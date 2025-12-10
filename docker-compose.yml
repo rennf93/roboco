@@ -1,0 +1,43 @@
+services:
+  # ==========================================================================
+  # PostgreSQL - Primary Database with pgvector for RAG
+  # ==========================================================================
+  postgres:
+    image: pgvector/pgvector:pg16
+    container_name: roboco-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: roboco
+      POSTGRES_PASSWORD: roboco
+      POSTGRES_DB: roboco
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U roboco -d roboco"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # ==========================================================================
+  # Redis - Cache, Sessions, Message Queue
+  # ==========================================================================
+  redis:
+    image: redis:7-alpine
+    container_name: roboco-redis
+    restart: unless-stopped
+    command: redis-server --appendonly yes
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+volumes:
+  postgres_data:
+  redis_data:
