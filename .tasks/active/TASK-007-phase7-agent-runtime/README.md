@@ -39,24 +39,24 @@
 ## Acceptance Criteria
 
 ### 1. MCP Server Integration
-- [x] Claude Code can call Task API (claim, update status, complete) - `src/roboco/mcp/task_server.py`
-- [x] Claude Code can call Message API (send/receive, channels) - `src/roboco/mcp/message_server.py`
-- [x] Claude Code can call Notification API (PMs only) - `src/roboco/mcp/notify_server.py`
-- [x] Claude Code can call Journal API (personal logs) - `src/roboco/mcp/journal_server.py`
+- [x] Claude Code can call Task API (claim, update status, complete) - `roboco/mcp/task_server.py`
+- [x] Claude Code can call Message API (send/receive, channels) - `roboco/mcp/message_server.py`
+- [x] Claude Code can call Notification API (PMs only) - `roboco/mcp/notify_server.py`
+- [x] Claude Code can call Journal API (personal logs) - `roboco/mcp/journal_server.py`
 - [x] MCP config file that any agent can use - Dynamic generation in orchestrator
 
 ### 2. API Rule Enforcement
-- [x] Channel access enforced (reject writes to wrong channels) - `src/roboco/enforcement/channel_access.py`
-- [x] Notification permissions enforced (only PM/Board/Auditor can notify) - `src/roboco/enforcement/notification_perms.py`, `api/routes/notifications.py`
-- [x] Notification routing enforced (Cell PM can only notify own cell) - `src/roboco/enforcement/notification_perms.py`
-- [x] Task state transitions enforced (no skipping states) - `src/roboco/enforcement/task_lifecycle.py`
-- [x] Task ownership enforced (only assigned agent can update) - `src/roboco/enforcement/task_ownership.py`
+- [x] Channel access enforced (reject writes to wrong channels) - `roboco/enforcement/channel_access.py`
+- [x] Notification permissions enforced (only PM/Board/Auditor can notify) - `roboco/enforcement/notification_perms.py`, `api/routes/notifications.py`
+- [x] Notification routing enforced (Cell PM can only notify own cell) - `roboco/enforcement/notification_perms.py`
+- [x] Task state transitions enforced (no skipping states) - `roboco/enforcement/task_lifecycle.py`
+- [x] Task ownership enforced (only assigned agent can update) - `roboco/enforcement/task_ownership.py`
 - [x] Message validation enforced (must have type, task_id when applicable) - `api/routes/messages.py` (Pydantic validation)
 - [x] Session boundaries enforced (auto-close, create new) - `api/routes/messages.py:297-306`
 - [x] Handoff requirements enforced (can't close without docs) - `services/task.py:complete()`
 
 ### 3. Agent Orchestrator
-- [x] Can spawn a Claude Code instance with a specific blueprint - `src/roboco/runtime/orchestrator.py`
+- [x] Can spawn a Claude Code instance with a specific blueprint - `roboco/runtime/orchestrator.py`
 - [x] Can pass MCP config to instance - `AgentOrchestrator._generate_mcp_config()`
 - [x] Can monitor instance health (responsive, errored, stuck) - `AgentOrchestrator._health_loop()`
 - [x] Can resume sessions on failure - `AgentOrchestrator.resolve_wait()` + auto-restart
@@ -64,17 +64,17 @@
 - [x] Provides status dashboard/API - `AgentOrchestrator.get_status_summary()`
 
 ### 4. Agent Bootstrap
-- [x] 18 agent records created in database - `src/roboco/bootstrap.py`
+- [x] 18 agent records created in database - `roboco/bootstrap.py`
 - [x] All channels created with correct membership - `bootstrap.py:create_channels()`
 - [x] Silent observer (Auditor) configured for all channels - `bootstrap.py:AUDITOR_SILENT_ACCESS`
 - [x] PM notification permissions configured - Built into enforcement layer
 - [x] Initial channel messages posted - `bootstrap.py:create_initial_messages()`
 
 ### 5. Workflow Triggers
-- [x] Task status changes trigger appropriate notifications - `src/roboco/events/handlers.py:handle_task_status_change()`
-- [x] Session boundaries trigger new session creation - `src/roboco/events/handlers.py:handle_session_boundary()`
-- [x] Handoff creation triggers documenter notification - `src/roboco/events/handlers.py:handle_handoff_created()`
-- [x] QA pass/fail triggers appropriate next step - `src/roboco/events/handlers.py:handle_qa_result()`
+- [x] Task status changes trigger appropriate notifications - `roboco/events/handlers.py:handle_task_status_change()`
+- [x] Session boundaries trigger new session creation - `roboco/events/handlers.py:handle_session_boundary()`
+- [x] Handoff creation triggers documenter notification - `roboco/events/handlers.py:handle_handoff_created()`
+- [x] QA pass/fail triggers appropriate next step - `roboco/events/handlers.py:handle_qa_result()`
 
 ### 6. End-to-End Validation
 - [ ] Can spawn all 18 agents - Requires testing
@@ -1057,7 +1057,7 @@ The orchestrator manages Claude Code instances.
 #### 3.1 Orchestrator Core
 
 ```python
-# src/roboco/runtime/orchestrator.py
+# roboco/runtime/orchestrator.py
 
 class AgentOrchestrator:
     """
@@ -1272,7 +1272,7 @@ Create the initial state for the system.
 #### 4.1 Bootstrap Script
 
 ```python
-# src/roboco/runtime/bootstrap.py
+# roboco/runtime/bootstrap.py
 
 async def bootstrap_roboco() -> None:
     """
@@ -1547,7 +1547,7 @@ Events that automatically trigger the next step in the workflow.
 #### 6.1 Event System
 
 ```python
-# src/roboco/runtime/events.py
+# roboco/runtime/events.py
 
 class WorkflowEventHandler:
     """Handles workflow events and triggers appropriate actions."""
@@ -2194,7 +2194,7 @@ BOARD MEETING (Both PO + HoM):
 ### 10. File Structure
 
 ```
-src/roboco/
+roboco/
 ├── runtime/                      # NEW - Agent Runtime
 │   ├── __init__.py
 │   ├── orchestrator.py           # Claude Code instance management
@@ -2236,7 +2236,7 @@ Projects need to be tracked in the database to support multi-project workflows.
 #### 11.1 Project Table
 
 ```python
-# src/roboco/models/project.py
+# roboco/models/project.py
 
 class Project(Base):
     """A project/repository managed by RoboCo."""
@@ -2285,7 +2285,7 @@ class Project(Base):
 #### 11.2 Task-Project Relationship
 
 ```python
-# Update to src/roboco/models/task.py
+# Update to roboco/models/task.py
 
 class Task(Base):
     # ... existing fields ...
@@ -2358,7 +2358,7 @@ def downgrade():
 #### 11.4 Project API Endpoints
 
 ```python
-# src/roboco/api/routes/projects.py
+# roboco/api/routes/projects.py
 
 router = APIRouter(prefix="/projects", tags=["Projects"])
 
@@ -2701,7 +2701,7 @@ MCP tools don't just validate - they **guide** the agent to the next step:
   },
   "context": {
     "related_tasks": ["TASK-038 (Redis setup)"],
-    "related_code": ["src/roboco/api/routes/auth.py"],
+    "related_code": ["roboco/api/routes/auth.py"],
     "previous_attempts": []
   },
   "next_step": "UNDERSTAND",
@@ -3470,7 +3470,7 @@ Phase 7 builds the Agent Runtime - the layer that brings RoboCo to life. We have
 
 ### Files Created
 
-#### MCP Servers (`src/roboco/mcp/`)
+#### MCP Servers (`roboco/mcp/`)
 | File | Purpose | Tools |
 |------|---------|-------|
 | `__init__.py` | Module init | Exports all server factories |
@@ -3479,7 +3479,7 @@ Phase 7 builds the Agent Runtime - the layer that brings RoboCo to life. We have
 | `notify_server.py` | Notifications via MCP | notify_list, notify_get, notify_ack, notify_send, escalate, request_approval |
 | `journal_server.py` | Personal journaling via MCP | journal_entry, journal_reflect, journal_decision, journal_learning, journal_struggle, journal_search, journal_stats, journal_recent |
 
-#### Enforcement Layer (`src/roboco/enforcement/`)
+#### Enforcement Layer (`roboco/enforcement/`)
 | File | Purpose | Key Functions |
 |------|---------|---------------|
 | `__init__.py` | Module init | Exports all validators |
@@ -3488,13 +3488,13 @@ Phase 7 builds the Agent Runtime - the layer that brings RoboCo to life. We have
 | `task_lifecycle.py` | Task state machine | `validate_task_transition()`, `TaskLifecycleError`, `is_terminal_state()`, `is_waiting_state()` |
 | `task_ownership.py` | Task ownership rules | `validate_task_ownership()`, `validate_task_claim()`, `can_review_task()` |
 
-#### Runtime (`src/roboco/runtime/`)
+#### Runtime (`roboco/runtime/`)
 | File | Purpose | Key Classes |
 |------|---------|-------------|
 | `__init__.py` | Module init | Exports orchestrator |
 | `orchestrator.py` | Agent lifecycle management | `AgentOrchestrator`, `AgentInstance`, `AgentState`, `WaitingRecord` |
 
-#### Bootstrap (`src/roboco/`)
+#### Bootstrap (`roboco/`)
 | File | Purpose |
 |------|---------|
 | `bootstrap.py` | System initialization (DB, agents, channels, memberships) |
@@ -3516,19 +3516,19 @@ Phase 7 builds the Agent Runtime - the layer that brings RoboCo to life. We have
 
 ### Additional Files Created (Second Implementation Pass)
 
-#### Event System (`src/roboco/events/`)
+#### Event System (`roboco/events/`)
 | File | Purpose | Key Components |
 |------|---------|----------------|
 | `__init__.py` | Module init | Exports EventBus, Event, EventType, handlers |
 | `bus.py` | Redis pub/sub event bus | `EventBus`, `Event`, `EventType` enum |
 | `handlers.py` | Workflow trigger handlers | `handle_task_status_change()`, `handle_session_boundary()`, `handle_handoff_created()`, `handle_qa_result()` |
 
-#### API Routes (`src/roboco/api/routes/`)
+#### API Routes (`roboco/api/routes/`)
 | File | Purpose |
 |------|---------|
 | `orchestrator.py` | Agent orchestrator management API |
 
-#### Services (`src/roboco/services/`)
+#### Services (`roboco/services/`)
 | File | Purpose |
 |------|---------|
 | `notification.py` | System-generated notification service |

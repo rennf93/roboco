@@ -28,7 +28,7 @@ Implement Phase 4 of the RoboCo system per HOMELAB_TEAM_V0.md blueprint (Section
 
 ## What Was Built
 
-### 1. Developer Agent (`src/roboco/agents/developer.py`)
+### 1. Developer Agent (`roboco/agents/developer.py`)
 
 | Component | Description |
 |-----------|-------------|
@@ -44,7 +44,7 @@ Key features:
 - Handoff creation for documenter
 - Factory functions for BE/FE/UX developers
 
-### 2. QA Agent (`src/roboco/agents/qa.py`)
+### 2. QA Agent (`roboco/agents/qa.py`)
 
 | Component | Description |
 |-----------|-------------|
@@ -60,7 +60,7 @@ Key features:
 - Specific feedback for failures
 - QA report generation
 
-### 3. Documenter Agent (`src/roboco/agents/documenter.py`)
+### 3. Documenter Agent (`roboco/agents/documenter.py`)
 
 | Component | Description |
 |-----------|-------------|
@@ -76,7 +76,7 @@ Key features:
 - Self-review before publish
 - Factory functions for all cells
 
-### 4. PM Agents (`src/roboco/agents/pm.py`)
+### 4. PM Agents (`roboco/agents/pm.py`)
 
 | Component | Description |
 |-----------|-------------|
@@ -93,7 +93,7 @@ Key features:
 - Status reporting
 - Cross-cell coordination (Main PM)
 
-### 5. Board Agents (`src/roboco/agents/board.py`)
+### 5. Board Agents (`roboco/agents/board.py`)
 
 | Component | Description |
 |-----------|-------------|
@@ -108,7 +108,7 @@ Auditor special powers:
 - Direct line to CEO
 - Can notify anyone (sparingly)
 
-### 6. Factory and Deployment (`src/roboco/agents/factory.py`)
+### 6. Factory and Deployment (`roboco/agents/factory.py`)
 
 | Component | Description |
 |-----------|-------------|
@@ -129,7 +129,7 @@ Utility functions:
 
 ## File Structure
 ```
-src/roboco/agents/
+roboco/agents/
 ├── __init__.py        # Updated with all exports
 ├── base.py            # Phase 1 - Base Agent class
 ├── orchestrator.py    # Phase 1 - Agent orchestration

@@ -38,7 +38,7 @@ Implement Phase 3 of the RoboCo system per HOMELAB_TEAM_V0.md blueprint (Section
 - Replaced `qdrant-client>=1.7.0` with `piragi[postgres]>=0.1.0`
 - Updated mypy overrides for piragi
 
-### 2. Configuration (`src/roboco/config.py`)
+### 2. Configuration (`roboco/config.py`)
 | Setting | Default | Description |
 |---------|---------|-------------|
 | `rag_persist_dir` | `.piragi` | Directory for piragi index data |
@@ -52,7 +52,7 @@ Implement Phase 3 of the RoboCo system per HOMELAB_TEAM_V0.md blueprint (Section
 | `rag_auto_update_interval` | 300 | Seconds between updates |
 | `rag_store_url` | computed | PostgreSQL connection for piragi |
 
-### 3. Optimal API Service (`src/roboco/services/optimal.py`)
+### 3. Optimal API Service (`roboco/services/optimal.py`)
 
 | Component | Description |
 |-----------|-------------|
@@ -73,7 +73,7 @@ Key features:
 - RAG queries with citations
 - HyDE and hybrid search enabled by default
 
-### 4. Journal API Service (`src/roboco/services/journal.py`)
+### 4. Journal API Service (`roboco/services/journal.py`)
 
 | Component | Description |
 |-----------|-------------|
@@ -97,7 +97,7 @@ Key features:
 
 ### 5. API Routes
 
-#### Optimal API (`src/roboco/api/routes/optimal.py`)
+#### Optimal API (`roboco/api/routes/optimal.py`)
 | Endpoint | Method | Description |
 |----------|--------|-------------|
 | `/api/v1/optimal/kb/index/code` | POST | Index code files |
@@ -110,7 +110,7 @@ Key features:
 | `/api/v1/optimal/kb/{type}` | DELETE | Clear an index |
 | `/api/v1/optimal/kb/refresh` | POST | Refresh index sources |
 
-#### Journal API (`src/roboco/api/routes/journals.py`)
+#### Journal API (`roboco/api/routes/journals.py`)
 | Endpoint | Method | Description |
 |----------|--------|-------------|
 | `/api/v1/journals/me` | GET | Get my journal |
@@ -128,14 +128,14 @@ Key features:
 | `/api/v1/journals/me/growth` | GET | Get growth metrics |
 | `/api/v1/journals/me/search` | POST | Semantic search entries |
 
-### 6. App Integration (`src/roboco/api/app.py`)
+### 6. App Integration (`roboco/api/app.py`)
 - OptimalService initialized in lifespan
 - Stored in `app.state.optimal`
 - Proper cleanup on shutdown
 
 ## File Structure
 ```
-src/roboco/services/
+roboco/services/
 ├── __init__.py           # Updated with Phase 3 exports
 ├── transcription.py      # Phase 2
 ├── extraction.py         # Phase 2
@@ -143,7 +143,7 @@ src/roboco/services/
 ├── optimal.py            # NEW - RAG/Knowledge Base
 └── journal.py            # NEW - Agent Journals
 
-src/roboco/api/routes/
+roboco/api/routes/
 ├── __init__.py           # Updated with new routes
 ├── ... (Phase 1-2 routes)
 ├── optimal.py            # NEW - Optimal API endpoints

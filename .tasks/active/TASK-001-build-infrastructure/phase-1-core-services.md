@@ -32,7 +32,7 @@ Implement Phase 1 of the RoboCo system per HOMELAB_TEAM_V0.md blueprint:
 - `.env.example` - Environment template
 - `alembic/` - Migration setup
 
-### 2. Data Models (`src/roboco/models/`)
+### 2. Data Models (`roboco/models/`)
 | File | Models |
 |------|--------|
 | `base.py` | All enums (TaskStatus, AgentRole, Team, etc.) |
@@ -46,15 +46,15 @@ Implement Phase 1 of the RoboCo system per HOMELAB_TEAM_V0.md blueprint:
 | `journal.py` | Journal, JournalEntry |
 | `handoff.py` | DocumenterHandoff |
 
-### 3. Database Layer (`src/roboco/db/`)
+### 3. Database Layer (`roboco/db/`)
 - `base.py` - Async SQLAlchemy engine, session factory
 - `tables.py` - All ORM table definitions (10 tables)
 
-### 4. Configuration (`src/roboco/config.py`)
+### 4. Configuration (`roboco/config.py`)
 - Environment-based settings via pydantic-settings
 - Database, Redis, Qdrant, LLM provider configs
 
-### 5. Messaging API (`src/roboco/api/`)
+### 5. Messaging API (`roboco/api/`)
 | Route | Endpoints |
 |-------|-----------|
 | `health.py` | `/health`, `/ready` |
@@ -63,19 +63,19 @@ Implement Phase 1 of the RoboCo system per HOMELAB_TEAM_V0.md blueprint:
 | `messages.py` | Send, edit, delete messages |
 | `notifications.py` | Send, list, acknowledge |
 
-### 6. WebSocket (`src/roboco/api/websocket.py`)
+### 6. WebSocket (`roboco/api/websocket.py`)
 - `/ws/channels/{id}` - Channel stream
 - `/ws/agents/{id}` - Agent output stream
 - `/ws/sessions/{id}` - Session stream
 - ConnectionManager for broadcasting
 
-### 7. Agent Framework (`src/roboco/agents/`)
+### 7. Agent Framework (`roboco/agents/`)
 - `base.py` - Agent base class with lifecycle, LLM stubs
 - `orchestrator.py` - Spawn/stop agents, health monitoring
 
 ## File Structure
 ```
-src/roboco/
+roboco/
 ├── __init__.py
 ├── config.py
 ├── models/

@@ -33,7 +33,7 @@ Implement Phase 5 of the RoboCo system per HOMELAB_TEAM_V0.md blueprint (Section
 
 ## What Was Built
 
-### 1. Task Service (`src/roboco/services/task.py`)
+### 1. Task Service (`roboco/services/task.py`)
 
 | Component | Description |
 |-----------|-------------|
@@ -43,7 +43,7 @@ Implement Phase 5 of the RoboCo system per HOMELAB_TEAM_V0.md blueprint (Section
 | Queries | list_all, list_by_team, list_by_assignee, list_by_status, list_pending, list_blocked, list_awaiting_qa, list_awaiting_docs |
 | Statistics | count_by_status, count_by_team, get_active_count |
 
-### 2. Task API Routes (`src/roboco/api/routes/tasks.py`)
+### 2. Task API Routes (`roboco/api/routes/tasks.py`)
 
 | Endpoint | Description |
 |----------|-------------|
@@ -57,7 +57,7 @@ Implement Phase 5 of the RoboCo system per HOMELAB_TEAM_V0.md blueprint (Section
 | `POST /tasks/{id}/verify, /submit-qa, /pass-qa, /fail-qa, /complete, /cancel` | Review transitions |
 | `POST /tasks/{id}/progress, /checkpoint, /commit` | Progress and artifacts |
 
-### 3. Kanban Models (`src/roboco/models/kanban.py`)
+### 3. Kanban Models (`roboco/models/kanban.py`)
 
 | Component | Description |
 |-----------|-------------|
@@ -68,7 +68,7 @@ Implement Phase 5 of the RoboCo system per HOMELAB_TEAM_V0.md blueprint (Section
 | `KanbanBoard` | Complete board with columns or swimlanes |
 | Column configs | DEV_COLUMNS, QA_COLUMNS, DOCUMENTER_COLUMNS, PM_COLUMNS, MAIN_PM_COLUMNS, BOARD_COLUMNS |
 
-### 4. Kanban Service (`src/roboco/services/kanban.py`)
+### 4. Kanban Service (`roboco/services/kanban.py`)
 
 | Method | Description |
 |--------|-------------|
@@ -81,7 +81,7 @@ Implement Phase 5 of the RoboCo system per HOMELAB_TEAM_V0.md blueprint (Section
 | `get_board_kanban()` | Board-level roadmap |
 | `get_board_stats(team)` | Board statistics |
 
-### 5. Kanban API Routes (`src/roboco/api/routes/kanban.py`)
+### 5. Kanban API Routes (`roboco/api/routes/kanban.py`)
 
 | Endpoint | Description |
 |----------|-------------|
@@ -93,7 +93,7 @@ Implement Phase 5 of the RoboCo system per HOMELAB_TEAM_V0.md blueprint (Section
 | `GET /kanban/board` | Board-level roadmap |
 | `GET /kanban/stats` | Board statistics |
 
-### 6. Metrics Service (`src/roboco/services/metrics.py`)
+### 6. Metrics Service (`roboco/services/metrics.py`)
 
 | Component | Description |
 |-----------|-------------|
@@ -108,7 +108,7 @@ Implement Phase 5 of the RoboCo system per HOMELAB_TEAM_V0.md blueprint (Section
 | `get_communication_volume(hours)` | Message and notification counts |
 | `get_health_status(team)` | ok/slow/critical status |
 
-### 7. Dashboard API Routes (`src/roboco/api/routes/dashboard.py`)
+### 7. Dashboard API Routes (`roboco/api/routes/dashboard.py`)
 
 | Endpoint | Description |
 |----------|-------------|
@@ -127,7 +127,7 @@ Implement Phase 5 of the RoboCo system per HOMELAB_TEAM_V0.md blueprint (Section
 
 ## File Structure
 ```
-src/roboco/
+roboco/
 ├── models/
 │   └── kanban.py          # NEW - Kanban board models
 ├── services/

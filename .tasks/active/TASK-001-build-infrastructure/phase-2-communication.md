@@ -26,7 +26,7 @@ Implement Phase 2 of the RoboCo system per HOMELAB_TEAM_V0.md blueprint (Section
 
 ## What Was Built
 
-### 1. Transcription Service (`src/roboco/services/transcription.py`)
+### 1. Transcription Service (`roboco/services/transcription.py`)
 | Component | Description |
 |-----------|-------------|
 | `StreamBuffer` | Accumulates chunks from agent, tracks timing, detects readiness |
@@ -39,7 +39,7 @@ Key features:
 - Background task for periodic buffer checking
 - Callback registration for ready segments
 
-### 2. Extraction Service (`src/roboco/services/extraction.py`)
+### 2. Extraction Service (`roboco/services/extraction.py`)
 | Component | Description |
 |-----------|-------------|
 | Pattern matchers | Regex patterns for each MessageType |
@@ -56,7 +56,7 @@ Message types detected:
 - **BLOCKER**: "Blocked:", "Waiting on...", "Error:"
 - **TECHNICAL**: Code blocks, API explanations
 
-### 3. Permission Service (`src/roboco/services/permissions.py`)
+### 3. Permission Service (`roboco/services/permissions.py`)
 | Component | Description |
 |-----------|-------------|
 | `PermissionLevel` | Hierarchy levels (CEO → Board → Main PM → Cell PM → Member) |
@@ -76,14 +76,14 @@ Auditor has silent read access to all channels.
 
 ### 4. API Integration
 
-#### New Dependencies (`src/roboco/api/deps.py`)
+#### New Dependencies (`roboco/api/deps.py`)
 - `PermissionServiceDep` - Injects permission service
 - `CurrentAgentContext` - Full agent context from headers
 - `require_channel_read()` - Dependency factory for channel read checks
 - `require_channel_write()` - Dependency factory for channel write checks
 - `require_notification_permission()` - Dependency for notification checks
 
-#### New Routes (`src/roboco/api/routes/stream.py`)
+#### New Routes (`roboco/api/routes/stream.py`)
 | Endpoint | Method | Description |
 |----------|--------|-------------|
 | `/api/v1/stream/chunk` | POST | Process a stream chunk |
@@ -93,14 +93,14 @@ Auditor has silent read access to all channels.
 | `/api/v1/stream/permissions` | GET | Get agent's permission summary |
 | `/api/v1/stream/permissions/channel/{name}` | GET | Check specific channel access |
 
-#### App Integration (`src/roboco/api/app.py`)
+#### App Integration (`roboco/api/app.py`)
 - Services initialized in lifespan context
 - `app.state.transcription` - Global transcription service
 - `app.state.extraction` - Global extraction pipeline
 
 ## File Structure
 ```
-src/roboco/services/
+roboco/services/
 ├── __init__.py           # Service exports
 ├── transcription.py      # StreamBuffer, TranscriptionService
 ├── extraction.py         # ExtractionService, ExtractionPipeline

@@ -25,7 +25,7 @@ CEO (Renzo - Human)
 
 ```
 roboco/
-├── src/roboco/              # Main Python package
+├── roboco/              # Main Python package
 │   ├── models/              # Pydantic data models
 │   ├── db/                  # SQLAlchemy ORM & database
 │   ├── api/                 # FastAPI routes (coming soon)

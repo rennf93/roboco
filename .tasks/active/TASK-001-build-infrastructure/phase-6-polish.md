@@ -26,7 +26,7 @@ Implement Phase 6 of the RoboCo system per HOMELAB_TEAM_V0.md blueprint (Section
 
 ## What Was Built
 
-### 1. Custom Exceptions (`src/roboco/exceptions.py`)
+### 1. Custom Exceptions (`roboco/exceptions.py`)
 
 | Exception | Description |
 |-----------|-------------|
@@ -60,7 +60,7 @@ All exceptions include:
 - `details`: Additional context dict
 - `to_dict()`: Convert to API response format
 
-### 2. Middleware (`src/roboco/api/middleware.py`)
+### 2. Middleware (`roboco/api/middleware.py`)
 
 | Component | Description |
 |-----------|-------------|
@@ -77,7 +77,7 @@ Features:
 - Added to all error responses
 - Request timing in X-Response-Time-Ms header
 
-### 3. Logging Configuration (`src/roboco/logging.py`)
+### 3. Logging Configuration (`roboco/logging.py`)
 
 | Component | Description |
 |-----------|-------------|
@@ -114,7 +114,7 @@ With:
 - JSON columns for structured data
 - Performance indexes for common queries
 
-### 5. Updated Application (`src/roboco/api/app.py`)
+### 5. Updated Application (`roboco/api/app.py`)
 
 - Logging setup at import time
 - Startup/shutdown logging
@@ -123,7 +123,7 @@ With:
 
 ## File Structure
 ```
-src/roboco/
+roboco/
 ├── __init__.py            # Updated with core exports
 ├── exceptions.py          # NEW - Custom exception hierarchy
 ├── logging.py             # NEW - Structured logging config
