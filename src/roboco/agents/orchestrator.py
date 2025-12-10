@@ -14,6 +14,7 @@ import structlog
 
 from roboco.agents.base import Agent, AgentConfig
 from roboco.models import AgentRole, AgentStatus, Team
+import contextlib
 
 logger = structlog.get_logger()
 
@@ -46,7 +47,9 @@ class Orchestrator:
     @property
     def active_agents(self) -> list[Agent]:
         """Get all active agents."""
-        return [a for a in self._agents.values() if a.state.status == AgentStatus.ACTIVE]
+        return [
+            a for a in self._agents.values() if a.state.status == AgentStatus.ACTIVE
+        ]
 
     @property
     def idle_agents(self) -> list[Agent]:
@@ -80,10 +83,8 @@ class Orchestrator:
         # Stop health monitor
         if self._monitor_task:
             self._monitor_task.cancel()
-            try:
+            with contextlib.suppress(asyncio.CancelledError):
                 await self._monitor_task
-            except asyncio.CancelledError:
-                pass
 
         # Stop all agents
         await self.stop_all_agents()
@@ -124,7 +125,9 @@ class Orchestrator:
             return
 
         agent = self._agents.pop(agent_id)
-        self.log.info("Agent unregistered", agent_id=str(agent_id), agent_name=agent.name)
+        self.log.info(
+            "Agent unregistered", agent_id=str(agent_id), agent_name=agent.name
+        )
 
     async def spawn_agent(self, agent: Agent) -> None:
         """
@@ -280,11 +283,13 @@ class Orchestrator:
             by_status[status] = by_status.get(status, 0) + 1
 
             if agent.state.error:
-                errors.append({
-                    "agent_id": str(agent.id),
-                    "agent_name": agent.name,
-                    "error": agent.state.error,
-                })
+                errors.append(
+                    {
+                        "agent_id": str(agent.id),
+                        "agent_name": agent.name,
+                        "error": agent.state.error,
+                    }
+                )
 
         return {
             "total_agents": total,

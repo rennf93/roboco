@@ -30,14 +30,18 @@ router = APIRouter(prefix="/optimal", tags=["optimal"])
 class IndexCodeRequest(BaseModel):
     """Request to index code files."""
 
-    sources: list[str] = Field(..., min_length=1, description="File paths, directories, or globs")
+    sources: list[str] = Field(
+        ..., min_length=1, description="File paths, directories, or globs"
+    )
     project: str | None = Field(None, description="Project identifier for filtering")
 
 
 class IndexDocsRequest(BaseModel):
     """Request to index documentation."""
 
-    sources: list[str] = Field(..., min_length=1, description="File paths, URLs, or globs")
+    sources: list[str] = Field(
+        ..., min_length=1, description="File paths, URLs, or globs"
+    )
     project: str | None = Field(None, description="Project identifier for filtering")
 
 

@@ -17,7 +17,6 @@ from roboco.models.base import (
     TimestampMixin,
 )
 
-
 # =============================================================================
 # MAIN NOTIFICATION MODEL
 # =============================================================================
@@ -37,12 +36,8 @@ class Notification(TimestampMixin):
     priority: NotificationPriority = Field(default=NotificationPriority.NORMAL)
 
     # Routing
-    from_agent: UUID = Field(
-        ..., description="Sender (must be PM/Board/Auditor)"
-    )
-    to_agents: list[UUID] = Field(
-        ..., min_length=1, description="Recipient agent IDs"
-    )
+    from_agent: UUID = Field(..., description="Sender (must be PM/Board/Auditor)")
+    to_agents: list[UUID] = Field(..., min_length=1, description="Recipient agent IDs")
 
     # Content
     subject: str = Field(..., min_length=1, max_length=200, description="Subject line")
@@ -216,10 +211,17 @@ def create_priority_change(
     new_priority: int,
 ) -> Notification:
     """Create a priority change notification."""
-    priority_labels = {0: "P0 (Critical)", 1: "P1 (High)", 2: "P2 (Medium)", 3: "P3 (Low)"}
+    priority_labels = {
+        0: "P0 (Critical)",
+        1: "P1 (High)",
+        2: "P2 (Medium)",
+        3: "P3 (Low)",
+    }
     return Notification(
         type=NotificationType.PRIORITY_CHANGE,
-        priority=NotificationPriority.URGENT if new_priority == 0 else NotificationPriority.HIGH,
+        priority=NotificationPriority.URGENT
+        if new_priority == 0
+        else NotificationPriority.HIGH,
         from_agent=from_agent,
         to_agents=to_agents,
         subject=f"Priority Changed: {task_title}",

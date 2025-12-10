@@ -14,6 +14,9 @@ Permission Levels:
 - L3: Cell PM (own cell + PM channel)
 - L4: Cell Members (own cell only)
 - SPECIAL: Auditor (silent read all)
+
+Note: This service uses enum-based roles (AgentRole) for type safety.
+For string-based agent ID lookups, see roboco.agents_config.
 """
 
 from dataclasses import dataclass, field
@@ -23,6 +26,15 @@ from uuid import UUID
 
 import structlog
 
+from roboco.agents_config import (
+    CHANNEL_ACCESS as CHANNEL_ACCESS_BY_ID,
+)
+from roboco.agents_config import (
+    NOTIFICATION_PERMISSIONS as NOTIFICATION_PERMS_BY_ROLE,
+)
+from roboco.agents_config import (
+    get_agent_role as get_role_string,
+)
 from roboco.models import AgentRole, ChannelType, Team
 
 logger = structlog.get_logger()
@@ -490,10 +502,7 @@ class PermissionService:
             return True
 
         # Higher permission levels can read lower-level channels
-        if agent.level <= PermissionLevel.MAIN_PM:
-            return True
-
-        return False
+        return agent.level <= PermissionLevel.MAIN_PM
 
     def can_write_channel(
         self,
@@ -524,10 +533,7 @@ class PermissionService:
             return True
 
         # Higher permission levels can write to lower-level channels
-        if agent.level <= PermissionLevel.MAIN_PM:
-            return True
-
-        return False
+        return agent.level <= PermissionLevel.MAIN_PM
 
     def get_accessible_channels(
         self,
@@ -633,11 +639,9 @@ class PermissionService:
             return True
 
         # Check VIEW_ALL permission for VIEW_OWN requests
-        if action == TaskAction.VIEW_OWN:
-            if TaskAction.VIEW_ALL in allowed_actions:
-                return True
-
-        return False
+        return bool(
+            action == TaskAction.VIEW_OWN and TaskAction.VIEW_ALL in allowed_actions
+        )
 
     def get_task_actions(
         self,
@@ -681,3 +685,45 @@ class PermissionService:
             "can_send_notifications": self.can_send_notifications(agent),
             "task_actions": list(self.get_task_actions(agent)),
         }
+
+    # =========================================================================
+    # STRING-BASED LOOKUPS (bridges to agents_config)
+    # =========================================================================
+
+    def can_agent_read_channel(self, agent_slug: str, channel_slug: str) -> bool:
+        """
+        Check channel access using agent slug (string ID).
+
+        This bridges to the agents_config module for string-based lookups.
+        """
+        channel = CHANNEL_ACCESS_BY_ID.get(channel_slug)
+        if not channel:
+            return False
+
+        read_list = channel.get("read", [])
+        silent_list = channel.get("silent", [])
+
+        return agent_slug in read_list or agent_slug in silent_list
+
+    def can_agent_write_channel(self, agent_slug: str, channel_slug: str) -> bool:
+        """
+        Check channel write access using agent slug (string ID).
+
+        This bridges to the agents_config module for string-based lookups.
+        """
+        channel = CHANNEL_ACCESS_BY_ID.get(channel_slug)
+        if not channel:
+            return False
+
+        write_list = channel.get("write", [])
+        return agent_slug in write_list
+
+    def can_agent_send_notifications(self, agent_slug: str) -> bool:
+        """
+        Check notification permission using agent slug (string ID).
+
+        This bridges to the agents_config module for string-based lookups.
+        """
+        role = get_role_string(agent_slug)
+        perms = NOTIFICATION_PERMS_BY_ROLE.get(role, {})
+        return perms.get("can_send", False)

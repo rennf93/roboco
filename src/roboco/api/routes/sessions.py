@@ -260,9 +260,7 @@ async def close_session(
     session_id: UUID,
 ) -> SessionResponse:
     """Close a session."""
-    result = await db.execute(
-        select(SessionTable).where(SessionTable.id == session_id)
-    )
+    result = await db.execute(select(SessionTable).where(SessionTable.id == session_id))
     session = result.scalar_one_or_none()
 
     if not session:

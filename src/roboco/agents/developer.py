@@ -270,7 +270,7 @@ If clarification needed, respond with: "QUESTION: [your question]"
 Create an implementation plan for this task:
 
 Task: {ctx.title}
-Understanding: {ctx.journal_entries[-1] if ctx.journal_entries else 'No previous context'}
+Understanding: {ctx.journal_entries[-1] if ctx.journal_entries else "No previous context"}
 
 Break this into ordered subtasks. For each subtask:
 - Clear description
@@ -286,9 +286,7 @@ Format as JSON array:
         response = await self.think(prompt)
 
         # Parse subtasks (simplified - would use proper JSON parsing)
-        ctx.subtasks = [
-            {"description": response, "files": [], "complexity": "medium"}
-        ]
+        ctx.subtasks = [{"description": response, "files": [], "complexity": "medium"}]
 
         # Journal entry
         ctx.journal_entries.append(
@@ -329,7 +327,7 @@ Format as JSON array:
 Execute this subtask:
 
 Task: {ctx.title}
-Subtask {ctx.current_subtask + 1}/{len(ctx.subtasks)}: {subtask.get('description', str(subtask))}
+Subtask {ctx.current_subtask + 1}/{len(ctx.subtasks)}: {subtask.get("description", str(subtask))}
 
 Provide:
 1. Code changes needed
@@ -416,7 +414,7 @@ Respond with the implementation.
 Create a documentation handoff for this completed task:
 
 Task: {ctx.title}
-Commits: {', '.join(ctx.commits)}
+Commits: {", ".join(ctx.commits)}
 Journal:
 {chr(10).join(ctx.journal_entries)}
 
@@ -550,6 +548,7 @@ def create_backend_developer(
             content = blueprint_path.read_text()
             # Extract system prompt section (between ```blocks after ## System Prompt)
             import re
+
             match = re.search(r"## System Prompt\s*```\s*(.*?)```", content, re.DOTALL)
             system_prompt = match.group(1).strip() if match else ""
         else:
@@ -577,6 +576,7 @@ def create_frontend_developer(
         if blueprint_path.exists():
             content = blueprint_path.read_text()
             import re
+
             match = re.search(r"## System Prompt\s*```\s*(.*?)```", content, re.DOTALL)
             system_prompt = match.group(1).strip() if match else ""
         else:
@@ -604,6 +604,7 @@ def create_ux_developer(
         if blueprint_path.exists():
             content = blueprint_path.read_text()
             import re
+
             match = re.search(r"## System Prompt\s*```\s*(.*?)```", content, re.DOTALL)
             system_prompt = match.group(1).strip() if match else ""
         else:

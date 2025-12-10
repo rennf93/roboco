@@ -11,13 +11,13 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
+from roboco.api.middleware import setup_middleware
 from roboco.config import settings
 from roboco.db.base import close_db, init_db
-from roboco.logging import setup_logging, get_logger
-from roboco.api.middleware import setup_middleware
+from roboco.logging import get_logger, setup_logging
+from roboco.services.extraction import ExtractionPipeline, ExtractionService
+from roboco.services.optimal import close_optimal_service, get_optimal_service
 from roboco.services.transcription import TranscriptionService
-from roboco.services.extraction import ExtractionService, ExtractionPipeline
-from roboco.services.optimal import get_optimal_service, close_optimal_service
 
 # Setup logging before anything else
 setup_logging()
@@ -29,7 +29,7 @@ extraction_pipeline: ExtractionPipeline | None = None
 
 
 @asynccontextmanager
-async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
+async def lifespan(app: FastAPI) -> AsyncGenerator[None]:
     """
     Application lifespan manager.
 
@@ -120,16 +120,17 @@ def create_app() -> FastAPI:
 
     from roboco.api.routes import (
         channels,
+        dashboard,
         health,
         journals,
+        kanban,
         messages,
         notifications,
         optimal,
+        orchestrator,
         sessions,
         stream,
         tasks,
-        kanban,
-        dashboard,
     )
 
     # Health check
@@ -199,6 +200,13 @@ def create_app() -> FastAPI:
         dashboard.router,
         prefix=api_prefix,
         tags=["Dashboard"],
+    )
+
+    # Phase 7: Agent Runtime
+    app.include_router(
+        orchestrator.router,
+        prefix=f"{api_prefix}/orchestrator",
+        tags=["Orchestrator"],
     )
 
     # ==========================================================================

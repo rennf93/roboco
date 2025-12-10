@@ -17,8 +17,8 @@ Creates all tables for the RoboCo AI Agents Company system:
 - handoffs: Documentation handoffs
 """
 
-from alembic import op
 import sqlalchemy as sa
+from alembic import op
 from sqlalchemy.dialects import postgresql
 
 # revision identifiers, used by Alembic.
@@ -72,7 +72,9 @@ def upgrade() -> None:
         sa.Column("metrics", postgresql.JSON(), server_default="{}"),
         sa.Column("journal_id", postgresql.UUID(as_uuid=True), nullable=True),
         sa.Column("description", sa.Text(), nullable=True),
-        sa.Column("created_at", sa.DateTime(), nullable=False, server_default=sa.func.now()),
+        sa.Column(
+            "created_at", sa.DateTime(), nullable=False, server_default=sa.func.now()
+        ),
         sa.Column("updated_at", sa.DateTime(), nullable=True),
     )
 
@@ -121,7 +123,9 @@ def upgrade() -> None:
         ),
         sa.Column(
             "team",
-            sa.Enum("backend", "frontend", "ux_ui", "board", name="team", create_type=False),
+            sa.Enum(
+                "backend", "frontend", "ux_ui", "board", name="team", create_type=False
+            ),
             nullable=False,
             index=True,
         ),
@@ -131,9 +135,19 @@ def upgrade() -> None:
             sa.ForeignKey("tasks.id", ondelete="SET NULL"),
             nullable=True,
         ),
-        sa.Column("dependency_ids", postgresql.ARRAY(postgresql.UUID(as_uuid=True)), server_default="{}"),
-        sa.Column("blocker_ids", postgresql.ARRAY(postgresql.UUID(as_uuid=True)), server_default="{}"),
-        sa.Column("created_at", sa.DateTime(), nullable=False, server_default=sa.func.now()),
+        sa.Column(
+            "dependency_ids",
+            postgresql.ARRAY(postgresql.UUID(as_uuid=True)),
+            server_default="{}",
+        ),
+        sa.Column(
+            "blocker_ids",
+            postgresql.ARRAY(postgresql.UUID(as_uuid=True)),
+            server_default="{}",
+        ),
+        sa.Column(
+            "created_at", sa.DateTime(), nullable=False, server_default=sa.func.now()
+        ),
         sa.Column("updated_at", sa.DateTime(), nullable=True),
         sa.Column("claimed_at", sa.DateTime(), nullable=True),
         sa.Column("started_at", sa.DateTime(), nullable=True),
@@ -185,19 +199,35 @@ def upgrade() -> None:
         ),
         sa.Column("description", sa.Text(), nullable=True),
         sa.Column("topic", sa.String(500), nullable=True),
-        sa.Column("members", postgresql.ARRAY(postgresql.UUID(as_uuid=True)), server_default="{}"),
-        sa.Column("writers", postgresql.ARRAY(postgresql.UUID(as_uuid=True)), server_default="{}"),
-        sa.Column("silent_observers", postgresql.ARRAY(postgresql.UUID(as_uuid=True)), server_default="{}"),
+        sa.Column(
+            "members",
+            postgresql.ARRAY(postgresql.UUID(as_uuid=True)),
+            server_default="{}",
+        ),
+        sa.Column(
+            "writers",
+            postgresql.ARRAY(postgresql.UUID(as_uuid=True)),
+            server_default="{}",
+        ),
+        sa.Column(
+            "silent_observers",
+            postgresql.ARRAY(postgresql.UUID(as_uuid=True)),
+            server_default="{}",
+        ),
         sa.Column("is_archived", sa.Boolean(), server_default="false"),
         sa.Column("is_private", sa.Boolean(), server_default="false"),
         sa.Column("allow_threads", sa.Boolean(), server_default="true"),
         sa.Column("allow_reactions", sa.Boolean(), server_default="true"),
-        sa.Column("message_retention_days", sa.Integer(), nullable=True, server_default="90"),
+        sa.Column(
+            "message_retention_days", sa.Integer(), nullable=True, server_default="90"
+        ),
         sa.Column("max_message_length", sa.Integer(), server_default="10000"),
         sa.Column("message_count", sa.Integer(), server_default="0"),
         sa.Column("group_count", sa.Integer(), server_default="0"),
         sa.Column("last_activity", sa.DateTime(), nullable=True),
-        sa.Column("created_at", sa.DateTime(), nullable=False, server_default=sa.func.now()),
+        sa.Column(
+            "created_at", sa.DateTime(), nullable=False, server_default=sa.func.now()
+        ),
         sa.Column("updated_at", sa.DateTime(), nullable=True),
     )
 
@@ -217,14 +247,20 @@ def upgrade() -> None:
         ),
         sa.Column("allowed_roles", postgresql.ARRAY(sa.String()), server_default="{}"),
         sa.Column("hierarchy_level", sa.Integer(), server_default="4"),
-        sa.Column("members", postgresql.ARRAY(postgresql.UUID(as_uuid=True)), server_default="{}"),
+        sa.Column(
+            "members",
+            postgresql.ARRAY(postgresql.UUID(as_uuid=True)),
+            server_default="{}",
+        ),
         sa.Column("is_active", sa.Boolean(), server_default="true"),
         sa.Column("active_session_id", postgresql.UUID(as_uuid=True), nullable=True),
         sa.Column("default_session_config", postgresql.JSON(), server_default="{}"),
         sa.Column("total_sessions", sa.Integer(), server_default="0"),
         sa.Column("total_messages", sa.Integer(), server_default="0"),
         sa.Column("last_activity", sa.DateTime(), nullable=True),
-        sa.Column("created_at", sa.DateTime(), nullable=False, server_default=sa.func.now()),
+        sa.Column(
+            "created_at", sa.DateTime(), nullable=False, server_default=sa.func.now()
+        ),
         sa.Column("updated_at", sa.DateTime(), nullable=True),
     )
 
@@ -242,8 +278,12 @@ def upgrade() -> None:
             index=True,
         ),
         sa.Column("max_time_window", sa.Interval(), nullable=True),
-        sa.Column("max_message_count", sa.Integer(), nullable=True, server_default="100"),
-        sa.Column("max_content_length", sa.Integer(), nullable=True, server_default="50000"),
+        sa.Column(
+            "max_message_count", sa.Integer(), nullable=True, server_default="100"
+        ),
+        sa.Column(
+            "max_content_length", sa.Integer(), nullable=True, server_default="50000"
+        ),
         sa.Column("timeout_seconds", sa.Integer(), server_default="300"),
         sa.Column(
             "status",
@@ -252,12 +292,21 @@ def upgrade() -> None:
             server_default="active",
             index=True,
         ),
-        sa.Column("started_at", sa.DateTime(), nullable=False, server_default=sa.func.now()),
-        sa.Column("last_activity_at", sa.DateTime(), nullable=False, server_default=sa.func.now()),
+        sa.Column(
+            "started_at", sa.DateTime(), nullable=False, server_default=sa.func.now()
+        ),
+        sa.Column(
+            "last_activity_at",
+            sa.DateTime(),
+            nullable=False,
+            server_default=sa.func.now(),
+        ),
         sa.Column("closed_at", sa.DateTime(), nullable=True),
         sa.Column("message_count", sa.Integer(), server_default="0"),
         sa.Column("total_content_length", sa.Integer(), server_default="0"),
-        sa.Column("created_at", sa.DateTime(), nullable=False, server_default=sa.func.now()),
+        sa.Column(
+            "created_at", sa.DateTime(), nullable=False, server_default=sa.func.now()
+        ),
     )
 
     # ==========================================================================
@@ -317,7 +366,11 @@ def upgrade() -> None:
             sa.ForeignKey("messages.id", ondelete="SET NULL"),
             nullable=True,
         ),
-        sa.Column("mentions", postgresql.ARRAY(postgresql.UUID(as_uuid=True)), server_default="{}"),
+        sa.Column(
+            "mentions",
+            postgresql.ARRAY(postgresql.UUID(as_uuid=True)),
+            server_default="{}",
+        ),
         sa.Column(
             "task_id",
             postgresql.UUID(as_uuid=True),
@@ -326,12 +379,20 @@ def upgrade() -> None:
             index=True,
         ),
         sa.Column("commit_ref", sa.String(40), nullable=True),
-        sa.Column("timestamp", sa.DateTime(), nullable=False, server_default=sa.func.now(), index=True),
+        sa.Column(
+            "timestamp",
+            sa.DateTime(),
+            nullable=False,
+            server_default=sa.func.now(),
+            index=True,
+        ),
         sa.Column("confidence", sa.Float(), server_default="1.0"),
         sa.Column("raw_excerpt", sa.Text(), nullable=True),
         sa.Column("edited_at", sa.DateTime(), nullable=True),
         sa.Column("edit_history", postgresql.JSON(), server_default="[]"),
-        sa.Column("created_at", sa.DateTime(), nullable=False, server_default=sa.func.now()),
+        sa.Column(
+            "created_at", sa.DateTime(), nullable=False, server_default=sa.func.now()
+        ),
     )
 
     # ==========================================================================
@@ -367,11 +428,17 @@ def upgrade() -> None:
             sa.ForeignKey("agents.id"),
             nullable=False,
         ),
-        sa.Column("to_agents", postgresql.ARRAY(postgresql.UUID(as_uuid=True)), nullable=False),
+        sa.Column(
+            "to_agents", postgresql.ARRAY(postgresql.UUID(as_uuid=True)), nullable=False
+        ),
         sa.Column("subject", sa.String(200), nullable=False),
         sa.Column("body", sa.Text(), nullable=False),
         sa.Column("requires_ack", sa.Boolean(), server_default="true"),
-        sa.Column("acked_by", postgresql.ARRAY(postgresql.UUID(as_uuid=True)), server_default="{}"),
+        sa.Column(
+            "acked_by",
+            postgresql.ARRAY(postgresql.UUID(as_uuid=True)),
+            server_default="{}",
+        ),
         sa.Column("acked_at", postgresql.JSON(), server_default="{}"),
         sa.Column(
             "related_task_id",
@@ -379,11 +446,27 @@ def upgrade() -> None:
             sa.ForeignKey("tasks.id", ondelete="SET NULL"),
             nullable=True,
         ),
-        sa.Column("related_message_ids", postgresql.ARRAY(postgresql.UUID(as_uuid=True)), server_default="{}"),
-        sa.Column("timestamp", sa.DateTime(), nullable=False, server_default=sa.func.now(), index=True),
+        sa.Column(
+            "related_message_ids",
+            postgresql.ARRAY(postgresql.UUID(as_uuid=True)),
+            server_default="{}",
+        ),
+        sa.Column(
+            "timestamp",
+            sa.DateTime(),
+            nullable=False,
+            server_default=sa.func.now(),
+            index=True,
+        ),
         sa.Column("expires_at", sa.DateTime(), nullable=True),
-        sa.Column("read_by", postgresql.ARRAY(postgresql.UUID(as_uuid=True)), server_default="{}"),
-        sa.Column("created_at", sa.DateTime(), nullable=False, server_default=sa.func.now()),
+        sa.Column(
+            "read_by",
+            postgresql.ARRAY(postgresql.UUID(as_uuid=True)),
+            server_default="{}",
+        ),
+        sa.Column(
+            "created_at", sa.DateTime(), nullable=False, server_default=sa.func.now()
+        ),
     )
 
     # ==========================================================================
@@ -404,7 +487,9 @@ def upgrade() -> None:
         sa.Column("latest_summary", sa.Text(), nullable=True),
         sa.Column("summary_updated_at", sa.DateTime(), nullable=True),
         sa.Column("entries_by_type", postgresql.JSON(), server_default="{}"),
-        sa.Column("created_at", sa.DateTime(), nullable=False, server_default=sa.func.now()),
+        sa.Column(
+            "created_at", sa.DateTime(), nullable=False, server_default=sa.func.now()
+        ),
         sa.Column("updated_at", sa.DateTime(), nullable=True),
     )
 
@@ -448,11 +533,19 @@ def upgrade() -> None:
             sa.ForeignKey("sessions.id", ondelete="SET NULL"),
             nullable=True,
         ),
-        sa.Column("timestamp", sa.DateTime(), nullable=False, server_default=sa.func.now(), index=True),
+        sa.Column(
+            "timestamp",
+            sa.DateTime(),
+            nullable=False,
+            server_default=sa.func.now(),
+            index=True,
+        ),
         sa.Column("tags", postgresql.ARRAY(sa.String()), server_default="{}"),
         sa.Column("sentiment", sa.String(50), nullable=True),
         sa.Column("is_private", sa.Boolean(), server_default="false"),
-        sa.Column("created_at", sa.DateTime(), nullable=False, server_default=sa.func.now()),
+        sa.Column(
+            "created_at", sa.DateTime(), nullable=False, server_default=sa.func.now()
+        ),
         sa.Column("updated_at", sa.DateTime(), nullable=True),
     )
 
@@ -470,9 +563,15 @@ def upgrade() -> None:
             index=True,
         ),
         sa.Column("summary", sa.Text(), nullable=False),
-        sa.Column("new_functionality", postgresql.ARRAY(sa.String()), server_default="{}"),
-        sa.Column("modified_behavior", postgresql.ARRAY(sa.String()), server_default="{}"),
-        sa.Column("breaking_changes", postgresql.ARRAY(sa.String()), server_default="{}"),
+        sa.Column(
+            "new_functionality", postgresql.ARRAY(sa.String()), server_default="{}"
+        ),
+        sa.Column(
+            "modified_behavior", postgresql.ARRAY(sa.String()), server_default="{}"
+        ),
+        sa.Column(
+            "breaking_changes", postgresql.ARRAY(sa.String()), server_default="{}"
+        ),
         sa.Column("required_docs", postgresql.JSON(), server_default="[]"),
         sa.Column("optional_docs", postgresql.JSON(), server_default="[]"),
         sa.Column("commits", postgresql.JSON(), server_default="[]"),
@@ -489,7 +588,9 @@ def upgrade() -> None:
         sa.Column("dev_notes_location", sa.String(500), nullable=True),
         sa.Column(
             "status",
-            sa.Enum("pending", "claimed", "in_progress", "completed", name="handoffstatus"),
+            sa.Enum(
+                "pending", "claimed", "in_progress", "completed", name="handoffstatus"
+            ),
             nullable=False,
             server_default="pending",
             index=True,
@@ -500,7 +601,9 @@ def upgrade() -> None:
             sa.ForeignKey("agents.id", ondelete="SET NULL"),
             nullable=True,
         ),
-        sa.Column("created_at", sa.DateTime(), nullable=False, server_default=sa.func.now()),
+        sa.Column(
+            "created_at", sa.DateTime(), nullable=False, server_default=sa.func.now()
+        ),
         sa.Column("updated_at", sa.DateTime(), nullable=True),
         sa.Column("claimed_at", sa.DateTime(), nullable=True),
         sa.Column("completed_at", sa.DateTime(), nullable=True),

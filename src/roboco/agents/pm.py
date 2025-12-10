@@ -16,7 +16,7 @@ from uuid import UUID
 import structlog
 
 from roboco.agents.base import Agent, AgentConfig
-from roboco.models import AgentRole, TaskStatus, Team, NotificationType
+from roboco.models import AgentRole, NotificationType, TaskStatus, Team
 
 logger = structlog.get_logger()
 
@@ -157,7 +157,9 @@ class CellPMAgent(Agent):
             return False  # Never complete - continuous duty
 
         except Exception as e:
-            self.log.error("Error in PM phase", phase=self._current_phase.value, error=str(e))
+            self.log.error(
+                "Error in PM phase", phase=self._current_phase.value, error=str(e)
+            )
             return False
 
     # =========================================================================
@@ -211,7 +213,9 @@ Consider:
 Provide assessment.
 """
             assessment = await self.think(prompt)
-            self.log.info("Task assessed", task_id=str(task_id), assessment=assessment[:100])
+            self.log.info(
+                "Task assessed", task_id=str(task_id), assessment=assessment[:100]
+            )
             self._pending_tasks.append(task_id)
 
     async def _phase_assign(self) -> None:
@@ -286,9 +290,7 @@ Be helpful and unblock the team.
         for task_id in active_tasks:
             progress = await self._check_task_progress(task_id)
             if progress.get("at_risk"):
-                self._cell_status.concerns.append(
-                    f"Task {str(task_id)[:8]} at risk"
-                )
+                self._cell_status.concerns.append(f"Task {str(task_id)[:8]} at risk")
 
     async def _phase_report(self) -> None:
         """
@@ -305,7 +307,7 @@ Be helpful and unblock the team.
 **Available Devs**: {self._cell_status.available_devs}
 
 **Concerns**:
-{chr(10).join(f'- {c}' for c in self._cell_status.concerns) if self._cell_status.concerns else '- None'}
+{chr(10).join(f"- {c}" for c in self._cell_status.concerns) if self._cell_status.concerns else "- None"}
 """
         # Would send to #pm-all channel
         self.log.info("Report generated", report_length=len(report))
@@ -431,7 +433,9 @@ class MainPMAgent(Agent):
             return False
 
         except Exception as e:
-            self.log.error("Error in Main PM phase", phase=self._current_phase.value, error=str(e))
+            self.log.error(
+                "Error in Main PM phase", phase=self._current_phase.value, error=str(e)
+            )
             return False
 
     # =========================================================================
@@ -471,10 +475,10 @@ class MainPMAgent(Agent):
 Translate these Board directives into cell priorities:
 
 Directives:
-{chr(10).join(f'- {d}' for d in self._board_directives)}
+{chr(10).join(f"- {d}" for d in self._board_directives)}
 
 Current Cell Status:
-{chr(10).join(f'- {k}: {v.active_tasks} active, {v.blocked_tasks} blocked' for k, v in self._cell_statuses.items())}
+{chr(10).join(f"- {k}: {v.active_tasks} active, {v.blocked_tasks} blocked" for k, v in self._cell_statuses.items())}
 
 Provide prioritized task list for each cell.
 """
@@ -489,8 +493,8 @@ Provide prioritized task list for each cell.
             prompt = f"""
 Resolve this cross-cell issue:
 
-Issue: {issue.get('description')}
-Cells Involved: {issue.get('cells')}
+Issue: {issue.get("description")}
+Cells Involved: {issue.get("cells")}
 
 Propose a resolution that unblocks all parties.
 """
@@ -597,6 +601,7 @@ def create_backend_pm(
         if blueprint_path.exists():
             content = blueprint_path.read_text()
             import re
+
             match = re.search(r"## System Prompt\s*```\s*(.*?)```", content, re.DOTALL)
             system_prompt = match.group(1).strip() if match else ""
         else:
@@ -625,6 +630,7 @@ def create_frontend_pm(
         if blueprint_path.exists():
             content = blueprint_path.read_text()
             import re
+
             match = re.search(r"## System Prompt\s*```\s*(.*?)```", content, re.DOTALL)
             system_prompt = match.group(1).strip() if match else ""
         else:
@@ -653,6 +659,7 @@ def create_ux_pm(
         if blueprint_path.exists():
             content = blueprint_path.read_text()
             import re
+
             match = re.search(r"## System Prompt\s*```\s*(.*?)```", content, re.DOTALL)
             system_prompt = match.group(1).strip() if match else ""
         else:
@@ -681,6 +688,7 @@ def create_main_pm(
         if blueprint_path.exists():
             content = blueprint_path.read_text()
             import re
+
             match = re.search(r"## System Prompt\s*```\s*(.*?)```", content, re.DOTALL)
             system_prompt = match.group(1).strip() if match else ""
         else:

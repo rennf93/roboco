@@ -18,7 +18,6 @@ from roboco.models.base import (
     TimestampMixin,
 )
 
-
 # =============================================================================
 # SUPPORTING MODELS
 # =============================================================================
@@ -29,7 +28,9 @@ class ModelConfig(RobocoBase):
 
     provider: str = Field(..., description="Model provider (anthropic, local, etc.)")
     name: str = Field(..., description="Model name (claude-3-opus, llama-70b, etc.)")
-    fallback: str | None = Field(default=None, description="Fallback model if primary unavailable")
+    fallback: str | None = Field(
+        default=None, description="Fallback model if primary unavailable"
+    )
     temperature: float = Field(default=0.7, ge=0.0, le=2.0)
     max_tokens: int = Field(default=4096, ge=1)
 
@@ -78,7 +79,9 @@ class Agent(TimestampMixin):
 
     # Identity
     id: UUID = Field(default_factory=uuid4, description="Unique agent identifier")
-    name: str = Field(..., min_length=1, max_length=100, description="Agent display name")
+    name: str = Field(
+        ..., min_length=1, max_length=100, description="Agent display name"
+    )
     slug: str = Field(
         ...,
         min_length=1,
@@ -192,8 +195,8 @@ class Agent(TimestampMixin):
                 # Running average
                 total = self.metrics.tasks_completed
                 self.metrics.avg_completion_hours = (
-                    (self.metrics.avg_completion_hours * (total - 1) + hours_spent) / total
-                )
+                    self.metrics.avg_completion_hours * (total - 1) + hours_spent
+                ) / total
 
         self.status = AgentStatus.IDLE
 

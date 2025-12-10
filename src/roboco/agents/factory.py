@@ -5,24 +5,26 @@ Provides factory functions for creating all agent types and
 deploying complete cells with their full agent complement.
 """
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Any
 from uuid import UUID
 
 import structlog
 
 from roboco.agents.base import Agent
+from roboco.agents.board import (
+    AuditorAgent,
+    HeadMarketingAgent,
+    ProductOwnerAgent,
+    create_auditor,
+    create_head_marketing,
+    create_product_owner,
+)
 from roboco.agents.developer import (
     DeveloperAgent,
     create_backend_developer,
     create_frontend_developer,
     create_ux_developer,
-)
-from roboco.agents.qa import (
-    QAAgent,
-    create_backend_qa,
-    create_frontend_qa,
-    create_ux_qa,
 )
 from roboco.agents.documenter import (
     DocumenterAgent,
@@ -35,16 +37,14 @@ from roboco.agents.pm import (
     MainPMAgent,
     create_backend_pm,
     create_frontend_pm,
-    create_ux_pm,
     create_main_pm,
+    create_ux_pm,
 )
-from roboco.agents.board import (
-    ProductOwnerAgent,
-    HeadMarketingAgent,
-    AuditorAgent,
-    create_product_owner,
-    create_head_marketing,
-    create_auditor,
+from roboco.agents.qa import (
+    QAAgent,
+    create_backend_qa,
+    create_frontend_qa,
+    create_ux_qa,
 )
 from roboco.models import Team
 
@@ -304,7 +304,11 @@ def get_agent_roster() -> dict[str, list[dict[str, Any]]]:
     return {
         "board": [
             {"name": "Product Owner", "role": "product_owner", "slug": "product-owner"},
-            {"name": "Head of Marketing", "role": "head_marketing", "slug": "head-marketing"},
+            {
+                "name": "Head of Marketing",
+                "role": "head_marketing",
+                "slug": "head-marketing",
+            },
             {"name": "Auditor", "role": "auditor", "slug": "auditor"},
         ],
         "management": [
@@ -359,7 +363,7 @@ def print_org_chart() -> str:
  ┌─────▼─────┐        ┌─────▼─────┐        ┌─────▼─────┐
  │  BE-PM    │        │  FE-PM    │        │  UX-PM    │
  ├───────────┤        ├───────────┤        ├───────────┤
- │ BE-Dev ×2 │        │ FE-Dev ×2 │        │ UX-Dev    │
+ │ BE-Dev x2 │        │ FE-Dev x2 │        │ UX-Dev    │
  │ BE-QA     │        │ FE-QA     │        │ UX-QA     │
  │ BE-Doc    │        │ FE-Doc    │        │ UX-Doc    │
  └───────────┘        └───────────┘        └───────────┘

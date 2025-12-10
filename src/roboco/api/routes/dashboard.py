@@ -16,10 +16,10 @@ from sqlalchemy import and_, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from roboco.api.deps import get_current_agent_id, get_db
-from roboco.db.tables import TaskTable, AgentTable, MessageTable, ChannelTable
-from roboco.models.base import TaskStatus, Team, AgentStatus
-from roboco.services.metrics import get_metrics_service
+from roboco.db.tables import AgentTable, ChannelTable, MessageTable, TaskTable
+from roboco.models.base import AgentStatus, TaskStatus, Team
 from roboco.services.kanban import get_kanban_service
+from roboco.services.metrics import get_metrics_service
 
 router = APIRouter(prefix="/dashboard", tags=["dashboard"])
 
@@ -163,7 +163,9 @@ async def get_auditor_dashboard(
     for channel in channels:
         # Determine status based on last activity
         if channel.last_activity:
-            minutes_ago = (datetime.utcnow() - channel.last_activity).total_seconds() / 60
+            minutes_ago = (
+                datetime.utcnow() - channel.last_activity
+            ).total_seconds() / 60
             if minutes_ago < 5:
                 status = "streaming"
             elif minutes_ago < 30:
@@ -213,24 +215,28 @@ async def get_auditor_dashboard(
         select(TaskTable).where(TaskTable.status == TaskStatus.BLOCKED)
     )
     for task in blocked_result.scalars().all():
-        audit_queue.append({
-            "type": "blocked_task",
-            "title": f"Blocked: {task.title}",
-            "task_id": str(task.id),
-            "team": task.team.value,
-        })
+        audit_queue.append(
+            {
+                "type": "blocked_task",
+                "title": f"Blocked: {task.title}",
+                "task_id": str(task.id),
+                "team": task.team.value,
+            }
+        )
 
     # Tasks awaiting QA > 24 hours
     qa_result = await db.execute(
         select(TaskTable).where(TaskTable.status == TaskStatus.AWAITING_QA)
     )
     for task in qa_result.scalars().all():
-        audit_queue.append({
-            "type": "qa_review",
-            "title": f"QA Review: {task.title}",
-            "task_id": str(task.id),
-            "team": task.team.value,
-        })
+        audit_queue.append(
+            {
+                "type": "qa_review",
+                "title": f"QA Review: {task.title}",
+                "task_id": str(task.id),
+                "team": task.team.value,
+            }
+        )
 
     # Recent reports
     recent_reports = [
@@ -276,7 +282,9 @@ async def get_auditor_flags(
     return flags
 
 
-@router.post("/auditor/flags", response_model=AuditorFlag, status_code=status.HTTP_201_CREATED)
+@router.post(
+    "/auditor/flags", response_model=AuditorFlag, status_code=status.HTTP_201_CREATED
+)
 async def create_auditor_flag(
     data: CreateFlagRequest,
     db: Annotated[AsyncSession, Depends(get_db)],
@@ -338,7 +346,11 @@ async def get_auditor_reports(
     return reports[-limit:]
 
 
-@router.post("/auditor/reports", response_model=AuditorReport, status_code=status.HTTP_201_CREATED)
+@router.post(
+    "/auditor/reports",
+    response_model=AuditorReport,
+    status_code=status.HTTP_201_CREATED,
+)
 async def create_auditor_report(
     data: CreateReportRequest,
     db: Annotated[AsyncSession, Depends(get_db)],
@@ -425,11 +437,23 @@ async def get_ceo_overview(
     }
 
     # Auditor alerts summary
-    urgent_flags = sum(1 for f in _flags.values() if f.get("severity") == "urgent" and not f.get("resolved_at"))
-    warning_flags = sum(1 for f in _flags.values() if f.get("severity") == "warning" and not f.get("resolved_at"))
+    urgent_flags = sum(
+        1
+        for f in _flags.values()
+        if f.get("severity") == "urgent" and not f.get("resolved_at")
+    )
+    warning_flags = sum(
+        1
+        for f in _flags.values()
+        if f.get("severity") == "warning" and not f.get("resolved_at")
+    )
 
     recent_reports = [r for r in _reports.values() if r.get("sent_at")]
-    last_report_at = max((r["sent_at"] for r in recent_reports), default=None) if recent_reports else None
+    last_report_at = (
+        max((r["sent_at"] for r in recent_reports), default=None)
+        if recent_reports
+        else None
+    )
 
     auditor_alerts = {
         "urgent_count": urgent_flags,

@@ -146,7 +146,7 @@ class ExtractionResult:
 
     @property
     def types_extracted(self) -> list[MessageType]:
-        return list(set(m.type for m in self.messages))
+        return list({m.type for m in self.messages})
 
 
 @dataclass

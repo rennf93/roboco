@@ -5,146 +5,134 @@ This module contains all data models for the AI Agents Company system.
 Based on the HOMELAB_TEAM_V0.md blueprint.
 """
 
-from roboco.models.base import (
-    # Enums
-    TaskStatus,
-    Complexity,
-    Team,
-    AgentRole,
-    AgentStatus,
-    SessionStatus,
-    MessageType,
-    NotificationType,
-    NotificationPriority,
-    ChannelType,
-    JournalEntryType,
-    HandoffStatus,
-    # Base types
-    RobocoBase,
-)
-from roboco.models.task import (
-    TaskPlan,
-    ExecutionLog,
-    Checkpoint,
-    ProgressUpdate,
-    CommitRef,
-    DocRef,
-    FileRef,
-    Task,
-    TaskCreate,
-    TaskUpdate,
-)
 from roboco.models.agent import (
     Agent,
     AgentCreate,
     AgentUpdate,
 )
-from roboco.models.session import (
-    SessionConfig,
-    Session,
-    SessionCreate,
-)
-from roboco.models.message import (
-    MessageEdit,
-    ExtractedMessage,
-    MessageCreate,
-    RawStream,
-)
-from roboco.models.group import (
-    Group,
-    GroupCreate,
-    GroupUpdate,
+from roboco.models.base import (
+    AgentRole,
+    AgentStatus,
+    ChannelType,
+    Complexity,
+    HandoffStatus,
+    JournalEntryType,
+    MessageType,
+    NotificationPriority,
+    NotificationType,
+    # Base types
+    RobocoBase,
+    SessionStatus,
+    # Enums
+    TaskStatus,
+    Team,
 )
 from roboco.models.channel import (
     Channel,
     ChannelCreate,
     ChannelUpdate,
 )
-from roboco.models.notification import (
-    Notification,
-    NotificationCreate,
-)
-from roboco.models.journal import (
-    JournalEntry,
-    JournalEntryCreate,
-    Journal,
+from roboco.models.group import (
+    Group,
+    GroupCreate,
+    GroupUpdate,
 )
 from roboco.models.handoff import (
     DocumenterHandoff,
     HandoffCreate,
 )
+from roboco.models.journal import (
+    Journal,
+    JournalEntry,
+    JournalEntryCreate,
+)
 from roboco.models.kanban import (
+    KanbanBoard,
     KanbanBoardType,
     KanbanCard,
     KanbanColumn,
     KanbanSwimlane,
-    KanbanBoard,
     get_column_config,
+)
+from roboco.models.message import (
+    ExtractedMessage,
+    MessageCreate,
+    MessageEdit,
+    RawStream,
+)
+from roboco.models.notification import (
+    Notification,
+    NotificationCreate,
+)
+from roboco.models.session import (
+    Session,
+    SessionConfig,
+    SessionCreate,
+)
+from roboco.models.task import (
+    Checkpoint,
+    CommitRef,
+    DocRef,
+    ExecutionLog,
+    FileRef,
+    ProgressUpdate,
+    Task,
+    TaskCreate,
+    TaskPlan,
+    TaskUpdate,
 )
 
 __all__ = [
-    # Enums
-    "TaskStatus",
-    "Complexity",
-    "Team",
-    "AgentRole",
-    "AgentStatus",
-    "SessionStatus",
-    "MessageType",
-    "NotificationType",
-    "NotificationPriority",
-    "ChannelType",
-    "JournalEntryType",
-    "HandoffStatus",
-    # Base
-    "RobocoBase",
-    # Task
-    "TaskPlan",
-    "ExecutionLog",
-    "Checkpoint",
-    "ProgressUpdate",
-    "CommitRef",
-    "DocRef",
-    "FileRef",
-    "Task",
-    "TaskCreate",
-    "TaskUpdate",
-    # Agent
     "Agent",
     "AgentCreate",
+    "AgentRole",
+    "AgentStatus",
     "AgentUpdate",
-    # Session
-    "SessionConfig",
-    "Session",
-    "SessionCreate",
-    # Message
-    "MessageEdit",
+    "Channel",
+    "ChannelCreate",
+    "ChannelType",
+    "ChannelUpdate",
+    "Checkpoint",
+    "CommitRef",
+    "Complexity",
+    "DocRef",
+    "DocumenterHandoff",
+    "ExecutionLog",
     "ExtractedMessage",
-    "MessageCreate",
-    "RawStream",
-    # Group
+    "FileRef",
     "Group",
     "GroupCreate",
     "GroupUpdate",
-    # Channel
-    "Channel",
-    "ChannelCreate",
-    "ChannelUpdate",
-    # Notification
-    "Notification",
-    "NotificationCreate",
-    # Journal
+    "HandoffCreate",
+    "HandoffStatus",
+    "Journal",
     "JournalEntry",
     "JournalEntryCreate",
-    "Journal",
-    # Handoff
-    "DocumenterHandoff",
-    "HandoffCreate",
-    # Kanban
+    "JournalEntryType",
+    "KanbanBoard",
     "KanbanBoardType",
     "KanbanCard",
     "KanbanColumn",
     "KanbanSwimlane",
-    "KanbanBoard",
+    "MessageCreate",
+    "MessageEdit",
+    "MessageType",
+    "Notification",
+    "NotificationCreate",
+    "NotificationPriority",
+    "NotificationType",
+    "ProgressUpdate",
+    "RawStream",
+    "RobocoBase",
+    "Session",
+    "SessionConfig",
+    "SessionCreate",
+    "SessionStatus",
+    "Task",
+    "TaskCreate",
+    "TaskPlan",
+    "TaskStatus",
+    "TaskUpdate",
+    "Team",
     "get_column_config",
 ]

@@ -13,8 +13,8 @@ import structlog
 from sqlalchemy import and_, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from roboco.db.tables import TaskTable, AgentTable, MessageTable, NotificationTable
-from roboco.models.base import TaskStatus, Team, AgentStatus
+from roboco.db.tables import AgentTable, MessageTable, NotificationTable, TaskTable
+from roboco.models.base import AgentStatus, TaskStatus, Team
 
 logger = structlog.get_logger()
 
@@ -67,7 +67,9 @@ class BlockerMetrics:
         return {
             "active_blockers": self.active_blockers,
             "avg_blocked_hours": self.avg_blocked_hours,
-            "longest_blocked_task_id": str(self.longest_blocked_task_id) if self.longest_blocked_task_id else None,
+            "longest_blocked_task_id": str(self.longest_blocked_task_id)
+            if self.longest_blocked_task_id
+            else None,
             "longest_blocked_hours": self.longest_blocked_hours,
             "blockers_by_team": self.blockers_by_team,
         }
@@ -127,7 +129,9 @@ class AgentMetrics:
             "agent_id": str(self.agent_id),
             "agent_name": self.agent_name,
             "tasks_completed_week": self.tasks_completed_week,
-            "current_task_id": str(self.current_task_id) if self.current_task_id else None,
+            "current_task_id": str(self.current_task_id)
+            if self.current_task_id
+            else None,
             "avg_completion_hours": self.avg_completion_hours,
             "messages_sent_week": self.messages_sent_week,
         }
@@ -188,7 +192,8 @@ class MetricsService:
                 func.extract(
                     "epoch",
                     TaskTable.completed_at - TaskTable.started_at,
-                ) / 3600  # Convert to hours
+                )
+                / 3600  # Convert to hours
             )
         ).where(
             and_(
@@ -283,12 +288,14 @@ class MetricsService:
             select(func.count(TaskTable.id)).where(
                 and_(
                     TaskTable.team == team,
-                    TaskTable.status.in_([
-                        TaskStatus.CLAIMED,
-                        TaskStatus.IN_PROGRESS,
-                        TaskStatus.VERIFYING,
-                        TaskStatus.AWAITING_QA,
-                    ]),
+                    TaskTable.status.in_(
+                        [
+                            TaskStatus.CLAIMED,
+                            TaskStatus.IN_PROGRESS,
+                            TaskStatus.VERIFYING,
+                            TaskStatus.AWAITING_QA,
+                        ]
+                    ),
                 )
             )
         )
@@ -324,7 +331,8 @@ class MetricsService:
                     func.extract(
                         "epoch",
                         TaskTable.completed_at - TaskTable.started_at,
-                    ) / 3600
+                    )
+                    / 3600
                 )
             ).where(
                 and_(
@@ -413,7 +421,8 @@ class MetricsService:
                     func.extract(
                         "epoch",
                         TaskTable.completed_at - TaskTable.started_at,
-                    ) / 3600
+                    )
+                    / 3600
                 )
             ).where(
                 and_(
@@ -459,9 +468,7 @@ class MetricsService:
 
         # Total messages
         total_result = await self.session.execute(
-            select(func.count(MessageTable.id)).where(
-                MessageTable.timestamp >= since
-            )
+            select(func.count(MessageTable.id)).where(MessageTable.timestamp >= since)
         )
         total_messages = total_result.scalar() or 0
 
@@ -520,13 +527,15 @@ class MetricsService:
         # Get counts
         active_query = select(func.count(TaskTable.id)).where(
             and_(
-                TaskTable.status.in_([
-                    TaskStatus.CLAIMED,
-                    TaskStatus.IN_PROGRESS,
-                    TaskStatus.VERIFYING,
-                    TaskStatus.AWAITING_QA,
-                    TaskStatus.BLOCKED,
-                ]),
+                TaskTable.status.in_(
+                    [
+                        TaskStatus.CLAIMED,
+                        TaskStatus.IN_PROGRESS,
+                        TaskStatus.VERIFYING,
+                        TaskStatus.AWAITING_QA,
+                        TaskStatus.BLOCKED,
+                    ]
+                ),
                 *base_filter,
             )
         )

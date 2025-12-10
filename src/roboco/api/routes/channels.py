@@ -254,9 +254,7 @@ async def update_channel(
     data: ChannelUpdate,
 ) -> ChannelResponse:
     """Update channel settings."""
-    result = await db.execute(
-        select(ChannelTable).where(ChannelTable.id == channel_id)
-    )
+    result = await db.execute(select(ChannelTable).where(ChannelTable.id == channel_id))
     channel = result.scalar_one_or_none()
 
     if not channel:
@@ -302,9 +300,7 @@ async def add_member(
     can_write: bool = Query(True),
 ) -> None:
     """Add a member to the channel."""
-    result = await db.execute(
-        select(ChannelTable).where(ChannelTable.id == channel_id)
-    )
+    result = await db.execute(select(ChannelTable).where(ChannelTable.id == channel_id))
     channel = result.scalar_one_or_none()
 
     if not channel:
@@ -315,11 +311,11 @@ async def add_member(
 
     # Add to members if not already present
     if member_id not in channel.members:
-        channel.members = channel.members + [member_id]
+        channel.members = [*channel.members, member_id]
 
     # Add to writers if requested
     if can_write and member_id not in channel.writers:
-        channel.writers = channel.writers + [member_id]
+        channel.writers = [*channel.writers, member_id]
 
     await db.flush()
 
@@ -337,9 +333,7 @@ async def remove_member(
     member_id: UUID,
 ) -> None:
     """Remove a member from the channel."""
-    result = await db.execute(
-        select(ChannelTable).where(ChannelTable.id == channel_id)
-    )
+    result = await db.execute(select(ChannelTable).where(ChannelTable.id == channel_id))
     channel = result.scalar_one_or_none()
 
     if not channel:

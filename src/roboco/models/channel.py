@@ -16,7 +16,6 @@ from roboco.models.base import (
     TimestampMixin,
 )
 
-
 # =============================================================================
 # MAIN CHANNEL MODEL
 # =============================================================================
@@ -101,9 +100,7 @@ class Channel(TimestampMixin):
 
     def can_read(self, agent_id: UUID) -> bool:
         """Check if an agent can read this channel."""
-        return (
-            agent_id in self.members or agent_id in self.silent_observers
-        )
+        return agent_id in self.members or agent_id in self.silent_observers
 
     def can_write(self, agent_id: UUID) -> bool:
         """Check if an agent can write to this channel."""
@@ -151,7 +148,7 @@ def create_cross_cell_channel(
     auditor_id: UUID,
 ) -> Channel:
     """Create a cross-cell coordination channel."""
-    all_members = member_ids + [main_pm_id]
+    all_members = [*member_ids, main_pm_id]
     return Channel(
         name=f"#{name}",
         slug=name,
@@ -176,7 +173,7 @@ def create_announcements_channel(
         type=ChannelType.SPECIAL,
         description="Company-wide announcements (read-only except for Board and Main PM)",
         members=all_agent_ids,
-        writers=board_ids + [main_pm_id],
+        writers=[*board_ids, main_pm_id],
         silent_observers=[auditor_id],
     )
 

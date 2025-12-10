@@ -12,20 +12,20 @@ from typing import Any
 from uuid import UUID
 
 import structlog
-from sqlalchemy import select, func, and_
+from sqlalchemy import and_, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from roboco.db.tables import JournalTable, JournalEntryTable
+from roboco.db.tables import JournalEntryTable, JournalTable
 from roboco.models.base import JournalEntryType
 from roboco.models.journal import (
     Journal,
     JournalEntry,
     JournalEntryCreate,
-    create_task_reflection,
     create_decision_log,
+    create_general_entry,
     create_learning_entry,
     create_struggle_entry,
-    create_general_entry,
+    create_task_reflection,
 )
 
 logger = structlog.get_logger()
@@ -112,7 +112,11 @@ class JournalService:
         await self._db.commit()
         await self._db.refresh(new_journal)
 
-        logger.info("Created new journal", agent_id=str(agent_id), journal_id=str(new_journal.id))
+        logger.info(
+            "Created new journal",
+            agent_id=str(agent_id),
+            journal_id=str(new_journal.id),
+        )
 
         return Journal(
             id=new_journal.id,
@@ -202,7 +206,11 @@ class JournalService:
         if journal_row:
             journal_row.total_entries += 1
             journal_row.last_entry_at = datetime.utcnow()
-            type_key = entry_create.type.value if isinstance(entry_create.type, JournalEntryType) else entry_create.type
+            type_key = (
+                entry_create.type.value
+                if isinstance(entry_create.type, JournalEntryType)
+                else entry_create.type
+            )
             entries_by_type = dict(journal_row.entries_by_type)
             entries_by_type[type_key] = entries_by_type.get(type_key, 0) + 1
             journal_row.entries_by_type = entries_by_type
@@ -217,12 +225,14 @@ class JournalService:
             type=entry_create.type,
         )
 
-        # Index in RAG (non-blocking)
+        # Index in RAG - non-blocking
         try:
             optimal = await self._get_optimal_service()
             await optimal.index_journal_entry(
                 entry_id=entry_row.id,
-                agent_id=journal_row.agent_id if journal_row else entry_create.journal_id,
+                agent_id=journal_row.agent_id
+                if journal_row
+                else entry_create.journal_id,
                 content=entry_create.content,
                 entry_type=type_key,
                 task_id=entry_create.task_id,
@@ -351,7 +361,11 @@ class JournalService:
 
         if journal_row:
             journal_row.total_entries = max(0, journal_row.total_entries - 1)
-            type_key = entry_row.type.value if isinstance(entry_row.type, JournalEntryType) else entry_row.type
+            type_key = (
+                entry_row.type.value
+                if isinstance(entry_row.type, JournalEntryType)
+                else entry_row.type
+            )
             entries_by_type = dict(journal_row.entries_by_type)
             if type_key in entries_by_type:
                 entries_by_type[type_key] = max(0, entries_by_type[type_key] - 1)
@@ -655,7 +669,9 @@ class JournalService:
                 # entry ID in metadata)
                 if "Entry ID:" in result.content:
                     try:
-                        entry_id_str = result.content.split("Entry ID:")[1].split("\n")[0].strip()
+                        entry_id_str = (
+                            result.content.split("Entry ID:")[1].split("\n")[0].strip()
+                        )
                         entry_id = UUID(entry_id_str)
                         entry = await self.get_entry(entry_id)
                         if entry:

@@ -11,7 +11,7 @@ from uuid import UUID
 
 from pydantic import Field
 
-from roboco.models.base import RobocoBase, TaskStatus, Team, Complexity
+from roboco.models.base import Complexity, RobocoBase, TaskStatus, Team
 
 
 class KanbanBoardType(str, Enum):

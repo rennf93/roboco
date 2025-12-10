@@ -524,9 +524,7 @@ async def add_progress(
 ):
     """Add a progress update to a task."""
     service = get_task_service(db)
-    task = await service.add_progress(
-        task_id, agent_id, data.message, data.percentage
-    )
+    task = await service.add_progress(task_id, agent_id, data.message, data.percentage)
     if not task:
         raise HTTPException(status_code=404, detail="Task not found")
     await db.commit()

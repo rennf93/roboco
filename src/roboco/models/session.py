@@ -16,7 +16,6 @@ from roboco.models.base import (
     TimestampMixin,
 )
 
-
 # =============================================================================
 # SUPPORTING MODELS
 # =============================================================================
@@ -68,9 +67,7 @@ class Session(TimestampMixin):
     )
 
     # Timeout
-    timeout_seconds: int = Field(
-        default=300, ge=0, description="Inactivity timeout"
-    )
+    timeout_seconds: int = Field(default=300, ge=0, description="Inactivity timeout")
 
     # State
     status: SessionStatus = Field(default=SessionStatus.ACTIVE)
@@ -100,19 +97,19 @@ class Session(TimestampMixin):
         now = datetime.utcnow()
 
         # Check time window
-        if self.max_time_window:
-            if now - self.started_at >= self.max_time_window:
-                return True
+        if self.max_time_window and now - self.started_at >= self.max_time_window:
+            return True
 
         # Check message count
-        if self.max_message_count:
-            if self.message_count >= self.max_message_count:
-                return True
+        if self.max_message_count and self.message_count >= self.max_message_count:
+            return True
 
         # Check content length
-        if self.max_content_length:
-            if self.total_content_length >= self.max_content_length:
-                return True
+        if (
+            self.max_content_length
+            and self.total_content_length >= self.max_content_length
+        ):
+            return True
 
         # Check timeout
         if self.timeout_seconds > 0:

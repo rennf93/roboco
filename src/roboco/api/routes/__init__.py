@@ -6,31 +6,30 @@ All FastAPI route modules.
 
 from roboco.api.routes import (
     channels,
+    dashboard,
     health,
     journals,
+    kanban,
     messages,
     notifications,
     optimal,
+    orchestrator,
     sessions,
     stream,
     tasks,
-    kanban,
-    dashboard,
 )
 
 __all__ = [
-    # Phase 1-2
     "channels",
+    "dashboard",
     "health",
+    "journals",
+    "kanban",
     "messages",
     "notifications",
+    "optimal",
+    "orchestrator",
     "sessions",
     "stream",
-    # Phase 3
-    "optimal",
-    "journals",
-    # Phase 5
     "tasks",
-    "kanban",
-    "dashboard",
 ]

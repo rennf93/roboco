@@ -2,80 +2,86 @@
 name = "roboco"
 version = "0.1.0"
 description = "AI Agents Company - A virtual organization of AI agents functioning as a software development workforce"
+authors = [
+    {name = "Renzo Franceschini", email = "rennf93@users.noreply.github.com"}
+]
 readme = "README.md"
 license = { text = "MIT" }
-authors = [{ name = "Renzo Franceschini" }]
-requires-python = ">=3.11"
+requires-python = ">=3.13"
 
 dependencies = [
     # Core
-    "pydantic>=2.5.0",
-    "pydantic-settings>=2.1.0",
+    "pydantic",
+    "pydantic-settings",
 
     # API
-    "fastapi>=0.109.0",
-    "uvicorn[standard]>=0.27.0",
-    "websockets>=12.0",
+    "fastapi",
+    "uvicorn[standard]",
+    "websockets",
 
     # Database
-    "sqlalchemy[asyncio]>=2.0.25",
-    "asyncpg>=0.29.0",  # PostgreSQL async driver
-    "alembic>=1.13.0",  # Migrations
+    "sqlalchemy[asyncio]",
+    "asyncpg",  # PostgreSQL async driver
+    "alembic",  # Migrations
 
     # Cache/Queue
-    "redis>=5.0.0",
-    "hiredis>=2.3.0",  # Redis performance
+    "redis",
+    "hiredis",  # Redis performance
 
     # RAG (piragi with PostgreSQL/pgvector backend)
-    "piragi[postgres]>=0.1.0",
+    "piragi[postgres]",
 
     # AI/LLM
-    "anthropic>=0.18.0",
-    "openai>=1.10.0",  # For embeddings
-    "tiktoken>=0.5.0",  # Token counting
+    "anthropic",
+    "openai",  # For embeddings
+    "tiktoken",  # Token counting
+
+    # MCP (Model Context Protocol)
+    "mcp",
 
     # Utilities
-    "httpx>=0.26.0",
-    "python-multipart>=0.0.6",
-    "python-jose[cryptography]>=3.3.0",  # JWT
-    "passlib[bcrypt]>=1.7.4",  # Password hashing
-    "tenacity>=8.2.0",  # Retry logic
-    "structlog>=24.1.0",  # Structured logging
+    "httpx",
+    "python-multipart",
+    "python-jose[cryptography]",  # JWT
+    "passlib[bcrypt]",  # Password hashing
+    "tenacity",  # Retry logic
+    "structlog",  # Structured logging
 ]
 
 [project.optional-dependencies]
 dev = [
     # Testing
-    "pytest>=8.0.0",
-    "pytest-asyncio>=0.23.0",
-    "pytest-cov>=4.1.0",
-    "pytest-xdist>=3.5.0",
-    "httpx>=0.26.0",  # For TestClient
-    "factory-boy>=3.3.0",
-    "faker>=22.0.0",
+    "pytest",
+    "pytest-asyncio",
+    "pytest-cov",
+    "pytest-xdist",
+    "httpx",  # For TestClient
+    "factory-boy",
+    "faker",
 
     # Code Quality
-    "ruff>=0.2.0",
-    "mypy>=1.8.0",
+    "ruff",
+    "mypy",
 
     # Type Stubs
-    "types-redis>=4.6.0",
-    "types-passlib>=1.7.7",
-    "types-python-jose>=3.3.0",
+    "types-redis",
+    "types-passlib",
+    "types-python-jose",
 
     # Development
-    "ipython>=8.20.0",
-    "rich>=13.7.0",
+    "ipython",
+    "rich",
 ]
 
 docs = [
-    "mkdocs>=1.5.0",
-    "mkdocs-material>=9.5.0",
-    "mkdocstrings[python]>=0.24.0",
+    "mkdocs",
+    "mkdocs-material",
+    "mkdocstrings[python]",
 ]
 
 [project.scripts]
 roboco = "roboco.cli:main"
+roboco-bootstrap = "roboco.bootstrap:cli"
 
 [project.urls]
 Homepage = "https://github.com/renzof/roboco"
@@ -89,13 +95,16 @@ build-backend = "hatchling.build"
 [tool.hatch.build.targets.wheel]
 packages = ["src/roboco"]
 
+[tool.hatch.metadata]
+allow-direct-references = true
+
 # =============================================================================
 # RUFF Configuration
 # =============================================================================
 [tool.ruff]
-target-version = "py311"
-line-length = 100
+target-version = "py313"
 src = ["src"]
+exclude = ["vulture_whitelist.py", ".venv"]
 
 [tool.ruff.lint]
 select = [
@@ -114,41 +123,25 @@ select = [
     "PL",     # Pylint
     "RUF",    # Ruff-specific
 ]
-ignore = [
-    "E501",   # Line too long (handled by formatter)
-    "PLR0913", # Too many arguments
-    "PLR2004", # Magic value comparison
-]
-
-[tool.ruff.lint.per-file-ignores]
-"tests/**/*.py" = ["ARG", "PLR2004"]
-"**/migrations/*.py" = ["ERA"]
-
-[tool.ruff.lint.isort]
-known-first-party = ["roboco"]
-
-[tool.ruff.format]
-quote-style = "double"
-indent-style = "space"
-docstring-code-format = true
 
 # =============================================================================
 # MyPy Configuration
 # =============================================================================
 [tool.mypy]
-python_version = "3.11"
-strict = true
+python_version = "3.13"
 warn_return_any = true
-warn_unused_ignores = true
+warn_unused_configs = true
 disallow_untyped_defs = true
 disallow_incomplete_defs = true
 check_untyped_defs = true
 disallow_untyped_decorators = true
 no_implicit_optional = true
+strict_optional = true
 warn_redundant_casts = true
-warn_unused_configs = true
-show_error_codes = true
-show_column_numbers = true
+warn_unused_ignores = true
+warn_no_return = true
+warn_unreachable = true
+exclude = ["vulture_whitelist.py", ".venv"]
 
 plugins = ["pydantic.mypy"]
 
@@ -170,40 +163,85 @@ warn_required_dynamic_aliases = true
 # Pytest Configuration
 # =============================================================================
 [tool.pytest.ini_options]
-testpaths = ["tests"]
 asyncio_mode = "auto"
-addopts = [
-    "-v",
-    "--strict-markers",
-    "--tb=short",
-    "-ra",
-]
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+asyncio_default_fixture_loop_scope = "function"
+addopts = "--cov=roboco --cov-report=term-missing"
 markers = [
+    "asyncio: mark tests as async",
     "slow: marks tests as slow",
     "integration: marks tests as integration tests",
     "unit: marks tests as unit tests",
 ]
-filterwarnings = [
-    "ignore::DeprecationWarning",
-]
 
-[tool.coverage.run]
-source = ["src/roboco"]
-branch = true
-omit = [
-    "*/tests/*",
-    "*/__pycache__/*",
-    "*/migrations/*",
+# =============================================================================
+# Vulture Configuration
+# =============================================================================
+[tool.vulture]
+paths = ["src/roboco", "tests", "vulture_whitelist.py"]
+exclude = ["**/conftest.py", ".venv"]
+min_confidence = 100
+ignore_decorators = [
+    "@app.route",
+    "@app.get",
+    "@app.post",
+    "@app.put",
+    "@app.delete",
+    "@app.patch",
+    "@pytest.fixture",
+    "@pytest.mark.*",
+    "@validator",
+    "@root_validator",
+    "@field_validator",
+    "@model_validator",
 ]
+ignore_names = [
+    "test_*",
+    "Test*",
+    "cleanup_*",
+    "mock_*",
+    "expected_*",
+    "exc_*",
+    "__*__",
+    "Config",
+    "Field",
+]
+sort_by_size = true
 
-[tool.coverage.report]
-exclude_lines = [
-    "pragma: no cover",
-    "def __repr__",
-    "raise NotImplementedError",
-    "if TYPE_CHECKING:",
-    "if __name__ == .__main__.:",
-    "@abstractmethod",
-]
-fail_under = 80
-show_missing = true
+# =============================================================================
+# Bandit Configuration
+# =============================================================================
+[tool.bandit]
+skips = ["B101", "B601"]
+exclude_dirs = ["tests", ".venv", "vulture_whitelist.py"]
+severity = "medium"
+
+# =============================================================================
+# Radon Configuration
+# =============================================================================
+[tool.radon]
+exclude = "tests/*,.venv/*,vulture_whitelist.py"
+cc_min = "C"
+mi_min = "A"
+no_assert = false
+show_closures = true
+total_average = true
+
+# =============================================================================
+# Xenon Configuration
+# =============================================================================
+[tool.xenon]
+max_absolute = "B"
+max_modules = "A"
+max_average = "A"
+exclude = ["tests/*", ".venv/*", "vulture_whitelist.py"]
+ignore = []
+
+# =============================================================================
+# Deptry Configuration
+# =============================================================================
+[tool.deptry]
+exclude = ["tests", ".venv", "vulture_whitelist.py"]
+extend_exclude = ["conftest.py", "setup.py"]
+known_first_party = ["src/roboco"]

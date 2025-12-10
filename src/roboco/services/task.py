@@ -13,8 +13,14 @@ import structlog
 from sqlalchemy import and_, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from roboco.db.tables import TaskTable, AgentTable
-from roboco.models.base import TaskStatus, Team, Complexity
+from roboco.db.tables import AgentTable, HandoffTable, TaskTable
+from roboco.enforcement import (
+    TaskLifecycleError,
+    TaskOwnershipError,
+    validate_task_ownership,
+    validate_task_transition,
+)
+from roboco.models.base import Complexity, HandoffStatus, TaskStatus, Team
 
 logger = structlog.get_logger()
 
@@ -167,9 +173,7 @@ class TaskService:
         logger.info("Task started", task_id=str(task_id))
         return task
 
-    async def block(
-        self, task_id: UUID, blocker_task_id: UUID
-    ) -> TaskTable | None:
+    async def block(self, task_id: UUID, blocker_task_id: UUID) -> TaskTable | None:
         """Block a task due to a dependency."""
         task = await self.get(task_id)
         if not task:
@@ -306,18 +310,57 @@ class TaskService:
         logger.info("Task failed QA", task_id=str(task_id))
         return task
 
-    async def complete(self, task_id: UUID) -> TaskTable | None:
-        """Mark task as completed."""
+    async def complete(
+        self,
+        task_id: UUID,
+        skip_handoff_check: bool = False,
+    ) -> TaskTable | None:
+        """
+        Mark task as completed.
+
+        Enforces handoff requirement: tasks in AWAITING_DOCUMENTATION
+        must have an accepted handoff before completion.
+
+        Args:
+            task_id: The task to complete
+            skip_handoff_check: Skip handoff requirement (for small tasks)
+
+        Returns:
+            The completed task or None if completion not allowed
+        """
         task = await self.get(task_id)
         if not task:
             return None
 
-        if task.status not in (
-            TaskStatus.AWAITING_DOCUMENTATION,
-            TaskStatus.AWAITING_QA,  # Small tasks may skip docs
-            TaskStatus.VERIFYING,  # Solo dev may skip QA
-        ):
-            return None
+        # Validate transition using enforcement layer
+        try:
+            validate_task_transition(task.status.value, TaskStatus.COMPLETED.value)
+        except TaskLifecycleError:
+            # Allow from specific states
+            if task.status not in (
+                TaskStatus.AWAITING_DOCUMENTATION,
+                TaskStatus.AWAITING_QA,  # Small tasks may skip docs
+                TaskStatus.VERIFYING,  # Solo dev may skip QA
+            ):
+                return None
+
+        # Enforce handoff requirement for tasks that went through full lifecycle
+        if task.status == TaskStatus.AWAITING_DOCUMENTATION and not skip_handoff_check:
+            handoff_result = await self.session.execute(
+                select(HandoffTable).where(
+                    HandoffTable.task_id == task_id,
+                    HandoffTable.status == HandoffStatus.ACCEPTED,
+                )
+            )
+            handoff = handoff_result.scalar_one_or_none()
+
+            if not handoff:
+                logger.warning(
+                    "Cannot complete task - handoff required",
+                    task_id=str(task_id),
+                    status=task.status.value,
+                )
+                return None
 
         task.completed_at = datetime.utcnow()
         task.status = TaskStatus.COMPLETED
@@ -353,8 +396,7 @@ class TaskService:
         for task in blocked_tasks:
             # Remove the completed task from dependencies
             task.dependency_ids = [
-                dep_id for dep_id in task.dependency_ids
-                if dep_id != completed_task_id
+                dep_id for dep_id in task.dependency_ids if dep_id != completed_task_id
             ]
             # If no more dependencies, unblock
             if not task.dependency_ids and task.status == TaskStatus.BLOCKED:
@@ -540,9 +582,7 @@ class TaskService:
     # STATISTICS
     # =========================================================================
 
-    async def count_by_status(
-        self, team: Team | None = None
-    ) -> dict[str, int]:
+    async def count_by_status(self, team: Team | None = None) -> dict[str, int]:
         """Count tasks by status."""
         query = select(
             TaskTable.status,
@@ -571,11 +611,13 @@ class TaskService:
             select(func.count(TaskTable.id)).where(
                 and_(
                     TaskTable.assigned_to == agent_id,
-                    TaskTable.status.in_([
-                        TaskStatus.CLAIMED,
-                        TaskStatus.IN_PROGRESS,
-                        TaskStatus.VERIFYING,
-                    ]),
+                    TaskTable.status.in_(
+                        [
+                            TaskStatus.CLAIMED,
+                            TaskStatus.IN_PROGRESS,
+                            TaskStatus.VERIFYING,
+                        ]
+                    ),
                 )
             )
         )

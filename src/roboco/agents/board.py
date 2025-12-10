@@ -102,7 +102,9 @@ class ProductOwnerAgent(Agent):
             return False
 
         except Exception as e:
-            self.log.error("Error in PO phase", phase=self._current_phase.value, error=str(e))
+            self.log.error(
+                "Error in PO phase", phase=self._current_phase.value, error=str(e)
+            )
             return False
 
     async def _phase_vision(self) -> None:
@@ -235,7 +237,11 @@ class HeadMarketingAgent(Agent):
             return False
 
         except Exception as e:
-            self.log.error("Error in marketing phase", phase=self._current_phase.value, error=str(e))
+            self.log.error(
+                "Error in marketing phase",
+                phase=self._current_phase.value,
+                error=str(e),
+            )
             return False
 
     async def _phase_research(self) -> None:
@@ -377,7 +383,9 @@ class AuditorAgent(Agent):
             return False
 
         except Exception as e:
-            self.log.error("Error in auditor phase", phase=self._current_phase.value, error=str(e))
+            self.log.error(
+                "Error in auditor phase", phase=self._current_phase.value, error=str(e)
+            )
             return False
 
     async def _phase_observe(self) -> None:
@@ -394,20 +402,29 @@ class AuditorAgent(Agent):
 
         # Observe all channels silently
         channels = [
-            "backend-cell", "frontend-cell", "uxui-cell",
-            "dev-all", "qa-all", "pm-all", "doc-all",
-            "main-pm-board", "board-private",
-            "announcements", "all-hands",
+            "backend-cell",
+            "frontend-cell",
+            "uxui-cell",
+            "dev-all",
+            "qa-all",
+            "pm-all",
+            "doc-all",
+            "main-pm-board",
+            "board-private",
+            "announcements",
+            "all-hands",
         ]
 
         for channel in channels:
             messages = await self._read_channel_silently(channel)
             for msg in messages:
-                self._observations.append({
-                    "channel": channel,
-                    "content": msg,
-                    "timestamp": datetime.utcnow(),
-                })
+                self._observations.append(
+                    {
+                        "channel": channel,
+                        "content": msg,
+                        "timestamp": datetime.utcnow(),
+                    }
+                )
 
     async def _phase_analyze(self) -> None:
         """
@@ -453,6 +470,7 @@ Be thorough but fair.
         # Parse and create flags (simplified)
         if "concern" in analysis.lower() or "critical" in analysis.lower():
             from uuid import uuid4
+
             self._flags.append(
                 AuditFlag(
                     id=uuid4(),
@@ -484,9 +502,12 @@ Be thorough but fair.
 
         # Check if it's time for regular report
         should_report = (
-            self._last_report is None or
-            (datetime.utcnow() - self._last_report).hours >= 24 or
-            any(f.severity in [FlagSeverity.CONCERN, FlagSeverity.CRITICAL] for f in self._flags)
+            self._last_report is None
+            or (datetime.utcnow() - self._last_report).hours >= 24
+            or any(
+                f.severity in [FlagSeverity.CONCERN, FlagSeverity.CRITICAL]
+                for f in self._flags
+            )
         )
 
         if should_report and self._flags:
@@ -498,7 +519,9 @@ Be thorough but fair.
                     "observations": len(self._observations),
                     "flags": len(self._flags),
                 },
-                recommendations=[f.recommendation for f in self._flags if f.recommendation],
+                recommendations=[
+                    f.recommendation for f in self._flags if f.recommendation
+                ],
             )
 
             await self._send_ceo_report(report)
@@ -523,6 +546,7 @@ Be thorough but fair.
             findings = await self._perform_audit(audit_type)
             if findings:
                 from uuid import uuid4
+
                 self._flags.append(
                     AuditFlag(
                         id=uuid4(),
@@ -583,6 +607,7 @@ def create_product_owner(
         if blueprint_path.exists():
             content = blueprint_path.read_text()
             import re
+
             match = re.search(r"## System Prompt\s*```\s*(.*?)```", content, re.DOTALL)
             system_prompt = match.group(1).strip() if match else ""
         else:
@@ -611,6 +636,7 @@ def create_head_marketing(
         if blueprint_path.exists():
             content = blueprint_path.read_text()
             import re
+
             match = re.search(r"## System Prompt\s*```\s*(.*?)```", content, re.DOTALL)
             system_prompt = match.group(1).strip() if match else ""
         else:
@@ -639,6 +665,7 @@ def create_auditor(
         if blueprint_path.exists():
             content = blueprint_path.read_text()
             import re
+
             match = re.search(r"## System Prompt\s*```\s*(.*?)```", content, re.DOTALL)
             system_prompt = match.group(1).strip() if match else ""
         else:

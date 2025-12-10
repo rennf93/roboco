@@ -119,7 +119,9 @@ class OptimalService:
                 config=self._config,
                 store=settings.rag_store_url,
             )
-            logger.info(f"Initialized {index_type.value} index", persist_dir=persist_dir)
+            logger.info(
+                f"Initialized {index_type.value} index", persist_dir=persist_dir
+            )
 
         self._initialized = True
         logger.info("OptimalService initialization complete")
@@ -134,7 +136,9 @@ class OptimalService:
     def _get_index(self, index_type: IndexType) -> AsyncRagi:
         """Get the index for a content type."""
         if not self._initialized:
-            raise RuntimeError("OptimalService not initialized. Call initialize() first.")
+            raise RuntimeError(
+                "OptimalService not initialized. Call initialize() first."
+            )
         return self._indexes[index_type]
 
     # =========================================================================
@@ -180,7 +184,9 @@ class OptimalService:
         index = self._get_index(IndexType.DOCUMENTATION)
         await index.add(sources)
         count = await index.count()
-        logger.info("Indexed documentation", sources=sources, project=project, count=count)
+        logger.info(
+            "Indexed documentation", sources=sources, project=project, count=count
+        )
         return count
 
     async def index_conversation(
@@ -218,15 +224,13 @@ class OptimalService:
 Channel: {channel_id}
 Session: {session_id}
 Agent: {agent_id}
-Task: {task_id or 'None'}
-Type: {message_type or 'unknown'}
+Task: {task_id or "None"}
+Type: {message_type or "unknown"}
 
 {content}
 """
         # Write to temp file and index
-        with tempfile.NamedTemporaryFile(
-            mode="w", suffix=".md", delete=False
-        ) as f:
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".md", delete=False) as f:
             f.write(enriched_content)
             temp_path = f.name
 
@@ -272,14 +276,12 @@ Type: {message_type or 'unknown'}
 Entry ID: {entry_id}
 Agent: {agent_id}
 Type: {entry_type}
-Task: {task_id or 'None'}
-Tags: {', '.join(tags or [])}
+Task: {task_id or "None"}
+Tags: {", ".join(tags or [])}
 
 {content}
 """
-        with tempfile.NamedTemporaryFile(
-            mode="w", suffix=".md", delete=False
-        ) as f:
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".md", delete=False) as f:
             f.write(enriched_content)
             temp_path = f.name
 
@@ -318,7 +320,9 @@ Tags: {', '.join(tags or [])}
             raise RuntimeError("OptimalService not initialized")
 
         results: list[SearchResult] = []
-        index_types = context.index_types if context and context.index_types else list(IndexType)
+        index_types = (
+            context.index_types if context and context.index_types else list(IndexType)
+        )
 
         for index_type in index_types:
             index = self._indexes[index_type]
@@ -343,7 +347,7 @@ Tags: {', '.join(tags or [])}
 
         # Sort by score descending
         results.sort(key=lambda r: r.score, reverse=True)
-        return results[:top_k * len(index_types)]
+        return results[: top_k * len(index_types)]
 
     async def query(
         self,
@@ -369,7 +373,9 @@ Tags: {', '.join(tags or [])}
 
         # Collect context from all relevant indexes
         all_chunks: list[SearchResult] = []
-        index_types = context.index_types if context and context.index_types else list(IndexType)
+        index_types = (
+            context.index_types if context and context.index_types else list(IndexType)
+        )
 
         for index_type in index_types:
             index = self._indexes[index_type]
@@ -380,7 +386,9 @@ Tags: {', '.join(tags or [])}
                     all_chunks.append(
                         SearchResult(
                             content=cite.chunk if hasattr(cite, "chunk") else str(cite),
-                            source=cite.source if hasattr(cite, "source") else "unknown",
+                            source=cite.source
+                            if hasattr(cite, "source")
+                            else "unknown",
                             score=cite.score if hasattr(cite, "score") else 0.0,
                             index_type=index_type,
                         )

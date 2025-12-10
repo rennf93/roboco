@@ -13,7 +13,7 @@ import structlog
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from roboco.db.tables import TaskTable, AgentTable
+from roboco.db.tables import AgentTable, TaskTable
 from roboco.models.base import TaskStatus, Team
 from roboco.models.kanban import (
     KanbanBoard,
@@ -70,7 +70,9 @@ class KanbanService:
         return KanbanCard(
             id=task.id,
             title=task.title,
-            description=task.quick_context or task.description[:200] if task.description else None,
+            description=task.quick_context or task.description[:200]
+            if task.description
+            else None,
             priority=task.priority,
             status=task.status,
             team=task.team,
@@ -352,11 +354,13 @@ class KanbanService:
         result = await self.session.execute(
             select(TaskTable)
             .where(
-                TaskTable.status.in_([
-                    TaskStatus.IN_PROGRESS,
-                    TaskStatus.BLOCKED,
-                    TaskStatus.AWAITING_QA,
-                ])
+                TaskTable.status.in_(
+                    [
+                        TaskStatus.IN_PROGRESS,
+                        TaskStatus.BLOCKED,
+                        TaskStatus.AWAITING_QA,
+                    ]
+                )
             )
             .order_by(TaskTable.priority, TaskTable.created_at.desc())
         )
@@ -364,12 +368,27 @@ class KanbanService:
 
         # Create columns for each team + incoming/done
         columns = [
-            KanbanColumn(id="incoming", title="Incoming", status=TaskStatus.PENDING, cards=[]),
-            KanbanColumn(id="distributed", title="Distributed", status=TaskStatus.CLAIMED, cards=[]),
-            KanbanColumn(id="backend", title="Backend", status=TaskStatus.IN_PROGRESS, cards=[]),
-            KanbanColumn(id="frontend", title="Frontend", status=TaskStatus.IN_PROGRESS, cards=[]),
-            KanbanColumn(id="ux_ui", title="UX/UI", status=TaskStatus.IN_PROGRESS, cards=[]),
-            KanbanColumn(id="done", title="Done", status=TaskStatus.COMPLETED, cards=[]),
+            KanbanColumn(
+                id="incoming", title="Incoming", status=TaskStatus.PENDING, cards=[]
+            ),
+            KanbanColumn(
+                id="distributed",
+                title="Distributed",
+                status=TaskStatus.CLAIMED,
+                cards=[],
+            ),
+            KanbanColumn(
+                id="backend", title="Backend", status=TaskStatus.IN_PROGRESS, cards=[]
+            ),
+            KanbanColumn(
+                id="frontend", title="Frontend", status=TaskStatus.IN_PROGRESS, cards=[]
+            ),
+            KanbanColumn(
+                id="ux_ui", title="UX/UI", status=TaskStatus.IN_PROGRESS, cards=[]
+            ),
+            KanbanColumn(
+                id="done", title="Done", status=TaskStatus.COMPLETED, cards=[]
+            ),
         ]
 
         # Sort tasks into columns
@@ -404,7 +423,7 @@ class KanbanService:
         )
 
     # =========================================================================
-    # BOARD-LEVEL (ROADMAP)
+    # BOARD-LEVEL - ROADMAP
     # =========================================================================
 
     async def get_board_kanban(self) -> KanbanBoard:

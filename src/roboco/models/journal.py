@@ -16,7 +16,6 @@ from roboco.models.base import (
     TimestampMixin,
 )
 
-
 # =============================================================================
 # JOURNAL ENTRY MODEL
 # =============================================================================
@@ -40,18 +39,14 @@ class JournalEntry(TimestampMixin):
     content: str = Field(..., description="Entry content (markdown)")
 
     # Context
-    task_id: UUID | None = Field(
-        default=None, description="Related task if applicable"
-    )
+    task_id: UUID | None = Field(default=None, description="Related task if applicable")
     session_id: UUID | None = Field(
         default=None, description="Related session if applicable"
     )
 
     # Metadata
     timestamp: datetime = Field(default_factory=datetime.utcnow)
-    tags: list[str] = Field(
-        default_factory=list, description="Tags for categorization"
-    )
+    tags: list[str] = Field(default_factory=list, description="Tags for categorization")
 
     # Embedding for RAG search
     embedding: list[float] | None = Field(
@@ -140,7 +135,7 @@ def create_task_reflection(
 {what_struggled}
 
 ## Next Steps
-{chr(10).join(f'- [ ] {step}' for step in next_steps)}
+{chr(10).join(f"- [ ] {step}" for step in next_steps)}
 """
     return JournalEntry(
         journal_id=journal_id,
@@ -180,7 +175,7 @@ def create_decision_log(
 Chose **{chosen}** because {rationale}
 
 ## Consequences
-{chr(10).join(f'- {c}' for c in consequences)}
+{chr(10).join(f"- {c}" for c in consequences)}
 """
     return JournalEntry(
         journal_id=journal_id,
@@ -241,7 +236,7 @@ def create_struggle_entry(
 {what_struggled}
 
 ## What I Tried
-{chr(10).join(f'- {s}' for s in attempted_solutions)}
+{chr(10).join(f"- {s}" for s in attempted_solutions)}
 """
     if resolution:
         content += f"""

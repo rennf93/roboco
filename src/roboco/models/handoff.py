@@ -16,7 +16,6 @@ from roboco.models.base import (
     TimestampMixin,
 )
 
-
 # =============================================================================
 # SUPPORTING MODELS
 # =============================================================================
@@ -157,9 +156,7 @@ class DocumenterHandoff(TimestampMixin):
 
     # Status
     status: HandoffStatus = Field(default=HandoffStatus.PENDING)
-    assigned_to: UUID | None = Field(
-        default=None, description="Assigned documenter"
-    )
+    assigned_to: UUID | None = Field(default=None, description="Assigned documenter")
 
     # Timestamps
     claimed_at: datetime | None = None

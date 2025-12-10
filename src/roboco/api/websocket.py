@@ -100,7 +100,9 @@ class ConnectionManager:
         # Remove from tracking
         self.connection_agents.pop(websocket, None)
 
-    async def broadcast_to_channel(self, channel_id: UUID, message: dict[str, Any]) -> None:
+    async def broadcast_to_channel(
+        self, channel_id: UUID, message: dict[str, Any]
+    ) -> None:
         """Broadcast a message to all channel subscribers."""
         connections = self.channel_connections.get(channel_id, set())
         if not connections:
@@ -126,7 +128,9 @@ class ConnectionManager:
             return_exceptions=True,
         )
 
-    async def broadcast_to_session(self, session_id: UUID, message: dict[str, Any]) -> None:
+    async def broadcast_to_session(
+        self, session_id: UUID, message: dict[str, Any]
+    ) -> None:
         """Broadcast a message to all session subscribers."""
         connections = self.session_connections.get(session_id, set())
         if not connections:
@@ -248,11 +252,13 @@ async def channel_stream(
 
     try:
         # Send connection confirmation
-        await websocket.send_json({
-            "type": "connected",
-            "channel_id": str(channel_id),
-            "subscriber_count": manager.get_channel_subscriber_count(channel_id),
-        })
+        await websocket.send_json(
+            {
+                "type": "connected",
+                "channel_id": str(channel_id),
+                "subscriber_count": manager.get_channel_subscriber_count(channel_id),
+            }
+        )
 
         # Keep connection alive and handle incoming messages
         while True:
@@ -295,11 +301,13 @@ async def agent_stream(
     await manager.connect_agent(websocket, agent_id, viewer_id)
 
     try:
-        await websocket.send_json({
-            "type": "connected",
-            "agent_id": str(agent_id),
-            "watcher_count": manager.get_agent_watcher_count(agent_id),
-        })
+        await websocket.send_json(
+            {
+                "type": "connected",
+                "agent_id": str(agent_id),
+                "watcher_count": manager.get_agent_watcher_count(agent_id),
+            }
+        )
 
         while True:
             data = await websocket.receive_text()
@@ -334,10 +342,12 @@ async def session_stream(
     await manager.connect_session(websocket, session_id, agent_id)
 
     try:
-        await websocket.send_json({
-            "type": "connected",
-            "session_id": str(session_id),
-        })
+        await websocket.send_json(
+            {
+                "type": "connected",
+                "session_id": str(session_id),
+            }
+        )
 
         while True:
             data = await websocket.receive_text()

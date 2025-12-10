@@ -19,12 +19,8 @@ from roboco.db.tables import (
 )
 
 __all__ = [
-    # Base
-    "Base",
-    "get_db",
-    "init_db",
-    # Tables
     "AgentTable",
+    "Base",
     "ChannelTable",
     "GroupTable",
     "HandoffTable",
@@ -34,4 +30,6 @@ __all__ = [
     "NotificationTable",
     "SessionTable",
     "TaskTable",
+    "get_db",
+    "init_db",
 ]

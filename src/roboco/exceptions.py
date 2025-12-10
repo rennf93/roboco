@@ -124,7 +124,9 @@ class InvalidStateError(RobocoError):
         allowed_states: list[str] | None = None,
         details: dict[str, Any] | None = None,
     ):
-        allowed = f" (allowed from: {', '.join(allowed_states)})" if allowed_states else ""
+        allowed = (
+            f" (allowed from: {', '.join(allowed_states)})" if allowed_states else ""
+        )
         super().__init__(
             message=f"Cannot {operation} in state '{current_state}'{allowed}",
             code="INVALID_STATE",

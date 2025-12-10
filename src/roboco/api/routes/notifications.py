@@ -2,6 +2,7 @@
 Notification Routes
 
 Formal notification system for PMs, Board, and Auditor.
+Enforces permission rules: only PMs, Board, and Auditor can send notifications.
 """
 
 from datetime import datetime
@@ -11,8 +12,12 @@ from fastapi import APIRouter, HTTPException, Query, status
 from pydantic import BaseModel, Field
 from sqlalchemy import select
 
-from roboco.api.deps import CurrentAgentId, DbSession
-from roboco.db.tables import NotificationTable
+from roboco.api.deps import CurrentAgentContext, CurrentAgentId, DbSession
+from roboco.db.tables import AgentTable, NotificationTable
+from roboco.enforcement import (
+    NotificationPermissionError,
+    validate_notification_permission,
+)
 from roboco.models import NotificationCreate, NotificationPriority, NotificationType
 
 router = APIRouter()
@@ -109,9 +114,7 @@ async def list_notifications(
     # Count unread and pending ack
     unread_count = sum(1 for n in notifications if agent_id not in n.read_by)
     pending_ack_count = sum(
-        1
-        for n in notifications
-        if n.requires_ack and agent_id not in n.acked_by
+        1 for n in notifications if n.requires_ack and agent_id not in n.acked_by
     )
 
     items = [
@@ -174,7 +177,7 @@ async def get_notification(
 
     # Mark as read
     if agent_id not in notification.read_by:
-        notification.read_by = notification.read_by + [agent_id]
+        notification.read_by = [*notification.read_by, agent_id]
         await db.flush()
 
     return NotificationResponse(
@@ -187,7 +190,9 @@ async def get_notification(
         body=notification.body,
         requires_ack=notification.requires_ack,
         is_acknowledged=agent_id in notification.acked_by,
-        is_fully_acknowledged=all(a in notification.acked_by for a in notification.to_agents),
+        is_fully_acknowledged=all(
+            a in notification.acked_by for a in notification.to_agents
+        ),
         is_read=True,
         related_task_id=notification.related_task_id,
         timestamp=notification.timestamp,
@@ -210,8 +215,43 @@ async def send_notification(
     """
     Send a notification.
 
-    TODO: Add permission check to ensure only PMs/Board/Auditor can send.
+    Enforces permission rules:
+    - Only PMs, Board members, and Auditor can send notifications
+    - Cell PMs can only notify members of their own cell
+    - Main PM, Auditor, and CEO can notify anyone
     """
+    # Look up the sending agent to get their agent_id string
+    agent_result = await db.execute(select(AgentTable).where(AgentTable.id == agent_id))
+    agent = agent_result.scalar_one_or_none()
+
+    if not agent:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Agent not found",
+        )
+
+    # Look up recipient agent_ids
+    recipient_ids = []
+    for recipient_uuid in data.to_agents:
+        recipient_result = await db.execute(
+            select(AgentTable).where(AgentTable.id == recipient_uuid)
+        )
+        recipient = recipient_result.scalar_one_or_none()
+        if recipient:
+            recipient_ids.append(recipient.agent_id)
+
+    # Validate notification permissions using enforcement layer
+    try:
+        validate_notification_permission(
+            sender_id=agent.agent_id,
+            recipients=recipient_ids,
+        )
+    except NotificationPermissionError as e:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=e.message,
+        ) from e
+
     notification = NotificationTable(
         type=data.type,
         priority=data.priority,
@@ -283,7 +323,7 @@ async def acknowledge_notification(
 
     # Add acknowledgment
     if agent_id not in notification.acked_by:
-        notification.acked_by = notification.acked_by + [agent_id]
+        notification.acked_by = [*notification.acked_by, agent_id]
         notification.acked_at = {
             **notification.acked_at,
             str(agent_id): datetime.utcnow().isoformat(),
@@ -291,7 +331,7 @@ async def acknowledge_notification(
 
     # Also mark as read
     if agent_id not in notification.read_by:
-        notification.read_by = notification.read_by + [agent_id]
+        notification.read_by = [*notification.read_by, agent_id]
 
     await db.flush()
 
@@ -305,7 +345,9 @@ async def acknowledge_notification(
         body=notification.body,
         requires_ack=notification.requires_ack,
         is_acknowledged=True,
-        is_fully_acknowledged=all(a in notification.acked_by for a in notification.to_agents),
+        is_fully_acknowledged=all(
+            a in notification.acked_by for a in notification.to_agents
+        ),
         is_read=True,
         related_task_id=notification.related_task_id,
         timestamp=notification.timestamp,
@@ -343,5 +385,5 @@ async def mark_as_read(
         )
 
     if agent_id not in notification.read_by:
-        notification.read_by = notification.read_by + [agent_id]
+        notification.read_by = [*notification.read_by, agent_id]
         await db.flush()

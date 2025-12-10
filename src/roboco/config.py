@@ -31,7 +31,9 @@ class Settings(BaseSettings):
     app_name: str = "RoboCo"
     app_version: str = "0.1.0"
     debug: bool = False
-    environment: str = Field(default="development", pattern="^(development|staging|production)$")
+    environment: str = Field(
+        default="development", pattern="^(development|staging|production)$"
+    )
 
     # ==========================================================================
     # API Server
@@ -42,11 +44,13 @@ class Settings(BaseSettings):
     workers: int = Field(default=1, ge=1)
 
     # CORS
-    cors_origins: list[str] = Field(default=["http://localhost:3000", "http://localhost:5173"])
+    cors_origins: list[str] = Field(
+        default=["http://localhost:3000", "http://localhost:5173"]
+    )
     cors_allow_credentials: bool = True
 
     # ==========================================================================
-    # Database (PostgreSQL)
+    # Database
     # ==========================================================================
     database_host: str = "localhost"
     database_port: int = 5432
@@ -112,7 +116,9 @@ class Settings(BaseSettings):
         default=False, description="Use neural reranking (slower but more accurate)"
     )
     rag_auto_update_enabled: bool = Field(default=True)
-    rag_auto_update_interval: int = Field(default=300, ge=60, description="Seconds between auto-updates")
+    rag_auto_update_interval: int = Field(
+        default=300, ge=60, description="Seconds between auto-updates"
+    )
 
     @computed_field
     @property
@@ -148,7 +154,9 @@ class Settings(BaseSettings):
     # ==========================================================================
     # Logging
     # ==========================================================================
-    log_level: str = Field(default="INFO", pattern="^(DEBUG|INFO|WARNING|ERROR|CRITICAL)$")
+    log_level: str = Field(
+        default="INFO", pattern="^(DEBUG|INFO|WARNING|ERROR|CRITICAL)$"
+    )
     log_format: str = Field(default="json", pattern="^(json|console)$")
 
     # ==========================================================================

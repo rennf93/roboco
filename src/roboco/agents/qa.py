@@ -9,7 +9,6 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from enum import Enum
 from pathlib import Path
-from typing import Any
 from uuid import UUID
 
 import structlog
@@ -192,9 +191,7 @@ class QAAgent(Agent):
             message_type="action",
         )
 
-        ctx.notes.append(
-            f"[{datetime.utcnow().isoformat()}] Review started"
-        )
+        ctx.notes.append(f"[{datetime.utcnow().isoformat()}] Review started")
 
     async def _phase_understand(self, ctx: ReviewContext) -> None:
         """
@@ -297,7 +294,7 @@ Execute this test case:
 
 Test: {test_case.name}
 Description: {test_case.description}
-Steps: {', '.join(test_case.steps)}
+Steps: {", ".join(test_case.steps)}
 Expected: {test_case.expected}
 
 Simulate executing this test and provide:
@@ -349,10 +346,9 @@ NOTES: [notes]
             ctx.verdict = TestResult.FAIL
 
             # Communicate failure with specifics
-            failure_summary = "\n".join([
-                f"- {t.name}: {t.actual or 'No details'}"
-                for t in failed_tests
-            ])
+            failure_summary = "\n".join(
+                [f"- {t.name}: {t.actual or 'No details'}" for t in failed_tests]
+            )
 
             await self.send_message(
                 self._cell_channel_id or ctx.task_id,
@@ -377,7 +373,9 @@ NOTES: [notes]
             )
 
             # Update task status
-            await self._update_task_status(ctx.task_id, TaskStatus.AWAITING_DOCUMENTATION)
+            await self._update_task_status(
+                ctx.task_id, TaskStatus.AWAITING_DOCUMENTATION
+            )
 
         ctx.notes.append(
             f"[{datetime.utcnow().isoformat()}] Verdict: {ctx.verdict.value.upper()}"
@@ -393,16 +391,18 @@ NOTES: [notes]
         self.log.info("DOCUMENT phase", task_id=str(ctx.task_id))
 
         # Generate QA report
-        test_summary = "\n".join([
-            f"- {t.name}: {t.result.value.upper() if t.result else 'NOT RUN'}"
-            for t in ctx.test_cases
-        ])
+        test_summary = "\n".join(
+            [
+                f"- {t.name}: {t.result.value.upper() if t.result else 'NOT RUN'}"
+                for t in ctx.test_cases
+            ]
+        )
 
         qa_report = f"""
 ## QA Review Summary
 
 **Task**: {ctx.title}
-**Verdict**: {ctx.verdict.value.upper() if ctx.verdict else 'UNKNOWN'}
+**Verdict**: {ctx.verdict.value.upper() if ctx.verdict else "UNKNOWN"}
 **Reviewed**: {datetime.utcnow().isoformat()}
 
 ### Tests Executed
@@ -411,7 +411,7 @@ NOTES: [notes]
 
 ### Findings
 
-{chr(10).join(ctx.findings) if ctx.findings else 'No issues found'}
+{chr(10).join(ctx.findings) if ctx.findings else "No issues found"}
 
 ### Notes
 
@@ -421,9 +421,7 @@ NOTES: [notes]
         # Would save to task record
         self.log.info("QA report generated", report_length=len(qa_report))
 
-        ctx.notes.append(
-            f"[{datetime.utcnow().isoformat()}] QA documentation complete"
-        )
+        ctx.notes.append(f"[{datetime.utcnow().isoformat()}] QA documentation complete")
 
     # =========================================================================
     # HELPER METHODS
@@ -470,6 +468,7 @@ def create_backend_qa(
         if blueprint_path.exists():
             content = blueprint_path.read_text()
             import re
+
             match = re.search(r"## System Prompt\s*```\s*(.*?)```", content, re.DOTALL)
             system_prompt = match.group(1).strip() if match else ""
         else:
@@ -497,6 +496,7 @@ def create_frontend_qa(
         if blueprint_path.exists():
             content = blueprint_path.read_text()
             import re
+
             match = re.search(r"## System Prompt\s*```\s*(.*?)```", content, re.DOTALL)
             system_prompt = match.group(1).strip() if match else ""
         else:
@@ -524,6 +524,7 @@ def create_ux_qa(
         if blueprint_path.exists():
             content = blueprint_path.read_text()
             import re
+
             match = re.search(r"## System Prompt\s*```\s*(.*?)```", content, re.DOTALL)
             system_prompt = match.group(1).strip() if match else ""
         else:

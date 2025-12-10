@@ -12,10 +12,11 @@ Flow:
 """
 
 import asyncio
+import contextlib
 import re
+from collections.abc import AsyncIterator, Callable
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
-from typing import AsyncIterator, Callable
 from uuid import UUID, uuid4
 
 import structlog
@@ -191,10 +192,8 @@ class TranscriptionService:
 
         if self._flush_task:
             self._flush_task.cancel()
-            try:
+            with contextlib.suppress(asyncio.CancelledError):
                 await self._flush_task
-            except asyncio.CancelledError:
-                pass
 
         # Flush all remaining buffers
         await self._flush_all()
@@ -324,11 +323,13 @@ class TranscriptionService:
 
         Does not remove buffers; caller should flush after extraction.
         """
-        for agent_id, agent_buffers in list(self._buffers.items()):
-            for session_id, buffer in list(agent_buffers.items()):
+        for _agent_id, agent_buffers in list(self._buffers.items()):
+            for _session_id, buffer in list(agent_buffers.items()):
                 if buffer.is_ready_for_extraction(
                     min_chars=self.config.min_chars_for_extraction,
-                    idle_threshold=timedelta(seconds=self.config.idle_threshold_seconds),
+                    idle_threshold=timedelta(
+                        seconds=self.config.idle_threshold_seconds
+                    ),
                     max_chars=self.config.max_chars_before_flush,
                 ):
                     yield buffer
@@ -373,8 +374,7 @@ class TranscriptionService:
     def get_stats(self) -> dict:
         """Get service statistics."""
         total_buffers = sum(
-            len(agent_buffers)
-            for agent_buffers in self._buffers.values()
+            len(agent_buffers) for agent_buffers in self._buffers.values()
         )
         total_chars = sum(
             buffer.char_count

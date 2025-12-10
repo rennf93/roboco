@@ -19,7 +19,6 @@ from roboco.models.base import (
     TimestampMixin,
 )
 
-
 # =============================================================================
 # SUPPORTING MODELS
 # =============================================================================
@@ -31,7 +30,9 @@ class CommitRef(RobocoBase):
     hash: str = Field(..., min_length=7, max_length=40, description="Git commit hash")
     message: str = Field(..., description="Commit message summary")
     timestamp: datetime = Field(default_factory=datetime.utcnow)
-    author_agent_id: UUID | None = Field(default=None, description="Agent who made the commit")
+    author_agent_id: UUID | None = Field(
+        default=None, description="Agent who made the commit"
+    )
 
 
 class DocRef(RobocoBase):
@@ -39,7 +40,9 @@ class DocRef(RobocoBase):
 
     path: str = Field(..., description="Path to document")
     title: str = Field(..., description="Document title")
-    doc_type: str = Field(..., description="Type of document (api, readme, architecture, etc.)")
+    doc_type: str = Field(
+        ..., description="Type of document (api, readme, architecture, etc.)"
+    )
     version: str | None = Field(default=None, description="Document version")
 
 
@@ -58,7 +61,9 @@ class ProgressUpdate(RobocoBase):
     timestamp: datetime = Field(default_factory=datetime.utcnow)
     agent_id: UUID = Field(..., description="Agent providing update")
     message: str = Field(..., description="Progress message")
-    percentage: int | None = Field(default=None, ge=0, le=100, description="Completion percentage")
+    percentage: int | None = Field(
+        default=None, ge=0, le=100, description="Completion percentage"
+    )
 
 
 class Checkpoint(RobocoBase):
@@ -68,16 +73,24 @@ class Checkpoint(RobocoBase):
     timestamp: datetime = Field(default_factory=datetime.utcnow)
     agent_id: UUID = Field(..., description="Agent who created checkpoint")
     state_summary: str = Field(..., description="Summary of current state")
-    remaining_work: list[str] = Field(default_factory=list, description="Remaining sub-tasks")
+    remaining_work: list[str] = Field(
+        default_factory=list, description="Remaining sub-tasks"
+    )
     notes: str | None = Field(default=None, description="Additional notes")
 
 
 class ExecutionLog(RobocoBase):
     """Log of task execution events."""
 
-    events: list[dict] = Field(default_factory=list, description="List of execution events")
-    errors: list[dict] = Field(default_factory=list, description="List of errors encountered")
-    total_duration_seconds: float | None = Field(default=None, description="Total execution time")
+    events: list[dict] = Field(
+        default_factory=list, description="List of execution events"
+    )
+    errors: list[dict] = Field(
+        default_factory=list, description="List of errors encountered"
+    )
+    total_duration_seconds: float | None = Field(
+        default=None, description="Total execution time"
+    )
 
 
 class SubTask(RobocoBase):
@@ -88,7 +101,9 @@ class SubTask(RobocoBase):
     description: str | None = Field(default=None, description="Sub-task description")
     completed: bool = Field(default=False)
     order: int = Field(..., ge=0, description="Order in the plan")
-    estimated_hours: float | None = Field(default=None, description="Estimated hours to complete")
+    estimated_hours: float | None = Field(
+        default=None, description="Estimated hours to complete"
+    )
     notes: str | None = None
 
 
@@ -96,7 +111,9 @@ class TaskPlan(RobocoBase):
     """Implementation plan for a task."""
 
     approach: str = Field(..., description="High-level approach description")
-    sub_tasks: list[SubTask] = Field(default_factory=list, description="Ordered list of sub-tasks")
+    sub_tasks: list[SubTask] = Field(
+        default_factory=list, description="Ordered list of sub-tasks"
+    )
     technical_considerations: list[str] = Field(
         default_factory=list, description="Technical notes and considerations"
     )
@@ -131,15 +148,21 @@ class Task(TimestampMixin):
 
     # Status
     status: TaskStatus = Field(default=TaskStatus.PENDING)
-    priority: int = Field(default=2, ge=0, le=3, description="0=P0(highest), 3=P3(lowest)")
+    priority: int = Field(
+        default=2, ge=0, le=3, description="0=P0(highest), 3=P3(lowest)"
+    )
 
     # Ownership
     created_by: UUID = Field(..., description="Agent who created the task")
-    assigned_to: UUID | None = Field(default=None, description="Currently assigned agent")
+    assigned_to: UUID | None = Field(
+        default=None, description="Currently assigned agent"
+    )
     team: Team = Field(..., description="Which cell owns this task")
 
     # Relationships
-    parent_task_id: UUID | None = Field(default=None, description="Parent task for sub-tasks")
+    parent_task_id: UUID | None = Field(
+        default=None, description="Parent task for sub-tasks"
+    )
     dependency_ids: list[UUID] = Field(
         default_factory=list, description="Task IDs this is blocked by"
     )
@@ -151,7 +174,9 @@ class Task(TimestampMixin):
     claimed_at: datetime | None = None
     started_at: datetime | None = None
     completed_at: datetime | None = None
-    target_date: datetime | None = Field(default=None, description="Target completion date")
+    target_date: datetime | None = Field(
+        default=None, description="Target completion date"
+    )
 
     # Planning
     plan: TaskPlan | None = None
@@ -168,7 +193,9 @@ class Task(TimestampMixin):
     outputs: list[FileRef] = Field(default_factory=list)
 
     # Documentation
-    dev_notes: str | None = Field(default=None, description="Journey notes from developer")
+    dev_notes: str | None = Field(
+        default=None, description="Journey notes from developer"
+    )
     qa_notes: str | None = Field(default=None, description="QA feedback")
     auditor_notes: str | None = Field(default=None, description="Auditor observations")
 
@@ -238,7 +265,9 @@ class Task(TimestampMixin):
         """Cancel the task."""
         self.status = TaskStatus.CANCELLED
 
-    def add_checkpoint(self, agent_id: UUID, state_summary: str, remaining_work: list[str]) -> None:
+    def add_checkpoint(
+        self, agent_id: UUID, state_summary: str, remaining_work: list[str]
+    ) -> None:
         """Add a checkpoint for state recovery."""
         checkpoint = Checkpoint(
             agent_id=agent_id,
@@ -247,7 +276,9 @@ class Task(TimestampMixin):
         )
         self.checkpoints.append(checkpoint)
 
-    def add_progress(self, agent_id: UUID, message: str, percentage: int | None = None) -> None:
+    def add_progress(
+        self, agent_id: UUID, message: str, percentage: int | None = None
+    ) -> None:
         """Add a progress update."""
         update = ProgressUpdate(
             agent_id=agent_id,

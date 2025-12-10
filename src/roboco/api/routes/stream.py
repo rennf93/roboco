@@ -194,8 +194,7 @@ async def extract_messages(
             for msg in result.messages
         ],
         types_extracted=[
-            t.value if isinstance(t, MessageType) else t
-            for t in result.types_extracted
+            t.value if isinstance(t, MessageType) else t for t in result.types_extracted
         ],
     )
 

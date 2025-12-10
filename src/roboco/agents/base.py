@@ -7,6 +7,7 @@ through the Messaging API.
 """
 
 import asyncio
+import contextlib
 from abc import ABC, abstractmethod
 from datetime import datetime
 from enum import Enum
@@ -184,10 +185,8 @@ class Agent(ABC):
         # Cancel main loop
         if self._task:
             self._task.cancel()
-            try:
+            with contextlib.suppress(asyncio.CancelledError):
                 await self._task
-            except asyncio.CancelledError:
-                pass
 
         # Save state and cleanup
         await self._cleanup()
@@ -397,8 +396,12 @@ class Agent(ABC):
             "role": self.role.value,
             "team": self.team.value if self.team else None,
             "status": self.state.status.value,
-            "current_task_id": str(self.state.current_task_id) if self.state.current_task_id else None,
-            "last_activity": self.state.last_activity.isoformat() if self.state.last_activity else None,
+            "current_task_id": str(self.state.current_task_id)
+            if self.state.current_task_id
+            else None,
+            "last_activity": self.state.last_activity.isoformat()
+            if self.state.last_activity
+            else None,
             "messages_sent": self.state.messages_sent,
             "tasks_completed": self.state.tasks_completed,
         }

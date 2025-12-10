@@ -6,7 +6,7 @@ Request/response middleware for logging, error handling, and correlation IDs.
 
 import time
 import uuid
-from typing import Callable
+from collections.abc import Callable
 
 import structlog
 from fastapi import FastAPI, Request, Response
@@ -14,12 +14,12 @@ from fastapi.responses import JSONResponse
 from starlette.middleware.base import BaseHTTPMiddleware
 
 from roboco.exceptions import (
-    RobocoError,
-    NotFoundError,
-    ValidationError,
-    PermissionDeniedError,
     AuthenticationError,
     InvalidStateError,
+    NotFoundError,
+    PermissionDeniedError,
+    RobocoError,
+    ValidationError,
 )
 
 logger = structlog.get_logger()

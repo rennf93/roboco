@@ -17,7 +17,6 @@ from roboco.models.base import (
 )
 from roboco.models.session import SessionConfig
 
-
 # =============================================================================
 # MAIN GROUP MODEL
 # =============================================================================

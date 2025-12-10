@@ -7,12 +7,14 @@ for production and colored console output for development.
 
 import logging
 import sys
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import structlog
-from structlog.types import Processor
 
 from roboco.config import settings
+
+if TYPE_CHECKING:
+    from structlog.types import Processor
 
 
 def add_app_context(

@@ -170,9 +170,7 @@ async def get_message(
     message_id: UUID,
 ) -> MessageResponse:
     """Get a message by ID."""
-    result = await db.execute(
-        select(MessageTable).where(MessageTable.id == message_id)
-    )
+    result = await db.execute(select(MessageTable).where(MessageTable.id == message_id))
     message = result.scalar_one_or_none()
 
     if not message:
@@ -297,7 +295,10 @@ async def send_message(
     should_close = False
     if session.max_message_count and session.message_count >= session.max_message_count:
         should_close = True
-    if session.max_content_length and session.total_content_length >= session.max_content_length:
+    if (
+        session.max_content_length
+        and session.total_content_length >= session.max_content_length
+    ):
         should_close = True
 
     if should_close:
@@ -340,9 +341,7 @@ async def edit_message(
     data: MessageEditRequest,
 ) -> MessageResponse:
     """Edit a message."""
-    result = await db.execute(
-        select(MessageTable).where(MessageTable.id == message_id)
-    )
+    result = await db.execute(select(MessageTable).where(MessageTable.id == message_id))
     message = result.scalar_one_or_none()
 
     if not message:
@@ -364,7 +363,7 @@ async def edit_message(
         "previous_content": message.content,
         "edit_reason": data.reason,
     }
-    message.edit_history = message.edit_history + [edit_record]
+    message.edit_history = [*message.edit_history, edit_record]
 
     # Update content
     old_length = message.content_length
@@ -414,9 +413,7 @@ async def delete_message(
     message_id: UUID,
 ) -> None:
     """Delete a message."""
-    result = await db.execute(
-        select(MessageTable).where(MessageTable.id == message_id)
-    )
+    result = await db.execute(select(MessageTable).where(MessageTable.id == message_id))
     message = result.scalar_one_or_none()
 
     if not message:

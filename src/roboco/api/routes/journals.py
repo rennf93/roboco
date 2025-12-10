@@ -5,7 +5,6 @@ Agent personal journals for reflection, growth tracking, and debugging.
 """
 
 from datetime import datetime
-from typing import Any
 from uuid import UUID
 
 from fastapi import APIRouter, HTTPException, Query, status
@@ -59,7 +58,10 @@ class JournalEntryResponse(BaseModel):
 class CreateEntryRequest(BaseModel):
     """Request to create a journal entry."""
 
-    type: str = Field(..., description="Entry type (task_reflection, decision_log, learning, struggle, general)")
+    type: str = Field(
+        ...,
+        description="Entry type (task_reflection, decision_log, learning, struggle, general)",
+    )
     title: str = Field(..., min_length=1, max_length=200)
     content: str = Field(..., min_length=1)
     task_id: UUID | None = None
@@ -221,7 +223,11 @@ async def get_journal_by_agent(
 # =============================================================================
 
 
-@router.post("/me/entries", response_model=JournalEntryResponse, status_code=status.HTTP_201_CREATED)
+@router.post(
+    "/me/entries",
+    response_model=JournalEntryResponse,
+    status_code=status.HTTP_201_CREATED,
+)
 async def create_entry(
     request: CreateEntryRequest,
     agent: CurrentAgentContext,
@@ -256,7 +262,9 @@ async def create_entry(
     return JournalEntryResponse(
         id=entry.id,
         journal_id=entry.journal_id,
-        type=entry.type.value if isinstance(entry.type, JournalEntryType) else entry.type,
+        type=entry.type.value
+        if isinstance(entry.type, JournalEntryType)
+        else entry.type,
         title=entry.title,
         content=entry.content,
         task_id=entry.task_id,
@@ -347,6 +355,7 @@ async def get_entry(
         if journal and journal.agent_id != agent.agent_id:
             # Allow CEO and Auditor to see private entries
             from roboco.models.base import AgentRole
+
             if agent.role not in [AgentRole.CEO, AgentRole.AUDITOR]:
                 raise HTTPException(
                     status_code=status.HTTP_403_FORBIDDEN,
@@ -356,7 +365,9 @@ async def get_entry(
     return JournalEntryResponse(
         id=entry.id,
         journal_id=entry.journal_id,
-        type=entry.type.value if isinstance(entry.type, JournalEntryType) else entry.type,
+        type=entry.type.value
+        if isinstance(entry.type, JournalEntryType)
+        else entry.type,
         title=entry.title,
         content=entry.content,
         task_id=entry.task_id,
@@ -402,7 +413,11 @@ async def delete_entry(
 # =============================================================================
 
 
-@router.post("/me/reflections", response_model=JournalEntryResponse, status_code=status.HTTP_201_CREATED)
+@router.post(
+    "/me/reflections",
+    response_model=JournalEntryResponse,
+    status_code=status.HTTP_201_CREATED,
+)
 async def add_task_reflection(
     request: TaskReflectionRequest,
     agent: CurrentAgentContext,
@@ -424,7 +439,9 @@ async def add_task_reflection(
     return JournalEntryResponse(
         id=entry.id,
         journal_id=entry.journal_id,
-        type=entry.type.value if isinstance(entry.type, JournalEntryType) else entry.type,
+        type=entry.type.value
+        if isinstance(entry.type, JournalEntryType)
+        else entry.type,
         title=entry.title,
         content=entry.content,
         task_id=entry.task_id,
@@ -437,7 +454,11 @@ async def add_task_reflection(
     )
 
 
-@router.post("/me/decisions", response_model=JournalEntryResponse, status_code=status.HTTP_201_CREATED)
+@router.post(
+    "/me/decisions",
+    response_model=JournalEntryResponse,
+    status_code=status.HTTP_201_CREATED,
+)
 async def add_decision_log(
     request: DecisionLogRequest,
     agent: CurrentAgentContext,
@@ -460,7 +481,9 @@ async def add_decision_log(
     return JournalEntryResponse(
         id=entry.id,
         journal_id=entry.journal_id,
-        type=entry.type.value if isinstance(entry.type, JournalEntryType) else entry.type,
+        type=entry.type.value
+        if isinstance(entry.type, JournalEntryType)
+        else entry.type,
         title=entry.title,
         content=entry.content,
         task_id=entry.task_id,
@@ -473,7 +496,11 @@ async def add_decision_log(
     )
 
 
-@router.post("/me/learnings", response_model=JournalEntryResponse, status_code=status.HTTP_201_CREATED)
+@router.post(
+    "/me/learnings",
+    response_model=JournalEntryResponse,
+    status_code=status.HTTP_201_CREATED,
+)
 async def add_learning(
     request: LearningRequest,
     agent: CurrentAgentContext,
@@ -494,7 +521,9 @@ async def add_learning(
     return JournalEntryResponse(
         id=entry.id,
         journal_id=entry.journal_id,
-        type=entry.type.value if isinstance(entry.type, JournalEntryType) else entry.type,
+        type=entry.type.value
+        if isinstance(entry.type, JournalEntryType)
+        else entry.type,
         title=entry.title,
         content=entry.content,
         task_id=entry.task_id,
@@ -507,7 +536,11 @@ async def add_learning(
     )
 
 
-@router.post("/me/struggles", response_model=JournalEntryResponse, status_code=status.HTTP_201_CREATED)
+@router.post(
+    "/me/struggles",
+    response_model=JournalEntryResponse,
+    status_code=status.HTTP_201_CREATED,
+)
 async def add_struggle(
     request: StruggleRequest,
     agent: CurrentAgentContext,
@@ -529,7 +562,9 @@ async def add_struggle(
     return JournalEntryResponse(
         id=entry.id,
         journal_id=entry.journal_id,
-        type=entry.type.value if isinstance(entry.type, JournalEntryType) else entry.type,
+        type=entry.type.value
+        if isinstance(entry.type, JournalEntryType)
+        else entry.type,
         title=entry.title,
         content=entry.content,
         task_id=entry.task_id,
@@ -542,7 +577,11 @@ async def add_struggle(
     )
 
 
-@router.post("/me/notes", response_model=JournalEntryResponse, status_code=status.HTTP_201_CREATED)
+@router.post(
+    "/me/notes",
+    response_model=JournalEntryResponse,
+    status_code=status.HTTP_201_CREATED,
+)
 async def add_general_entry(
     request: GeneralEntryRequest,
     agent: CurrentAgentContext,
@@ -563,7 +602,9 @@ async def add_general_entry(
     return JournalEntryResponse(
         id=entry.id,
         journal_id=entry.journal_id,
-        type=entry.type.value if isinstance(entry.type, JournalEntryType) else entry.type,
+        type=entry.type.value
+        if isinstance(entry.type, JournalEntryType)
+        else entry.type,
         title=entry.title,
         content=entry.content,
         task_id=entry.task_id,

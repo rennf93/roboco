@@ -40,7 +40,6 @@ from roboco.models.base import (
     Team,
 )
 
-
 # =============================================================================
 # HELPER FUNCTIONS
 # =============================================================================
@@ -62,9 +61,13 @@ class AgentTable(Base):
     __tablename__ = "agents"
 
     # Identity
-    id: Mapped[UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid4)
+    id: Mapped[UUID] = mapped_column(
+        UUID(as_uuid=True), primary_key=True, default=uuid4
+    )
     name: Mapped[str] = mapped_column(String(100), nullable=False)
-    slug: Mapped[str] = mapped_column(String(50), unique=True, nullable=False, index=True)
+    slug: Mapped[str] = mapped_column(
+        String(50), unique=True, nullable=False, index=True
+    )
 
     # Role & Team
     role: Mapped[AgentRole] = mapped_column(Enum(AgentRole), nullable=False)
@@ -96,8 +99,12 @@ class AgentTable(Base):
     description: Mapped[str | None] = mapped_column(Text, nullable=True)
 
     # Timestamps
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, nullable=False)
-    updated_at: Mapped[datetime | None] = mapped_column(DateTime, onupdate=utcnow, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime, default=utcnow, nullable=False
+    )
+    updated_at: Mapped[datetime | None] = mapped_column(
+        DateTime, onupdate=utcnow, nullable=True
+    )
 
     # Relationships
     current_task: Mapped["TaskTable | None"] = relationship(
@@ -116,10 +123,14 @@ class TaskTable(Base):
     __tablename__ = "tasks"
 
     # Identity
-    id: Mapped[UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid4)
+    id: Mapped[UUID] = mapped_column(
+        UUID(as_uuid=True), primary_key=True, default=uuid4
+    )
     title: Mapped[str] = mapped_column(String(200), nullable=False)
     description: Mapped[str] = mapped_column(Text, nullable=False)
-    acceptance_criteria: Mapped[list[str]] = mapped_column(ARRAY(String), nullable=False)
+    acceptance_criteria: Mapped[list[str]] = mapped_column(
+        ARRAY(String), nullable=False
+    )
 
     # Status
     status: Mapped[TaskStatus] = mapped_column(
@@ -132,7 +143,10 @@ class TaskTable(Base):
         UUID(as_uuid=True), ForeignKey("agents.id"), nullable=False
     )
     assigned_to: Mapped[UUID | None] = mapped_column(
-        UUID(as_uuid=True), ForeignKey("agents.id", ondelete="SET NULL"), nullable=True, index=True
+        UUID(as_uuid=True),
+        ForeignKey("agents.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
     )
     team: Mapped[Team] = mapped_column(Enum(Team), nullable=False, index=True)
 
@@ -140,12 +154,20 @@ class TaskTable(Base):
     parent_task_id: Mapped[UUID | None] = mapped_column(
         UUID(as_uuid=True), ForeignKey("tasks.id", ondelete="SET NULL"), nullable=True
     )
-    dependency_ids: Mapped[list[UUID]] = mapped_column(ARRAY(UUID(as_uuid=True)), default=list)
-    blocker_ids: Mapped[list[UUID]] = mapped_column(ARRAY(UUID(as_uuid=True)), default=list)
+    dependency_ids: Mapped[list[UUID]] = mapped_column(
+        ARRAY(UUID(as_uuid=True)), default=list
+    )
+    blocker_ids: Mapped[list[UUID]] = mapped_column(
+        ARRAY(UUID(as_uuid=True)), default=list
+    )
 
     # Timestamps
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, nullable=False)
-    updated_at: Mapped[datetime | None] = mapped_column(DateTime, onupdate=utcnow, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime, default=utcnow, nullable=False
+    )
+    updated_at: Mapped[datetime | None] = mapped_column(
+        DateTime, onupdate=utcnow, nullable=True
+    )
     claimed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     started_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     completed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
@@ -202,9 +224,13 @@ class ChannelTable(Base):
     __tablename__ = "channels"
 
     # Identity
-    id: Mapped[UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid4)
+    id: Mapped[UUID] = mapped_column(
+        UUID(as_uuid=True), primary_key=True, default=uuid4
+    )
     name: Mapped[str] = mapped_column(String(100), nullable=False)
-    slug: Mapped[str] = mapped_column(String(50), unique=True, nullable=False, index=True)
+    slug: Mapped[str] = mapped_column(
+        String(50), unique=True, nullable=False, index=True
+    )
     type: Mapped[ChannelType] = mapped_column(Enum(ChannelType), nullable=False)
 
     # Description
@@ -214,14 +240,18 @@ class ChannelTable(Base):
     # Access Control
     members: Mapped[list[UUID]] = mapped_column(ARRAY(UUID(as_uuid=True)), default=list)
     writers: Mapped[list[UUID]] = mapped_column(ARRAY(UUID(as_uuid=True)), default=list)
-    silent_observers: Mapped[list[UUID]] = mapped_column(ARRAY(UUID(as_uuid=True)), default=list)
+    silent_observers: Mapped[list[UUID]] = mapped_column(
+        ARRAY(UUID(as_uuid=True)), default=list
+    )
 
     # Settings
     is_archived: Mapped[bool] = mapped_column(Boolean, default=False)
     is_private: Mapped[bool] = mapped_column(Boolean, default=False)
     allow_threads: Mapped[bool] = mapped_column(Boolean, default=True)
     allow_reactions: Mapped[bool] = mapped_column(Boolean, default=True)
-    message_retention_days: Mapped[int | None] = mapped_column(Integer, nullable=True, default=90)
+    message_retention_days: Mapped[int | None] = mapped_column(
+        Integer, nullable=True, default=90
+    )
     max_message_length: Mapped[int] = mapped_column(Integer, default=10000)
 
     # Statistics
@@ -230,8 +260,12 @@ class ChannelTable(Base):
     last_activity: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
 
     # Timestamps
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, nullable=False)
-    updated_at: Mapped[datetime | None] = mapped_column(DateTime, onupdate=utcnow, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime, default=utcnow, nullable=False
+    )
+    updated_at: Mapped[datetime | None] = mapped_column(
+        DateTime, onupdate=utcnow, nullable=True
+    )
 
     # Relationships
     groups: Mapped[list["GroupTable"]] = relationship(
@@ -250,10 +284,15 @@ class GroupTable(Base):
     __tablename__ = "groups"
 
     # Identity
-    id: Mapped[UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid4)
+    id: Mapped[UUID] = mapped_column(
+        UUID(as_uuid=True), primary_key=True, default=uuid4
+    )
     name: Mapped[str] = mapped_column(String(100), nullable=False)
     channel_id: Mapped[UUID] = mapped_column(
-        UUID(as_uuid=True), ForeignKey("channels.id", ondelete="CASCADE"), nullable=False, index=True
+        UUID(as_uuid=True),
+        ForeignKey("channels.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
     )
 
     # Access Control
@@ -265,7 +304,9 @@ class GroupTable(Base):
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)
 
     # Current Session
-    active_session_id: Mapped[UUID | None] = mapped_column(UUID(as_uuid=True), nullable=True)
+    active_session_id: Mapped[UUID | None] = mapped_column(
+        UUID(as_uuid=True), nullable=True
+    )
 
     # Session Configuration (stored as JSON)
     default_session_config: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
@@ -276,11 +317,17 @@ class GroupTable(Base):
     last_activity: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
 
     # Timestamps
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, nullable=False)
-    updated_at: Mapped[datetime | None] = mapped_column(DateTime, onupdate=utcnow, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime, default=utcnow, nullable=False
+    )
+    updated_at: Mapped[datetime | None] = mapped_column(
+        DateTime, onupdate=utcnow, nullable=True
+    )
 
     # Relationships
-    channel: Mapped["ChannelTable"] = relationship("ChannelTable", back_populates="groups")
+    channel: Mapped["ChannelTable"] = relationship(
+        "ChannelTable", back_populates="groups"
+    )
     sessions: Mapped[list["SessionTable"]] = relationship(
         "SessionTable", back_populates="group", lazy="selectin"
     )
@@ -297,17 +344,26 @@ class SessionTable(Base):
     __tablename__ = "sessions"
 
     # Identity
-    id: Mapped[UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid4)
+    id: Mapped[UUID] = mapped_column(
+        UUID(as_uuid=True), primary_key=True, default=uuid4
+    )
     group_id: Mapped[UUID] = mapped_column(
-        UUID(as_uuid=True), ForeignKey("groups.id", ondelete="CASCADE"), nullable=False, index=True
+        UUID(as_uuid=True),
+        ForeignKey("groups.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
     )
 
     # Boundaries
     max_time_window: Mapped[timedelta | None] = mapped_column(
         Interval, nullable=True, default=timedelta(minutes=30)
     )
-    max_message_count: Mapped[int | None] = mapped_column(Integer, nullable=True, default=100)
-    max_content_length: Mapped[int | None] = mapped_column(Integer, nullable=True, default=50000)
+    max_message_count: Mapped[int | None] = mapped_column(
+        Integer, nullable=True, default=100
+    )
+    max_content_length: Mapped[int | None] = mapped_column(
+        Integer, nullable=True, default=50000
+    )
 
     # Timeout
     timeout_seconds: Mapped[int] = mapped_column(Integer, default=300)
@@ -318,8 +374,12 @@ class SessionTable(Base):
     )
 
     # Timestamps
-    started_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, nullable=False)
-    last_activity_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, nullable=False)
+    started_at: Mapped[datetime] = mapped_column(
+        DateTime, default=utcnow, nullable=False
+    )
+    last_activity_at: Mapped[datetime] = mapped_column(
+        DateTime, default=utcnow, nullable=False
+    )
     closed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
 
     # Statistics
@@ -327,7 +387,9 @@ class SessionTable(Base):
     total_content_length: Mapped[int] = mapped_column(Integer, default=0)
 
     # Timestamps
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime, default=utcnow, nullable=False
+    )
 
     # Relationships
     group: Mapped["GroupTable"] = relationship("GroupTable", back_populates="sessions")
@@ -347,44 +409,66 @@ class MessageTable(Base):
     __tablename__ = "messages"
 
     # Identity
-    id: Mapped[UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid4)
+    id: Mapped[UUID] = mapped_column(
+        UUID(as_uuid=True), primary_key=True, default=uuid4
+    )
 
     # Source & Context
     agent_id: Mapped[UUID] = mapped_column(
         UUID(as_uuid=True), ForeignKey("agents.id"), nullable=False, index=True
     )
     channel_id: Mapped[UUID] = mapped_column(
-        UUID(as_uuid=True), ForeignKey("channels.id", ondelete="CASCADE"), nullable=False, index=True
+        UUID(as_uuid=True),
+        ForeignKey("channels.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
     )
     group_id: Mapped[UUID] = mapped_column(
-        UUID(as_uuid=True), ForeignKey("groups.id", ondelete="CASCADE"), nullable=False, index=True
+        UUID(as_uuid=True),
+        ForeignKey("groups.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
     )
     session_id: Mapped[UUID] = mapped_column(
-        UUID(as_uuid=True), ForeignKey("sessions.id", ondelete="CASCADE"), nullable=False, index=True
+        UUID(as_uuid=True),
+        ForeignKey("sessions.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
     )
 
     # Content
-    type: Mapped[MessageType] = mapped_column(Enum(MessageType), nullable=False, index=True)
+    type: Mapped[MessageType] = mapped_column(
+        Enum(MessageType), nullable=False, index=True
+    )
     content: Mapped[str] = mapped_column(Text, nullable=False)
     content_length: Mapped[int] = mapped_column(Integer, nullable=False)
 
     # Threading
     is_reply: Mapped[bool] = mapped_column(Boolean, default=False)
     reply_to: Mapped[UUID | None] = mapped_column(
-        UUID(as_uuid=True), ForeignKey("messages.id", ondelete="SET NULL"), nullable=True
+        UUID(as_uuid=True),
+        ForeignKey("messages.id", ondelete="SET NULL"),
+        nullable=True,
     )
 
     # Mentions
-    mentions: Mapped[list[UUID]] = mapped_column(ARRAY(UUID(as_uuid=True)), default=list)
+    mentions: Mapped[list[UUID]] = mapped_column(
+        ARRAY(UUID(as_uuid=True)), default=list
+    )
 
     # Task Context
     task_id: Mapped[UUID | None] = mapped_column(
-        UUID(as_uuid=True), ForeignKey("tasks.id", ondelete="SET NULL"), nullable=True, index=True
+        UUID(as_uuid=True),
+        ForeignKey("tasks.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
     )
     commit_ref: Mapped[str | None] = mapped_column(String(40), nullable=True)
 
     # Metadata
-    timestamp: Mapped[datetime] = mapped_column(DateTime, default=utcnow, nullable=False, index=True)
+    timestamp: Mapped[datetime] = mapped_column(
+        DateTime, default=utcnow, nullable=False, index=True
+    )
 
     # Extraction metadata
     confidence: Mapped[float] = mapped_column(Float, default=1.0)
@@ -395,18 +479,22 @@ class MessageTable(Base):
     edit_history: Mapped[list[dict[str, Any]]] = mapped_column(JSON, default=list)
 
     # Timestamps
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime, default=utcnow, nullable=False
+    )
 
     # Relationships
     agent: Mapped["AgentTable"] = relationship("AgentTable", lazy="selectin")
-    session: Mapped["SessionTable"] = relationship("SessionTable", back_populates="messages")
+    session: Mapped["SessionTable"] = relationship(
+        "SessionTable", back_populates="messages"
+    )
     parent_message: Mapped["MessageTable | None"] = relationship(
         "MessageTable", remote_side=[id], lazy="selectin"
     )
 
     __table_args__ = (
         # Index for efficient channel message queries
-        # Index("ix_messages_channel_timestamp", channel_id, timestamp.desc()),
+        # Index"ix_messages_channel_timestamp", channel_id, timestamp.desc()),
     )
 
 
@@ -421,8 +509,12 @@ class NotificationTable(Base):
     __tablename__ = "notifications"
 
     # Identity
-    id: Mapped[UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid4)
-    type: Mapped[NotificationType] = mapped_column(Enum(NotificationType), nullable=False, index=True)
+    id: Mapped[UUID] = mapped_column(
+        UUID(as_uuid=True), primary_key=True, default=uuid4
+    )
+    type: Mapped[NotificationType] = mapped_column(
+        Enum(NotificationType), nullable=False, index=True
+    )
     priority: Mapped[NotificationPriority] = mapped_column(
         Enum(NotificationPriority), nullable=False, default=NotificationPriority.NORMAL
     )
@@ -431,7 +523,9 @@ class NotificationTable(Base):
     from_agent: Mapped[UUID] = mapped_column(
         UUID(as_uuid=True), ForeignKey("agents.id"), nullable=False
     )
-    to_agents: Mapped[list[UUID]] = mapped_column(ARRAY(UUID(as_uuid=True)), nullable=False)
+    to_agents: Mapped[list[UUID]] = mapped_column(
+        ARRAY(UUID(as_uuid=True)), nullable=False
+    )
 
     # Content
     subject: Mapped[str] = mapped_column(String(200), nullable=False)
@@ -439,28 +533,38 @@ class NotificationTable(Base):
 
     # Acknowledgment
     requires_ack: Mapped[bool] = mapped_column(Boolean, default=True)
-    acked_by: Mapped[list[UUID]] = mapped_column(ARRAY(UUID(as_uuid=True)), default=list)
+    acked_by: Mapped[list[UUID]] = mapped_column(
+        ARRAY(UUID(as_uuid=True)), default=list
+    )
     acked_at: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
 
     # Context
     related_task_id: Mapped[UUID | None] = mapped_column(
         UUID(as_uuid=True), ForeignKey("tasks.id", ondelete="SET NULL"), nullable=True
     )
-    related_message_ids: Mapped[list[UUID]] = mapped_column(ARRAY(UUID(as_uuid=True)), default=list)
+    related_message_ids: Mapped[list[UUID]] = mapped_column(
+        ARRAY(UUID(as_uuid=True)), default=list
+    )
 
     # Timing
-    timestamp: Mapped[datetime] = mapped_column(DateTime, default=utcnow, nullable=False, index=True)
+    timestamp: Mapped[datetime] = mapped_column(
+        DateTime, default=utcnow, nullable=False, index=True
+    )
     expires_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
 
     # Read tracking
     read_by: Mapped[list[UUID]] = mapped_column(ARRAY(UUID(as_uuid=True)), default=list)
 
     # Timestamps
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime, default=utcnow, nullable=False
+    )
 
     # Relationships
     sender: Mapped["AgentTable"] = relationship("AgentTable", lazy="selectin")
-    related_task: Mapped["TaskTable | None"] = relationship("TaskTable", lazy="selectin")
+    related_task: Mapped["TaskTable | None"] = relationship(
+        "TaskTable", lazy="selectin"
+    )
 
 
 # =============================================================================
@@ -474,9 +578,14 @@ class JournalTable(Base):
     __tablename__ = "journals"
 
     # Identity
-    id: Mapped[UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid4)
+    id: Mapped[UUID] = mapped_column(
+        UUID(as_uuid=True), primary_key=True, default=uuid4
+    )
     agent_id: Mapped[UUID] = mapped_column(
-        UUID(as_uuid=True), ForeignKey("agents.id", ondelete="CASCADE"), nullable=False, unique=True
+        UUID(as_uuid=True),
+        ForeignKey("agents.id", ondelete="CASCADE"),
+        nullable=False,
+        unique=True,
     )
 
     # Metadata
@@ -491,8 +600,12 @@ class JournalTable(Base):
     entries_by_type: Mapped[dict[str, int]] = mapped_column(JSON, default=dict)
 
     # Timestamps
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, nullable=False)
-    updated_at: Mapped[datetime | None] = mapped_column(DateTime, onupdate=utcnow, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime, default=utcnow, nullable=False
+    )
+    updated_at: Mapped[datetime | None] = mapped_column(
+        DateTime, onupdate=utcnow, nullable=True
+    )
 
     # Relationships
     agent: Mapped["AgentTable"] = relationship("AgentTable", lazy="selectin")
@@ -507,13 +620,20 @@ class JournalEntryTable(Base):
     __tablename__ = "journal_entries"
 
     # Identity
-    id: Mapped[UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid4)
+    id: Mapped[UUID] = mapped_column(
+        UUID(as_uuid=True), primary_key=True, default=uuid4
+    )
     journal_id: Mapped[UUID] = mapped_column(
-        UUID(as_uuid=True), ForeignKey("journals.id", ondelete="CASCADE"), nullable=False, index=True
+        UUID(as_uuid=True),
+        ForeignKey("journals.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
     )
 
     # Content
-    type: Mapped[JournalEntryType] = mapped_column(Enum(JournalEntryType), nullable=False, index=True)
+    type: Mapped[JournalEntryType] = mapped_column(
+        Enum(JournalEntryType), nullable=False, index=True
+    )
     title: Mapped[str] = mapped_column(String(200), nullable=False)
     content: Mapped[str] = mapped_column(Text, nullable=False)
 
@@ -522,11 +642,15 @@ class JournalEntryTable(Base):
         UUID(as_uuid=True), ForeignKey("tasks.id", ondelete="SET NULL"), nullable=True
     )
     session_id: Mapped[UUID | None] = mapped_column(
-        UUID(as_uuid=True), ForeignKey("sessions.id", ondelete="SET NULL"), nullable=True
+        UUID(as_uuid=True),
+        ForeignKey("sessions.id", ondelete="SET NULL"),
+        nullable=True,
     )
 
     # Metadata
-    timestamp: Mapped[datetime] = mapped_column(DateTime, default=utcnow, nullable=False, index=True)
+    timestamp: Mapped[datetime] = mapped_column(
+        DateTime, default=utcnow, nullable=False, index=True
+    )
     tags: Mapped[list[str]] = mapped_column(ARRAY(String), default=list)
 
     # Sentiment
@@ -536,11 +660,17 @@ class JournalEntryTable(Base):
     is_private: Mapped[bool] = mapped_column(Boolean, default=False)
 
     # Timestamps
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, nullable=False)
-    updated_at: Mapped[datetime | None] = mapped_column(DateTime, onupdate=utcnow, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime, default=utcnow, nullable=False
+    )
+    updated_at: Mapped[datetime | None] = mapped_column(
+        DateTime, onupdate=utcnow, nullable=True
+    )
 
     # Relationships
-    journal: Mapped["JournalTable"] = relationship("JournalTable", back_populates="entries")
+    journal: Mapped["JournalTable"] = relationship(
+        "JournalTable", back_populates="entries"
+    )
 
 
 # =============================================================================
@@ -554,9 +684,14 @@ class HandoffTable(Base):
     __tablename__ = "handoffs"
 
     # Identity
-    id: Mapped[UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid4)
+    id: Mapped[UUID] = mapped_column(
+        UUID(as_uuid=True), primary_key=True, default=uuid4
+    )
     task_id: Mapped[UUID] = mapped_column(
-        UUID(as_uuid=True), ForeignKey("tasks.id", ondelete="CASCADE"), nullable=False, index=True
+        UUID(as_uuid=True),
+        ForeignKey("tasks.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
     )
 
     # Summary
@@ -612,8 +747,12 @@ class HandoffTable(Base):
     )
 
     # Timestamps
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, nullable=False)
-    updated_at: Mapped[datetime | None] = mapped_column(DateTime, onupdate=utcnow, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime, default=utcnow, nullable=False
+    )
+    updated_at: Mapped[datetime | None] = mapped_column(
+        DateTime, onupdate=utcnow, nullable=True
+    )
     claimed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     completed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
 
@@ -624,6 +763,4 @@ class HandoffTable(Base):
     task: Mapped["TaskTable"] = relationship("TaskTable", lazy="selectin")
     assignee: Mapped["AgentTable | None"] = relationship("AgentTable", lazy="selectin")
 
-    __table_args__ = (
-        UniqueConstraint("task_id", name="uq_handoffs_task_id"),
-    )
+    __table_args__ = (UniqueConstraint("task_id", name="uq_handoffs_task_id"),)

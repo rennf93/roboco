@@ -9,7 +9,6 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from enum import Enum
 from pathlib import Path
-from typing import Any
 from uuid import UUID
 
 import structlog
@@ -238,16 +237,16 @@ Analyze this completed task and determine what documentation is needed.
 Task: {ctx.title}
 
 Developer Notes:
-{ctx.dev_notes or 'None provided'}
+{ctx.dev_notes or "None provided"}
 
 QA Feedback:
-{ctx.qa_feedback or 'None provided'}
+{ctx.qa_feedback or "None provided"}
 
 Commits:
-{chr(10).join(ctx.commits) if ctx.commits else 'None'}
+{chr(10).join(ctx.commits) if ctx.commits else "None"}
 
 Code Changes:
-{chr(10).join(ctx.code_changes) if ctx.code_changes else 'None'}
+{chr(10).join(ctx.code_changes) if ctx.code_changes else "None"}
 
 Determine:
 1. Summary of what was built
@@ -331,7 +330,7 @@ Summary:
 {ctx.summary}
 
 Developer Notes:
-{ctx.dev_notes or 'None'}
+{ctx.dev_notes or "None"}
 
 Write professional, clear documentation following best practices.
 Include:
@@ -418,9 +417,7 @@ If issues found, provide suggestions.
             message_type="action",
         )
 
-        ctx.notes.append(
-            f"[{datetime.utcnow().isoformat()}] Documentation published"
-        )
+        ctx.notes.append(f"[{datetime.utcnow().isoformat()}] Documentation published")
 
     # =========================================================================
     # HELPER METHODS
@@ -477,6 +474,7 @@ def create_backend_documenter(
         if blueprint_path.exists():
             content = blueprint_path.read_text()
             import re
+
             match = re.search(r"## System Prompt\s*```\s*(.*?)```", content, re.DOTALL)
             system_prompt = match.group(1).strip() if match else ""
         else:
@@ -504,6 +502,7 @@ def create_frontend_documenter(
         if blueprint_path.exists():
             content = blueprint_path.read_text()
             import re
+
             match = re.search(r"## System Prompt\s*```\s*(.*?)```", content, re.DOTALL)
             system_prompt = match.group(1).strip() if match else ""
         else:
@@ -531,6 +530,7 @@ def create_ux_documenter(
         if blueprint_path.exists():
             content = blueprint_path.read_text()
             import re
+
             match = re.search(r"## System Prompt\s*```\s*(.*?)```", content, re.DOTALL)
             system_prompt = match.group(1).strip() if match else ""
         else:
