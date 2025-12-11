@@ -20,15 +20,12 @@ Tools:
 - roboco_task_complete: Mark task complete
 """
 
-from datetime import datetime
 from typing import Any
-from uuid import UUID
 
 import httpx
 from mcp.server.fastmcp import FastMCP
 
 from roboco.config import settings
-from roboco.models.base import TaskStatus, Team
 
 # =============================================================================
 # VALID STATE TRANSITIONS

@@ -9,15 +9,21 @@ through the Messaging API.
 import asyncio
 import contextlib
 from abc import ABC, abstractmethod
-from datetime import datetime
+from datetime import UTC, datetime
 from enum import Enum
-from typing import Any
+from typing import TYPE_CHECKING, Any
 from uuid import UUID, uuid4
 
+import httpx
 import structlog
 from pydantic import BaseModel, Field
 
+from roboco.api.websocket import broadcast_agent_chunk
+from roboco.config import settings
 from roboco.models import AgentRole, AgentStatus, Team
+
+if TYPE_CHECKING:
+    from anthropic import AsyncAnthropic
 
 logger = structlog.get_logger()
 
@@ -108,6 +114,7 @@ class Agent(ABC):
         self.state = AgentState()
         self._running = False
         self._task: asyncio.Task | None = None
+        self._llm_client: AsyncAnthropic | None = None
 
         self.log = logger.bind(
             agent_id=str(config.id),
@@ -145,6 +152,15 @@ class Agent(ABC):
         """Check if agent is idle (running but no task)."""
         return self._running and self.state.current_task_id is None
 
+    @property
+    def llm_client(self) -> "AsyncAnthropic":
+        """Get or create the LLM client."""
+        if self._llm_client is None:
+            from anthropic import AsyncAnthropic
+
+            self._llm_client = AsyncAnthropic(api_key=settings.anthropic_api_key)
+        return self._llm_client
+
     # =========================================================================
     # LIFECYCLE METHODS
     # =========================================================================
@@ -162,7 +178,7 @@ class Agent(ABC):
         self.log.info("Starting agent")
         self._running = True
         self.state.status = AgentStatus.IDLE
-        self.state.last_activity = datetime.utcnow()
+        self.state.last_activity = datetime.now(UTC)
 
         # Initialize connections
         await self._initialize()
@@ -194,13 +210,13 @@ class Agent(ABC):
         self.state.status = AgentStatus.OFFLINE
         self.log.info("Agent stopped")
 
+    @abstractmethod
     async def _initialize(self) -> None:
         """Initialize agent resources. Override in subclasses."""
-        pass
 
+    @abstractmethod
     async def _cleanup(self) -> None:
         """Cleanup agent resources. Override in subclasses."""
-        pass
 
     # =========================================================================
     # MAIN LOOP
@@ -258,7 +274,7 @@ class Agent(ABC):
         CLAIM → UNDERSTAND → PLAN → EXECUTE → VERIFY → NOTES → CLOSE
         """
         self.state.status = AgentStatus.ACTIVE
-        self.state.last_activity = datetime.utcnow()
+        self.state.last_activity = datetime.now(UTC)
 
         try:
             # Execute the task (implemented by subclasses)
@@ -319,11 +335,23 @@ class Agent(ABC):
             content: Message content
             message_type: Type of message (reasoning, dialogue, action, etc.)
         """
-        # TODO: Integrate with Messaging API
         self.state.messages_sent += 1
-        self.state.last_activity = datetime.utcnow()
+        self.state.last_activity = datetime.now(UTC)
+
+        url = f"http://{settings.host}:{settings.port}/api/v1/messages"
+        async with httpx.AsyncClient() as client:
+            await client.post(
+                url,
+                json={
+                    "channel_id": str(channel_id),
+                    "agent_id": str(self.id),
+                    "content": content,
+                    "message_type": message_type,
+                },
+            )
+
         self.log.debug(
-            "Sending message",
+            "Message sent",
             channel_id=str(channel_id),
             message_type=message_type,
             content_length=len(content),
@@ -336,52 +364,99 @@ class Agent(ABC):
         This is the agent's internal thought process,
         visible to the Auditor and monitoring systems.
         """
-        # TODO: Integrate with WebSocket streaming
-        self.log.debug("Streaming reasoning", content_length=len(content))
+        await broadcast_agent_chunk(self.id, content)
+        self.log.debug("Streamed reasoning", content_length=len(content))
 
     # =========================================================================
     # LLM INTERACTION
     # =========================================================================
 
-    async def think(self, prompt: str, context: dict[str, Any] | None = None) -> str:
+    async def think(
+        self,
+        prompt: str,
+        context: dict[str, Any] | None = None,  # noqa: ARG002
+    ) -> str:
         """
         Send a prompt to the LLM and get a response.
 
         Args:
             prompt: The prompt to send
-            context: Additional context to include
+            context: Additional context to include (reserved for future use)
 
         Returns:
             The LLM's response
         """
-        # TODO: Integrate with actual LLM provider
         self.log.debug("Thinking", prompt_length=len(prompt))
 
-        # Placeholder - will integrate with Anthropic/OpenAI
-        return f"[Placeholder response for: {prompt[:50]}...]"
+        messages = [{"role": "user", "content": prompt}]
+
+        response = await self.llm_client.messages.create(
+            model=self.config.model,
+            max_tokens=self.config.max_tokens,
+            system=self.config.system_prompt,
+            messages=messages,
+        )
+
+        return response.content[0].text
 
     async def think_and_stream(
         self,
         prompt: str,
-        context: dict[str, Any] | None = None,
+        context: dict[str, Any] | None = None,  # noqa: ARG002
     ) -> str:
         """
         Send a prompt and stream the response.
 
         Args:
             prompt: The prompt to send
-            context: Additional context to include
+            context: Additional context to include (reserved for future use)
 
         Returns:
             The complete response after streaming
         """
-        # TODO: Integrate with actual LLM provider with streaming
         self.log.debug("Thinking (streaming)", prompt_length=len(prompt))
 
-        # Placeholder
-        response = f"[Placeholder streaming response for: {prompt[:50]}...]"
-        await self.stream_reasoning(response)
-        return response
+        messages = [{"role": "user", "content": prompt}]
+        full_response = ""
+
+        async with self.llm_client.messages.stream(
+            model=self.config.model,
+            max_tokens=self.config.max_tokens,
+            system=self.config.system_prompt,
+            messages=messages,
+        ) as stream:
+            async for text in stream.text_stream:
+                full_response += text
+                await self.stream_reasoning(text)
+
+        return full_response
+
+    # =========================================================================
+    # API HELPER
+    # =========================================================================
+
+    async def _api_call(
+        self,
+        method: str,
+        path: str,
+        **kwargs: Any,
+    ) -> dict[str, Any]:
+        """
+        Make API call to RoboCo services.
+
+        Args:
+            method: HTTP method (GET, POST, PUT, DELETE)
+            path: API path (e.g., "/tasks" or "/tasks/{id}")
+            **kwargs: Additional arguments passed to httpx
+
+        Returns:
+            JSON response as dictionary
+        """
+        url = f"http://{settings.host}:{settings.port}/api/v1{path}"
+        async with httpx.AsyncClient() as client:
+            response = await client.request(method, url, **kwargs)
+            response.raise_for_status()
+            return response.json()
 
     # =========================================================================
     # UTILITY METHODS

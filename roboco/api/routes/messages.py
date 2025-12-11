@@ -4,7 +4,7 @@ Message Routes
 CRUD operations for messages within sessions.
 """
 
-from datetime import datetime
+from datetime import UTC, datetime
 from uuid import UUID
 
 from fastapi import APIRouter, HTTPException, Query, status
@@ -13,8 +13,8 @@ from sqlalchemy import select
 from sqlalchemy.orm import selectinload
 
 from roboco.api.deps import CurrentAgentId, DbSession
-from roboco.db.tables import ChannelTable, GroupTable, MessageTable, SessionTable
-from roboco.models import MessageCreate, MessageType, SessionStatus
+from roboco.db.tables import ChannelTable, MessageTable, SessionTable
+from roboco.models import MessageType, SessionStatus
 
 router = APIRouter()
 
@@ -281,15 +281,15 @@ async def send_message(
     # Update session stats
     session.message_count += 1
     session.total_content_length += content_length
-    session.last_activity_at = datetime.utcnow()
+    session.last_activity_at = datetime.now(UTC)
 
     # Update group stats
     group.total_messages += 1
-    group.last_activity = datetime.utcnow()
+    group.last_activity = datetime.now(UTC)
 
     # Update channel stats
     channel.message_count += 1
-    channel.last_activity = datetime.utcnow()
+    channel.last_activity = datetime.now(UTC)
 
     # Check if session should be closed
     should_close = False
@@ -303,7 +303,7 @@ async def send_message(
 
     if should_close:
         session.status = SessionStatus.CLOSED
-        session.closed_at = datetime.utcnow()
+        session.closed_at = datetime.now(UTC)
         group.active_session_id = None
 
     await db.flush()
@@ -359,7 +359,7 @@ async def edit_message(
 
     # Save to edit history
     edit_record = {
-        "edited_at": datetime.utcnow().isoformat(),
+        "edited_at": datetime.now(UTC).isoformat(),
         "previous_content": message.content,
         "edit_reason": data.reason,
     }
@@ -369,7 +369,7 @@ async def edit_message(
     old_length = message.content_length
     message.content = data.content
     message.content_length = len(data.content)
-    message.edited_at = datetime.utcnow()
+    message.edited_at = datetime.now(UTC)
 
     # Update session content length
     session_result = await db.execute(

@@ -5,7 +5,7 @@ Notifications are formal signals that require acknowledgment.
 Only PMs, Board members, and the Auditor can send notifications.
 """
 
-from datetime import datetime
+from datetime import UTC, datetime
 from uuid import UUID, uuid4
 
 from pydantic import Field
@@ -62,7 +62,7 @@ class Notification(TimestampMixin):
     )
 
     # Timing
-    timestamp: datetime = Field(default_factory=datetime.utcnow)
+    timestamp: datetime = Field(default_factory=datetime.now(UTC))
     expires_at: datetime | None = Field(
         default=None, description="Expiration time if applicable"
     )
@@ -91,7 +91,7 @@ class Notification(TimestampMixin):
         """Check if notification has expired."""
         if self.expires_at is None:
             return False
-        return datetime.utcnow() > self.expires_at
+        return datetime.now(UTC) > self.expires_at
 
     def acknowledge(self, agent_id: UUID) -> bool:
         """
@@ -106,7 +106,7 @@ class Notification(TimestampMixin):
             return False  # Already acknowledged
 
         self.acked_by.append(agent_id)
-        self.acked_at[str(agent_id)] = datetime.utcnow()
+        self.acked_at[str(agent_id)] = datetime.now(UTC)
         return True
 
     def mark_read(self, agent_id: UUID) -> bool:

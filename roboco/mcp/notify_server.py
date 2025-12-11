@@ -11,9 +11,7 @@ Tools:
 - roboco_notify_send: Send a notification (PM/Board/Auditor only)
 """
 
-from datetime import datetime
 from typing import Any
-from uuid import UUID
 
 import httpx
 from mcp.server.fastmcp import FastMCP

@@ -4,7 +4,7 @@ Base models and enums for RoboCo.
 Contains all enumeration types and the base Pydantic model configuration.
 """
 
-from datetime import datetime
+from datetime import UTC, datetime
 from enum import Enum
 from typing import Annotated
 from uuid import UUID
@@ -188,5 +188,5 @@ GroupID = Annotated[UUID, Field(description="Unique group identifier")]
 class TimestampMixin(RobocoBase):
     """Mixin for models that track creation and update times."""
 
-    created_at: datetime = Field(default_factory=datetime.utcnow)
+    created_at: datetime = Field(default_factory=datetime.now(UTC))
     updated_at: datetime | None = None

@@ -5,7 +5,7 @@ Sessions group messages within boundaries (time, count, content length).
 They are automatically created and closed based on configuration.
 """
 
-from datetime import datetime, timedelta
+from datetime import UTC, datetime, timedelta
 from uuid import UUID, uuid4
 
 from pydantic import Field
@@ -73,8 +73,8 @@ class Session(TimestampMixin):
     status: SessionStatus = Field(default=SessionStatus.ACTIVE)
 
     # Timestamps
-    started_at: datetime = Field(default_factory=datetime.utcnow)
-    last_activity_at: datetime = Field(default_factory=datetime.utcnow)
+    started_at: datetime = Field(default_factory=datetime.now(UTC))
+    last_activity_at: datetime = Field(default_factory=datetime.now(UTC))
     closed_at: datetime | None = None
 
     # Statistics
@@ -89,12 +89,12 @@ class Session(TimestampMixin):
     @property
     def duration(self) -> timedelta:
         """Get session duration."""
-        end = self.closed_at or datetime.utcnow()
+        end = self.closed_at or datetime.now(UTC)
         return end - self.started_at
 
     def should_close(self) -> bool:
         """Check if any boundary has been reached."""
-        now = datetime.utcnow()
+        now = datetime.now(UTC)
 
         # Check time window
         if self.max_time_window and now - self.started_at >= self.max_time_window:
@@ -123,11 +123,11 @@ class Session(TimestampMixin):
         """Record a new message in the session."""
         self.message_count += 1
         self.total_content_length += content_length
-        self.last_activity_at = datetime.utcnow()
+        self.last_activity_at = datetime.now(UTC)
 
     def close(self, timed_out: bool = False) -> None:
         """Close the session."""
-        self.closed_at = datetime.utcnow()
+        self.closed_at = datetime.now(UTC)
         self.status = SessionStatus.TIMED_OUT if timed_out else SessionStatus.CLOSED
 
 

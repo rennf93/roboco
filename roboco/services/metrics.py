@@ -5,7 +5,7 @@ Collects and aggregates metrics for reporting and dashboards.
 Tracks velocity, blockers, completion rates, and agent performance.
 """
 
-from datetime import datetime, timedelta
+from datetime import UTC, datetime, timedelta
 from typing import Any
 from uuid import UUID
 
@@ -14,7 +14,7 @@ from sqlalchemy import and_, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from roboco.db.tables import AgentTable, MessageTable, NotificationTable, TaskTable
-from roboco.models.base import AgentStatus, TaskStatus, Team
+from roboco.models.base import TaskStatus, Team
 
 logger = structlog.get_logger()
 
@@ -161,7 +161,7 @@ class MetricsService:
         team: Team | None = None,
     ) -> VelocityMetrics:
         """Get velocity metrics for a time period."""
-        since = datetime.utcnow() - timedelta(days=days)
+        since = datetime.now(UTC) - timedelta(days=days)
 
         # Tasks completed in period
         completed_query = select(func.count(TaskTable.id)).where(
@@ -242,7 +242,7 @@ class MetricsService:
         blocked_tasks = blocked_result.scalars().all()
 
         # Calculate average blocked time
-        now = datetime.utcnow()
+        now = datetime.now(UTC)
         blocked_hours = []
         longest_task_id = None
         longest_hours = 0.0
@@ -281,7 +281,7 @@ class MetricsService:
 
     async def get_team_metrics(self, team: Team) -> TeamMetrics:
         """Get metrics for a specific team."""
-        week_ago = datetime.utcnow() - timedelta(days=7)
+        week_ago = datetime.now(UTC) - timedelta(days=7)
 
         # Active tasks
         active_result = await self.session.execute(
@@ -400,7 +400,7 @@ class MetricsService:
         if not agent:
             return None
 
-        week_ago = datetime.utcnow() - timedelta(days=7)
+        week_ago = datetime.now(UTC) - timedelta(days=7)
 
         # Tasks completed this week
         completed_result = await self.session.execute(
@@ -464,7 +464,7 @@ class MetricsService:
         hours: int = 24,
     ) -> dict[str, Any]:
         """Get communication volume metrics."""
-        since = datetime.utcnow() - timedelta(hours=hours)
+        since = datetime.now(UTC) - timedelta(hours=hours)
 
         # Total messages
         total_result = await self.session.execute(
@@ -517,7 +517,7 @@ class MetricsService:
         - Completion rate
         - Average task age
         """
-        week_ago = datetime.utcnow() - timedelta(days=7)
+        week_ago = datetime.now(UTC) - timedelta(days=7)
 
         # Build base query
         base_filter = []

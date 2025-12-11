@@ -5,7 +5,7 @@ Session management within groups. Sessions bound messages
 by time, count, or content length.
 """
 
-from datetime import datetime, timedelta
+from datetime import UTC, datetime, timedelta
 from uuid import UUID
 
 from fastapi import APIRouter, HTTPException, Query, status
@@ -14,8 +14,8 @@ from sqlalchemy import select
 from sqlalchemy.orm import selectinload
 
 from roboco.api.deps import CurrentAgentId, DbSession
-from roboco.db.tables import ChannelTable, GroupTable, SessionTable
-from roboco.models import SessionConfig, SessionCreate, SessionStatus
+from roboco.db.tables import GroupTable, SessionTable
+from roboco.models import SessionStatus
 
 router = APIRouter()
 
@@ -212,7 +212,7 @@ async def create_session(
 
     if active_session:
         active_session.status = SessionStatus.CLOSED
-        active_session.closed_at = datetime.utcnow()
+        active_session.closed_at = datetime.now(UTC)
 
     # Create new session
     session = SessionTable(
@@ -276,7 +276,7 @@ async def close_session(
         )
 
     session.status = SessionStatus.CLOSED
-    session.closed_at = datetime.utcnow()
+    session.closed_at = datetime.now(UTC)
 
     # Clear group's active session
     group_result = await db.execute(

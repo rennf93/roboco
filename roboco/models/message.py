@@ -5,7 +5,7 @@ Messages are extracted from agent streams and stored for communication,
 context, and RAG purposes.
 """
 
-from datetime import datetime
+from datetime import UTC, datetime
 from uuid import UUID, uuid4
 
 from pydantic import Field
@@ -24,7 +24,7 @@ from roboco.models.base import (
 class MessageEdit(RobocoBase):
     """Tracks edits to messages. Agents can only edit their own messages."""
 
-    edited_at: datetime = Field(default_factory=datetime.utcnow)
+    edited_at: datetime = Field(default_factory=datetime.now(UTC))
     previous_content: str = Field(..., description="Content before the edit")
     edit_reason: str | None = Field(default=None, description="Why the edit was made")
 
@@ -40,7 +40,7 @@ class RawStream(RobocoBase):
     agent_id: UUID = Field(..., description="Agent producing the stream")
     channel_id: UUID = Field(..., description="Target channel")
     chunk: str = Field(..., description="Raw LLM output chunk")
-    timestamp: datetime = Field(default_factory=datetime.utcnow)
+    timestamp: datetime = Field(default_factory=datetime.now(UTC))
 
 
 # =============================================================================
@@ -90,7 +90,7 @@ class ExtractedMessage(TimestampMixin):
     )
 
     # Metadata
-    timestamp: datetime = Field(default_factory=datetime.utcnow)
+    timestamp: datetime = Field(default_factory=datetime.now(UTC))
 
     # Embedding for RAG (stored as list of floats, actual Vector type in DB)
     embedding: list[float] | None = Field(
@@ -128,7 +128,7 @@ class ExtractedMessage(TimestampMixin):
         # Update content
         self.content = new_content
         self.content_length = len(new_content)
-        self.edited_at = datetime.utcnow()
+        self.edited_at = datetime.now(UTC)
 
     @property
     def was_edited(self) -> bool:

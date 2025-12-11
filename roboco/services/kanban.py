@@ -5,9 +5,8 @@ Generates role-specific kanban board views from task data.
 Supports swimlanes, cross-cell views, and real-time updates.
 """
 
-from datetime import datetime
+from datetime import UTC, datetime
 from typing import Any
-from uuid import UUID
 
 import structlog
 from sqlalchemy import func, select
@@ -165,7 +164,7 @@ class KanbanService:
             columns=list(columns.values()),
             total_cards=len(tasks),
             blocked_count=blocked_count,
-            last_updated=datetime.utcnow(),
+            last_updated=datetime.now(UTC),
         )
 
     async def _build_swimlane_board(
@@ -177,6 +176,18 @@ class KanbanService:
     ) -> KanbanBoard:
         """Build a board with swimlanes."""
         column_config = get_column_config(board_type)
+
+        # Pre-fetch agent names for assignee swimlanes
+        agent_names: dict[str, str] = {}
+        if swimlane_by == "assignee":
+            # Get all unique assignee IDs
+            assignee_ids = {t.assigned_to for t in tasks if t.assigned_to}
+            if assignee_ids:
+                agent_result = await self.session.execute(
+                    select(AgentTable).where(AgentTable.id.in_(assignee_ids))
+                )
+                for agent in agent_result.scalars().all():
+                    agent_names[str(agent.id)] = agent.name
 
         # Group tasks by swimlane key
         swimlane_groups: dict[str, list[TaskTable]] = {}
@@ -225,8 +236,8 @@ class KanbanService:
                 if lane_key == "Unassigned":
                     lane_title = "Unassigned"
                 else:
-                    # Would need to look up agent name
-                    lane_title = lane_key
+                    # Look up agent name from pre-fetched map
+                    lane_title = agent_names.get(lane_key, lane_key)
             else:
                 lane_title = lane_key
 
@@ -246,7 +257,7 @@ class KanbanService:
             swimlanes=swimlanes,
             total_cards=len(tasks),
             blocked_count=blocked_count,
-            last_updated=datetime.utcnow(),
+            last_updated=datetime.now(UTC),
         )
 
     # =========================================================================
@@ -419,7 +430,7 @@ class KanbanService:
             columns=columns,
             total_cards=len(tasks),
             blocked_count=blocked_count,
-            last_updated=datetime.utcnow(),
+            last_updated=datetime.now(UTC),
         )
 
     # =========================================================================

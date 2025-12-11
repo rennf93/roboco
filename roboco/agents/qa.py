@@ -6,7 +6,7 @@ Handles review lifecycle: MONITOR → RECEIVE → UNDERSTAND → TEST → VERDIC
 """
 
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import UTC, datetime
 from enum import Enum
 from pathlib import Path
 from uuid import UUID
@@ -63,7 +63,7 @@ class ReviewContext:
     current_test: int = 0
     findings: list[str] = field(default_factory=list)
     verdict: TestResult | None = None
-    started_at: datetime = field(default_factory=datetime.utcnow)
+    started_at: datetime = field(default_factory=datetime.now(UTC))
     notes: list[str] = field(default_factory=list)
 
 
@@ -191,7 +191,7 @@ class QAAgent(Agent):
             message_type="action",
         )
 
-        ctx.notes.append(f"[{datetime.utcnow().isoformat()}] Review started")
+        ctx.notes.append(f"[{datetime.now(UTC).isoformat()}] Review started")
 
     async def _phase_understand(self, ctx: ReviewContext) -> None:
         """
@@ -264,7 +264,7 @@ Format as JSON array.
         ]
 
         ctx.notes.append(
-            f"[{datetime.utcnow().isoformat()}] Created {len(ctx.test_cases)} test cases"
+            f"[{datetime.now(UTC).isoformat()}] Created {len(ctx.test_cases)} test cases"
         )
 
     async def _phase_test(self, ctx: ReviewContext) -> bool:
@@ -378,7 +378,7 @@ NOTES: [notes]
             )
 
         ctx.notes.append(
-            f"[{datetime.utcnow().isoformat()}] Verdict: {ctx.verdict.value.upper()}"
+            f"[{datetime.now(UTC).isoformat()}] Verdict: {ctx.verdict.value.upper()}"
         )
 
     async def _phase_document(self, ctx: ReviewContext) -> None:
@@ -403,7 +403,7 @@ NOTES: [notes]
 
 **Task**: {ctx.title}
 **Verdict**: {ctx.verdict.value.upper() if ctx.verdict else "UNKNOWN"}
-**Reviewed**: {datetime.utcnow().isoformat()}
+**Reviewed**: {datetime.now(UTC).isoformat()}
 
 ### Tests Executed
 
@@ -421,7 +421,7 @@ NOTES: [notes]
         # Would save to task record
         self.log.info("QA report generated", report_length=len(qa_report))
 
-        ctx.notes.append(f"[{datetime.utcnow().isoformat()}] QA documentation complete")
+        ctx.notes.append(f"[{datetime.now(UTC).isoformat()}] QA documentation complete")
 
     # =========================================================================
     # HELPER METHODS
@@ -429,33 +429,72 @@ NOTES: [notes]
 
     async def _find_awaiting_qa(self) -> UUID | None:
         """Find tasks awaiting QA review."""
-        # TODO: Query task API
-        return None
+        try:
+            team_param = self.team.value if self.team else None
+            result = await self._api_call(
+                "GET",
+                "/tasks",
+                params={"status": "awaiting_qa", "team": team_param},
+            )
+            tasks = result.get("items", [])
+            return UUID(tasks[0]["id"]) if tasks else None
+        except Exception as e:
+            self.log.warning("Failed to find awaiting QA task", error=str(e))
+            return None
 
     async def _get_task_title(self, task_id: UUID) -> str:
         """Get task title."""
-        # TODO: Query task API
-        return f"Task {str(task_id)[:8]}"
+        try:
+            result = await self._api_call("GET", f"/tasks/{task_id}")
+            return result.get("title", f"Task {str(task_id)[:8]}")
+        except Exception as e:
+            self.log.warning("Failed to get task title", error=str(e))
+            return f"Task {str(task_id)[:8]}"
 
     async def _read_task_requirements(self, task_id: UUID) -> str:
         """Read task requirements."""
-        # TODO: Read from task record
-        return "Requirements placeholder"
+        try:
+            result = await self._api_call("GET", f"/tasks/{task_id}")
+            description = result.get("description", "")
+            acceptance_criteria = result.get("acceptance_criteria", [])
+            criteria_text = "\n".join(f"- {c}" for c in acceptance_criteria)
+            return f"{description}\n\nAcceptance Criteria:\n{criteria_text}"
+        except Exception as e:
+            self.log.warning("Failed to read task requirements", error=str(e))
+            return "Requirements unavailable"
 
     async def _read_dev_notes(self, task_id: UUID) -> str:
         """Read developer's journey notes."""
-        # TODO: Read from task record
-        return "Dev notes placeholder"
+        try:
+            result = await self._api_call("GET", f"/tasks/{task_id}")
+            return result.get("dev_notes", "No developer notes available")
+        except Exception as e:
+            self.log.warning("Failed to read dev notes", error=str(e))
+            return "Dev notes unavailable"
 
     async def _get_task_commits(self, task_id: UUID) -> str:
         """Get commits for the task."""
-        # TODO: Read from task record
-        return "Commits placeholder"
+        try:
+            result = await self._api_call("GET", f"/tasks/{task_id}")
+            commits = result.get("commits", [])
+            return "\n".join(commits) if commits else "No commits recorded"
+        except Exception as e:
+            self.log.warning("Failed to get task commits", error=str(e))
+            return "Commits unavailable"
 
     async def _update_task_status(self, task_id: UUID, status: TaskStatus) -> None:
         """Update task status."""
-        # TODO: Update via task API
-        self.log.info("Task status updated", task_id=str(task_id), status=status.value)
+        try:
+            await self._api_call(
+                "PUT",
+                f"/tasks/{task_id}",
+                json={"status": status.value},
+            )
+            self.log.info(
+                "Task status updated", task_id=str(task_id), status=status.value
+            )
+        except Exception as e:
+            self.log.error("Failed to update task status", error=str(e))
 
 
 def create_backend_qa(

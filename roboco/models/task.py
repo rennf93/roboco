@@ -6,7 +6,7 @@ follows the universal task lifecycle: SCAN → CLAIM → UNDERSTAND →
 PLAN → EXECUTE → VERIFY → NOTES → CLOSE.
 """
 
-from datetime import datetime
+from datetime import UTC, datetime
 from uuid import UUID, uuid4
 
 from pydantic import Field
@@ -29,7 +29,7 @@ class CommitRef(RobocoBase):
 
     hash: str = Field(..., min_length=7, max_length=40, description="Git commit hash")
     message: str = Field(..., description="Commit message summary")
-    timestamp: datetime = Field(default_factory=datetime.utcnow)
+    timestamp: datetime = Field(default_factory=datetime.now(UTC))
     author_agent_id: UUID | None = Field(
         default=None, description="Agent who made the commit"
     )
@@ -58,7 +58,7 @@ class FileRef(RobocoBase):
 class ProgressUpdate(RobocoBase):
     """A progress update on a task."""
 
-    timestamp: datetime = Field(default_factory=datetime.utcnow)
+    timestamp: datetime = Field(default_factory=datetime.now(UTC))
     agent_id: UUID = Field(..., description="Agent providing update")
     message: str = Field(..., description="Progress message")
     percentage: int | None = Field(
@@ -70,7 +70,7 @@ class Checkpoint(RobocoBase):
     """A saved state checkpoint for task recovery."""
 
     id: UUID = Field(default_factory=uuid4)
-    timestamp: datetime = Field(default_factory=datetime.utcnow)
+    timestamp: datetime = Field(default_factory=datetime.now(UTC))
     agent_id: UUID = Field(..., description="Agent who created checkpoint")
     state_summary: str = Field(..., description="Summary of current state")
     remaining_work: list[str] = Field(
@@ -212,12 +212,12 @@ class Task(TimestampMixin):
     def claim(self, agent_id: UUID) -> None:
         """Claim this task for an agent."""
         self.assigned_to = agent_id
-        self.claimed_at = datetime.utcnow()
+        self.claimed_at = datetime.now(UTC)
         self.status = TaskStatus.CLAIMED
 
     def start(self) -> None:
         """Start working on the task."""
-        self.started_at = datetime.utcnow()
+        self.started_at = datetime.now(UTC)
         self.status = TaskStatus.IN_PROGRESS
 
     def block(self, blocker_task_id: UUID) -> None:
@@ -258,7 +258,7 @@ class Task(TimestampMixin):
 
     def complete(self) -> None:
         """Mark task as completed."""
-        self.completed_at = datetime.utcnow()
+        self.completed_at = datetime.now(UTC)
         self.status = TaskStatus.COMPLETED
 
     def cancel(self) -> None:

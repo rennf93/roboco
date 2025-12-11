@@ -6,7 +6,6 @@ Only PMs, Board, and Auditor can send notifications.
 """
 
 from roboco.agents_config import (
-    CELL_MEMBERS,
     NOTIFICATION_PERMISSIONS,
     get_agent_cell,
     get_agent_role,

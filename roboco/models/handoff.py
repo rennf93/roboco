@@ -5,7 +5,7 @@ Documenter handoffs contain all the information needed for
 a Documenter to create production documentation from developer work.
 """
 
-from datetime import datetime
+from datetime import UTC, datetime
 from uuid import UUID, uuid4
 
 from pydantic import Field
@@ -168,7 +168,7 @@ class DocumenterHandoff(TimestampMixin):
     def claim(self, documenter_id: UUID) -> None:
         """Claim the handoff."""
         self.assigned_to = documenter_id
-        self.claimed_at = datetime.utcnow()
+        self.claimed_at = datetime.now(UTC)
         self.status = HandoffStatus.CLAIMED
 
     def start(self) -> None:
@@ -177,7 +177,7 @@ class DocumenterHandoff(TimestampMixin):
 
     def complete(self, notes: str | None = None) -> None:
         """Mark handoff as complete."""
-        self.completed_at = datetime.utcnow()
+        self.completed_at = datetime.now(UTC)
         self.status = HandoffStatus.COMPLETED
         if notes:
             self.documenter_notes = notes

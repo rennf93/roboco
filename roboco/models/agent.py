@@ -5,7 +5,7 @@ Represents an AI agent in the organization. Each agent has a role,
 team affiliation, capabilities, and permissions.
 """
 
-from datetime import datetime
+from datetime import UTC, datetime
 from uuid import UUID, uuid4
 
 from pydantic import Field
@@ -163,7 +163,7 @@ class Agent(TimestampMixin):
     def go_online(self) -> None:
         """Mark agent as online/active."""
         self.status = AgentStatus.ACTIVE
-        self.metrics.last_active = datetime.utcnow()
+        self.metrics.last_active = datetime.now(UTC)
 
     def go_idle(self) -> None:
         """Mark agent as idle (online but not working)."""

@@ -6,12 +6,11 @@ API endpoints for managing the Agent Orchestrator.
 
 from datetime import datetime
 from typing import Any
-from uuid import UUID
 
 from fastapi import APIRouter, HTTPException, status
 from pydantic import BaseModel, Field
 
-from roboco.runtime import AgentOrchestrator, AgentState
+from roboco.runtime import AgentOrchestrator
 
 router = APIRouter()
 

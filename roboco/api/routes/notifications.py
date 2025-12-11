@@ -5,20 +5,20 @@ Formal notification system for PMs, Board, and Auditor.
 Enforces permission rules: only PMs, Board, and Auditor can send notifications.
 """
 
-from datetime import datetime
+from datetime import UTC, datetime
 from uuid import UUID
 
 from fastapi import APIRouter, HTTPException, Query, status
 from pydantic import BaseModel, Field
 from sqlalchemy import select
 
-from roboco.api.deps import CurrentAgentContext, CurrentAgentId, DbSession
+from roboco.api.deps import CurrentAgentId, DbSession
 from roboco.db.tables import AgentTable, NotificationTable
 from roboco.enforcement import (
     NotificationPermissionError,
     validate_notification_permission,
 )
-from roboco.models import NotificationCreate, NotificationPriority, NotificationType
+from roboco.models import NotificationPriority, NotificationType
 
 router = APIRouter()
 
@@ -326,7 +326,7 @@ async def acknowledge_notification(
         notification.acked_by = [*notification.acked_by, agent_id]
         notification.acked_at = {
             **notification.acked_at,
-            str(agent_id): datetime.utcnow().isoformat(),
+            str(agent_id): datetime.now(UTC).isoformat(),
         }
 
     # Also mark as read

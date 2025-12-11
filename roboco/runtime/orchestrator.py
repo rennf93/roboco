@@ -9,18 +9,15 @@ import asyncio
 import contextlib
 import json
 import os
-import subprocess
 import tempfile
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import UTC, datetime
 from enum import Enum
 from pathlib import Path
 from typing import Any
 from uuid import UUID, uuid4
 
 import structlog
-
-from roboco.config import settings
 
 logger = structlog.get_logger()
 
@@ -249,8 +246,8 @@ class AgentOrchestrator:
             process = await self._spawn_process(config, initial_prompt)
             instance.process = process
             instance.state = AgentState.ACTIVE
-            instance.started_at = datetime.utcnow()
-            instance.last_activity = datetime.utcnow()
+            instance.started_at = datetime.now(UTC)
+            instance.last_activity = datetime.now(UTC)
 
             logger.info(
                 "Agent spawned",
@@ -460,7 +457,7 @@ class AgentOrchestrator:
             agent_id=agent_id,
             task_id=task_id,
             waiting_for=waiting_for,
-            waiting_since=datetime.utcnow(),
+            waiting_since=datetime.now(UTC),
             context=context or {},
         )
 

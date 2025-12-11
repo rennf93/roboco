@@ -5,7 +5,7 @@ Channels are the top-level organizational unit for communication.
 They map to team structure (#backend-cell, #pm-all, etc.).
 """
 
-from datetime import datetime
+from datetime import UTC, datetime
 from uuid import UUID, uuid4
 
 from pydantic import Field
@@ -108,7 +108,7 @@ class Channel(TimestampMixin):
 
     def record_activity(self) -> None:
         """Record activity in the channel."""
-        self.last_activity = datetime.utcnow()
+        self.last_activity = datetime.now(UTC)
 
     def archive(self) -> None:
         """Archive the channel."""

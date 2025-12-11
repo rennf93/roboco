@@ -6,15 +6,15 @@ Handles spawning, monitoring, and coordination.
 """
 
 import asyncio
-from datetime import datetime
+import contextlib
+from datetime import UTC, datetime
 from typing import Any
 from uuid import UUID
 
 import structlog
 
-from roboco.agents.base import Agent, AgentConfig
+from roboco.agents.base import Agent
 from roboco.models import AgentRole, AgentStatus, Team
-import contextlib
 
 logger = structlog.get_logger()
 
@@ -246,7 +246,7 @@ class Orchestrator:
 
     async def _check_agent_health(self) -> None:
         """Check health of all agents."""
-        now = datetime.utcnow()
+        now = datetime.now(UTC)
 
         for agent in self._agents.values():
             # Check for errors

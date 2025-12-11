@@ -3,7 +3,7 @@
 Master index of all tasks in the RoboCo system.
 
 **Last Updated**: 2025-12-10
-**Next Task ID**: TASK-008
+**Next Task ID**: TASK-009
 
 ---
 
@@ -11,6 +11,7 @@ Master index of all tasks in the RoboCo system.
 
 | ID | Title | Cell | Assigned | Priority | State | Updated |
 |----|-------|------|----------|----------|-------|---------|
+| TASK-008 | Resolve All TODOs | board | - | P1 | completed | 2025-12-10 |
 | TASK-007 | Phase 7 - Agent Runtime | board | - | P0 | verifying (100%) | 2025-12-10 |
 
 ## Blocked Tasks
@@ -47,9 +48,9 @@ Master index of all tasks in the RoboCo system.
 ## Statistics
 
 ### This Week
-- Created: 7
+- Created: 8
 - Completed: 6
-- Active: 1
+- Active: 2
 - Blocked: 0
 - Avg Completion Time: 1 day
 
@@ -66,13 +67,13 @@ Master index of all tasks in the RoboCo system.
 | Backend | 0 | 0 | 0 |
 | Frontend | 0 | 0 | 0 |
 | UX/UI | 0 | 0 | 0 |
-| Board | 1 | 0 | 6 |
+| Board | 2 | 0 | 6 |
 
 ### By Priority
 | Priority | Active | Blocked |
 |----------|--------|---------|
 | P0 | 1 | 0 |
-| P1 | 0 | 0 |
+| P1 | 1 | 0 |
 | P2 | 0 | 0 |
 | P3 | 0 | 0 |
 

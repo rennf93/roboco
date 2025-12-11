@@ -5,7 +5,7 @@ Personal agent journals for reflection, growth tracking, and debugging.
 Each agent maintains their own journal with entries tied to tasks and sessions.
 """
 
-from datetime import datetime
+from datetime import UTC, datetime
 from uuid import UUID, uuid4
 
 from pydantic import Field
@@ -45,7 +45,7 @@ class JournalEntry(TimestampMixin):
     )
 
     # Metadata
-    timestamp: datetime = Field(default_factory=datetime.utcnow)
+    timestamp: datetime = Field(default_factory=datetime.now(UTC))
     tags: list[str] = Field(default_factory=list, description="Tags for categorization")
 
     # Embedding for RAG search
@@ -102,7 +102,7 @@ class Journal(TimestampMixin):
     def record_entry(self, entry_type: JournalEntryType) -> None:
         """Record that a new entry was added."""
         self.total_entries += 1
-        self.last_entry_at = datetime.utcnow()
+        self.last_entry_at = datetime.now(UTC)
 
         # Update type counts
         type_key = entry_type.value

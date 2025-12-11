@@ -9,12 +9,15 @@ Real-time communication via WebSocket connections for:
 
 import asyncio
 import json
-from datetime import datetime
+from datetime import UTC, datetime
 from typing import Any
 from uuid import UUID
 
+import httpx
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect, status
 from pydantic import BaseModel
+
+from roboco.config import settings
 
 router = APIRouter()
 
@@ -43,6 +46,9 @@ class ConnectionManager:
 
         # session_id -> set of websockets
         self.session_connections: dict[UUID, set[WebSocket]] = {}
+
+        # agent_id -> set of websockets (for notifications)
+        self.notification_connections: dict[UUID, set[WebSocket]] = {}
 
         # websocket -> agent_id (for tracking who is connected)
         self.connection_agents: dict[WebSocket, UUID] = {}
@@ -83,6 +89,16 @@ class ConnectionManager:
         self.session_connections[session_id].add(websocket)
         self.connection_agents[websocket] = agent_id
 
+    async def connect_notifications(self, websocket: WebSocket, agent_id: UUID) -> None:
+        """Connect to an agent's notification stream."""
+        await websocket.accept()
+
+        if agent_id not in self.notification_connections:
+            self.notification_connections[agent_id] = set()
+
+        self.notification_connections[agent_id].add(websocket)
+        self.connection_agents[websocket] = agent_id
+
     def disconnect(self, websocket: WebSocket) -> None:
         """Remove a websocket from all subscriptions."""
         # Remove from channel connections
@@ -95,6 +111,10 @@ class ConnectionManager:
 
         # Remove from session connections
         for connections in self.session_connections.values():
+            connections.discard(websocket)
+
+        # Remove from notification connections
+        for connections in self.notification_connections.values():
             connections.discard(websocket)
 
         # Remove from tracking
@@ -155,6 +175,32 @@ class ConnectionManager:
 manager = ConnectionManager()
 
 
+async def validate_channel_access(channel_id: UUID, agent_id: UUID) -> bool:
+    """
+    Validate that an agent has access to a channel.
+
+    Calls the permissions API to check read access.
+    """
+    try:
+        url = f"http://{settings.host}:{settings.port}/api/v1/permissions/check"
+        async with httpx.AsyncClient() as client:
+            response = await client.get(
+                url,
+                params={
+                    "agent_id": str(agent_id),
+                    "channel_id": str(channel_id),
+                    "action": "read",
+                },
+            )
+            if response.status_code == 200:
+                data = response.json()
+                return data.get("allowed", False)
+            return False
+    except Exception:
+        # On error, deny access (fail closed)
+        return False
+
+
 # =============================================================================
 # WebSocket Message Types
 # =============================================================================
@@ -164,7 +210,7 @@ class WSMessage(BaseModel):
     """Base WebSocket message."""
 
     type: str
-    timestamp: datetime = datetime.utcnow()
+    timestamp: datetime = datetime.now(UTC)
 
 
 class WSMessageNew(WSMessage):
@@ -233,9 +279,6 @@ async def channel_stream(
 
     Clients receive real-time messages for the channel.
     """
-    # TODO: Validate agent access to channel
-    # For now, accept all connections
-
     # Get agent ID from query params (or auth in production)
     agent_id_str = websocket.query_params.get("agent_id")
     if not agent_id_str:
@@ -245,6 +288,12 @@ async def channel_stream(
     try:
         agent_id = UUID(agent_id_str)
     except ValueError:
+        await websocket.close(code=status.WS_1008_POLICY_VIOLATION)
+        return
+
+    # Validate agent access to channel
+    has_access = await validate_channel_access(channel_id, agent_id)
+    if not has_access:
         await websocket.close(code=status.WS_1008_POLICY_VIOLATION)
         return
 
@@ -358,6 +407,35 @@ async def session_stream(
         manager.disconnect(websocket)
 
 
+@router.websocket("/notifications/{agent_id}")
+async def notification_stream(
+    websocket: WebSocket,
+    agent_id: UUID,
+) -> None:
+    """
+    WebSocket endpoint for agent notifications.
+
+    Agents receive real-time notifications via this stream.
+    """
+    await manager.connect_notifications(websocket, agent_id)
+
+    try:
+        await websocket.send_json(
+            {
+                "type": "connected",
+                "agent_id": str(agent_id),
+            }
+        )
+
+        while True:
+            data = await websocket.receive_text()
+            if data == "ping":
+                await websocket.send_text("pong")
+
+    except WebSocketDisconnect:
+        manager.disconnect(websocket)
+
+
 # =============================================================================
 # Helper Functions for Broadcasting
 # =============================================================================
@@ -378,7 +456,7 @@ async def broadcast_new_message(
         "agent_id": str(agent_id),
         "content": content,
         "message_type": message_type,
-        "timestamp": datetime.utcnow().isoformat(),
+        "timestamp": datetime.now(UTC).isoformat(),
     }
 
     await asyncio.gather(
@@ -393,7 +471,7 @@ async def broadcast_agent_chunk(agent_id: UUID, chunk: str) -> None:
         "type": "agent.stream",
         "agent_id": str(agent_id),
         "chunk": chunk,
-        "timestamp": datetime.utcnow().isoformat(),
+        "timestamp": datetime.now(UTC).isoformat(),
     }
 
     await manager.broadcast_to_agent_watchers(agent_id, event)
@@ -407,7 +485,7 @@ async def broadcast_session_closed(
         "type": "session.closed",
         "session_id": str(session_id),
         "reason": reason,
-        "timestamp": datetime.utcnow().isoformat(),
+        "timestamp": datetime.now(UTC).isoformat(),
     }
 
     await asyncio.gather(
@@ -426,9 +504,22 @@ async def broadcast_notification(
     """
     Broadcast notification to specific agents.
 
-    Note: This requires per-agent connections, which we could add
-    as a separate subscription type.
+    Sends to all agents that have notification websocket connections.
     """
-    # TODO: Implement per-agent notification delivery
-    # For now, agents must poll the notifications endpoint
-    pass
+    event = {
+        "type": "notification",
+        "notification_id": str(notification_id),
+        "notification_type": notification_type,
+        "subject": subject,
+        "priority": priority,
+        "timestamp": datetime.now(UTC).isoformat(),
+    }
+    data = json.dumps(event)
+
+    for agent_id in agent_ids:
+        connections = manager.notification_connections.get(agent_id, set())
+        if connections:
+            await asyncio.gather(
+                *[conn.send_text(data) for conn in connections],
+                return_exceptions=True,
+            )

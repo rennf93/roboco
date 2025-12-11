@@ -15,14 +15,14 @@ Flow:
 
 import re
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import UTC, datetime
 from typing import Any
 from uuid import UUID, uuid4
 
 import structlog
 
 from roboco.models import MessageType
-from roboco.models.message import ExtractedMessage, MessageCreate
+from roboco.models.message import ExtractedMessage
 
 logger = structlog.get_logger()
 
@@ -134,7 +134,7 @@ class ExtractionResult:
     agent_id: UUID
     channel_id: UUID
     session_id: UUID
-    extracted_at: datetime = field(default_factory=datetime.utcnow)
+    extracted_at: datetime = field(default_factory=datetime.now(UTC))
 
     # Metadata
     pattern_matches: dict[str, list[str]] = field(default_factory=dict)
@@ -375,19 +375,85 @@ class ExtractionService:
 
         This is more accurate but slower and more expensive.
         Falls back to pattern matching if LLM unavailable.
-
-        TODO: Implement when LLM integration is ready.
         """
-        # For now, fall back to pattern matching
-        self.log.warning("LLM extraction not yet implemented, using patterns")
-        return await self.extract(
-            content=content,
-            agent_id=agent_id,
-            channel_id=channel_id,
-            session_id=session_id,
-            group_id=group_id,
-            task_id=task_id,
-        )
+        from anthropic import AsyncAnthropic
+
+        from roboco.config import settings
+
+        try:
+            client = AsyncAnthropic(api_key=settings.anthropic_api_key)
+
+            # Build prompt for LLM classification
+            prompt = f"""Analyze this agent output and classify each distinct segment.
+
+Agent output:
+{content}
+
+For each segment, identify:
+- type: one of [reasoning, dialogue, decision, action, blocker, technical]
+- content: the segment text
+- confidence: 0.0 to 1.0
+
+Return as JSON array of objects. Example:
+[
+  {{"type": "reasoning", "content": "Analyzing the problem...", "confidence": 0.9}},
+  {{"type": "action", "content": "Creating file utils.py", "confidence": 0.95}}
+]
+
+Output only valid JSON, no other text."""
+
+            response = await client.messages.create(
+                model="claude-3-haiku-20240307",  # Fast, cheap for classification
+                max_tokens=2000,
+                messages=[{"role": "user", "content": prompt}],
+            )
+
+            # Parse response
+            import json
+
+            response_text = response.content[0].text
+            segments = json.loads(response_text)
+
+            messages: list[ExtractedMessage] = []
+            for segment in segments:
+                msg_type_str = segment.get("type", "reasoning")
+                msg_type = MessageType(msg_type_str)
+                msg_content = segment.get("content", "")
+                confidence = segment.get("confidence", 0.8)
+
+                messages.append(
+                    ExtractedMessage(
+                        id=uuid4(),
+                        content=msg_content,
+                        message_type=msg_type,
+                        agent_id=agent_id,
+                        channel_id=channel_id,
+                        session_id=session_id,
+                        group_id=group_id,
+                        task_id=task_id,
+                        confidence=confidence,
+                        metadata={"extraction_method": "llm"},
+                    )
+                )
+
+            return ExtractionResult(
+                messages=messages,
+                raw_content=content,
+                extraction_time=0.0,  # Could measure actual time
+                confidence=sum(m.confidence for m in messages) / max(1, len(messages)),
+            )
+
+        except Exception as e:
+            # Fall back to pattern matching
+            self.log.warning("LLM extraction failed, using patterns", error=str(e))
+            return await self.extract(
+                content=content,
+                agent_id=agent_id,
+                channel_id=channel_id,
+                session_id=session_id,
+                group_id=group_id,
+                task_id=task_id,
+            )
 
 
 # =============================================================================

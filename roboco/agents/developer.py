@@ -6,7 +6,7 @@ Handles task lifecycle: SCAN → CLAIM → UNDERSTAND → PLAN → EXECUTE → V
 """
 
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import UTC, datetime
 from enum import Enum
 from pathlib import Path
 from typing import Any
@@ -45,7 +45,7 @@ class TaskContext:
     current_subtask: int = 0
     blockers: list[str] = field(default_factory=list)
     commits: list[str] = field(default_factory=list)
-    started_at: datetime = field(default_factory=datetime.utcnow)
+    started_at: datetime = field(default_factory=datetime.now(UTC))
     journal_entries: list[str] = field(default_factory=list)
 
 
@@ -203,7 +203,7 @@ class DeveloperAgent(Agent):
 
         # Journal entry
         ctx.journal_entries.append(
-            f"[{datetime.utcnow().isoformat()}] Claimed task. Beginning work."
+            f"[{datetime.now(UTC).isoformat()}] Claimed task. Beginning work."
         )
 
     async def _phase_understand(self, ctx: TaskContext) -> bool:
@@ -242,7 +242,7 @@ If clarification needed, respond with: "QUESTION: [your question]"
         if response.startswith("UNDERSTOOD:"):
             # Add understanding to journal
             ctx.journal_entries.append(
-                f"[{datetime.utcnow().isoformat()}] Understanding: {response}"
+                f"[{datetime.now(UTC).isoformat()}] Understanding: {response}"
             )
             return True
         else:
@@ -290,7 +290,7 @@ Format as JSON array:
 
         # Journal entry
         ctx.journal_entries.append(
-            f"[{datetime.utcnow().isoformat()}] Plan: {len(ctx.subtasks)} subtasks created"
+            f"[{datetime.now(UTC).isoformat()}] Plan: {len(ctx.subtasks)} subtasks created"
         )
 
         # Announce plan
@@ -340,7 +340,7 @@ Respond with the implementation.
 
         # Record work done
         ctx.journal_entries.append(
-            f"[{datetime.utcnow().isoformat()}] Subtask {ctx.current_subtask + 1}: {response[:100]}..."
+            f"[{datetime.now(UTC).isoformat()}] Subtask {ctx.current_subtask + 1}: {response[:100]}..."
         )
 
         # Simulate commit (in real implementation would execute git)
@@ -382,7 +382,7 @@ Respond with the implementation.
             if not passed:
                 all_passed = False
                 ctx.journal_entries.append(
-                    f"[{datetime.utcnow().isoformat()}] VERIFY FAILED: {check_name}"
+                    f"[{datetime.now(UTC).isoformat()}] VERIFY FAILED: {check_name}"
                 )
 
         if all_passed:
@@ -394,7 +394,7 @@ Respond with the implementation.
                 message_type="action",
             )
             ctx.journal_entries.append(
-                f"[{datetime.utcnow().isoformat()}] VERIFY PASSED. Flagged for QA."
+                f"[{datetime.now(UTC).isoformat()}] VERIFY PASSED. Flagged for QA."
             )
 
         return all_passed
@@ -427,7 +427,7 @@ Create a handoff summary including:
         handoff = await self.think(prompt)
 
         ctx.journal_entries.append(
-            f"[{datetime.utcnow().isoformat()}] Handoff created for documenter"
+            f"[{datetime.now(UTC).isoformat()}] Handoff created for documenter"
         )
 
         # Update task status
@@ -494,13 +494,31 @@ Create a handoff summary including:
 
     async def _find_paused_task(self) -> UUID | None:
         """Find own paused/interrupted tasks."""
-        # TODO: Query task API for paused tasks assigned to this agent
-        return None
+        try:
+            result = await self._api_call(
+                "GET",
+                "/tasks",
+                params={"status": "paused", "assigned_to": str(self.id)},
+            )
+            tasks = result.get("items", [])
+            return UUID(tasks[0]["id"]) if tasks else None
+        except Exception as e:
+            self.log.warning("Failed to find paused task", error=str(e))
+            return None
 
     async def _find_assigned_task(self) -> UUID | None:
         """Find tasks assigned to this agent."""
-        # TODO: Query task API for assigned tasks
-        return None
+        try:
+            result = await self._api_call(
+                "GET",
+                "/tasks",
+                params={"status": "pending", "assigned_to": str(self.id)},
+            )
+            tasks = result.get("items", [])
+            return UUID(tasks[0]["id"]) if tasks else None
+        except Exception as e:
+            self.log.warning("Failed to find assigned task", error=str(e))
+            return None
 
     async def _signal_availability(self) -> None:
         """Signal availability to PM."""
@@ -512,28 +530,65 @@ Create a handoff summary including:
 
     async def _get_task_title(self, task_id: UUID) -> str:
         """Get task title from API."""
-        # TODO: Query task API
-        return f"Task {str(task_id)[:8]}"
+        try:
+            result = await self._api_call("GET", f"/tasks/{task_id}")
+            return result.get("title", f"Task {str(task_id)[:8]}")
+        except Exception as e:
+            self.log.warning("Failed to get task title", error=str(e))
+            return f"Task {str(task_id)[:8]}"
 
     async def _read_task_requirements(self, task_id: UUID) -> str:
         """Read task requirements from task record."""
-        # TODO: Read from .tasks/active/TASK-XXX/
-        return "Requirements placeholder"
+        try:
+            result = await self._api_call("GET", f"/tasks/{task_id}")
+            description = result.get("description", "")
+            acceptance_criteria = result.get("acceptance_criteria", [])
+            criteria_text = "\n".join(f"- {c}" for c in acceptance_criteria)
+            return f"{description}\n\nAcceptance Criteria:\n{criteria_text}"
+        except Exception as e:
+            self.log.warning("Failed to read task requirements", error=str(e))
+            return "Requirements unavailable"
 
     async def _update_task_status(self, task_id: UUID, status: TaskStatus) -> None:
         """Update task status via API."""
-        # TODO: Update via task API
-        self.log.info("Task status updated", task_id=str(task_id), status=status.value)
+        try:
+            await self._api_call(
+                "PUT",
+                f"/tasks/{task_id}",
+                json={"status": status.value},
+            )
+            self.log.info(
+                "Task status updated", task_id=str(task_id), status=status.value
+            )
+        except Exception as e:
+            self.log.error("Failed to update task status", error=str(e))
 
     async def _check_qa_approved(self, task_id: UUID) -> bool:
         """Check if QA has approved the task."""
-        # TODO: Check via task API
-        return True  # Simulated
+        try:
+            result = await self._api_call("GET", f"/tasks/{task_id}")
+            status = result.get("status", "")
+            # QA approved if status moved past awaiting_qa
+            return status in ["awaiting_documentation", "completed"]
+        except Exception as e:
+            self.log.warning("Failed to check QA status", error=str(e))
+            return False
 
     async def _check_docs_complete(self, task_id: UUID) -> bool:
         """Check if documentation is complete."""
-        # TODO: Check via task API
-        return True  # Simulated
+        try:
+            result = await self._api_call("GET", f"/tasks/{task_id}/handoffs")
+            handoffs = result.get("items", [])
+            # Check if documenter handoff is complete
+            for handoff in handoffs:
+                is_doc = handoff.get("type") == "documentation"
+                is_done = handoff.get("status") == "completed"
+                if is_doc and is_done:
+                    return True
+            return False
+        except Exception as e:
+            self.log.warning("Failed to check docs status", error=str(e))
+            return False
 
 
 def create_backend_developer(

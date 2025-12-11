@@ -104,7 +104,7 @@ allow-direct-references = true
 [tool.ruff]
 target-version = "py313"
 src = ["src"]
-exclude = ["vulture_whitelist.py", ".venv"]
+exclude = ["vulture_whitelist.py", ".venv", "alembic"]
 
 [tool.ruff.lint]
 select = [
@@ -141,7 +141,7 @@ warn_redundant_casts = true
 warn_unused_ignores = true
 warn_no_return = true
 warn_unreachable = true
-exclude = ["vulture_whitelist.py", ".venv"]
+exclude = ["vulture_whitelist.py", ".venv", "alembic"]
 
 plugins = ["pydantic.mypy"]
 
@@ -180,7 +180,7 @@ markers = [
 # =============================================================================
 [tool.vulture]
 paths = ["roboco", "tests", "vulture_whitelist.py"]
-exclude = ["**/conftest.py", ".venv"]
+exclude = ["**/conftest.py", ".venv", "alembic"]
 min_confidence = 100
 ignore_decorators = [
     "@app.route",
@@ -214,14 +214,14 @@ sort_by_size = true
 # =============================================================================
 [tool.bandit]
 skips = ["B101", "B601"]
-exclude_dirs = ["tests", ".venv", "vulture_whitelist.py"]
+exclude_dirs = ["tests", ".venv", "vulture_whitelist.py", "alembic"]
 severity = "medium"
 
 # =============================================================================
 # Radon Configuration
 # =============================================================================
 [tool.radon]
-exclude = "tests/*,.venv/*,vulture_whitelist.py"
+exclude = "tests/*,.venv/*,vulture_whitelist.py,alembic/*"
 cc_min = "C"
 mi_min = "A"
 no_assert = false
@@ -235,13 +235,13 @@ total_average = true
 max_absolute = "B"
 max_modules = "A"
 max_average = "A"
-exclude = ["tests/*", ".venv/*", "vulture_whitelist.py"]
+exclude = ["tests/*", ".venv/*", "vulture_whitelist.py", "alembic/*"]
 ignore = []
 
 # =============================================================================
 # Deptry Configuration
 # =============================================================================
 [tool.deptry]
-exclude = ["tests", ".venv", "vulture_whitelist.py"]
+exclude = ["tests", ".venv", "vulture_whitelist.py", "alembic"]
 extend_exclude = ["conftest.py", "setup.py"]
 known_first_party = ["roboco"]

@@ -7,7 +7,7 @@ Integrates with the Optimal API for RAG indexing of entries.
 """
 
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import UTC, datetime
 from typing import Any
 from uuid import UUID
 
@@ -205,7 +205,7 @@ class JournalService:
 
         if journal_row:
             journal_row.total_entries += 1
-            journal_row.last_entry_at = datetime.utcnow()
+            journal_row.last_entry_at = datetime.now(UTC)
             type_key = (
                 entry_create.type.value
                 if isinstance(entry_create.type, JournalEntryType)
@@ -612,7 +612,7 @@ class JournalService:
         # Calculate learning frequency (learnings per day since first entry)
         learning_frequency = 0.0
         if journal.created_at and learnings > 0:
-            days_active = max(1, (datetime.utcnow() - journal.created_at).days)
+            days_active = max(1, (datetime.now(UTC) - journal.created_at).days)
             learning_frequency = learnings / days_active
 
         # Simple sentiment trend based on recent entries

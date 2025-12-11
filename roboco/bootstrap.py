@@ -5,15 +5,12 @@ Initializes the database, creates default data, and starts the system.
 """
 
 import asyncio
-import sys
 from pathlib import Path
-from uuid import uuid4
 
 import structlog
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from roboco.config import settings
 from roboco.db.base import get_db_context, init_db
 from roboco.db.tables import AgentTable, ChannelTable
 from roboco.events import EventBus
@@ -474,7 +471,7 @@ async def create_initial_messages(
     """Create initial welcome messages in channels."""
     from uuid import UUID as UUIDType
 
-    from roboco.db.tables import MessageTable, GroupTable, SessionTable
+    from roboco.db.tables import GroupTable, MessageTable, SessionTable
     from roboco.models import MessageType, SessionStatus
 
     for channel_slug, message_data in INITIAL_MESSAGES.items():

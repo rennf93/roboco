@@ -5,7 +5,7 @@ Groups are role-based chat containers within channels.
 They hold sessions and control access by hierarchy level.
 """
 
-from datetime import datetime
+from datetime import UTC, datetime
 from uuid import UUID, uuid4
 
 from pydantic import Field
@@ -90,7 +90,7 @@ class Group(TimestampMixin):
 
     def record_activity(self) -> None:
         """Record activity in the group."""
-        self.last_activity = datetime.utcnow()
+        self.last_activity = datetime.now(UTC)
 
     def increment_messages(self) -> None:
         """Increment message count."""

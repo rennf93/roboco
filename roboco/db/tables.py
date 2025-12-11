@@ -4,7 +4,7 @@ SQLAlchemy Table Definitions
 ORM mappings for all RoboCo data models.
 """
 
-from datetime import datetime, timedelta
+from datetime import UTC, datetime, timedelta
 from typing import Any
 from uuid import uuid4
 
@@ -39,16 +39,6 @@ from roboco.models.base import (
     TaskStatus,
     Team,
 )
-
-# =============================================================================
-# HELPER FUNCTIONS
-# =============================================================================
-
-
-def utcnow() -> datetime:
-    """Get current UTC time."""
-    return datetime.utcnow()
-
 
 # =============================================================================
 # AGENT TABLE
@@ -100,10 +90,10 @@ class AgentTable(Base):
 
     # Timestamps
     created_at: Mapped[datetime] = mapped_column(
-        DateTime, default=utcnow, nullable=False
+        DateTime, default=datetime.now(UTC), nullable=False
     )
     updated_at: Mapped[datetime | None] = mapped_column(
-        DateTime, onupdate=utcnow, nullable=True
+        DateTime, onupdate=datetime.now(UTC), nullable=True
     )
 
     # Relationships
@@ -163,10 +153,10 @@ class TaskTable(Base):
 
     # Timestamps
     created_at: Mapped[datetime] = mapped_column(
-        DateTime, default=utcnow, nullable=False
+        DateTime, default=datetime.now(UTC), nullable=False
     )
     updated_at: Mapped[datetime | None] = mapped_column(
-        DateTime, onupdate=utcnow, nullable=True
+        DateTime, onupdate=datetime.now(UTC), nullable=True
     )
     claimed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     started_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
@@ -261,10 +251,10 @@ class ChannelTable(Base):
 
     # Timestamps
     created_at: Mapped[datetime] = mapped_column(
-        DateTime, default=utcnow, nullable=False
+        DateTime, default=datetime.now(UTC), nullable=False
     )
     updated_at: Mapped[datetime | None] = mapped_column(
-        DateTime, onupdate=utcnow, nullable=True
+        DateTime, onupdate=datetime.now(UTC), nullable=True
     )
 
     # Relationships
@@ -318,10 +308,10 @@ class GroupTable(Base):
 
     # Timestamps
     created_at: Mapped[datetime] = mapped_column(
-        DateTime, default=utcnow, nullable=False
+        DateTime, default=datetime.now(UTC), nullable=False
     )
     updated_at: Mapped[datetime | None] = mapped_column(
-        DateTime, onupdate=utcnow, nullable=True
+        DateTime, onupdate=datetime.now(UTC), nullable=True
     )
 
     # Relationships
@@ -375,10 +365,10 @@ class SessionTable(Base):
 
     # Timestamps
     started_at: Mapped[datetime] = mapped_column(
-        DateTime, default=utcnow, nullable=False
+        DateTime, default=datetime.now(UTC), nullable=False
     )
     last_activity_at: Mapped[datetime] = mapped_column(
-        DateTime, default=utcnow, nullable=False
+        DateTime, default=datetime.now(UTC), nullable=False
     )
     closed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
 
@@ -388,7 +378,7 @@ class SessionTable(Base):
 
     # Timestamps
     created_at: Mapped[datetime] = mapped_column(
-        DateTime, default=utcnow, nullable=False
+        DateTime, default=datetime.now(UTC), nullable=False
     )
 
     # Relationships
@@ -467,7 +457,7 @@ class MessageTable(Base):
 
     # Metadata
     timestamp: Mapped[datetime] = mapped_column(
-        DateTime, default=utcnow, nullable=False, index=True
+        DateTime, default=datetime.now(UTC), nullable=False, index=True
     )
 
     # Extraction metadata
@@ -480,7 +470,7 @@ class MessageTable(Base):
 
     # Timestamps
     created_at: Mapped[datetime] = mapped_column(
-        DateTime, default=utcnow, nullable=False
+        DateTime, default=datetime.now(UTC), nullable=False
     )
 
     # Relationships
@@ -548,7 +538,7 @@ class NotificationTable(Base):
 
     # Timing
     timestamp: Mapped[datetime] = mapped_column(
-        DateTime, default=utcnow, nullable=False, index=True
+        DateTime, default=datetime.now(UTC), nullable=False, index=True
     )
     expires_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
 
@@ -557,7 +547,7 @@ class NotificationTable(Base):
 
     # Timestamps
     created_at: Mapped[datetime] = mapped_column(
-        DateTime, default=utcnow, nullable=False
+        DateTime, default=datetime.now(UTC), nullable=False
     )
 
     # Relationships
@@ -601,10 +591,10 @@ class JournalTable(Base):
 
     # Timestamps
     created_at: Mapped[datetime] = mapped_column(
-        DateTime, default=utcnow, nullable=False
+        DateTime, default=datetime.now(UTC), nullable=False
     )
     updated_at: Mapped[datetime | None] = mapped_column(
-        DateTime, onupdate=utcnow, nullable=True
+        DateTime, onupdate=datetime.now(UTC), nullable=True
     )
 
     # Relationships
@@ -649,7 +639,7 @@ class JournalEntryTable(Base):
 
     # Metadata
     timestamp: Mapped[datetime] = mapped_column(
-        DateTime, default=utcnow, nullable=False, index=True
+        DateTime, default=datetime.now(UTC), nullable=False, index=True
     )
     tags: Mapped[list[str]] = mapped_column(ARRAY(String), default=list)
 
@@ -661,10 +651,10 @@ class JournalEntryTable(Base):
 
     # Timestamps
     created_at: Mapped[datetime] = mapped_column(
-        DateTime, default=utcnow, nullable=False
+        DateTime, default=datetime.now(UTC), nullable=False
     )
     updated_at: Mapped[datetime | None] = mapped_column(
-        DateTime, onupdate=utcnow, nullable=True
+        DateTime, onupdate=datetime.now(UTC), nullable=True
     )
 
     # Relationships
@@ -748,10 +738,10 @@ class HandoffTable(Base):
 
     # Timestamps
     created_at: Mapped[datetime] = mapped_column(
-        DateTime, default=utcnow, nullable=False
+        DateTime, default=datetime.now(UTC), nullable=False
     )
     updated_at: Mapped[datetime | None] = mapped_column(
-        DateTime, onupdate=utcnow, nullable=True
+        DateTime, onupdate=datetime.now(UTC), nullable=True
     )
     claimed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     completed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)

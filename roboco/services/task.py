@@ -5,7 +5,7 @@ Provides CRUD operations and lifecycle management for tasks.
 Handles status transitions, assignments, and queries.
 """
 
-from datetime import datetime
+from datetime import UTC, datetime
 from typing import Any
 from uuid import UUID
 
@@ -127,7 +127,13 @@ class TaskService:
     # =========================================================================
 
     async def claim(self, task_id: UUID, agent_id: UUID) -> TaskTable | None:
-        """Claim a task for an agent."""
+        """
+        Claim a task for an agent.
+
+        Validates:
+        - Task exists and is in PENDING status
+        - Agent belongs to the same team as the task
+        """
         task = await self.get(task_id)
         if not task:
             return None
@@ -140,8 +146,23 @@ class TaskService:
             )
             return None
 
+        # Validate agent belongs to the task's team
+        agent_result = await self.session.execute(
+            select(AgentTable).where(AgentTable.id == agent_id)
+        )
+        agent = agent_result.scalar_one_or_none()
+
+        if agent and task.team and agent.team != task.team:
+            logger.warning(
+                "Cannot claim task - agent not in task's team",
+                task_id=str(task_id),
+                agent_team=agent.team.value if agent.team else None,
+                task_team=task.team.value,
+            )
+            return None
+
         task.assigned_to = agent_id
-        task.claimed_at = datetime.utcnow()
+        task.claimed_at = datetime.now(UTC)
         task.status = TaskStatus.CLAIMED
         await self.session.flush()
 
@@ -152,11 +173,39 @@ class TaskService:
         )
         return task
 
-    async def start(self, task_id: UUID) -> TaskTable | None:
-        """Start working on a task."""
+    async def start(
+        self, task_id: UUID, agent_id: UUID | None = None
+    ) -> TaskTable | None:
+        """
+        Start working on a task.
+
+        Args:
+            task_id: The task to start
+            agent_id: Optional agent ID to validate ownership
+
+        Returns:
+            The started task, or None if not allowed
+        """
         task = await self.get(task_id)
         if not task:
             return None
+
+        # Validate ownership if agent_id provided
+        if agent_id is not None:
+            try:
+                validate_task_ownership(
+                    task_id=str(task_id),
+                    agent_id=str(agent_id),
+                    assigned_to=str(task.assigned_to) if task.assigned_to else None,
+                )
+            except TaskOwnershipError as e:
+                logger.warning(
+                    "Cannot start task - ownership validation failed",
+                    task_id=str(task_id),
+                    agent_id=str(agent_id),
+                    error=str(e),
+                )
+                return None
 
         if task.status not in (TaskStatus.CLAIMED, TaskStatus.PAUSED):
             logger.warning(
@@ -166,7 +215,7 @@ class TaskService:
             )
             return None
 
-        task.started_at = datetime.utcnow()
+        task.started_at = datetime.now(UTC)
         task.status = TaskStatus.IN_PROGRESS
         await self.session.flush()
 
@@ -362,7 +411,7 @@ class TaskService:
                 )
                 return None
 
-        task.completed_at = datetime.utcnow()
+        task.completed_at = datetime.now(UTC)
         task.status = TaskStatus.COMPLETED
         await self.session.flush()
 
@@ -426,7 +475,7 @@ class TaskService:
             return None
 
         update = {
-            "timestamp": datetime.utcnow().isoformat(),
+            "timestamp": datetime.now(UTC).isoformat(),
             "agent_id": str(agent_id),
             "message": message,
             "percentage": percentage,
@@ -451,7 +500,7 @@ class TaskService:
 
         checkpoint = {
             "id": str(UUID(int=len(task.checkpoints))),
-            "timestamp": datetime.utcnow().isoformat(),
+            "timestamp": datetime.now(UTC).isoformat(),
             "agent_id": str(agent_id),
             "state_summary": state_summary,
             "remaining_work": remaining_work,
@@ -477,7 +526,7 @@ class TaskService:
         commit = {
             "hash": hash,
             "message": message,
-            "timestamp": datetime.utcnow().isoformat(),
+            "timestamp": datetime.now(UTC).isoformat(),
             "author_agent_id": str(agent_id) if agent_id else None,
         }
         task.commits = [*task.commits, commit]
@@ -528,6 +577,40 @@ class TaskService:
     ) -> list[TaskTable]:
         """List tasks assigned to an agent."""
         query = select(TaskTable).where(TaskTable.assigned_to == agent_id)
+
+        if status:
+            query = query.where(TaskTable.status == status)
+
+        query = query.order_by(TaskTable.priority, TaskTable.created_at.desc())
+
+        result = await self.session.execute(query)
+        return list(result.scalars().all())
+
+    async def list_by_team_or_assignee(
+        self,
+        team: Team | None = None,
+        agent_id: UUID | None = None,
+        status: TaskStatus | None = None,
+    ) -> list[TaskTable]:
+        """
+        List tasks by team OR assignee.
+
+        Useful for finding tasks an agent could work on (their assigned tasks
+        or unassigned tasks in their team).
+        """
+        conditions = []
+
+        if team:
+            conditions.append(
+                and_(TaskTable.team == team, TaskTable.assigned_to.is_(None))
+            )
+        if agent_id:
+            conditions.append(TaskTable.assigned_to == agent_id)
+
+        if not conditions:
+            return []
+
+        query = select(TaskTable).where(or_(*conditions))
 
         if status:
             query = query.where(TaskTable.status == status)

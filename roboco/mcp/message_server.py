@@ -12,9 +12,8 @@ Tools:
 - roboco_channel_history: Get channel message history
 """
 
-from datetime import datetime, timedelta
+from datetime import UTC, datetime, timedelta
 from typing import Any
-from uuid import UUID
 
 import httpx
 from mcp.server.fastmcp import FastMCP
@@ -147,7 +146,7 @@ def create_message_mcp_server(agent_id: str) -> FastMCP:
             )
 
         limit = min(limit, 100)
-        since = datetime.utcnow() - timedelta(hours=hours_back)
+        since = datetime.now(UTC) - timedelta(hours=hours_back)
 
         async with httpx.AsyncClient() as client:
             # Get channel ID from slug

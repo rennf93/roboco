@@ -7,13 +7,13 @@ CRUD operations for communication channels.
 from uuid import UUID
 
 from fastapi import APIRouter, HTTPException, Query, status
-from pydantic import BaseModel, Field
+from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.orm import selectinload
 
 from roboco.api.deps import CurrentAgentId, DbSession
-from roboco.db.tables import ChannelTable, GroupTable
-from roboco.models import Channel, ChannelCreate, ChannelType, ChannelUpdate
+from roboco.db.tables import ChannelTable
+from roboco.models import ChannelCreate, ChannelType, ChannelUpdate
 
 router = APIRouter()
 

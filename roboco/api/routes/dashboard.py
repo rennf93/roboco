@@ -5,7 +5,7 @@ Auditor dashboard and CEO overview endpoints.
 Provides aggregated views, alerts, and reporting.
 """
 
-from datetime import datetime
+from datetime import UTC, datetime, timedelta
 from enum import Enum
 from typing import Annotated, Any
 from uuid import UUID
@@ -15,7 +15,7 @@ from pydantic import BaseModel, Field
 from sqlalchemy import and_, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from roboco.api.deps import get_current_agent_id, get_db
+from roboco.api.deps import get_db
 from roboco.db.tables import AgentTable, ChannelTable, MessageTable, TaskTable
 from roboco.models.base import AgentStatus, TaskStatus, Team
 from roboco.services.kanban import get_kanban_service
@@ -164,7 +164,7 @@ async def get_auditor_dashboard(
         # Determine status based on last activity
         if channel.last_activity:
             minutes_ago = (
-                datetime.utcnow() - channel.last_activity
+                datetime.now(UTC) - channel.last_activity
             ).total_seconds() / 60
             if minutes_ago < 5:
                 status = "streaming"
@@ -300,7 +300,7 @@ async def create_auditor_flag(
         "description": data.description,
         "related_task_id": data.related_task_id,
         "related_agent_id": data.related_agent_id,
-        "created_at": datetime.utcnow(),
+        "created_at": datetime.now(UTC),
         "resolved_at": None,
         "notes": None,
     }
@@ -318,7 +318,7 @@ async def resolve_auditor_flag(
     if flag_id not in _flags:
         raise HTTPException(status_code=404, detail="Flag not found")
 
-    _flags[flag_id]["resolved_at"] = datetime.utcnow()
+    _flags[flag_id]["resolved_at"] = datetime.now(UTC)
     if notes:
         _flags[flag_id]["notes"] = notes
 
@@ -364,7 +364,7 @@ async def create_auditor_report(
         "title": data.title,
         "summary": data.summary,
         "sections": data.sections,
-        "created_at": datetime.utcnow(),
+        "created_at": datetime.now(UTC),
         "sent_at": None,
     }
     _reports[report_id] = report_data
@@ -378,7 +378,7 @@ async def send_auditor_report(report_id: UUID):
     if report_id not in _reports:
         raise HTTPException(status_code=404, detail="Report not found")
 
-    _reports[report_id]["sent_at"] = datetime.utcnow()
+    _reports[report_id]["sent_at"] = datetime.now(UTC)
 
     return {"status": "sent", "report_id": str(report_id)}
 
@@ -502,6 +502,190 @@ async def get_ceo_team_details(
     metrics_service = get_metrics_service(db)
     team_metrics = await metrics_service.get_all_team_metrics()
     return [tm.to_dict() for tm in team_metrics]
+
+
+# =============================================================================
+# KANBAN ENDPOINTS
+# =============================================================================
+
+
+@router.get("/kanban/{team}")
+async def get_team_kanban(
+    team: Team,
+    db: Annotated[AsyncSession, Depends(get_db)],
+    swimlane_by: str | None = Query(
+        None, description="Swimlane by: priority or assignee"
+    ),
+):
+    """Get kanban board for a specific team."""
+    kanban_service = get_kanban_service(db)
+    board = await kanban_service.get_dev_board(team, swimlane_by)
+    return (
+        board.to_dict()
+        if hasattr(board, "to_dict")
+        else {
+            "id": board.id,
+            "title": board.title,
+            "board_type": board.board_type.value,
+            "team": board.team.value if board.team else None,
+            "columns": [
+                {
+                    "id": col.id,
+                    "title": col.title,
+                    "status": col.status.value if col.status else None,
+                    "cards": [
+                        {
+                            "id": str(card.id),
+                            "title": card.title,
+                            "priority": card.priority,
+                            "status": card.status.value,
+                            "assignee_name": card.assignee_name,
+                            "is_blocked": card.is_blocked,
+                        }
+                        for card in col.cards
+                    ],
+                    "card_count": col.card_count,
+                }
+                for col in board.columns
+            ],
+            "total_cards": board.total_cards,
+            "blocked_count": board.blocked_count,
+        }
+    )
+
+
+@router.get("/kanban/main-pm")
+async def get_main_pm_kanban(
+    db: Annotated[AsyncSession, Depends(get_db)],
+):
+    """Get the Main PM cross-cell kanban board."""
+    kanban_service = get_kanban_service(db)
+    board = await kanban_service.get_main_pm_board_flat()
+    return board
+
+
+# =============================================================================
+# AGENT STATUS ENDPOINTS
+# =============================================================================
+
+
+@router.get("/agents/status")
+async def get_all_agent_status(
+    db: Annotated[AsyncSession, Depends(get_db)],
+    team: Team | None = None,
+):
+    """
+    Get status of all agents.
+
+    Returns agent status summary including active, idle, and offline counts.
+    """
+    query = select(AgentTable)
+    if team:
+        query = query.where(AgentTable.team == team)
+
+    result = await db.execute(query)
+    agents = result.scalars().all()
+
+    # Group by status
+    status_counts = {status.value: 0 for status in AgentStatus}
+    agent_list = []
+
+    for agent in agents:
+        status = agent.status or AgentStatus.IDLE
+        status_counts[status.value] = status_counts.get(status.value, 0) + 1
+        agent_list.append(
+            {
+                "id": str(agent.id),
+                "name": agent.name,
+                "role": agent.role.value,
+                "team": agent.team.value if agent.team else None,
+                "status": status.value,
+                "current_task_id": str(agent.current_task_id)
+                if agent.current_task_id
+                else None,
+            }
+        )
+
+    return {
+        "total": len(agents),
+        "by_status": status_counts,
+        "agents": agent_list,
+    }
+
+
+# =============================================================================
+# RECENT ACTIVITY ENDPOINTS
+# =============================================================================
+
+
+@router.get("/activity/recent")
+async def get_recent_activity(
+    db: Annotated[AsyncSession, Depends(get_db)],
+    hours: int = Query(default=24, ge=1, le=168),
+    limit: int = Query(default=50, ge=1, le=200),
+):
+    """
+    Get recent activity across channels.
+
+    Returns recent messages and task updates for dashboard feed.
+    """
+    since = datetime.now(UTC) - timedelta(hours=hours)
+
+    # Get recent messages
+    message_result = await db.execute(
+        select(MessageTable)
+        .where(MessageTable.timestamp >= since)
+        .order_by(MessageTable.timestamp.desc())
+        .limit(limit)
+    )
+    messages = message_result.scalars().all()
+
+    # Get recent task updates
+    task_result = await db.execute(
+        select(TaskTable)
+        .where(TaskTable.updated_at >= since)
+        .order_by(TaskTable.updated_at.desc())
+        .limit(limit)
+    )
+    tasks = task_result.scalars().all()
+
+    activity_feed = []
+
+    # Add messages to feed
+    for msg in messages:
+        activity_feed.append(
+            {
+                "type": "message",
+                "timestamp": msg.timestamp.isoformat(),
+                "agent_id": str(msg.agent_id),
+                "channel_id": str(msg.channel_id),
+                "content_preview": msg.content[:100] if msg.content else "",
+                "message_type": msg.type.value,
+            }
+        )
+
+    # Add task updates to feed
+    for task in tasks:
+        activity_feed.append(
+            {
+                "type": "task_update",
+                "timestamp": task.updated_at.isoformat()
+                if task.updated_at
+                else task.created_at.isoformat(),
+                "task_id": str(task.id),
+                "title": task.title,
+                "status": task.status.value,
+                "team": task.team.value if task.team else None,
+            }
+        )
+
+    # Sort by timestamp
+    activity_feed.sort(key=lambda x: x["timestamp"], reverse=True)
+
+    return {
+        "period_hours": hours,
+        "activity": activity_feed[:limit],
+    }
 
 
 @router.get("/ceo/blockers")

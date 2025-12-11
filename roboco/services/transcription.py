@@ -13,15 +13,13 @@ Flow:
 
 import asyncio
 import contextlib
-import re
 from collections.abc import AsyncIterator, Callable
 from dataclasses import dataclass, field
-from datetime import datetime, timedelta
+from datetime import UTC, datetime, timedelta
 from uuid import UUID, uuid4
 
 import structlog
 
-from roboco.models import MessageType
 from roboco.models.message import RawStream
 
 logger = structlog.get_logger()
@@ -45,8 +43,8 @@ class StreamBuffer:
     chunks: list[str] = field(default_factory=list)
 
     # Timing
-    started_at: datetime = field(default_factory=datetime.utcnow)
-    last_chunk_at: datetime = field(default_factory=datetime.utcnow)
+    started_at: datetime = field(default_factory=datetime.now(UTC))
+    last_chunk_at: datetime = field(default_factory=datetime.now(UTC))
 
     # State
     is_complete: bool = False
@@ -55,26 +53,26 @@ class StreamBuffer:
         """Append a chunk to the buffer."""
         self.chunks.append(chunk)
         self.content += chunk
-        self.last_chunk_at = datetime.utcnow()
+        self.last_chunk_at = datetime.now(UTC)
 
     def clear(self) -> str:
         """Clear buffer and return content."""
         content = self.content
         self.content = ""
         self.chunks.clear()
-        self.started_at = datetime.utcnow()
+        self.started_at = datetime.now(UTC)
         self.is_complete = False
         return content
 
     @property
     def age(self) -> timedelta:
         """Time since buffer started."""
-        return datetime.utcnow() - self.started_at
+        return datetime.now(UTC) - self.started_at
 
     @property
     def idle_time(self) -> timedelta:
         """Time since last chunk."""
-        return datetime.utcnow() - self.last_chunk_at
+        return datetime.now(UTC) - self.last_chunk_at
 
     @property
     def char_count(self) -> int:

@@ -815,7 +815,7 @@ async def check_session_boundaries(session_id: UUID, new_message: Message) -> Se
     """
     session = await get_session(session_id)
 
-    now = datetime.utcnow()
+    now = datetime.now(UTC)
 
     # Check time window
     if session.max_time_window:
@@ -1003,7 +1003,7 @@ async def reassign_task(
         "to": to_agent,
         "by": pm_id,
         "reason": reason,
-        "at": datetime.utcnow()
+        "at": datetime.now(UTC)
     })
 
     # Update assignment
@@ -1124,7 +1124,7 @@ class AgentOrchestrator:
         instance = AgentInstance(
             agent_id=agent_id,
             process=process,
-            started_at=datetime.utcnow(),
+            started_at=datetime.now(UTC),
             blueprint_path=blueprint_path,
         )
 
@@ -1218,7 +1218,7 @@ Resume your work by:
 
                 # Check for activity (no output in X minutes = stuck)
                 if instance.last_activity:
-                    inactive = (datetime.utcnow() - instance.last_activity).total_seconds()
+                    inactive = (datetime.now(UTC) - instance.last_activity).total_seconds()
                     if inactive > self.config.stuck_threshold_seconds:
                         logger.warning(
                             "Agent appears stuck",
@@ -1936,7 +1936,7 @@ class SpotCheckProtocol:
         """Randomly select and verify completed tasks."""
         recent_completed = await get_tasks(
             status="completed",
-            completed_after=datetime.utcnow() - timedelta(days=7)
+            completed_after=datetime.now(UTC) - timedelta(days=7)
         )
 
         sample = random.sample(
@@ -2273,9 +2273,9 @@ class Project(Base):
     active: Mapped[bool] = mapped_column(default=True)
 
     # Timestamps
-    created_at: Mapped[datetime] = mapped_column(default=datetime.utcnow)
+    created_at: Mapped[datetime] = mapped_column(default=datetime.now(UTC))
     updated_at: Mapped[datetime] = mapped_column(
-        default=datetime.utcnow, onupdate=datetime.utcnow
+        default=datetime.now(UTC), onupdate=datetime.now(UTC)
     )
 
     # Relationships
@@ -3351,7 +3351,7 @@ class FailureTracker:
             agent_id=agent_id,
             task_id=task_id,
             error=error,
-            timestamp=datetime.utcnow()
+            timestamp=datetime.now(UTC)
         )
 
         self.agent_failures[agent_id].append(failure)
@@ -3438,7 +3438,7 @@ async def quarantine_task(task_id: str, reason: str):
 
     task.status = "quarantined"
     task.quarantine_reason = reason
-    task.quarantine_at = datetime.utcnow()
+    task.quarantine_at = datetime.now(UTC)
 
     await save_task(task)
 

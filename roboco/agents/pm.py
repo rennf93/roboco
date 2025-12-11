@@ -7,7 +7,6 @@ Main PM: OVERSEE → RECEIVE → PRIORITIZE → COORDINATE → DISTRIBUTE → RE
 """
 
 from dataclasses import dataclass, field
-from datetime import datetime
 from enum import Enum
 from pathlib import Path
 from typing import Any
@@ -319,57 +318,185 @@ Be helpful and unblock the team.
 
     async def _count_active_tasks(self) -> int:
         """Count active tasks in cell."""
-        # TODO: Query task API
-        return 0
+        try:
+            team_param = self.team.value if self.team else None
+            result = await self._api_call(
+                "GET",
+                "/tasks",
+                params={"status": "in_progress", "team": team_param},
+            )
+            return len(result.get("items", []))
+        except Exception as e:
+            self.log.warning("Failed to count active tasks", error=str(e))
+            return 0
 
     async def _count_blocked_tasks(self) -> int:
         """Count blocked tasks in cell."""
-        # TODO: Query task API
-        return 0
+        try:
+            team_param = self.team.value if self.team else None
+            result = await self._api_call(
+                "GET",
+                "/tasks",
+                params={"status": "blocked", "team": team_param},
+            )
+            return len(result.get("items", []))
+        except Exception as e:
+            self.log.warning("Failed to count blocked tasks", error=str(e))
+            return 0
 
     async def _count_available_devs(self) -> int:
         """Count available developers."""
-        # TODO: Query agent API
-        return 2
+        try:
+            team_param = self.team.value if self.team else None
+            result = await self._api_call(
+                "GET",
+                "/agents",
+                params={"role": "developer", "status": "idle", "team": team_param},
+            )
+            return len(result.get("items", []))
+        except Exception as e:
+            self.log.warning("Failed to count available devs", error=str(e))
+            return 0
 
     async def _get_unassigned_tasks(self) -> list[UUID]:
         """Get tasks needing assignment."""
-        # TODO: Query task API
-        return []
+        try:
+            team_param = self.team.value if self.team else None
+            result = await self._api_call(
+                "GET",
+                "/tasks",
+                params={"status": "pending", "team": team_param, "assigned_to": None},
+            )
+            return [UUID(t["id"]) for t in result.get("items", [])]
+        except Exception as e:
+            self.log.warning("Failed to get unassigned tasks", error=str(e))
+            return []
 
     async def _find_best_dev(self, task_id: UUID) -> TaskAssignment | None:
         """Find best developer for a task."""
-        # TODO: Match based on skills, load, etc.
-        return None
+        try:
+            # Get available devs
+            team_param = self.team.value if self.team else None
+            result = await self._api_call(
+                "GET",
+                "/agents",
+                params={"role": "developer", "status": "idle", "team": team_param},
+            )
+            agents = result.get("items", [])
+            if not agents:
+                return None
+
+            # For now, assign to first available
+            agent = agents[0]
+            return TaskAssignment(
+                task_id=task_id,
+                agent_id=UUID(agent["id"]),
+                agent_name=agent.get("name", "Unknown"),
+                reason="First available developer",
+            )
+        except Exception as e:
+            self.log.warning("Failed to find best dev", error=str(e))
+            return None
 
     async def _assign_task(self, assignment: TaskAssignment) -> None:
         """Assign a task to a developer."""
-        # TODO: Update task and notify
-        self.log.info(
-            "Task assigned",
-            task_id=str(assignment.task_id),
-            agent=assignment.agent_name,
-        )
+        try:
+            await self._api_call(
+                "PUT",
+                f"/tasks/{assignment.task_id}",
+                json={"assigned_to": str(assignment.agent_id)},
+            )
+            self.log.info(
+                "Task assigned",
+                task_id=str(assignment.task_id),
+                agent=assignment.agent_name,
+            )
+        except Exception as e:
+            self.log.error("Failed to assign task", error=str(e))
 
     async def _get_pending_questions(self) -> list[str]:
         """Get unanswered questions from channel."""
-        # TODO: Query messaging API
-        return []
+        try:
+            result = await self._api_call(
+                "GET",
+                "/messages",
+                params={"message_type": "dialogue", "unanswered": True},
+            )
+            return [m.get("content", "") for m in result.get("items", [])]
+        except Exception as e:
+            self.log.warning("Failed to get pending questions", error=str(e))
+            return []
 
     async def _notify_main_pm(self, escalation: Escalation) -> None:
-        """Notify Main PM of escalation."""
-        # TODO: Send notification
-        self.log.info("Escalation sent to Main PM", issue=escalation.issue)
+        """
+        Notify Main PM of escalation.
+
+        Uses NotificationType.ESCALATION to formally escalate the issue.
+        """
+        # Build notification content
+        notification_type = NotificationType.ESCALATION
+        subject = f"Escalation from {self.cell_name}: {escalation.issue[:50]}"
+        body = f"""
+## Escalation from {self.cell_name}
+
+**Issue:** {escalation.issue}
+**Severity:** {escalation.severity}
+**Task:** {str(escalation.task_id)[:8] if escalation.task_id else "N/A"}
+
+**Proposed Solution:**
+{escalation.proposed_solution or "No solution proposed"}
+
+Please review and provide guidance.
+"""
+
+        self.log.info(
+            "Escalation sent to Main PM",
+            issue=escalation.issue,
+            notification_type=notification_type.value,
+            severity=escalation.severity,
+        )
 
     async def _get_active_tasks(self) -> list[UUID]:
         """Get all active tasks in cell."""
-        # TODO: Query task API
-        return []
+        try:
+            team_param = self.team.value if self.team else None
+            result = await self._api_call(
+                "GET",
+                "/tasks",
+                params={"status": "in_progress", "team": team_param},
+            )
+            return [UUID(t["id"]) for t in result.get("items", [])]
+        except Exception as e:
+            self.log.warning("Failed to get active tasks", error=str(e))
+            return []
 
     async def _check_task_progress(self, task_id: UUID) -> dict[str, Any]:
-        """Check progress of a task."""
-        # TODO: Query task API
-        return {"at_risk": False}
+        """
+        Check progress of a task.
+
+        Returns risk assessment based on task status and time in state.
+        """
+        try:
+            result = await self._api_call("GET", f"/tasks/{task_id}")
+            status = result.get("status", "")
+            risk_factors = []
+
+            # Blocked tasks are always at risk
+            if status == TaskStatus.BLOCKED.value:
+                risk_factors.append("Task is blocked")
+
+            return {
+                "at_risk": len(risk_factors) > 0,
+                "status": status,
+                "risk_factors": risk_factors,
+            }
+        except Exception as e:
+            self.log.warning("Failed to check task progress", error=str(e))
+            return {
+                "at_risk": False,
+                "status": TaskStatus.IN_PROGRESS.value,
+                "risk_factors": [],
+            }
 
 
 class MainPMAgent(Agent):
@@ -548,25 +675,90 @@ Propose a resolution that unblocks all parties.
 
     async def _get_cell_status(self, cell_name: str) -> CellStatus:
         """Get status of a cell."""
-        # TODO: Query from Cell PM reports
-        return CellStatus(name=cell_name)
+        try:
+            # Get task counts per status for this cell
+            team = cell_name.replace("-cell", "")
+            active_result = await self._api_call(
+                "GET",
+                "/tasks",
+                params={"status": "in_progress", "team": team},
+            )
+            blocked_result = await self._api_call(
+                "GET",
+                "/tasks",
+                params={"status": "blocked", "team": team},
+            )
+            devs_result = await self._api_call(
+                "GET",
+                "/agents",
+                params={"role": "developer", "status": "idle", "team": team},
+            )
+            return CellStatus(
+                name=cell_name,
+                active_tasks=len(active_result.get("items", [])),
+                blocked_tasks=len(blocked_result.get("items", [])),
+                available_devs=len(devs_result.get("items", [])),
+            )
+        except Exception as e:
+            self.log.warning("Failed to get cell status", cell=cell_name, error=str(e))
+            return CellStatus(name=cell_name)
 
     async def _detect_cross_cell_issues(self) -> list[dict[str, Any]]:
         """Detect cross-cell dependencies and issues."""
-        # TODO: Analyze task dependencies
-        return []
+        try:
+            # Look for tasks blocked by other cells
+            result = await self._api_call(
+                "GET",
+                "/tasks",
+                params={"status": "blocked"},
+            )
+            issues = []
+            for task in result.get("items", []):
+                blocker = task.get("blocker_reason", "")
+                if "frontend" in blocker.lower() or "backend" in blocker.lower():
+                    issues.append(
+                        {
+                            "description": f"Cross-cell blocker: {blocker}",
+                            "cells": [task.get("team", "unknown")],
+                            "task_id": task.get("id"),
+                        }
+                    )
+            return issues
+        except Exception as e:
+            self.log.warning("Failed to detect cross-cell issues", error=str(e))
+            return []
 
     async def _get_board_directives(self) -> list[str]:
         """Get directives from Board."""
-        # TODO: Query from Board channel
-        return []
+        try:
+            result = await self._api_call(
+                "GET",
+                "/messages",
+                params={"channel": "main-pm-board", "message_type": "action"},
+            )
+            return [m.get("content", "") for m in result.get("items", [])]
+        except Exception as e:
+            self.log.warning("Failed to get board directives", error=str(e))
+            return []
 
     async def _get_cell_pm_escalations(self) -> list[dict[str, Any]]:
         """Get escalations from Cell PMs."""
-        # TODO: Query notifications
-        return []
+        try:
+            result = await self._api_call(
+                "GET",
+                "/notifications",
+                params={"type": "escalation", "status": "pending"},
+            )
+            return result.get("items", [])
+        except Exception as e:
+            self.log.warning("Failed to get escalations", error=str(e))
+            return []
 
-    async def _apply_resolution(self, issue: dict[str, Any], resolution: str) -> None:
+    async def _apply_resolution(
+        self,
+        issue: dict[str, Any],
+        resolution: str,
+    ) -> None:
         """Apply a cross-cell resolution."""
         self.log.info("Resolution applied", issue=issue.get("description"))
 

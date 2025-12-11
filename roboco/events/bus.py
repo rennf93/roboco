@@ -9,7 +9,7 @@ import contextlib
 import json
 from collections.abc import Callable, Coroutine
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import UTC, datetime
 from enum import Enum
 from typing import Any
 from uuid import UUID, uuid4
@@ -77,7 +77,7 @@ class Event:
     type: EventType
     data: dict[str, Any]
     id: UUID = field(default_factory=uuid4)
-    timestamp: datetime = field(default_factory=datetime.utcnow)
+    timestamp: datetime = field(default_factory=datetime.now(UTC))
     source_agent: str | None = None
     correlation_id: str | None = None  # For tracking related events
 

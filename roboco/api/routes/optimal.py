@@ -14,8 +14,6 @@ from roboco.api.deps import CurrentAgentContext
 from roboco.services.optimal import (
     IndexType,
     QueryContext,
-    RAGResponse,
-    SearchResult,
     get_optimal_service,
 )
 

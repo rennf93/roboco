@@ -5,7 +5,7 @@ Implementation of Board-level workflows from the blueprint.
 """
 
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import UTC, datetime
 from enum import Enum
 from pathlib import Path
 from typing import Any
@@ -148,8 +148,30 @@ class ProductOwnerAgent(Agent):
 
     async def _review_feature(self, task_id: UUID) -> bool:
         """Review a completed feature."""
-        # TODO: Check against acceptance criteria
-        return True
+        try:
+            result = await self._api_call("GET", f"/tasks/{task_id}")
+            acceptance_criteria = result.get("acceptance_criteria", [])
+
+            # Use LLM to check if criteria are met
+            prompt = f"""
+Review this completed feature against its acceptance criteria:
+
+Task: {result.get("title", "Unknown")}
+Description: {result.get("description", "No description")}
+
+Acceptance Criteria:
+{chr(10).join(f"- {c}" for c in acceptance_criteria)}
+
+Dev Notes: {result.get("dev_notes", "None")}
+
+Determine if all criteria are met. Respond with:
+ACCEPTED: [reason] or NEEDS_CHANGES: [what's missing]
+"""
+            review = await self.think(prompt)
+            return review.upper().startswith("ACCEPTED")
+        except Exception as e:
+            self.log.warning("Failed to review feature", error=str(e))
+            return False
 
 
 # =============================================================================
@@ -305,7 +327,7 @@ class AuditFlag:
     evidence: list[str]
     recommendation: str | None = None
     reported_to_ceo: bool = False
-    timestamp: datetime = field(default_factory=datetime.utcnow)
+    timestamp: datetime = field(default_factory=datetime.now(UTC))
 
 
 @dataclass
@@ -317,7 +339,7 @@ class AuditReport:
     flags: list[AuditFlag]
     metrics: dict[str, Any]
     recommendations: list[str]
-    timestamp: datetime = field(default_factory=datetime.utcnow)
+    timestamp: datetime = field(default_factory=datetime.now(UTC))
 
 
 class AuditorAgent(Agent):
@@ -422,7 +444,7 @@ class AuditorAgent(Agent):
                     {
                         "channel": channel,
                         "content": msg,
-                        "timestamp": datetime.utcnow(),
+                        "timestamp": datetime.now(UTC),
                     }
                 )
 
@@ -503,7 +525,7 @@ Be thorough but fair.
         # Check if it's time for regular report
         should_report = (
             self._last_report is None
-            or (datetime.utcnow() - self._last_report).hours >= 24
+            or (datetime.now(UTC) - self._last_report).hours >= 24
             or any(
                 f.severity in [FlagSeverity.CONCERN, FlagSeverity.CRITICAL]
                 for f in self._flags
@@ -525,7 +547,7 @@ Be thorough but fair.
             )
 
             await self._send_ceo_report(report)
-            self._last_report = datetime.utcnow()
+            self._last_report = datetime.now(UTC)
             self._flags.clear()
 
     async def _phase_audit(self) -> None:
@@ -575,21 +597,114 @@ Be thorough but fair.
 
     async def _read_channel_silently(self, channel: str) -> list[str]:
         """Read channel messages without appearing in member list."""
-        # TODO: Query messaging API with silent flag
-        return []
+        try:
+            result = await self._api_call(
+                "GET",
+                f"/channels/{channel}/messages",
+                params={"silent": True},
+            )
+            return [m.get("content", "") for m in result.get("items", [])]
+        except Exception as e:
+            self.log.warning("Failed to read channel silently", error=str(e))
+            return []
 
     async def _alert_ceo(self, flags: list[AuditFlag]) -> None:
         """Send immediate alert to CEO."""
-        self.log.warning("CEO alert sent", flags=len(flags))
+        try:
+            for flag in flags:
+                await self._api_call(
+                    "POST",
+                    "/notifications",
+                    json={
+                        "type": "alert",
+                        "recipient": "ceo",
+                        "subject": f"CRITICAL: {flag.category}",
+                        "body": flag.description,
+                        "priority": "critical",
+                    },
+                )
+            self.log.warning("CEO alert sent", flags=len(flags))
+        except Exception as e:
+            self.log.error("Failed to alert CEO", error=str(e))
 
     async def _send_ceo_report(self, report: AuditReport) -> None:
         """Send private report to CEO."""
-        self.log.info("CEO report sent", period=report.period)
+        try:
+            await self._api_call(
+                "POST",
+                "/notifications",
+                json={
+                    "type": "report",
+                    "recipient": "ceo",
+                    "subject": f"Auditor Report: {report.period}",
+                    "body": report.summary,
+                    "priority": "normal",
+                    "metadata": {"flags": len(report.flags)},
+                },
+            )
+            self.log.info("CEO report sent", period=report.period)
+        except Exception as e:
+            self.log.error("Failed to send CEO report", error=str(e))
 
     async def _perform_audit(self, audit_type: str) -> str | None:
         """Perform a specific type of audit."""
-        # TODO: Implement actual audits
-        return None
+        try:
+            # Query relevant data based on audit type
+            if audit_type == "code_quality":
+                result = await self._api_call(
+                    "GET",
+                    "/tasks",
+                    params={"status": "completed", "limit": 10},
+                )
+                tasks = result.get("items", [])
+                # Analyze completed tasks for quality issues
+                if tasks:
+                    prompt = f"""
+Analyze these completed tasks for code quality patterns:
+
+{chr(10).join(f"- {t.get('title')}: {t.get('description', '')[:100]}" for t in tasks)}
+
+Look for:
+- Rushed work patterns
+- Skipped testing
+- Missing documentation
+- Quality shortcuts
+
+Report findings or None if all looks good.
+"""
+                    return await self.think(prompt)
+
+            elif audit_type == "documentation":
+                result = await self._api_call(
+                    "GET",
+                    "/tasks",
+                    params={"status": "completed", "limit": 10},
+                )
+                tasks = result.get("items", [])
+                missing_docs = [t for t in tasks if not t.get("documentation_complete")]
+                if missing_docs:
+                    count = len(missing_docs)
+                    return f"Found {count} tasks with incomplete documentation"
+
+            elif audit_type == "process_compliance":
+                # Check for process violations
+                result = await self._api_call(
+                    "GET",
+                    "/tasks",
+                    params={"status": "completed", "limit": 10},
+                )
+                tasks = result.get("items", [])
+                violations = []
+                for task in tasks:
+                    if not task.get("qa_passed"):
+                        violations.append(f"{task.get('title')} - no QA")
+                if violations:
+                    return f"Process violations: {', '.join(violations)}"
+
+            return None
+        except Exception as e:
+            self.log.warning("Failed to perform audit", error=str(e))
+            return None
 
 
 # =============================================================================
