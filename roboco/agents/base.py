@@ -11,19 +11,17 @@ import contextlib
 from abc import ABC, abstractmethod
 from datetime import UTC, datetime
 from enum import Enum
-from typing import TYPE_CHECKING, Any
+from typing import Any
 from uuid import UUID, uuid4
 
 import httpx
 import structlog
+from anthropic import AsyncAnthropic
 from pydantic import BaseModel, Field
 
 from roboco.api.websocket import broadcast_agent_chunk
 from roboco.config import settings
 from roboco.models import AgentRole, AgentStatus, Team
-
-if TYPE_CHECKING:
-    from anthropic import AsyncAnthropic
 
 logger = structlog.get_logger()
 
@@ -156,8 +154,6 @@ class Agent(ABC):
     def llm_client(self) -> "AsyncAnthropic":
         """Get or create the LLM client."""
         if self._llm_client is None:
-            from anthropic import AsyncAnthropic
-
             self._llm_client = AsyncAnthropic(api_key=settings.anthropic_api_key)
         return self._llm_client
 
@@ -374,7 +370,7 @@ class Agent(ABC):
     async def think(
         self,
         prompt: str,
-        context: dict[str, Any] | None = None,  # noqa: ARG002
+        _context: dict[str, Any] | None = None,
     ) -> str:
         """
         Send a prompt to the LLM and get a response.
@@ -402,7 +398,7 @@ class Agent(ABC):
     async def think_and_stream(
         self,
         prompt: str,
-        context: dict[str, Any] | None = None,  # noqa: ARG002
+        _context: dict[str, Any] | None = None,
     ) -> str:
         """
         Send a prompt and stream the response.

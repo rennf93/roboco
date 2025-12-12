@@ -26,6 +26,7 @@ from roboco.enforcement.task_lifecycle import (
     validate_task_transition,
 )
 from roboco.enforcement.task_ownership import (
+    TaskClaimContext,
     TaskOwnershipError,
     validate_task_claim,
     validate_task_ownership,
@@ -36,6 +37,7 @@ __all__ = [
     "VALID_TRANSITIONS",
     "ChannelAccessDeniedError",
     "NotificationPermissionError",
+    "TaskClaimContext",
     "TaskLifecycleError",
     "TaskOwnershipError",
     "validate_channel_access",

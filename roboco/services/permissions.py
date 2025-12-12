@@ -496,10 +496,9 @@ class PermissionService:
         # Check role-based access
         if agent.role in permission.read_roles:
             # For cell channels, also check team membership
-            if permission.channel_type == ChannelType.CELL:
-                if permission.teams and agent.team not in permission.teams:
-                    return False
-            return True
+            is_cell = permission.channel_type == ChannelType.CELL
+            wrong_team = permission.teams and agent.team not in permission.teams
+            return not (is_cell and wrong_team)
 
         # Higher permission levels can read lower-level channels
         return agent.level <= PermissionLevel.MAIN_PM
@@ -527,10 +526,9 @@ class PermissionService:
         # Check role-based access
         if agent.role in permission.write_roles:
             # For cell channels, also check team membership
-            if permission.channel_type == ChannelType.CELL:
-                if permission.teams and agent.team not in permission.teams:
-                    return False
-            return True
+            is_cell = permission.channel_type == ChannelType.CELL
+            wrong_team = permission.teams and agent.team not in permission.teams
+            return not (is_cell and wrong_team)
 
         # Higher permission levels can write to lower-level channels
         return agent.level <= PermissionLevel.MAIN_PM
@@ -579,12 +577,14 @@ class PermissionService:
         # Check if recipient role is in allowed targets
         if recipient.role in allowed_targets:
             # For Cell PM, also check team membership
-            if sender.role == AgentRole.CELL_PM:
-                # Cell PM can only notify their own cell (unless coordinating with other PMs)
-                if recipient.role != AgentRole.CELL_PM:
-                    if sender.team != recipient.team:
-                        return False
-            return True
+            # Cell PM can only notify their own cell unless coordinating with PMs
+            is_cell_pm_sender = sender.role == AgentRole.CELL_PM
+            is_not_pm_recipient = recipient.role != AgentRole.CELL_PM
+            is_different_team = sender.team != recipient.team
+            cannot_notify = (
+                is_cell_pm_sender and is_not_pm_recipient and is_different_team
+            )
+            return not cannot_notify
 
         return False
 
@@ -607,14 +607,14 @@ class PermissionService:
 
         if recipient.role in allowed:
             # For cell members, check if same team
-            if sender.level >= PermissionLevel.CELL_MEMBER:
-                if recipient.level >= PermissionLevel.CELL_MEMBER:
-                    # Cell members can only communicate within their cell
-                    # unless going through PM
-                    if sender.team != recipient.team:
-                        # Exception: going through shared channels
-                        return False
-            return True
+            # Cell members can only communicate within their cell
+            sender_is_cell_member = sender.level >= PermissionLevel.CELL_MEMBER
+            recipient_is_cell_member = recipient.level >= PermissionLevel.CELL_MEMBER
+            different_teams = sender.team != recipient.team
+            cross_cell = (
+                sender_is_cell_member and recipient_is_cell_member and different_teams
+            )
+            return not cross_cell
 
         return False
 
@@ -633,10 +633,9 @@ class PermissionService:
 
         if action in allowed_actions:
             # VIEW_OWN means only own cell
-            if action == TaskAction.VIEW_OWN and task_team:
-                if agent.team and agent.team != task_team:
-                    return False
-            return True
+            is_view_own = action == TaskAction.VIEW_OWN and task_team
+            wrong_team = agent.team and agent.team != task_team
+            return not (is_view_own and wrong_team)
 
         # Check VIEW_ALL permission for VIEW_OWN requests
         return bool(

@@ -14,6 +14,7 @@ Tools:
 from typing import Any
 
 import httpx
+from fastapi import status
 from mcp.server.fastmcp import FastMCP
 
 from roboco.agents_config import (
@@ -104,7 +105,7 @@ def create_notify_mcp_server(agent_id: str) -> FastMCP:
     mcp = FastMCP(f"roboco-notify-{agent_id}", json_response=True)
 
     # Store agent context
-    mcp.agent_id = agent_id  # type: ignore
+    mcp.agent_id = agent_id
 
     # =========================================================================
     # LIST NOTIFICATIONS
@@ -140,7 +141,7 @@ def create_notify_mcp_server(agent_id: str) -> FastMCP:
                 headers={"X-Agent-Id": agent_id},
             )
 
-            if resp.status_code != 200:
+            if resp.status_code != status.HTTP_200_OK:
                 return _format_error_response(
                     "API_ERROR", "Failed to fetch notifications"
                 )
@@ -194,16 +195,16 @@ def create_notify_mcp_server(agent_id: str) -> FastMCP:
                 headers={"X-Agent-Id": agent_id},
             )
 
-            if resp.status_code == 404:
+            if resp.status_code == status.HTTP_404_NOT_FOUND:
                 return _format_error_response("NOT_FOUND", "Notification not found")
 
-            if resp.status_code == 403:
+            if resp.status_code == status.HTTP_403_FORBIDDEN:
                 return _format_error_response(
                     "NOT_RECIPIENT",
                     "You are not a recipient of this notification",
                 )
 
-            if resp.status_code != 200:
+            if resp.status_code != status.HTTP_200_OK:
                 return _format_error_response(
                     "API_ERROR", "Failed to fetch notification"
                 )
@@ -246,22 +247,22 @@ def create_notify_mcp_server(agent_id: str) -> FastMCP:
                 headers={"X-Agent-Id": agent_id},
             )
 
-            if resp.status_code == 404:
+            if resp.status_code == status.HTTP_404_NOT_FOUND:
                 return _format_error_response("NOT_FOUND", "Notification not found")
 
-            if resp.status_code == 403:
+            if resp.status_code == status.HTTP_403_FORBIDDEN:
                 return _format_error_response(
                     "NOT_RECIPIENT",
                     "You are not a recipient of this notification",
                 )
 
-            if resp.status_code == 400:
+            if resp.status_code == status.HTTP_400_BAD_REQUEST:
                 return _format_error_response(
                     "NO_ACK_REQUIRED",
                     "This notification does not require acknowledgment",
                 )
 
-            if resp.status_code != 200:
+            if resp.status_code != status.HTTP_200_OK:
                 return _format_error_response(
                     "API_ERROR", "Failed to acknowledge notification"
                 )
@@ -367,7 +368,7 @@ def create_notify_mcp_server(agent_id: str) -> FastMCP:
                 headers={"X-Agent-Id": agent_id},
             )
 
-            if resp.status_code not in [200, 201]:
+            if resp.status_code not in [status.HTTP_200_OK, status.HTTP_201_CREATED]:
                 return _format_error_response(
                     "SEND_FAILED",
                     "Failed to send notification",
@@ -477,7 +478,9 @@ def create_notify_mcp_server(agent_id: str) -> FastMCP:
 if __name__ == "__main__":
     import sys
 
-    if len(sys.argv) < 2:
+    two = 2
+
+    if len(sys.argv) < two:
         print("Usage: python notify_server.py <agent_id>")
         sys.exit(1)
 

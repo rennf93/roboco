@@ -18,8 +18,8 @@ if TYPE_CHECKING:
 
 
 def add_app_context(
-    logger: logging.Logger,
-    method_name: str,
+    _logger: logging.Logger,
+    _method_name: str,
     event_dict: dict[str, Any],
 ) -> dict[str, Any]:
     """Add application context to all log entries."""

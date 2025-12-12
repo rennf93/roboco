@@ -9,6 +9,7 @@ Real-time communication via WebSocket connections for:
 
 import asyncio
 import json
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any
 from uuid import UUID
@@ -18,6 +19,19 @@ from fastapi import APIRouter, WebSocket, WebSocketDisconnect, status
 from pydantic import BaseModel
 
 from roboco.config import settings
+
+
+@dataclass
+class NewMessageBroadcast:
+    """Data for broadcasting a new message."""
+
+    channel_id: UUID
+    session_id: UUID
+    message_id: UUID
+    agent_id: UUID
+    content: str
+    message_type: str
+
 
 router = APIRouter()
 
@@ -192,7 +206,7 @@ async def validate_channel_access(channel_id: UUID, agent_id: UUID) -> bool:
                     "action": "read",
                 },
             )
-            if response.status_code == 200:
+            if response.status_code == status.HTTP_200_OK:
                 data = response.json()
                 return data.get("allowed", False)
             return False
@@ -441,27 +455,20 @@ async def notification_stream(
 # =============================================================================
 
 
-async def broadcast_new_message(
-    channel_id: UUID,
-    session_id: UUID,
-    message_id: UUID,
-    agent_id: UUID,
-    content: str,
-    message_type: str,
-) -> None:
+async def broadcast_new_message(msg: NewMessageBroadcast) -> None:
     """Broadcast a new message to channel and session subscribers."""
     event = {
         "type": "message.new",
-        "message_id": str(message_id),
-        "agent_id": str(agent_id),
-        "content": content,
-        "message_type": message_type,
+        "message_id": str(msg.message_id),
+        "agent_id": str(msg.agent_id),
+        "content": msg.content,
+        "message_type": msg.message_type,
         "timestamp": datetime.now(UTC).isoformat(),
     }
 
     await asyncio.gather(
-        manager.broadcast_to_channel(channel_id, event),
-        manager.broadcast_to_session(session_id, event),
+        manager.broadcast_to_channel(msg.channel_id, event),
+        manager.broadcast_to_session(msg.session_id, event),
     )
 
 

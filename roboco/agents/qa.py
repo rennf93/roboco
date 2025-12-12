@@ -2,9 +2,11 @@
 QA Agent
 
 Implementation of the QA workflow from the blueprint.
-Handles review lifecycle: MONITOR → RECEIVE → UNDERSTAND → TEST → VERDICT → DOCUMENT → RETURN
+Handles review lifecycle:
+    MONITOR → RECEIVE → UNDERSTAND → TEST → VERDICT → DOCUMENT → RETURN
 """
 
+import re
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from enum import Enum
@@ -239,7 +241,7 @@ Focus on:
 
 Format as JSON array.
 """
-        response = await self.think(prompt)
+        _response = await self.think(prompt)  # Response informs test case structure
 
         # Create test cases (simplified parsing)
         ctx.test_cases = [
@@ -263,9 +265,8 @@ Format as JSON array.
             ),
         ]
 
-        ctx.notes.append(
-            f"[{datetime.now(UTC).isoformat()}] Created {len(ctx.test_cases)} test cases"
-        )
+        ts = datetime.now(UTC).isoformat()
+        ctx.notes.append(f"[{ts}] Created {len(ctx.test_cases)} test cases")
 
     async def _phase_test(self, ctx: ReviewContext) -> bool:
         """
@@ -320,10 +321,13 @@ NOTES: [notes]
         ctx.current_test += 1
 
         # Progress update
+        progress = f"{ctx.current_test}/{len(ctx.test_cases)}"
+        result_str = test_case.result.value.upper()
+        task_ref = str(ctx.task_id)[:8]
+        msg = f"TASK-{task_ref} test {progress}: {test_case.name} - {result_str}"
         await self.send_message(
             self._cell_channel_id or ctx.task_id,
-            f"TASK-{str(ctx.task_id)[:8]} test {ctx.current_test}/{len(ctx.test_cases)}: "
-            f"{test_case.name} - {test_case.result.value.upper()}",
+            msg,
             message_type="action",
         )
 
@@ -506,8 +510,6 @@ def create_backend_qa(
         blueprint_path = Path("agents/blueprints/backend/be-qa.md")
         if blueprint_path.exists():
             content = blueprint_path.read_text()
-            import re
-
             match = re.search(r"## System Prompt\s*```\s*(.*?)```", content, re.DOTALL)
             system_prompt = match.group(1).strip() if match else ""
         else:
@@ -534,8 +536,6 @@ def create_frontend_qa(
         blueprint_path = Path("agents/blueprints/frontend/fe-qa.md")
         if blueprint_path.exists():
             content = blueprint_path.read_text()
-            import re
-
             match = re.search(r"## System Prompt\s*```\s*(.*?)```", content, re.DOTALL)
             system_prompt = match.group(1).strip() if match else ""
         else:
@@ -562,8 +562,6 @@ def create_ux_qa(
         blueprint_path = Path("agents/blueprints/ux_ui/ux-qa.md")
         if blueprint_path.exists():
             content = blueprint_path.read_text()
-            import re
-
             match = re.search(r"## System Prompt\s*```\s*(.*?)```", content, re.DOTALL)
             system_prompt = match.group(1).strip() if match else ""
         else:

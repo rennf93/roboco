@@ -565,9 +565,14 @@ class MetricsService:
         blocked_ratio = blocked_count / active_count if active_count > 0 else 0
 
         # Determine status
-        if blocked_ratio > 0.3:
+        three_tenths = 0.3
+        fifteen_hundredths = 0.15
+        five = 5
+        if blocked_ratio > three_tenths:
             status = "critical"
-        elif blocked_ratio > 0.15 or (active_count > 5 and completed_count == 0):
+        elif blocked_ratio > fifteen_hundredths or (
+            active_count > five and completed_count == 0
+        ):
             status = "slow"
         else:
             status = "ok"

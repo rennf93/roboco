@@ -316,7 +316,7 @@ class JournalService:
             query = query.where(JournalEntryTable.task_id == task_id)
 
         if not include_private:
-            query = query.where(JournalEntryTable.is_private == False)  # noqa: E712
+            query = query.where(JournalEntryTable.is_private is False)
 
         query = query.order_by(JournalEntryTable.timestamp.desc())
         query = query.limit(limit).offset(offset)

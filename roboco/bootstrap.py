@@ -4,21 +4,35 @@ RoboCo Bootstrap Script
 Initializes the database, creates default data, and starts the system.
 """
 
+import argparse
 import asyncio
 from pathlib import Path
+from uuid import UUID as UUIDType
 
 import structlog
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from roboco.api.routes.orchestrator import set_orchestrator
 from roboco.db.base import get_db_context, init_db
-from roboco.db.tables import AgentTable, ChannelTable
+from roboco.db.tables import (
+    AgentTable,
+    ChannelTable,
+    GroupTable,
+    MessageTable,
+    SessionTable,
+)
 from roboco.events import EventBus
 from roboco.events.handlers import register_default_handlers
+from roboco.models import AgentRole, ChannelType, MessageType, SessionStatus, Team
 from roboco.runtime import AgentOrchestrator
 
-# Global orchestrator instance (accessible by API routes and event handlers)
-_orchestrator: AgentOrchestrator | None = None
+
+class _BootstrapHolder:
+    """Holder for bootstrap singleton instances."""
+
+    orchestrator: AgentOrchestrator | None = None
+
 
 logger = structlog.get_logger()
 
@@ -222,8 +236,6 @@ AUDITOR_SILENT_ACCESS = [
 
 async def create_channels(session: AsyncSession) -> dict[str, str]:
     """Create default channels. Returns slug -> id mapping."""
-    from roboco.models import ChannelType
-
     channel_ids = {}
 
     for channel_data in DEFAULT_CHANNELS:
@@ -256,7 +268,6 @@ async def create_channels(session: AsyncSession) -> dict[str, str]:
 
 async def create_agents(session: AsyncSession) -> dict[str, str]:
     """Create default agents. Returns agent_id (slug) -> db_id mapping."""
-    from roboco.models import AgentRole, Team
 
     agent_ids = {}
 
@@ -311,8 +322,6 @@ async def create_channel_memberships(
     Note: ChannelTable uses arrays for members/writers/silent_observers
     rather than a separate membership table.
     """
-    from uuid import UUID as UUIDType
-
     for channel_slug, members in CHANNEL_MEMBERSHIPS.items():
         channel_id = channel_ids.get(channel_slug)
         if not channel_id:
@@ -355,12 +364,10 @@ async def create_channel_memberships(
                 select(ChannelTable).where(ChannelTable.id == UUIDType(channel_id))
             )
             channel = result.scalar_one_or_none()
-            if channel:
-                # Add to silent_observers (read-only)
-                if auditor_uuid not in (channel.silent_observers or []):
-                    channel.silent_observers = (channel.silent_observers or []) + [
-                        auditor_uuid
-                    ]
+            # Add auditor to silent_observers (read-only)
+            observers = channel.silent_observers or [] if channel else []
+            if channel and auditor_uuid not in observers:
+                channel.silent_observers = [*observers, auditor_uuid]
 
     logger.info("Channel memberships configured")
 
@@ -374,7 +381,7 @@ INITIAL_MESSAGES = {
         "agent_id": "main-pm",
         "content": """Welcome to RoboCo!
 
-This is the official announcements channel. Important company-wide updates will be posted here.
+This is the official announcements channel. Company-wide updates will be posted here.
 
 **Key Channels:**
 - `#backend-cell`, `#frontend-cell`, `#uxui-cell` - Team communication
@@ -469,11 +476,6 @@ async def create_initial_messages(
     agent_ids: dict[str, str],
 ) -> None:
     """Create initial welcome messages in channels."""
-    from uuid import UUID as UUIDType
-
-    from roboco.db.tables import GroupTable, MessageTable, SessionTable
-    from roboco.models import MessageType, SessionStatus
-
     for channel_slug, message_data in INITIAL_MESSAGES.items():
         channel_id_str = channel_ids.get(channel_slug)
         agent_id_str = agent_ids.get(message_data["agent_id"])
@@ -587,8 +589,6 @@ async def main(
         skip_orchestrator: Skip starting orchestrator
         spawn_agents: List of agent IDs to spawn immediately
     """
-    global _orchestrator
-
     logger.info("RoboCo Bootstrap starting...")
 
     if not skip_db:
@@ -609,22 +609,23 @@ async def main(
     orchestrator = AgentOrchestrator(
         blueprints_dir=Path("agents/blueprints"),
     )
-    _orchestrator = orchestrator
+    _BootstrapHolder.orchestrator = orchestrator
 
     # Set orchestrator in API routes
-    from roboco.api.routes.orchestrator import set_orchestrator
-
     set_orchestrator(orchestrator)
 
     await orchestrator.start()
 
     # Spawn requested agents
     if spawn_agents:
+        startup_prompt = (
+            "You are starting up. Call roboco_task_scan() to look for pending work."
+        )
         for agent_id in spawn_agents:
             try:
                 await orchestrator.spawn_agent(
                     agent_id=agent_id,
-                    initial_prompt="You are starting up. Call roboco_task_scan() to look for pending work.",
+                    initial_prompt=startup_prompt,
                 )
             except Exception as e:
                 logger.error("Failed to spawn agent", agent_id=agent_id, error=str(e))
@@ -638,14 +639,12 @@ async def main(
     finally:
         await orchestrator.stop()
         await event_bus.disconnect()
-        _orchestrator = None
+        _BootstrapHolder.orchestrator = None
         logger.info("RoboCo shutdown complete")
 
 
 def cli() -> None:
     """CLI entry point."""
-    import argparse
-
     parser = argparse.ArgumentParser(description="RoboCo Bootstrap")
     parser.add_argument(
         "--skip-db",

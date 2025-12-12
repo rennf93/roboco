@@ -33,7 +33,7 @@ async def handle_task_status_change(event: Event) -> None:
     )
 
     # Import here to avoid circular imports
-    from roboco.services.notification import NotificationService
+    from roboco.services.notification import NotificationService  # noqa: PLC0415
 
     notification_service = NotificationService()
 
@@ -129,7 +129,7 @@ async def handle_handoff_created(event: Event) -> None:
         from_agent=from_agent,
     )
 
-    from roboco.services.notification import NotificationService
+    from roboco.services.notification import NotificationService  # noqa: PLC0415
 
     notification_service = NotificationService()
 
@@ -167,7 +167,7 @@ async def handle_qa_result(event: Event) -> None:
 
     # Get orchestrator instance (if running)
     try:
-        from roboco.bootstrap import _orchestrator
+        from roboco.bootstrap import _orchestrator  # noqa: PLC0415
 
         if _orchestrator and developer_id:
             waiting = _orchestrator.get_waiting_agents()
@@ -207,7 +207,7 @@ async def handle_blocker_resolved(event: Event) -> None:
 
     # Resume agent if waiting
     try:
-        from roboco.bootstrap import _orchestrator
+        from roboco.bootstrap import _orchestrator  # noqa: PLC0415
 
         if _orchestrator and agent_id:
             waiting = _orchestrator.get_waiting_agents()
@@ -244,7 +244,7 @@ async def handle_question_answered(event: Event) -> None:
 
     # Resume agent if waiting
     try:
-        from roboco.bootstrap import _orchestrator
+        from roboco.bootstrap import _orchestrator  # noqa: PLC0415
 
         if _orchestrator and agent_id:
             waiting = _orchestrator.get_waiting_agents()

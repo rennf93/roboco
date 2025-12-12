@@ -188,5 +188,5 @@ GroupID = Annotated[UUID, Field(description="Unique group identifier")]
 class TimestampMixin(RobocoBase):
     """Mixin for models that track creation and update times."""
 
-    created_at: datetime = Field(default_factory=datetime.now(UTC))
+    created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
     updated_at: datetime | None = None

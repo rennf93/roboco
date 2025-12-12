@@ -5,15 +5,30 @@ Agent personal journals for reflection, growth tracking, and debugging.
 """
 
 from datetime import datetime
+from typing import Annotated
 from uuid import UUID
 
-from fastapi import APIRouter, HTTPException, Query, status
+from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel, Field
 
 from roboco.api.deps import CurrentAgentContext, DbSession
-from roboco.models.base import JournalEntryType
+from roboco.models.base import AgentRole, JournalEntryType
 from roboco.models.journal import JournalEntryCreate
 from roboco.services.journal import get_journal_service
+
+# =============================================================================
+# QUERY PARAMETER SCHEMAS
+# =============================================================================
+
+
+class ListEntriesParams(BaseModel):
+    """Query parameters for listing journal entries."""
+
+    entry_type: str | None = Field(None, description="Filter by entry type")
+    task_id: UUID | None = Field(None, description="Filter by task")
+    limit: int = Field(50, ge=1, le=100, description="Maximum entries to return")
+    offset: int = Field(0, ge=0, description="Number of entries to skip")
+
 
 router = APIRouter(prefix="/journals", tags=["journals"])
 
@@ -60,7 +75,7 @@ class CreateEntryRequest(BaseModel):
 
     type: str = Field(
         ...,
-        description="Entry type (task_reflection, decision_log, learning, struggle, general)",
+        description="Entry type (task_reflection, decision_log, learning, etc.)",
     )
     title: str = Field(..., min_length=1, max_length=200)
     content: str = Field(..., min_length=1)
@@ -188,7 +203,7 @@ async def get_my_journal(
 @router.get("/{agent_id}", response_model=JournalResponse)
 async def get_journal_by_agent(
     agent_id: UUID,
-    agent: CurrentAgentContext,
+    _agent: CurrentAgentContext,
     db: DbSession,
 ) -> JournalResponse:
     """
@@ -282,10 +297,7 @@ async def create_entry(
 async def list_my_entries(
     agent: CurrentAgentContext,
     db: DbSession,
-    entry_type: str | None = Query(None, description="Filter by entry type"),
-    task_id: UUID | None = Query(None, description="Filter by task"),
-    limit: int = Query(50, ge=1, le=100),
-    offset: int = Query(0, ge=0),
+    params: Annotated[ListEntriesParams, Depends()],
 ) -> list[JournalEntryResponse]:
     """List the current agent's journal entries."""
     service = get_journal_service(db)
@@ -295,9 +307,9 @@ async def list_my_entries(
         return []
 
     type_filter = None
-    if entry_type:
+    if params.entry_type:
         try:
-            type_filter = JournalEntryType(entry_type)
+            type_filter = JournalEntryType(params.entry_type)
         except ValueError as e:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
@@ -307,9 +319,9 @@ async def list_my_entries(
     entries = await service.list_entries(
         journal_id=journal.id,
         entry_type=type_filter,
-        task_id=task_id,
-        limit=limit,
-        offset=offset,
+        task_id=params.task_id,
+        limit=params.limit,
+        offset=params.offset,
         include_private=True,  # Can see own private entries
     )
 
@@ -352,15 +364,14 @@ async def get_entry(
     # Check privacy (simplified - in production would check journal ownership)
     if entry.is_private:
         journal = await service.get_journal(entry.journal_id)
-        if journal and journal.agent_id != agent.agent_id:
-            # Allow CEO and Auditor to see private entries
-            from roboco.models.base import AgentRole
-
-            if agent.role not in [AgentRole.CEO, AgentRole.AUDITOR]:
-                raise HTTPException(
-                    status_code=status.HTTP_403_FORBIDDEN,
-                    detail="This entry is private",
-                )
+        # Allow CEO and Auditor to see private entries
+        is_other_agent = journal and journal.agent_id != agent.agent_id
+        is_unprivileged = agent.role not in [AgentRole.CEO, AgentRole.AUDITOR]
+        if is_other_agent and is_unprivileged:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="This entry is private",
+            )
 
     return JournalEntryResponse(
         id=entry.id,

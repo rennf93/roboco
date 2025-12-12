@@ -16,7 +16,7 @@ from roboco.config import settings
 from roboco.db.base import Base
 
 # Import all models to ensure they're registered with Base.metadata
-from roboco.db import tables  # noqa: F401
+from roboco.db import tables
 
 # Alembic Config object
 config = context.config

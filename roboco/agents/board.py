@@ -4,12 +4,13 @@ Board Agents (Product Owner, Head of Marketing, Auditor)
 Implementation of Board-level workflows from the blueprint.
 """
 
+import re
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from enum import Enum
 from pathlib import Path
 from typing import Any
-from uuid import UUID
+from uuid import UUID, uuid4
 
 import structlog
 
@@ -71,7 +72,7 @@ class ProductOwnerAgent(Agent):
         """Product Owner always has work."""
         return self.id
 
-    async def execute_task(self, task_id: UUID) -> bool:
+    async def execute_task(self, _task_id: UUID) -> bool:
         """Execute Product Owner duties."""
         try:
             match self._current_phase:
@@ -228,7 +229,7 @@ class HeadMarketingAgent(Agent):
         """Head of Marketing always has work."""
         return self.id
 
-    async def execute_task(self, task_id: UUID) -> bool:
+    async def execute_task(self, _task_id: UUID) -> bool:
         """Execute marketing duties."""
         try:
             match self._current_phase:
@@ -374,7 +375,7 @@ class AuditorAgent(Agent):
         """Auditor always has work - watching everything."""
         return self.id
 
-    async def execute_task(self, task_id: UUID) -> bool:
+    async def execute_task(self, _task_id: UUID) -> bool:
         """Execute Auditor duties."""
         try:
             match self._current_phase:
@@ -491,8 +492,6 @@ Be thorough but fair.
 
         # Parse and create flags (simplified)
         if "concern" in analysis.lower() or "critical" in analysis.lower():
-            from uuid import uuid4
-
             self._flags.append(
                 AuditFlag(
                     id=uuid4(),
@@ -523,9 +522,10 @@ Be thorough but fair.
         self.log.debug("REPORT phase")
 
         # Check if it's time for regular report
+        hours_in_day = 24
         should_report = (
             self._last_report is None
-            or (datetime.now(UTC) - self._last_report).hours >= 24
+            or (datetime.now(UTC) - self._last_report).hours >= hours_in_day
             or any(
                 f.severity in [FlagSeverity.CONCERN, FlagSeverity.CRITICAL]
                 for f in self._flags
@@ -567,8 +567,6 @@ Be thorough but fair.
         for audit_type in audits:
             findings = await self._perform_audit(audit_type)
             if findings:
-                from uuid import uuid4
-
                 self._flags.append(
                     AuditFlag(
                         id=uuid4(),
@@ -721,8 +719,6 @@ def create_product_owner(
         blueprint_path = Path("agents/blueprints/board/product-owner.md")
         if blueprint_path.exists():
             content = blueprint_path.read_text()
-            import re
-
             match = re.search(r"## System Prompt\s*```\s*(.*?)```", content, re.DOTALL)
             system_prompt = match.group(1).strip() if match else ""
         else:
@@ -750,8 +746,6 @@ def create_head_marketing(
         blueprint_path = Path("agents/blueprints/board/head-marketing.md")
         if blueprint_path.exists():
             content = blueprint_path.read_text()
-            import re
-
             match = re.search(r"## System Prompt\s*```\s*(.*?)```", content, re.DOTALL)
             system_prompt = match.group(1).strip() if match else ""
         else:
@@ -779,8 +773,6 @@ def create_auditor(
         blueprint_path = Path("agents/blueprints/board/auditor.md")
         if blueprint_path.exists():
             content = blueprint_path.read_text()
-            import re
-
             match = re.search(r"## System Prompt\s*```\s*(.*?)```", content, re.DOTALL)
             system_prompt = match.group(1).strip() if match else ""
         else:

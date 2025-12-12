@@ -14,7 +14,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from roboco.api.deps import get_current_agent_id, get_db
 from roboco.models.base import Complexity, TaskStatus, Team
-from roboco.services.task import get_task_service
+from roboco.services.task import TaskCreateRequest, get_task_service
 
 router = APIRouter(prefix="/tasks", tags=["tasks"])
 
@@ -129,7 +129,7 @@ async def create_task(
 ):
     """Create a new task."""
     service = get_task_service(db)
-    task = await service.create(
+    req = TaskCreateRequest(
         title=data.title,
         description=data.description,
         acceptance_criteria=data.acceptance_criteria,
@@ -140,6 +140,7 @@ async def create_task(
         target_date=data.target_date,
         estimated_complexity=data.estimated_complexity,
     )
+    task = await service.create(req)
     await db.commit()
     return task
 

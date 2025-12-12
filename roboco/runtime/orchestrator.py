@@ -602,7 +602,8 @@ Start by:
                 instance.error_count += 1
 
                 # Auto-restart if not too many errors
-                if instance.error_count < 3:
+                max_retries = 3
+                if instance.error_count < max_retries:
                     logger.info("Auto-restarting agent", agent_id=agent_id)
                     await self.spawn_agent(
                         agent_id=agent_id,

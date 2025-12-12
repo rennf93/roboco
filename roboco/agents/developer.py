@@ -2,9 +2,11 @@
 Developer Agent
 
 Implementation of the Developer workflow from the blueprint.
-Handles task lifecycle: SCAN → CLAIM → UNDERSTAND → PLAN → EXECUTE → VERIFY → NOTES → CLOSE
+Handles task lifecycle:
+    SCAN → CLAIM → UNDERSTAND → PLAN → EXECUTE → VERIFY → NOTES → CLOSE
 """
 
+import re
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from enum import Enum
@@ -128,55 +130,81 @@ class DeveloperAgent(Agent):
         ctx = self._task_context
 
         try:
-            match ctx.phase:
-                case DevTaskPhase.CLAIM:
-                    await self._phase_claim(ctx)
-                    ctx.phase = DevTaskPhase.UNDERSTAND
-
-                case DevTaskPhase.UNDERSTAND:
-                    understood = await self._phase_understand(ctx)
-                    if understood:
-                        ctx.phase = DevTaskPhase.PLAN
-                    # If not understood, stay in UNDERSTAND (asking questions)
-
-                case DevTaskPhase.PLAN:
-                    await self._phase_plan(ctx)
-                    ctx.phase = DevTaskPhase.EXECUTE
-
-                case DevTaskPhase.EXECUTE:
-                    completed = await self._phase_execute(ctx)
-                    if completed:
-                        ctx.phase = DevTaskPhase.VERIFY
-
-                case DevTaskPhase.VERIFY:
-                    verified = await self._phase_verify(ctx)
-                    if verified:
-                        ctx.phase = DevTaskPhase.NOTES
-                    else:
-                        ctx.phase = DevTaskPhase.EXECUTE  # Back to fix issues
-
-                case DevTaskPhase.NOTES:
-                    await self._phase_notes(ctx)
-                    ctx.phase = DevTaskPhase.CLOSE
-
-                case DevTaskPhase.CLOSE:
-                    closed = await self._phase_close(ctx)
-                    if closed:
-                        self._task_context = None
-                        return True
-
-                case DevTaskPhase.BLOCKED:
-                    resolved = await self._handle_blocked(ctx)
-                    if resolved:
-                        ctx.phase = DevTaskPhase.EXECUTE
-
-            return False
+            completed = await self._dispatch_phase(ctx)
+            if completed:
+                self._task_context = None
+            return completed
 
         except Exception as e:
             self.log.error("Error in task phase", phase=ctx.phase.value, error=str(e))
             ctx.blockers.append(str(e))
             ctx.phase = DevTaskPhase.BLOCKED
             return False
+
+    async def _dispatch_phase(self, ctx: TaskContext) -> bool:
+        """Dispatch to the appropriate phase handler. Returns True if task complete."""
+        phase_handlers = {
+            DevTaskPhase.CLAIM: self._handle_claim_phase,
+            DevTaskPhase.UNDERSTAND: self._handle_understand_phase,
+            DevTaskPhase.PLAN: self._handle_plan_phase,
+            DevTaskPhase.EXECUTE: self._handle_execute_phase,
+            DevTaskPhase.VERIFY: self._handle_verify_phase,
+            DevTaskPhase.NOTES: self._handle_notes_phase,
+            DevTaskPhase.CLOSE: self._handle_close_phase,
+            DevTaskPhase.BLOCKED: self._handle_blocked_phase,
+        }
+        handler = phase_handlers.get(ctx.phase)
+        if handler:
+            return await handler(ctx)
+        return False
+
+    async def _handle_claim_phase(self, ctx: TaskContext) -> bool:
+        """Handle CLAIM phase transition."""
+        await self._phase_claim(ctx)
+        ctx.phase = DevTaskPhase.UNDERSTAND
+        return False
+
+    async def _handle_understand_phase(self, ctx: TaskContext) -> bool:
+        """Handle UNDERSTAND phase transition."""
+        if await self._phase_understand(ctx):
+            ctx.phase = DevTaskPhase.PLAN
+        return False
+
+    async def _handle_plan_phase(self, ctx: TaskContext) -> bool:
+        """Handle PLAN phase transition."""
+        await self._phase_plan(ctx)
+        ctx.phase = DevTaskPhase.EXECUTE
+        return False
+
+    async def _handle_execute_phase(self, ctx: TaskContext) -> bool:
+        """Handle EXECUTE phase transition."""
+        if await self._phase_execute(ctx):
+            ctx.phase = DevTaskPhase.VERIFY
+        return False
+
+    async def _handle_verify_phase(self, ctx: TaskContext) -> bool:
+        """Handle VERIFY phase transition."""
+        if await self._phase_verify(ctx):
+            ctx.phase = DevTaskPhase.NOTES
+        else:
+            ctx.phase = DevTaskPhase.EXECUTE
+        return False
+
+    async def _handle_notes_phase(self, ctx: TaskContext) -> bool:
+        """Handle NOTES phase transition."""
+        await self._phase_notes(ctx)
+        ctx.phase = DevTaskPhase.CLOSE
+        return False
+
+    async def _handle_close_phase(self, ctx: TaskContext) -> bool:
+        """Handle CLOSE phase transition."""
+        return await self._phase_close(ctx)
+
+    async def _handle_blocked_phase(self, ctx: TaskContext) -> bool:
+        """Handle BLOCKED phase transition."""
+        if await self._handle_blocked(ctx):
+            ctx.phase = DevTaskPhase.EXECUTE
+        return False
 
     # =========================================================================
     # PHASE IMPLEMENTATIONS
@@ -270,7 +298,7 @@ If clarification needed, respond with: "QUESTION: [your question]"
 Create an implementation plan for this task:
 
 Task: {ctx.title}
-Understanding: {ctx.journal_entries[-1] if ctx.journal_entries else "No previous context"}
+Understanding: {ctx.journal_entries[-1] if ctx.journal_entries else "No context"}
 
 Break this into ordered subtasks. For each subtask:
 - Clear description
@@ -289,9 +317,8 @@ Format as JSON array:
         ctx.subtasks = [{"description": response, "files": [], "complexity": "medium"}]
 
         # Journal entry
-        ctx.journal_entries.append(
-            f"[{datetime.now(UTC).isoformat()}] Plan: {len(ctx.subtasks)} subtasks created"
-        )
+        ts = datetime.now(UTC).isoformat()
+        ctx.journal_entries.append(f"[{ts}] Plan: {len(ctx.subtasks)} subtasks created")
 
         # Announce plan
         await self.send_message(
@@ -327,7 +354,7 @@ Format as JSON array:
 Execute this subtask:
 
 Task: {ctx.title}
-Subtask {ctx.current_subtask + 1}/{len(ctx.subtasks)}: {subtask.get("description", str(subtask))}
+Subtask {ctx.current_subtask + 1}/{len(ctx.subtasks)}: {subtask.get("description", "")}
 
 Provide:
 1. Code changes needed
@@ -339,18 +366,19 @@ Respond with the implementation.
         response = await self.think_and_stream(prompt)
 
         # Record work done
-        ctx.journal_entries.append(
-            f"[{datetime.now(UTC).isoformat()}] Subtask {ctx.current_subtask + 1}: {response[:100]}..."
-        )
+        ts = datetime.now(UTC).isoformat()
+        subtask_num = ctx.current_subtask + 1
+        ctx.journal_entries.append(f"[{ts}] Subtask {subtask_num}: {response[:100]}...")
 
         # Simulate commit (in real implementation would execute git)
         commit_hash = f"commit_{ctx.current_subtask}"
         ctx.commits.append(commit_hash)
 
         # Progress update
+        progress = f"{ctx.current_subtask + 1}/{len(ctx.subtasks)}"
         await self.send_message(
             self._cell_channel_id or ctx.task_id,
-            f"TASK-{str(ctx.task_id)[:8]} progress: subtask {ctx.current_subtask + 1}/{len(ctx.subtasks)} complete",
+            f"TASK-{str(ctx.task_id)[:8]} progress: subtask {progress} complete",
             message_type="action",
         )
 
@@ -424,7 +452,7 @@ Create a handoff summary including:
 3. Documentation needed
 4. Code samples to include
 """
-        handoff = await self.think(prompt)
+        _handoff = await self.think(prompt)  # Handoff content is for documenter
 
         ctx.journal_entries.append(
             f"[{datetime.now(UTC).isoformat()}] Handoff created for documenter"
@@ -602,8 +630,6 @@ def create_backend_developer(
         if blueprint_path.exists():
             content = blueprint_path.read_text()
             # Extract system prompt section (between ```blocks after ## System Prompt)
-            import re
-
             match = re.search(r"## System Prompt\s*```\s*(.*?)```", content, re.DOTALL)
             system_prompt = match.group(1).strip() if match else ""
         else:
@@ -630,8 +656,6 @@ def create_frontend_developer(
         blueprint_path = Path("agents/blueprints/frontend/fe-dev.md")
         if blueprint_path.exists():
             content = blueprint_path.read_text()
-            import re
-
             match = re.search(r"## System Prompt\s*```\s*(.*?)```", content, re.DOTALL)
             system_prompt = match.group(1).strip() if match else ""
         else:
@@ -658,8 +682,6 @@ def create_ux_developer(
         blueprint_path = Path("agents/blueprints/ux_ui/ux-dev.md")
         if blueprint_path.exists():
             content = blueprint_path.read_text()
-            import re
-
             match = re.search(r"## System Prompt\s*```\s*(.*?)```", content, re.DOTALL)
             system_prompt = match.group(1).strip() if match else ""
         else:

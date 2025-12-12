@@ -112,7 +112,7 @@ class RefreshRequest(BaseModel):
 @router.post("/kb/index/code", status_code=status.HTTP_201_CREATED)
 async def index_code(
     request: IndexCodeRequest,
-    agent: CurrentAgentContext,
+    _agent: CurrentAgentContext,
 ) -> dict[str, Any]:
     """
     Index code files/directories.
@@ -137,7 +137,7 @@ async def index_code(
 @router.post("/kb/index/docs", status_code=status.HTTP_201_CREATED)
 async def index_documentation(
     request: IndexDocsRequest,
-    agent: CurrentAgentContext,
+    _agent: CurrentAgentContext,
 ) -> dict[str, Any]:
     """
     Index documentation files.
@@ -219,7 +219,7 @@ async def search(
 async def find_similar(
     source: str,
     top_k: int = 5,
-    agent: CurrentAgentContext = None,
+    _agent: CurrentAgentContext = None,
 ) -> SearchResponse:
     """
     Find documents similar to a given source.
@@ -364,7 +364,7 @@ async def get_context(
 
 @router.get("/stats", response_model=IndexStatsResponse)
 async def get_stats(
-    agent: CurrentAgentContext,
+    _agent: CurrentAgentContext,
 ) -> IndexStatsResponse:
     """Get statistics about all indexes."""
     service = await get_optimal_service()
@@ -378,7 +378,7 @@ async def get_stats(
 @router.delete("/kb/{index_type}")
 async def clear_index(
     index_type: str,
-    agent: CurrentAgentContext,
+    _agent: CurrentAgentContext,
 ) -> dict[str, str]:
     """
     Clear a specific index.
@@ -402,7 +402,7 @@ async def clear_index(
 @router.post("/kb/refresh")
 async def refresh_index(
     request: RefreshRequest,
-    agent: CurrentAgentContext,
+    _agent: CurrentAgentContext,
 ) -> dict[str, Any]:
     """
     Refresh an index with updated sources.

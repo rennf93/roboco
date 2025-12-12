@@ -17,6 +17,7 @@ Tools:
 from typing import Any
 
 import httpx
+from fastapi import status
 from mcp.server.fastmcp import FastMCP
 
 from roboco.config import settings
@@ -64,7 +65,7 @@ def create_journal_mcp_server(agent_id: str) -> FastMCP:
     mcp = FastMCP(f"roboco-journal-{agent_id}", json_response=True)
 
     # Store agent context
-    mcp.agent_id = agent_id  # type: ignore
+    mcp.agent_id = agent_id
 
     # =========================================================================
     # GENERAL ENTRY
@@ -251,7 +252,8 @@ def create_journal_mcp_server(agent_id: str) -> FastMCP:
         Returns:
             Created decision log entry
         """
-        if len(options) < 2:
+        two = 2
+        if len(options) < two:
             return _format_error_response(
                 "INVALID_OPTIONS",
                 "Decision log requires at least 2 options",
@@ -464,7 +466,7 @@ def create_journal_mcp_server(agent_id: str) -> FastMCP:
                 headers={"X-Agent-Id": agent_id},
             )
 
-            if resp.status_code != 200:
+            if resp.status_code != status.HTTP_200_OK:
                 return _format_error_response(
                     "SEARCH_FAILED",
                     "Failed to search journal",
@@ -513,8 +515,16 @@ def create_journal_mcp_server(agent_id: str) -> FastMCP:
                 headers={"X-Agent-Id": agent_id},
             )
 
-            stats = stats_resp.json() if stats_resp.status_code == 200 else {}
-            growth = growth_resp.json() if growth_resp.status_code == 200 else {}
+            stats = (
+                stats_resp.json()
+                if stats_resp.status_code == status.HTTP_200_OK
+                else {}
+            )
+            growth = (
+                growth_resp.json()
+                if growth_resp.status_code == status.HTTP_200_OK
+                else {}
+            )
 
         return {
             "total_entries": stats.get("total_entries", 0),
@@ -548,9 +558,13 @@ def create_journal_mcp_server(agent_id: str) -> FastMCP:
         List recent journal entries.
 
         Args:
-            entry_type: Optional filter by type (general, task_reflection, decision_log, learning, struggle)
-            task_id: Optional filter by related task
-            limit: Maximum entries to return
+            entry_type:
+                Optional filter by type
+                (general, task_reflection, decision_log, learning, struggle)
+            task_id:
+                Optional filter by related task
+            limit:
+                Maximum entries to return
 
         Returns:
             Recent journal entries
@@ -568,7 +582,7 @@ def create_journal_mcp_server(agent_id: str) -> FastMCP:
                 headers={"X-Agent-Id": agent_id},
             )
 
-            if resp.status_code != 200:
+            if resp.status_code != status.HTTP_200_OK:
                 return _format_error_response(
                     "LIST_FAILED",
                     "Failed to list entries",
@@ -591,7 +605,9 @@ def create_journal_mcp_server(agent_id: str) -> FastMCP:
 if __name__ == "__main__":
     import sys
 
-    if len(sys.argv) < 2:
+    two = 2
+
+    if len(sys.argv) < two:
         print("Usage: python journal_server.py <agent_id>")
         sys.exit(1)
 

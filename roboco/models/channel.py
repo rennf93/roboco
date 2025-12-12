@@ -171,7 +171,7 @@ def create_announcements_channel(
         name="#announcements",
         slug="announcements",
         type=ChannelType.SPECIAL,
-        description="Company-wide announcements (read-only except for Board and Main PM)",
+        description="Company-wide announcements (read-only except for Board and Main PM)",  # noqa: E501
         members=all_agent_ids,
         writers=[*board_ids, main_pm_id],
         silent_observers=[auditor_id],

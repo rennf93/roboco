@@ -4,6 +4,7 @@ API Dependencies
 Shared dependencies for FastAPI routes.
 """
 
+import contextlib
 from typing import Annotated
 from uuid import UUID
 
@@ -17,16 +18,18 @@ from roboco.services.permissions import AgentContext, PermissionService
 # Type alias for database session dependency
 DbSession = Annotated[AsyncSession, Depends(get_db)]
 
-# Global service instances
-_permission_service: PermissionService | None = None
+
+class _ServiceHolder:
+    """Holder for singleton service instances."""
+
+    permission_service: PermissionService | None = None
 
 
 def get_permission_service() -> PermissionService:
     """Get or create the permission service singleton."""
-    global _permission_service
-    if _permission_service is None:
-        _permission_service = PermissionService()
-    return _permission_service
+    if _ServiceHolder.permission_service is None:
+        _ServiceHolder.permission_service = PermissionService()
+    return _ServiceHolder.permission_service
 
 
 PermissionServiceDep = Annotated[PermissionService, Depends(get_permission_service)]
@@ -137,10 +140,8 @@ async def get_agent_context(
 
     team: Team | None = None
     if x_agent_team:
-        try:
+        with contextlib.suppress(ValueError):
             team = Team(x_agent_team.lower())
-        except ValueError:
-            pass  # Team is optional
 
     return AgentContext(
         agent_id=agent_id,

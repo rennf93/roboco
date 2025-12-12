@@ -258,9 +258,10 @@ class Orchestrator:
                 )
 
             # Check for inactivity (5 minutes)
+            minutes_in_seconds = 300
             if agent.state.last_activity:
                 inactive_seconds = (now - agent.state.last_activity).total_seconds()
-                if inactive_seconds > 300 and agent.is_running:
+                if inactive_seconds > minutes_in_seconds and agent.is_running:
                     self.log.warning(
                         "Agent inactive",
                         agent_id=str(agent.id),
@@ -355,19 +356,21 @@ class Orchestrator:
 
 
 # =============================================================================
-# GLOBAL ORCHESTRATOR INSTANCE
+# SINGLETON HOLDER
 # =============================================================================
 
-# Singleton orchestrator for the application
-_orchestrator: Orchestrator | None = None
+
+class _OrchestratorHolder:
+    """Holder class for singleton orchestrator instance."""
+
+    instance: Orchestrator | None = None
 
 
 def get_orchestrator() -> Orchestrator:
     """Get or create the global orchestrator instance."""
-    global _orchestrator
-    if _orchestrator is None:
-        _orchestrator = Orchestrator()
-    return _orchestrator
+    if _OrchestratorHolder.instance is None:
+        _OrchestratorHolder.instance = Orchestrator()
+    return _OrchestratorHolder.instance
 
 
 async def start_orchestrator() -> Orchestrator:
@@ -379,7 +382,6 @@ async def start_orchestrator() -> Orchestrator:
 
 async def stop_orchestrator() -> None:
     """Stop the global orchestrator."""
-    global _orchestrator
-    if _orchestrator:
-        await _orchestrator.stop()
-        _orchestrator = None
+    if _OrchestratorHolder.instance:
+        await _OrchestratorHolder.instance.stop()
+        _OrchestratorHolder.instance = None

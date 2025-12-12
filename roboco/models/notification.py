@@ -62,7 +62,7 @@ class Notification(TimestampMixin):
     )
 
     # Timing
-    timestamp: datetime = Field(default_factory=datetime.now(UTC))
+    timestamp: datetime = Field(default_factory=lambda: datetime.now(UTC))
     expires_at: datetime | None = Field(
         default=None, description="Expiration time if applicable"
     )
@@ -225,7 +225,7 @@ def create_priority_change(
         from_agent=from_agent,
         to_agents=to_agents,
         subject=f"Priority Changed: {task_title}",
-        body=f"Task '{task_title}' priority changed to {priority_labels.get(new_priority, f'P{new_priority}')}",
+        body=f"Task '{task_title}' priority changed to {priority_labels.get(new_priority, f'P{new_priority}')}",  # noqa: E501
         related_task_id=task_id,
     )
 

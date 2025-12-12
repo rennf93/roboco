@@ -8,7 +8,7 @@ Provides aggregated views, alerts, and reporting.
 from datetime import UTC, datetime, timedelta
 from enum import Enum
 from typing import Annotated, Any
-from uuid import UUID
+from uuid import UUID, uuid4
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from pydantic import BaseModel, Field
@@ -161,14 +161,16 @@ async def get_auditor_dashboard(
 
     live_feeds = []
     for channel in channels:
+        five_minutes = 5
+        thirty_minutes = 30
         # Determine status based on last activity
         if channel.last_activity:
             minutes_ago = (
                 datetime.now(UTC) - channel.last_activity
             ).total_seconds() / 60
-            if minutes_ago < 5:
+            if minutes_ago < five_minutes:
                 status = "streaming"
-            elif minutes_ago < 30:
+            elif minutes_ago < thirty_minutes:
                 status = "idle"
             else:
                 status = "offline"
@@ -258,7 +260,7 @@ async def get_auditor_dashboard(
 
 @router.get("/auditor/flags", response_model=list[AuditorFlag])
 async def get_auditor_flags(
-    db: Annotated[AsyncSession, Depends(get_db)],
+    _db: Annotated[AsyncSession, Depends(get_db)],
     severity: FlagSeverity | None = None,
     resolved: bool = False,
 ):
@@ -287,11 +289,9 @@ async def get_auditor_flags(
 )
 async def create_auditor_flag(
     data: CreateFlagRequest,
-    db: Annotated[AsyncSession, Depends(get_db)],
+    _db: Annotated[AsyncSession, Depends(get_db)],
 ):
     """Create a new auditor flag."""
-    from uuid import uuid4
-
     flag_id = uuid4()
     flag_data = {
         "severity": data.severity.value,
@@ -353,11 +353,9 @@ async def get_auditor_reports(
 )
 async def create_auditor_report(
     data: CreateReportRequest,
-    db: Annotated[AsyncSession, Depends(get_db)],
+    _db: Annotated[AsyncSession, Depends(get_db)],
 ):
     """Create a new auditor report."""
-    from uuid import uuid4
-
     report_id = uuid4()
     report_data = {
         "report_type": data.report_type,

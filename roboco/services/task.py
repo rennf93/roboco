@@ -5,6 +5,7 @@ Provides CRUD operations and lifecycle management for tasks.
 Handles status transitions, assignments, and queries.
 """
 
+from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import Any
 from uuid import UUID
@@ -23,6 +24,21 @@ from roboco.enforcement import (
 from roboco.models.base import Complexity, HandoffStatus, TaskStatus, Team
 
 logger = structlog.get_logger()
+
+
+@dataclass
+class TaskCreateRequest:
+    """Request data for creating a task."""
+
+    title: str
+    description: str
+    acceptance_criteria: list[str]
+    team: Team
+    created_by: UUID
+    priority: int = 2
+    parent_task_id: UUID | None = None
+    target_date: datetime | None = None
+    estimated_complexity: Complexity = field(default=Complexity.MEDIUM)
 
 
 class TaskService:
@@ -44,29 +60,18 @@ class TaskService:
     # CRUD OPERATIONS
     # =========================================================================
 
-    async def create(
-        self,
-        title: str,
-        description: str,
-        acceptance_criteria: list[str],
-        team: Team,
-        created_by: UUID,
-        priority: int = 2,
-        parent_task_id: UUID | None = None,
-        target_date: datetime | None = None,
-        estimated_complexity: Complexity = Complexity.MEDIUM,
-    ) -> TaskTable:
+    async def create(self, req: TaskCreateRequest) -> TaskTable:
         """Create a new task."""
         task = TaskTable(
-            title=title,
-            description=description,
-            acceptance_criteria=acceptance_criteria,
-            team=team,
-            created_by=created_by,
-            priority=priority,
-            parent_task_id=parent_task_id,
-            target_date=target_date,
-            estimated_complexity=estimated_complexity,
+            title=req.title,
+            description=req.description,
+            acceptance_criteria=req.acceptance_criteria,
+            team=req.team,
+            created_by=req.created_by,
+            priority=req.priority,
+            parent_task_id=req.parent_task_id,
+            target_date=req.target_date,
+            estimated_complexity=req.estimated_complexity,
             status=TaskStatus.PENDING,
         )
         self.session.add(task)
@@ -75,8 +80,8 @@ class TaskService:
         logger.info(
             "Task created",
             task_id=str(task.id),
-            title=title,
-            team=team.value,
+            title=req.title,
+            team=req.team.value,
         )
         return task
 

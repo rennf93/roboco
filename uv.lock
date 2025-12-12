@@ -7,6 +7,15 @@ resolution-markers = [
 ]
 
 [[package]]
+name = "aiofiles"
+version = "25.1.0"
+source = { registry = "https://pkgs.safetycli.com/repository/renzof/pypi/simple/" }
+sdist = { url = "https://pkgs.safetycli.com/package/renzof/pypi/packages/41/c3/534eac40372d8ee36ef40df62ec129bee4fdb5ad9706e58a29be53b2c970/aiofiles-25.1.0.tar.gz", hash = "sha256:a8d728f0a29de45dc521f18f07297428d56992a742f0cd2701ba86e44d23d5b2", size = 46354, upload-time = "2025-10-09T20:51:04.358Z" }
+wheels = [
+    { url = "https://pkgs.safetycli.com/package/renzof/pypi/packages/bc/8a/340a1555ae33d7354dbca4faa54948d76d89a27ceef032c8c3bc661d003e/aiofiles-25.1.0-py3-none-any.whl", hash = "sha256:abe311e527c862958650f9438e859c1fa7568a141b22abcd015e120e86a85695", size = 14668, upload-time = "2025-10-09T20:51:03.174Z" },
+]
+
+[[package]]
 name = "alembic"
 version = "1.17.2"
 source = { registry = "https://pkgs.safetycli.com/repository/renzof/pypi/simple/" }
@@ -1130,19 +1139,19 @@ wheels = [
 
 [[package]]
 name = "lance-namespace"
-version = "0.2.1"
+version = "0.3.0"
 source = { registry = "https://pkgs.safetycli.com/repository/renzof/pypi/simple/" }
 dependencies = [
     { name = "lance-namespace-urllib3-client" },
 ]
-sdist = { url = "https://pkgs.safetycli.com/package/renzof/pypi/packages/ae/a0/54aae8694869594b65bb6733811e43307bf5485cf9574bf28e50673ae5cf/lance_namespace-0.2.1.tar.gz", hash = "sha256:b4f18c5bb86486937a79ed89f0eb5b30aba907bb8a854824b450f2a30f4f38d9", size = 6082, upload-time = "2025-11-28T07:20:32.703Z" }
+sdist = { url = "https://pkgs.safetycli.com/package/renzof/pypi/packages/df/af/5a8ca441cce0bc499f6c621adb90de1c19ad9df5a17b069f20b645d03d54/lance_namespace-0.3.0.tar.gz", hash = "sha256:67f467261958530ff5447062b56c0a07301f42dacfd0ee12d9cfaa544715922f", size = 6828, upload-time = "2025-12-11T00:21:04.63Z" }
 wheels = [
-    { url = "https://pkgs.safetycli.com/package/renzof/pypi/packages/87/de/16ea77c472c0f9d2d9ecabf5746a90d9ed9c1b1504ca659b1ce0c4833613/lance_namespace-0.2.1-py3-none-any.whl", hash = "sha256:12809ceaf13616b8e6e0caf3f84a2d921deb5436b0d3769ef021e335022f2d80", size = 7566, upload-time = "2025-11-28T07:20:31.689Z" },
+    { url = "https://pkgs.safetycli.com/package/renzof/pypi/packages/87/d6/03e42e3372dbddd5e64487923851abe337daaff590cbd325b675816e35d4/lance_namespace-0.3.0-py3-none-any.whl", hash = "sha256:346fe74d252bd81e71e1aead825851bcfd81992330046693330c0cac3d6bdbd0", size = 8330, upload-time = "2025-12-11T00:21:05.336Z" },
 ]
 
 [[package]]
 name = "lance-namespace-urllib3-client"
-version = "0.2.1"
+version = "0.3.0"
 source = { registry = "https://pkgs.safetycli.com/repository/renzof/pypi/simple/" }
 dependencies = [
     { name = "pydantic" },
@@ -1150,9 +1159,9 @@ dependencies = [
     { name = "typing-extensions" },
     { name = "urllib3" },
 ]
-sdist = { url = "https://pkgs.safetycli.com/package/renzof/pypi/packages/1e/1d/b2037e7bfa1802d1e5a8e59b26081043f0352eec55ab58a5002ab6b4a2a3/lance_namespace_urllib3_client-0.2.1.tar.gz", hash = "sha256:68640e279d1d52fe2a65f82b832ec5f63bd1304271014c9dffe074da564bde1b", size = 134044, upload-time = "2025-11-28T07:20:28.953Z" }
+sdist = { url = "https://pkgs.safetycli.com/package/renzof/pypi/packages/57/2d/99a80e5374a79caea636d3a7d4b273cb8960daa645f855a695d7581a1e9d/lance_namespace_urllib3_client-0.3.0.tar.gz", hash = "sha256:9de100e48bbd36069af7f543fa3e8a50e379f306bf2c191938138ef300186307", size = 152580, upload-time = "2025-12-11T00:21:03.463Z" }
 wheels = [
-    { url = "https://pkgs.safetycli.com/package/renzof/pypi/packages/59/b4/40b75958172ce8211258c50e086adfb95f3211f7dc2fe9271a924d9ef2e1/lance_namespace_urllib3_client-0.2.1-py3-none-any.whl", hash = "sha256:3b3efbdab3783fd04f3c8d7b186dbf6244507485fac374bd2dd49ea61cb84cc7", size = 228490, upload-time = "2025-11-28T07:20:30.349Z" },
+    { url = "https://pkgs.safetycli.com/package/renzof/pypi/packages/a0/6c/6a32fd2a101363acc0d3265d752fd111185707a33204751858c9b7b3a8ac/lance_namespace_urllib3_client-0.3.0-py3-none-any.whl", hash = "sha256:ff0eed4037d69ed74d455fa737c890c7b6839df083b95e1c354ebb098a3871e1", size = 260120, upload-time = "2025-12-11T00:21:06.634Z" },
 ]
 
 [[package]]
@@ -2757,6 +2766,7 @@ name = "roboco"
 version = "0.1.0"
 source = { editable = "." }
 dependencies = [
+    { name = "aiofiles" },
     { name = "alembic" },
     { name = "anthropic" },
     { name = "asyncpg" },
@@ -2805,6 +2815,7 @@ docs = [
 
 [package.metadata]
 requires-dist = [
+    { name = "aiofiles" },
     { name = "alembic" },
     { name = "anthropic" },
     { name = "asyncpg" },

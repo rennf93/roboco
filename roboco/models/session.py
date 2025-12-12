@@ -73,8 +73,8 @@ class Session(TimestampMixin):
     status: SessionStatus = Field(default=SessionStatus.ACTIVE)
 
     # Timestamps
-    started_at: datetime = Field(default_factory=datetime.now(UTC))
-    last_activity_at: datetime = Field(default_factory=datetime.now(UTC))
+    started_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
+    last_activity_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
     closed_at: datetime | None = None
 
     # Statistics

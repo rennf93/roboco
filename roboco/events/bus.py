@@ -264,16 +264,17 @@ class EventBus:
             logger.error("Failed to handle message", error=str(e))
 
 
-# Global event bus instance
-_event_bus: EventBus | None = None
+class _EventBusHolder:
+    """Holder for singleton EventBus instance."""
+
+    instance: EventBus | None = None
 
 
 def get_event_bus() -> EventBus:
     """Get or create the global event bus instance."""
-    global _event_bus
-    if _event_bus is None:
-        _event_bus = EventBus()
-    return _event_bus
+    if _EventBusHolder.instance is None:
+        _EventBusHolder.instance = EventBus()
+    return _EventBusHolder.instance
 
 
 async def init_event_bus() -> EventBus:

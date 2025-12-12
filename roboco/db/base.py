@@ -31,36 +31,36 @@ class Base(DeclarativeBase):
     metadata = MetaData(naming_convention=convention)
 
 
-# Engine and session factory (initialized lazily)
-_engine = None
-_async_session_factory = None
+class _DbHolder:
+    """Holder for database engine and session factory singletons."""
+
+    engine = None
+    session_factory: async_sessionmaker[AsyncSession] | None = None
 
 
 def get_engine():
     """Get or create the async engine."""
-    global _engine
-    if _engine is None:
-        _engine = create_async_engine(
+    if _DbHolder.engine is None:
+        _DbHolder.engine = create_async_engine(
             settings.database_url,
             echo=settings.database_echo,
             pool_size=settings.database_pool_size,
             max_overflow=settings.database_max_overflow,
             pool_pre_ping=True,
         )
-    return _engine
+    return _DbHolder.engine
 
 
 def get_session_factory() -> async_sessionmaker[AsyncSession]:
     """Get or create the async session factory."""
-    global _async_session_factory
-    if _async_session_factory is None:
-        _async_session_factory = async_sessionmaker(
+    if _DbHolder.session_factory is None:
+        _DbHolder.session_factory = async_sessionmaker(
             bind=get_engine(),
             class_=AsyncSession,
             expire_on_commit=False,
             autoflush=False,
         )
-    return _async_session_factory
+    return _DbHolder.session_factory
 
 
 async def get_db() -> AsyncGenerator[AsyncSession]:
@@ -125,8 +125,7 @@ async def drop_db() -> None:
 
 async def close_db() -> None:
     """Close the database connection."""
-    global _engine, _async_session_factory
-    if _engine is not None:
-        await _engine.dispose()
-        _engine = None
-        _async_session_factory = None
+    if _DbHolder.engine is not None:
+        await _DbHolder.engine.dispose()
+        _DbHolder.engine = None
+        _DbHolder.session_factory = None
