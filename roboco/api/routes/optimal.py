@@ -4,13 +4,15 @@ Optimal API Routes
 Knowledge base, RAG queries, and semantic search endpoints.
 """
 
+from datetime import UTC, datetime
 from typing import Any
-from uuid import UUID
+from uuid import UUID, uuid4
 
 from fastapi import APIRouter, HTTPException, status
 from pydantic import BaseModel, Field
 
 from roboco.api.deps import CurrentAgentContext
+from roboco.models import AgentRole
 from roboco.services.optimal import (
     IndexType,
     QueryContext,
@@ -104,16 +106,80 @@ class RefreshRequest(BaseModel):
     sources: list[str] = Field(..., min_length=1, description="Sources to refresh")
 
 
+class IndexResponse(BaseModel):
+    """Response from indexing operations."""
+
+    indexed: int
+    sources: list[str]
+    project: str | None
+
+
+class ClearIndexResponse(BaseModel):
+    """Response from clearing an index."""
+
+    status: str
+    index_type: str
+
+
+class RefreshIndexResponse(BaseModel):
+    """Response from refreshing an index."""
+
+    status: str
+    index_type: str
+    sources: list[str]
+
+
+class PromptTemplateRequest(BaseModel):
+    """Request to create/manage a prompt template."""
+
+    name: str = Field(..., min_length=1, max_length=100, description="Template name")
+    template: str = Field(..., min_length=1, description="Prompt template")
+    description: str | None = Field(None, description="Template description")
+    variables: list[str] = Field(default_factory=list, description="Variables")
+    category: str | None = Field(None, description="Template category")
+
+
+class PromptTemplateResponse(BaseModel):
+    """Response for prompt template."""
+
+    id: str
+    name: str
+    template: str
+    description: str | None
+    variables: list[str]
+    category: str | None
+    created_at: str
+
+
+class TokenEstimateRequest(BaseModel):
+    """Request to estimate token count."""
+
+    content: str = Field(..., min_length=1, description="Content to estimate")
+    model: str = Field("claude-sonnet-4-20250514", description="Model")
+
+
+class TokenEstimateResponse(BaseModel):
+    """Response with token count estimate."""
+
+    token_count: int
+    model: str
+    content_length: int
+
+
 # =============================================================================
 # INDEXING ENDPOINTS
 # =============================================================================
 
 
-@router.post("/kb/index/code", status_code=status.HTTP_201_CREATED)
+@router.post(
+    "/kb/index/code",
+    response_model=IndexResponse,
+    status_code=status.HTTP_201_CREATED,
+)
 async def index_code(
     request: IndexCodeRequest,
-    _agent: CurrentAgentContext,
-) -> dict[str, Any]:
+    agent: CurrentAgentContext,
+) -> IndexResponse:
     """
     Index code files/directories.
 
@@ -122,23 +188,35 @@ async def index_code(
     - Directories
     - Glob patterns (e.g., "src/**/*.py")
     """
+    # Only developers and PMs can index code
+    allowed = {AgentRole.DEVELOPER, AgentRole.CELL_PM, AgentRole.MAIN_PM, AgentRole.CEO}
+    if agent.role not in allowed:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Not authorized to index code",
+        )
+
     service = await get_optimal_service()
     count = await service.index_code(
         sources=request.sources,
         project=request.project,
     )
-    return {
-        "indexed": count,
-        "sources": request.sources,
-        "project": request.project,
-    }
+    return IndexResponse(
+        indexed=count,
+        sources=request.sources,
+        project=request.project,
+    )
 
 
-@router.post("/kb/index/docs", status_code=status.HTTP_201_CREATED)
+@router.post(
+    "/kb/index/docs",
+    response_model=IndexResponse,
+    status_code=status.HTTP_201_CREATED,
+)
 async def index_documentation(
     request: IndexDocsRequest,
-    _agent: CurrentAgentContext,
-) -> dict[str, Any]:
+    agent: CurrentAgentContext,
+) -> IndexResponse:
     """
     Index documentation files.
 
@@ -147,16 +225,30 @@ async def index_documentation(
     - URLs (single page or crawl with /**)
     - Glob patterns
     """
+    # Documenters and above can index docs
+    allowed = {
+        AgentRole.DOCUMENTER,
+        AgentRole.DEVELOPER,
+        AgentRole.CELL_PM,
+        AgentRole.MAIN_PM,
+        AgentRole.CEO,
+    }
+    if agent.role not in allowed:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Not authorized to index documentation",
+        )
+
     service = await get_optimal_service()
     count = await service.index_documentation(
         sources=request.sources,
         project=request.project,
     )
-    return {
-        "indexed": count,
-        "sources": request.sources,
-        "project": request.project,
-    }
+    return IndexResponse(
+        indexed=count,
+        sources=request.sources,
+        project=request.project,
+    )
 
 
 # =============================================================================
@@ -215,21 +307,23 @@ async def search(
     )
 
 
-@router.get("/kb/similar")
+@router.get("/kb/similar", response_model=SearchResponse)
 async def find_similar(
     source: str,
+    agent: CurrentAgentContext,
     top_k: int = 5,
-    _agent: CurrentAgentContext = None,
 ) -> SearchResponse:
     """
     Find documents similar to a given source.
 
     Pass a file path or URL to find similar content.
     """
+    context = QueryContext(agent_id=agent.agent_id)
+
     service = await get_optimal_service()
-    # Use the source content as the query
     results = await service.search(
         query=f"Find documents similar to: {source}",
+        context=context,
         top_k=top_k,
     )
 
@@ -364,9 +458,17 @@ async def get_context(
 
 @router.get("/stats", response_model=IndexStatsResponse)
 async def get_stats(
-    _agent: CurrentAgentContext,
+    agent: CurrentAgentContext,
 ) -> IndexStatsResponse:
     """Get statistics about all indexes."""
+    # PMs and above can view stats
+    allowed = {AgentRole.CELL_PM, AgentRole.MAIN_PM, AgentRole.CEO, AgentRole.AUDITOR}
+    if agent.role not in allowed:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Not authorized to view index statistics",
+        )
+
     service = await get_optimal_service()
     stats = await service.get_stats()
     return IndexStatsResponse(
@@ -375,16 +477,24 @@ async def get_stats(
     )
 
 
-@router.delete("/kb/{index_type}")
+@router.delete("/kb/{index_type}", response_model=ClearIndexResponse)
 async def clear_index(
     index_type: str,
-    _agent: CurrentAgentContext,
-) -> dict[str, str]:
+    agent: CurrentAgentContext,
+) -> ClearIndexResponse:
     """
     Clear a specific index.
 
     Warning: This permanently deletes all documents in the index.
     """
+    # Only Main PM and CEO can clear indexes (destructive operation)
+    allowed = {AgentRole.MAIN_PM, AgentRole.CEO}
+    if agent.role not in allowed:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Not authorized to clear indexes",
+        )
+
     try:
         idx_type = IndexType(index_type)
     except ValueError as e:
@@ -396,19 +506,27 @@ async def clear_index(
     service = await get_optimal_service()
     await service.clear_index(idx_type)
 
-    return {"status": "cleared", "index_type": index_type}
+    return ClearIndexResponse(status="cleared", index_type=index_type)
 
 
-@router.post("/kb/refresh")
+@router.post("/kb/refresh", response_model=RefreshIndexResponse)
 async def refresh_index(
     request: RefreshRequest,
-    _agent: CurrentAgentContext,
-) -> dict[str, Any]:
+    agent: CurrentAgentContext,
+) -> RefreshIndexResponse:
     """
     Refresh an index with updated sources.
 
     Re-indexes the specified sources to pick up changes.
     """
+    # Developers and PMs can refresh indexes
+    allowed = {AgentRole.DEVELOPER, AgentRole.CELL_PM, AgentRole.MAIN_PM, AgentRole.CEO}
+    if agent.role not in allowed:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Not authorized to refresh indexes",
+        )
+
     try:
         idx_type = IndexType(request.index_type)
     except ValueError as e:
@@ -420,8 +538,111 @@ async def refresh_index(
     service = await get_optimal_service()
     await service.refresh_index(idx_type, request.sources)
 
-    return {
-        "status": "refreshed",
-        "index_type": request.index_type,
-        "sources": request.sources,
+    return RefreshIndexResponse(
+        status="refreshed",
+        index_type=request.index_type,
+        sources=request.sources,
+    )
+
+
+# =============================================================================
+# PROMPT TEMPLATE ENDPOINTS
+# =============================================================================
+
+# In-memory prompt template storage (would be database in production)
+_prompt_templates: dict[str, dict[str, Any]] = {}
+
+
+@router.post(
+    "/prompts",
+    response_model=PromptTemplateResponse,
+    status_code=status.HTTP_201_CREATED,
+)
+async def create_prompt_template(
+    request: PromptTemplateRequest,
+    agent: CurrentAgentContext,
+) -> PromptTemplateResponse:
+    """
+    Create a reusable prompt template.
+
+    Templates can include {variables} that get substituted when rendering.
+    """
+    # Any authenticated agent can create prompt templates
+    template_id = str(uuid4())
+    created_at = datetime.now(UTC).isoformat()
+
+    _prompt_templates[template_id] = {
+        "id": template_id,
+        "name": request.name,
+        "template": request.template,
+        "description": request.description,
+        "variables": request.variables,
+        "category": request.category,
+        "created_at": created_at,
+        "created_by": str(agent.agent_id),
     }
+
+    return PromptTemplateResponse(
+        id=template_id,
+        name=request.name,
+        template=request.template,
+        description=request.description,
+        variables=request.variables,
+        category=request.category,
+        created_at=created_at,
+    )
+
+
+@router.get("/prompts", response_model=list[PromptTemplateResponse])
+async def list_prompt_templates(
+    agent: CurrentAgentContext,
+    category: str | None = None,
+) -> list[PromptTemplateResponse]:
+    """List all prompt templates, optionally filtered by category."""
+    # Any authenticated agent can list templates
+    _ = agent  # Used for authentication
+    templates = list(_prompt_templates.values())
+
+    if category:
+        templates = [t for t in templates if t.get("category") == category]
+
+    return [
+        PromptTemplateResponse(
+            id=t["id"],
+            name=t["name"],
+            template=t["template"],
+            description=t["description"],
+            variables=t["variables"],
+            category=t["category"],
+            created_at=t["created_at"],
+        )
+        for t in templates
+    ]
+
+
+# =============================================================================
+# TOKEN ESTIMATION ENDPOINTS
+# =============================================================================
+
+
+@router.post("/tokens/estimate", response_model=TokenEstimateResponse)
+async def estimate_tokens(
+    request: TokenEstimateRequest,
+    agent: CurrentAgentContext,
+) -> TokenEstimateResponse:
+    """
+    Estimate token count for content.
+
+    Uses a simple character-based estimation (avg 4 chars per token for English).
+    For exact counts, use the Anthropic tokenizer directly.
+    """
+    # Any authenticated agent can estimate tokens
+    _ = agent  # Used for authentication
+    content_length = len(request.content)
+    estimated_tokens = max(1, content_length // 4)
+
+    return TokenEstimateResponse(
+        token_count=estimated_tokens,
+        model=request.model,
+        content_length=content_length,
+    )
