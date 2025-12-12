@@ -29,6 +29,19 @@ logger = structlog.get_logger()
 # Maximum length for raw excerpt storage
 MAX_EXCERPT_LENGTH = 200
 
+
+@dataclass
+class ExtractionContext:
+    """Context for message extraction."""
+
+    content: str
+    agent_id: UUID
+    channel_id: UUID
+    session_id: UUID
+    group_id: UUID
+    task_id: UUID | None = None
+
+
 # =============================================================================
 # EXTRACTION PATTERNS
 # =============================================================================
@@ -202,40 +215,27 @@ class ExtractionService:
         # Mention pattern
         self._mention_pattern = re.compile(r"@(\w+)")
 
-    async def extract(
-        self,
-        content: str,
-        agent_id: UUID,
-        channel_id: UUID,
-        session_id: UUID,
-        group_id: UUID,
-        task_id: UUID | None = None,
-    ) -> ExtractionResult:
+    async def extract(self, ctx: ExtractionContext) -> ExtractionResult:
         """
         Extract messages from raw content.
 
         Args:
-            content: Raw LLM output text
-            agent_id: Agent who produced the content
-            channel_id: Target channel
-            session_id: Current session
-            group_id: Group within channel
-            task_id: Optional related task
+            ctx: Extraction context with content and metadata
 
         Returns:
             ExtractionResult with extracted messages
         """
-        if len(content) < self.config.min_content_length:
+        if len(ctx.content) < self.config.min_content_length:
             return ExtractionResult(
                 messages=[],
-                raw_content=content,
-                agent_id=agent_id,
-                channel_id=channel_id,
-                session_id=session_id,
+                raw_content=ctx.content,
+                agent_id=ctx.agent_id,
+                channel_id=ctx.channel_id,
+                session_id=ctx.session_id,
             )
 
         # Segment the content
-        segments = self._segment_content(content)
+        segments = self._segment_content(ctx.content)
 
         messages: list[ExtractedMessage] = []
         pattern_matches: dict[str, list[str]] = {}
@@ -264,15 +264,15 @@ class ExtractionService:
             # Create message
             message = ExtractedMessage(
                 id=uuid4(),
-                agent_id=agent_id,
-                channel_id=channel_id,
-                group_id=group_id,
-                session_id=session_id,
+                agent_id=ctx.agent_id,
+                channel_id=ctx.channel_id,
+                group_id=ctx.group_id,
+                session_id=ctx.session_id,
                 type=msg_type,
                 content=segment.strip(),
                 content_length=len(segment.strip()),
                 mentions=mentions,
-                task_id=task_id,
+                task_id=ctx.task_id,
                 confidence=confidence,
                 raw_excerpt=segment[:MAX_EXCERPT_LENGTH]
                 if len(segment) > MAX_EXCERPT_LENGTH
@@ -284,17 +284,17 @@ class ExtractionService:
 
         result = ExtractionResult(
             messages=messages,
-            raw_content=content,
-            agent_id=agent_id,
-            channel_id=channel_id,
-            session_id=session_id,
+            raw_content=ctx.content,
+            agent_id=ctx.agent_id,
+            channel_id=ctx.channel_id,
+            session_id=ctx.session_id,
             pattern_matches=pattern_matches,
             confidence_scores=confidence_scores,
         )
 
         self.log.info(
             "Extraction complete",
-            agent_id=str(agent_id),
+            agent_id=str(ctx.agent_id),
             message_count=result.message_count,
             types=result.types_extracted,
         )
@@ -365,46 +365,41 @@ class ExtractionService:
 
         return best_type, confidence, matches
 
-    async def extract_with_llm(
-        self,
-        content: str,
-        agent_id: UUID,
-        channel_id: UUID,
-        session_id: UUID,
-        group_id: UUID,
-        task_id: UUID | None = None,
-    ) -> ExtractionResult:
+    async def extract_with_llm(self, ctx: ExtractionContext) -> ExtractionResult:
         """
         Extract messages using LLM classification.
 
         This is more accurate but slower and more expensive.
         Falls back to pattern matching if LLM unavailable.
+        Uses TOON format for token-efficient communication.
         """
         from anthropic import AsyncAnthropic
 
         from roboco.config import settings
+        from roboco.llm import ToonAdapter
+
+        toon = ToonAdapter()
 
         try:
             client = AsyncAnthropic(api_key=settings.anthropic_api_key)
 
-            # Build prompt for LLM classification
+            # Build prompt for LLM classification using TOON
             prompt = f"""Analyze this agent output and classify each distinct segment.
 
 Agent output:
-{content}
+{ctx.content}
 
 For each segment, identify:
 - type: one of [reasoning, dialogue, decision, action, blocker, technical]
 - content: the segment text
 - confidence: 0.0 to 1.0
 
-Return as JSON array of objects. Example:
-[
-  {{"type": "reasoning", "content": "Analyzing the problem...", "confidence": 0.9}},
-  {{"type": "action", "content": "Creating file utils.py", "confidence": 0.95}}
-]
+Return as TOON tabular format:
+[N,]{{type,content,confidence}}:
+reasoning,Analyzing the problem...,0.9
+action,Creating file utils.py,0.95
 
-Output only valid JSON, no other text."""
+Output only valid TOON, no other text."""
 
             response = await client.messages.create(
                 model="claude-3-haiku-20240307",  # Fast, cheap for classification
@@ -412,11 +407,9 @@ Output only valid JSON, no other text."""
                 messages=[{"role": "user", "content": prompt}],
             )
 
-            # Parse response
-            import json
-
+            # Parse response using TOON (falls back to JSON)
             response_text = response.content[0].text
-            segments = json.loads(response_text)
+            segments = toon.decode(response_text)
 
             messages: list[ExtractedMessage] = []
             for segment in segments:
@@ -430,11 +423,11 @@ Output only valid JSON, no other text."""
                         id=uuid4(),
                         content=msg_content,
                         message_type=msg_type,
-                        agent_id=agent_id,
-                        channel_id=channel_id,
-                        session_id=session_id,
-                        group_id=group_id,
-                        task_id=task_id,
+                        agent_id=ctx.agent_id,
+                        channel_id=ctx.channel_id,
+                        session_id=ctx.session_id,
+                        group_id=ctx.group_id,
+                        task_id=ctx.task_id,
                         confidence=confidence,
                         metadata={"extraction_method": "llm"},
                     )
@@ -442,7 +435,7 @@ Output only valid JSON, no other text."""
 
             return ExtractionResult(
                 messages=messages,
-                raw_content=content,
+                raw_content=ctx.content,
                 extraction_time=0.0,  # Could measure actual time
                 confidence=sum(m.confidence for m in messages) / max(1, len(messages)),
             )
@@ -450,14 +443,7 @@ Output only valid JSON, no other text."""
         except Exception as e:
             # Fall back to pattern matching
             self.log.warning("LLM extraction failed, using patterns", error=str(e))
-            return await self.extract(
-                content=content,
-                agent_id=agent_id,
-                channel_id=channel_id,
-                session_id=session_id,
-                group_id=group_id,
-                task_id=task_id,
-            )
+            return await self.extract(ctx)
 
 
 # =============================================================================
@@ -496,26 +482,11 @@ class ExtractionPipeline:
         """Register a callback for extracted messages."""
         self._message_callbacks.append(callback)
 
-    async def process_buffer(
-        self,
-        content: str,
-        agent_id: UUID,
-        channel_id: UUID,
-        session_id: UUID,
-        group_id: UUID,
-        task_id: UUID | None = None,
-    ) -> ExtractionResult:
+    async def process_buffer(self, ctx: ExtractionContext) -> ExtractionResult:
         """
         Process a buffer and invoke callbacks for each message.
         """
-        result = await self.extraction.extract(
-            content=content,
-            agent_id=agent_id,
-            channel_id=channel_id,
-            session_id=session_id,
-            group_id=group_id,
-            task_id=task_id,
-        )
+        result = await self.extraction.extract(ctx)
 
         # Invoke callbacks for each message
         for message in result.messages:

@@ -27,6 +27,10 @@ from fastapi import status
 from mcp.server.fastmcp import FastMCP
 
 from roboco.config import settings
+from roboco.llm import ToonAdapter
+
+# Global TOON adapter for encoding task data
+_toon = ToonAdapter()
 
 # =============================================================================
 # VALID STATE TRANSITIONS
@@ -63,15 +67,25 @@ def _format_task_response(
     guidance: str,
     project: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    """Format a standardized task response with guidance."""
+    """
+    Format a standardized task response with guidance.
+
+    Includes both JSON task data and TOON-encoded version for
+    token-efficient LLM consumption.
+    """
+    # Encode task data as TOON for token efficiency when LLM processes response
+    task_toon = _toon.encode(task)
+
     response = {
         "status": task.get("status"),
         "task": task,
+        "task_toon": task_toon,  # TOON-encoded for LLM token efficiency
         "next_step": next_step,
         "guidance": guidance,
     }
     if project:
         response["project"] = project
+        response["project_toon"] = _toon.encode(project)
     return response
 
 

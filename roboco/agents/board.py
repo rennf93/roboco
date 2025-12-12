@@ -153,17 +153,20 @@ class ProductOwnerAgent(Agent):
             result = await self._api_call("GET", f"/tasks/{task_id}")
             acceptance_criteria = result.get("acceptance_criteria", [])
 
-            # Use LLM to check if criteria are met
-            prompt = f"""
-Review this completed feature against its acceptance criteria:
+            # Use TOON for token-efficient context encoding
+            task_context = self.format_context_labeled(
+                "Feature Review",
+                {
+                    "title": result.get("title", "Unknown"),
+                    "description": result.get("description", "No description"),
+                    "acceptance_criteria": acceptance_criteria,
+                    "dev_notes": result.get("dev_notes", "None"),
+                },
+            )
 
-Task: {result.get("title", "Unknown")}
-Description: {result.get("description", "No description")}
+            prompt = f"""Review this completed feature against its acceptance criteria:
 
-Acceptance Criteria:
-{chr(10).join(f"- {c}" for c in acceptance_criteria)}
-
-Dev Notes: {result.get("dev_notes", "None")}
+{task_context}
 
 Determine if all criteria are met. Respond with:
 ACCEPTED: [reason] or NEEDS_CHANGES: [what's missing]
@@ -465,11 +468,15 @@ class AuditorAgent(Agent):
         if not self._observations:
             return
 
-        prompt = f"""
-Analyze these observations for quality and efficiency issues:
+        # Use TOON for token-efficient context encoding
+        observations_context = self.format_context_labeled(
+            "Observations",
+            {"recent": self._observations[-50:]},
+        )
 
-Observations:
-{chr(10).join(str(o) for o in self._observations[-50:])}
+        prompt = f"""Analyze these observations for quality and efficiency issues:
+
+{observations_context}
 
 Look for:
 1. Efficiency issues - wasted effort, unclear processes
@@ -478,14 +485,9 @@ Look for:
 4. Process violations - skipping QA, missing documentation
 5. Team health - frustration, conflicts
 
-For each issue found, provide:
-- Category
-- Severity (info/warning/concern/critical)
-- Description
-- Evidence
-- Recommendation
-
-Be thorough but fair.
+Format response as TOON tabular:
+[N,]{{category,severity,description,evidence,recommendation}}:
+efficiency,warning,Unclear handoff process,3 tasks delayed,Document handoff steps
 """
         analysis = await self.think(prompt)
         self.log.info("Analysis complete", analysis_length=len(analysis))

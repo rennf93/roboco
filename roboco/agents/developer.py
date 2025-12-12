@@ -249,13 +249,16 @@ class DeveloperAgent(Agent):
         # Read task requirements
         requirements = await self._read_task_requirements(ctx.task_id)
 
-        # Use LLM to understand and identify gaps
-        prompt = f"""
-You are analyzing a task before beginning work.
+        # Format context using TOON for token efficiency
+        task_context = self.format_context_labeled(
+            "Task Context",
+            {"title": ctx.title, "requirements": requirements},
+        )
 
-Task: {ctx.title}
-Requirements:
-{requirements}
+        # Use LLM to understand and identify gaps
+        prompt = f"""You are analyzing a task before beginning work.
+
+{task_context}
 
 Analyze:
 1. What exactly needs to be done?
@@ -293,28 +296,48 @@ If clarification needed, respond with: "QUESTION: [your question]"
         """
         self.log.info("PLAN phase", task_id=str(ctx.task_id))
 
-        # Use LLM to create plan
-        prompt = f"""
-Create an implementation plan for this task:
+        # Format context using TOON
+        plan_context = self.format_context_labeled(
+            "Task",
+            {
+                "title": ctx.title,
+                "understanding": ctx.journal_entries[-1]
+                if ctx.journal_entries
+                else "No context",
+            },
+        )
 
-Task: {ctx.title}
-Understanding: {ctx.journal_entries[-1] if ctx.journal_entries else "No context"}
+        # Use LLM to create plan - request TOON tabular response
+        prompt = f"""Create an implementation plan for this task:
 
-Break this into ordered subtasks. For each subtask:
+{plan_context}
+
+Break this into ordered subtasks. For each subtask provide:
 - Clear description
 - Files to modify
 - Estimated complexity (small/medium/large)
 
-Format as JSON array:
-[
-  {{"description": "...", "files": ["..."], "complexity": "small|medium|large"}},
-  ...
-]
+Format response as TOON tabular:
+[N,]{{description,files,complexity}}:
+Implement the main logic,src/main.py|src/utils.py,medium
+Add unit tests,tests/test_main.py,small
 """
         response = await self.think(prompt)
 
-        # Parse subtasks (simplified - would use proper JSON parsing)
-        ctx.subtasks = [{"description": response, "files": [], "complexity": "medium"}]
+        # Parse subtasks using TOON (falls back to JSON)
+        try:
+            subtasks = self.parse_llm_response(response)
+            if isinstance(subtasks, list):
+                ctx.subtasks = subtasks
+            else:
+                ctx.subtasks = [
+                    {"description": response, "files": [], "complexity": "medium"}
+                ]
+        except ValueError:
+            # Fallback if parsing fails
+            ctx.subtasks = [
+                {"description": response, "files": [], "complexity": "medium"}
+            ]
 
         # Journal entry
         ts = datetime.now(UTC).isoformat()
@@ -349,12 +372,22 @@ Format as JSON array:
 
         subtask = ctx.subtasks[ctx.current_subtask]
 
-        # Use LLM to work on subtask
-        prompt = f"""
-Execute this subtask:
+        # Format context using TOON
+        execute_context = self.format_context_labeled(
+            "Execution Context",
+            {
+                "task": ctx.title,
+                "subtask_number": ctx.current_subtask + 1,
+                "total_subtasks": len(ctx.subtasks),
+                "description": subtask.get("description", ""),
+                "files": subtask.get("files", []),
+            },
+        )
 
-Task: {ctx.title}
-Subtask {ctx.current_subtask + 1}/{len(ctx.subtasks)}: {subtask.get("description", "")}
+        # Use LLM to work on subtask
+        prompt = f"""Execute this subtask:
+
+{execute_context}
 
 Provide:
 1. Code changes needed

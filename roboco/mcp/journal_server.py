@@ -21,6 +21,10 @@ from fastapi import status
 from mcp.server.fastmcp import FastMCP
 
 from roboco.config import settings
+from roboco.llm import ToonAdapter
+
+# Global TOON adapter for encoding journal data
+_toon = ToonAdapter()
 
 # =============================================================================
 # HELPER FUNCTIONS
@@ -141,6 +145,7 @@ def create_journal_mcp_server(agent_id: str) -> FastMCP:
         return {
             "status": "created",
             "entry": entry,
+            "entry_toon": _toon.encode(entry),  # TOON-encoded for LLM token efficiency
             "guidance": "Journal entry saved. Use roboco_journal_search to find past entries.",
         }
 

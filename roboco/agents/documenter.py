@@ -321,19 +321,21 @@ Respond with structured analysis.
 
         doc_spec = ctx.documents_needed[ctx.current_doc]
 
-        # Use LLM to write documentation
-        prompt = f"""
-Write documentation for this task.
+        # Use TOON for token-efficient context encoding
+        doc_context = self.format_context_labeled(
+            "Documentation Task",
+            {
+                "title": ctx.title,
+                "doc_type": doc_spec.doc_type.value,
+                "target_path": doc_spec.path,
+                "summary": ctx.summary,
+                "dev_notes": ctx.dev_notes or "None",
+            },
+        )
 
-Task: {ctx.title}
-Document Type: {doc_spec.doc_type.value}
-Target Path: {doc_spec.path}
+        prompt = f"""Write documentation for this task.
 
-Summary:
-{ctx.summary}
-
-Developer Notes:
-{ctx.dev_notes or "None"}
+{doc_context}
 
 Write professional, clear documentation following best practices.
 Include:
@@ -373,14 +375,19 @@ Format appropriately for the document type.
             if not doc_spec.content:
                 continue
 
-            prompt = f"""
-Review this documentation for quality:
+            # Use TOON for token-efficient context encoding
+            review_context = self.format_context_labeled(
+                "Document Review",
+                {
+                    "title": doc_spec.title,
+                    "doc_type": doc_spec.doc_type.value,
+                    "content": doc_spec.content,
+                },
+            )
 
-Document: {doc_spec.title}
-Type: {doc_spec.doc_type.value}
+            prompt = f"""Review this documentation for quality:
 
-Content:
-{doc_spec.content}
+{review_context}
 
 Check:
 1. Accuracy - Does it correctly describe the feature?
@@ -388,7 +395,9 @@ Check:
 3. Clarity - Is it easy to understand?
 4. Examples - Are examples helpful and correct?
 
-If issues found, provide suggestions.
+Format response as TOON:
+{{accuracy,completeness,clarity,examples,suggestions}}:
+good,complete,clear,helpful,None
 """
             review = await self.think(prompt)
             ts = datetime.now(UTC).isoformat()

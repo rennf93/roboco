@@ -36,6 +36,7 @@ dependencies = [
     "anthropic",
     "openai",  # For embeddings
     "tiktoken",  # Token counting
+    "python-toon",  # Token-efficient LLM serialization
 
     # MCP (Model Context Protocol)
     "mcp",
@@ -120,10 +121,22 @@ select = [
     "SIM",    # flake8-simplify
     "TCH",    # flake8-type-checking
     "PTH",    # flake8-use-pathlib
-    "ERA",    # eradicate (commented code)
     "PL",     # Pylint
     "RUF",    # Ruff-specific
 ]
+
+# MCP servers: Tool functions require explicit parameters for schema generation.
+# PLR0913 - MCP tools need many params (no dataclass workaround)
+# PLR0915 - Factory functions define all tools (unavoidable nesting)
+# PLC0415 - Lazy imports for circular import avoidance
+# E501 - Docstrings and guidance messages
+#
+# Services: Internal methods often need multiple related parameters for DB ops.
+# PLR0913 - Service methods wrapping DB/external calls need multiple params
+# PLC0415 - Lazy imports for circular import avoidance
+[tool.ruff.lint.per-file-ignores]
+"roboco/mcp/*.py" = ["PLR0913", "PLR0915", "PLC0415", "E501"]
+"roboco/services/*.py" = ["PLC0415", "PLR0913"]
 
 # =============================================================================
 # MyPy Configuration

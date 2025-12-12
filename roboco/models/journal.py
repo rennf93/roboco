@@ -5,6 +5,7 @@ Personal agent journals for reflection, growth tracking, and debugging.
 Each agent maintains their own journal with entries tied to tasks and sessions.
 """
 
+from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from uuid import UUID, uuid4
 
@@ -114,170 +115,195 @@ class Journal(TimestampMixin):
 # =============================================================================
 
 
-def create_task_reflection(
-    journal_id: UUID,
-    task_id: UUID,
-    title: str,
-    what_done: str,
-    what_learned: str,
-    what_struggled: str,
-    next_steps: list[str],
-    tags: list[str] | None = None,
-) -> JournalEntry:
+@dataclass
+class TaskReflectionParams:
+    """Parameters for creating a task reflection entry."""
+
+    journal_id: UUID
+    task_id: UUID
+    title: str
+    what_done: str
+    what_learned: str
+    what_struggled: str
+    next_steps: list[str]
+    tags: list[str] = field(default_factory=list)
+
+
+@dataclass
+class DecisionLogParams:
+    """Parameters for creating a decision log entry."""
+
+    journal_id: UUID
+    title: str
+    context: str
+    options: list[dict[str, str]]
+    chosen: str
+    rationale: str
+    consequences: list[str]
+    task_id: UUID | None = None
+    tags: list[str] = field(default_factory=list)
+
+
+@dataclass
+class LearningEntryParams:
+    """Parameters for creating a learning entry."""
+
+    journal_id: UUID
+    title: str
+    what_learned: str
+    how_applied: str | None = None
+    source: str | None = None
+    task_id: UUID | None = None
+    tags: list[str] = field(default_factory=list)
+
+
+@dataclass
+class StruggleEntryParams:
+    """Parameters for creating a struggle entry."""
+
+    journal_id: UUID
+    title: str
+    what_struggled: str
+    attempted_solutions: list[str]
+    resolution: str | None = None
+    help_needed: str | None = None
+    task_id: UUID | None = None
+    tags: list[str] = field(default_factory=list)
+
+
+@dataclass
+class GeneralEntryParams:
+    """Parameters for creating a general journal entry."""
+
+    journal_id: UUID
+    title: str
+    content: str
+    task_id: UUID | None = None
+    session_id: UUID | None = None
+    tags: list[str] = field(default_factory=list)
+    is_private: bool = False
+
+
+def create_task_reflection(params: TaskReflectionParams) -> JournalEntry:
     """Create a task reflection entry."""
     content = f"""## What I Did
-{what_done}
+{params.what_done}
 
 ## What I Learned
-{what_learned}
+{params.what_learned}
 
 ## What I Struggled With
-{what_struggled}
+{params.what_struggled}
 
 ## Next Steps
-{chr(10).join(f"- [ ] {step}" for step in next_steps)}
+{chr(10).join(f"- [ ] {step}" for step in params.next_steps)}
 """
     return JournalEntry(
-        journal_id=journal_id,
+        journal_id=params.journal_id,
         type=JournalEntryType.TASK_REFLECTION,
-        title=title,
+        title=params.title,
         content=content,
-        task_id=task_id,
-        tags=tags or [],
+        task_id=params.task_id,
+        tags=params.tags,
     )
 
 
-def create_decision_log(
-    journal_id: UUID,
-    title: str,
-    context: str,
-    options: list[dict[str, str]],
-    chosen: str,
-    rationale: str,
-    consequences: list[str],
-    task_id: UUID | None = None,
-    tags: list[str] | None = None,
-) -> JournalEntry:
+def create_decision_log(params: DecisionLogParams) -> JournalEntry:
     """Create a decision log entry."""
     options_text = ""
-    for i, opt in enumerate(options, 1):
+    for i, opt in enumerate(params.options, 1):
         options_text += f"\n**Option {i}: {opt.get('name', f'Option {i}')}**\n"
         options_text += f"- Pros: {opt.get('pros', 'N/A')}\n"
         options_text += f"- Cons: {opt.get('cons', 'N/A')}\n"
 
     content = f"""## Context
-{context}
+{params.context}
 
 ## Options Considered
 {options_text}
 
 ## Decision
-Chose **{chosen}** because {rationale}
+Chose **{params.chosen}** because {params.rationale}
 
 ## Consequences
-{chr(10).join(f"- {c}" for c in consequences)}
+{chr(10).join(f"- {c}" for c in params.consequences)}
 """
     return JournalEntry(
-        journal_id=journal_id,
+        journal_id=params.journal_id,
         type=JournalEntryType.DECISION_LOG,
-        title=title,
+        title=params.title,
         content=content,
-        task_id=task_id,
-        tags=tags or [],
+        task_id=params.task_id,
+        tags=params.tags,
     )
 
 
-def create_learning_entry(
-    journal_id: UUID,
-    title: str,
-    what_learned: str,
-    how_applied: str | None = None,
-    source: str | None = None,
-    task_id: UUID | None = None,
-    tags: list[str] | None = None,
-) -> JournalEntry:
+def create_learning_entry(params: LearningEntryParams) -> JournalEntry:
     """Create a learning entry."""
     content = f"""## What I Learned
-{what_learned}
+{params.what_learned}
 """
-    if how_applied:
+    if params.how_applied:
         content += f"""
 ## How I Applied It
-{how_applied}
+{params.how_applied}
 """
-    if source:
+    if params.source:
         content += f"""
 ## Source
-{source}
+{params.source}
 """
     return JournalEntry(
-        journal_id=journal_id,
+        journal_id=params.journal_id,
         type=JournalEntryType.LEARNING,
-        title=title,
+        title=params.title,
         content=content,
-        task_id=task_id,
-        tags=tags or [],
+        task_id=params.task_id,
+        tags=params.tags,
         sentiment="positive",
     )
 
 
-def create_struggle_entry(
-    journal_id: UUID,
-    title: str,
-    what_struggled: str,
-    attempted_solutions: list[str],
-    resolution: str | None = None,
-    help_needed: str | None = None,
-    task_id: UUID | None = None,
-    tags: list[str] | None = None,
-) -> JournalEntry:
+def create_struggle_entry(params: StruggleEntryParams) -> JournalEntry:
     """Create a struggle/difficulty entry."""
     content = f"""## What I Struggled With
-{what_struggled}
+{params.what_struggled}
 
 ## What I Tried
-{chr(10).join(f"- {s}" for s in attempted_solutions)}
+{chr(10).join(f"- {s}" for s in params.attempted_solutions)}
 """
-    if resolution:
+    if params.resolution:
         content += f"""
 ## Resolution
-{resolution}
+{params.resolution}
 """
-    if help_needed:
+    if params.help_needed:
         content += f"""
 ## Help Needed
-{help_needed}
+{params.help_needed}
 """
     return JournalEntry(
-        journal_id=journal_id,
+        journal_id=params.journal_id,
         type=JournalEntryType.STRUGGLE,
-        title=title,
+        title=params.title,
         content=content,
-        task_id=task_id,
-        tags=tags or [],
+        task_id=params.task_id,
+        tags=params.tags,
         sentiment="frustrated",
     )
 
 
-def create_general_entry(
-    journal_id: UUID,
-    title: str,
-    content: str,
-    task_id: UUID | None = None,
-    session_id: UUID | None = None,
-    tags: list[str] | None = None,
-    is_private: bool = False,
-) -> JournalEntry:
+def create_general_entry(params: GeneralEntryParams) -> JournalEntry:
     """Create a general journal entry."""
     return JournalEntry(
-        journal_id=journal_id,
+        journal_id=params.journal_id,
         type=JournalEntryType.GENERAL,
-        title=title,
-        content=content,
-        task_id=task_id,
-        session_id=session_id,
-        tags=tags or [],
-        is_private=is_private,
+        title=params.title,
+        content=params.content,
+        task_id=params.task_id,
+        session_id=params.session_id,
+        tags=params.tags,
+        is_private=params.is_private,
     )
 
 

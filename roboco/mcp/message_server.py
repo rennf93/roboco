@@ -21,6 +21,10 @@ from mcp.server.fastmcp import FastMCP
 
 from roboco.agents_config import CHANNEL_ACCESS
 from roboco.config import settings
+from roboco.llm import ToonAdapter
+
+# Global TOON adapter for encoding message data
+_toon = ToonAdapter()
 
 
 def _check_channel_access(agent_id: str, channel_slug: str, action: str) -> bool:

@@ -211,27 +211,22 @@ class QAAgent(Agent):
         dev_notes = await self._read_dev_notes(ctx.task_id)
         commits = await self._get_task_commits(ctx.task_id)
 
-        # Use LLM to understand and create test plan
-        prompt = f"""
-You are a QA engineer reviewing a completed task.
+        # Use TOON for token-efficient context encoding
+        task_context = self.format_context_labeled(
+            "QA Review Context",
+            {
+                "title": ctx.title,
+                "requirements": requirements,
+                "dev_notes": dev_notes,
+                "commits": commits,
+            },
+        )
 
-Task: {ctx.title}
+        prompt = f"""You are a QA engineer reviewing a completed task.
 
-Requirements:
-{requirements}
-
-Developer Notes:
-{dev_notes}
-
-Commits:
-{commits}
+{task_context}
 
 Based on this, create test cases to verify the implementation.
-For each test case provide:
-1. Name
-2. What to test
-3. Steps to execute
-4. Expected outcome
 
 Focus on:
 - Acceptance criteria verification
@@ -239,8 +234,10 @@ Focus on:
 - Integration points
 - Error handling
 
-Format as JSON array.
-"""
+Format response as TOON tabular:
+[N,]{{name,description,steps,expected}}:
+Acceptance Criteria,Verify all criteria met,Review implementation|Check each criterion,All criteria satisfied
+""" # noqa: E501
         _response = await self.think(prompt)  # Response informs test case structure
 
         # Create test cases (simplified parsing)
@@ -289,24 +286,26 @@ Format as JSON array.
 
         test_case = ctx.test_cases[ctx.current_test]
 
-        # Use LLM to execute test
-        prompt = f"""
-Execute this test case:
+        # Use TOON for token-efficient context encoding
+        test_context = self.format_context_labeled(
+            "Test Case",
+            {
+                "name": test_case.name,
+                "description": test_case.description,
+                "steps": test_case.steps,
+                "expected": test_case.expected,
+            },
+        )
 
-Test: {test_case.name}
-Description: {test_case.description}
-Steps: {", ".join(test_case.steps)}
-Expected: {test_case.expected}
+        prompt = f"""Execute this test case:
 
-Simulate executing this test and provide:
-1. RESULT: PASS or FAIL
-2. ACTUAL: What was observed
-3. NOTES: Any additional findings
+{test_context}
 
-Format:
-RESULT: [PASS|FAIL]
-ACTUAL: [observation]
-NOTES: [notes]
+Simulate executing this test and provide results.
+
+Format response as TOON:
+{{result,actual,notes}}:
+PASS,All criteria verified successfully,No issues found
 """
         response = await self.think(prompt)
 

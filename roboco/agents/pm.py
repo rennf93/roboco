@@ -199,12 +199,15 @@ class CellPMAgent(Agent):
         new_tasks = await self._get_unassigned_tasks()
 
         for task_id in new_tasks:
-            # Assess complexity and priority
-            prompt = f"""
-Assess this task for prioritization:
+            # Use TOON for token-efficient context encoding
+            triage_context = self.format_context_labeled(
+                "Task Triage",
+                {"task_id": str(task_id), "cell": self.cell_name},
+            )
 
-Task ID: {task_id}
-Cell: {self.cell_name}
+            prompt = f"""Assess this task for prioritization:
+
+{triage_context}
 
 Consider:
 1. Complexity (low/medium/high)
@@ -212,7 +215,9 @@ Consider:
 3. Priority (P0-P3)
 4. Best dev fit based on skills
 
-Provide assessment.
+Format response as TOON:
+{{complexity,dependencies,priority,dev_fit}}:
+medium,TASK-abc123,P1,backend-dev-1
 """
             assessment = await self.think(prompt)
             self.log.info(
@@ -249,11 +254,15 @@ Provide assessment.
         questions = await self._get_pending_questions()
 
         for question in questions:
-            # Try to answer or route appropriately
-            prompt = f"""
-A cell member has a question:
+            # Use TOON for token-efficient context encoding
+            question_context = self.format_context_labeled(
+                "Cell Question",
+                {"question": question, "cell": self.cell_name},
+            )
 
-{question}
+            prompt = f"""A cell member needs help:
+
+{question_context}
 
 As the Cell PM, provide:
 1. Answer if you can
@@ -610,23 +619,29 @@ class MainPMAgent(Agent):
         self.log.debug("PRIORITIZE phase")
 
         if self._board_directives:
-            directives = chr(10).join(f"- {d}" for d in self._board_directives)
-            status_lines = []
-            for k, v in self._cell_statuses.items():
-                active = v.active_tasks
-                blocked = v.blocked_tasks
-                status_lines.append(f"- {k}: {active} active, {blocked} blocked")
-            cell_status = chr(10).join(status_lines)
-            prompt = f"""
-Translate these Board directives into cell priorities:
+            # Build status data for TOON encoding
+            cell_status_data = {
+                name: {"active": s.active_tasks, "blocked": s.blocked_tasks}
+                for name, s in self._cell_statuses.items()
+            }
 
-Directives:
-{directives}
+            # Use TOON for token-efficient context encoding
+            priority_context = self.format_context_labeled(
+                "Prioritization Context",
+                {
+                    "directives": self._board_directives,
+                    "cell_status": cell_status_data,
+                },
+            )
 
-Current Cell Status:
-{cell_status}
+            prompt = f"""Translate these Board directives into cell priorities:
 
-Provide prioritized task list for each cell.
+{priority_context}
+
+Format response as TOON tabular:
+[N,]{{cell,priority,task_description}}:
+backend-cell,P0,Implement critical auth fix
+frontend-cell,P1,Update dashboard layout
 """
             priorities = await self.think(prompt)
             self.log.info("Priorities set", priorities=priorities[:200])
@@ -636,11 +651,19 @@ Provide prioritized task list for each cell.
         self.log.debug("COORDINATE phase")
 
         for issue in self._cross_cell_issues:
-            prompt = f"""
-Resolve this cross-cell issue:
+            # Use TOON for token-efficient context encoding
+            issue_context = self.format_context_labeled(
+                "Cross-Cell Issue",
+                {
+                    "description": issue.get("description"),
+                    "cells": issue.get("cells"),
+                    "task_id": issue.get("task_id"),
+                },
+            )
 
-Issue: {issue.get("description")}
-Cells Involved: {issue.get("cells")}
+            prompt = f"""Resolve this cross-cell issue:
+
+{issue_context}
 
 Propose a resolution that unblocks all parties.
 """

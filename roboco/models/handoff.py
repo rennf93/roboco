@@ -5,6 +5,7 @@ Documenter handoffs contain all the information needed for
 a Documenter to create production documentation from developer work.
 """
 
+from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from uuid import UUID, uuid4
 
@@ -225,24 +226,29 @@ class DocumenterHandoff(TimestampMixin):
 # =============================================================================
 
 
-def create_handoff(
-    task_id: UUID,
-    summary: str,
-    commits: list[dict[str, str]],
-    dev_notes_location: str,
-    new_functionality: list[str] | None = None,
-    modified_behavior: list[str] | None = None,
-    breaking_changes: list[str] | None = None,
-) -> DocumenterHandoff:
+@dataclass
+class HandoffParams:
+    """Parameters for creating a handoff document."""
+
+    task_id: UUID
+    summary: str
+    commits: list[dict[str, str]]
+    dev_notes_location: str
+    new_functionality: list[str] = field(default_factory=list)
+    modified_behavior: list[str] = field(default_factory=list)
+    breaking_changes: list[str] = field(default_factory=list)
+
+
+def create_handoff(params: HandoffParams) -> DocumenterHandoff:
     """Create a basic handoff document."""
     handoff = DocumenterHandoff(
-        task_id=task_id,
-        summary=summary,
-        commits=commits,
-        dev_notes_location=dev_notes_location,
-        new_functionality=new_functionality or [],
-        modified_behavior=modified_behavior or [],
-        breaking_changes=breaking_changes or [],
+        task_id=params.task_id,
+        summary=params.summary,
+        commits=params.commits,
+        dev_notes_location=params.dev_notes_location,
+        new_functionality=params.new_functionality,
+        modified_behavior=params.modified_behavior,
+        breaking_changes=params.breaking_changes,
     )
 
     # Always add changelog as required

@@ -21,6 +21,7 @@ from pydantic import BaseModel, Field
 
 from roboco.api.websocket import broadcast_agent_chunk
 from roboco.config import settings
+from roboco.llm import ToonAdapter
 from roboco.models import AgentRole, AgentStatus, Team
 
 logger = structlog.get_logger()
@@ -113,6 +114,7 @@ class Agent(ABC):
         self._running = False
         self._task: asyncio.Task | None = None
         self._llm_client: AsyncAnthropic | None = None
+        self._toon = ToonAdapter()
 
         self.log = logger.bind(
             agent_id=str(config.id),
@@ -156,6 +158,52 @@ class Agent(ABC):
         if self._llm_client is None:
             self._llm_client = AsyncAnthropic(api_key=settings.anthropic_api_key)
         return self._llm_client
+
+    # =========================================================================
+    # TOON SERIALIZATION (for token-efficient LLM communication)
+    # =========================================================================
+
+    def format_context(self, data: dict[str, Any]) -> str:
+        """
+        Format context data for LLM using TOON.
+
+        TOON (Token-Oriented Object Notation) reduces token consumption
+        by 30-60% compared to JSON while maintaining semantic clarity.
+
+        Args:
+            data: Dictionary to encode for LLM prompt.
+
+        Returns:
+            TOON-formatted string.
+        """
+        return self._toon.encode(data)
+
+    def format_context_labeled(self, label: str, data: dict[str, Any]) -> str:
+        """
+        Format labeled context data for embedding in prompts.
+
+        Args:
+            label: Section label (e.g., "Task Context").
+            data: Dictionary to encode.
+
+        Returns:
+            Labeled TOON-formatted string.
+        """
+        return self._toon.format_for_prompt(label, data)
+
+    def parse_llm_response(self, response: str) -> dict[str, Any] | list[Any]:
+        """
+        Parse structured data from LLM response.
+
+        Attempts TOON parsing first, falls back to JSON.
+
+        Args:
+            response: Raw LLM response text.
+
+        Returns:
+            Parsed Python dict or list.
+        """
+        return self._toon.decode(response)
 
     # =========================================================================
     # LIFECYCLE METHODS
