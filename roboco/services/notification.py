@@ -32,13 +32,18 @@ class NotificationService:
         )
 
         # System notifications bypass normal permission checks
+        body = (
+            f"Task {task_id} has been blocked.\n\n"
+            f"Reason: {blocker_reason}\n\n"
+            "Please investigate and help resolve."
+        )
         await self._create_notification(
             notification_type=NotificationType.ESCALATION,
             priority=NotificationPriority.HIGH,
             from_agent=from_agent or "system",
             to_agents=[to_pm],
             subject=f"Task {task_id} is blocked",
-            body=f"Task {task_id} has been blocked.\n\nReason: {blocker_reason}\n\nPlease investigate and help resolve.",
+            body=body,
             related_task_id=task_id,
         )
 
@@ -55,13 +60,17 @@ class NotificationService:
             to_qa=to_qa,
         )
 
+        body = (
+            f"Task {task_id} has been submitted for QA review.\n\n"
+            "Please review the implementation and acceptance criteria."
+        )
         await self._create_notification(
             notification_type=NotificationType.TASK_ASSIGNMENT,
             priority=NotificationPriority.NORMAL,
             from_agent=from_agent or "system",
             to_agents=[to_qa],
             subject=f"Task {task_id} ready for QA",
-            body=f"Task {task_id} has been submitted for QA review.\n\nPlease review the implementation and acceptance criteria.",
+            body=body,
             related_task_id=task_id,
         )
 
@@ -78,13 +87,18 @@ class NotificationService:
             to_developer=to_developer,
         )
 
+        body = (
+            f"Task {task_id} did not pass QA review.\n\n"
+            f"QA Notes:\n{qa_notes}\n\n"
+            "Please address the feedback and resubmit."
+        )
         await self._create_notification(
             notification_type=NotificationType.STATUS_CHANGE,
             priority=NotificationPriority.HIGH,
             from_agent="system",
             to_agents=[to_developer],
             subject=f"Task {task_id} needs revision",
-            body=f"Task {task_id} did not pass QA review.\n\nQA Notes:\n{qa_notes}\n\nPlease address the feedback and resubmit.",
+            body=body,
             related_task_id=task_id,
         )
 
@@ -101,13 +115,17 @@ class NotificationService:
             to_documenter=to_documenter,
         )
 
+        body = (
+            f"Task {task_id} has passed QA and is ready for documentation.\n\n"
+            "Please create the handoff documentation."
+        )
         await self._create_notification(
             notification_type=NotificationType.TASK_ASSIGNMENT,
             priority=NotificationPriority.NORMAL,
             from_agent=from_agent or "system",
             to_agents=[to_documenter],
             subject=f"Task {task_id} ready for documentation",
-            body=f"Task {task_id} has passed QA and is ready for documentation.\n\nPlease create the handoff documentation.",
+            body=body,
             related_task_id=task_id,
         )
 
@@ -126,13 +144,18 @@ class NotificationService:
             to_documenter=to_documenter,
         )
 
+        body = (
+            f"A handoff document has been created for task {task_id}.\n\n"
+            f"Handoff ID: {handoff_id}\n\n"
+            "Please review and complete the documentation."
+        )
         await self._create_notification(
             notification_type=NotificationType.HANDOFF,
             priority=NotificationPriority.NORMAL,
             from_agent=from_agent or "system",
             to_agents=[to_documenter],
             subject=f"Handoff ready for task {task_id}",
-            body=f"A handoff document has been created for task {task_id}.\n\nHandoff ID: {handoff_id}\n\nPlease review and complete the documentation.",
+            body=body,
             related_task_id=task_id,
         )
 
@@ -152,14 +175,24 @@ class NotificationService:
         async with get_async_session() as session:
             # Look up agent UUIDs from agent_ids
             # For now, we store the string IDs - in production would look up UUIDs
+            # Use from_agent if provided, otherwise system agent
+            sender_uuid = (
+                self._agent_id_to_uuid(from_agent)
+                if from_agent != "system"
+                else self._get_system_agent_uuid()
+            )
+            # Convert task_id to UUID if provided
+            task_uuid = UUID(related_task_id) if related_task_id else None
+
             notification = NotificationTable(
                 type=notification_type,
                 priority=priority,
-                from_agent=self._get_system_agent_uuid(),
+                from_agent=sender_uuid,
                 to_agents=[self._agent_id_to_uuid(a) for a in to_agents],
                 subject=subject,
                 body=body,
                 requires_ack=True,
+                related_task_id=task_uuid,
             )
 
             session.add(notification)

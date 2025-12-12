@@ -454,22 +454,22 @@ Tags: {", ".join(tags or [])}
         logger.info("Refreshed index", index_type=index_type.value, sources=sources)
 
 
-# Global service instance
-_optimal_service: OptimalService | None = None
+class _OptimalServiceHolder:
+    """Holder for singleton OptimalService instance."""
+
+    instance: OptimalService | None = None
 
 
 async def get_optimal_service() -> OptimalService:
     """Get or create the OptimalService instance."""
-    global _optimal_service
-    if _optimal_service is None:
-        _optimal_service = OptimalService()
-        await _optimal_service.initialize()
-    return _optimal_service
+    if _OptimalServiceHolder.instance is None:
+        _OptimalServiceHolder.instance = OptimalService()
+        await _OptimalServiceHolder.instance.initialize()
+    return _OptimalServiceHolder.instance
 
 
 async def close_optimal_service() -> None:
     """Close the OptimalService instance."""
-    global _optimal_service
-    if _optimal_service is not None:
-        await _optimal_service.close()
-        _optimal_service = None
+    if _OptimalServiceHolder.instance is not None:
+        await _OptimalServiceHolder.instance.close()
+        _OptimalServiceHolder.instance = None

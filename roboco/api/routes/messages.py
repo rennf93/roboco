@@ -5,9 +5,10 @@ CRUD operations for messages within sessions.
 """
 
 from datetime import UTC, datetime
+from typing import Annotated
 from uuid import UUID
 
-from fastapi import APIRouter, HTTPException, Query, status
+from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.orm import selectinload
@@ -17,6 +18,21 @@ from roboco.db.tables import ChannelTable, MessageTable, SessionTable
 from roboco.models import MessageType, SessionStatus
 
 router = APIRouter()
+
+
+# =============================================================================
+# Query Parameter Models
+# =============================================================================
+
+
+class ListMessagesParams(BaseModel):
+    """Query parameters for listing messages."""
+
+    session_id: UUID
+    before: datetime | None = None
+    after: datetime | None = None
+    type_filter: MessageType | None = None
+    limit: int = Field(50, ge=1, le=100)
 
 
 # =============================================================================
@@ -86,18 +102,14 @@ class MessageEditRequest(BaseModel):
 )
 async def list_messages(
     db: DbSession,
-    agent_id: CurrentAgentId,
-    session_id: UUID = Query(...),
-    before: datetime | None = None,
-    after: datetime | None = None,
-    type_filter: MessageType | None = None,
-    limit: int = Query(50, ge=1, le=100),
+    _agent_id: CurrentAgentId,
+    params: Annotated[ListMessagesParams, Depends()],
 ) -> MessageListResponse:
     """List messages in a session."""
     # Verify session exists
     session_result = await db.execute(
         select(SessionTable)
-        .where(SessionTable.id == session_id)
+        .where(SessionTable.id == params.session_id)
         .options(selectinload(SessionTable.group))
     )
     session = session_result.scalar_one_or_none()
@@ -109,25 +121,25 @@ async def list_messages(
         )
 
     # Build query
-    query = select(MessageTable).where(MessageTable.session_id == session_id)
+    query = select(MessageTable).where(MessageTable.session_id == params.session_id)
 
-    if before:
-        query = query.where(MessageTable.timestamp < before)
-    if after:
-        query = query.where(MessageTable.timestamp > after)
-    if type_filter:
-        query = query.where(MessageTable.type == type_filter)
+    if params.before:
+        query = query.where(MessageTable.timestamp < params.before)
+    if params.after:
+        query = query.where(MessageTable.timestamp > params.after)
+    if params.type_filter:
+        query = query.where(MessageTable.type == params.type_filter)
 
     # Order by timestamp descending (newest first) and limit
-    query = query.order_by(MessageTable.timestamp.desc()).limit(limit + 1)
+    query = query.order_by(MessageTable.timestamp.desc()).limit(params.limit + 1)
 
     result = await db.execute(query)
     messages = result.scalars().all()
 
     # Check if there are more messages
-    has_more = len(messages) > limit
+    has_more = len(messages) > params.limit
     if has_more:
-        messages = messages[:limit]
+        messages = messages[: params.limit]
 
     items = [
         MessageResponse(
@@ -166,7 +178,7 @@ async def list_messages(
 )
 async def get_message(
     db: DbSession,
-    agent_id: CurrentAgentId,
+    _agent_id: CurrentAgentId,
     message_id: UUID,
 ) -> MessageResponse:
     """Get a message by ID."""

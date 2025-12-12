@@ -6,9 +6,10 @@ Enforces permission rules: only PMs, Board, and Auditor can send notifications.
 """
 
 from datetime import UTC, datetime
+from typing import Annotated
 from uuid import UUID
 
-from fastapi import APIRouter, HTTPException, Query, status
+from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel, Field
 from sqlalchemy import select
 
@@ -21,6 +22,20 @@ from roboco.enforcement import (
 from roboco.models import NotificationPriority, NotificationType
 
 router = APIRouter()
+
+
+# =============================================================================
+# Query Parameter Models
+# =============================================================================
+
+
+class ListNotificationsParams(BaseModel):
+    """Query parameters for listing notifications."""
+
+    unread_only: bool = False
+    pending_ack_only: bool = False
+    type_filter: NotificationType | None = None
+    limit: int = Field(50, ge=1, le=100)
 
 
 # =============================================================================
@@ -83,10 +98,7 @@ class NotificationCreateRequest(BaseModel):
 async def list_notifications(
     db: DbSession,
     agent_id: CurrentAgentId,
-    unread_only: bool = Query(False),
-    pending_ack_only: bool = Query(False),
-    type_filter: NotificationType | None = None,
-    limit: int = Query(50, ge=1, le=100),
+    params: Annotated[ListNotificationsParams, Depends()],
 ) -> NotificationListResponse:
     """List notifications for the agent."""
     # Query notifications where agent is a recipient
@@ -94,19 +106,19 @@ async def list_notifications(
         NotificationTable.to_agents.contains([agent_id])
     )
 
-    if unread_only:
+    if params.unread_only:
         query = query.where(~NotificationTable.read_by.contains([agent_id]))
 
-    if pending_ack_only:
+    if params.pending_ack_only:
         query = query.where(
-            NotificationTable.requires_ack == True,  # noqa: E712
+            NotificationTable.requires_ack is True,
             ~NotificationTable.acked_by.contains([agent_id]),
         )
 
-    if type_filter:
-        query = query.where(NotificationTable.type == type_filter)
+    if params.type_filter:
+        query = query.where(NotificationTable.type == params.type_filter)
 
-    query = query.order_by(NotificationTable.timestamp.desc()).limit(limit)
+    query = query.order_by(NotificationTable.timestamp.desc()).limit(params.limit)
 
     result = await db.execute(query)
     notifications = result.scalars().all()

@@ -29,7 +29,7 @@ class CommitRef(RobocoBase):
 
     hash: str = Field(..., min_length=7, max_length=40, description="Git commit hash")
     message: str = Field(..., description="Commit message summary")
-    timestamp: datetime = Field(default_factory=datetime.now(UTC))
+    timestamp: datetime = Field(default_factory=lambda: datetime.now(UTC))
     author_agent_id: UUID | None = Field(
         default=None, description="Agent who made the commit"
     )
@@ -58,7 +58,7 @@ class FileRef(RobocoBase):
 class ProgressUpdate(RobocoBase):
     """A progress update on a task."""
 
-    timestamp: datetime = Field(default_factory=datetime.now(UTC))
+    timestamp: datetime = Field(default_factory=lambda: datetime.now(UTC))
     agent_id: UUID = Field(..., description="Agent providing update")
     message: str = Field(..., description="Progress message")
     percentage: int | None = Field(
@@ -70,7 +70,7 @@ class Checkpoint(RobocoBase):
     """A saved state checkpoint for task recovery."""
 
     id: UUID = Field(default_factory=uuid4)
-    timestamp: datetime = Field(default_factory=datetime.now(UTC))
+    timestamp: datetime = Field(default_factory=lambda: datetime.now(UTC))
     agent_id: UUID = Field(..., description="Agent who created checkpoint")
     state_summary: str = Field(..., description="Summary of current state")
     remaining_work: list[str] = Field(

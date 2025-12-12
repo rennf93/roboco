@@ -103,7 +103,8 @@ class KanbanService:
         """
         Get the developer kanban board for a cell.
 
-        Columns: Backlog → Assigned → In Progress → Blocked → QA Review → Documenting → Done
+        Columns:
+            Backlog → Assigned → In Progress → Blocked → QA Review → Documenting → Done
         """
         # Get all tasks for the team
         result = await self.session.execute(
@@ -158,7 +159,7 @@ class KanbanService:
 
         return KanbanBoard(
             id=f"{board_type.value}-{team.value if team else 'all'}",
-            title=f"{team.value.title() if team else 'All'} {board_type.value.title()} Board",
+            title=f"{team.value.title() if team else 'All'} {board_type.value.title()} Board",  # noqa: E501
             board_type=board_type,
             team=team,
             columns=list(columns.values()),
@@ -166,6 +167,71 @@ class KanbanService:
             blocked_count=blocked_count,
             last_updated=datetime.now(UTC),
         )
+
+    def _get_swimlane_key(self, task: TaskTable, swimlane_by: str) -> str:
+        """Get the swimlane key for a task."""
+        if swimlane_by == "priority":
+            return f"P{task.priority}"
+        if swimlane_by == "assignee":
+            return str(task.assigned_to) if task.assigned_to else "Unassigned"
+        return "default"
+
+    def _get_swimlane_title(
+        self,
+        lane_key: str,
+        swimlane_by: str,
+        agent_names: dict[str, str],
+    ) -> str:
+        """Get the display title for a swimlane."""
+        if swimlane_by == "priority":
+            return f"Priority {lane_key}"
+        if swimlane_by == "assignee":
+            return (
+                "Unassigned"
+                if lane_key == "Unassigned"
+                else agent_names.get(lane_key, lane_key)
+            )
+        return lane_key
+
+    async def _fetch_agent_names(self, tasks: list[TaskTable]) -> dict[str, str]:
+        """Fetch agent names for all assignees in tasks."""
+        assignee_ids = {t.assigned_to for t in tasks if t.assigned_to}
+        if not assignee_ids:
+            return {}
+
+        agent_result = await self.session.execute(
+            select(AgentTable).where(AgentTable.id.in_(assignee_ids))
+        )
+        return {str(agent.id): agent.name for agent in agent_result.scalars().all()}
+
+    async def _build_swimlane_columns(
+        self,
+        lane_key: str,
+        lane_tasks: list[TaskTable],
+        column_config: list,
+    ) -> tuple[list[KanbanColumn], int]:
+        """Build columns for a swimlane. Returns (columns, blocked_count)."""
+        columns: list[KanbanColumn] = []
+        blocked_count = 0
+
+        for col_id, col_title, col_status in column_config:
+            cards = [
+                await self._task_to_card(t, lane_key)
+                for t in lane_tasks
+                if t.status == col_status
+            ]
+            columns.append(
+                KanbanColumn(
+                    id=f"{lane_key}-{col_id}",
+                    title=col_title,
+                    status=col_status,
+                    cards=cards,
+                    card_count=len(cards),
+                )
+            )
+            blocked_count += sum(1 for c in cards if c.is_blocked)
+
+        return columns, blocked_count
 
     async def _build_swimlane_board(
         self,
@@ -178,85 +244,42 @@ class KanbanService:
         column_config = get_column_config(board_type)
 
         # Pre-fetch agent names for assignee swimlanes
-        agent_names: dict[str, str] = {}
-        if swimlane_by == "assignee":
-            # Get all unique assignee IDs
-            assignee_ids = {t.assigned_to for t in tasks if t.assigned_to}
-            if assignee_ids:
-                agent_result = await self.session.execute(
-                    select(AgentTable).where(AgentTable.id.in_(assignee_ids))
-                )
-                for agent in agent_result.scalars().all():
-                    agent_names[str(agent.id)] = agent.name
+        agent_names = (
+            await self._fetch_agent_names(tasks) if swimlane_by == "assignee" else {}
+        )
 
         # Group tasks by swimlane key
         swimlane_groups: dict[str, list[TaskTable]] = {}
         for task in tasks:
-            if swimlane_by == "priority":
-                key = f"P{task.priority}"
-            elif swimlane_by == "assignee":
-                key = str(task.assigned_to) if task.assigned_to else "Unassigned"
-            else:
-                key = "default"
-
-            if key not in swimlane_groups:
-                swimlane_groups[key] = []
-            swimlane_groups[key].append(task)
+            key = self._get_swimlane_key(task, swimlane_by)
+            swimlane_groups.setdefault(key, []).append(task)
 
         # Build swimlanes
         swimlanes: list[KanbanSwimlane] = []
-        blocked_count = 0
+        total_blocked = 0
 
         for lane_key in sorted(swimlane_groups.keys()):
-            lane_tasks = swimlane_groups[lane_key]
-
-            # Create columns for this swimlane
-            columns: list[KanbanColumn] = []
-            for col_id, col_title, col_status in column_config:
-                cards = [
-                    await self._task_to_card(t, lane_key)
-                    for t in lane_tasks
-                    if t.status == col_status
-                ]
-                columns.append(
-                    KanbanColumn(
-                        id=f"{lane_key}-{col_id}",
-                        title=col_title,
-                        status=col_status,
-                        cards=cards,
-                        card_count=len(cards),
-                    )
-                )
-                blocked_count += sum(1 for c in cards if c.is_blocked)
-
-            # Get lane title
-            if swimlane_by == "priority":
-                lane_title = f"Priority {lane_key}"
-            elif swimlane_by == "assignee":
-                if lane_key == "Unassigned":
-                    lane_title = "Unassigned"
-                else:
-                    # Look up agent name from pre-fetched map
-                    lane_title = agent_names.get(lane_key, lane_key)
-            else:
-                lane_title = lane_key
+            columns, blocked = await self._build_swimlane_columns(
+                lane_key, swimlane_groups[lane_key], column_config
+            )
+            total_blocked += blocked
 
             swimlanes.append(
                 KanbanSwimlane(
                     id=lane_key,
-                    title=lane_title,
+                    title=self._get_swimlane_title(lane_key, swimlane_by, agent_names),
                     columns=columns,
                 )
             )
 
         return KanbanBoard(
             id=f"{board_type.value}-{team.value if team else 'all'}-swimlane",
-            title=f"{team.value.title() if team else 'All'} {board_type.value.title()} Board",
+            title=f"{team.value.title() if team else 'All'} {board_type.value.title()} Board",  # noqa: E501
             board_type=board_type,
             team=team,
             swimlanes=swimlanes,
             total_cards=len(tasks),
-            blocked_count=blocked_count,
+            blocked_count=total_blocked,
             last_updated=datetime.now(UTC),
         )
 

@@ -2,9 +2,11 @@
 Documenter Agent
 
 Implementation of the Documenter workflow from the blueprint.
-Handles documentation lifecycle: MONITOR → RECEIVE → GATHER → SYNTHESIZE → WRITE → REVIEW → PUBLISH
+Handles documentation lifecycle:
+    MONITOR → RECEIVE → GATHER → SYNTHESIZE → WRITE → REVIEW → PUBLISH
 """
 
+import re
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from enum import Enum
@@ -348,10 +350,10 @@ Format appropriately for the document type.
 
         ctx.current_doc += 1
 
+        progress = f"{ctx.current_doc}/{len(ctx.documents_needed)}"
         await self.send_message(
             self._cell_channel_id or ctx.task_id,
-            f"TASK-{str(ctx.task_id)[:8]} doc {ctx.current_doc}/{len(ctx.documents_needed)}: "
-            f"{doc_spec.title}",
+            f"TASK-{str(ctx.task_id)[:8]} doc {progress}: {doc_spec.title}",
             message_type="action",
         )
 
@@ -389,9 +391,8 @@ Check:
 If issues found, provide suggestions.
 """
             review = await self.think(prompt)
-            ctx.notes.append(
-                f"[{datetime.now(UTC).isoformat()}] Reviewed {doc_spec.title}: {review[:100]}..."
-            )
+            ts = datetime.now(UTC).isoformat()
+            ctx.notes.append(f"[{ts}] Reviewed {doc_spec.title}: {review[:100]}...")
 
     async def _phase_publish(self, ctx: DocContext) -> None:
         """
@@ -527,8 +528,6 @@ def create_backend_documenter(
         blueprint_path = Path("agents/blueprints/backend/be-documenter.md")
         if blueprint_path.exists():
             content = blueprint_path.read_text()
-            import re
-
             match = re.search(r"## System Prompt\s*```\s*(.*?)```", content, re.DOTALL)
             system_prompt = match.group(1).strip() if match else ""
         else:
@@ -555,8 +554,6 @@ def create_frontend_documenter(
         blueprint_path = Path("agents/blueprints/frontend/fe-documenter.md")
         if blueprint_path.exists():
             content = blueprint_path.read_text()
-            import re
-
             match = re.search(r"## System Prompt\s*```\s*(.*?)```", content, re.DOTALL)
             system_prompt = match.group(1).strip() if match else ""
         else:
@@ -583,8 +580,6 @@ def create_ux_documenter(
         blueprint_path = Path("agents/blueprints/ux_ui/ux-documenter.md")
         if blueprint_path.exists():
             content = blueprint_path.read_text()
-            import re
-
             match = re.search(r"## System Prompt\s*```\s*(.*?)```", content, re.DOTALL)
             system_prompt = match.group(1).strip() if match else ""
         else:

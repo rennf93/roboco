@@ -45,7 +45,7 @@ class JournalEntry(TimestampMixin):
     )
 
     # Metadata
-    timestamp: datetime = Field(default_factory=datetime.now(UTC))
+    timestamp: datetime = Field(default_factory=lambda: datetime.now(UTC))
     tags: list[str] = Field(default_factory=list, description="Tags for categorization")
 
     # Embedding for RAG search
@@ -56,7 +56,7 @@ class JournalEntry(TimestampMixin):
     # Sentiment/mood tracking (for growth analysis)
     sentiment: str | None = Field(
         default=None,
-        description="Sentiment indicator (positive, neutral, negative, frustrated, confident, etc.)",
+        description="Sentiment indicator (positive, neutral, negative, frustrated, confident, etc.)",  # noqa: E501
     )
 
     # Visibility

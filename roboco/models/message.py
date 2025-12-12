@@ -24,7 +24,7 @@ from roboco.models.base import (
 class MessageEdit(RobocoBase):
     """Tracks edits to messages. Agents can only edit their own messages."""
 
-    edited_at: datetime = Field(default_factory=datetime.now(UTC))
+    edited_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
     previous_content: str = Field(..., description="Content before the edit")
     edit_reason: str | None = Field(default=None, description="Why the edit was made")
 
@@ -40,7 +40,7 @@ class RawStream(RobocoBase):
     agent_id: UUID = Field(..., description="Agent producing the stream")
     channel_id: UUID = Field(..., description="Target channel")
     chunk: str = Field(..., description="Raw LLM output chunk")
-    timestamp: datetime = Field(default_factory=datetime.now(UTC))
+    timestamp: datetime = Field(default_factory=lambda: datetime.now(UTC))
 
 
 # =============================================================================
@@ -90,7 +90,7 @@ class ExtractedMessage(TimestampMixin):
     )
 
     # Metadata
-    timestamp: datetime = Field(default_factory=datetime.now(UTC))
+    timestamp: datetime = Field(default_factory=lambda: datetime.now(UTC))
 
     # Embedding for RAG (stored as list of floats, actual Vector type in DB)
     embedding: list[float] | None = Field(

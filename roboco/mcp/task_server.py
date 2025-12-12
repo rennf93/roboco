@@ -23,6 +23,7 @@ Tools:
 from typing import Any
 
 import httpx
+from fastapi import status
 from mcp.server.fastmcp import FastMCP
 
 from roboco.config import settings
@@ -169,7 +170,7 @@ def create_task_mcp_server(agent_id: str) -> FastMCP:
     mcp = FastMCP(f"roboco-task-{agent_id}", json_response=True)
 
     # Store agent context
-    mcp.agent_id = agent_id  # type: ignore
+    mcp.agent_id = agent_id
 
     # =========================================================================
     # TASK SCANNING
@@ -199,7 +200,11 @@ def create_task_mcp_server(agent_id: str) -> FastMCP:
                 f"{_get_api_url()}/tasks",
                 params={"assigned_to": agent_id, "status": "paused"},
             )
-            paused_tasks = paused_resp.json() if paused_resp.status_code == 200 else []
+            paused_tasks = (
+                paused_resp.json()
+                if paused_resp.status_code == status.HTTP_200_OK
+                else []
+            )
 
             # Get assigned tasks (claimed, in_progress)
             assigned_resp = await client.get(
@@ -207,7 +212,9 @@ def create_task_mcp_server(agent_id: str) -> FastMCP:
                 params={"assigned_to": agent_id},
             )
             assigned_data = (
-                assigned_resp.json() if assigned_resp.status_code == 200 else []
+                assigned_resp.json()
+                if assigned_resp.status_code == status.HTTP_200_OK
+                else []
             )
             assigned_tasks = [
                 t
@@ -225,7 +232,9 @@ def create_task_mcp_server(agent_id: str) -> FastMCP:
                 params=params,
             )
             available_tasks = (
-                available_resp.json() if available_resp.status_code == 200 else []
+                available_resp.json()
+                if available_resp.status_code == status.HTTP_200_OK
+                else []
             )
 
         # Determine guidance
@@ -275,7 +284,7 @@ def create_task_mcp_server(agent_id: str) -> FastMCP:
         async with httpx.AsyncClient() as client:
             resp = await client.get(f"{_get_api_url()}/tasks/{task_id}")
 
-            if resp.status_code == 404:
+            if resp.status_code == status.HTTP_404_NOT_FOUND:
                 return _format_error_response(
                     "NOT_FOUND",
                     f"Task {task_id} not found",
@@ -312,7 +321,7 @@ def create_task_mcp_server(agent_id: str) -> FastMCP:
                 f"{_get_api_url()}/tasks",
                 params={"assigned_to": agent_id},
             )
-            if active_resp.status_code == 200:
+            if active_resp.status_code == status.HTTP_200_OK:
                 active_tasks = active_resp.json()
                 # Check for non-waiting active tasks
                 blocking_tasks = [
@@ -340,7 +349,7 @@ def create_task_mcp_server(agent_id: str) -> FastMCP:
 
             # Get the task to check status
             task_resp = await client.get(f"{_get_api_url()}/tasks/{task_id}")
-            if task_resp.status_code == 404:
+            if task_resp.status_code == status.HTTP_404_NOT_FOUND:
                 return _format_error_response("NOT_FOUND", f"Task {task_id} not found")
 
             task = task_resp.json()
@@ -358,7 +367,7 @@ def create_task_mcp_server(agent_id: str) -> FastMCP:
                 json={"agent_id": agent_id},
             )
 
-            if claim_resp.status_code != 200:
+            if claim_resp.status_code != status.HTTP_200_OK:
                 return _format_error_response(
                     "CLAIM_FAILED",
                     "Failed to claim task",
@@ -374,7 +383,7 @@ def create_task_mcp_server(agent_id: str) -> FastMCP:
                 proj_resp = await client.get(
                     f"{_get_api_url()}/projects/{claimed_task['project_id']}"
                 )
-                if proj_resp.status_code == 200:
+                if proj_resp.status_code == status.HTTP_200_OK:
                     project = proj_resp.json()
 
         return _format_task_response(
@@ -419,7 +428,7 @@ def create_task_mcp_server(agent_id: str) -> FastMCP:
         async with httpx.AsyncClient() as client:
             # Verify task state and ownership
             task_resp = await client.get(f"{_get_api_url()}/tasks/{task_id}")
-            if task_resp.status_code == 404:
+            if task_resp.status_code == status.HTTP_404_NOT_FOUND:
                 return _format_error_response("NOT_FOUND", f"Task {task_id} not found")
 
             task = task_resp.json()
@@ -461,7 +470,7 @@ def create_task_mcp_server(agent_id: str) -> FastMCP:
                 json={"plan": plan_data},
             )
 
-            if update_resp.status_code != 200:
+            if update_resp.status_code != status.HTTP_200_OK:
                 return _format_error_response(
                     "UPDATE_FAILED",
                     "Failed to save plan",
@@ -490,6 +499,41 @@ def create_task_mcp_server(agent_id: str) -> FastMCP:
     # TASK START
     # =========================================================================
 
+    def _validate_task_start(task: dict[str, Any]) -> dict[str, Any] | None:
+        """Validate task can be started. Returns error dict or None if valid."""
+        if task.get("assigned_to") != agent_id:
+            return _format_error_response(
+                "NOT_OWNER", "You are not assigned to this task"
+            )
+
+        task_status = task.get("status")
+        if task_status not in ["claimed", "paused"]:
+            return _format_error_response(
+                "INVALID_STATE",
+                f"Cannot start task in '{task_status}' status. Task must be 'claimed' or 'paused'.",
+                {"current_status": task_status},
+            )
+
+        if task_status == "claimed" and not task.get("plan"):
+            return _format_error_response(
+                "NO_PLAN",
+                "Cannot start without a plan. Call roboco_task_plan first.",
+            )
+
+        plan = task.get("plan", {})
+        unanswered = [
+            q for q in plan.get("open_questions", []) if not q.get("answered")
+        ]
+        if unanswered:
+            return _format_error_response(
+                "UNANSWERED_QUESTIONS",
+                f"Cannot start with {len(unanswered)} unanswered question(s). "
+                "Get answers first, then update the plan.",
+                {"questions": [q.get("question") for q in unanswered]},
+            )
+
+        return None
+
     @mcp.tool()
     async def roboco_task_start(task_id: str) -> dict[str, Any]:
         """
@@ -508,67 +552,34 @@ def create_task_mcp_server(agent_id: str) -> FastMCP:
         """
         async with httpx.AsyncClient() as client:
             task_resp = await client.get(f"{_get_api_url()}/tasks/{task_id}")
-            if task_resp.status_code == 404:
+            if task_resp.status_code == status.HTTP_404_NOT_FOUND:
                 return _format_error_response("NOT_FOUND", f"Task {task_id} not found")
 
             task = task_resp.json()
 
-            if task.get("assigned_to") != agent_id:
-                return _format_error_response(
-                    "NOT_OWNER",
-                    "You are not assigned to this task",
-                )
-
-            if task.get("status") not in ["claimed", "paused"]:
-                return _format_error_response(
-                    "INVALID_STATE",
-                    f"Cannot start task in '{task.get('status')}' status. "
-                    "Task must be 'claimed' or 'paused'.",
-                    {"current_status": task.get("status")},
-                )
-
-            # Check for plan (if claimed)
-            if task.get("status") == "claimed" and not task.get("plan"):
-                return _format_error_response(
-                    "NO_PLAN",
-                    "Cannot start without a plan. Call roboco_task_plan first.",
-                )
-
-            # Check for unanswered questions
-            plan = task.get("plan", {})
-            unanswered = [
-                q for q in plan.get("open_questions", []) if not q.get("answered")
-            ]
-            if unanswered:
-                return _format_error_response(
-                    "UNANSWERED_QUESTIONS",
-                    f"Cannot start with {len(unanswered)} unanswered question(s). "
-                    "Get answers first, then update the plan.",
-                    {"questions": [q.get("question") for q in unanswered]},
-                )
+            if validation_error := _validate_task_start(task):
+                return validation_error
 
             # Start the task
             start_resp = await client.post(f"{_get_api_url()}/tasks/{task_id}/start")
 
-            if start_resp.status_code != 200:
+            if start_resp.status_code != status.HTTP_200_OK:
                 return _format_error_response(
                     "START_FAILED",
                     "Failed to start task",
                     {"api_error": start_resp.text},
                 )
 
-            started_task = start_resp.json()
-
-        return _format_task_response(
-            started_task,
-            "EXECUTE",
-            "Task started. Work through your plan step by step:\n"
-            "1. Implement each sub-task\n"
-            "2. Commit frequently with clear messages\n"
-            "3. Call roboco_task_progress to update status\n"
-            "4. If blocked, call roboco_task_block immediately\n"
-            "5. When done, call roboco_task_submit_verification",
-        )
+            return _format_task_response(
+                start_resp.json(),
+                "EXECUTE",
+                "Task started. Work through your plan step by step:\n"
+                "1. Implement each sub-task\n"
+                "2. Commit frequently with clear messages\n"
+                "3. Call roboco_task_progress to update status\n"
+                "4. If blocked, call roboco_task_block immediately\n"
+                "5. When done, call roboco_task_submit_verification",
+            )
 
     # =========================================================================
     # PROGRESS UPDATES
@@ -593,7 +604,7 @@ def create_task_mcp_server(agent_id: str) -> FastMCP:
         """
         async with httpx.AsyncClient() as client:
             task_resp = await client.get(f"{_get_api_url()}/tasks/{task_id}")
-            if task_resp.status_code == 404:
+            if task_resp.status_code == status.HTTP_404_NOT_FOUND:
                 return _format_error_response("NOT_FOUND", f"Task {task_id} not found")
 
             task = task_resp.json()
@@ -619,7 +630,7 @@ def create_task_mcp_server(agent_id: str) -> FastMCP:
                 },
             )
 
-            if progress_resp.status_code != 200:
+            if progress_resp.status_code != status.HTTP_200_OK:
                 return _format_error_response(
                     "UPDATE_FAILED",
                     "Failed to update progress",
@@ -668,7 +679,7 @@ def create_task_mcp_server(agent_id: str) -> FastMCP:
 
         async with httpx.AsyncClient() as client:
             task_resp = await client.get(f"{_get_api_url()}/tasks/{task_id}")
-            if task_resp.status_code == 404:
+            if task_resp.status_code == status.HTTP_404_NOT_FOUND:
                 return _format_error_response("NOT_FOUND", f"Task {task_id} not found")
 
             task = task_resp.json()
@@ -694,7 +705,7 @@ def create_task_mcp_server(agent_id: str) -> FastMCP:
                 },
             )
 
-            if block_resp.status_code != 200:
+            if block_resp.status_code != status.HTTP_200_OK:
                 return _format_error_response("BLOCK_FAILED", "Failed to block task")
 
             blocked_task = block_resp.json()
@@ -727,7 +738,7 @@ def create_task_mcp_server(agent_id: str) -> FastMCP:
         """
         async with httpx.AsyncClient() as client:
             task_resp = await client.get(f"{_get_api_url()}/tasks/{task_id}")
-            if task_resp.status_code == 404:
+            if task_resp.status_code == status.HTTP_404_NOT_FOUND:
                 return _format_error_response("NOT_FOUND", f"Task {task_id} not found")
 
             task = task_resp.json()
@@ -747,7 +758,7 @@ def create_task_mcp_server(agent_id: str) -> FastMCP:
                 f"{_get_api_url()}/tasks/{task_id}/unblock"
             )
 
-            if unblock_resp.status_code != 200:
+            if unblock_resp.status_code != status.HTTP_200_OK:
                 return _format_error_response(
                     "UNBLOCK_FAILED", "Failed to unblock task"
                 )
@@ -789,7 +800,7 @@ def create_task_mcp_server(agent_id: str) -> FastMCP:
         """
         async with httpx.AsyncClient() as client:
             task_resp = await client.get(f"{_get_api_url()}/tasks/{task_id}")
-            if task_resp.status_code == 404:
+            if task_resp.status_code == status.HTTP_404_NOT_FOUND:
                 return _format_error_response("NOT_FOUND", f"Task {task_id} not found")
 
             task = task_resp.json()
@@ -819,7 +830,7 @@ def create_task_mcp_server(agent_id: str) -> FastMCP:
             # Pause the task
             pause_resp = await client.post(f"{_get_api_url()}/tasks/{task_id}/pause")
 
-            if pause_resp.status_code != 200:
+            if pause_resp.status_code != status.HTTP_200_OK:
                 return _format_error_response("PAUSE_FAILED", "Failed to pause task")
 
             paused_task = pause_resp.json()
@@ -854,7 +865,7 @@ def create_task_mcp_server(agent_id: str) -> FastMCP:
         """
         async with httpx.AsyncClient() as client:
             task_resp = await client.get(f"{_get_api_url()}/tasks/{task_id}")
-            if task_resp.status_code == 404:
+            if task_resp.status_code == status.HTTP_404_NOT_FOUND:
                 return _format_error_response("NOT_FOUND", f"Task {task_id} not found")
 
             task = task_resp.json()
@@ -880,7 +891,7 @@ def create_task_mcp_server(agent_id: str) -> FastMCP:
 
             verify_resp = await client.post(f"{_get_api_url()}/tasks/{task_id}/verify")
 
-            if verify_resp.status_code != 200:
+            if verify_resp.status_code != status.HTTP_200_OK:
                 return _format_error_response(
                     "VERIFY_FAILED", "Failed to submit for verification"
                 )
@@ -929,7 +940,7 @@ def create_task_mcp_server(agent_id: str) -> FastMCP:
 
         async with httpx.AsyncClient() as client:
             task_resp = await client.get(f"{_get_api_url()}/tasks/{task_id}")
-            if task_resp.status_code == 404:
+            if task_resp.status_code == status.HTTP_404_NOT_FOUND:
                 return _format_error_response("NOT_FOUND", f"Task {task_id} not found")
 
             task = task_resp.json()
@@ -957,7 +968,7 @@ def create_task_mcp_server(agent_id: str) -> FastMCP:
             # Submit for QA
             qa_resp = await client.post(f"{_get_api_url()}/tasks/{task_id}/submit-qa")
 
-            if qa_resp.status_code != 200:
+            if qa_resp.status_code != status.HTTP_200_OK:
                 return _format_error_response(
                     "SUBMIT_FAILED", "Failed to submit for QA"
                 )
@@ -1001,7 +1012,7 @@ def create_task_mcp_server(agent_id: str) -> FastMCP:
 
         async with httpx.AsyncClient() as client:
             task_resp = await client.get(f"{_get_api_url()}/tasks/{task_id}")
-            if task_resp.status_code == 404:
+            if task_resp.status_code == status.HTTP_404_NOT_FOUND:
                 return _format_error_response("NOT_FOUND", f"Task {task_id} not found")
 
             task = task_resp.json()
@@ -1024,7 +1035,7 @@ def create_task_mcp_server(agent_id: str) -> FastMCP:
                 json={"notes": qa_notes},
             )
 
-            if pass_resp.status_code != 200:
+            if pass_resp.status_code != status.HTTP_200_OK:
                 return _format_error_response("QA_FAILED", "Failed to pass QA")
 
             passed_task = pass_resp.json()
@@ -1072,7 +1083,7 @@ def create_task_mcp_server(agent_id: str) -> FastMCP:
 
         async with httpx.AsyncClient() as client:
             task_resp = await client.get(f"{_get_api_url()}/tasks/{task_id}")
-            if task_resp.status_code == 404:
+            if task_resp.status_code == status.HTTP_404_NOT_FOUND:
                 return _format_error_response("NOT_FOUND", f"Task {task_id} not found")
 
             task = task_resp.json()
@@ -1092,7 +1103,7 @@ def create_task_mcp_server(agent_id: str) -> FastMCP:
                 json={"notes": full_notes},
             )
 
-            if fail_resp.status_code != 200:
+            if fail_resp.status_code != status.HTTP_200_OK:
                 return _format_error_response("QA_FAILED", "Failed to fail QA")
 
             failed_task = fail_resp.json()
@@ -1126,7 +1137,7 @@ def create_task_mcp_server(agent_id: str) -> FastMCP:
         """
         async with httpx.AsyncClient() as client:
             task_resp = await client.get(f"{_get_api_url()}/tasks/{task_id}")
-            if task_resp.status_code == 404:
+            if task_resp.status_code == status.HTTP_404_NOT_FOUND:
                 return _format_error_response("NOT_FOUND", f"Task {task_id} not found")
 
             task = task_resp.json()
@@ -1141,7 +1152,7 @@ def create_task_mcp_server(agent_id: str) -> FastMCP:
                 f"{_get_api_url()}/tasks/{task_id}/complete"
             )
 
-            if complete_resp.status_code != 200:
+            if complete_resp.status_code != status.HTTP_200_OK:
                 return _format_error_response(
                     "COMPLETE_FAILED", "Failed to complete task"
                 )
@@ -1164,7 +1175,9 @@ def create_task_mcp_server(agent_id: str) -> FastMCP:
 if __name__ == "__main__":
     import sys
 
-    if len(sys.argv) < 2:
+    two = 2
+
+    if len(sys.argv) < two:
         print("Usage: python task_server.py <agent_id>")
         sys.exit(1)
 

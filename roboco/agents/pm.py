@@ -2,10 +2,13 @@
 PM Agents (Cell PM and Main PM)
 
 Implementation of PM workflows from the blueprint.
-Cell PM: MONITOR → TRIAGE → ASSIGN → FACILITATE → ESCALATE → TRACK → REPORT
-Main PM: OVERSEE → RECEIVE → PRIORITIZE → COORDINATE → DISTRIBUTE → REPORT UP → FACILITATE
+Cell PM:
+    MONITOR → TRIAGE → ASSIGN → FACILITATE → ESCALATE → TRACK → REPORT
+Main PM:
+    OVERSEE → RECEIVE → PRIORITIZE → COORDINATE → DISTRIBUTE → REPORT UP → FACILITATE
 """
 
+import re
 from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
@@ -117,7 +120,7 @@ class CellPMAgent(Agent):
         # PMs are always active, cycling through phases
         return self.id  # Use own ID as "task" since PM work is continuous
 
-    async def execute_task(self, task_id: UUID) -> bool:
+    async def execute_task(self, _task_id: UUID) -> bool:
         """
         Execute PM duties in a cycle.
 
@@ -297,6 +300,7 @@ Be helpful and unblock the team.
         """
         self.log.debug("REPORT phase")
 
+        concerns = self._format_concerns()
         report = f"""
 ## {self.cell_name} Status Report
 
@@ -306,11 +310,17 @@ Be helpful and unblock the team.
 **Available Devs**: {self._cell_status.available_devs}
 
 **Concerns**:
-{chr(10).join(f"- {c}" for c in self._cell_status.concerns) if self._cell_status.concerns else "- None"}
+{concerns}
 """
         # Would send to #pm-all channel
         self.log.info("Report generated", report_length=len(report))
         self._cell_status.concerns.clear()
+
+    def _format_concerns(self) -> str:
+        """Format concerns for report."""
+        if not self._cell_status.concerns:
+            return "- None"
+        return chr(10).join(f"- {c}" for c in self._cell_status.concerns)
 
     # =========================================================================
     # HELPER METHODS
@@ -435,13 +445,14 @@ Be helpful and unblock the team.
         """
         # Build notification content
         notification_type = NotificationType.ESCALATION
+        task_ref = str(escalation.task_id)[:8] if escalation.task_id else "N/A"
         subject = f"Escalation from {self.cell_name}: {escalation.issue[:50]}"
         body = f"""
 ## Escalation from {self.cell_name}
 
 **Issue:** {escalation.issue}
 **Severity:** {escalation.severity}
-**Task:** {str(escalation.task_id)[:8] if escalation.task_id else "N/A"}
+**Task:** {task_ref}
 
 **Proposed Solution:**
 {escalation.proposed_solution or "No solution proposed"}
@@ -451,7 +462,8 @@ Please review and provide guidance.
 
         self.log.info(
             "Escalation sent to Main PM",
-            issue=escalation.issue,
+            subject=subject,
+            body_length=len(body),
             notification_type=notification_type.value,
             severity=escalation.severity,
         )
@@ -525,7 +537,7 @@ class MainPMAgent(Agent):
         """Main PM always has work."""
         return self.id
 
-    async def execute_task(self, task_id: UUID) -> bool:
+    async def execute_task(self, _task_id: UUID) -> bool:
         """Execute Main PM duties in a cycle."""
         try:
             match self._current_phase:
@@ -598,14 +610,21 @@ class MainPMAgent(Agent):
         self.log.debug("PRIORITIZE phase")
 
         if self._board_directives:
+            directives = chr(10).join(f"- {d}" for d in self._board_directives)
+            status_lines = []
+            for k, v in self._cell_statuses.items():
+                active = v.active_tasks
+                blocked = v.blocked_tasks
+                status_lines.append(f"- {k}: {active} active, {blocked} blocked")
+            cell_status = chr(10).join(status_lines)
             prompt = f"""
 Translate these Board directives into cell priorities:
 
 Directives:
-{chr(10).join(f"- {d}" for d in self._board_directives)}
+{directives}
 
 Current Cell Status:
-{chr(10).join(f"- {k}: {v.active_tasks} active, {v.blocked_tasks} blocked" for k, v in self._cell_statuses.items())}
+{cell_status}
 
 Provide prioritized task list for each cell.
 """
@@ -760,7 +779,11 @@ Propose a resolution that unblocks all parties.
         resolution: str,
     ) -> None:
         """Apply a cross-cell resolution."""
-        self.log.info("Resolution applied", issue=issue.get("description"))
+        self.log.info(
+            "Resolution applied",
+            issue=issue.get("description"),
+            resolution_length=len(resolution),
+        )
 
     def _route_directive(self, directive: str) -> str | None:
         """Route a directive to appropriate cell."""
@@ -792,8 +815,6 @@ def create_backend_pm(
         blueprint_path = Path("agents/blueprints/backend/be-pm.md")
         if blueprint_path.exists():
             content = blueprint_path.read_text()
-            import re
-
             match = re.search(r"## System Prompt\s*```\s*(.*?)```", content, re.DOTALL)
             system_prompt = match.group(1).strip() if match else ""
         else:
@@ -821,8 +842,6 @@ def create_frontend_pm(
         blueprint_path = Path("agents/blueprints/frontend/fe-pm.md")
         if blueprint_path.exists():
             content = blueprint_path.read_text()
-            import re
-
             match = re.search(r"## System Prompt\s*```\s*(.*?)```", content, re.DOTALL)
             system_prompt = match.group(1).strip() if match else ""
         else:
@@ -850,8 +869,6 @@ def create_ux_pm(
         blueprint_path = Path("agents/blueprints/ux_ui/ux-pm.md")
         if blueprint_path.exists():
             content = blueprint_path.read_text()
-            import re
-
             match = re.search(r"## System Prompt\s*```\s*(.*?)```", content, re.DOTALL)
             system_prompt = match.group(1).strip() if match else ""
         else:
@@ -879,8 +896,6 @@ def create_main_pm(
         blueprint_path = Path("agents/blueprints/board/main-pm.md")
         if blueprint_path.exists():
             content = blueprint_path.read_text()
-            import re
-
             match = re.search(r"## System Prompt\s*```\s*(.*?)```", content, re.DOTALL)
             system_prompt = match.group(1).strip() if match else ""
         else:

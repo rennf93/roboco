@@ -81,7 +81,7 @@ async def list_channels(
     )
 
     if not include_archived:
-        query = query.where(ChannelTable.is_archived == False)  # noqa: E712
+        query = query.where(ChannelTable.is_archived is False)
 
     # Get total count
     count_result = await db.execute(
@@ -294,7 +294,7 @@ async def update_channel(
 )
 async def add_member(
     db: DbSession,
-    agent_id: CurrentAgentId,
+    _agent_id: CurrentAgentId,  # For auth context
     channel_id: UUID,
     member_id: UUID,
     can_write: bool = Query(True),
@@ -328,7 +328,7 @@ async def add_member(
 )
 async def remove_member(
     db: DbSession,
-    agent_id: CurrentAgentId,
+    _agent_id: CurrentAgentId,  # For auth context
     channel_id: UUID,
     member_id: UUID,
 ) -> None:

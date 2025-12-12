@@ -217,8 +217,9 @@ class TaskLifecycleError(TaskError):
         target_status: str,
         details: dict[str, Any] | None = None,
     ):
+        msg = f"Cannot transition task from '{current_status}' to '{target_status}'"
         super().__init__(
-            message=f"Cannot transition task from '{current_status}' to '{target_status}'",
+            message=msg,
             task_id=task_id,
             code="TASK_LIFECYCLE_ERROR",
             details={

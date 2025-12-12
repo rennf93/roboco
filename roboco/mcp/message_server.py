@@ -16,6 +16,7 @@ from datetime import UTC, datetime, timedelta
 from typing import Any
 
 import httpx
+from fastapi import status
 from mcp.server.fastmcp import FastMCP
 
 from roboco.agents_config import CHANNEL_ACCESS
@@ -81,7 +82,7 @@ def create_message_mcp_server(agent_id: str) -> FastMCP:
     mcp = FastMCP(f"roboco-message-{agent_id}", json_response=True)
 
     # Store agent context
-    mcp.agent_id = agent_id  # type: ignore
+    mcp.agent_id = agent_id
 
     # =========================================================================
     # CHANNEL LISTING
@@ -155,7 +156,7 @@ def create_message_mcp_server(agent_id: str) -> FastMCP:
                 params={"slug": channel_slug},
             )
 
-            if channels_resp.status_code != 200:
+            if channels_resp.status_code != status.HTTP_200_OK:
                 return _format_error_response("API_ERROR", "Failed to fetch channels")
 
             channels = channels_resp.json()
@@ -175,7 +176,7 @@ def create_message_mcp_server(agent_id: str) -> FastMCP:
                 },
             )
 
-            if messages_resp.status_code != 200:
+            if messages_resp.status_code != status.HTTP_200_OK:
                 return _format_error_response("API_ERROR", "Failed to fetch messages")
 
             messages = messages_resp.json()
@@ -191,6 +192,76 @@ def create_message_mcp_server(agent_id: str) -> FastMCP:
     # =========================================================================
     # SEND MESSAGE
     # =========================================================================
+
+    def _validate_message_send(
+        channel_slug: str,
+        content: str,
+        message_type: str,
+    ) -> dict[str, Any] | None:
+        """Validate message send parameters. Returns error dict or None if valid."""
+        valid_types = [
+            "reasoning",
+            "dialogue",
+            "decision",
+            "action",
+            "blocker",
+            "technical",
+        ]
+        if message_type not in valid_types:
+            return _format_error_response(
+                "INVALID_TYPE",
+                f"Invalid message type '{message_type}'. Must be one of: {valid_types}",
+            )
+
+        if not _check_channel_access(agent_id, channel_slug, "write"):
+            return _format_error_response(
+                "ACCESS_DENIED",
+                f"You don't have write access to #{channel_slug}",
+                {
+                    "your_writable_channels": [
+                        ch
+                        for ch in CHANNEL_ACCESS
+                        if _check_channel_access(agent_id, ch, "write")
+                    ]
+                },
+            )
+
+        if agent_id in CHANNEL_ACCESS.get(channel_slug, {}).get("silent", []):
+            return _format_error_response(
+                "SILENT_OBSERVER",
+                "You are a silent observer on this channel and cannot post messages.",
+            )
+
+        if not content or not content.strip():
+            return _format_error_response(
+                "EMPTY_CONTENT",
+                "Message content cannot be empty.",
+            )
+
+        return None
+
+    async def _get_or_create_session(
+        client: httpx.AsyncClient,
+        channel_id: str,
+    ) -> str | dict[str, Any]:
+        """Get or create session for channel. Returns session_id or error dict."""
+        session_resp = await client.get(
+            f"{_get_api_url()}/channels/{channel_id}/session",
+        )
+
+        if session_resp.status_code == status.HTTP_200_OK:
+            return session_resp.json()["id"]
+
+        create_resp = await client.post(
+            f"{_get_api_url()}/sessions",
+            json={"channel_id": channel_id},
+        )
+        if create_resp.status_code in [status.HTTP_200_OK, status.HTTP_201_CREATED]:
+            return create_resp.json()["id"]
+
+        return _format_error_response(
+            "SESSION_ERROR", "Failed to get or create session"
+        )
 
     @mcp.tool()
     async def roboco_message_send(
@@ -220,56 +291,23 @@ def create_message_mcp_server(agent_id: str) -> FastMCP:
         Returns:
             Sent message with confirmation
         """
-        # Validate message type
-        valid_types = [
-            "reasoning",
-            "dialogue",
-            "decision",
-            "action",
-            "blocker",
-            "technical",
-        ]
-        if message_type not in valid_types:
-            return _format_error_response(
-                "INVALID_TYPE",
-                f"Invalid message type '{message_type}'. Must be one of: {valid_types}",
-            )
-
-        # Check write access
-        if not _check_channel_access(agent_id, channel_slug, "write"):
-            return _format_error_response(
-                "ACCESS_DENIED",
-                f"You don't have write access to #{channel_slug}",
-                {
-                    "your_writable_channels": [
-                        ch
-                        for ch in CHANNEL_ACCESS
-                        if _check_channel_access(agent_id, ch, "write")
-                    ]
-                },
-            )
-
-        # Silent observers cannot write even if in read list
-        if agent_id in CHANNEL_ACCESS.get(channel_slug, {}).get("silent", []):
-            return _format_error_response(
-                "SILENT_OBSERVER",
-                "You are a silent observer on this channel and cannot post messages.",
-            )
-
-        if not content or not content.strip():
-            return _format_error_response(
-                "EMPTY_CONTENT",
-                "Message content cannot be empty.",
-            )
+        # Validate inputs
+        if validation_error := _validate_message_send(
+            channel_slug, content, message_type
+        ):
+            return validation_error
 
         async with httpx.AsyncClient() as client:
-            # Get channel and active session
+            # Get channel
             channels_resp = await client.get(
                 f"{_get_api_url()}/channels",
                 params={"slug": channel_slug},
             )
 
-            if channels_resp.status_code != 200 or not channels_resp.json():
+            if (
+                channels_resp.status_code != status.HTTP_200_OK
+                or not channels_resp.json()
+            ):
                 return _format_error_response(
                     "NOT_FOUND", f"Channel #{channel_slug} not found"
                 )
@@ -277,26 +315,13 @@ def create_message_mcp_server(agent_id: str) -> FastMCP:
             channel = channels_resp.json()[0]
             channel_id = channel["id"]
 
-            # Get or create session for the channel
-            session_resp = await client.get(
-                f"{_get_api_url()}/channels/{channel_id}/session",
-            )
+            # Get or create session
+            session_result = await _get_or_create_session(client, channel_id)
+            if isinstance(session_result, dict):
+                return session_result  # Error response
+            session_id = session_result
 
-            if session_resp.status_code != 200:
-                # Create a new session
-                create_resp = await client.post(
-                    f"{_get_api_url()}/sessions",
-                    json={"channel_id": channel_id},
-                )
-                if create_resp.status_code not in [200, 201]:
-                    return _format_error_response(
-                        "SESSION_ERROR", "Failed to get or create session"
-                    )
-                session_id = create_resp.json()["id"]
-            else:
-                session_id = session_resp.json()["id"]
-
-            # Build message payload
+            # Build and send message
             message_data = {
                 "session_id": session_id,
                 "type": message_type,
@@ -307,28 +332,28 @@ def create_message_mcp_server(agent_id: str) -> FastMCP:
                 "task_id": task_id,
             }
 
-            # Send message
             send_resp = await client.post(
                 f"{_get_api_url()}/messages",
                 json=message_data,
                 headers={"X-Agent-Id": agent_id},
             )
 
-            if send_resp.status_code not in [200, 201]:
+            if send_resp.status_code not in [
+                status.HTTP_200_OK,
+                status.HTTP_201_CREATED,
+            ]:
                 return _format_error_response(
                     "SEND_FAILED",
                     "Failed to send message",
                     {"api_error": send_resp.text},
                 )
 
-            message = send_resp.json()
-
-        return {
-            "status": "sent",
-            "message": message,
-            "channel": channel_slug,
-            "guidance": "Message sent successfully.",
-        }
+            return {
+                "status": "sent",
+                "message": send_resp.json(),
+                "channel": channel_slug,
+                "guidance": "Message sent successfully.",
+            }
 
     # =========================================================================
     # GET MESSAGE
@@ -348,12 +373,12 @@ def create_message_mcp_server(agent_id: str) -> FastMCP:
         async with httpx.AsyncClient() as client:
             resp = await client.get(f"{_get_api_url()}/messages/{message_id}")
 
-            if resp.status_code == 404:
+            if resp.status_code == status.HTTP_404_NOT_FOUND:
                 return _format_error_response(
                     "NOT_FOUND", f"Message {message_id} not found"
                 )
 
-            if resp.status_code != 200:
+            if resp.status_code != status.HTTP_200_OK:
                 return _format_error_response("API_ERROR", "Failed to fetch message")
 
             message = resp.json()
@@ -475,7 +500,9 @@ def create_message_mcp_server(agent_id: str) -> FastMCP:
 if __name__ == "__main__":
     import sys
 
-    if len(sys.argv) < 2:
+    two = 2
+
+    if len(sys.argv) < two:
         print("Usage: python message_server.py <agent_id>")
         sys.exit(1)
 

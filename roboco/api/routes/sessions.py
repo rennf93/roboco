@@ -6,10 +6,11 @@ by time, count, or content length.
 """
 
 from datetime import UTC, datetime, timedelta
+from typing import Annotated
 from uuid import UUID
 
-from fastapi import APIRouter, HTTPException, Query, status
-from pydantic import BaseModel
+from fastapi import APIRouter, Depends, HTTPException, status
+from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.orm import selectinload
 
@@ -18,6 +19,19 @@ from roboco.db.tables import GroupTable, SessionTable
 from roboco.models import SessionStatus
 
 router = APIRouter()
+
+
+# =============================================================================
+# Query Parameter Models
+# =============================================================================
+
+
+class ListSessionsParams(BaseModel):
+    """Query parameters for listing sessions."""
+
+    group_id: UUID
+    status_filter: SessionStatus | None = None
+    limit: int = Field(20, ge=1, le=100)
 
 
 # =============================================================================
@@ -69,15 +83,13 @@ class SessionCreateRequest(BaseModel):
 async def list_sessions(
     db: DbSession,
     agent_id: CurrentAgentId,
-    group_id: UUID = Query(...),
-    status_filter: SessionStatus | None = None,
-    limit: int = Query(20, ge=1, le=100),
+    params: Annotated[ListSessionsParams, Depends()],
 ) -> SessionListResponse:
     """List sessions for a group."""
     # Verify group access
     group_result = await db.execute(
         select(GroupTable)
-        .where(GroupTable.id == group_id)
+        .where(GroupTable.id == params.group_id)
         .options(selectinload(GroupTable.channel))
     )
     group = group_result.scalar_one_or_none()
@@ -97,12 +109,12 @@ async def list_sessions(
         )
 
     # Query sessions
-    query = select(SessionTable).where(SessionTable.group_id == group_id)
+    query = select(SessionTable).where(SessionTable.group_id == params.group_id)
 
-    if status_filter:
-        query = query.where(SessionTable.status == status_filter)
+    if params.status_filter:
+        query = query.where(SessionTable.status == params.status_filter)
 
-    query = query.order_by(SessionTable.started_at.desc()).limit(limit)
+    query = query.order_by(SessionTable.started_at.desc()).limit(params.limit)
 
     result = await db.execute(query)
     sessions = result.scalars().all()
@@ -135,7 +147,7 @@ async def list_sessions(
 )
 async def get_session(
     db: DbSession,
-    agent_id: CurrentAgentId,
+    _agent_id: CurrentAgentId,
     session_id: UUID,
 ) -> SessionResponse:
     """Get session details."""
@@ -256,7 +268,7 @@ async def create_session(
 )
 async def close_session(
     db: DbSession,
-    agent_id: CurrentAgentId,
+    __agent_id: CurrentAgentId,
     session_id: UUID,
 ) -> SessionResponse:
     """Close a session."""

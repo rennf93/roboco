@@ -14,24 +14,26 @@ from roboco.runtime import AgentOrchestrator
 
 router = APIRouter()
 
-# Global orchestrator instance (set by bootstrap)
-_orchestrator: AgentOrchestrator | None = None
+
+class _OrchestratorHolder:
+    """Holder for orchestrator instance (set by bootstrap)."""
+
+    instance: AgentOrchestrator | None = None
 
 
 def set_orchestrator(orchestrator: AgentOrchestrator) -> None:
     """Set the global orchestrator instance."""
-    global _orchestrator
-    _orchestrator = orchestrator
+    _OrchestratorHolder.instance = orchestrator
 
 
 def get_orchestrator() -> AgentOrchestrator:
     """Get the global orchestrator instance."""
-    if _orchestrator is None:
+    if _OrchestratorHolder.instance is None:
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail="Orchestrator not initialized",
         )
-    return _orchestrator
+    return _OrchestratorHolder.instance
 
 
 # =============================================================================

@@ -26,6 +26,8 @@ from roboco.models.message import ExtractedMessage
 
 logger = structlog.get_logger()
 
+# Maximum length for raw excerpt storage
+MAX_EXCERPT_LENGTH = 200
 
 # =============================================================================
 # EXTRACTION PATTERNS
@@ -272,7 +274,9 @@ class ExtractionService:
                 mentions=mentions,
                 task_id=task_id,
                 confidence=confidence,
-                raw_excerpt=segment[:200] if len(segment) > 200 else segment,
+                raw_excerpt=segment[:MAX_EXCERPT_LENGTH]
+                if len(segment) > MAX_EXCERPT_LENGTH
+                else segment,
             )
 
             messages.append(message)
