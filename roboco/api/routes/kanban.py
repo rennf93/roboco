@@ -3,13 +3,9 @@ Kanban API Routes
 
 Role-specific kanban board views for task visualization.
 """
+from fastapi import APIRouter, Query
 
-from typing import Annotated
-
-from fastapi import APIRouter, Depends, Query
-from sqlalchemy.ext.asyncio import AsyncSession
-
-from roboco.api.deps import get_db
+from roboco.api.deps import DbSession
 from roboco.models.base import Team
 from roboco.models.kanban import KanbanBoard
 from roboco.services.kanban import get_kanban_service
@@ -25,7 +21,7 @@ router = APIRouter(prefix="/kanban", tags=["kanban"])
 @router.get("/dev/{team}", response_model=KanbanBoard)
 async def get_dev_board(
     team: Team,
-    db: Annotated[AsyncSession, Depends(get_db)],
+    db: DbSession,
     swimlane_by: str | None = Query(
         default=None,
         description="Group by 'priority' or 'assignee'",
@@ -45,7 +41,7 @@ async def get_dev_board(
 @router.get("/qa/{team}", response_model=KanbanBoard)
 async def get_qa_board(
     team: Team,
-    db: Annotated[AsyncSession, Depends(get_db)],
+    db: DbSession,
 ):
     """
     Get the QA kanban board for a cell.
@@ -59,7 +55,7 @@ async def get_qa_board(
 @router.get("/documenter/{team}", response_model=KanbanBoard)
 async def get_documenter_board(
     team: Team,
-    db: Annotated[AsyncSession, Depends(get_db)],
+    db: DbSession,
 ):
     """
     Get the documenter kanban board for a cell.
@@ -73,7 +69,7 @@ async def get_documenter_board(
 @router.get("/pm/{team}", response_model=KanbanBoard)
 async def get_pm_board(
     team: Team,
-    db: Annotated[AsyncSession, Depends(get_db)],
+    db: DbSession,
 ):
     """
     Get the cell PM kanban board.
@@ -91,7 +87,7 @@ async def get_pm_board(
 
 @router.get("/main-pm", response_model=KanbanBoard)
 async def get_main_pm_board(
-    db: Annotated[AsyncSession, Depends(get_db)],
+    db: DbSession,
     flat: bool = Query(
         default=False,
         description="Use flat team columns instead of swimlanes",
@@ -113,7 +109,7 @@ async def get_main_pm_board(
 
 @router.get("/board", response_model=KanbanBoard)
 async def get_board_kanban(
-    db: Annotated[AsyncSession, Depends(get_db)],
+    db: DbSession,
 ):
     """
     Get the Board-level roadmap view.
@@ -133,7 +129,7 @@ async def get_board_kanban(
 
 @router.get("/stats")
 async def get_board_stats(
-    db: Annotated[AsyncSession, Depends(get_db)],
+    db: DbSession,
     team: Team | None = None,
 ):
     """Get kanban board statistics."""

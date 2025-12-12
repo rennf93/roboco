@@ -7,15 +7,14 @@ Provides aggregated views, alerts, and reporting.
 
 from datetime import UTC, datetime, timedelta
 from enum import Enum
-from typing import Annotated, Any
+from typing import Any
 from uuid import UUID, uuid4
 
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi import APIRouter, HTTPException, Query, status
 from pydantic import BaseModel, Field
 from sqlalchemy import and_, func, select
-from sqlalchemy.ext.asyncio import AsyncSession
 
-from roboco.api.deps import get_db
+from roboco.api.deps import DbSession
 from roboco.db.tables import AgentTable, ChannelTable, MessageTable, TaskTable
 from roboco.models.base import AgentStatus, TaskStatus, Team
 from roboco.services.kanban import get_kanban_service
@@ -141,7 +140,7 @@ _reports: dict[UUID, dict[str, Any]] = {}
 
 @router.get("/auditor", response_model=AuditorDashboard)
 async def get_auditor_dashboard(
-    db: Annotated[AsyncSession, Depends(get_db)],
+    db: DbSession,
 ):
     """
     Get the complete auditor dashboard.
@@ -260,7 +259,7 @@ async def get_auditor_dashboard(
 
 @router.get("/auditor/flags", response_model=list[AuditorFlag])
 async def get_auditor_flags(
-    _db: Annotated[AsyncSession, Depends(get_db)],
+    _db: DbSession,
     severity: FlagSeverity | None = None,
     resolved: bool = False,
 ):
@@ -289,7 +288,7 @@ async def get_auditor_flags(
 )
 async def create_auditor_flag(
     data: CreateFlagRequest,
-    _db: Annotated[AsyncSession, Depends(get_db)],
+    _db: DbSession,
 ):
     """Create a new auditor flag."""
     flag_id = uuid4()
@@ -353,7 +352,7 @@ async def get_auditor_reports(
 )
 async def create_auditor_report(
     data: CreateReportRequest,
-    _db: Annotated[AsyncSession, Depends(get_db)],
+    _db: DbSession,
 ):
     """Create a new auditor report."""
     report_id = uuid4()
@@ -388,7 +387,7 @@ async def send_auditor_report(report_id: UUID):
 
 @router.get("/ceo", response_model=CEOOverview)
 async def get_ceo_overview(
-    db: Annotated[AsyncSession, Depends(get_db)],
+    db: DbSession,
 ):
     """
     Get the CEO overview dashboard.
@@ -494,7 +493,7 @@ async def get_ceo_overview(
 
 @router.get("/ceo/teams")
 async def get_ceo_team_details(
-    db: Annotated[AsyncSession, Depends(get_db)],
+    db: DbSession,
 ):
     """Get detailed metrics for all teams."""
     metrics_service = get_metrics_service(db)
@@ -510,7 +509,7 @@ async def get_ceo_team_details(
 @router.get("/kanban/{team}")
 async def get_team_kanban(
     team: Team,
-    db: Annotated[AsyncSession, Depends(get_db)],
+    db: DbSession,
     swimlane_by: str | None = Query(
         None, description="Swimlane by: priority or assignee"
     ),
@@ -554,7 +553,7 @@ async def get_team_kanban(
 
 @router.get("/kanban/main-pm")
 async def get_main_pm_kanban(
-    db: Annotated[AsyncSession, Depends(get_db)],
+    db: DbSession,
 ):
     """Get the Main PM cross-cell kanban board."""
     kanban_service = get_kanban_service(db)
@@ -569,7 +568,7 @@ async def get_main_pm_kanban(
 
 @router.get("/agents/status")
 async def get_all_agent_status(
-    db: Annotated[AsyncSession, Depends(get_db)],
+    db: DbSession,
     team: Team | None = None,
 ):
     """
@@ -618,7 +617,7 @@ async def get_all_agent_status(
 
 @router.get("/activity/recent")
 async def get_recent_activity(
-    db: Annotated[AsyncSession, Depends(get_db)],
+    db: DbSession,
     hours: int = Query(default=24, ge=1, le=168),
     limit: int = Query(default=50, ge=1, le=200),
 ):
@@ -688,7 +687,7 @@ async def get_recent_activity(
 
 @router.get("/ceo/blockers")
 async def get_ceo_blocker_details(
-    db: Annotated[AsyncSession, Depends(get_db)],
+    db: DbSession,
 ):
     """Get detailed blocker information for CEO."""
     metrics_service = get_metrics_service(db)
@@ -698,7 +697,7 @@ async def get_ceo_blocker_details(
 
 @router.get("/ceo/velocity")
 async def get_ceo_velocity(
-    db: Annotated[AsyncSession, Depends(get_db)],
+        db: DbSession,
     days: int = Query(default=7, ge=1, le=90),
 ):
     """Get velocity metrics for a time period."""
@@ -714,7 +713,7 @@ async def get_ceo_velocity(
 
 @router.get("/metrics/velocity")
 async def get_velocity_metrics(
-    db: Annotated[AsyncSession, Depends(get_db)],
+    db: DbSession,
     days: int = Query(default=7, ge=1, le=90),
     team: Team | None = None,
 ):
@@ -726,7 +725,7 @@ async def get_velocity_metrics(
 
 @router.get("/metrics/blockers")
 async def get_blocker_metrics(
-    db: Annotated[AsyncSession, Depends(get_db)],
+    db: DbSession,
 ):
     """Get blocker metrics."""
     metrics_service = get_metrics_service(db)
@@ -737,7 +736,7 @@ async def get_blocker_metrics(
 @router.get("/metrics/team/{team}")
 async def get_team_metrics(
     team: Team,
-    db: Annotated[AsyncSession, Depends(get_db)],
+    db: DbSession,
 ):
     """Get metrics for a specific team."""
     metrics_service = get_metrics_service(db)
@@ -747,7 +746,7 @@ async def get_team_metrics(
 
 @router.get("/metrics/communication")
 async def get_communication_metrics(
-    db: Annotated[AsyncSession, Depends(get_db)],
+    db: DbSession,
     hours: int = Query(default=24, ge=1, le=168),
 ):
     """Get communication volume metrics."""
@@ -757,7 +756,7 @@ async def get_communication_metrics(
 
 @router.get("/metrics/health")
 async def get_health_metrics(
-    db: Annotated[AsyncSession, Depends(get_db)],
+    db: DbSession,
     team: Team | None = None,
 ):
     """Get health status for a team or the whole organization."""
@@ -768,7 +767,7 @@ async def get_health_metrics(
 @router.get("/metrics/agent/{agent_id}")
 async def get_agent_metrics(
     agent_id: UUID,
-    db: Annotated[AsyncSession, Depends(get_db)],
+    db: DbSession,
 ):
     """Get metrics for a specific agent."""
     metrics_service = get_metrics_service(db)

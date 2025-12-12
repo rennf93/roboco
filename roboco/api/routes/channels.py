@@ -4,16 +4,17 @@ Channel Routes
 CRUD operations for communication channels.
 """
 
+from typing import Annotated
 from uuid import UUID
 
 from fastapi import APIRouter, HTTPException, Query, status
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.orm import selectinload
 
-from roboco.api.deps import CurrentAgentId, DbSession
+from roboco.api.deps import CurrentAgentContext, DbSession, PermissionServiceDep
 from roboco.db.tables import ChannelTable
-from roboco.models import ChannelCreate, ChannelType, ChannelUpdate
+from roboco.models import AgentRole, ChannelCreate, ChannelType, ChannelUpdate
 
 router = APIRouter()
 
@@ -55,6 +56,30 @@ class ChannelDetailResponse(ChannelResponse):
     groups: list[dict]
 
 
+class GroupResponse(BaseModel):
+    """Group within a channel."""
+
+    id: UUID
+    name: str
+    hierarchy_level: int
+    is_active: bool
+    total_messages: int
+    active_session_id: UUID | None = None
+
+
+# =============================================================================
+# Query Parameter Models
+# =============================================================================
+
+
+class ListChannelsQuery(BaseModel):
+    """Query params for listing channels."""
+
+    page: int = Field(1, ge=1)
+    page_size: int = Field(20, ge=1, le=100)
+    include_archived: bool = False
+
+
 # =============================================================================
 # Routes
 # =============================================================================
@@ -68,32 +93,31 @@ class ChannelDetailResponse(ChannelResponse):
 )
 async def list_channels(
     db: DbSession,
-    agent_id: CurrentAgentId,
-    page: int = Query(1, ge=1),
-    page_size: int = Query(20, ge=1, le=100),
-    include_archived: bool = Query(False),
+    agent: CurrentAgentContext,
+    permissions: PermissionServiceDep,
+    params: Annotated[ListChannelsQuery, Query()],
 ) -> ChannelListResponse:
     """List channels the agent can access."""
-    # Build query for channels where agent is member or silent observer
-    query = select(ChannelTable).where(
-        (ChannelTable.members.contains([agent_id]))
-        | (ChannelTable.silent_observers.contains([agent_id]))
-    )
+    # Get accessible channels based on permissions
+    accessible_slugs = permissions.get_accessible_channels(agent)
 
-    if not include_archived:
-        query = query.where(ChannelTable.is_archived is False)
+    # Query channels by slug
+    query = select(ChannelTable).where(ChannelTable.slug.in_(accessible_slugs))
+
+    if not params.include_archived:
+        query = query.where(ChannelTable.is_archived.is_(False))
 
     # Get total count
-    count_result = await db.execute(
-        select(ChannelTable.id).where(
-            (ChannelTable.members.contains([agent_id]))
-            | (ChannelTable.silent_observers.contains([agent_id]))
-        )
+    count_query = select(ChannelTable.id).where(
+        ChannelTable.slug.in_(accessible_slugs)
     )
+    if not params.include_archived:
+        count_query = count_query.where(ChannelTable.is_archived.is_(False))
+    count_result = await db.execute(count_query)
     total = len(count_result.all())
 
     # Apply pagination
-    query = query.offset((page - 1) * page_size).limit(page_size)
+    query = query.offset((params.page - 1) * params.page_size).limit(params.page_size)
     query = query.order_by(ChannelTable.name)
 
     result = await db.execute(query)
@@ -112,7 +136,7 @@ async def list_channels(
             group_count=ch.group_count,
             is_archived=ch.is_archived,
             is_private=ch.is_private,
-            can_write=agent_id in ch.writers,
+            can_write=permissions.can_write_channel(agent, ch.slug),
         )
         for ch in channels
     ]
@@ -120,8 +144,8 @@ async def list_channels(
     return ChannelListResponse(
         items=items,
         total=total,
-        page=page,
-        page_size=page_size,
+        page=params.page,
+        page_size=params.page_size,
     )
 
 
@@ -133,7 +157,8 @@ async def list_channels(
 )
 async def get_channel(
     db: DbSession,
-    agent_id: CurrentAgentId,
+    agent: CurrentAgentContext,
+    permissions: PermissionServiceDep,
     channel_id: UUID,
 ) -> ChannelDetailResponse:
     """Get channel details."""
@@ -152,8 +177,8 @@ async def get_channel(
             detail="Channel not found",
         )
 
-    # Check access
-    if agent_id not in channel.members and agent_id not in channel.silent_observers:
+    # Check access using permission service
+    if not permissions.can_read_channel(agent, channel.slug):
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="You don't have access to this channel",
@@ -182,9 +207,57 @@ async def get_channel(
         group_count=channel.group_count,
         is_archived=channel.is_archived,
         is_private=channel.is_private,
-        can_write=agent_id in channel.writers,
+        can_write=permissions.can_write_channel(agent, channel.slug),
         groups=groups,
     )
+
+
+@router.get(
+    "/{channel_id}/groups",
+    response_model=list[GroupResponse],
+    summary="Get channel groups",
+    description="Get all groups in a channel.",
+)
+async def get_channel_groups(
+    db: DbSession,
+    agent: CurrentAgentContext,
+    permissions: PermissionServiceDep,
+    channel_id: UUID,
+) -> list[GroupResponse]:
+    """Get all groups in a channel."""
+    query = (
+        select(ChannelTable)
+        .where(ChannelTable.id == channel_id)
+        .options(selectinload(ChannelTable.groups))
+    )
+
+    result = await db.execute(query)
+    channel = result.scalar_one_or_none()
+
+    if not channel:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Channel not found",
+        )
+
+    # Check access using permission service
+    if not permissions.can_read_channel(agent, channel.slug):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="You don't have access to this channel",
+        )
+
+    return [
+        GroupResponse(
+            id=g.id,
+            name=g.name,
+            hierarchy_level=g.hierarchy_level,
+            is_active=g.is_active,
+            total_messages=g.total_messages,
+            active_session_id=g.active_session_id,
+        )
+        for g in channel.groups
+    ]
 
 
 @router.post(
@@ -196,10 +269,19 @@ async def get_channel(
 )
 async def create_channel(
     db: DbSession,
-    agent_id: CurrentAgentId,
+    agent: CurrentAgentContext,
+    permissions: PermissionServiceDep,
     data: ChannelCreate,
 ) -> ChannelResponse:
     """Create a new channel."""
+    # Only Board, Main PM can create channels
+    allowed_roles = {AgentRole.CEO, AgentRole.PRODUCT_OWNER, AgentRole.MAIN_PM}
+    if agent.role not in allowed_roles:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Not authorized to create channels",
+        )
+
     # Check if slug already exists
     existing = await db.execute(
         select(ChannelTable).where(ChannelTable.slug == data.slug)
@@ -237,7 +319,7 @@ async def create_channel(
         group_count=0,
         is_archived=False,
         is_private=channel.is_private,
-        can_write=agent_id in channel.writers,
+        can_write=permissions.can_write_channel(agent, channel.slug),
     )
 
 
@@ -249,7 +331,8 @@ async def create_channel(
 )
 async def update_channel(
     db: DbSession,
-    agent_id: CurrentAgentId,
+    agent: CurrentAgentContext,
+    permissions: PermissionServiceDep,
     channel_id: UUID,
     data: ChannelUpdate,
 ) -> ChannelResponse:
@@ -261,6 +344,14 @@ async def update_channel(
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Channel not found",
+        )
+
+    # Only Board, Main PM can update channels
+    allowed_roles = {AgentRole.CEO, AgentRole.PRODUCT_OWNER, AgentRole.MAIN_PM}
+    if agent.role not in allowed_roles:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Not authorized to update channels",
         )
 
     # Update fields
@@ -282,7 +373,7 @@ async def update_channel(
         group_count=channel.group_count,
         is_archived=channel.is_archived,
         is_private=channel.is_private,
-        can_write=agent_id in channel.writers,
+        can_write=permissions.can_write_channel(agent, channel.slug),
     )
 
 
@@ -294,12 +385,20 @@ async def update_channel(
 )
 async def add_member(
     db: DbSession,
-    _agent_id: CurrentAgentId,  # For auth context
+    agent: CurrentAgentContext,
     channel_id: UUID,
     member_id: UUID,
     can_write: bool = Query(True),
 ) -> None:
     """Add a member to the channel."""
+    # Only Board, Main PM can manage channel members
+    allowed_roles = {AgentRole.CEO, AgentRole.PRODUCT_OWNER, AgentRole.MAIN_PM}
+    if agent.role not in allowed_roles:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Not authorized to manage channel members",
+        )
+
     result = await db.execute(select(ChannelTable).where(ChannelTable.id == channel_id))
     channel = result.scalar_one_or_none()
 
@@ -328,11 +427,19 @@ async def add_member(
 )
 async def remove_member(
     db: DbSession,
-    _agent_id: CurrentAgentId,  # For auth context
+    agent: CurrentAgentContext,
     channel_id: UUID,
     member_id: UUID,
 ) -> None:
     """Remove a member from the channel."""
+    # Only Board, Main PM can manage channel members
+    allowed_roles = {AgentRole.CEO, AgentRole.PRODUCT_OWNER, AgentRole.MAIN_PM}
+    if agent.role not in allowed_roles:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Not authorized to manage channel members",
+        )
+
     result = await db.execute(select(ChannelTable).where(ChannelTable.id == channel_id))
     channel = result.scalar_one_or_none()
 

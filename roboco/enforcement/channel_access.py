@@ -57,8 +57,13 @@ def validate_channel_access(
 
     channel = CHANNEL_ACCESS.get(channel_slug)
     if not channel:
-        # Unknown channel - allow by default (will be caught by other validation)
-        return True
+        # Unknown channel - deny by default (secure by default)
+        raise ChannelAccessDeniedError(
+            agent_id=agent_id,
+            channel_slug=channel_slug,
+            action=action,
+            message=f"Channel #{channel_slug} is not configured in access control",
+        )
 
     allowed = channel.get(action, [])
 

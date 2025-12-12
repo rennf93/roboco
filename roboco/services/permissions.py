@@ -15,11 +15,13 @@ Permission Levels:
 - L4: Cell Members (own cell only)
 - SPECIAL: Auditor (silent read all)
 
-Note: This service uses enum-based roles (AgentRole) for type safety.
-For string-based agent ID lookups, see roboco.agents_config.
+Architecture:
+- agents_config.py is the SINGLE SOURCE OF TRUTH for permission configuration
+- This service provides runtime enforcement using AgentContext (role + team)
+- No duplicate permission definitions - all derived from agents_config
 """
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from enum import IntEnum
 from typing import Any
 from uuid import UUID
@@ -27,15 +29,15 @@ from uuid import UUID
 import structlog
 
 from roboco.agents_config import (
-    CHANNEL_ACCESS as CHANNEL_ACCESS_BY_ID,
-)
-from roboco.agents_config import (
-    NOTIFICATION_PERMISSIONS as NOTIFICATION_PERMS_BY_ROLE,
+    AGENT_ROLE_MAP,
+    AGENT_TEAM_MAP,
+    CHANNEL_ACCESS,
+    NOTIFICATION_PERMISSIONS,
 )
 from roboco.agents_config import (
     get_agent_role as get_role_string,
 )
-from roboco.models import AgentRole, ChannelType, Team
+from roboco.models import AgentRole, Team
 
 logger = structlog.get_logger()
 
@@ -71,209 +73,41 @@ ROLE_LEVELS: dict[AgentRole, PermissionLevel] = {
 
 
 # =============================================================================
-# CHANNEL PERMISSIONS
+# CHANNEL PERMISSIONS (derived from agents_config.CHANNEL_ACCESS)
 # =============================================================================
 
-
-@dataclass
-class ChannelPermission:
-    """Defines who can read/write to a channel."""
-
-    channel_name: str
-    channel_type: ChannelType
-
-    # Roles that can read
-    read_roles: set[AgentRole]
-
-    # Roles that can write
-    write_roles: set[AgentRole]
-
-    # Teams that have access (for cell channels)
-    teams: set[Team] = field(default_factory=set)
-
-    # Whether Auditor has silent read access
-    auditor_access: bool = True
+# Build role→team mapping from agents_config for efficient lookups
+_ROLE_TEAM_LOOKUP: dict[tuple[str, str | None], list[str]] = {}
+for agent_slug, role in AGENT_ROLE_MAP.items():
+    team = AGENT_TEAM_MAP.get(agent_slug)
+    key = (role, team)
+    if key not in _ROLE_TEAM_LOOKUP:
+        _ROLE_TEAM_LOOKUP[key] = []
+    _ROLE_TEAM_LOOKUP[key].append(agent_slug)
 
 
-# Default channel permissions per HOMELAB_TEAM_V0.md Section 12.2
-DEFAULT_CHANNEL_PERMISSIONS: dict[str, ChannelPermission] = {
-    # Cell channels - internal team
-    "backend-cell": ChannelPermission(
-        channel_name="backend-cell",
-        channel_type=ChannelType.CELL,
-        read_roles={
-            AgentRole.DEVELOPER,
-            AgentRole.QA,
-            AgentRole.CELL_PM,
-            AgentRole.DOCUMENTER,
-        },
-        write_roles={
-            AgentRole.DEVELOPER,
-            AgentRole.QA,
-            AgentRole.CELL_PM,
-            AgentRole.DOCUMENTER,
-        },
-        teams={Team.BACKEND},
-    ),
-    "frontend-cell": ChannelPermission(
-        channel_name="frontend-cell",
-        channel_type=ChannelType.CELL,
-        read_roles={
-            AgentRole.DEVELOPER,
-            AgentRole.QA,
-            AgentRole.CELL_PM,
-            AgentRole.DOCUMENTER,
-        },
-        write_roles={
-            AgentRole.DEVELOPER,
-            AgentRole.QA,
-            AgentRole.CELL_PM,
-            AgentRole.DOCUMENTER,
-        },
-        teams={Team.FRONTEND},
-    ),
-    "uxui-cell": ChannelPermission(
-        channel_name="uxui-cell",
-        channel_type=ChannelType.CELL,
-        read_roles={
-            AgentRole.DEVELOPER,
-            AgentRole.QA,
-            AgentRole.CELL_PM,
-            AgentRole.DOCUMENTER,
-        },
-        write_roles={
-            AgentRole.DEVELOPER,
-            AgentRole.QA,
-            AgentRole.CELL_PM,
-            AgentRole.DOCUMENTER,
-        },
-        teams={Team.UX_UI},
-    ),
-    # Cross-cell coordination
-    "dev-all": ChannelPermission(
-        channel_name="dev-all",
-        channel_type=ChannelType.CROSS_CELL,
-        read_roles={AgentRole.DEVELOPER, AgentRole.MAIN_PM},
-        write_roles={AgentRole.DEVELOPER},
-    ),
-    "qa-all": ChannelPermission(
-        channel_name="qa-all",
-        channel_type=ChannelType.CROSS_CELL,
-        read_roles={AgentRole.QA, AgentRole.MAIN_PM},
-        write_roles={AgentRole.QA},
-    ),
-    "pm-all": ChannelPermission(
-        channel_name="pm-all",
-        channel_type=ChannelType.CROSS_CELL,
-        read_roles={AgentRole.CELL_PM, AgentRole.MAIN_PM},
-        write_roles={AgentRole.CELL_PM, AgentRole.MAIN_PM},
-    ),
-    "doc-all": ChannelPermission(
-        channel_name="doc-all",
-        channel_type=ChannelType.CROSS_CELL,
-        read_roles={AgentRole.DOCUMENTER, AgentRole.MAIN_PM},
-        write_roles={AgentRole.DOCUMENTER},
-    ),
-    # Management channels
-    "main-pm-board": ChannelPermission(
-        channel_name="main-pm-board",
-        channel_type=ChannelType.MANAGEMENT,
-        read_roles={
-            AgentRole.MAIN_PM,
-            AgentRole.PRODUCT_OWNER,
-            AgentRole.HEAD_MARKETING,
-            AgentRole.AUDITOR,
-        },
-        write_roles={
-            AgentRole.MAIN_PM,
-            AgentRole.PRODUCT_OWNER,
-            AgentRole.HEAD_MARKETING,
-        },
-    ),
-    "board-private": ChannelPermission(
-        channel_name="board-private",
-        channel_type=ChannelType.MANAGEMENT,
-        read_roles={
-            AgentRole.PRODUCT_OWNER,
-            AgentRole.HEAD_MARKETING,
-            AgentRole.AUDITOR,
-            AgentRole.CEO,
-        },
-        write_roles={
-            AgentRole.PRODUCT_OWNER,
-            AgentRole.HEAD_MARKETING,
-            AgentRole.CEO,
-        },
-    ),
-    # Special channels
-    "announcements": ChannelPermission(
-        channel_name="announcements",
-        channel_type=ChannelType.SPECIAL,
-        read_roles=set(AgentRole),  # Everyone can read
-        write_roles={
-            AgentRole.PRODUCT_OWNER,
-            AgentRole.HEAD_MARKETING,
-            AgentRole.MAIN_PM,
-            AgentRole.CEO,
-        },
-    ),
-    "all-hands": ChannelPermission(
-        channel_name="all-hands",
-        channel_type=ChannelType.SPECIAL,
-        read_roles=set(AgentRole),  # Everyone
-        write_roles=set(AgentRole),  # Everyone can write
-    ),
-}
+def _get_agents_for_role_team(role: AgentRole, team: Team | None) -> list[str]:
+    """Get all agent slugs that match a role and optional team."""
+    role_str = role.value
+    team_str = team.value if team else None
+    return _ROLE_TEAM_LOOKUP.get((role_str, team_str), [])
 
 
 # =============================================================================
-# NOTIFICATION PERMISSIONS
+# NOTIFICATION PERMISSIONS (derived from agents_config.NOTIFICATION_PERMISSIONS)
 # =============================================================================
 
 
-# Who can send notifications per HOMELAB_TEAM_V0.md Section 12.4
-NOTIFICATION_SENDERS: set[AgentRole] = {
-    AgentRole.CELL_PM,
-    AgentRole.MAIN_PM,
-    AgentRole.PRODUCT_OWNER,
-    AgentRole.HEAD_MARKETING,
-    AgentRole.AUDITOR,
-    AgentRole.CEO,
-}
+def _can_role_send_notifications(role: AgentRole) -> bool:
+    """Check if a role can send notifications (from agents_config)."""
+    perms = NOTIFICATION_PERMISSIONS.get(role.value, {})
+    return perms.get("can_send", False)
 
-# Who each role can notify
-NOTIFICATION_TARGETS: dict[AgentRole, set[AgentRole]] = {
-    # Cell PM can notify their own cell members
-    AgentRole.CELL_PM: {
-        AgentRole.DEVELOPER,
-        AgentRole.QA,
-        AgentRole.DOCUMENTER,
-        AgentRole.CELL_PM,  # Other cell PMs for coordination
-    },
-    # Main PM can notify all PMs and escalate to any cell
-    AgentRole.MAIN_PM: {
-        AgentRole.CELL_PM,
-        AgentRole.DEVELOPER,
-        AgentRole.QA,
-        AgentRole.DOCUMENTER,
-    },
-    # Product Owner can notify Main PM and Board
-    AgentRole.PRODUCT_OWNER: {
-        AgentRole.MAIN_PM,
-        AgentRole.HEAD_MARKETING,
-        AgentRole.AUDITOR,
-    },
-    # Head of Marketing can notify Main PM and Board
-    AgentRole.HEAD_MARKETING: {
-        AgentRole.MAIN_PM,
-        AgentRole.PRODUCT_OWNER,
-        AgentRole.AUDITOR,
-    },
-    # Auditor can notify anyone (special privilege)
-    AgentRole.AUDITOR: set(AgentRole),
-    # CEO can notify anyone
-    AgentRole.CEO: set(AgentRole),
-}
+
+def _get_notification_scope(role: AgentRole) -> str | list[str]:
+    """Get the notification scope for a role (from agents_config)."""
+    perms = NOTIFICATION_PERMISSIONS.get(role.value, {})
+    return perms.get("scope", [])
 
 
 # =============================================================================
@@ -451,6 +285,7 @@ class PermissionService:
     Service for checking and enforcing permissions.
 
     Implements the access control model from HOMELAB_TEAM_V0.md.
+    Uses agents_config.py as the SINGLE SOURCE OF TRUTH.
 
     Usage:
         service = PermissionService()
@@ -466,13 +301,43 @@ class PermissionService:
 
     def __init__(self) -> None:
         self.log = logger.bind(component="permissions")
-
-        # Channel permissions (can be customized)
-        self._channel_permissions = DEFAULT_CHANNEL_PERMISSIONS.copy()
+        # No duplicate storage - uses agents_config.CHANNEL_ACCESS directly
 
     # =========================================================================
-    # CHANNEL PERMISSIONS
+    # CHANNEL PERMISSIONS (uses agents_config.CHANNEL_ACCESS)
     # =========================================================================
+
+    def _check_channel_access_for_agent(
+        self,
+        agent: AgentContext,
+        channel_name: str,
+        access_type: str,
+    ) -> bool:
+        """
+        Check channel access using agents_config.CHANNEL_ACCESS.
+
+        Converts AgentContext (role+team) to potential agent slugs,
+        then checks if any of them have access.
+        """
+        channel = CHANNEL_ACCESS.get(channel_name)
+        if not channel:
+            self.log.warning("Unknown channel", channel=channel_name)
+            return False
+
+        # Get list of agent slugs that match this role+team
+        agent_slugs = _get_agents_for_role_team(agent.role, agent.team)
+
+        # Check if any matching agent has the requested access
+        access_list = channel.get(access_type, [])
+        silent_list = channel.get("silent", [])
+
+        for slug in agent_slugs:
+            if slug in access_list:
+                return True
+            if access_type == "read" and slug in silent_list:
+                return True
+
+        return False
 
     def can_read_channel(
         self,
@@ -488,20 +353,11 @@ class PermissionService:
         if agent.role == AgentRole.CEO:
             return True
 
-        permission = self._channel_permissions.get(channel_name)
-        if not permission:
-            self.log.warning("Unknown channel", channel=channel_name)
-            return False
+        # Main PM has access to all channels
+        if agent.role == AgentRole.MAIN_PM:
+            return True
 
-        # Check role-based access
-        if agent.role in permission.read_roles:
-            # For cell channels, also check team membership
-            is_cell = permission.channel_type == ChannelType.CELL
-            wrong_team = permission.teams and agent.team not in permission.teams
-            return not (is_cell and wrong_team)
-
-        # Higher permission levels can read lower-level channels
-        return agent.level <= PermissionLevel.MAIN_PM
+        return self._check_channel_access_for_agent(agent, channel_name, "read")
 
     def can_write_channel(
         self,
@@ -514,24 +370,14 @@ class PermissionService:
             return True
 
         # Auditor can write but usually doesn't (to maintain cover)
-        # They CAN notify anyone though
         if agent.role == AgentRole.AUDITOR:
             return True
 
-        permission = self._channel_permissions.get(channel_name)
-        if not permission:
-            self.log.warning("Unknown channel", channel=channel_name)
-            return False
+        # Main PM has access to all channels
+        if agent.role == AgentRole.MAIN_PM:
+            return True
 
-        # Check role-based access
-        if agent.role in permission.write_roles:
-            # For cell channels, also check team membership
-            is_cell = permission.channel_type == ChannelType.CELL
-            wrong_team = permission.teams and agent.team not in permission.teams
-            return not (is_cell and wrong_team)
-
-        # Higher permission levels can write to lower-level channels
-        return agent.level <= PermissionLevel.MAIN_PM
+        return self._check_channel_access_for_agent(agent, channel_name, "write")
 
     def get_accessible_channels(
         self,
@@ -539,7 +385,7 @@ class PermissionService:
     ) -> list[str]:
         """Get list of channels an agent can read."""
         channels = []
-        for channel_name in self._channel_permissions:
+        for channel_name in CHANNEL_ACCESS:
             if self.can_read_channel(agent, channel_name):
                 channels.append(channel_name)
         return channels
@@ -550,41 +396,52 @@ class PermissionService:
     ) -> list[str]:
         """Get list of channels an agent can write to."""
         channels = []
-        for channel_name in self._channel_permissions:
+        for channel_name in CHANNEL_ACCESS:
             if self.can_write_channel(agent, channel_name):
                 channels.append(channel_name)
         return channels
 
     # =========================================================================
-    # NOTIFICATION PERMISSIONS
+    # NOTIFICATION PERMISSIONS (uses agents_config.NOTIFICATION_PERMISSIONS)
     # =========================================================================
 
     def can_send_notifications(self, agent: AgentContext) -> bool:
         """Check if agent can send notifications at all."""
-        return agent.role in NOTIFICATION_SENDERS
+        return _can_role_send_notifications(agent.role)
 
     def can_notify(
         self,
         sender: AgentContext,
         recipient: AgentContext,
     ) -> bool:
-        """Check if sender can notify recipient."""
+        """
+        Check if sender can notify recipient.
+
+        Uses agents_config.NOTIFICATION_PERMISSIONS for scope rules.
+        """
         if not self.can_send_notifications(sender):
             return False
 
-        allowed_targets = NOTIFICATION_TARGETS.get(sender.role, set())
+        scope = _get_notification_scope(sender.role)
 
-        # Check if recipient role is in allowed targets
-        if recipient.role in allowed_targets:
-            # For Cell PM, also check team membership
+        # "all" scope means can notify anyone
+        if scope == "all":
+            return True
+
+        # "cell" scope means can only notify own cell members
+        if scope == "cell":
             # Cell PM can only notify their own cell unless coordinating with PMs
-            is_cell_pm_sender = sender.role == AgentRole.CELL_PM
-            is_not_pm_recipient = recipient.role != AgentRole.CELL_PM
-            is_different_team = sender.team != recipient.team
-            cannot_notify = (
-                is_cell_pm_sender and is_not_pm_recipient and is_different_team
-            )
-            return not cannot_notify
+            if recipient.role == AgentRole.CELL_PM:
+                # PMs can notify other PMs for coordination
+                return True
+            # Otherwise must be same team
+            return sender.team == recipient.team
+
+        # List scope - check if recipient slug is in the allowed list
+        if isinstance(scope, list):
+            # Get recipient's potential slugs
+            recipient_slugs = _get_agents_for_role_team(recipient.role, recipient.team)
+            return any(slug in scope for slug in recipient_slugs)
 
         return False
 
@@ -653,18 +510,6 @@ class PermissionService:
     # UTILITY
     # =========================================================================
 
-    def register_channel(
-        self,
-        permission: ChannelPermission,
-    ) -> None:
-        """Register a custom channel permission."""
-        self._channel_permissions[permission.channel_name] = permission
-        self.log.info(
-            "Registered channel",
-            channel=permission.channel_name,
-            type=permission.channel_type.value,
-        )
-
     def get_permission_level(self, role: AgentRole) -> PermissionLevel:
         """Get the permission level for a role."""
         return ROLE_LEVELS.get(role, PermissionLevel.CELL_MEMBER)
@@ -686,16 +531,16 @@ class PermissionService:
         }
 
     # =========================================================================
-    # STRING-BASED LOOKUPS (bridges to agents_config)
+    # STRING-BASED LOOKUPS (direct access to agents_config)
     # =========================================================================
 
     def can_agent_read_channel(self, agent_slug: str, channel_slug: str) -> bool:
         """
         Check channel access using agent slug (string ID).
 
-        This bridges to the agents_config module for string-based lookups.
+        Direct lookup in agents_config.CHANNEL_ACCESS.
         """
-        channel = CHANNEL_ACCESS_BY_ID.get(channel_slug)
+        channel = CHANNEL_ACCESS.get(channel_slug)
         if not channel:
             return False
 
@@ -708,9 +553,9 @@ class PermissionService:
         """
         Check channel write access using agent slug (string ID).
 
-        This bridges to the agents_config module for string-based lookups.
+        Direct lookup in agents_config.CHANNEL_ACCESS.
         """
-        channel = CHANNEL_ACCESS_BY_ID.get(channel_slug)
+        channel = CHANNEL_ACCESS.get(channel_slug)
         if not channel:
             return False
 
@@ -721,8 +566,8 @@ class PermissionService:
         """
         Check notification permission using agent slug (string ID).
 
-        This bridges to the agents_config module for string-based lookups.
+        Direct lookup in agents_config.NOTIFICATION_PERMISSIONS.
         """
         role = get_role_string(agent_slug)
-        perms = NOTIFICATION_PERMS_BY_ROLE.get(role, {})
+        perms = NOTIFICATION_PERMISSIONS.get(role, {})
         return perms.get("can_send", False)

@@ -213,3 +213,33 @@ def require_notification_permission():
             )
 
     return check_permission
+
+
+def require_task_action(action: str, task_team: Team | None = None):
+    """
+    Dependency factory that requires permission for a task action.
+
+    Args:
+        action: The task action (from TaskAction constants)
+        task_team: Optional team context for team-specific checks
+
+    Usage:
+        @router.post("/tasks")
+        async def create_task(
+            agent: CurrentAgentContext,
+            _: Annotated[None, Depends(require_task_action("create"))],
+        ):
+            ...
+    """
+
+    async def check_permission(
+        agent: CurrentAgentContext,
+        permissions: PermissionServiceDep,
+    ) -> None:
+        if not permissions.can_perform_task_action(agent, action, task_team):
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail=f"Not authorized to perform task action: {action}",
+            )
+
+    return check_permission

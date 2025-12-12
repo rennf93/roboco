@@ -4,6 +4,11 @@ Optimal API Service
 Knowledge base, RAG queries, and prompt optimization using piragi.
 This service provides semantic search across code, documentation,
 conversations, and journal entries.
+
+Document ingestion:
+    For in-memory content (conversations, journals), we use piragi's
+    internal components directly (chunker, embedder, store) to avoid
+    temp files and preserve structured metadata.
 """
 
 from dataclasses import dataclass, field
@@ -13,6 +18,7 @@ from uuid import UUID
 
 import structlog
 from piragi import AsyncRagi
+from piragi.types import Document
 
 from roboco.config import settings
 
@@ -142,6 +148,70 @@ class OptimalService:
         return self._indexes[index_type]
 
     # =========================================================================
+    # DOCUMENT INGESTION (direct in-memory, no temp files)
+    # =========================================================================
+
+    async def ingest_document(
+        self,
+        index_type: IndexType,
+        content: str,
+        metadata: dict[str, Any],
+        doc_id: str | None = None,
+    ) -> None:
+        """
+        Ingest a document with metadata directly into an index.
+
+        Uses piragi's internal components (chunker, embedder, store) to
+        add content directly without temp files. Metadata is preserved
+        in the chunk metadata for filtering during retrieval.
+
+        Args:
+            index_type: Which index to add to
+            content: The document content
+            metadata: Structured metadata dict (preserved in chunk metadata)
+            doc_id: Optional unique ID for the document
+        """
+        import asyncio
+
+        index = self._get_index(index_type)
+
+        # Access piragi's internal sync Ragi instance
+        ragi = index._sync
+
+        # Create a Document object with metadata
+        source = f"roboco://{index_type.value}/{doc_id or 'unknown'}"
+        doc = Document(
+            content=content,
+            source=source,
+            metadata=metadata,
+        )
+
+        # Use piragi's internal pipeline: chunk -> embed -> store
+        # Run in thread since piragi internals are synchronous
+        def _process_and_store() -> None:
+            # Chunk the document
+            chunks = ragi.chunker.chunk_document(doc)
+
+            # Add metadata to each chunk
+            for chunk in chunks:
+                chunk.metadata = {**chunk.metadata, **metadata}
+
+            # Generate embeddings
+            chunks_with_embeddings = ragi.embedder.embed_chunks(chunks)
+
+            # Store directly in vector database
+            ragi.store.add_chunks(chunks_with_embeddings)
+
+        await asyncio.to_thread(_process_and_store)
+
+        logger.debug(
+            "Ingested document",
+            index_type=index_type.value,
+            doc_id=doc_id,
+            metadata_keys=list(metadata.keys()),
+        )
+
+    # =========================================================================
     # INDEXING OPERATIONS
     # =========================================================================
 
@@ -211,38 +281,27 @@ class OptimalService:
             task_id: Related task if any
             message_type: Type of message (reasoning, dialogue, etc.)
         """
-        # For conversations, we write to a temporary file and index it
-        # This is a workaround since piragi expects file sources
-        # In production, we'd extend piragi with a custom document loader
-        import tempfile
-        from pathlib import Path
+        metadata = {
+            "type": "conversation",
+            "channel_id": str(channel_id),
+            "session_id": str(session_id),
+            "agent_id": str(agent_id),
+            "task_id": str(task_id) if task_id else "none",
+            "message_type": message_type or "unknown",
+        }
 
-        index = self._get_index(IndexType.CONVERSATIONS)
+        await self.ingest_document(
+            index_type=IndexType.CONVERSATIONS,
+            content=content,
+            metadata=metadata,
+            doc_id=f"{session_id}-{agent_id}"[:50],
+        )
 
-        # Create metadata-rich content
-        enriched_content = f"""
-Channel: {channel_id}
-Session: {session_id}
-Agent: {agent_id}
-Task: {task_id or "None"}
-Type: {message_type or "unknown"}
-
-{content}
-"""
-        # Write to temp file and index
-        with tempfile.NamedTemporaryFile(mode="w", suffix=".md", delete=False) as f:
-            f.write(enriched_content)
-            temp_path = f.name
-
-        try:
-            await index.add([temp_path])
-            logger.debug(
-                "Indexed conversation",
-                channel_id=str(channel_id),
-                agent_id=str(agent_id),
-            )
-        finally:
-            Path(temp_path).unlink(missing_ok=True)
+        logger.debug(
+            "Indexed conversation",
+            channel_id=str(channel_id),
+            agent_id=str(agent_id),
+        )
 
     async def index_journal_entry(
         self,
@@ -266,34 +325,27 @@ Type: {message_type or "unknown"}
             task_id: Related task if any
             tags: Entry tags
         """
-        import tempfile
-        from pathlib import Path
+        metadata = {
+            "type": "journal",
+            "entry_id": str(entry_id),
+            "agent_id": str(agent_id),
+            "entry_type": entry_type,
+            "task_id": str(task_id) if task_id else "none",
+            "tags": tags or [],
+        }
 
-        index = self._get_index(IndexType.JOURNALS)
+        await self.ingest_document(
+            index_type=IndexType.JOURNALS,
+            content=content,
+            metadata=metadata,
+            doc_id=str(entry_id)[:50],
+        )
 
-        # Create metadata-rich content
-        enriched_content = f"""
-Entry ID: {entry_id}
-Agent: {agent_id}
-Type: {entry_type}
-Task: {task_id or "None"}
-Tags: {", ".join(tags or [])}
-
-{content}
-"""
-        with tempfile.NamedTemporaryFile(mode="w", suffix=".md", delete=False) as f:
-            f.write(enriched_content)
-            temp_path = f.name
-
-        try:
-            await index.add([temp_path])
-            logger.debug(
-                "Indexed journal entry",
-                entry_id=str(entry_id),
-                agent_id=str(agent_id),
-            )
-        finally:
-            Path(temp_path).unlink(missing_ok=True)
+        logger.debug(
+            "Indexed journal entry",
+            entry_id=str(entry_id),
+            agent_id=str(agent_id),
+        )
 
     # =========================================================================
     # SEARCH OPERATIONS

@@ -237,7 +237,7 @@ Focus on:
 Format response as TOON tabular:
 [N,]{{name,description,steps,expected}}:
 Acceptance Criteria,Verify all criteria met,Review implementation|Check each criterion,All criteria satisfied
-""" # noqa: E501
+"""  # noqa: E501
         _response = await self.think(prompt)  # Response informs test case structure
 
         # Create test cases (simplified parsing)
