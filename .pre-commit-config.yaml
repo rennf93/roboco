@@ -1,0 +1,69 @@
+repos:
+-   repo: local
+    hooks:
+      - id: ruff-format
+        name: ruff-format
+        entry: uv run ruff format
+        require_serial: true
+        language: system
+        types: [ python ]
+      - id: ruff
+        name: ruff
+        entry: uv run ruff check --force-exclude
+        require_serial: true
+        language: system
+        types: [python]
+      - id: mypy
+        name: mypy
+        entry: uv run mypy roboco
+        require_serial: true
+        language: system
+        types: [python]
+        pass_filenames: false
+      - id: vulture
+        name: vulture
+        entry: uv run vulture vulture_whitelist.py
+        require_serial: true
+        language: system
+        types: [python]
+        pass_filenames: false
+      - id: bandit
+        name: bandit
+        entry: uv run bandit -r roboco -ll
+        require_serial: true
+        language: system
+        types: [python]
+        pass_filenames: false
+      - id: safety
+        name: safety
+        entry: uv run safety check
+        require_serial: true
+        language: system
+        pass_filenames: false
+      - id: radon-cc
+        name: radon-cyclomatic-complexity
+        entry: uv run radon cc roboco -nc
+        require_serial: true
+        language: system
+        types: [python]
+        pass_filenames: false
+      - id: xenon
+        name: xenon
+        entry: uv run xenon roboco --max-absolute B --max-modules A --max-average A
+        require_serial: true
+        language: system
+        types: [python]
+        pass_filenames: false
+      - id: deptry
+        name: deptry
+        entry: uv run deptry .
+        require_serial: true
+        language: system
+        pass_filenames: false
+      - id: semgrep
+        name: semgrep
+        entry: uv run semgrep --config=auto --error roboco
+        require_serial: true
+        language: system
+        types: [python]
+        pass_filenames: false

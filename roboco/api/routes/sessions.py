@@ -269,7 +269,7 @@ async def create_session(
 )
 async def close_session(
     db: DbSession,
-    __agent_id: CurrentAgentId,
+    _agent_id: CurrentAgentId,
     session_id: UUID,
 ) -> SessionResponse:
     """Close a session."""
