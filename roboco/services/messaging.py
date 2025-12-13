@@ -12,7 +12,7 @@ Implements the communication model from HOMELAB_TEAM_V0.md.
 
 from dataclasses import dataclass
 from datetime import UTC, datetime
-from typing import Any, cast
+from typing import cast
 from uuid import UUID
 
 import structlog
@@ -211,11 +211,11 @@ class MessagingService:
 
         # Add to members
         if agent_id not in channel.members:
-            channel.members = cast("list[Any]", [*channel.members, agent_id])
+            channel.members = [*channel.members, agent_id]
 
         # Add to writers if requested
         if can_write and agent_id not in channel.writers:
-            channel.writers = cast("list[Any]", [*channel.writers, agent_id])
+            channel.writers = [*channel.writers, agent_id]
 
         await self.session.flush()
 

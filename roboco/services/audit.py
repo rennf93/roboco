@@ -5,12 +5,38 @@ Logs permission denials and security events for visibility by Auditor and CEO.
 All audit logs are persisted and queryable.
 """
 
+from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from enum import Enum
 from typing import Any
 from uuid import UUID
 
 import structlog
+
+
+@dataclass
+class PermissionDenialContext:
+    """Context for a permission denial audit log."""
+
+    agent_id: UUID | str
+    action: str
+    resource: str
+    resource_id: UUID | str | None = None
+    reason: str | None = None
+    details: dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass
+class StateTransitionDenialContext:
+    """Context for a state transition denial audit log."""
+
+    agent_id: UUID | str
+    agent_role: str
+    task_id: UUID | str
+    current_status: str
+    target_status: str
+    reason: str | None = None
+
 
 logger = structlog.get_logger()
 
@@ -67,36 +93,23 @@ class AuditService:
 
     async def log_permission_denial(
         self,
-        agent_id: UUID | str,
-        action: str,
-        resource: str,
-        resource_id: UUID | str | None = None,
-        reason: str | None = None,
-        details: dict[str, Any] | None = None,
+        ctx: PermissionDenialContext,
     ) -> None:
         """
         Log a permission denial.
 
         This is the primary method for logging when an agent is denied
         permission to perform an action.
-
-        Args:
-            agent_id: Agent who attempted the action
-            action: The action attempted (e.g., "create", "update", "delete")
-            resource: The resource type (e.g., "task", "channel", "notification")
-            resource_id: Optional ID of the specific resource
-            reason: Why the permission was denied
-            details: Additional context
         """
         self.log.warning(
             "Permission denied",
             event_type=AuditEventType.PERMISSION_DENIED.value,
-            agent_id=str(agent_id),
-            action=action,
-            resource=resource,
-            resource_id=str(resource_id) if resource_id else None,
-            reason=reason,
-            details=details,
+            agent_id=str(ctx.agent_id),
+            action=ctx.action,
+            resource=ctx.resource,
+            resource_id=str(ctx.resource_id) if ctx.resource_id else None,
+            reason=ctx.reason,
+            details=ctx.details,
             timestamp=datetime.now(UTC).isoformat(),
         )
 
@@ -140,23 +153,18 @@ class AuditService:
 
     async def log_state_transition_denial(
         self,
-        agent_id: UUID | str,
-        agent_role: str,
-        task_id: UUID | str,
-        current_status: str,
-        target_status: str,
-        reason: str | None = None,
+        ctx: StateTransitionDenialContext,
     ) -> None:
         """Log a state transition denial."""
         self.log.warning(
             "State transition denied",
             event_type=AuditEventType.STATE_TRANSITION_DENIED.value,
-            agent_id=str(agent_id),
-            agent_role=agent_role,
-            task_id=str(task_id),
-            current_status=current_status,
-            target_status=target_status,
-            reason=reason,
+            agent_id=str(ctx.agent_id),
+            agent_role=ctx.agent_role,
+            task_id=str(ctx.task_id),
+            current_status=ctx.current_status,
+            target_status=ctx.target_status,
+            reason=ctx.reason,
             timestamp=datetime.now(UTC).isoformat(),
         )
 

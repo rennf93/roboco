@@ -6,7 +6,7 @@ Enforces permission rules: only PMs, Board, and Auditor can send notifications.
 """
 
 from datetime import UTC, datetime
-from typing import Annotated, Any, cast
+from typing import Annotated
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, status
@@ -190,7 +190,7 @@ async def get_notification(
 
     # Mark as read
     if agent_id not in notification.read_by:
-        notification.read_by = cast("list[Any]", [*notification.read_by, agent_id])
+        notification.read_by = [*notification.read_by, agent_id]
         await db.flush()
 
     return NotificationResponse(
@@ -336,7 +336,7 @@ async def acknowledge_notification(
 
     # Add acknowledgment
     if agent_id not in notification.acked_by:
-        notification.acked_by = cast("list[Any]", [*notification.acked_by, agent_id])
+        notification.acked_by = [*notification.acked_by, agent_id]
         notification.acked_at = {
             **notification.acked_at,
             str(agent_id): datetime.now(UTC).isoformat(),
@@ -344,7 +344,7 @@ async def acknowledge_notification(
 
     # Also mark as read
     if agent_id not in notification.read_by:
-        notification.read_by = cast("list[Any]", [*notification.read_by, agent_id])
+        notification.read_by = [*notification.read_by, agent_id]
 
     await db.flush()
 
@@ -398,5 +398,5 @@ async def mark_as_read(
         )
 
     if agent_id not in notification.read_by:
-        notification.read_by = cast("list[Any]", [*notification.read_by, agent_id])
+        notification.read_by = [*notification.read_by, agent_id]
         await db.flush()

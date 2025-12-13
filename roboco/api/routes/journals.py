@@ -13,8 +13,15 @@ from pydantic import BaseModel, Field
 
 from roboco.api.deps import CurrentAgentContext, DbSession
 from roboco.models.base import AgentRole, JournalEntryType
-from roboco.models.journal import JournalEntryCreate
-from roboco.services.journal import get_journal_service
+from roboco.models.journal import (
+    DecisionLogParams,
+    GeneralEntryParams,
+    JournalEntryCreate,
+    LearningEntryParams,
+    StruggleEntryParams,
+    TaskReflectionParams,
+)
+from roboco.services.journal import ListEntriesFilter, get_journal_service
 
 # =============================================================================
 # QUERY PARAMETER SCHEMAS
@@ -318,11 +325,13 @@ async def list_my_entries(
 
     entries = await service.list_entries(
         journal_id=journal.id,
-        entry_type=type_filter,
-        task_id=params.task_id,
-        limit=params.limit,
-        offset=params.offset,
-        include_private=True,  # Can see own private entries
+        filters=ListEntriesFilter(
+            entry_type=type_filter,
+            task_id=params.task_id,
+            limit=params.limit,
+            offset=params.offset,
+            include_private=True,  # Can see own private entries
+        ),
     )
 
     return [
@@ -438,13 +447,15 @@ async def add_task_reflection(
     service = get_journal_service(db)
     entry = await service.add_task_reflection(
         agent_id=agent.agent_id,
-        task_id=request.task_id,
-        title=request.title,
-        what_done=request.what_done,
-        what_learned=request.what_learned,
-        what_struggled=request.what_struggled,
-        next_steps=request.next_steps,
-        tags=request.tags,
+        params=TaskReflectionParams(
+            task_id=request.task_id,
+            title=request.title,
+            what_done=request.what_done,
+            what_learned=request.what_learned,
+            what_struggled=request.what_struggled,
+            next_steps=request.next_steps,
+            tags=request.tags,
+        ),
     )
 
     return JournalEntryResponse(
@@ -479,14 +490,16 @@ async def add_decision_log(
     service = get_journal_service(db)
     entry = await service.add_decision_log(
         agent_id=agent.agent_id,
-        title=request.title,
-        context=request.context,
-        options=request.options,
-        chosen=request.chosen,
-        rationale=request.rationale,
-        consequences=request.consequences,
-        task_id=request.task_id,
-        tags=request.tags,
+        params=DecisionLogParams(
+            title=request.title,
+            context=request.context,
+            options=request.options,
+            chosen=request.chosen,
+            rationale=request.rationale,
+            consequences=request.consequences,
+            task_id=request.task_id,
+            tags=request.tags,
+        ),
     )
 
     return JournalEntryResponse(
@@ -521,12 +534,14 @@ async def add_learning(
     service = get_journal_service(db)
     entry = await service.add_learning(
         agent_id=agent.agent_id,
-        title=request.title,
-        what_learned=request.what_learned,
-        how_applied=request.how_applied,
-        source=request.source,
-        task_id=request.task_id,
-        tags=request.tags,
+        params=LearningEntryParams(
+            title=request.title,
+            what_learned=request.what_learned,
+            how_applied=request.how_applied,
+            source=request.source,
+            task_id=request.task_id,
+            tags=request.tags,
+        ),
     )
 
     return JournalEntryResponse(
@@ -561,13 +576,15 @@ async def add_struggle(
     service = get_journal_service(db)
     entry = await service.add_struggle(
         agent_id=agent.agent_id,
-        title=request.title,
-        what_struggled=request.what_struggled,
-        attempted_solutions=request.attempted_solutions,
-        resolution=request.resolution,
-        help_needed=request.help_needed,
-        task_id=request.task_id,
-        tags=request.tags,
+        params=StruggleEntryParams(
+            title=request.title,
+            what_struggled=request.what_struggled,
+            attempted_solutions=request.attempted_solutions,
+            resolution=request.resolution,
+            help_needed=request.help_needed,
+            task_id=request.task_id,
+            tags=request.tags,
+        ),
     )
 
     return JournalEntryResponse(
@@ -602,12 +619,14 @@ async def add_general_entry(
     service = get_journal_service(db)
     entry = await service.add_general_entry(
         agent_id=agent.agent_id,
-        title=request.title,
-        content=request.content,
-        task_id=request.task_id,
-        session_id=request.session_id,
-        tags=request.tags,
-        is_private=request.is_private,
+        params=GeneralEntryParams(
+            title=request.title,
+            content=request.content,
+            task_id=request.task_id,
+            session_id=request.session_id,
+            tags=request.tags,
+            is_private=request.is_private,
+        ),
     )
 
     return JournalEntryResponse(

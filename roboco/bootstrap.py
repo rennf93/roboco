@@ -7,7 +7,7 @@ Initializes the database, creates default data, and starts the system.
 import argparse
 import asyncio
 from pathlib import Path
-from typing import Any, cast
+from typing import Any
 from uuid import UUID as UUIDType
 
 import structlog
@@ -348,8 +348,8 @@ async def create_channel_memberships(
                 writer_uuids.append(uuid)  # All members can write by default
 
         # Update channel
-        channel.members = cast("list[Any]", member_uuids)
-        channel.writers = cast("list[Any]", writer_uuids)
+        channel.members = member_uuids
+        channel.writers = writer_uuids
 
     # Add auditor silent access to specified channels
     auditor_db_id = agent_ids.get("auditor")
@@ -368,7 +368,7 @@ async def create_channel_memberships(
             # Add auditor to silent_observers (read-only)
             observers = channel.silent_observers or [] if channel else []
             if channel and auditor_uuid not in observers:
-                channel.silent_observers = cast("list[Any]", [*observers, auditor_uuid])
+                channel.silent_observers = [*observers, auditor_uuid]
 
     logger.info("Channel memberships configured")
 

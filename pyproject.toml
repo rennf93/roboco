@@ -64,6 +64,14 @@ dev = [
     # Code Quality
     "ruff",
     "mypy",
+    "vulture",
+    "bandit",
+    "safety",
+    "pip-audit",
+    "radon",
+    "xenon",
+    "deptry",
+    "semgrep",
 
     # Type Stubs
     "types-redis",
@@ -162,7 +170,6 @@ module = [
     "tiktoken.*",
     "piragi.*",
     "toon.*",
-    "aiofiles.*",
 ]
 ignore_missing_imports = true
 
@@ -257,3 +264,8 @@ ignore = []
 exclude = ["tests", ".venv", "vulture_whitelist.py", "alembic"]
 extend_exclude = ["conftest.py", "setup.py"]
 known_first_party = ["roboco"]
+
+[dependency-groups]
+dev = [
+    "types-aiofiles",
+]

@@ -119,7 +119,6 @@ class Journal(TimestampMixin):
 class TaskReflectionParams:
     """Parameters for creating a task reflection entry."""
 
-    journal_id: UUID
     task_id: UUID
     title: str
     what_done: str
@@ -127,13 +126,13 @@ class TaskReflectionParams:
     what_struggled: str
     next_steps: list[str]
     tags: list[str] = field(default_factory=list)
+    journal_id: UUID | None = None
 
 
 @dataclass
 class DecisionLogParams:
     """Parameters for creating a decision log entry."""
 
-    journal_id: UUID
     title: str
     context: str
     options: list[dict[str, str]]
@@ -142,26 +141,26 @@ class DecisionLogParams:
     consequences: list[str]
     task_id: UUID | None = None
     tags: list[str] = field(default_factory=list)
+    journal_id: UUID | None = None
 
 
 @dataclass
 class LearningEntryParams:
     """Parameters for creating a learning entry."""
 
-    journal_id: UUID
     title: str
     what_learned: str
     how_applied: str | None = None
     source: str | None = None
     task_id: UUID | None = None
     tags: list[str] = field(default_factory=list)
+    journal_id: UUID | None = None
 
 
 @dataclass
 class StruggleEntryParams:
     """Parameters for creating a struggle entry."""
 
-    journal_id: UUID
     title: str
     what_struggled: str
     attempted_solutions: list[str]
@@ -169,23 +168,27 @@ class StruggleEntryParams:
     help_needed: str | None = None
     task_id: UUID | None = None
     tags: list[str] = field(default_factory=list)
+    journal_id: UUID | None = None
 
 
 @dataclass
 class GeneralEntryParams:
     """Parameters for creating a general journal entry."""
 
-    journal_id: UUID
     title: str
     content: str
     task_id: UUID | None = None
     session_id: UUID | None = None
     tags: list[str] = field(default_factory=list)
     is_private: bool = False
+    journal_id: UUID | None = None
 
 
 def create_task_reflection(params: TaskReflectionParams) -> JournalEntry:
     """Create a task reflection entry."""
+    if params.journal_id is None:
+        msg = "journal_id is required for task reflection"
+        raise ValueError(msg)
     content = f"""## What I Did
 {params.what_done}
 
@@ -210,6 +213,9 @@ def create_task_reflection(params: TaskReflectionParams) -> JournalEntry:
 
 def create_decision_log(params: DecisionLogParams) -> JournalEntry:
     """Create a decision log entry."""
+    if params.journal_id is None:
+        msg = "journal_id is required for decision log"
+        raise ValueError(msg)
     options_text = ""
     for i, opt in enumerate(params.options, 1):
         options_text += f"\n**Option {i}: {opt.get('name', f'Option {i}')}**\n"
@@ -240,6 +246,9 @@ Chose **{params.chosen}** because {params.rationale}
 
 def create_learning_entry(params: LearningEntryParams) -> JournalEntry:
     """Create a learning entry."""
+    if params.journal_id is None:
+        msg = "journal_id is required for learning entry"
+        raise ValueError(msg)
     content = f"""## What I Learned
 {params.what_learned}
 """
@@ -266,6 +275,9 @@ def create_learning_entry(params: LearningEntryParams) -> JournalEntry:
 
 def create_struggle_entry(params: StruggleEntryParams) -> JournalEntry:
     """Create a struggle/difficulty entry."""
+    if params.journal_id is None:
+        msg = "journal_id is required for struggle entry"
+        raise ValueError(msg)
     content = f"""## What I Struggled With
 {params.what_struggled}
 
@@ -295,6 +307,9 @@ def create_struggle_entry(params: StruggleEntryParams) -> JournalEntry:
 
 def create_general_entry(params: GeneralEntryParams) -> JournalEntry:
     """Create a general journal entry."""
+    if params.journal_id is None:
+        msg = "journal_id is required for general entry"
+        raise ValueError(msg)
     return JournalEntry(
         journal_id=params.journal_id,
         type=JournalEntryType.GENERAL,

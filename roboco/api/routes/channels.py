@@ -4,7 +4,7 @@ Channel Routes
 CRUD operations for communication channels.
 """
 
-from typing import Annotated, Any, cast
+from typing import Annotated
 from uuid import UUID
 
 from fastapi import APIRouter, HTTPException, Query, status
@@ -409,11 +409,11 @@ async def add_member(
 
     # Add to members if not already present
     if member_id not in channel.members:
-        channel.members = cast("list[Any]", [*channel.members, member_id])
+        channel.members = [*channel.members, member_id]
 
     # Add to writers if requested
     if can_write and member_id not in channel.writers:
-        channel.writers = cast("list[Any]", [*channel.writers, member_id])
+        channel.writers = [*channel.writers, member_id]
 
     await db.flush()
 

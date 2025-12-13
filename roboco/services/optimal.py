@@ -66,6 +66,30 @@ class QueryContext:
     index_types: list[IndexType] | None = None
 
 
+@dataclass
+class IndexConversationParams:
+    """Parameters for indexing a conversation message."""
+
+    content: str
+    channel_id: UUID
+    session_id: UUID
+    agent_id: UUID
+    task_id: UUID | None = None
+    message_type: str | None = None
+
+
+@dataclass
+class IndexJournalEntryParams:
+    """Parameters for indexing a journal entry."""
+
+    entry_id: UUID
+    agent_id: UUID
+    content: str
+    entry_type: str
+    task_id: UUID | None = None
+    tags: list[str] | None = None
+
+
 class OptimalService:
     """
     Service for knowledge base operations and RAG queries.
@@ -259,92 +283,68 @@ class OptimalService:
         )
         return count
 
-    async def index_conversation(
-        self,
-        content: str,
-        channel_id: UUID,
-        session_id: UUID,
-        agent_id: UUID,
-        task_id: UUID | None = None,
-        message_type: str | None = None,
-    ) -> None:
+    async def index_conversation(self, params: IndexConversationParams) -> None:
         """
         Index a conversation message.
 
         Called by the transcription pipeline when messages are extracted.
 
         Args:
-            content: Message content
-            channel_id: Channel where message was posted
-            session_id: Session ID
-            agent_id: Agent who posted the message
-            task_id: Related task if any
-            message_type: Type of message (reasoning, dialogue, etc.)
+            params: IndexConversationParams containing content, channel_id,
+                    session_id, agent_id, task_id, and message_type
         """
         metadata = {
             "type": "conversation",
-            "channel_id": str(channel_id),
-            "session_id": str(session_id),
-            "agent_id": str(agent_id),
-            "task_id": str(task_id) if task_id else "none",
-            "message_type": message_type or "unknown",
+            "channel_id": str(params.channel_id),
+            "session_id": str(params.session_id),
+            "agent_id": str(params.agent_id),
+            "task_id": str(params.task_id) if params.task_id else "none",
+            "message_type": params.message_type or "unknown",
         }
 
         await self.ingest_document(
             index_type=IndexType.CONVERSATIONS,
-            content=content,
+            content=params.content,
             metadata=metadata,
-            doc_id=f"{session_id}-{agent_id}"[:50],
+            doc_id=f"{params.session_id}-{params.agent_id}"[:50],
         )
 
         logger.debug(
             "Indexed conversation",
-            channel_id=str(channel_id),
-            agent_id=str(agent_id),
+            channel_id=str(params.channel_id),
+            agent_id=str(params.agent_id),
         )
 
-    async def index_journal_entry(
-        self,
-        entry_id: UUID,
-        agent_id: UUID,
-        content: str,
-        entry_type: str,
-        task_id: UUID | None = None,
-        tags: list[str] | None = None,
-    ) -> None:
+    async def index_journal_entry(self, params: IndexJournalEntryParams) -> None:
         """
         Index a journal entry.
 
         Called by the Journal API when entries are created.
 
         Args:
-            entry_id: Journal entry ID
-            agent_id: Agent who owns the journal
-            content: Entry content
-            entry_type: Type of entry (reflection, decision, learning, etc.)
-            task_id: Related task if any
-            tags: Entry tags
+            params: IndexJournalEntryParams containing entry_id, agent_id,
+                    content, entry_type, task_id, and tags
         """
         metadata = {
             "type": "journal",
-            "entry_id": str(entry_id),
-            "agent_id": str(agent_id),
-            "entry_type": entry_type,
-            "task_id": str(task_id) if task_id else "none",
-            "tags": tags or [],
+            "entry_id": str(params.entry_id),
+            "agent_id": str(params.agent_id),
+            "entry_type": params.entry_type,
+            "task_id": str(params.task_id) if params.task_id else "none",
+            "tags": params.tags or [],
         }
 
         await self.ingest_document(
             index_type=IndexType.JOURNALS,
-            content=content,
+            content=params.content,
             metadata=metadata,
-            doc_id=str(entry_id)[:50],
+            doc_id=str(params.entry_id)[:50],
         )
 
         logger.debug(
             "Indexed journal entry",
-            entry_id=str(entry_id),
-            agent_id=str(agent_id),
+            entry_id=str(params.entry_id),
+            agent_id=str(params.agent_id),
         )
 
     # =========================================================================

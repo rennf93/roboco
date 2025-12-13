@@ -238,14 +238,14 @@ class TaskService:
 
         if blocker_task_id not in task.dependency_ids:
             new_deps = [*task.dependency_ids, blocker_task_id]
-            task.dependency_ids = cast("list[Any]", new_deps)
+            task.dependency_ids = new_deps
         task.status = TaskStatus.BLOCKED
         await self.session.flush()
 
         # Update the blocker task to reference this as blocked
         blocker = await self.get(blocker_task_id)
         if blocker and task_id not in blocker.blocker_ids:
-            blocker.blocker_ids = cast("list[Any]", [*blocker.blocker_ids, task_id])
+            blocker.blocker_ids = [*blocker.blocker_ids, task_id]
             await self.session.flush()
 
         logger.info(

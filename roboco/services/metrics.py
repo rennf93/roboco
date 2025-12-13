@@ -5,6 +5,7 @@ Collects and aggregates metrics for reporting and dashboards.
 Tracks velocity, blockers, completion rates, and agent performance.
 """
 
+from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from typing import Any
 from uuid import UUID
@@ -76,24 +77,16 @@ class BlockerMetrics:
         }
 
 
+@dataclass
 class TeamMetrics:
     """Metrics for a specific team."""
 
-    def __init__(
-        self,
-        team: Team,
-        active_tasks: int,
-        completed_tasks_week: int,
-        blocked_tasks: int,
-        avg_completion_hours: float | None,
-        documentation_coverage: float,
-    ):
-        self.team = team
-        self.active_tasks = active_tasks
-        self.completed_tasks_week = completed_tasks_week
-        self.blocked_tasks = blocked_tasks
-        self.avg_completion_hours = avg_completion_hours
-        self.documentation_coverage = documentation_coverage
+    team: Team
+    active_tasks: int
+    completed_tasks_week: int
+    blocked_tasks: int
+    avg_completion_hours: float | None
+    documentation_coverage: float
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -106,24 +99,16 @@ class TeamMetrics:
         }
 
 
+@dataclass
 class AgentMetrics:
     """Metrics for a specific agent."""
 
-    def __init__(
-        self,
-        agent_id: UUID,
-        agent_name: str,
-        tasks_completed_week: int,
-        current_task_id: UUID | None,
-        avg_completion_hours: float | None,
-        messages_sent_week: int,
-    ):
-        self.agent_id = agent_id
-        self.agent_name = agent_name
-        self.tasks_completed_week = tasks_completed_week
-        self.current_task_id = current_task_id
-        self.avg_completion_hours = avg_completion_hours
-        self.messages_sent_week = messages_sent_week
+    agent_id: UUID
+    agent_name: str
+    tasks_completed_week: int
+    current_task_id: UUID | None
+    avg_completion_hours: float | None
+    messages_sent_week: int
 
     def to_dict(self) -> dict[str, Any]:
         return {

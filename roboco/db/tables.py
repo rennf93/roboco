@@ -6,6 +6,7 @@ ORM mappings for all RoboCo data models.
 
 from datetime import UTC, datetime, timedelta
 from typing import Any
+from uuid import UUID as PyUUID
 from uuid import uuid4
 
 from sqlalchemy import (
@@ -144,10 +145,10 @@ class TaskTable(Base):
     parent_task_id: Mapped[UUID | None] = mapped_column(
         UUID(as_uuid=True), ForeignKey("tasks.id", ondelete="SET NULL"), nullable=True
     )
-    dependency_ids: Mapped[list[UUID]] = mapped_column(
+    dependency_ids: Mapped[list[PyUUID]] = mapped_column(
         ARRAY(UUID(as_uuid=True)), default=list
     )
-    blocker_ids: Mapped[list[UUID]] = mapped_column(
+    blocker_ids: Mapped[list[PyUUID]] = mapped_column(
         ARRAY(UUID(as_uuid=True)), default=list
     )
 
@@ -228,9 +229,13 @@ class ChannelTable(Base):
     topic: Mapped[str | None] = mapped_column(String(500), nullable=True)
 
     # Access Control
-    members: Mapped[list[UUID]] = mapped_column(ARRAY(UUID(as_uuid=True)), default=list)
-    writers: Mapped[list[UUID]] = mapped_column(ARRAY(UUID(as_uuid=True)), default=list)
-    silent_observers: Mapped[list[UUID]] = mapped_column(
+    members: Mapped[list[PyUUID]] = mapped_column(
+        ARRAY(UUID(as_uuid=True)), default=list
+    )
+    writers: Mapped[list[PyUUID]] = mapped_column(
+        ARRAY(UUID(as_uuid=True)), default=list
+    )
+    silent_observers: Mapped[list[PyUUID]] = mapped_column(
         ARRAY(UUID(as_uuid=True)), default=list
     )
 
@@ -288,7 +293,9 @@ class GroupTable(Base):
     # Access Control
     allowed_roles: Mapped[list[str]] = mapped_column(ARRAY(String), default=list)
     hierarchy_level: Mapped[int] = mapped_column(Integer, default=4)
-    members: Mapped[list[UUID]] = mapped_column(ARRAY(UUID(as_uuid=True)), default=list)
+    members: Mapped[list[PyUUID]] = mapped_column(
+        ARRAY(UUID(as_uuid=True)), default=list
+    )
 
     # Settings
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)
@@ -523,7 +530,7 @@ class NotificationTable(Base):
 
     # Acknowledgment
     requires_ack: Mapped[bool] = mapped_column(Boolean, default=True)
-    acked_by: Mapped[list[UUID]] = mapped_column(
+    acked_by: Mapped[list[PyUUID]] = mapped_column(
         ARRAY(UUID(as_uuid=True)), default=list
     )
     acked_at: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
@@ -532,7 +539,7 @@ class NotificationTable(Base):
     related_task_id: Mapped[UUID | None] = mapped_column(
         UUID(as_uuid=True), ForeignKey("tasks.id", ondelete="SET NULL"), nullable=True
     )
-    related_message_ids: Mapped[list[UUID]] = mapped_column(
+    related_message_ids: Mapped[list[PyUUID]] = mapped_column(
         ARRAY(UUID(as_uuid=True)), default=list
     )
 
@@ -543,7 +550,9 @@ class NotificationTable(Base):
     expires_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
 
     # Read tracking
-    read_by: Mapped[list[UUID]] = mapped_column(ARRAY(UUID(as_uuid=True)), default=list)
+    read_by: Mapped[list[PyUUID]] = mapped_column(
+        ARRAY(UUID(as_uuid=True)), default=list
+    )
 
     # Delivery tracking
     delivered_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)

@@ -38,6 +38,17 @@ logger = structlog.get_logger()
 
 
 @dataclass
+class ListEntriesFilter:
+    """Filter parameters for listing journal entries."""
+
+    entry_type: JournalEntryType | None = None
+    task_id: UUID | None = None
+    limit: int = 50
+    offset: int = 0
+    include_private: bool = False
+
+
+@dataclass
 class JournalStats:
     """Statistics for a journal."""
 
@@ -291,41 +302,34 @@ class JournalService:
     async def list_entries(
         self,
         journal_id: UUID,
-        entry_type: JournalEntryType | None = None,
-        task_id: UUID | None = None,
-        limit: int = 50,
-        offset: int = 0,
-        include_private: bool = False,
+        filters: ListEntriesFilter | None = None,
     ) -> list[JournalEntry]:
         """
         List journal entries with filtering.
 
         Args:
             journal_id: Journal to list entries from
-            entry_type: Filter by entry type
-            task_id: Filter by related task
-            limit: Maximum entries to return
-            offset: Pagination offset
-            include_private: Include private entries
+            filters: Optional filter parameters
 
         Returns:
             List of journal entries
         """
+        f = filters or ListEntriesFilter()
         query = select(JournalEntryTable).where(
             JournalEntryTable.journal_id == journal_id
         )
 
-        if entry_type:
-            query = query.where(JournalEntryTable.type == entry_type)
+        if f.entry_type:
+            query = query.where(JournalEntryTable.type == f.entry_type)
 
-        if task_id:
-            query = query.where(JournalEntryTable.task_id == task_id)
+        if f.task_id:
+            query = query.where(JournalEntryTable.task_id == f.task_id)
 
-        if not include_private:
+        if not f.include_private:
             query = query.where(JournalEntryTable.is_private.is_(False))
 
         query = query.order_by(JournalEntryTable.timestamp.desc())
-        query = query.limit(limit).offset(offset)
+        query = query.limit(f.limit).offset(f.offset)
 
         result = await self._db.execute(query)
         rows = result.scalars().all()
@@ -390,28 +394,22 @@ class JournalService:
     async def add_task_reflection(
         self,
         agent_id: UUID,
-        task_id: UUID,
-        title: str,
-        what_done: str,
-        what_learned: str,
-        what_struggled: str,
-        next_steps: list[str],
-        tags: list[str] | None = None,
+        params: TaskReflectionParams,
     ) -> JournalEntry:
         """Add a task reflection entry."""
         journal = await self.get_or_create_journal(agent_id)
-        entry = create_task_reflection(
-            TaskReflectionParams(
-                journal_id=journal.id,
-                task_id=task_id,
-                title=title,
-                what_done=what_done,
-                what_learned=what_learned,
-                what_struggled=what_struggled,
-                next_steps=next_steps,
-                tags=tags or [],
-            )
+        # Update journal_id in params
+        params_with_journal = TaskReflectionParams(
+            journal_id=journal.id,
+            task_id=params.task_id,
+            title=params.title,
+            what_done=params.what_done,
+            what_learned=params.what_learned,
+            what_struggled=params.what_struggled,
+            next_steps=params.next_steps,
+            tags=params.tags,
         )
+        entry = create_task_reflection(params_with_journal)
         return await self.create_entry(
             JournalEntryCreate(
                 journal_id=entry.journal_id,
@@ -426,30 +424,22 @@ class JournalService:
     async def add_decision_log(
         self,
         agent_id: UUID,
-        title: str,
-        context: str,
-        options: list[dict[str, str]],
-        chosen: str,
-        rationale: str,
-        consequences: list[str],
-        task_id: UUID | None = None,
-        tags: list[str] | None = None,
+        params: DecisionLogParams,
     ) -> JournalEntry:
         """Add a decision log entry."""
         journal = await self.get_or_create_journal(agent_id)
-        entry = create_decision_log(
-            DecisionLogParams(
-                journal_id=journal.id,
-                title=title,
-                context=context,
-                options=options,
-                chosen=chosen,
-                rationale=rationale,
-                consequences=consequences,
-                task_id=task_id,
-                tags=tags or [],
-            )
+        params_with_journal = DecisionLogParams(
+            journal_id=journal.id,
+            title=params.title,
+            context=params.context,
+            options=params.options,
+            chosen=params.chosen,
+            rationale=params.rationale,
+            consequences=params.consequences,
+            task_id=params.task_id,
+            tags=params.tags,
         )
+        entry = create_decision_log(params_with_journal)
         return await self.create_entry(
             JournalEntryCreate(
                 journal_id=entry.journal_id,
@@ -464,26 +454,20 @@ class JournalService:
     async def add_learning(
         self,
         agent_id: UUID,
-        title: str,
-        what_learned: str,
-        how_applied: str | None = None,
-        source: str | None = None,
-        task_id: UUID | None = None,
-        tags: list[str] | None = None,
+        params: LearningEntryParams,
     ) -> JournalEntry:
         """Add a learning entry."""
         journal = await self.get_or_create_journal(agent_id)
-        entry = create_learning_entry(
-            LearningEntryParams(
-                journal_id=journal.id,
-                title=title,
-                what_learned=what_learned,
-                how_applied=how_applied,
-                source=source,
-                task_id=task_id,
-                tags=tags or [],
-            )
+        params_with_journal = LearningEntryParams(
+            journal_id=journal.id,
+            title=params.title,
+            what_learned=params.what_learned,
+            how_applied=params.how_applied,
+            source=params.source,
+            task_id=params.task_id,
+            tags=params.tags,
         )
+        entry = create_learning_entry(params_with_journal)
         return await self.create_entry(
             JournalEntryCreate(
                 journal_id=entry.journal_id,
@@ -499,28 +483,21 @@ class JournalService:
     async def add_struggle(
         self,
         agent_id: UUID,
-        title: str,
-        what_struggled: str,
-        attempted_solutions: list[str],
-        resolution: str | None = None,
-        help_needed: str | None = None,
-        task_id: UUID | None = None,
-        tags: list[str] | None = None,
+        params: StruggleEntryParams,
     ) -> JournalEntry:
         """Add a struggle entry."""
         journal = await self.get_or_create_journal(agent_id)
-        entry = create_struggle_entry(
-            StruggleEntryParams(
-                journal_id=journal.id,
-                title=title,
-                what_struggled=what_struggled,
-                attempted_solutions=attempted_solutions,
-                resolution=resolution,
-                help_needed=help_needed,
-                task_id=task_id,
-                tags=tags or [],
-            )
+        params_with_journal = StruggleEntryParams(
+            journal_id=journal.id,
+            title=params.title,
+            what_struggled=params.what_struggled,
+            attempted_solutions=params.attempted_solutions,
+            resolution=params.resolution,
+            help_needed=params.help_needed,
+            task_id=params.task_id,
+            tags=params.tags,
         )
+        entry = create_struggle_entry(params_with_journal)
         return await self.create_entry(
             JournalEntryCreate(
                 journal_id=entry.journal_id,
@@ -536,26 +513,20 @@ class JournalService:
     async def add_general_entry(
         self,
         agent_id: UUID,
-        title: str,
-        content: str,
-        task_id: UUID | None = None,
-        session_id: UUID | None = None,
-        tags: list[str] | None = None,
-        is_private: bool = False,
+        params: GeneralEntryParams,
     ) -> JournalEntry:
         """Add a general journal entry."""
         journal = await self.get_or_create_journal(agent_id)
-        entry = create_general_entry(
-            GeneralEntryParams(
-                journal_id=journal.id,
-                title=title,
-                content=content,
-                task_id=task_id,
-                session_id=session_id,
-                tags=tags or [],
-                is_private=is_private,
-            )
+        params_with_journal = GeneralEntryParams(
+            journal_id=journal.id,
+            title=params.title,
+            content=params.content,
+            task_id=params.task_id,
+            session_id=params.session_id,
+            tags=params.tags,
+            is_private=params.is_private,
         )
+        entry = create_general_entry(params_with_journal)
         return await self.create_entry(
             JournalEntryCreate(
                 journal_id=entry.journal_id,
