@@ -13,6 +13,76 @@ from roboco.events.bus import Event, EventType, get_event_bus
 logger = structlog.get_logger()
 
 
+async def _handle_task_blocked(
+    event: Event,
+    task_id: str,
+    notification_service: Any,
+) -> None:
+    """Handle blocked task notification."""
+    team = event.data.get("team")
+    if not team:
+        return
+    blocker_reason = event.data.get("reason", "Unknown blocker")
+    pm_id = f"{team[:2]}-pm"
+    await notification_service.send_blocker_notification(
+        task_id=task_id,
+        blocker_reason=blocker_reason,
+        from_agent=event.source_agent,
+        to_pm=pm_id,
+    )
+
+
+async def _handle_task_awaiting_qa(
+    event: Event,
+    task_id: str,
+    notification_service: Any,
+) -> None:
+    """Handle task awaiting QA notification."""
+    team = event.data.get("team")
+    if not team:
+        return
+    qa_id = f"{team[:2]}-qa"
+    await notification_service.send_qa_ready_notification(
+        task_id=task_id,
+        from_agent=event.source_agent,
+        to_qa=qa_id,
+    )
+
+
+async def _handle_task_qa_failed(
+    event: Event,
+    task_id: str,
+    notification_service: Any,
+) -> None:
+    """Handle QA failed notification."""
+    developer_id = event.data.get("assigned_to")
+    if not developer_id:
+        return
+    qa_notes = event.data.get("qa_notes", "See task for details")
+    await notification_service.send_qa_failed_notification(
+        task_id=task_id,
+        qa_notes=qa_notes,
+        to_developer=developer_id,
+    )
+
+
+async def _handle_task_awaiting_docs(
+    event: Event,
+    task_id: str,
+    notification_service: Any,
+) -> None:
+    """Handle task awaiting docs notification."""
+    team = event.data.get("team")
+    if not team:
+        return
+    doc_id = f"{team[:2]}-doc"
+    await notification_service.send_docs_ready_notification(
+        task_id=task_id,
+        from_agent=event.source_agent,
+        to_documenter=doc_id,
+    )
+
+
 async def handle_task_status_change(event: Event) -> None:
     """
     Handle task status change events.
@@ -25,68 +95,28 @@ async def handle_task_status_change(event: Event) -> None:
     """
     task_id_raw = event.data.get("task_id")
     task_id = str(task_id_raw) if task_id_raw else ""
-    agent_id = event.source_agent
-    event_type = event.type
 
     logger.info(
         "Task status changed",
         task_id=task_id,
-        event_type=event_type.value,
-        agent=agent_id,
+        event_type=event.type.value,
+        agent=event.source_agent,
     )
 
-    # Import here to avoid circular imports
     from roboco.services.notification import NotificationService  # noqa: PLC0415
 
     notification_service = NotificationService()
 
-    if event_type == EventType.TASK_BLOCKED:
-        # Notify the cell PM
-        blocker_reason = event.data.get("reason", "Unknown blocker")
-        team = event.data.get("team")
+    handlers = {
+        EventType.TASK_BLOCKED: _handle_task_blocked,
+        EventType.TASK_AWAITING_QA: _handle_task_awaiting_qa,
+        EventType.TASK_QA_FAILED: _handle_task_qa_failed,
+        EventType.TASK_AWAITING_DOCS: _handle_task_awaiting_docs,
+    }
 
-        if team:
-            pm_id = f"{team[:2]}-pm"  # e.g., "backend" -> "be-pm"
-            await notification_service.send_blocker_notification(
-                task_id=task_id,
-                blocker_reason=blocker_reason,
-                from_agent=agent_id,
-                to_pm=pm_id,
-            )
-
-    elif event_type == EventType.TASK_AWAITING_QA:
-        # Notify the QA agent
-        team = event.data.get("team")
-        if team:
-            qa_id = f"{team[:2]}-qa"
-            await notification_service.send_qa_ready_notification(
-                task_id=task_id,
-                from_agent=agent_id,
-                to_qa=qa_id,
-            )
-
-    elif event_type == EventType.TASK_QA_FAILED:
-        # Notify the original developer
-        developer_id = event.data.get("assigned_to")
-        qa_notes = event.data.get("qa_notes", "See task for details")
-
-        if developer_id:
-            await notification_service.send_qa_failed_notification(
-                task_id=task_id,
-                qa_notes=qa_notes,
-                to_developer=developer_id,
-            )
-
-    elif event_type == EventType.TASK_AWAITING_DOCS:
-        # Notify the documenter
-        team = event.data.get("team")
-        if team:
-            doc_id = f"{team[:2]}-doc"
-            await notification_service.send_docs_ready_notification(
-                task_id=task_id,
-                from_agent=agent_id,
-                to_documenter=doc_id,
-            )
+    handler = handlers.get(event.type)
+    if handler:
+        await handler(event, task_id, notification_service)
 
 
 async def handle_session_boundary(event: Event) -> None:
@@ -148,18 +178,35 @@ async def handle_handoff_created(event: Event) -> None:
         )
 
 
-async def handle_qa_result(event: Event) -> None:
-    """
-    Handle QA result events.
+async def _try_resolve_agent_wait(
+    agent_id: str | None,
+    waiting_for: str,
+    resolution: dict[str, Any],
+) -> None:
+    """Try to resolve a waiting agent if orchestrator is running."""
+    if not agent_id:
+        return
+    try:
+        from roboco.bootstrap import _BootstrapHolder  # noqa: PLC0415
 
-    Triggers:
-    - Resume developer agent if waiting on QA result
-    - Notify appropriate parties
-    """
+        orchestrator = _BootstrapHolder.orchestrator
+        if not orchestrator:
+            return
+        waiting = orchestrator.get_waiting_agents()
+        if agent_id not in waiting:
+            return
+        record = waiting[agent_id]
+        if record.waiting_for == waiting_for:
+            await orchestrator.resolve_wait(agent_id=agent_id, resolution=resolution)
+    except (ImportError, AttributeError):
+        pass
+
+
+async def handle_qa_result(event: Event) -> None:
+    """Handle QA result events."""
     task_id = event.data.get("task_id")
     passed = event.type == EventType.TASK_QA_PASSED
     developer_id = event.data.get("assigned_to")
-    qa_notes = event.data.get("qa_notes")
 
     logger.info(
         "QA result",
@@ -168,106 +215,41 @@ async def handle_qa_result(event: Event) -> None:
         developer=developer_id,
     )
 
-    # Check if developer agent is in WAITING_LONG state
-
-    # Get orchestrator instance (if running)
-    try:
-        from roboco.bootstrap import _BootstrapHolder  # noqa: PLC0415
-
-        orchestrator = _BootstrapHolder.orchestrator
-        if orchestrator and developer_id:
-            waiting = orchestrator.get_waiting_agents()
-            if developer_id in waiting:
-                record = waiting[developer_id]
-                if record.waiting_for == "qa_result":
-                    # Resume the agent
-                    await orchestrator.resolve_wait(
-                        agent_id=developer_id,
-                        resolution={
-                            "passed": passed,
-                            "notes": qa_notes,
-                            "task_id": task_id,
-                        },
-                    )
-    except (ImportError, AttributeError):
-        pass  # Orchestrator not running
+    await _try_resolve_agent_wait(
+        developer_id,
+        "qa_result",
+        {"passed": passed, "notes": event.data.get("qa_notes"), "task_id": task_id},
+    )
 
 
 async def handle_blocker_resolved(event: Event) -> None:
-    """
-    Handle blocker resolution events.
-
-    Triggers:
-    - Resume blocked agent
-    - Update task status
-    """
+    """Handle blocker resolution events."""
     task_id = event.data.get("task_id")
     agent_id = event.data.get("agent_id")
     resolution = event.data.get("resolution", "Resolved")
 
-    logger.info(
-        "Blocker resolved",
-        task_id=task_id,
-        agent=agent_id,
+    logger.info("Blocker resolved", task_id=task_id, agent=agent_id)
+
+    await _try_resolve_agent_wait(
+        agent_id,
+        "blocker_resolution",
+        {"details": resolution, "task_id": task_id},
     )
-
-    # Resume agent if waiting
-    try:
-        from roboco.bootstrap import _BootstrapHolder  # noqa: PLC0415
-
-        orchestrator = _BootstrapHolder.orchestrator
-        if orchestrator and agent_id:
-            waiting = orchestrator.get_waiting_agents()
-            if agent_id in waiting:
-                record = waiting[agent_id]
-                if record.waiting_for == "blocker_resolution":
-                    await orchestrator.resolve_wait(
-                        agent_id=agent_id,
-                        resolution={
-                            "details": resolution,
-                            "task_id": task_id,
-                        },
-                    )
-    except (ImportError, AttributeError):
-        pass
 
 
 async def handle_question_answered(event: Event) -> None:
-    """
-    Handle question answered events.
-
-    Triggers:
-    - Resume agent waiting for answer
-    """
+    """Handle question answered events."""
     question_id = event.data.get("question_id")
     agent_id = event.data.get("asking_agent")
     answer = event.data.get("answer")
 
-    logger.info(
-        "Question answered",
-        question_id=question_id,
-        agent=agent_id,
+    logger.info("Question answered", question_id=question_id, agent=agent_id)
+
+    await _try_resolve_agent_wait(
+        agent_id,
+        "answer",
+        {"answer": answer, "question_id": question_id},
     )
-
-    # Resume agent if waiting
-    try:
-        from roboco.bootstrap import _BootstrapHolder  # noqa: PLC0415
-
-        orchestrator = _BootstrapHolder.orchestrator
-        if orchestrator and agent_id:
-            waiting = orchestrator.get_waiting_agents()
-            if agent_id in waiting:
-                record = waiting[agent_id]
-                if record.waiting_for == "answer":
-                    await orchestrator.resolve_wait(
-                        agent_id=agent_id,
-                        resolution={
-                            "answer": answer,
-                            "question_id": question_id,
-                        },
-                    )
-    except (ImportError, AttributeError):
-        pass
 
 
 def register_default_handlers(bus: Any = None) -> None:

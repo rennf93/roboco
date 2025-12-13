@@ -312,6 +312,65 @@ async def create_agents(session: AsyncSession) -> dict[str, str]:
     return agent_ids
 
 
+async def _get_channel(
+    session: AsyncSession,
+    channel_id: str,
+) -> ChannelTable | None:
+    """Fetch a channel by ID."""
+    result = await session.execute(
+        select(ChannelTable).where(ChannelTable.id == UUIDType(channel_id))
+    )
+    return result.scalar_one_or_none()
+
+
+def _build_member_uuids(
+    agent_slugs: list[str],
+    agent_ids: dict[str, str],
+) -> list[UUIDType]:
+    """Build a list of UUIDs from agent slugs."""
+    return [UUIDType(agent_ids[slug]) for slug in agent_slugs if slug in agent_ids]
+
+
+async def _configure_channel_members(
+    session: AsyncSession,
+    channel_ids: dict[str, str],
+    agent_ids: dict[str, str],
+) -> None:
+    """Configure members and writers for all channels."""
+    for channel_slug, members in CHANNEL_MEMBERSHIPS.items():
+        channel_id = channel_ids.get(channel_slug)
+        if not channel_id:
+            continue
+
+        channel = await _get_channel(session, channel_id)
+        if not channel:
+            continue
+
+        member_uuids = _build_member_uuids(members, agent_ids)
+        channel.members = member_uuids
+        channel.writers = member_uuids  # All members can write by default
+
+
+async def _add_auditor_silent_access(
+    session: AsyncSession,
+    channel_ids: dict[str, str],
+    auditor_uuid: UUIDType,
+) -> None:
+    """Add auditor as silent observer to specified channels."""
+    for channel_slug in AUDITOR_SILENT_ACCESS:
+        channel_id = channel_ids.get(channel_slug)
+        if not channel_id:
+            continue
+
+        channel = await _get_channel(session, channel_id)
+        if not channel:
+            continue
+
+        observers = channel.silent_observers or []
+        if auditor_uuid not in observers:
+            channel.silent_observers = [*observers, auditor_uuid]
+
+
 async def create_channel_memberships(
     session: AsyncSession,
     channel_ids: dict[str, str],
@@ -323,52 +382,11 @@ async def create_channel_memberships(
     Note: ChannelTable uses arrays for members/writers/silent_observers
     rather than a separate membership table.
     """
-    for channel_slug, members in CHANNEL_MEMBERSHIPS.items():
-        channel_id = channel_ids.get(channel_slug)
-        if not channel_id:
-            continue
+    await _configure_channel_members(session, channel_ids, agent_ids)
 
-        # Get the channel
-        result = await session.execute(
-            select(ChannelTable).where(ChannelTable.id == UUIDType(channel_id))
-        )
-        channel = result.scalar_one_or_none()
-        if not channel:
-            continue
-
-        # Build member and writer UUID lists
-        member_uuids = []
-        writer_uuids = []
-
-        for agent_slug in members:
-            db_agent_id = agent_ids.get(agent_slug)
-            if db_agent_id:
-                uuid = UUIDType(db_agent_id)
-                member_uuids.append(uuid)
-                writer_uuids.append(uuid)  # All members can write by default
-
-        # Update channel
-        channel.members = member_uuids
-        channel.writers = writer_uuids
-
-    # Add auditor silent access to specified channels
     auditor_db_id = agent_ids.get("auditor")
     if auditor_db_id:
-        auditor_uuid = UUIDType(auditor_db_id)
-
-        for channel_slug in AUDITOR_SILENT_ACCESS:
-            channel_id = channel_ids.get(channel_slug)
-            if not channel_id:
-                continue
-
-            result = await session.execute(
-                select(ChannelTable).where(ChannelTable.id == UUIDType(channel_id))
-            )
-            channel = result.scalar_one_or_none()
-            # Add auditor to silent_observers (read-only)
-            observers = channel.silent_observers or [] if channel else []
-            if channel and auditor_uuid not in observers:
-                channel.silent_observers = [*observers, auditor_uuid]
+        await _add_auditor_silent_access(session, channel_ids, UUIDType(auditor_db_id))
 
     logger.info("Channel memberships configured")
 

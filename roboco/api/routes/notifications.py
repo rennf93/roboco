@@ -6,7 +6,7 @@ Enforces permission rules: only PMs, Board, and Auditor can send notifications.
 """
 
 from datetime import UTC, datetime
-from typing import Annotated
+from typing import Annotated, Any
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, status
@@ -90,6 +90,49 @@ class NotificationCreateRequest(BaseModel):
 # =============================================================================
 
 
+def _build_notification_query(
+    agent_id: UUID,
+    params: ListNotificationsParams,
+) -> Any:
+    """Build the notification query with filters."""
+    query = select(NotificationTable).where(
+        NotificationTable.to_agents.contains([agent_id])
+    )
+    if params.unread_only:
+        query = query.where(~NotificationTable.read_by.contains([agent_id]))
+    if params.pending_ack_only:
+        query = query.where(
+            NotificationTable.requires_ack.is_(True),
+            ~NotificationTable.acked_by.contains([agent_id]),
+        )
+    if params.type_filter:
+        query = query.where(NotificationTable.type == params.type_filter)
+    return query.order_by(NotificationTable.timestamp.desc()).limit(params.limit)
+
+
+def _notification_to_response(
+    n: NotificationTable,
+    agent_id: UUID,
+) -> NotificationResponse:
+    """Convert a notification to response format."""
+    return NotificationResponse(
+        id=require_uuid(n.id),
+        type=n.type,
+        priority=n.priority,
+        from_agent=require_uuid(n.from_agent),
+        to_agents=to_python_uuid_list(n.to_agents),
+        subject=n.subject,
+        body=n.body,
+        requires_ack=n.requires_ack,
+        is_acknowledged=agent_id in n.acked_by,
+        is_fully_acknowledged=all(a in n.acked_by for a in n.to_agents),
+        is_read=agent_id in n.read_by,
+        related_task_id=to_python_uuid(n.related_task_id),
+        timestamp=n.timestamp,
+        expires_at=n.expires_at,
+    )
+
+
 @router.get(
     "",
     response_model=NotificationListResponse,
@@ -102,53 +145,15 @@ async def list_notifications(
     params: Annotated[ListNotificationsParams, Depends()],
 ) -> NotificationListResponse:
     """List notifications for the agent."""
-    # Query notifications where agent is a recipient
-    query = select(NotificationTable).where(
-        NotificationTable.to_agents.contains([agent_id])
-    )
-
-    if params.unread_only:
-        query = query.where(~NotificationTable.read_by.contains([agent_id]))
-
-    if params.pending_ack_only:
-        query = query.where(
-            NotificationTable.requires_ack.is_(True),
-            ~NotificationTable.acked_by.contains([agent_id]),
-        )
-
-    if params.type_filter:
-        query = query.where(NotificationTable.type == params.type_filter)
-
-    query = query.order_by(NotificationTable.timestamp.desc()).limit(params.limit)
-
-    result = await db.execute(query)
+    query = _build_notification_query(agent_id, params)
+    result: Any = await db.execute(query)
     notifications = result.scalars().all()
 
-    # Count unread and pending ack
     unread_count = sum(1 for n in notifications if agent_id not in n.read_by)
     pending_ack_count = sum(
         1 for n in notifications if n.requires_ack and agent_id not in n.acked_by
     )
-
-    items = [
-        NotificationResponse(
-            id=require_uuid(n.id),
-            type=n.type,
-            priority=n.priority,
-            from_agent=require_uuid(n.from_agent),
-            to_agents=to_python_uuid_list(n.to_agents),
-            subject=n.subject,
-            body=n.body,
-            requires_ack=n.requires_ack,
-            is_acknowledged=agent_id in n.acked_by,
-            is_fully_acknowledged=all(a in n.acked_by for a in n.to_agents),
-            is_read=agent_id in n.read_by,
-            related_task_id=to_python_uuid(n.related_task_id),
-            timestamp=n.timestamp,
-            expires_at=n.expires_at,
-        )
-        for n in notifications
-    ]
+    items = [_notification_to_response(n, agent_id) for n in notifications]
 
     return NotificationListResponse(
         items=items,

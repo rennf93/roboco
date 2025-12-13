@@ -681,20 +681,11 @@ efficiency,warning,Unclear handoff process,3 tasks delayed,Document handoff step
         except Exception as e:
             self.log.error("Failed to send CEO report", error=str(e))
 
-    async def _perform_audit(self, audit_type: str) -> str | None:
-        """Perform a specific type of audit."""
-        try:
-            # Query relevant data based on audit type
-            if audit_type == "code_quality":
-                result = await self._api_call(
-                    "GET",
-                    "/tasks",
-                    params={"status": "completed", "limit": 10},
-                )
-                tasks = result.get("items", [])
-                # Analyze completed tasks for quality issues
-                if tasks:
-                    prompt = f"""
+    async def _audit_code_quality(self, tasks: list[dict]) -> str | None:
+        """Audit code quality from completed tasks."""
+        if not tasks:
+            return None
+        prompt = f"""
 Analyze these completed tasks for code quality patterns:
 
 {chr(10).join(f"- {t.get('title')}: {t.get('description', '')[:100]}" for t in tasks)}
@@ -707,36 +698,44 @@ Look for:
 
 Report findings or None if all looks good.
 """
-                    return await self.think(prompt)
+        return await self.think(prompt)
 
-            elif audit_type == "documentation":
-                result = await self._api_call(
-                    "GET",
-                    "/tasks",
-                    params={"status": "completed", "limit": 10},
-                )
-                tasks = result.get("items", [])
-                missing_docs = [t for t in tasks if not t.get("documentation_complete")]
-                if missing_docs:
-                    count = len(missing_docs)
-                    return f"Found {count} tasks with incomplete documentation"
+    async def _audit_documentation(self, tasks: list[dict]) -> str | None:
+        """Audit documentation completeness."""
+        missing_docs = [t for t in tasks if not t.get("documentation_complete")]
+        if missing_docs:
+            return f"Found {len(missing_docs)} tasks with incomplete documentation"
+        return None
 
-            elif audit_type == "process_compliance":
-                # Check for process violations
-                result = await self._api_call(
-                    "GET",
-                    "/tasks",
-                    params={"status": "completed", "limit": 10},
-                )
-                tasks = result.get("items", [])
-                violations = []
-                for task in tasks:
-                    if not task.get("qa_passed"):
-                        violations.append(f"{task.get('title')} - no QA")
-                if violations:
-                    return f"Process violations: {', '.join(violations)}"
+    async def _audit_process_compliance(self, tasks: list[dict]) -> str | None:
+        """Audit process compliance."""
+        violations = [
+            f"{t.get('title')} - no QA" for t in tasks if not t.get("qa_passed")
+        ]
+        if violations:
+            return f"Process violations: {', '.join(violations)}"
+        return None
 
+    async def _perform_audit(self, audit_type: str) -> str | None:
+        """Perform a specific type of audit."""
+        audit_handlers = {
+            "code_quality": self._audit_code_quality,
+            "documentation": self._audit_documentation,
+            "process_compliance": self._audit_process_compliance,
+        }
+
+        handler = audit_handlers.get(audit_type)
+        if not handler:
             return None
+
+        try:
+            result = await self._api_call(
+                "GET",
+                "/tasks",
+                params={"status": "completed", "limit": 10},
+            )
+            tasks = result.get("items", [])
+            return await handler(tasks)
         except Exception as e:
             self.log.warning("Failed to perform audit", error=str(e))
             return None

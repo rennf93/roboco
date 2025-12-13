@@ -494,6 +494,46 @@ class MetricsService:
     # HEALTH STATUS
     # =========================================================================
 
+    def _determine_health_status(
+        self,
+        blocked_ratio: float,
+        active_count: int,
+        completed_count: int,
+    ) -> str:
+        """Determine health status from metrics."""
+        critical_threshold = 0.3
+        slow_threshold = 0.15
+        stale_threshold = 5
+
+        if blocked_ratio > critical_threshold:
+            return "critical"
+        if blocked_ratio > slow_threshold:
+            return "slow"
+        if active_count > stale_threshold and completed_count == 0:
+            return "slow"
+        return "ok"
+
+    async def _get_task_count(
+        self,
+        status_filter: list[TaskStatus] | TaskStatus,
+        team: Team | None,
+        since: datetime | None = None,
+    ) -> int:
+        """Get count of tasks matching criteria."""
+        conditions: list[Any] = []
+        if isinstance(status_filter, list):
+            conditions.append(TaskTable.status.in_(status_filter))
+        else:
+            conditions.append(TaskTable.status == status_filter)
+        if team:
+            conditions.append(TaskTable.team == team)
+        if since:
+            conditions.append(TaskTable.completed_at >= since)
+
+        query = select(func.count(TaskTable.id)).where(and_(*conditions))
+        result = await self.session.execute(query)
+        return result.scalar() or 0
+
     async def get_health_status(self, team: Team | None = None) -> dict[str, Any]:
         """
         Get health status for a team or the whole organization.
@@ -504,67 +544,27 @@ class MetricsService:
         - Average task age
         """
         week_ago = datetime.now(UTC) - timedelta(days=7)
+        active_statuses = [
+            TaskStatus.CLAIMED,
+            TaskStatus.IN_PROGRESS,
+            TaskStatus.VERIFYING,
+            TaskStatus.AWAITING_QA,
+            TaskStatus.BLOCKED,
+        ]
 
-        # Build base query
-        base_filter = []
-        if team:
-            base_filter.append(TaskTable.team == team)
-
-        # Get counts
-        active_query = select(func.count(TaskTable.id)).where(
-            and_(
-                TaskTable.status.in_(
-                    [
-                        TaskStatus.CLAIMED,
-                        TaskStatus.IN_PROGRESS,
-                        TaskStatus.VERIFYING,
-                        TaskStatus.AWAITING_QA,
-                        TaskStatus.BLOCKED,
-                    ]
-                ),
-                *base_filter,
-            )
+        active_count = await self._get_task_count(active_statuses, team)
+        blocked_count = await self._get_task_count(TaskStatus.BLOCKED, team)
+        completed_count = await self._get_task_count(
+            TaskStatus.COMPLETED, team, since=week_ago
         )
-        active_result = await self.session.execute(active_query)
-        active_count = active_result.scalar() or 0
 
-        blocked_query = select(func.count(TaskTable.id)).where(
-            and_(
-                TaskTable.status == TaskStatus.BLOCKED,
-                *base_filter,
-            )
-        )
-        blocked_result = await self.session.execute(blocked_query)
-        blocked_count = blocked_result.scalar() or 0
-
-        completed_query = select(func.count(TaskTable.id)).where(
-            and_(
-                TaskTable.completed_at >= week_ago,
-                TaskTable.status == TaskStatus.COMPLETED,
-                *base_filter,
-            )
-        )
-        completed_result = await self.session.execute(completed_query)
-        completed_count = completed_result.scalar() or 0
-
-        # Calculate ratios
         blocked_ratio = blocked_count / active_count if active_count > 0 else 0
-
-        # Determine status
-        three_tenths = 0.3
-        fifteen_hundredths = 0.15
-        five = 5
-        if blocked_ratio > three_tenths:
-            status = "critical"
-        elif blocked_ratio > fifteen_hundredths or (
-            active_count > five and completed_count == 0
-        ):
-            status = "slow"
-        else:
-            status = "ok"
+        status_str = self._determine_health_status(
+            blocked_ratio, active_count, completed_count
+        )
 
         return {
-            "status": status,
+            "status": status_str,
             "team": team.value if team else "all",
             "active_tasks": active_count,
             "blocked_tasks": blocked_count,

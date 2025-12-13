@@ -461,6 +461,54 @@ class MessagingService:
     # MESSAGE OPERATIONS (TASK-014)
     # =========================================================================
 
+    async def _get_message_context(
+        self,
+        session_id: UUID,
+    ) -> tuple[SessionTable, GroupTable, ChannelTable]:
+        """Get session, group, and channel for sending a message."""
+        session = await self.get_session(session_id)
+        if not session:
+            raise ValueError(f"Session {session_id} not found")
+        if session.status != SessionStatus.ACTIVE:
+            raise ValueError("Session is not active")
+
+        group = await self.get_group(cast("UUID", session.group_id))
+        if not group:
+            raise ValueError(f"Group {session.group_id} not found")
+
+        channel = await self.get_channel(cast("UUID", group.channel_id))
+        if not channel:
+            raise ValueError(f"Channel {group.channel_id} not found")
+
+        return session, group, channel
+
+    async def _validate_reply_target(
+        self,
+        reply_to: UUID,
+        session_id: UUID,
+    ) -> None:
+        """Validate reply target exists in session."""
+        reply_msg = await self.get_message(reply_to)
+        if not reply_msg or reply_msg.session_id != session_id:
+            raise ValueError("Reply target not found in this session")
+
+    def _update_message_stats(
+        self,
+        session: SessionTable,
+        group: GroupTable,
+        channel: ChannelTable,
+        content_length: int,
+    ) -> None:
+        """Update statistics after sending a message."""
+        now = datetime.now(UTC)
+        session.message_count += 1
+        session.total_content_length += content_length
+        session.last_activity_at = now
+        group.total_messages += 1
+        group.last_activity = now
+        channel.message_count += 1
+        channel.last_activity = now
+
     async def send_message(
         self,
         req: MessageCreateRequest,
@@ -468,12 +516,6 @@ class MessagingService:
     ) -> MessageTable:
         """
         Send a message to a session.
-
-        - Validates session is active
-        - Validates agent has write access (if agent_slug provided)
-        - Updates session statistics
-        - Checks session boundaries (auto-close if exceeded)
-        - Publishes message event
 
         Args:
             req: Message creation request
@@ -486,34 +528,13 @@ class MessagingService:
             ValueError: If session not found or not active
             ChannelAccessDeniedError: If agent cannot write to channel
         """
-        # Get session
-        session = await self.get_session(req.session_id)
-        if not session:
-            raise ValueError(f"Session {req.session_id} not found")
+        session, group, channel = await self._get_message_context(req.session_id)
 
-        if session.status != SessionStatus.ACTIVE:
-            raise ValueError("Session is not active")
-
-        # Get group and channel for access check
-        group = await self.get_group(cast("UUID", session.group_id))
-        if not group:
-            raise ValueError(f"Group {session.group_id} not found")
-
-        channel = await self.get_channel(cast("UUID", group.channel_id))
-        if not channel:
-            raise ValueError(f"Channel {group.channel_id} not found")
-
-        # Validate write access
         if agent_slug:
             validate_channel_access(agent_slug, channel.slug, "write")
-
-        # Validate reply target if provided
         if req.reply_to:
-            reply_msg = await self.get_message(req.reply_to)
-            if not reply_msg or reply_msg.session_id != req.session_id:
-                raise ValueError("Reply target not found in this session")
+            await self._validate_reply_target(req.reply_to, req.session_id)
 
-        # Create message
         content_length = len(req.content)
         message = MessageTable(
             agent_id=req.agent_id,
@@ -529,25 +550,10 @@ class MessagingService:
             task_id=req.task_id,
             commit_ref=req.commit_ref,
         )
-
         self.session.add(message)
-
-        # Update session statistics
-        session.message_count += 1
-        session.total_content_length += content_length
-        session.last_activity_at = datetime.now(UTC)
-
-        # Update group statistics
-        group.total_messages += 1
-        group.last_activity = datetime.now(UTC)
-
-        # Update channel statistics
-        channel.message_count += 1
-        channel.last_activity = datetime.now(UTC)
-
+        self._update_message_stats(session, group, channel, content_length)
         await self.session.flush()
 
-        # Check session boundaries - close if exceeded
         if self._check_session_boundaries(session):
             await self.close_session(cast("UUID", session.id), "Boundary exceeded")
 

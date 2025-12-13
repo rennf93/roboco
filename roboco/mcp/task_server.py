@@ -259,61 +259,81 @@ async def _handle_task_get(task_id: str) -> dict[str, Any]:
     return _format_task_response(task, next_step, guidance)
 
 
+def _check_blocking_tasks(active_tasks: list[dict]) -> dict[str, Any] | None:
+    """Check for blocking active tasks. Returns error or None."""
+    blocking_statuses = ["claimed", "in_progress", "verifying"]
+    blocking = [t for t in active_tasks if t.get("status") in blocking_statuses]
+    if blocking:
+        return _format_error_response(
+            "ALREADY_ACTIVE",
+            f"You already have an active task: {blocking[0]['id']}. "
+            "Complete or pause it before claiming a new task.",
+            {"active_task_id": blocking[0]["id"]},
+        )
+    return None
+
+
+def _check_paused_tasks(active_tasks: list[dict]) -> dict[str, Any] | None:
+    """Check for paused tasks. Returns error or None."""
+    paused = [t for t in active_tasks if t.get("status") == "paused"]
+    if paused:
+        return _format_error_response(
+            "PAUSED_TASKS_EXIST",
+            f"You have {len(paused)} paused task(s). "
+            "Resume paused work before claiming new tasks.",
+            {"paused_task_ids": [t["id"] for t in paused]},
+        )
+    return None
+
+
+def _validate_task_claimable(task: dict) -> dict[str, Any] | None:
+    """Validate task can be claimed. Returns error or None."""
+    if task.get("status") != "pending":
+        return _format_error_response(
+            "INVALID_STATE",
+            f"Cannot claim task in '{task.get('status')}' status. "
+            "Only 'pending' tasks can be claimed.",
+            {"current_status": task.get("status")},
+        )
+    return None
+
+
+async def _get_project_context(project_id: str) -> dict[str, Any] | None:
+    """Fetch project context if available."""
+    async with httpx.AsyncClient() as client:
+        resp = await client.get(f"{_get_api_url()}/projects/{project_id}")
+        if resp.status_code == status.HTTP_200_OK:
+            result: dict[str, Any] = resp.json()
+            return result
+    return None
+
+
 async def _handle_task_claim(task_id: str, agent_id: str) -> dict[str, Any]:
     """Handle task claiming."""
     async with httpx.AsyncClient() as client:
-        # Check for existing active tasks
         active_resp = await client.get(
             f"{_get_api_url()}/tasks",
             params={"assigned_to": agent_id},
         )
         if active_resp.status_code == status.HTTP_200_OK:
             active_tasks = active_resp.json()
-            # Check for non-waiting active tasks
-            blocking_tasks = [
-                t
-                for t in active_tasks
-                if t.get("status") in ["claimed", "in_progress", "verifying"]
-            ]
-            if blocking_tasks:
-                return _format_error_response(
-                    "ALREADY_ACTIVE",
-                    f"You already have an active task: "
-                    f"{blocking_tasks[0]['id']}. "
-                    "Complete or pause it before claiming a new task.",
-                    {"active_task_id": blocking_tasks[0]["id"]},
-                )
+            if error := _check_blocking_tasks(active_tasks):
+                return error
+            if error := _check_paused_tasks(active_tasks):
+                return error
 
-            # Check for paused tasks
-            paused_tasks = [t for t in active_tasks if t.get("status") == "paused"]
-            if paused_tasks:
-                return _format_error_response(
-                    "PAUSED_TASKS_EXIST",
-                    f"You have {len(paused_tasks)} paused task(s). "
-                    "Resume paused work before claiming new tasks.",
-                    {"paused_task_ids": [t["id"] for t in paused_tasks]},
-                )
-
-        # Get the task to check status
         task_resp = await client.get(f"{_get_api_url()}/tasks/{task_id}")
         if task_resp.status_code == status.HTTP_404_NOT_FOUND:
             return _format_error_response("NOT_FOUND", f"Task {task_id} not found")
 
         task = task_resp.json()
-        if task.get("status") != "pending":
-            return _format_error_response(
-                "INVALID_STATE",
-                f"Cannot claim task in '{task.get('status')}' status. "
-                "Only 'pending' tasks can be claimed.",
-                {"current_status": task.get("status")},
-            )
+        if error := _validate_task_claimable(task):
+            return error
 
-        # Claim the task
         claim_resp = await client.post(
             f"{_get_api_url()}/tasks/{task_id}/claim",
             json={"agent_id": agent_id},
         )
-
         if claim_resp.status_code != status.HTTP_200_OK:
             return _format_error_response(
                 "CLAIM_FAILED",
@@ -323,15 +343,9 @@ async def _handle_task_claim(task_id: str, agent_id: str) -> dict[str, Any]:
 
         claimed_task = claim_resp.json()
 
-    # Get project context if available
     project = None
     if claimed_task.get("project_id"):
-        async with httpx.AsyncClient() as client:
-            proj_resp = await client.get(
-                f"{_get_api_url()}/projects/{claimed_task['project_id']}"
-            )
-            if proj_resp.status_code == status.HTTP_200_OK:
-                project = proj_resp.json()
+        project = await _get_project_context(claimed_task["project_id"])
 
     return _format_task_response(
         claimed_task,
@@ -344,70 +358,71 @@ async def _handle_task_claim(task_id: str, agent_id: str) -> dict[str, Any]:
     )
 
 
+def _validate_task_ownership(task: dict, agent_id: str) -> dict[str, Any] | None:
+    """Validate agent owns the task. Returns error or None."""
+    if task.get("assigned_to") != agent_id:
+        return _format_error_response(
+            "NOT_OWNER",
+            "You are not assigned to this task",
+            {"assigned_to": task.get("assigned_to")},
+        )
+    return None
+
+
+def _validate_task_status_claimed(task: dict) -> dict[str, Any] | None:
+    """Validate task is in claimed status. Returns error or None."""
+    if task.get("status") != "claimed":
+        return _format_error_response(
+            "INVALID_STATE",
+            f"Cannot submit plan for task in '{task.get('status')}' status. "
+            "Task must be 'claimed'.",
+            {"current_status": task.get("status")},
+        )
+    return None
+
+
+def _build_plan_data(plan_params: dict[str, Any]) -> dict[str, Any]:
+    """Build the plan data structure from params."""
+    return {
+        "approach": plan_params["approach"],
+        "sub_tasks": [
+            {
+                "title": st.get("title", ""),
+                "description": st.get("description", ""),
+                "order": i,
+            }
+            for i, st in enumerate(plan_params["sub_tasks"])
+        ],
+        "risks": [{"description": r} for r in (plan_params.get("risks") or [])],
+        "open_questions": [
+            {"question": q, "answered": False}
+            for q in (plan_params.get("open_questions") or [])
+        ],
+    }
+
+
 async def _handle_task_plan(
     task_id: str,
     plan_params: dict[str, Any],
     agent_id: str,
 ) -> dict[str, Any]:
-    """Handle task planning.
-
-    Args:
-        task_id: The task UUID
-        plan_params: Dict with 'approach', 'sub_tasks', 'risks',
-                     'open_questions'
-        agent_id: The agent ID
-    """
-    approach = plan_params["approach"]
-    sub_tasks = plan_params["sub_tasks"]
-    risks = plan_params.get("risks")
-    open_questions = plan_params.get("open_questions")
-
+    """Handle task planning."""
     async with httpx.AsyncClient() as client:
-        # Verify task state and ownership
         task_resp = await client.get(f"{_get_api_url()}/tasks/{task_id}")
         if task_resp.status_code == status.HTTP_404_NOT_FOUND:
             return _format_error_response("NOT_FOUND", f"Task {task_id} not found")
 
         task = task_resp.json()
+        if error := _validate_task_ownership(task, agent_id):
+            return error
+        if error := _validate_task_status_claimed(task):
+            return error
 
-        if task.get("assigned_to") != agent_id:
-            return _format_error_response(
-                "NOT_OWNER",
-                "You are not assigned to this task",
-                {"assigned_to": task.get("assigned_to")},
-            )
-
-        if task.get("status") != "claimed":
-            return _format_error_response(
-                "INVALID_STATE",
-                f"Cannot submit plan for task in "
-                f"'{task.get('status')}' status. "
-                "Task must be 'claimed'.",
-                {"current_status": task.get("status")},
-            )
-
-        # Submit the plan
-        plan_data = {
-            "approach": approach,
-            "sub_tasks": [
-                {
-                    "title": st.get("title", ""),
-                    "description": st.get("description", ""),
-                    "order": i,
-                }
-                for i, st in enumerate(sub_tasks)
-            ],
-            "risks": [{"description": r} for r in (risks or [])],
-            "open_questions": [
-                {"question": q, "answered": False} for q in (open_questions or [])
-            ],
-        }
-
+        plan_data = _build_plan_data(plan_params)
         update_resp = await client.patch(
             f"{_get_api_url()}/tasks/{task_id}",
             json={"plan": plan_data},
         )
-
         if update_resp.status_code != status.HTTP_200_OK:
             return _format_error_response(
                 "UPDATE_FAILED",
@@ -417,13 +432,12 @@ async def _handle_task_plan(
 
         updated_task = update_resp.json()
 
-    # Check for blocking questions
+    open_questions = plan_params.get("open_questions")
     if open_questions:
         return _format_task_response(
             updated_task,
             "ASK_QUESTIONS",
-            f"Plan saved but you have {len(open_questions)} "
-            "open question(s). "
+            f"Plan saved but you have {len(open_questions)} open question(s). "
             "Ask these questions in your cell channel before starting. "
             "Do NOT proceed until questions are answered.",
         )

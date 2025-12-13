@@ -144,6 +144,51 @@ class DocumenterAgent(Agent):
 
         return None
 
+    async def _run_phase(self, ctx: DocContext) -> bool | None:
+        """
+        Run the current phase and return transition info.
+
+        Returns:
+            True if task is complete
+            False if phase didn't complete (stay in current phase)
+            None if phase completed (advance to next phase)
+        """
+        phase_transitions: dict[DocTaskPhase, tuple[DocTaskPhase | None, bool]] = {
+            DocTaskPhase.RECEIVE: (DocTaskPhase.GATHER, True),
+            DocTaskPhase.GATHER: (DocTaskPhase.SYNTHESIZE, True),
+            DocTaskPhase.SYNTHESIZE: (DocTaskPhase.WRITE, True),
+            DocTaskPhase.REVIEW: (DocTaskPhase.PUBLISH, True),
+            DocTaskPhase.PUBLISH: (None, True),  # Terminal phase
+        }
+
+        phase_handlers = {
+            DocTaskPhase.RECEIVE: self._phase_receive,
+            DocTaskPhase.GATHER: self._phase_gather,
+            DocTaskPhase.SYNTHESIZE: self._phase_synthesize,
+            DocTaskPhase.REVIEW: self._phase_review,
+            DocTaskPhase.PUBLISH: self._phase_publish,
+        }
+
+        if ctx.phase == DocTaskPhase.WRITE:
+            completed = await self._phase_write(ctx)
+            if completed:
+                ctx.phase = DocTaskPhase.REVIEW
+            return None
+
+        handler = phase_handlers.get(ctx.phase)
+        if handler:
+            await handler(ctx)
+
+        transition = phase_transitions.get(ctx.phase)
+        if transition:
+            next_phase, _ = transition
+            if next_phase is None:
+                self._doc_context = None
+                return True
+            ctx.phase = next_phase
+
+        return None
+
     async def execute_task(self, task_id: UUID) -> bool:
         """
         Execute documentation through lifecycle phases.
@@ -156,40 +201,15 @@ class DocumenterAgent(Agent):
                 title=await self._get_task_title(task_id),
             )
 
-        ctx = self._doc_context
-
         try:
-            match ctx.phase:
-                case DocTaskPhase.RECEIVE:
-                    await self._phase_receive(ctx)
-                    ctx.phase = DocTaskPhase.GATHER
-
-                case DocTaskPhase.GATHER:
-                    await self._phase_gather(ctx)
-                    ctx.phase = DocTaskPhase.SYNTHESIZE
-
-                case DocTaskPhase.SYNTHESIZE:
-                    await self._phase_synthesize(ctx)
-                    ctx.phase = DocTaskPhase.WRITE
-
-                case DocTaskPhase.WRITE:
-                    completed = await self._phase_write(ctx)
-                    if completed:
-                        ctx.phase = DocTaskPhase.REVIEW
-
-                case DocTaskPhase.REVIEW:
-                    await self._phase_review(ctx)
-                    ctx.phase = DocTaskPhase.PUBLISH
-
-                case DocTaskPhase.PUBLISH:
-                    await self._phase_publish(ctx)
-                    self._doc_context = None
-                    return True
-
-            return False
-
+            result = await self._run_phase(self._doc_context)
+            return result is True
         except Exception as e:
-            self.log.error("Error in doc phase", phase=ctx.phase.value, error=str(e))
+            self.log.error(
+                "Error in doc phase",
+                phase=self._doc_context.phase.value,
+                error=str(e),
+            )
             return False
 
     # =========================================================================

@@ -411,6 +411,94 @@ async def send_auditor_report(report_id: UUID) -> dict[str, str]:
 # =============================================================================
 
 
+async def _get_team_health_list(metrics_service: Any) -> list[TeamHealth]:
+    """Get health status for all teams."""
+    teams = [Team.BACKEND, Team.FRONTEND, Team.UX_UI, Team.BOARD]
+    health_list = []
+    for team in teams:
+        health = await metrics_service.get_health_status(team)
+        health_list.append(
+            TeamHealth(
+                team=team.value,
+                status=health["status"],
+                active_tasks=health["active_tasks"],
+                blocked_tasks=health["blocked_tasks"],
+                blocked_ratio=health["blocked_ratio"],
+                completed_this_week=health["completed_this_week"],
+            )
+        )
+    return health_list
+
+
+async def _get_key_metrics(metrics_service: Any) -> dict[str, Any]:
+    """Get key organization metrics."""
+    velocity = await metrics_service.get_velocity(7)
+    team_metrics = await metrics_service.get_all_team_metrics()
+    blockers = await metrics_service.get_blocker_metrics()
+
+    total_docs = sum(tm.documentation_coverage for tm in team_metrics)
+    avg_doc_coverage = total_docs / len(team_metrics) if team_metrics else 0
+
+    return {
+        "velocity_weekly": velocity.tasks_completed,
+        "completion_rate": velocity.completion_rate,
+        "documentation_coverage": round(avg_doc_coverage, 2),
+        "active_blockers": blockers.active_blockers,
+    }
+
+
+def _count_unresolved_flags(severity: str) -> int:
+    """Count unresolved flags of a given severity."""
+    return sum(
+        1
+        for f in _flags.values()
+        if f.get("severity") == severity and not f.get("resolved_at")
+    )
+
+
+def _get_last_report_time() -> str | None:
+    """Get the timestamp of the most recent report."""
+    recent_reports = [r for r in _reports.values() if r.get("sent_at")]
+    if not recent_reports:
+        return None
+    last_time = max(r["sent_at"] for r in recent_reports)
+    return last_time.isoformat() if last_time else None
+
+
+def _get_auditor_alerts() -> dict[str, Any]:
+    """Get auditor alerts summary."""
+    return {
+        "urgent_count": _count_unresolved_flags("urgent"),
+        "warning_count": _count_unresolved_flags("warning"),
+        "last_report_at": _get_last_report_time(),
+    }
+
+
+async def _get_roadmap_progress(db: DbSession) -> dict[str, Any]:
+    """Get roadmap progress from high-priority tasks."""
+    total_result = await db.execute(
+        select(func.count(TaskTable.id)).where(TaskTable.priority <= 1)
+    )
+    total_priority = total_result.scalar() or 0
+
+    completed_result = await db.execute(
+        select(func.count(TaskTable.id)).where(
+            and_(
+                TaskTable.priority <= 1,
+                TaskTable.status == TaskStatus.COMPLETED,
+            )
+        )
+    )
+    completed_priority = completed_result.scalar() or 0
+    progress = completed_priority / total_priority if total_priority > 0 else 0
+
+    return {
+        "current_quarter_progress": round(progress, 2),
+        "high_priority_total": total_priority,
+        "high_priority_completed": completed_priority,
+    }
+
+
 @router.get("/ceo", response_model=CEOOverview)
 async def get_ceo_overview(
     db: DbSession,
@@ -426,94 +514,11 @@ async def get_ceo_overview(
     """
     metrics_service = get_metrics_service(db)
 
-    # Get health status for each team
-    health_status = []
-    for team in [Team.BACKEND, Team.FRONTEND, Team.UX_UI, Team.BOARD]:
-        health = await metrics_service.get_health_status(team)
-        health_status.append(
-            TeamHealth(
-                team=team.value,
-                status=health["status"],
-                active_tasks=health["active_tasks"],
-                blocked_tasks=health["blocked_tasks"],
-                blocked_ratio=health["blocked_ratio"],
-                completed_this_week=health["completed_this_week"],
-            )
-        )
-
-    # Get key metrics
-    velocity = await metrics_service.get_velocity(7)
-    team_metrics = await metrics_service.get_all_team_metrics()
-
-    # Calculate documentation coverage
-    total_docs = sum(tm.documentation_coverage for tm in team_metrics)
-    avg_doc_coverage = total_docs / len(team_metrics) if team_metrics else 0
-
-    # Get blocker info
-    blockers = await metrics_service.get_blocker_metrics()
-
-    key_metrics = {
-        "velocity_weekly": velocity.tasks_completed,
-        "completion_rate": velocity.completion_rate,
-        "documentation_coverage": round(avg_doc_coverage, 2),
-        "active_blockers": blockers.active_blockers,
-    }
-
-    # Auditor alerts summary
-    urgent_flags = sum(
-        1
-        for f in _flags.values()
-        if f.get("severity") == "urgent" and not f.get("resolved_at")
-    )
-    warning_flags = sum(
-        1
-        for f in _flags.values()
-        if f.get("severity") == "warning" and not f.get("resolved_at")
-    )
-
-    recent_reports = [r for r in _reports.values() if r.get("sent_at")]
-    last_report_at = (
-        max((r["sent_at"] for r in recent_reports), default=None)
-        if recent_reports
-        else None
-    )
-
-    auditor_alerts = {
-        "urgent_count": urgent_flags,
-        "warning_count": warning_flags,
-        "last_report_at": last_report_at.isoformat() if last_report_at else None,
-    }
-
-    # Roadmap progress (simplified - would query epics/milestones)
-    # For now, calculate from task completion rates
-    total_result = await db.execute(
-        select(func.count(TaskTable.id)).where(TaskTable.priority <= 1)
-    )
-    total_priority = total_result.scalar() or 0
-
-    completed_result = await db.execute(
-        select(func.count(TaskTable.id)).where(
-            and_(
-                TaskTable.priority <= 1,
-                TaskTable.status == TaskStatus.COMPLETED,
-            )
-        )
-    )
-    completed_priority = completed_result.scalar() or 0
-
-    progress = completed_priority / total_priority if total_priority > 0 else 0
-
-    roadmap_progress = {
-        "current_quarter_progress": round(progress, 2),
-        "high_priority_total": total_priority,
-        "high_priority_completed": completed_priority,
-    }
-
     return CEOOverview(
-        health_status=health_status,
-        key_metrics=key_metrics,
-        auditor_alerts=auditor_alerts,
-        roadmap_progress=roadmap_progress,
+        health_status=await _get_team_health_list(metrics_service),
+        key_metrics=await _get_key_metrics(metrics_service),
+        auditor_alerts=_get_auditor_alerts(),
+        roadmap_progress=await _get_roadmap_progress(db),
     )
 
 

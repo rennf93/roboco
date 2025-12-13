@@ -135,53 +135,71 @@ class QAAgent(Agent):
 
         return None
 
+    async def _run_phase(self, ctx: ReviewContext) -> bool | None:
+        """
+        Run the current phase and return transition info.
+
+        Returns:
+            True if review is complete
+            None if phase completed (advance to next phase)
+        """
+        phase_transitions: dict[QATaskPhase, QATaskPhase | None] = {
+            QATaskPhase.RECEIVE: QATaskPhase.UNDERSTAND,
+            QATaskPhase.UNDERSTAND: QATaskPhase.TEST,
+            QATaskPhase.VERDICT: QATaskPhase.DOCUMENT,
+            QATaskPhase.DOCUMENT: QATaskPhase.RETURN,
+            QATaskPhase.RETURN: None,  # Terminal phase
+        }
+
+        phase_handlers = {
+            QATaskPhase.RECEIVE: self._phase_receive,
+            QATaskPhase.UNDERSTAND: self._phase_understand,
+            QATaskPhase.VERDICT: self._phase_verdict,
+            QATaskPhase.DOCUMENT: self._phase_document,
+        }
+
+        if ctx.phase == QATaskPhase.TEST:
+            completed = await self._phase_test(ctx)
+            if completed:
+                ctx.phase = QATaskPhase.VERDICT
+            return None
+
+        if ctx.phase == QATaskPhase.RETURN:
+            self._review_context = None
+            return True
+
+        handler = phase_handlers.get(ctx.phase)
+        if handler:
+            await handler(ctx)
+
+        next_phase = phase_transitions.get(ctx.phase)
+        if next_phase:
+            ctx.phase = next_phase
+
+        return None
+
     async def execute_task(self, task_id: UUID) -> bool:
         """
         Execute review through QA lifecycle phases.
 
         Returns True when review is complete.
         """
-        # Initialize or restore review context
         if self._review_context is None or self._review_context.task_id != task_id:
             self._review_context = ReviewContext(
                 task_id=task_id,
                 title=await self._get_task_title(task_id),
             )
 
-        ctx = self._review_context
-
         try:
-            match ctx.phase:
-                case QATaskPhase.RECEIVE:
-                    await self._phase_receive(ctx)
-                    ctx.phase = QATaskPhase.UNDERSTAND
-
-                case QATaskPhase.UNDERSTAND:
-                    await self._phase_understand(ctx)
-                    ctx.phase = QATaskPhase.TEST
-
-                case QATaskPhase.TEST:
-                    completed = await self._phase_test(ctx)
-                    if completed:
-                        ctx.phase = QATaskPhase.VERDICT
-
-                case QATaskPhase.VERDICT:
-                    await self._phase_verdict(ctx)
-                    ctx.phase = QATaskPhase.DOCUMENT
-
-                case QATaskPhase.DOCUMENT:
-                    await self._phase_document(ctx)
-                    ctx.phase = QATaskPhase.RETURN
-
-                case QATaskPhase.RETURN:
-                    self._review_context = None
-                    return True
-
-            return False
-
+            result = await self._run_phase(self._review_context)
+            return result is True
         except Exception as e:
-            self.log.error("Error in review phase", phase=ctx.phase.value, error=str(e))
-            ctx.findings.append(f"Error during review: {e}")
+            self.log.error(
+                "Error in review phase",
+                phase=self._review_context.phase.value,
+                error=str(e),
+            )
+            self._review_context.findings.append(f"Error during review: {e}")
             return False
 
     # =========================================================================
