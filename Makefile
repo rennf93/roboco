@@ -41,9 +41,10 @@ restart: stop start-example
 # Lint code
 .PHONY: lint
 lint:
-	@COMPOSE_BAKE=true docker compose run --rm --no-deps roboco sh -c "echo 'Formatting w/ Ruff...' ; echo '' ; ruff format . ; echo '' ; echo '' ; echo 'Linting w/ Ruff...' ; echo '' ; ruff check . ; echo '' ; echo '' ; echo 'Type checking w/ Mypy...' ; echo '' ; mypy . ; echo '' ; echo '' ; echo 'Finding dead code w/ Vulture...' ; echo '' ; vulture"
-	@docker compose down --rmi all --remove-orphans -v
-	@docker system prune -f
+	@echo 'Formatting w/ Ruff...' ; echo '' ; uv run ruff format .
+	@echo '' ; echo '' ; echo 'Linting w/ Ruff...' ; echo '' ; uv run ruff check .
+	@echo '' ; echo '' ; echo 'Type checking w/ Mypy...' ; echo '' ; uv run mypy .
+	@echo '' ; echo '' ; echo 'Finding dead code w/ Vulture...' ; echo '' ; uv run vulture vulture_whitelist.py
 
 # Fix code
 .PHONY: fix
@@ -68,7 +69,7 @@ vulture:
 bandit:
 	@echo "Running Bandit security scan..."
 	@echo ''
-	@uv run bandit -r guard -ll
+	@uv run bandit -r roboco -ll
 	@find . | grep -E "(__pycache__|\.pyc|\.pyo|\.pytest_cache|\.ruff_cache|\.mypy_cache)" | xargs rm -rf
 
 # Check dependencies with Safety
@@ -93,13 +94,13 @@ radon:
 	@echo "Analyzing code complexity with Radon..."
 	@echo ''
 	@echo "Cyclomatic Complexity:"
-	@uv run radon cc guard -nc
+	@uv run radon cc roboco -nc
 	@echo ''
 	@echo "Maintainability Index:"
-	@uv run radon mi guard -nc
+	@uv run radon mi roboco -nc
 	@echo ''
 	@echo "Raw Metrics:"
-	@uv run radon raw guard
+	@uv run radon raw roboco
 	@find . | grep -E "(__pycache__|\.pyc|\.pyo|\.pytest_cache|\.ruff_cache|\.mypy_cache)" | xargs rm -rf
 
 # Check complexity thresholds with Xenon
@@ -107,7 +108,7 @@ radon:
 xenon:
 	@echo "Checking complexity thresholds with Xenon..."
 	@echo ''
-	@uv run xenon guard --max-absolute B --max-modules A --max-average A
+	@uv run xenon roboco --max-absolute B --max-modules A --max-average A
 	@find . | grep -E "(__pycache__|\.pyc|\.pyo|\.pytest_cache|\.ruff_cache|\.mypy_cache)" | xargs rm -rf
 
 # Analyze dependencies with Deptry
@@ -123,7 +124,7 @@ deptry:
 semgrep:
 	@echo "Running Semgrep static analysis..."
 	@echo ''
-	@uv run semgrep --config=auto guard
+	@uv run semgrep --config=auto roboco
 	@find . | grep -E "(__pycache__|\.pyc|\.pyo|\.pytest_cache|\.ruff_cache|\.mypy_cache)" | xargs rm -rf
 
 # Run all security checks
@@ -231,13 +232,13 @@ serve-docs:
 # Lint documentation
 .PHONY: lint-docs
 lint-docs:
-	@uv run pymarkdownlnt scan -r -e ./.venv -e ./.git -e ./.github -e ./data -e ./guard -e ./tests -e ./.claude -e ./CLAUDE.md -e ./.cursor -e ./.kiro -e ./ZZZ .
+	@uv run pymarkdownlnt scan -r -e ./.venv -e ./.git -e ./.github -e ./roboco -e ./tests -e ./.claude -e ./CLAUDE.md -e ./ZZZ .
 	@find . | grep -E "(__pycache__|\\.pyc|\\.pyo|\\.pytest_cache|\\.ruff_cache|\\.mypy_cache)" | xargs rm -rf
 
 # Fix documentation
 .PHONY: fix-docs
 fix-docs:
-	@uv run pymarkdownlnt fix -r -e ./.venv -e ./.git -e ./.github -e ./data -e ./guard -e ./tests -e ./.claude -e ./CLAUDE.md -e ./.cursor -e ./.kiro -e ./ZZZ .
+	@uv run pymarkdownlnt fix -r -e ./.venv -e ./.git -e ./.github -e ./roboco -e ./tests -e ./.claude -e ./CLAUDE.md -e ./ZZZ .
 	@find . | grep -E "(__pycache__|\\.pyc|\\.pyo|\\.pytest_cache|\\.ruff_cache|\\.mypy_cache)" | xargs rm -rf
 
 # Prune
