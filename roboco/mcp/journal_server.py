@@ -68,9 +68,6 @@ def create_journal_mcp_server(agent_id: str) -> FastMCP:
     """
     mcp = FastMCP(f"roboco-journal-{agent_id}", json_response=True)
 
-    # Store agent context
-    mcp.agent_id = agent_id
-
     # =========================================================================
     # GENERAL ENTRY
     # =========================================================================

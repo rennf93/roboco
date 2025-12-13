@@ -30,7 +30,7 @@ async def _check_redis() -> tuple[str, bool]:
     try:
         client = redis.from_url(settings.redis_url)
         await client.ping()
-        await client.aclose()
+        await client.close()
         return "ok", True
     except Exception as e:
         return str(e), False

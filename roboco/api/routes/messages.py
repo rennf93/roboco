@@ -16,6 +16,7 @@ from sqlalchemy.orm import selectinload
 from roboco.api.deps import CurrentAgentId, DbSession
 from roboco.db.tables import ChannelTable, MessageTable, SessionTable
 from roboco.models import MessageType, SessionStatus
+from roboco.utils.converters import require_uuid, to_python_uuid, to_python_uuid_list
 
 router = APIRouter()
 
@@ -143,18 +144,18 @@ async def list_messages(
 
     items = [
         MessageResponse(
-            id=m.id,
-            agent_id=m.agent_id,
-            channel_id=m.channel_id,
-            group_id=m.group_id,
-            session_id=m.session_id,
+            id=require_uuid(m.id),
+            agent_id=require_uuid(m.agent_id),
+            channel_id=require_uuid(m.channel_id),
+            group_id=require_uuid(m.group_id),
+            session_id=require_uuid(m.session_id),
             type=m.type,
             content=m.content,
             content_length=m.content_length,
             is_reply=m.is_reply,
-            reply_to=m.reply_to,
-            mentions=m.mentions,
-            task_id=m.task_id,
+            reply_to=to_python_uuid(m.reply_to),
+            mentions=to_python_uuid_list(m.mentions),
+            task_id=to_python_uuid(m.task_id),
             commit_ref=m.commit_ref,
             timestamp=m.timestamp,
             edited_at=m.edited_at,
@@ -192,18 +193,18 @@ async def get_message(
         )
 
     return MessageResponse(
-        id=message.id,
-        agent_id=message.agent_id,
-        channel_id=message.channel_id,
-        group_id=message.group_id,
-        session_id=message.session_id,
+        id=require_uuid(message.id),
+        agent_id=require_uuid(message.agent_id),
+        channel_id=require_uuid(message.channel_id),
+        group_id=require_uuid(message.group_id),
+        session_id=require_uuid(message.session_id),
         type=message.type,
         content=message.content,
         content_length=message.content_length,
         is_reply=message.is_reply,
-        reply_to=message.reply_to,
-        mentions=message.mentions,
-        task_id=message.task_id,
+        reply_to=to_python_uuid(message.reply_to),
+        mentions=to_python_uuid_list(message.mentions),
+        task_id=to_python_uuid(message.task_id),
         commit_ref=message.commit_ref,
         timestamp=message.timestamp,
         edited_at=message.edited_at,
@@ -321,18 +322,18 @@ async def send_message(
     await db.flush()
 
     return MessageResponse(
-        id=message.id,
-        agent_id=message.agent_id,
-        channel_id=message.channel_id,
-        group_id=message.group_id,
-        session_id=message.session_id,
+        id=require_uuid(message.id),
+        agent_id=require_uuid(message.agent_id),
+        channel_id=require_uuid(message.channel_id),
+        group_id=require_uuid(message.group_id),
+        session_id=require_uuid(message.session_id),
         type=message.type,
         content=message.content,
         content_length=message.content_length,
         is_reply=message.is_reply,
-        reply_to=message.reply_to,
-        mentions=message.mentions,
-        task_id=message.task_id,
+        reply_to=to_python_uuid(message.reply_to),
+        mentions=to_python_uuid_list(message.mentions),
+        task_id=to_python_uuid(message.task_id),
         commit_ref=message.commit_ref,
         timestamp=message.timestamp,
         edited_at=message.edited_at,
@@ -394,18 +395,18 @@ async def edit_message(
     await db.flush()
 
     return MessageResponse(
-        id=message.id,
-        agent_id=message.agent_id,
-        channel_id=message.channel_id,
-        group_id=message.group_id,
-        session_id=message.session_id,
+        id=require_uuid(message.id),
+        agent_id=require_uuid(message.agent_id),
+        channel_id=require_uuid(message.channel_id),
+        group_id=require_uuid(message.group_id),
+        session_id=require_uuid(message.session_id),
         type=message.type,
         content=message.content,
         content_length=message.content_length,
         is_reply=message.is_reply,
-        reply_to=message.reply_to,
-        mentions=message.mentions,
-        task_id=message.task_id,
+        reply_to=to_python_uuid(message.reply_to),
+        mentions=to_python_uuid_list(message.mentions),
+        task_id=to_python_uuid(message.task_id),
         commit_ref=message.commit_ref,
         timestamp=message.timestamp,
         edited_at=message.edited_at,

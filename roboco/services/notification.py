@@ -8,7 +8,7 @@ from uuid import UUID
 
 import structlog
 
-from roboco.db import get_async_session
+from roboco.db.base import get_db_context
 from roboco.models import NotificationPriority, NotificationType
 
 logger = structlog.get_logger()
@@ -38,7 +38,7 @@ class NotificationService:
             "Please investigate and help resolve."
         )
         await self._create_notification(
-            notification_type=NotificationType.ESCALATION,
+            notification_type=NotificationType.BLOCKER_ESCALATION,
             priority=NotificationPriority.HIGH,
             from_agent=from_agent or "system",
             to_agents=[to_pm],
@@ -93,7 +93,7 @@ class NotificationService:
             "Please address the feedback and resubmit."
         )
         await self._create_notification(
-            notification_type=NotificationType.STATUS_CHANGE,
+            notification_type=NotificationType.ALERT,
             priority=NotificationPriority.HIGH,
             from_agent="system",
             to_agents=[to_developer],
@@ -150,7 +150,7 @@ class NotificationService:
             "Please review and complete the documentation."
         )
         await self._create_notification(
-            notification_type=NotificationType.HANDOFF,
+            notification_type=NotificationType.DOCUMENTATION_REQUEST,
             priority=NotificationPriority.NORMAL,
             from_agent=from_agent or "system",
             to_agents=[to_documenter],
@@ -172,7 +172,7 @@ class NotificationService:
         """Create a notification in the database."""
         from roboco.db.tables import NotificationTable
 
-        async with get_async_session() as session:
+        async with get_db_context() as session:
             # Look up agent UUIDs from agent_ids
             # For now, we store the string IDs - in production would look up UUIDs
             # Use from_agent if provided, otherwise system agent

@@ -208,7 +208,7 @@ async def validate_channel_access(channel_id: UUID, agent_id: UUID) -> bool:
             )
             if response.status_code == status.HTTP_200_OK:
                 data = response.json()
-                return data.get("allowed", False)
+                return bool(data.get("allowed", False))
             return False
     except Exception:
         # On error, deny access (fail closed)

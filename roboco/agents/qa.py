@@ -65,7 +65,7 @@ class ReviewContext:
     current_test: int = 0
     findings: list[str] = field(default_factory=list)
     verdict: TestResult | None = None
-    started_at: datetime = field(default_factory=datetime.now(UTC))
+    started_at: datetime = field(default_factory=lambda: datetime.now(UTC))
     notes: list[str] = field(default_factory=list)
 
 
@@ -89,6 +89,16 @@ class QAAgent(Agent):
         self._review_context: ReviewContext | None = None
         self._cell_channel_id: UUID | None = None
         self._pending_reviews: list[UUID] = []
+
+    async def _initialize(self) -> None:
+        """Initialize QA-specific resources."""
+        self.log.debug("QA agent initialized", agent_id=str(self.id))
+
+    async def _cleanup(self) -> None:
+        """Cleanup QA-specific resources."""
+        self._review_context = None
+        self._pending_reviews.clear()
+        self.log.debug("QA agent cleanup complete", agent_id=str(self.id))
 
     @property
     def cell_name(self) -> str:
@@ -449,7 +459,8 @@ PASS,All criteria verified successfully,No issues found
         """Get task title."""
         try:
             result = await self._api_call("GET", f"/tasks/{task_id}")
-            return result.get("title", f"Task {str(task_id)[:8]}")
+            title: str = result.get("title", f"Task {str(task_id)[:8]}")
+            return title
         except Exception as e:
             self.log.warning("Failed to get task title", error=str(e))
             return f"Task {str(task_id)[:8]}"
@@ -470,7 +481,8 @@ PASS,All criteria verified successfully,No issues found
         """Read developer's journey notes."""
         try:
             result = await self._api_call("GET", f"/tasks/{task_id}")
-            return result.get("dev_notes", "No developer notes available")
+            notes: str = result.get("dev_notes", "No developer notes available")
+            return notes
         except Exception as e:
             self.log.warning("Failed to read dev notes", error=str(e))
             return "Dev notes unavailable"

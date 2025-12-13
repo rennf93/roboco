@@ -142,6 +142,7 @@ class HandoffStatus(str, Enum):
     PENDING = "pending"
     CLAIMED = "claimed"
     IN_PROGRESS = "in_progress"
+    ACCEPTED = "accepted"
     COMPLETED = "completed"
 
 

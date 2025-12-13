@@ -7,9 +7,11 @@ Request/response middleware for logging, error handling, and correlation IDs.
 import time
 import uuid
 from collections.abc import Callable
+from typing import cast
 
 import structlog
 from fastapi import FastAPI, Request, Response
+from fastapi import status as http_status
 from fastapi.responses import JSONResponse
 from starlette.middleware.base import BaseHTTPMiddleware
 
@@ -59,7 +61,7 @@ class CorrelationIdMiddleware(BaseHTTPMiddleware):
         )
 
         # Process request
-        response = await call_next(request)
+        response = cast("Response", await call_next(request))
 
         # Add correlation ID to response
         response.headers["X-Correlation-ID"] = correlation_id
@@ -89,7 +91,7 @@ class RequestLoggingMiddleware(BaseHTTPMiddleware):
         )
 
         try:
-            response = await call_next(request)
+            response = cast("Response", await call_next(request))
             duration_ms = (time.perf_counter() - start_time) * 1000
 
             # Log response
@@ -137,25 +139,26 @@ def get_status_code(exc: RobocoError) -> int:
     return 400
 
 
-async def roboco_exception_handler(request: Request, exc: RobocoError) -> JSONResponse:
+async def roboco_exception_handler(request: Request, exc: Exception) -> JSONResponse:
     """Handle RobocoError exceptions."""
-    status_code = get_status_code(exc)
+    roboco_exc = cast("RobocoError", exc)
+    status_code = get_status_code(roboco_exc)
 
     # Add correlation ID to error details
     correlation_id = getattr(request.state, "correlation_id", None)
     if correlation_id:
-        exc.details["correlation_id"] = correlation_id
+        roboco_exc.details["correlation_id"] = correlation_id
 
     logger.warning(
         "Handled exception",
-        error_code=exc.code,
-        error_message=exc.message,
+        error_code=roboco_exc.code,
+        error_message=roboco_exc.message,
         status_code=status_code,
     )
 
     return JSONResponse(
         status_code=status_code,
-        content=exc.to_dict(),
+        content=roboco_exc.to_dict(),
     )
 
 
@@ -170,7 +173,7 @@ async def generic_exception_handler(request: Request, exc: Exception) -> JSONRes
     )
 
     return JSONResponse(
-        status_code=500,
+        status_code=http_status.HTTP_500_INTERNAL_SERVER_ERROR,
         content={
             "error": {
                 "code": "INTERNAL_ERROR",

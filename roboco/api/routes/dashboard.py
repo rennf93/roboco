@@ -19,6 +19,7 @@ from roboco.db.tables import AgentTable, ChannelTable, MessageTable, TaskTable
 from roboco.models.base import AgentStatus, TaskStatus, Team
 from roboco.services.kanban import get_kanban_service
 from roboco.services.metrics import get_metrics_service
+from roboco.utils.converters import require_uuid
 
 router = APIRouter(prefix="/dashboard", tags=["dashboard"])
 
@@ -141,7 +142,7 @@ _reports: dict[UUID, dict[str, Any]] = {}
 @router.get("/auditor", response_model=AuditorDashboard)
 async def get_auditor_dashboard(
     db: DbSession,
-):
+) -> AuditorDashboard:
     """
     Get the complete auditor dashboard.
 
@@ -178,7 +179,7 @@ async def get_auditor_dashboard(
 
         live_feeds.append(
             ChannelFeed(
-                id=channel.id,
+                id=require_uuid(channel.id),
                 name=channel.name,
                 status=status,
                 last_activity=channel.last_activity,
@@ -262,7 +263,7 @@ async def get_auditor_flags(
     _db: DbSession,
     severity: FlagSeverity | None = None,
     resolved: bool = False,
-):
+) -> list[AuditorFlag]:
     """Get auditor flags with optional filters."""
     flags = []
     for i, flag_data in enumerate(_flags.values()):
@@ -289,9 +290,10 @@ async def get_auditor_flags(
 async def create_auditor_flag(
     data: CreateFlagRequest,
     _db: DbSession,
-):
+) -> AuditorFlag:
     """Create a new auditor flag."""
     flag_id = uuid4()
+    created_at = datetime.now(UTC)
     flag_data = {
         "severity": data.severity.value,
         "category": data.category,
@@ -299,23 +301,36 @@ async def create_auditor_flag(
         "description": data.description,
         "related_task_id": data.related_task_id,
         "related_agent_id": data.related_agent_id,
-        "created_at": datetime.now(UTC),
+        "created_at": created_at,
         "resolved_at": None,
         "notes": None,
     }
     _flags[flag_id] = flag_data
 
-    return AuditorFlag(id=flag_id, **flag_data)
+    return AuditorFlag(
+        id=flag_id,
+        severity=data.severity,
+        category=data.category,
+        title=data.title,
+        description=data.description,
+        related_task_id=data.related_task_id,
+        related_agent_id=data.related_agent_id,
+        created_at=created_at,
+        resolved_at=None,
+        notes=None,
+    )
 
 
 @router.put("/auditor/flags/{flag_id}/resolve")
 async def resolve_auditor_flag(
     flag_id: UUID,
     notes: str | None = None,
-):
+) -> dict[str, str]:
     """Resolve an auditor flag."""
     if flag_id not in _flags:
-        raise HTTPException(status_code=404, detail="Flag not found")
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="Flag not found"
+        )
 
     _flags[flag_id]["resolved_at"] = datetime.now(UTC)
     if notes:
@@ -328,7 +343,7 @@ async def resolve_auditor_flag(
 async def get_auditor_reports(
     report_type: str | None = None,
     limit: int = Query(default=10, ge=1, le=100),
-):
+) -> list[AuditorReport]:
     """Get auditor reports."""
     reports = []
     for i, report_data in enumerate(_reports.values()):
@@ -353,27 +368,38 @@ async def get_auditor_reports(
 async def create_auditor_report(
     data: CreateReportRequest,
     _db: DbSession,
-):
+) -> AuditorReport:
     """Create a new auditor report."""
     report_id = uuid4()
+    created_at = datetime.now(UTC)
     report_data = {
         "report_type": data.report_type,
         "title": data.title,
         "summary": data.summary,
         "sections": data.sections,
-        "created_at": datetime.now(UTC),
+        "created_at": created_at,
         "sent_at": None,
     }
     _reports[report_id] = report_data
 
-    return AuditorReport(id=report_id, **report_data)
+    return AuditorReport(
+        id=report_id,
+        report_type=data.report_type,
+        title=data.title,
+        summary=data.summary,
+        sections=data.sections,
+        created_at=created_at,
+        sent_at=None,
+    )
 
 
 @router.post("/auditor/reports/{report_id}/send")
-async def send_auditor_report(report_id: UUID):
+async def send_auditor_report(report_id: UUID) -> dict[str, str]:
     """Mark a report as sent to CEO."""
     if report_id not in _reports:
-        raise HTTPException(status_code=404, detail="Report not found")
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="Report not found"
+        )
 
     _reports[report_id]["sent_at"] = datetime.now(UTC)
 
@@ -388,7 +414,7 @@ async def send_auditor_report(report_id: UUID):
 @router.get("/ceo", response_model=CEOOverview)
 async def get_ceo_overview(
     db: DbSession,
-):
+) -> CEOOverview:
     """
     Get the CEO overview dashboard.
 
@@ -494,7 +520,7 @@ async def get_ceo_overview(
 @router.get("/ceo/teams")
 async def get_ceo_team_details(
     db: DbSession,
-):
+) -> list[dict[str, Any]]:
     """Get detailed metrics for all teams."""
     metrics_service = get_metrics_service(db)
     team_metrics = await metrics_service.get_all_team_metrics()
@@ -513,7 +539,7 @@ async def get_team_kanban(
     swimlane_by: str | None = Query(
         None, description="Swimlane by: priority or assignee"
     ),
-):
+) -> dict[str, Any]:
     """Get kanban board for a specific team."""
     kanban_service = get_kanban_service(db)
     board = await kanban_service.get_dev_board(team, swimlane_by)
@@ -554,11 +580,11 @@ async def get_team_kanban(
 @router.get("/kanban/main-pm")
 async def get_main_pm_kanban(
     db: DbSession,
-):
+) -> dict[str, Any]:
     """Get the Main PM cross-cell kanban board."""
     kanban_service = get_kanban_service(db)
     board = await kanban_service.get_main_pm_board_flat()
-    return board
+    return board.model_dump()
 
 
 # =============================================================================
@@ -570,7 +596,7 @@ async def get_main_pm_kanban(
 async def get_all_agent_status(
     db: DbSession,
     team: Team | None = None,
-):
+) -> dict[str, Any]:
     """
     Get status of all agents.
 
@@ -620,7 +646,7 @@ async def get_recent_activity(
     db: DbSession,
     hours: int = Query(default=24, ge=1, le=168),
     limit: int = Query(default=50, ge=1, le=200),
-):
+) -> dict[str, Any]:
     """
     Get recent activity across channels.
 
@@ -672,7 +698,7 @@ async def get_recent_activity(
                 "task_id": str(task.id),
                 "title": task.title,
                 "status": task.status.value,
-                "team": task.team.value if task.team else None,
+                "team": task.team.value if task.team else "",
             }
         )
 
@@ -688,7 +714,7 @@ async def get_recent_activity(
 @router.get("/ceo/blockers")
 async def get_ceo_blocker_details(
     db: DbSession,
-):
+) -> dict[str, Any]:
     """Get detailed blocker information for CEO."""
     metrics_service = get_metrics_service(db)
     blockers = await metrics_service.get_blocker_metrics()
@@ -697,9 +723,9 @@ async def get_ceo_blocker_details(
 
 @router.get("/ceo/velocity")
 async def get_ceo_velocity(
-        db: DbSession,
+    db: DbSession,
     days: int = Query(default=7, ge=1, le=90),
-):
+) -> dict[str, Any]:
     """Get velocity metrics for a time period."""
     metrics_service = get_metrics_service(db)
     velocity = await metrics_service.get_velocity(days)
@@ -716,7 +742,7 @@ async def get_velocity_metrics(
     db: DbSession,
     days: int = Query(default=7, ge=1, le=90),
     team: Team | None = None,
-):
+) -> dict[str, Any]:
     """Get velocity metrics."""
     metrics_service = get_metrics_service(db)
     velocity = await metrics_service.get_velocity(days, team)
@@ -726,7 +752,7 @@ async def get_velocity_metrics(
 @router.get("/metrics/blockers")
 async def get_blocker_metrics(
     db: DbSession,
-):
+) -> dict[str, Any]:
     """Get blocker metrics."""
     metrics_service = get_metrics_service(db)
     blockers = await metrics_service.get_blocker_metrics()
@@ -737,7 +763,7 @@ async def get_blocker_metrics(
 async def get_team_metrics(
     team: Team,
     db: DbSession,
-):
+) -> dict[str, Any]:
     """Get metrics for a specific team."""
     metrics_service = get_metrics_service(db)
     metrics = await metrics_service.get_team_metrics(team)
@@ -748,7 +774,7 @@ async def get_team_metrics(
 async def get_communication_metrics(
     db: DbSession,
     hours: int = Query(default=24, ge=1, le=168),
-):
+) -> dict[str, Any]:
     """Get communication volume metrics."""
     metrics_service = get_metrics_service(db)
     return await metrics_service.get_communication_volume(hours)
@@ -758,7 +784,7 @@ async def get_communication_metrics(
 async def get_health_metrics(
     db: DbSession,
     team: Team | None = None,
-):
+) -> dict[str, Any]:
     """Get health status for a team or the whole organization."""
     metrics_service = get_metrics_service(db)
     return await metrics_service.get_health_status(team)
@@ -768,10 +794,12 @@ async def get_health_metrics(
 async def get_agent_metrics(
     agent_id: UUID,
     db: DbSession,
-):
+) -> dict[str, Any]:
     """Get metrics for a specific agent."""
     metrics_service = get_metrics_service(db)
     metrics = await metrics_service.get_agent_metrics(agent_id)
     if not metrics:
-        raise HTTPException(status_code=404, detail="Agent not found")
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="Agent not found"
+        )
     return metrics.to_dict()

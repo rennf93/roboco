@@ -61,7 +61,7 @@ class Settings(BaseSettings):
     database_pool_size: int = Field(default=5, ge=1)
     database_max_overflow: int = Field(default=10, ge=0)
 
-    @computed_field
+    @computed_field  # type: ignore[prop-decorator]
     @property
     def database_url(self) -> str:
         """Async PostgreSQL connection URL."""
@@ -70,7 +70,7 @@ class Settings(BaseSettings):
             f"@{self.database_host}:{self.database_port}/{self.database_name}"
         )
 
-    @computed_field
+    @computed_field  # type: ignore[prop-decorator]
     @property
     def database_url_sync(self) -> str:
         """Sync PostgreSQL connection URL (for Alembic)."""
@@ -87,7 +87,7 @@ class Settings(BaseSettings):
     redis_db: int = 0
     redis_password: str | None = None
 
-    @computed_field
+    @computed_field  # type: ignore[prop-decorator]
     @property
     def redis_url(self) -> str:
         """Redis connection URL."""
@@ -120,7 +120,7 @@ class Settings(BaseSettings):
         default=300, ge=60, description="Seconds between auto-updates"
     )
 
-    @computed_field
+    @computed_field  # type: ignore[prop-decorator]
     @property
     def rag_store_url(self) -> str:
         """PostgreSQL connection URL for piragi vector store."""

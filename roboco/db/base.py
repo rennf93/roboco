@@ -7,6 +7,7 @@ from contextlib import asynccontextmanager
 
 from sqlalchemy import MetaData
 from sqlalchemy.ext.asyncio import (
+    AsyncEngine,
     AsyncSession,
     async_sessionmaker,
     create_async_engine,
@@ -34,11 +35,11 @@ class Base(DeclarativeBase):
 class _DbHolder:
     """Holder for database engine and session factory singletons."""
 
-    engine = None
+    engine: AsyncEngine | None = None
     session_factory: async_sessionmaker[AsyncSession] | None = None
 
 
-def get_engine():
+def get_engine() -> AsyncEngine:
     """Get or create the async engine."""
     if _DbHolder.engine is None:
         _DbHolder.engine = create_async_engine(

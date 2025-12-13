@@ -17,6 +17,7 @@ from sqlalchemy.orm import selectinload
 from roboco.api.deps import CurrentAgentId, DbSession
 from roboco.db.tables import GroupTable, SessionTable
 from roboco.models import SessionStatus
+from roboco.utils.converters import require_uuid
 
 router = APIRouter()
 
@@ -121,8 +122,8 @@ async def list_sessions(
 
     items = [
         SessionResponse(
-            id=s.id,
-            group_id=s.group_id,
+            id=require_uuid(s.id),
+            group_id=require_uuid(s.group_id),
             status=s.status,
             message_count=s.message_count,
             total_content_length=s.total_content_length,
@@ -167,8 +168,8 @@ async def get_session(
         )
 
     return SessionResponse(
-        id=session.id,
-        group_id=session.group_id,
+        id=require_uuid(session.id),
+        group_id=require_uuid(session.group_id),
         status=session.status,
         message_count=session.message_count,
         total_content_length=session.total_content_length,
@@ -249,8 +250,8 @@ async def create_session(
     await db.flush()
 
     return SessionResponse(
-        id=session.id,
-        group_id=session.group_id,
+        id=require_uuid(session.id),
+        group_id=require_uuid(session.group_id),
         status=session.status,
         message_count=session.message_count,
         total_content_length=session.total_content_length,
@@ -301,8 +302,8 @@ async def close_session(
     await db.flush()
 
     return SessionResponse(
-        id=session.id,
-        group_id=session.group_id,
+        id=require_uuid(session.id),
+        group_id=require_uuid(session.group_id),
         status=session.status,
         message_count=session.message_count,
         total_content_length=session.total_content_length,

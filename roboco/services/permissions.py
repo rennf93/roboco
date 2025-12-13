@@ -101,13 +101,14 @@ def _get_agents_for_role_team(role: AgentRole, team: Team | None) -> list[str]:
 def _can_role_send_notifications(role: AgentRole) -> bool:
     """Check if a role can send notifications (from agents_config)."""
     perms = NOTIFICATION_PERMISSIONS.get(role.value, {})
-    return perms.get("can_send", False)
+    return bool(perms.get("can_send", False))
 
 
 def _get_notification_scope(role: AgentRole) -> str | list[str]:
     """Get the notification scope for a role (from agents_config)."""
     perms = NOTIFICATION_PERMISSIONS.get(role.value, {})
-    return perms.get("scope", [])
+    scope = perms.get("scope", [])
+    return str(scope) if isinstance(scope, str) else list(scope) if scope else []
 
 
 # =============================================================================
@@ -570,4 +571,4 @@ class PermissionService:
         """
         role = get_role_string(agent_slug)
         perms = NOTIFICATION_PERMISSIONS.get(role, {})
-        return perms.get("can_send", False)
+        return bool(perms.get("can_send", False))

@@ -18,15 +18,21 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from roboco.db.tables import JournalEntryTable, JournalTable
 from roboco.models.base import JournalEntryType
 from roboco.models.journal import (
+    DecisionLogParams,
+    GeneralEntryParams,
     Journal,
     JournalEntry,
     JournalEntryCreate,
+    LearningEntryParams,
+    StruggleEntryParams,
+    TaskReflectionParams,
     create_decision_log,
     create_general_entry,
     create_learning_entry,
     create_struggle_entry,
     create_task_reflection,
 )
+from roboco.utils.converters import require_uuid, to_python_uuid
 
 logger = structlog.get_logger()
 
@@ -95,8 +101,8 @@ class JournalService:
 
         if journal_row:
             return Journal(
-                id=journal_row.id,
-                agent_id=journal_row.agent_id,
+                id=require_uuid(journal_row.id),
+                agent_id=require_uuid(journal_row.agent_id),
                 total_entries=journal_row.total_entries,
                 last_entry_at=journal_row.last_entry_at,
                 latest_summary=journal_row.latest_summary,
@@ -119,8 +125,8 @@ class JournalService:
         )
 
         return Journal(
-            id=new_journal.id,
-            agent_id=new_journal.agent_id,
+            id=require_uuid(new_journal.id),
+            agent_id=require_uuid(new_journal.agent_id),
             total_entries=0,
             created_at=new_journal.created_at,
         )
@@ -136,8 +142,8 @@ class JournalService:
             return None
 
         return Journal(
-            id=journal_row.id,
-            agent_id=journal_row.agent_id,
+            id=require_uuid(journal_row.id),
+            agent_id=require_uuid(journal_row.agent_id),
             total_entries=journal_row.total_entries,
             last_entry_at=journal_row.last_entry_at,
             latest_summary=journal_row.latest_summary,
@@ -158,8 +164,8 @@ class JournalService:
             return None
 
         return Journal(
-            id=journal_row.id,
-            agent_id=journal_row.agent_id,
+            id=require_uuid(journal_row.id),
+            agent_id=require_uuid(journal_row.agent_id),
             total_entries=journal_row.total_entries,
             last_entry_at=journal_row.last_entry_at,
             latest_summary=journal_row.latest_summary,
@@ -242,13 +248,13 @@ class JournalService:
             logger.warning("Failed to index journal entry in RAG", error=str(e))
 
         return JournalEntry(
-            id=entry_row.id,
-            journal_id=entry_row.journal_id,
+            id=require_uuid(entry_row.id),
+            journal_id=require_uuid(entry_row.journal_id),
             type=entry_row.type,
             title=entry_row.title,
             content=entry_row.content,
-            task_id=entry_row.task_id,
-            session_id=entry_row.session_id,
+            task_id=to_python_uuid(entry_row.task_id),
+            session_id=to_python_uuid(entry_row.session_id),
             timestamp=entry_row.timestamp,
             tags=entry_row.tags,
             sentiment=entry_row.sentiment,
@@ -267,13 +273,13 @@ class JournalService:
             return None
 
         return JournalEntry(
-            id=entry_row.id,
-            journal_id=entry_row.journal_id,
+            id=require_uuid(entry_row.id),
+            journal_id=require_uuid(entry_row.journal_id),
             type=entry_row.type,
             title=entry_row.title,
             content=entry_row.content,
-            task_id=entry_row.task_id,
-            session_id=entry_row.session_id,
+            task_id=to_python_uuid(entry_row.task_id),
+            session_id=to_python_uuid(entry_row.session_id),
             timestamp=entry_row.timestamp,
             tags=entry_row.tags,
             sentiment=entry_row.sentiment,
@@ -316,7 +322,7 @@ class JournalService:
             query = query.where(JournalEntryTable.task_id == task_id)
 
         if not include_private:
-            query = query.where(JournalEntryTable.is_private is False)
+            query = query.where(JournalEntryTable.is_private.is_(False))
 
         query = query.order_by(JournalEntryTable.timestamp.desc())
         query = query.limit(limit).offset(offset)
@@ -326,13 +332,13 @@ class JournalService:
 
         return [
             JournalEntry(
-                id=row.id,
-                journal_id=row.journal_id,
+                id=require_uuid(row.id),
+                journal_id=require_uuid(row.journal_id),
                 type=row.type,
                 title=row.title,
                 content=row.content,
-                task_id=row.task_id,
-                session_id=row.session_id,
+                task_id=to_python_uuid(row.task_id),
+                session_id=to_python_uuid(row.session_id),
                 timestamp=row.timestamp,
                 tags=row.tags,
                 sentiment=row.sentiment,
@@ -395,14 +401,16 @@ class JournalService:
         """Add a task reflection entry."""
         journal = await self.get_or_create_journal(agent_id)
         entry = create_task_reflection(
-            journal_id=journal.id,
-            task_id=task_id,
-            title=title,
-            what_done=what_done,
-            what_learned=what_learned,
-            what_struggled=what_struggled,
-            next_steps=next_steps,
-            tags=tags,
+            TaskReflectionParams(
+                journal_id=journal.id,
+                task_id=task_id,
+                title=title,
+                what_done=what_done,
+                what_learned=what_learned,
+                what_struggled=what_struggled,
+                next_steps=next_steps,
+                tags=tags or [],
+            )
         )
         return await self.create_entry(
             JournalEntryCreate(
@@ -430,15 +438,17 @@ class JournalService:
         """Add a decision log entry."""
         journal = await self.get_or_create_journal(agent_id)
         entry = create_decision_log(
-            journal_id=journal.id,
-            title=title,
-            context=context,
-            options=options,
-            chosen=chosen,
-            rationale=rationale,
-            consequences=consequences,
-            task_id=task_id,
-            tags=tags,
+            DecisionLogParams(
+                journal_id=journal.id,
+                title=title,
+                context=context,
+                options=options,
+                chosen=chosen,
+                rationale=rationale,
+                consequences=consequences,
+                task_id=task_id,
+                tags=tags or [],
+            )
         )
         return await self.create_entry(
             JournalEntryCreate(
@@ -464,13 +474,15 @@ class JournalService:
         """Add a learning entry."""
         journal = await self.get_or_create_journal(agent_id)
         entry = create_learning_entry(
-            journal_id=journal.id,
-            title=title,
-            what_learned=what_learned,
-            how_applied=how_applied,
-            source=source,
-            task_id=task_id,
-            tags=tags,
+            LearningEntryParams(
+                journal_id=journal.id,
+                title=title,
+                what_learned=what_learned,
+                how_applied=how_applied,
+                source=source,
+                task_id=task_id,
+                tags=tags or [],
+            )
         )
         return await self.create_entry(
             JournalEntryCreate(
@@ -498,14 +510,16 @@ class JournalService:
         """Add a struggle entry."""
         journal = await self.get_or_create_journal(agent_id)
         entry = create_struggle_entry(
-            journal_id=journal.id,
-            title=title,
-            what_struggled=what_struggled,
-            attempted_solutions=attempted_solutions,
-            resolution=resolution,
-            help_needed=help_needed,
-            task_id=task_id,
-            tags=tags,
+            StruggleEntryParams(
+                journal_id=journal.id,
+                title=title,
+                what_struggled=what_struggled,
+                attempted_solutions=attempted_solutions,
+                resolution=resolution,
+                help_needed=help_needed,
+                task_id=task_id,
+                tags=tags or [],
+            )
         )
         return await self.create_entry(
             JournalEntryCreate(
@@ -532,13 +546,15 @@ class JournalService:
         """Add a general journal entry."""
         journal = await self.get_or_create_journal(agent_id)
         entry = create_general_entry(
-            journal_id=journal.id,
-            title=title,
-            content=content,
-            task_id=task_id,
-            session_id=session_id,
-            tags=tags,
-            is_private=is_private,
+            GeneralEntryParams(
+                journal_id=journal.id,
+                title=title,
+                content=content,
+                task_id=task_id,
+                session_id=session_id,
+                tags=tags or [],
+                is_private=is_private,
+            )
         )
         return await self.create_entry(
             JournalEntryCreate(

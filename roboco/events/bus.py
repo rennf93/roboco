@@ -77,7 +77,7 @@ class Event:
     type: EventType
     data: dict[str, Any]
     id: UUID = field(default_factory=uuid4)
-    timestamp: datetime = field(default_factory=datetime.now(UTC))
+    timestamp: datetime = field(default_factory=lambda: datetime.now(UTC))
     source_agent: str | None = None
     correlation_id: str | None = None  # For tracking related events
 
@@ -217,6 +217,8 @@ class EventBus:
         """Main event listening loop."""
         while self._running:
             try:
+                if self._pubsub is None:
+                    break
                 message = await self._pubsub.get_message(
                     ignore_subscribe_messages=True,
                     timeout=1.0,

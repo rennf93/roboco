@@ -68,6 +68,16 @@ class ProductOwnerAgent(Agent):
         self._features: list[Feature] = []
         self._pending_reviews: list[UUID] = []
 
+    async def _initialize(self) -> None:
+        """Initialize Product Owner-specific resources."""
+        self.log.debug("Product Owner agent initialized", agent_id=str(self.id))
+
+    async def _cleanup(self) -> None:
+        """Cleanup Product Owner-specific resources."""
+        self._features.clear()
+        self._pending_reviews.clear()
+        self.log.debug("Product Owner agent cleanup complete", agent_id=str(self.id))
+
     async def find_work(self) -> UUID | None:
         """Product Owner always has work."""
         return self.id
@@ -228,6 +238,16 @@ class HeadMarketingAgent(Agent):
         self._campaigns: list[Campaign] = []
         self._market_insights: list[str] = []
 
+    async def _initialize(self) -> None:
+        """Initialize Head of Marketing-specific resources."""
+        self.log.debug("Head of Marketing agent initialized", agent_id=str(self.id))
+
+    async def _cleanup(self) -> None:
+        """Cleanup Head of Marketing-specific resources."""
+        self._campaigns.clear()
+        self._market_insights.clear()
+        self.log.debug("Head Marketing cleanup complete", agent_id=str(self.id))
+
     async def find_work(self) -> UUID | None:
         """Head of Marketing always has work."""
         return self.id
@@ -331,7 +351,7 @@ class AuditFlag:
     evidence: list[str]
     recommendation: str | None = None
     reported_to_ceo: bool = False
-    timestamp: datetime = field(default_factory=datetime.now(UTC))
+    timestamp: datetime = field(default_factory=lambda: datetime.now(UTC))
 
 
 @dataclass
@@ -343,7 +363,7 @@ class AuditReport:
     flags: list[AuditFlag]
     metrics: dict[str, Any]
     recommendations: list[str]
-    timestamp: datetime = field(default_factory=datetime.now(UTC))
+    timestamp: datetime = field(default_factory=lambda: datetime.now(UTC))
 
 
 class AuditorAgent(Agent):
@@ -373,6 +393,16 @@ class AuditorAgent(Agent):
         self._flags: list[AuditFlag] = []
         self._observations: list[dict[str, Any]] = []
         self._last_report: datetime | None = None
+
+    async def _initialize(self) -> None:
+        """Initialize Auditor-specific resources."""
+        self.log.debug("Auditor agent initialized", agent_id=str(self.id))
+
+    async def _cleanup(self) -> None:
+        """Cleanup Auditor-specific resources."""
+        self._flags.clear()
+        self._observations.clear()
+        self.log.debug("Auditor agent cleanup complete", agent_id=str(self.id))
 
     async def find_work(self) -> UUID | None:
         """Auditor always has work - watching everything."""
@@ -525,9 +555,14 @@ efficiency,warning,Unclear handoff process,3 tasks delayed,Document handoff step
 
         # Check if it's time for regular report
         hours_in_day = 24
+        if self._last_report:
+            time_since_report = datetime.now(UTC) - self._last_report
+            hours_elapsed = time_since_report.total_seconds() / 3600
+        else:
+            hours_elapsed = float("inf")
         should_report = (
             self._last_report is None
-            or (datetime.now(UTC) - self._last_report).hours >= hours_in_day
+            or hours_elapsed >= hours_in_day
             or any(
                 f.severity in [FlagSeverity.CONCERN, FlagSeverity.CRITICAL]
                 for f in self._flags

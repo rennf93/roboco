@@ -149,7 +149,7 @@ class ExtractionResult:
     agent_id: UUID
     channel_id: UUID
     session_id: UUID
-    extracted_at: datetime = field(default_factory=datetime.now(UTC))
+    extracted_at: datetime = field(default_factory=lambda: datetime.now(UTC))
 
     # Metadata
     pattern_matches: dict[str, list[str]] = field(default_factory=dict)
@@ -408,36 +408,47 @@ Output only valid TOON, no other text."""
             )
 
             # Parse response using TOON (falls back to JSON)
-            response_text = response.content[0].text
+            # Extract text from first TextBlock content
+            response_text = ""
+            for block in response.content:
+                if hasattr(block, "text"):
+                    response_text = block.text
+                    break
             segments = toon.decode(response_text)
 
             messages: list[ExtractedMessage] = []
             for segment in segments:
-                msg_type_str = segment.get("type", "reasoning")
+                if isinstance(segment, dict):
+                    msg_type_str = segment.get("type", "reasoning")
+                    msg_content = segment.get("content", "")
+                    confidence = segment.get("confidence", 0.8)
+                else:
+                    msg_type_str = "reasoning"
+                    msg_content = str(segment)
+                    confidence = 0.8
                 msg_type = MessageType(msg_type_str)
-                msg_content = segment.get("content", "")
-                confidence = segment.get("confidence", 0.8)
 
                 messages.append(
                     ExtractedMessage(
                         id=uuid4(),
                         content=msg_content,
-                        message_type=msg_type,
+                        content_length=len(msg_content),
+                        type=msg_type,
                         agent_id=ctx.agent_id,
                         channel_id=ctx.channel_id,
                         session_id=ctx.session_id,
                         group_id=ctx.group_id,
                         task_id=ctx.task_id,
                         confidence=confidence,
-                        metadata={"extraction_method": "llm"},
                     )
                 )
 
             return ExtractionResult(
                 messages=messages,
                 raw_content=ctx.content,
-                extraction_time=0.0,  # Could measure actual time
-                confidence=sum(m.confidence for m in messages) / max(1, len(messages)),
+                agent_id=ctx.agent_id,
+                channel_id=ctx.channel_id,
+                session_id=ctx.session_id,
             )
 
         except Exception as e:

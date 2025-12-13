@@ -13,7 +13,7 @@ Document ingestion:
 
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Any
+from typing import Any, cast
 from uuid import UUID
 
 import structlog
@@ -232,7 +232,7 @@ class OptimalService:
         """
         index = self._get_index(IndexType.CODE)
         await index.add(sources)
-        count = await index.count()
+        count = cast("int", await index.count())
         logger.info("Indexed code", sources=sources, project=project, count=count)
         return count
 
@@ -253,7 +253,7 @@ class OptimalService:
         """
         index = self._get_index(IndexType.DOCUMENTATION)
         await index.add(sources)
-        count = await index.count()
+        count = cast("int", await index.count())
         logger.info(
             "Indexed documentation", sources=sources, project=project, count=count
         )

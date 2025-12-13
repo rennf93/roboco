@@ -5,6 +5,7 @@ Generates role-specific kanban board views from task data.
 Supports swimlanes, cross-cell views, and real-time updates.
 """
 
+from collections.abc import Sequence
 from datetime import UTC, datetime
 from typing import Any
 
@@ -22,6 +23,7 @@ from roboco.models.kanban import (
     KanbanSwimlane,
     get_column_config,
 )
+from roboco.utils.converters import require_uuid, to_python_uuid
 
 logger = structlog.get_logger()
 
@@ -67,7 +69,7 @@ class KanbanService:
         subtask_count = 0
 
         return KanbanCard(
-            id=task.id,
+            id=require_uuid(task.id),
             title=task.title,
             description=task.quick_context or task.description[:200]
             if task.description
@@ -75,7 +77,7 @@ class KanbanService:
             priority=task.priority,
             status=task.status,
             team=task.team,
-            assigned_to=task.assigned_to,
+            assigned_to=to_python_uuid(task.assigned_to),
             assignee_name=assignee_name,
             created_at=task.created_at,
             updated_at=task.updated_at,
@@ -124,7 +126,7 @@ class KanbanService:
 
     async def _build_flat_board(
         self,
-        tasks: list[TaskTable],
+        tasks: Sequence[TaskTable],
         team: Team | None,
         board_type: KanbanBoardType,
     ) -> KanbanBoard:
@@ -193,7 +195,7 @@ class KanbanService:
             )
         return lane_key
 
-    async def _fetch_agent_names(self, tasks: list[TaskTable]) -> dict[str, str]:
+    async def _fetch_agent_names(self, tasks: Sequence[TaskTable]) -> dict[str, str]:
         """Fetch agent names for all assignees in tasks."""
         assignee_ids = {t.assigned_to for t in tasks if t.assigned_to}
         if not assignee_ids:
@@ -235,7 +237,7 @@ class KanbanService:
 
     async def _build_swimlane_board(
         self,
-        tasks: list[TaskTable],
+        tasks: Sequence[TaskTable],
         team: Team | None,
         board_type: KanbanBoardType,
         swimlane_by: str,

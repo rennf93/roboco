@@ -545,6 +545,9 @@ class NotificationTable(Base):
     # Read tracking
     read_by: Mapped[list[UUID]] = mapped_column(ARRAY(UUID(as_uuid=True)), default=list)
 
+    # Delivery tracking
+    delivered_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+
     # Timestamps
     created_at: Mapped[datetime] = mapped_column(
         DateTime, default=datetime.now(UTC), nullable=False

@@ -7,6 +7,7 @@ Handles spawning, monitoring, and coordination.
 
 import asyncio
 import contextlib
+from collections.abc import Callable
 from datetime import UTC, datetime
 from typing import Any
 from uuid import UUID
@@ -276,8 +277,8 @@ class Orchestrator:
             Health status summary
         """
         total = len(self._agents)
-        by_status = {}
-        errors = []
+        by_status: dict[str, int] = {}
+        errors: list[dict[str, str]] = []
 
         for agent in self._agents.values():
             status = agent.state.status.value
@@ -306,7 +307,7 @@ class Orchestrator:
     async def spawn_cell(
         self,
         team: Team,
-        agent_factory: callable,
+        agent_factory: Callable[[Team], list[Agent]],
     ) -> list[Agent]:
         """
         Spawn all agents for a cell.
