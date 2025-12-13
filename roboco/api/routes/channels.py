@@ -9,7 +9,7 @@ from uuid import UUID
 
 from fastapi import APIRouter, HTTPException, Query, status
 from pydantic import BaseModel, Field
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.orm import selectinload
 
 from roboco.api.deps import CurrentAgentContext, DbSession, PermissionServiceDep
@@ -109,11 +109,13 @@ async def list_channels(
         query = query.where(ChannelTable.is_archived.is_(False))
 
     # Get total count
-    count_query = select(ChannelTable.id).where(ChannelTable.slug.in_(accessible_slugs))
+    count_query = select(func.count(ChannelTable.id)).where(
+        ChannelTable.slug.in_(accessible_slugs)
+    )
     if not params.include_archived:
         count_query = count_query.where(ChannelTable.is_archived.is_(False))
     count_result = await db.execute(count_query)
-    total = len(count_result.all())
+    total = count_result.scalar() or 0
 
     # Apply pagination
     query = query.offset((params.page - 1) * params.page_size).limit(params.page_size)
