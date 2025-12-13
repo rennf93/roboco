@@ -126,17 +126,13 @@ select = [
 ]
 
 # MCP servers: Tool functions require explicit parameters for schema generation.
-# PLR0913 - MCP tools need many params (no dataclass workaround)
-# PLR0915 - Factory functions define all tools (unavoidable nesting)
 # PLC0415 - Lazy imports for circular import avoidance
-# E501 - Docstrings and guidance messages
 #
 # Services: Internal methods often need multiple related parameters for DB ops.
-# PLR0913 - Service methods wrapping DB/external calls need multiple params
 # PLC0415 - Lazy imports for circular import avoidance
 [tool.ruff.lint.per-file-ignores]
-"roboco/mcp/*.py" = ["PLR0913", "PLR0915", "PLC0415", "E501"]
-"roboco/services/*.py" = ["PLC0415", "PLR0913"]
+"roboco/mcp/*.py" = ["PLC0415"]
+"roboco/services/*.py" = ["PLC0415"]
 
 # =============================================================================
 # MyPy Configuration
@@ -151,7 +147,7 @@ check_untyped_defs = true
 disallow_untyped_decorators = true
 no_implicit_optional = true
 strict_optional = true
-warn_redundant_casts = false  # SQLAlchemy array types require casts that appear redundant
+warn_redundant_casts = true
 warn_unused_ignores = true
 warn_no_return = true
 warn_unreachable = true
