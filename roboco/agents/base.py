@@ -11,13 +11,16 @@ import contextlib
 from abc import ABC, abstractmethod
 from datetime import UTC, datetime
 from enum import Enum
-from typing import Any
+from typing import TYPE_CHECKING, Any
 from uuid import UUID, uuid4
 
 import httpx
 import structlog
 from anthropic import AsyncAnthropic
 from pydantic import BaseModel, Field
+
+if TYPE_CHECKING:
+    from anthropic.types import MessageParam
 
 from roboco.api.websocket import broadcast_agent_chunk
 from roboco.config import settings
@@ -322,6 +325,9 @@ class Agent(ABC):
 
         try:
             # Execute the task (implemented by subclasses)
+            if self.state.current_task_id is None:
+                self.log.warning("No current task to execute")
+                return
             completed = await self.execute_task(self.state.current_task_id)
 
             if completed:
@@ -432,7 +438,7 @@ class Agent(ABC):
         """
         self.log.debug("Thinking", prompt_length=len(prompt))
 
-        messages = [{"role": "user", "content": prompt}]
+        messages: list[MessageParam] = [{"role": "user", "content": prompt}]
 
         response = await self.llm_client.messages.create(
             model=self.config.model,
@@ -441,7 +447,10 @@ class Agent(ABC):
             messages=messages,
         )
 
-        return response.content[0].text
+        # Extract text from first content block
+        if response.content and hasattr(response.content[0], "text"):
+            return response.content[0].text
+        return ""
 
     async def think_and_stream(
         self,
@@ -460,7 +469,7 @@ class Agent(ABC):
         """
         self.log.debug("Thinking (streaming)", prompt_length=len(prompt))
 
-        messages = [{"role": "user", "content": prompt}]
+        messages: list[MessageParam] = [{"role": "user", "content": prompt}]
         full_response = ""
 
         async with self.llm_client.messages.stream(
@@ -500,7 +509,8 @@ class Agent(ABC):
         async with httpx.AsyncClient() as client:
             response = await client.request(method, url, **kwargs)
             response.raise_for_status()
-            return response.json()
+            result: dict[str, Any] = response.json()
+            return result
 
     # =========================================================================
     # UTILITY METHODS

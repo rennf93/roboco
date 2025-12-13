@@ -4,7 +4,7 @@ Channel Routes
 CRUD operations for communication channels.
 """
 
-from typing import Annotated
+from typing import Annotated, Any, cast
 from uuid import UUID
 
 from fastapi import APIRouter, HTTPException, Query, status
@@ -15,6 +15,7 @@ from sqlalchemy.orm import selectinload
 from roboco.api.deps import CurrentAgentContext, DbSession, PermissionServiceDep
 from roboco.db.tables import ChannelTable
 from roboco.models import AgentRole, ChannelCreate, ChannelType, ChannelUpdate
+from roboco.utils.converters import require_uuid, to_python_uuid
 
 router = APIRouter()
 
@@ -108,9 +109,7 @@ async def list_channels(
         query = query.where(ChannelTable.is_archived.is_(False))
 
     # Get total count
-    count_query = select(ChannelTable.id).where(
-        ChannelTable.slug.in_(accessible_slugs)
-    )
+    count_query = select(ChannelTable.id).where(ChannelTable.slug.in_(accessible_slugs))
     if not params.include_archived:
         count_query = count_query.where(ChannelTable.is_archived.is_(False))
     count_result = await db.execute(count_query)
@@ -125,7 +124,7 @@ async def list_channels(
 
     items = [
         ChannelResponse(
-            id=ch.id,
+            id=require_uuid(ch.id),
             name=ch.name,
             slug=ch.slug,
             type=ch.type,
@@ -196,7 +195,7 @@ async def get_channel(
     ]
 
     return ChannelDetailResponse(
-        id=channel.id,
+        id=require_uuid(channel.id),
         name=channel.name,
         slug=channel.slug,
         type=channel.type,
@@ -249,12 +248,12 @@ async def get_channel_groups(
 
     return [
         GroupResponse(
-            id=g.id,
+            id=require_uuid(g.id),
             name=g.name,
             hierarchy_level=g.hierarchy_level,
             is_active=g.is_active,
             total_messages=g.total_messages,
-            active_session_id=g.active_session_id,
+            active_session_id=to_python_uuid(g.active_session_id),
         )
         for g in channel.groups
     ]
@@ -308,7 +307,7 @@ async def create_channel(
     await db.flush()
 
     return ChannelResponse(
-        id=channel.id,
+        id=require_uuid(channel.id),
         name=channel.name,
         slug=channel.slug,
         type=channel.type,
@@ -362,7 +361,7 @@ async def update_channel(
     await db.flush()
 
     return ChannelResponse(
-        id=channel.id,
+        id=require_uuid(channel.id),
         name=channel.name,
         slug=channel.slug,
         type=channel.type,
@@ -410,11 +409,11 @@ async def add_member(
 
     # Add to members if not already present
     if member_id not in channel.members:
-        channel.members = [*channel.members, member_id]
+        channel.members = cast("list[Any]", [*channel.members, member_id])
 
     # Add to writers if requested
     if can_write and member_id not in channel.writers:
-        channel.writers = [*channel.writers, member_id]
+        channel.writers = cast("list[Any]", [*channel.writers, member_id])
 
     await db.flush()
 

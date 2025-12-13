@@ -183,9 +183,6 @@ def create_task_mcp_server(agent_id: str) -> FastMCP:
     """
     mcp = FastMCP(f"roboco-task-{agent_id}", json_response=True)
 
-    # Store agent context
-    mcp.agent_id = agent_id
-
     # =========================================================================
     # TASK SCANNING
     # =========================================================================

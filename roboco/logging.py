@@ -7,9 +7,11 @@ for production and colored console output for development.
 
 import logging
 import sys
-from typing import TYPE_CHECKING, Any
+from collections.abc import Mapping, MutableMapping
+from typing import TYPE_CHECKING, Any, cast
 
 import structlog
+from structlog.stdlib import BoundLogger
 
 from roboco.config import settings
 
@@ -18,10 +20,10 @@ if TYPE_CHECKING:
 
 
 def add_app_context(
-    _logger: logging.Logger,
+    _logger: Any,
     _method_name: str,
-    event_dict: dict[str, Any],
-) -> dict[str, Any]:
+    event_dict: MutableMapping[str, Any],
+) -> Mapping[str, Any]:
     """Add application context to all log entries."""
     event_dict["app"] = "roboco"
     event_dict["version"] = settings.app_version
@@ -89,7 +91,7 @@ def setup_logging() -> None:
     )
 
 
-def get_logger(name: str | None = None) -> structlog.stdlib.BoundLogger:
+def get_logger(name: str | None = None) -> BoundLogger:
     """
     Get a structured logger.
 
@@ -99,7 +101,7 @@ def get_logger(name: str | None = None) -> structlog.stdlib.BoundLogger:
     Returns:
         Configured structlog logger
     """
-    return structlog.get_logger(name)
+    return cast("BoundLogger", structlog.get_logger(name))
 
 
 # =============================================================================

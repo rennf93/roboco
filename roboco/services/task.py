@@ -7,7 +7,7 @@ Handles status transitions, assignments, and queries.
 
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
-from typing import Any
+from typing import Any, cast
 from uuid import UUID
 
 import structlog
@@ -166,7 +166,7 @@ class TaskService:
             )
             return None
 
-        task.assigned_to = agent_id
+        task.assigned_to = cast("Any", agent_id)
         task.claimed_at = datetime.now(UTC)
         task.status = TaskStatus.CLAIMED
         await self.session.flush()
@@ -198,10 +198,13 @@ class TaskService:
         # Validate ownership if agent_id provided
         if agent_id is not None:
             try:
+                assigned = task.assigned_to
                 validate_task_ownership(
-                    task_id=str(task_id),
                     agent_id=str(agent_id),
-                    assigned_to=str(task.assigned_to) if task.assigned_to else None,
+                    task_id=str(task_id),
+                    task_assigned_to=str(assigned) if assigned else None,
+                    task_team=task.team.value if task.team else "backend",
+                    action="start",
                 )
             except TaskOwnershipError as e:
                 logger.warning(
@@ -234,14 +237,15 @@ class TaskService:
             return None
 
         if blocker_task_id not in task.dependency_ids:
-            task.dependency_ids = [*task.dependency_ids, blocker_task_id]
+            new_deps = [*task.dependency_ids, blocker_task_id]
+            task.dependency_ids = cast("list[Any]", new_deps)
         task.status = TaskStatus.BLOCKED
         await self.session.flush()
 
         # Update the blocker task to reference this as blocked
         blocker = await self.get(blocker_task_id)
         if blocker and task_id not in blocker.blocker_ids:
-            blocker.blocker_ids = [*blocker.blocker_ids, task_id]
+            blocker.blocker_ids = cast("list[Any]", [*blocker.blocker_ids, task_id])
             await self.session.flush()
 
         logger.info(

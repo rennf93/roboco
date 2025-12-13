@@ -151,7 +151,7 @@ check_untyped_defs = true
 disallow_untyped_decorators = true
 no_implicit_optional = true
 strict_optional = true
-warn_redundant_casts = true
+warn_redundant_casts = false  # SQLAlchemy array types require casts that appear redundant
 warn_unused_ignores = true
 warn_no_return = true
 warn_unreachable = true
@@ -165,6 +165,8 @@ module = [
     "anthropic.*",
     "tiktoken.*",
     "piragi.*",
+    "toon.*",
+    "aiofiles.*",
 ]
 ignore_missing_imports = true
 

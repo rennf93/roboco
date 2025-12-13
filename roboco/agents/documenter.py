@@ -76,7 +76,7 @@ class DocContext:
     current_doc: int = 0
     # Output
     written_docs: list[str] = field(default_factory=list)
-    started_at: datetime = field(default_factory=datetime.now(UTC))
+    started_at: datetime = field(default_factory=lambda: datetime.now(UTC))
     notes: list[str] = field(default_factory=list)
 
 
@@ -100,6 +100,16 @@ class DocumenterAgent(Agent):
         self._doc_context: DocContext | None = None
         self._cell_channel_id: UUID | None = None
         self._pending_docs: list[UUID] = []
+
+    async def _initialize(self) -> None:
+        """Initialize documenter-specific resources."""
+        self.log.debug("Documenter agent initialized", agent_id=str(self.id))
+
+    async def _cleanup(self) -> None:
+        """Cleanup documenter-specific resources."""
+        self._doc_context = None
+        self._pending_docs.clear()
+        self.log.debug("Documenter agent cleanup complete", agent_id=str(self.id))
 
     @property
     def cell_name(self) -> str:
@@ -462,7 +472,8 @@ good,complete,clear,helpful,None
         """Get task title."""
         try:
             result = await self._api_call("GET", f"/tasks/{task_id}")
-            return result.get("title", f"Task {str(task_id)[:8]}")
+            title: str = result.get("title", f"Task {str(task_id)[:8]}")
+            return title
         except Exception as e:
             self.log.warning("Failed to get task title", error=str(e))
             return f"Task {str(task_id)[:8]}"
@@ -471,7 +482,8 @@ good,complete,clear,helpful,None
         """Read developer's journey notes."""
         try:
             result = await self._api_call("GET", f"/tasks/{task_id}")
-            return result.get("dev_notes", "No developer notes available")
+            notes: str = result.get("dev_notes", "No developer notes available")
+            return notes
         except Exception as e:
             self.log.warning("Failed to read dev notes", error=str(e))
             return "Dev notes unavailable"
@@ -480,7 +492,8 @@ good,complete,clear,helpful,None
         """Read QA feedback."""
         try:
             result = await self._api_call("GET", f"/tasks/{task_id}")
-            return result.get("qa_feedback", "No QA feedback available")
+            feedback: str = result.get("qa_feedback", "No QA feedback available")
+            return feedback
         except Exception as e:
             self.log.warning("Failed to read QA feedback", error=str(e))
             return "QA feedback unavailable"
@@ -489,7 +502,8 @@ good,complete,clear,helpful,None
         """Get commits for the task."""
         try:
             result = await self._api_call("GET", f"/tasks/{task_id}")
-            return result.get("commits", [])
+            commits: list[str] = result.get("commits", [])
+            return commits
         except Exception as e:
             self.log.warning("Failed to get task commits", error=str(e))
             return []
@@ -498,7 +512,7 @@ good,complete,clear,helpful,None
         """Get relevant conversations."""
         try:
             result = await self._api_call("GET", f"/tasks/{task_id}/messages")
-            messages = result.get("items", [])
+            messages: list[dict[str, str]] = result.get("items", [])
             return [m.get("content", "") for m in messages]
         except Exception as e:
             self.log.warning("Failed to get conversations", error=str(e))
@@ -508,7 +522,8 @@ good,complete,clear,helpful,None
         """Get code changes from commits."""
         try:
             result = await self._api_call("GET", f"/tasks/{task_id}")
-            return result.get("code_changes", [])
+            changes: list[str] = result.get("code_changes", [])
+            return changes
         except Exception as e:
             self.log.warning("Failed to get code changes", error=str(e))
             return []

@@ -15,6 +15,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from roboco.db.tables import AgentTable, MessageTable, NotificationTable, TaskTable
 from roboco.models.base import TaskStatus, Team
+from roboco.utils.converters import to_python_uuid
 
 logger = structlog.get_logger()
 
@@ -270,7 +271,7 @@ class MetricsService:
         return BlockerMetrics(
             active_blockers=active_blockers,
             avg_blocked_hours=round(avg_blocked, 2) if avg_blocked else None,
-            longest_blocked_task_id=longest_task_id,
+            longest_blocked_task_id=to_python_uuid(longest_task_id),
             longest_blocked_hours=round(longest_hours, 2) if longest_hours else None,
             blockers_by_team=blockers_by_team,
         )
@@ -450,7 +451,7 @@ class MetricsService:
             agent_id=agent_id,
             agent_name=agent.name,
             tasks_completed_week=tasks_completed,
-            current_task_id=agent.current_task_id,
+            current_task_id=to_python_uuid(agent.current_task_id),
             avg_completion_hours=round(avg_hours, 2) if avg_hours else None,
             messages_sent_week=messages_sent,
         )

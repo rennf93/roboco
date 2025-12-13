@@ -70,7 +70,8 @@ class ToonAdapter:
         if isinstance(data, BaseModel):
             data = data.model_dump()
 
-        return toon.encode(data, indent=self.config.indent)
+        result: str = toon.encode(data, indent=self.config.indent)
+        return result
 
     def decode(self, toon_str: str) -> dict[str, Any] | list[Any]:
         """
@@ -90,7 +91,8 @@ class ToonAdapter:
         # Try TOON first
         toon_err_msg = ""
         try:
-            return toon.decode(toon_str)
+            decoded: dict[str, Any] | list[Any] = toon.decode(toon_str)
+            return decoded
         except Exception as toon_error:
             toon_err_msg = str(toon_error)
             self.log.warning(
@@ -100,7 +102,8 @@ class ToonAdapter:
 
         # Fallback to JSON
         try:
-            return json.loads(toon_str)
+            fallback: dict[str, Any] | list[Any] = json.loads(toon_str)
+            return fallback
         except json.JSONDecodeError as json_error:
             self.log.error(
                 "Both TOON and JSON decode failed",

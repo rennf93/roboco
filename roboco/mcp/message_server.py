@@ -85,9 +85,6 @@ def create_message_mcp_server(agent_id: str) -> FastMCP:
     """
     mcp = FastMCP(f"roboco-message-{agent_id}", json_response=True)
 
-    # Store agent context
-    mcp.agent_id = agent_id
-
     # =========================================================================
     # CHANNEL LISTING
     # =========================================================================
@@ -254,14 +251,16 @@ def create_message_mcp_server(agent_id: str) -> FastMCP:
         )
 
         if session_resp.status_code == status.HTTP_200_OK:
-            return session_resp.json()["id"]
+            session_id: str = session_resp.json()["id"]
+            return session_id
 
         create_resp = await client.post(
             f"{_get_api_url()}/sessions",
             json={"channel_id": channel_id},
         )
         if create_resp.status_code in [status.HTTP_200_OK, status.HTTP_201_CREATED]:
-            return create_resp.json()["id"]
+            created_id: str = create_resp.json()["id"]
+            return created_id
 
         return _format_error_response(
             "SESSION_ERROR", "Failed to get or create session"
@@ -424,7 +423,7 @@ def create_message_mcp_server(agent_id: str) -> FastMCP:
         if context:
             content = f"{context}\n\n{content}"
 
-        result = await roboco_message_send(
+        result: dict[str, Any] = await roboco_message_send(
             channel_slug=channel_slug,
             content=content,
             message_type="dialogue",
@@ -475,7 +474,7 @@ def create_message_mcp_server(agent_id: str) -> FastMCP:
             f"**Needed to unblock**: {what_needed}"
         )
 
-        result = await roboco_message_send(
+        result: dict[str, Any] = await roboco_message_send(
             channel_slug=channel_slug,
             content=content,
             message_type="blocker",

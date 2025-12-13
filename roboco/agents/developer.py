@@ -47,7 +47,7 @@ class TaskContext:
     current_subtask: int = 0
     blockers: list[str] = field(default_factory=list)
     commits: list[str] = field(default_factory=list)
-    started_at: datetime = field(default_factory=datetime.now(UTC))
+    started_at: datetime = field(default_factory=lambda: datetime.now(UTC))
     journal_entries: list[str] = field(default_factory=list)
 
 
@@ -71,6 +71,15 @@ class DeveloperAgent(Agent):
         super().__init__(config)
         self._task_context: TaskContext | None = None
         self._cell_channel_id: UUID | None = None
+
+    async def _initialize(self) -> None:
+        """Initialize developer-specific resources."""
+        self.log.debug("Developer agent initialized", agent_id=str(self.id))
+
+    async def _cleanup(self) -> None:
+        """Cleanup developer-specific resources."""
+        self._task_context = None
+        self.log.debug("Developer agent cleanup complete", agent_id=str(self.id))
 
     @property
     def cell_name(self) -> str:
@@ -593,7 +602,8 @@ Create a handoff summary including:
         """Get task title from API."""
         try:
             result = await self._api_call("GET", f"/tasks/{task_id}")
-            return result.get("title", f"Task {str(task_id)[:8]}")
+            title: str = result.get("title", f"Task {str(task_id)[:8]}")
+            return title
         except Exception as e:
             self.log.warning("Failed to get task title", error=str(e))
             return f"Task {str(task_id)[:8]}"

@@ -102,6 +102,16 @@ class CellPMAgent(Agent):
         self._pending_escalations: list[Escalation] = []
         self._cell_channel_id: UUID | None = None
 
+    async def _initialize(self) -> None:
+        """Initialize Cell PM-specific resources."""
+        self.log.debug("Cell PM agent initialized", agent_id=str(self.id))
+
+    async def _cleanup(self) -> None:
+        """Cleanup Cell PM-specific resources."""
+        self._pending_tasks.clear()
+        self._pending_escalations.clear()
+        self.log.debug("Cell PM agent cleanup complete", agent_id=str(self.id))
+
     @property
     def cell_name(self) -> str:
         """Get the cell name."""
@@ -450,10 +460,10 @@ Be helpful and unblock the team.
         """
         Notify Main PM of escalation.
 
-        Uses NotificationType.ESCALATION to formally escalate the issue.
+        Uses NotificationType.BLOCKER_ESCALATION to formally escalate the issue.
         """
         # Build notification content
-        notification_type = NotificationType.ESCALATION
+        notification_type = NotificationType.BLOCKER_ESCALATION
         task_ref = str(escalation.task_id)[:8] if escalation.task_id else "N/A"
         subject = f"Escalation from {self.cell_name}: {escalation.issue[:50]}"
         body = f"""
@@ -541,6 +551,17 @@ class MainPMAgent(Agent):
         self._cell_statuses: dict[str, CellStatus] = {}
         self._board_directives: list[str] = []
         self._cross_cell_issues: list[dict[str, Any]] = []
+
+    async def _initialize(self) -> None:
+        """Initialize Main PM-specific resources."""
+        self.log.debug("Main PM agent initialized", agent_id=str(self.id))
+
+    async def _cleanup(self) -> None:
+        """Cleanup Main PM-specific resources."""
+        self._cell_statuses.clear()
+        self._board_directives.clear()
+        self._cross_cell_issues.clear()
+        self.log.debug("Main PM agent cleanup complete", agent_id=str(self.id))
 
     async def find_work(self) -> UUID | None:
         """Main PM always has work."""
@@ -791,7 +812,8 @@ Propose a resolution that unblocks all parties.
                 "/notifications",
                 params={"type": "escalation", "status": "pending"},
             )
-            return result.get("items", [])
+            items: list[dict[str, Any]] = result.get("items", [])
+            return items
         except Exception as e:
             self.log.warning("Failed to get escalations", error=str(e))
             return []

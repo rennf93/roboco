@@ -98,7 +98,7 @@ class AgentInstance:
     waiting_for: str | None = None  # For WAITING_LONG state
     waiting_context: dict[str, Any] = field(default_factory=dict)
 
-    def __post_init__(self):
+    def __post_init__(self) -> None:
         if not self.id:
             self.id = uuid4()
 
@@ -634,20 +634,16 @@ Start by:
 
     def get_status_summary(self) -> dict[str, Any]:
         """Get summary of all agent states."""
-        summary = {
-            "total": len(self._instances),
-            "by_state": {},
-            "waiting_count": len(self._waiting_records),
-            "agents": [],
-        }
+        by_state: dict[str, int] = {}
+        agents: list[dict[str, Any]] = []
 
         for state in AgentState:
             count = sum(1 for i in self._instances.values() if i.state == state)
             if count > 0:
-                summary["by_state"][state.value] = count
+                by_state[state.value] = count
 
         for agent_id, instance in self._instances.items():
-            summary["agents"].append(
+            agents.append(
                 {
                     "agent_id": agent_id,
                     "state": instance.state.value,
@@ -659,4 +655,9 @@ Start by:
                 }
             )
 
-        return summary
+        return {
+            "total": len(self._instances),
+            "by_state": by_state,
+            "waiting_count": len(self._waiting_records),
+            "agents": agents,
+        }

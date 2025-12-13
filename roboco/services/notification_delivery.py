@@ -10,7 +10,7 @@ Also implements the ACK system for tracking acknowledgments.
 """
 
 from datetime import UTC, datetime
-from typing import Literal
+from typing import Any, Literal, cast
 from uuid import UUID
 
 import structlog
@@ -242,7 +242,8 @@ class NotificationDeliveryService:
 
         # Add to acked_by if received ACK and not already there
         if ack_type == "received" and agent_id not in notification.acked_by:
-            notification.acked_by = [*notification.acked_by, agent_id]
+            new_acked = [*notification.acked_by, agent_id]
+            notification.acked_by = cast("list[Any]", new_acked)
             notification.acked_at = {
                 **notification.acked_at,
                 str(agent_id): now.isoformat(),
@@ -250,8 +251,7 @@ class NotificationDeliveryService:
 
         # Both types mark as read
         if agent_id not in notification.read_by:
-            notification.read_by = [*notification.read_by, agent_id]
-            notification.ack_read_at = now
+            notification.read_by = cast("list[Any]", [*notification.read_by, agent_id])
 
         await self.session.flush()
 

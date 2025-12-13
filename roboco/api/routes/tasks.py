@@ -16,10 +16,12 @@ from roboco.api.deps import (
     DbSession,
     PermissionServiceDep,
 )
+from roboco.db.tables import TaskTable
 from roboco.models.base import Complexity, TaskStatus, Team
 from roboco.services.audit import get_audit_service
 from roboco.services.permissions import TaskAction
 from roboco.services.task import TaskCreateRequest, get_task_service
+from roboco.utils.converters import require_uuid, to_python_uuid, to_python_uuid_list
 
 router = APIRouter(prefix="/tasks", tags=["tasks"])
 
@@ -85,6 +87,41 @@ class TaskResponse(BaseModel):
 
     class Config:
         from_attributes = True
+
+
+def _to_response(task: TaskTable) -> TaskResponse:
+    """Convert TaskTable to TaskResponse with proper UUID conversion."""
+    return TaskResponse(
+        id=require_uuid(task.id),
+        title=task.title,
+        description=task.description,
+        acceptance_criteria=task.acceptance_criteria or [],
+        status=task.status,
+        priority=task.priority,
+        team=task.team,
+        created_by=require_uuid(task.created_by),
+        assigned_to=to_python_uuid(task.assigned_to),
+        parent_task_id=to_python_uuid(task.parent_task_id),
+        dependency_ids=to_python_uuid_list(task.dependency_ids),
+        blocker_ids=to_python_uuid_list(task.blocker_ids),
+        created_at=task.created_at,
+        updated_at=task.updated_at,
+        claimed_at=task.claimed_at,
+        started_at=task.started_at,
+        completed_at=task.completed_at,
+        target_date=task.target_date,
+        estimated_complexity=task.estimated_complexity,
+        self_verified=task.self_verified,
+        qa_verified=task.qa_verified,
+        dev_notes=task.dev_notes,
+        qa_notes=task.qa_notes,
+        quick_context=task.quick_context,
+    )
+
+
+def _to_response_list(tasks: list[TaskTable]) -> list[TaskResponse]:
+    """Convert list of TaskTable to list of TaskResponse."""
+    return [_to_response(t) for t in tasks]
 
 
 class ProgressRequest(BaseModel):
@@ -153,7 +190,7 @@ async def create_task(
     db: DbSession,
     agent: CurrentAgentContext,
     permissions: PermissionServiceDep,
-):
+) -> TaskResponse:
     """Create a new task."""
     # Check create permission
     if not permissions.can_perform_task_action(agent, TaskAction.CREATE, data.team):
@@ -185,7 +222,7 @@ async def create_task(
     )
     task = await service.create(req)
     await db.commit()
-    return task
+    return _to_response(task)
 
 
 @router.get("", response_model=list[TaskResponse])
@@ -194,7 +231,7 @@ async def list_tasks(
     agent: CurrentAgentContext,
     permissions: PermissionServiceDep,
     params: Annotated[ListTasksQuery, Query()],
-):
+) -> list[TaskResponse]:
     """
     List tasks with optional filters.
 
@@ -226,7 +263,7 @@ async def list_tasks(
     else:
         tasks = await service.list_all(params.limit, params.offset)
 
-    return tasks
+    return _to_response_list(tasks)
 
 
 @router.get("/my", response_model=list[TaskResponse])
@@ -234,10 +271,11 @@ async def get_my_tasks(
     db: DbSession,
     agent: CurrentAgentContext,
     status: TaskStatus | None = None,
-):
+) -> list[TaskResponse]:
     """Get tasks assigned to the current agent."""
     service = get_task_service(db)
-    return await service.list_by_assignee(agent.agent_id, status)
+    tasks = await service.list_by_assignee(agent.agent_id, status)
+    return _to_response_list(tasks)
 
 
 @router.get("/pending", response_model=list[TaskResponse])
@@ -246,7 +284,7 @@ async def get_pending_tasks(
     agent: CurrentAgentContext,
     permissions: PermissionServiceDep,
     team: Team | None = None,
-):
+) -> list[TaskResponse]:
     """Get pending tasks available to claim."""
     service = get_task_service(db)
 
@@ -254,7 +292,8 @@ async def get_pending_tasks(
     can_view_all = permissions.can_perform_task_action(agent, TaskAction.VIEW_ALL)
     effective_team = team if can_view_all else agent.team
 
-    return await service.list_pending(effective_team)
+    tasks = await service.list_pending(effective_team)
+    return _to_response_list(tasks)
 
 
 @router.get("/blocked", response_model=list[TaskResponse])
@@ -263,7 +302,7 @@ async def get_blocked_tasks(
     agent: CurrentAgentContext,
     permissions: PermissionServiceDep,
     team: Team | None = None,
-):
+) -> list[TaskResponse]:
     """Get blocked tasks."""
     service = get_task_service(db)
 
@@ -271,7 +310,8 @@ async def get_blocked_tasks(
     can_view_all = permissions.can_perform_task_action(agent, TaskAction.VIEW_ALL)
     effective_team = team if can_view_all else agent.team
 
-    return await service.list_blocked(effective_team)
+    tasks = await service.list_blocked(effective_team)
+    return _to_response_list(tasks)
 
 
 @router.get("/awaiting-qa", response_model=list[TaskResponse])
@@ -280,7 +320,7 @@ async def get_awaiting_qa_tasks(
     agent: CurrentAgentContext,
     permissions: PermissionServiceDep,
     team: Team | None = None,
-):
+) -> list[TaskResponse]:
     """Get tasks awaiting QA review."""
     service = get_task_service(db)
 
@@ -288,7 +328,8 @@ async def get_awaiting_qa_tasks(
     can_view_all = permissions.can_perform_task_action(agent, TaskAction.VIEW_ALL)
     effective_team = team if can_view_all else agent.team
 
-    return await service.list_awaiting_qa(effective_team)
+    tasks = await service.list_awaiting_qa(effective_team)
+    return _to_response_list(tasks)
 
 
 @router.get("/awaiting-docs", response_model=list[TaskResponse])
@@ -297,7 +338,7 @@ async def get_awaiting_docs_tasks(
     agent: CurrentAgentContext,
     permissions: PermissionServiceDep,
     team: Team | None = None,
-):
+) -> list[TaskResponse]:
     """Get tasks awaiting documentation."""
     service = get_task_service(db)
 
@@ -305,7 +346,8 @@ async def get_awaiting_docs_tasks(
     can_view_all = permissions.can_perform_task_action(agent, TaskAction.VIEW_ALL)
     effective_team = team if can_view_all else agent.team
 
-    return await service.list_awaiting_docs(effective_team)
+    tasks = await service.list_awaiting_docs(effective_team)
+    return _to_response_list(tasks)
 
 
 @router.get("/team/{team}", response_model=list[TaskResponse])
@@ -315,7 +357,7 @@ async def get_team_tasks(
     agent: CurrentAgentContext,
     permissions: PermissionServiceDep,
     params: Annotated[TeamTasksQuery, Query()],
-):
+) -> list[TaskResponse]:
     """Get tasks for a specific team."""
     # Check if agent can view this team's tasks
     can_view_all = permissions.can_perform_task_action(agent, TaskAction.VIEW_ALL)
@@ -328,7 +370,8 @@ async def get_team_tasks(
         )
 
     service = get_task_service(db)
-    return await service.list_by_team(team, params.task_status, params.limit)
+    tasks = await service.list_by_team(team, params.task_status, params.limit)
+    return _to_response_list(tasks)
 
 
 @router.get("/stats", response_model=TaskCountResponse)
@@ -337,7 +380,7 @@ async def get_task_stats(
     agent: CurrentAgentContext,
     permissions: PermissionServiceDep,
     team: Team | None = None,
-):
+) -> TaskCountResponse:
     """Get task counts by status."""
     service = get_task_service(db)
 
@@ -354,7 +397,7 @@ async def get_task_stats_by_team(
     db: DbSession,
     agent: CurrentAgentContext,
     permissions: PermissionServiceDep,
-):
+) -> TaskCountResponse:
     """Get task counts by team."""
     # Only agents with VIEW_ALL can see cross-team stats
     can_view_all = permissions.can_perform_task_action(agent, TaskAction.VIEW_ALL)
@@ -373,13 +416,15 @@ async def get_task_stats_by_team(
 async def get_task(
     task_id: UUID,
     db: DbSession,
-):
+) -> TaskResponse:
     """Get a specific task."""
     service = get_task_service(db)
     task = await service.get(task_id)
     if not task:
-        raise HTTPException(status_code=404, detail="Task not found")
-    return task
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="Task not found"
+        )
+    return _to_response(task)
 
 
 @router.put("/{task_id}", response_model=TaskResponse)
@@ -389,12 +434,14 @@ async def update_task(
     db: DbSession,
     agent: CurrentAgentContext,
     permissions: PermissionServiceDep,
-):
+) -> TaskResponse:
     """Update a task."""
     service = get_task_service(db)
     task = await service.get(task_id)
     if not task:
-        raise HTTPException(status_code=404, detail="Task not found")
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="Task not found"
+        )
 
     # Check if agent can update this task
     # UPDATE_OWN requires agent to be assigned to or created the task
@@ -413,8 +460,13 @@ async def update_task(
         )
 
     task = await service.update(task_id, **data.model_dump(exclude_unset=True))
+    if not task:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Task update failed unexpectedly",
+        )
     await db.commit()
-    return task
+    return _to_response(task)
 
 
 @router.delete("/{task_id}", status_code=status.HTTP_204_NO_CONTENT)
@@ -423,12 +475,14 @@ async def delete_task(
     db: DbSession,
     agent: CurrentAgentContext,
     permissions: PermissionServiceDep,
-):
+) -> None:
     """Delete a task."""
     service = get_task_service(db)
     task = await service.get(task_id)
     if not task:
-        raise HTTPException(status_code=404, detail="Task not found")
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="Task not found"
+        )
 
     # Only creators or agents with ASSIGN permission can delete tasks
     is_creator = task.created_by == agent.agent_id
@@ -450,10 +504,11 @@ async def delete_task(
 async def get_subtasks(
     task_id: UUID,
     db: DbSession,
-):
+) -> list[TaskResponse]:
     """Get subtasks of a task."""
     service = get_task_service(db)
-    return await service.get_subtasks(task_id)
+    tasks = await service.get_subtasks(task_id)
+    return _to_response_list(tasks)
 
 
 # =============================================================================
@@ -467,12 +522,14 @@ async def claim_task(
     db: DbSession,
     agent: CurrentAgentContext,
     permissions: PermissionServiceDep,
-):
+) -> TaskResponse:
     """Claim a task."""
     service = get_task_service(db)
     task = await service.get(task_id)
     if not task:
-        raise HTTPException(status_code=404, detail="Task not found")
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="Task not found"
+        )
 
     # Check claim permission
     if not permissions.can_perform_task_action(agent, TaskAction.CLAIM, task.team):
@@ -484,11 +541,11 @@ async def claim_task(
     task = await service.claim(task_id, agent.agent_id)
     if not task:
         raise HTTPException(
-            status_code=400,
+            status_code=status.HTTP_400_BAD_REQUEST,
             detail="Cannot claim task - not pending",
         )
     await db.commit()
-    return task
+    return _to_response(task)
 
 
 @router.post("/{task_id}/start", response_model=TaskResponse)
@@ -496,12 +553,14 @@ async def start_task(
     task_id: UUID,
     db: DbSession,
     agent: CurrentAgentContext,
-):
+) -> TaskResponse:
     """Start working on a task."""
     service = get_task_service(db)
     task = await service.get(task_id)
     if not task:
-        raise HTTPException(status_code=404, detail="Task not found")
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="Task not found"
+        )
 
     # Only assigned agent can start the task
     if task.assigned_to != agent.agent_id:
@@ -513,11 +572,11 @@ async def start_task(
     task = await service.start(task_id)
     if not task:
         raise HTTPException(
-            status_code=400,
+            status_code=status.HTTP_400_BAD_REQUEST,
             detail="Cannot start task - invalid status",
         )
     await db.commit()
-    return task
+    return _to_response(task)
 
 
 @router.post("/{task_id}/block", response_model=TaskResponse)
@@ -526,12 +585,14 @@ async def block_task(
     blocker_id: UUID,
     db: DbSession,
     agent: CurrentAgentContext,
-):
+) -> TaskResponse:
     """Block a task due to a dependency."""
     service = get_task_service(db)
     task = await service.get(task_id)
     if not task:
-        raise HTTPException(status_code=404, detail="Task not found")
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="Task not found"
+        )
 
     # Only assigned agent or PM can block a task
     if task.assigned_to != agent.agent_id and agent.role.value not in (
@@ -544,8 +605,13 @@ async def block_task(
         )
 
     task = await service.block(task_id, blocker_id)
+    if not task:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Task block failed unexpectedly",
+        )
     await db.commit()
-    return task
+    return _to_response(task)
 
 
 @router.post("/{task_id}/unblock", response_model=TaskResponse)
@@ -553,12 +619,14 @@ async def unblock_task(
     task_id: UUID,
     db: DbSession,
     agent: CurrentAgentContext,
-):
+) -> TaskResponse:
     """Unblock a task."""
     service = get_task_service(db)
     task = await service.get(task_id)
     if not task:
-        raise HTTPException(status_code=404, detail="Task not found")
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="Task not found"
+        )
 
     # Only assigned agent or PM can unblock a task
     if task.assigned_to != agent.agent_id and agent.role.value not in (
@@ -573,11 +641,11 @@ async def unblock_task(
     task = await service.unblock(task_id)
     if not task:
         raise HTTPException(
-            status_code=400,
+            status_code=status.HTTP_400_BAD_REQUEST,
             detail="Cannot unblock task - not blocked",
         )
     await db.commit()
-    return task
+    return _to_response(task)
 
 
 @router.post("/{task_id}/pause", response_model=TaskResponse)
@@ -585,12 +653,14 @@ async def pause_task(
     task_id: UUID,
     db: DbSession,
     agent: CurrentAgentContext,
-):
+) -> TaskResponse:
     """Pause a task."""
     service = get_task_service(db)
     task = await service.get(task_id)
     if not task:
-        raise HTTPException(status_code=404, detail="Task not found")
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="Task not found"
+        )
 
     # Only assigned agent can pause their task
     if task.assigned_to != agent.agent_id:
@@ -602,11 +672,11 @@ async def pause_task(
     task = await service.pause(task_id)
     if not task:
         raise HTTPException(
-            status_code=400,
+            status_code=status.HTTP_400_BAD_REQUEST,
             detail="Cannot pause task - not in progress",
         )
     await db.commit()
-    return task
+    return _to_response(task)
 
 
 @router.post("/{task_id}/resume", response_model=TaskResponse)
@@ -614,12 +684,14 @@ async def resume_task(
     task_id: UUID,
     db: DbSession,
     agent: CurrentAgentContext,
-):
+) -> TaskResponse:
     """Resume a paused task."""
     service = get_task_service(db)
     task = await service.get(task_id)
     if not task:
-        raise HTTPException(status_code=404, detail="Task not found")
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="Task not found"
+        )
 
     # Only assigned agent can resume their task
     if task.assigned_to != agent.agent_id:
@@ -631,11 +703,11 @@ async def resume_task(
     task = await service.resume(task_id)
     if not task:
         raise HTTPException(
-            status_code=400,
+            status_code=status.HTTP_400_BAD_REQUEST,
             detail="Cannot resume task - not paused",
         )
     await db.commit()
-    return task
+    return _to_response(task)
 
 
 @router.post("/{task_id}/verify", response_model=TaskResponse)
@@ -643,12 +715,14 @@ async def submit_for_verification(
     task_id: UUID,
     db: DbSession,
     agent: CurrentAgentContext,
-):
+) -> TaskResponse:
     """Submit task for self-verification."""
     service = get_task_service(db)
     task = await service.get(task_id)
     if not task:
-        raise HTTPException(status_code=404, detail="Task not found")
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="Task not found"
+        )
 
     # Only assigned agent can submit for verification
     if task.assigned_to != agent.agent_id:
@@ -660,11 +734,11 @@ async def submit_for_verification(
     task = await service.submit_for_verification(task_id)
     if not task:
         raise HTTPException(
-            status_code=400,
+            status_code=status.HTTP_400_BAD_REQUEST,
             detail="Cannot verify task - not in progress",
         )
     await db.commit()
-    return task
+    return _to_response(task)
 
 
 @router.post("/{task_id}/submit-qa", response_model=TaskResponse)
@@ -672,12 +746,14 @@ async def submit_for_qa(
     task_id: UUID,
     db: DbSession,
     agent: CurrentAgentContext,
-):
+) -> TaskResponse:
     """Submit task for QA review."""
     service = get_task_service(db)
     task = await service.get(task_id)
     if not task:
-        raise HTTPException(status_code=404, detail="Task not found")
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="Task not found"
+        )
 
     # Only assigned agent can submit for QA
     if task.assigned_to != agent.agent_id:
@@ -689,11 +765,11 @@ async def submit_for_qa(
     task = await service.submit_for_qa(task_id)
     if not task:
         raise HTTPException(
-            status_code=400,
+            status_code=status.HTTP_400_BAD_REQUEST,
             detail="Cannot submit for QA - not verifying",
         )
     await db.commit()
-    return task
+    return _to_response(task)
 
 
 @router.post("/{task_id}/pass-qa", response_model=TaskResponse)
@@ -702,12 +778,14 @@ async def pass_qa(
     db: DbSession,
     agent: CurrentAgentContext,
     data: QANotes | None = None,
-):
+) -> TaskResponse:
     """Mark task as passed QA."""
     service = get_task_service(db)
     task = await service.get(task_id)
     if not task:
-        raise HTTPException(status_code=404, detail="Task not found")
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="Task not found"
+        )
 
     # Only QA agents can pass/fail QA
     if agent.role.value != "qa":
@@ -743,11 +821,11 @@ async def pass_qa(
     task = await service.pass_qa(task_id, notes)
     if not task:
         raise HTTPException(
-            status_code=400,
+            status_code=status.HTTP_400_BAD_REQUEST,
             detail="Cannot pass QA - not awaiting QA",
         )
     await db.commit()
-    return task
+    return _to_response(task)
 
 
 @router.post("/{task_id}/fail-qa", response_model=TaskResponse)
@@ -756,12 +834,14 @@ async def fail_qa(
     data: QANotes,
     db: DbSession,
     agent: CurrentAgentContext,
-):
+) -> TaskResponse:
     """Mark task as failed QA."""
     service = get_task_service(db)
     task = await service.get(task_id)
     if not task:
-        raise HTTPException(status_code=404, detail="Task not found")
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="Task not found"
+        )
 
     # Only QA agents can pass/fail QA
     if agent.role.value != "qa":
@@ -780,11 +860,11 @@ async def fail_qa(
     task = await service.fail_qa(task_id, data.notes)
     if not task:
         raise HTTPException(
-            status_code=400,
+            status_code=status.HTTP_400_BAD_REQUEST,
             detail="Cannot fail QA - not awaiting QA",
         )
     await db.commit()
-    return task
+    return _to_response(task)
 
 
 @router.post("/{task_id}/complete", response_model=TaskResponse)
@@ -793,12 +873,14 @@ async def complete_task(
     db: DbSession,
     agent: CurrentAgentContext,
     permissions: PermissionServiceDep,
-):
+) -> TaskResponse:
     """Mark task as completed."""
     service = get_task_service(db)
     task = await service.get(task_id)
     if not task:
-        raise HTTPException(status_code=404, detail="Task not found")
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="Task not found"
+        )
 
     # Check close permission - assigned agent or those with CLOSE permission
     is_assigned = task.assigned_to == agent.agent_id
@@ -813,11 +895,11 @@ async def complete_task(
     task = await service.complete(task_id)
     if not task:
         raise HTTPException(
-            status_code=400,
+            status_code=status.HTTP_400_BAD_REQUEST,
             detail="Cannot complete task - invalid status",
         )
     await db.commit()
-    return task
+    return _to_response(task)
 
 
 @router.post("/{task_id}/cancel", response_model=TaskResponse)
@@ -826,12 +908,14 @@ async def cancel_task(
     db: DbSession,
     agent: CurrentAgentContext,
     permissions: PermissionServiceDep,
-):
+) -> TaskResponse:
     """Cancel a task."""
     service = get_task_service(db)
     task = await service.get(task_id)
     if not task:
-        raise HTTPException(status_code=404, detail="Task not found")
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="Task not found"
+        )
 
     # Only PM or higher can cancel tasks
     can_cancel = permissions.can_perform_task_action(
@@ -844,8 +928,13 @@ async def cancel_task(
         )
 
     task = await service.cancel(task_id)
+    if not task:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Task cancel failed unexpectedly",
+        )
     await db.commit()
-    return task
+    return _to_response(task)
 
 
 # =============================================================================
@@ -859,12 +948,14 @@ async def add_progress(
     data: ProgressRequest,
     db: DbSession,
     agent: CurrentAgentContext,
-):
+) -> TaskResponse:
     """Add a progress update to a task."""
     service = get_task_service(db)
     task = await service.get(task_id)
     if not task:
-        raise HTTPException(status_code=404, detail="Task not found")
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="Task not found"
+        )
 
     # Only assigned agent can add progress
     if task.assigned_to != agent.agent_id:
@@ -876,8 +967,13 @@ async def add_progress(
     task = await service.add_progress(
         task_id, agent.agent_id, data.message, data.percentage
     )
+    if not task:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Add progress failed unexpectedly",
+        )
     await db.commit()
-    return task
+    return _to_response(task)
 
 
 @router.post("/{task_id}/checkpoint", response_model=TaskResponse)
@@ -886,12 +982,14 @@ async def add_checkpoint(
     data: CheckpointRequest,
     db: DbSession,
     agent: CurrentAgentContext,
-):
+) -> TaskResponse:
     """Add a checkpoint for state recovery."""
     service = get_task_service(db)
     task = await service.get(task_id)
     if not task:
-        raise HTTPException(status_code=404, detail="Task not found")
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="Task not found"
+        )
 
     # Only assigned agent can add checkpoints
     if task.assigned_to != agent.agent_id:
@@ -907,8 +1005,13 @@ async def add_checkpoint(
         data.remaining_work,
         data.notes,
     )
+    if not task:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Add checkpoint failed unexpectedly",
+        )
     await db.commit()
-    return task
+    return _to_response(task)
 
 
 @router.post("/{task_id}/commit", response_model=TaskResponse)
@@ -917,12 +1020,14 @@ async def add_commit(
     data: CommitRequest,
     db: DbSession,
     agent: CurrentAgentContext,
-):
+) -> TaskResponse:
     """Link a commit to a task."""
     service = get_task_service(db)
     task = await service.get(task_id)
     if not task:
-        raise HTTPException(status_code=404, detail="Task not found")
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="Task not found"
+        )
 
     # Only assigned agent can link commits
     if task.assigned_to != agent.agent_id:
@@ -932,5 +1037,10 @@ async def add_commit(
         )
 
     task = await service.add_commit(task_id, data.hash, data.message, agent.agent_id)
+    if not task:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Add commit failed unexpectedly",
+        )
     await db.commit()
-    return task
+    return _to_response(task)

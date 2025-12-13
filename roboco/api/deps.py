@@ -5,7 +5,8 @@ Shared dependencies for FastAPI routes.
 """
 
 import contextlib
-from typing import Annotated
+from collections.abc import Callable, Coroutine
+from typing import Annotated, Any
 from uuid import UUID
 
 from fastapi import Depends, Header, HTTPException, status
@@ -153,7 +154,9 @@ async def get_agent_context(
 CurrentAgentContext = Annotated[AgentContext, Depends(get_agent_context)]
 
 
-def require_channel_read(channel_name: str):
+def require_channel_read(
+    channel_name: str,
+) -> Callable[..., Coroutine[Any, Any, None]]:
     """
     Dependency factory that requires read access to a channel.
 
@@ -179,7 +182,9 @@ def require_channel_read(channel_name: str):
     return check_permission
 
 
-def require_channel_write(channel_name: str):
+def require_channel_write(
+    channel_name: str,
+) -> Callable[..., Coroutine[Any, Any, None]]:
     """
     Dependency factory that requires write access to a channel.
     """
@@ -197,7 +202,7 @@ def require_channel_write(channel_name: str):
     return check_permission
 
 
-def require_notification_permission():
+def require_notification_permission() -> Callable[..., Coroutine[Any, Any, None]]:
     """
     Dependency that requires the agent can send notifications.
     """
@@ -215,7 +220,9 @@ def require_notification_permission():
     return check_permission
 
 
-def require_task_action(action: str, task_team: Team | None = None):
+def require_task_action(
+    action: str, task_team: Team | None = None
+) -> Callable[..., Coroutine[Any, Any, None]]:
     """
     Dependency factory that requires permission for a task action.
 

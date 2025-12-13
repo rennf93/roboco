@@ -43,8 +43,8 @@ class StreamBuffer:
     chunks: list[str] = field(default_factory=list)
 
     # Timing
-    started_at: datetime = field(default_factory=datetime.now(UTC))
-    last_chunk_at: datetime = field(default_factory=datetime.now(UTC))
+    started_at: datetime = field(default_factory=lambda: datetime.now(UTC))
+    last_chunk_at: datetime = field(default_factory=lambda: datetime.now(UTC))
 
     # State
     is_complete: bool = False

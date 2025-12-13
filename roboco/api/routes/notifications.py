@@ -6,7 +6,7 @@ Enforces permission rules: only PMs, Board, and Auditor can send notifications.
 """
 
 from datetime import UTC, datetime
-from typing import Annotated
+from typing import Annotated, Any, cast
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, status
@@ -20,6 +20,7 @@ from roboco.enforcement import (
     validate_notification_permission,
 )
 from roboco.models import NotificationPriority, NotificationType
+from roboco.utils.converters import require_uuid, to_python_uuid, to_python_uuid_list
 
 router = APIRouter()
 
@@ -111,7 +112,7 @@ async def list_notifications(
 
     if params.pending_ack_only:
         query = query.where(
-            NotificationTable.requires_ack is True,
+            NotificationTable.requires_ack.is_(True),
             ~NotificationTable.acked_by.contains([agent_id]),
         )
 
@@ -131,18 +132,18 @@ async def list_notifications(
 
     items = [
         NotificationResponse(
-            id=n.id,
+            id=require_uuid(n.id),
             type=n.type,
             priority=n.priority,
-            from_agent=n.from_agent,
-            to_agents=n.to_agents,
+            from_agent=require_uuid(n.from_agent),
+            to_agents=to_python_uuid_list(n.to_agents),
             subject=n.subject,
             body=n.body,
             requires_ack=n.requires_ack,
             is_acknowledged=agent_id in n.acked_by,
             is_fully_acknowledged=all(a in n.acked_by for a in n.to_agents),
             is_read=agent_id in n.read_by,
-            related_task_id=n.related_task_id,
+            related_task_id=to_python_uuid(n.related_task_id),
             timestamp=n.timestamp,
             expires_at=n.expires_at,
         )
@@ -189,15 +190,15 @@ async def get_notification(
 
     # Mark as read
     if agent_id not in notification.read_by:
-        notification.read_by = [*notification.read_by, agent_id]
+        notification.read_by = cast("list[Any]", [*notification.read_by, agent_id])
         await db.flush()
 
     return NotificationResponse(
-        id=notification.id,
+        id=require_uuid(notification.id),
         type=notification.type,
         priority=notification.priority,
-        from_agent=notification.from_agent,
-        to_agents=notification.to_agents,
+        from_agent=require_uuid(notification.from_agent),
+        to_agents=to_python_uuid_list(notification.to_agents),
         subject=notification.subject,
         body=notification.body,
         requires_ack=notification.requires_ack,
@@ -206,7 +207,7 @@ async def get_notification(
             a in notification.acked_by for a in notification.to_agents
         ),
         is_read=True,
-        related_task_id=notification.related_task_id,
+        related_task_id=to_python_uuid(notification.related_task_id),
         timestamp=notification.timestamp,
         expires_at=notification.expires_at,
     )
@@ -250,12 +251,12 @@ async def send_notification(
         )
         recipient = recipient_result.scalar_one_or_none()
         if recipient:
-            recipient_ids.append(recipient.agent_id)
+            recipient_ids.append(str(recipient.id))
 
     # Validate notification permissions using enforcement layer
     try:
         validate_notification_permission(
-            sender_id=agent.agent_id,
+            sender_id=agent.slug,
             recipients=recipient_ids,
         )
     except NotificationPermissionError as e:
@@ -280,18 +281,18 @@ async def send_notification(
     await db.flush()
 
     return NotificationResponse(
-        id=notification.id,
+        id=require_uuid(notification.id),
         type=notification.type,
         priority=notification.priority,
-        from_agent=notification.from_agent,
-        to_agents=notification.to_agents,
+        from_agent=require_uuid(notification.from_agent),
+        to_agents=to_python_uuid_list(notification.to_agents),
         subject=notification.subject,
         body=notification.body,
         requires_ack=notification.requires_ack,
         is_acknowledged=False,
         is_fully_acknowledged=False,
         is_read=False,
-        related_task_id=notification.related_task_id,
+        related_task_id=to_python_uuid(notification.related_task_id),
         timestamp=notification.timestamp,
         expires_at=notification.expires_at,
     )
@@ -335,7 +336,7 @@ async def acknowledge_notification(
 
     # Add acknowledgment
     if agent_id not in notification.acked_by:
-        notification.acked_by = [*notification.acked_by, agent_id]
+        notification.acked_by = cast("list[Any]", [*notification.acked_by, agent_id])
         notification.acked_at = {
             **notification.acked_at,
             str(agent_id): datetime.now(UTC).isoformat(),
@@ -343,16 +344,16 @@ async def acknowledge_notification(
 
     # Also mark as read
     if agent_id not in notification.read_by:
-        notification.read_by = [*notification.read_by, agent_id]
+        notification.read_by = cast("list[Any]", [*notification.read_by, agent_id])
 
     await db.flush()
 
     return NotificationResponse(
-        id=notification.id,
+        id=require_uuid(notification.id),
         type=notification.type,
         priority=notification.priority,
-        from_agent=notification.from_agent,
-        to_agents=notification.to_agents,
+        from_agent=require_uuid(notification.from_agent),
+        to_agents=to_python_uuid_list(notification.to_agents),
         subject=notification.subject,
         body=notification.body,
         requires_ack=notification.requires_ack,
@@ -361,7 +362,7 @@ async def acknowledge_notification(
             a in notification.acked_by for a in notification.to_agents
         ),
         is_read=True,
-        related_task_id=notification.related_task_id,
+        related_task_id=to_python_uuid(notification.related_task_id),
         timestamp=notification.timestamp,
         expires_at=notification.expires_at,
     )
@@ -397,5 +398,5 @@ async def mark_as_read(
         )
 
     if agent_id not in notification.read_by:
-        notification.read_by = [*notification.read_by, agent_id]
+        notification.read_by = cast("list[Any]", [*notification.read_by, agent_id])
         await db.flush()

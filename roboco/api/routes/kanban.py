@@ -3,6 +3,9 @@ Kanban API Routes
 
 Role-specific kanban board views for task visualization.
 """
+
+from typing import Any
+
 from fastapi import APIRouter, Query
 
 from roboco.api.deps import DbSession
@@ -26,7 +29,7 @@ async def get_dev_board(
         default=None,
         description="Group by 'priority' or 'assignee'",
     ),
-):
+) -> KanbanBoard:
     """
     Get the developer kanban board for a cell.
 
@@ -42,7 +45,7 @@ async def get_dev_board(
 async def get_qa_board(
     team: Team,
     db: DbSession,
-):
+) -> KanbanBoard:
     """
     Get the QA kanban board for a cell.
 
@@ -56,7 +59,7 @@ async def get_qa_board(
 async def get_documenter_board(
     team: Team,
     db: DbSession,
-):
+) -> KanbanBoard:
     """
     Get the documenter kanban board for a cell.
 
@@ -70,7 +73,7 @@ async def get_documenter_board(
 async def get_pm_board(
     team: Team,
     db: DbSession,
-):
+) -> KanbanBoard:
     """
     Get the cell PM kanban board.
 
@@ -92,7 +95,7 @@ async def get_main_pm_board(
         default=False,
         description="Use flat team columns instead of swimlanes",
     ),
-):
+) -> KanbanBoard:
     """
     Get the Main PM kanban board with cross-cell view.
 
@@ -110,7 +113,7 @@ async def get_main_pm_board(
 @router.get("/board", response_model=KanbanBoard)
 async def get_board_kanban(
     db: DbSession,
-):
+) -> KanbanBoard:
     """
     Get the Board-level roadmap view.
 
@@ -131,7 +134,7 @@ async def get_board_kanban(
 async def get_board_stats(
     db: DbSession,
     team: Team | None = None,
-):
+) -> dict[str, Any]:
     """Get kanban board statistics."""
     service = get_kanban_service(db)
     return await service.get_board_stats(team)

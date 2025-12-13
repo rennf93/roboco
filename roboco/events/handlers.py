@@ -4,6 +4,8 @@ Event Handlers
 Workflow trigger handlers that respond to system events.
 """
 
+from typing import Any
+
 import structlog
 
 from roboco.events.bus import Event, EventType, get_event_bus
@@ -21,7 +23,8 @@ async def handle_task_status_change(event: Event) -> None:
     - Notify Documenter when task ready for docs
     - Notify developer when QA fails
     """
-    task_id = event.data.get("task_id")
+    task_id_raw = event.data.get("task_id")
+    task_id = str(task_id_raw) if task_id_raw else ""
     agent_id = event.source_agent
     event_type = event.type
 
@@ -117,8 +120,10 @@ async def handle_handoff_created(event: Event) -> None:
     - Notify documenter that handoff is ready
     - Update task status tracking
     """
-    task_id = event.data.get("task_id")
-    handoff_id = event.data.get("handoff_id")
+    task_id_raw = event.data.get("task_id")
+    handoff_id_raw = event.data.get("handoff_id")
+    task_id = str(task_id_raw) if task_id_raw else ""
+    handoff_id = str(handoff_id_raw) if handoff_id_raw else ""
     from_agent = event.source_agent
     team = event.data.get("team")
 
@@ -167,15 +172,16 @@ async def handle_qa_result(event: Event) -> None:
 
     # Get orchestrator instance (if running)
     try:
-        from roboco.bootstrap import _orchestrator  # noqa: PLC0415
+        from roboco.bootstrap import _BootstrapHolder  # noqa: PLC0415
 
-        if _orchestrator and developer_id:
-            waiting = _orchestrator.get_waiting_agents()
+        orchestrator = _BootstrapHolder.orchestrator
+        if orchestrator and developer_id:
+            waiting = orchestrator.get_waiting_agents()
             if developer_id in waiting:
                 record = waiting[developer_id]
                 if record.waiting_for == "qa_result":
                     # Resume the agent
-                    await _orchestrator.resolve_wait(
+                    await orchestrator.resolve_wait(
                         agent_id=developer_id,
                         resolution={
                             "passed": passed,
@@ -207,14 +213,15 @@ async def handle_blocker_resolved(event: Event) -> None:
 
     # Resume agent if waiting
     try:
-        from roboco.bootstrap import _orchestrator  # noqa: PLC0415
+        from roboco.bootstrap import _BootstrapHolder  # noqa: PLC0415
 
-        if _orchestrator and agent_id:
-            waiting = _orchestrator.get_waiting_agents()
+        orchestrator = _BootstrapHolder.orchestrator
+        if orchestrator and agent_id:
+            waiting = orchestrator.get_waiting_agents()
             if agent_id in waiting:
                 record = waiting[agent_id]
                 if record.waiting_for == "blocker_resolution":
-                    await _orchestrator.resolve_wait(
+                    await orchestrator.resolve_wait(
                         agent_id=agent_id,
                         resolution={
                             "details": resolution,
@@ -244,14 +251,15 @@ async def handle_question_answered(event: Event) -> None:
 
     # Resume agent if waiting
     try:
-        from roboco.bootstrap import _orchestrator  # noqa: PLC0415
+        from roboco.bootstrap import _BootstrapHolder  # noqa: PLC0415
 
-        if _orchestrator and agent_id:
-            waiting = _orchestrator.get_waiting_agents()
+        orchestrator = _BootstrapHolder.orchestrator
+        if orchestrator and agent_id:
+            waiting = orchestrator.get_waiting_agents()
             if agent_id in waiting:
                 record = waiting[agent_id]
                 if record.waiting_for == "answer":
-                    await _orchestrator.resolve_wait(
+                    await orchestrator.resolve_wait(
                         agent_id=agent_id,
                         resolution={
                             "answer": answer,
@@ -262,7 +270,7 @@ async def handle_question_answered(event: Event) -> None:
         pass
 
 
-def register_default_handlers(bus=None) -> None:
+def register_default_handlers(bus: Any = None) -> None:
     """Register all default event handlers."""
     if bus is None:
         bus = get_event_bus()

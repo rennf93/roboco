@@ -104,9 +104,6 @@ def create_notify_mcp_server(agent_id: str) -> FastMCP:
     """
     mcp = FastMCP(f"roboco-notify-{agent_id}", json_response=True)
 
-    # Store agent context
-    mcp.agent_id = agent_id
-
     # =========================================================================
     # LIST NOTIFICATIONS
     # =========================================================================
@@ -129,7 +126,7 @@ def create_notify_mcp_server(agent_id: str) -> FastMCP:
             List of notifications with counts
         """
         async with httpx.AsyncClient() as client:
-            params = {
+            params: dict[str, str | int] = {
                 "unread_only": str(unread_only).lower(),
                 "pending_ack_only": str(pending_ack_only).lower(),
                 "limit": limit,
@@ -418,7 +415,7 @@ def create_notify_mcp_server(agent_id: str) -> FastMCP:
                 "Only PMs can use the escalate function",
             )
 
-        return await roboco_notify_send(
+        result: dict[str, Any] = await roboco_notify_send(
             recipients=[escalate_to],
             subject=f"[ESCALATION] {subject}",
             body=description,
@@ -427,6 +424,7 @@ def create_notify_mcp_server(agent_id: str) -> FastMCP:
             requires_ack=True,
             related_task_id=task_id,
         )
+        return result
 
     # =========================================================================
     # CONVENIENCE: REQUEST APPROVAL (PM/Board only)
@@ -458,7 +456,7 @@ def create_notify_mcp_server(agent_id: str) -> FastMCP:
                 "Only PMs and Board can request approvals",
             )
 
-        return await roboco_notify_send(
+        result: dict[str, Any] = await roboco_notify_send(
             recipients=[approver],
             subject=f"[APPROVAL NEEDED] {subject}",
             body=what_needs_approval,
@@ -467,6 +465,7 @@ def create_notify_mcp_server(agent_id: str) -> FastMCP:
             requires_ack=True,
             related_task_id=task_id,
         )
+        return result
 
     return mcp
 

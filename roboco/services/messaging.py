@@ -12,6 +12,7 @@ Implements the communication model from HOMELAB_TEAM_V0.md.
 
 from dataclasses import dataclass
 from datetime import UTC, datetime
+from typing import Any, cast
 from uuid import UUID
 
 import structlog
@@ -210,11 +211,11 @@ class MessagingService:
 
         # Add to members
         if agent_id not in channel.members:
-            channel.members = [*channel.members, agent_id]
+            channel.members = cast("list[Any]", [*channel.members, agent_id])
 
         # Add to writers if requested
         if can_write and agent_id not in channel.writers:
-            channel.writers = [*channel.writers, agent_id]
+            channel.writers = cast("list[Any]", [*channel.writers, agent_id])
 
         await self.session.flush()
 
@@ -327,7 +328,8 @@ class MessagingService:
 
         # Close existing active session if any
         if group.active_session_id:
-            await self.close_session(group.active_session_id, "New session started")
+            session_id = cast("UUID", group.active_session_id)
+            await self.close_session(session_id, "New session started")
 
         session = SessionTable(
             group_id=req.group_id,
@@ -393,7 +395,7 @@ class MessagingService:
         session.closed_at = datetime.now(UTC)
 
         # Clear group's active session
-        group = await self.get_group(session.group_id)
+        group = await self.get_group(cast("UUID", session.group_id))
         if group and group.active_session_id == session_id:
             group.active_session_id = None
 
@@ -433,7 +435,7 @@ class MessagingService:
 
         # Return active session if exists
         if group.active_session_id:
-            session = await self.get_session(group.active_session_id)
+            session = await self.get_session(cast("UUID", group.active_session_id))
             if session and session.status == SessionStatus.ACTIVE:
                 return session
 
@@ -493,11 +495,11 @@ class MessagingService:
             raise ValueError("Session is not active")
 
         # Get group and channel for access check
-        group = await self.get_group(session.group_id)
+        group = await self.get_group(cast("UUID", session.group_id))
         if not group:
             raise ValueError(f"Group {session.group_id} not found")
 
-        channel = await self.get_channel(group.channel_id)
+        channel = await self.get_channel(cast("UUID", group.channel_id))
         if not channel:
             raise ValueError(f"Channel {group.channel_id} not found")
 
@@ -547,7 +549,7 @@ class MessagingService:
 
         # Check session boundaries - close if exceeded
         if self._check_session_boundaries(session):
-            await self.close_session(session.id, "Boundary exceeded")
+            await self.close_session(cast("UUID", session.id), "Boundary exceeded")
 
         self.log.info(
             "Message sent",
@@ -657,7 +659,7 @@ class MessagingService:
         message.edited_at = datetime.now(UTC)
 
         # Update session total content length
-        session = await self.get_session(message.session_id)
+        session = await self.get_session(cast("UUID", message.session_id))
         if session:
             session.total_content_length += delta
 
