@@ -265,6 +265,56 @@ exclude = ["tests", ".venv", "vulture_whitelist.py", "alembic"]
 extend_exclude = ["conftest.py", "setup.py"]
 known_first_party = ["roboco"]
 
+[tool.deptry.per_rule_ignores]
+# DEP002: Dependencies not directly imported but used at runtime or via CLI
+DEP002 = [
+    # Runtime server/driver dependencies (used by frameworks, not imported)
+    "uvicorn",
+    "websockets",
+    "asyncpg",
+    "hiredis",
+    "python-multipart",
+    # Database migrations (CLI tool)
+    "alembic",
+    # Auth libraries (used via passlib[bcrypt], python-jose[cryptography])
+    "python-jose",
+    "passlib",
+    # LLM utilities (embeddings/token counting)
+    "openai",
+    "tiktoken",
+    # Retry logic (used in production services)
+    "tenacity",
+    # Dev tools (CLI, not imported)
+    "pytest",
+    "pytest-asyncio",
+    "pytest-cov",
+    "pytest-xdist",
+    "factory-boy",
+    "faker",
+    "ruff",
+    "mypy",
+    "vulture",
+    "bandit",
+    "safety",
+    "pip-audit",
+    "radon",
+    "xenon",
+    "deptry",
+    "semgrep",
+    "ipython",
+    "rich",
+    # Type stubs (used by mypy)
+    "types-redis",
+    "types-passlib",
+    "types-python-jose",
+    # Documentation (CLI tools)
+    "mkdocs",
+    "mkdocs-material",
+    "mkdocstrings",
+]
+# DEP003: Starlette is a transitive dep of FastAPI, but BaseHTTPMiddleware is needed
+DEP003 = ["starlette"]
+
 [dependency-groups]
 dev = [
     "types-aiofiles",
