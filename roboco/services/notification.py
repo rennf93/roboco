@@ -233,6 +233,6 @@ class NotificationService:
         """
         import hashlib
 
-        # Create deterministic UUID from agent_id string
-        hash_bytes = hashlib.md5(agent_id.encode()).digest()
+        # Create deterministic UUID from agent_id string (not for security)
+        hash_bytes = hashlib.md5(agent_id.encode(), usedforsecurity=False).digest()
         return UUID(bytes=hash_bytes)

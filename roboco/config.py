@@ -38,7 +38,7 @@ class Settings(BaseSettings):
     # ==========================================================================
     # API Server
     # ==========================================================================
-    host: str = "0.0.0.0"
+    host: str = Field(default="127.0.0.1", description="Use 0.0.0.0 for containers")
     port: int = 8000
     reload: bool = Field(default=True, description="Auto-reload on code changes")
     workers: int = Field(default=1, ge=1)
