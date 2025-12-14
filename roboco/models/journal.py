@@ -100,14 +100,8 @@ class Journal(TimestampMixin):
         description="Count of entries by type",
     )
 
-    def record_entry(self, entry_type: JournalEntryType) -> None:
-        """Record that a new entry was added."""
-        self.total_entries += 1
-        self.last_entry_at = datetime.now(UTC)
-
-        # Update type counts
-        type_key = entry_type.value
-        self.entries_by_type[type_key] = self.entries_by_type.get(type_key, 0) + 1
+    # NOTE: Entry recording should be performed through JournalService.
+    # The service handles incrementing counts and updating timestamps.
 
 
 # =============================================================================
@@ -339,3 +333,42 @@ class JournalEntryCreate(RobocoBase):
     tags: list[str] = Field(default_factory=list)
     sentiment: str | None = None
     is_private: bool = False
+
+
+# =============================================================================
+# SERVICE PARAMETERS
+# =============================================================================
+
+
+@dataclass
+class ListEntriesFilter:
+    """Filter parameters for listing journal entries."""
+
+    entry_type: JournalEntryType | None = None
+    task_id: UUID | None = None
+    limit: int = 50
+    offset: int = 0
+    include_private: bool = False
+
+
+@dataclass
+class JournalStats:
+    """Statistics for a journal."""
+
+    total_entries: int
+    entries_by_type: dict[str, int]
+    last_entry_at: datetime | None
+    has_summary: bool
+
+
+@dataclass
+class GrowthMetrics:
+    """Growth metrics calculated from journal entries."""
+
+    total_reflections: int
+    total_learnings: int
+    total_struggles: int
+    total_decisions: int
+    struggle_resolution_rate: float  # Percentage of struggles that were resolved
+    learning_frequency: float  # Average learnings per day
+    sentiment_trend: str  # "improving", "stable", "declining"

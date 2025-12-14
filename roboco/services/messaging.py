@@ -10,7 +10,6 @@ Comprehensive service for managing communication:
 Implements the communication model from HOMELAB_TEAM_V0.md.
 """
 
-from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import cast
 from uuid import UUID
@@ -28,67 +27,17 @@ from roboco.db.tables import (
 from roboco.enforcement.channel_access import validate_channel_access
 from roboco.events.bus import Event, EventType, get_event_bus
 from roboco.models.base import (
-    AgentRole,
-    ChannelType,
     MessageType,
     SessionStatus,
 )
+from roboco.models.messaging import (
+    ChannelCreateRequest,
+    GroupCreateRequest,
+    MessageCreateRequest,
+    SessionCreateRequest,
+)
 
 logger = structlog.get_logger()
-
-
-# =============================================================================
-# REQUEST DATACLASSES
-# =============================================================================
-
-
-@dataclass
-class ChannelCreateRequest:
-    """Request to create a channel."""
-
-    name: str
-    slug: str
-    channel_type: ChannelType
-    description: str | None = None
-    members: list[UUID] | None = None
-    writers: list[UUID] | None = None
-    silent_observers: list[UUID] | None = None
-    is_private: bool = False
-
-
-@dataclass
-class GroupCreateRequest:
-    """Request to create a group."""
-
-    name: str
-    channel_id: UUID
-    allowed_roles: list[AgentRole] | None = None
-    hierarchy_level: int = 4
-    members: list[UUID] | None = None
-
-
-@dataclass
-class SessionCreateRequest:
-    """Request to create a session."""
-
-    group_id: UUID
-    max_message_count: int | None = 100
-    max_content_length: int | None = 50000
-    timeout_seconds: int = 300
-
-
-@dataclass
-class MessageCreateRequest:
-    """Request to send a message."""
-
-    agent_id: UUID
-    session_id: UUID
-    content: str
-    message_type: MessageType = MessageType.DIALOGUE
-    reply_to: UUID | None = None
-    mentions: list[UUID] | None = None
-    task_id: UUID | None = None
-    commit_ref: str | None = None
 
 
 # =============================================================================

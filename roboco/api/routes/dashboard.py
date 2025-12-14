@@ -8,18 +8,19 @@ Provides aggregated views, alerts, and reporting.
 from datetime import UTC, datetime, timedelta
 from enum import Enum
 from typing import Any
-from uuid import UUID, uuid4
+from uuid import UUID
 
 from fastapi import APIRouter, HTTPException, Query, status
 from pydantic import BaseModel, Field
-from sqlalchemy import and_, func, select
+from sqlalchemy import select
 
 from roboco.api.deps import DbSession
-from roboco.db.tables import AgentTable, ChannelTable, MessageTable, TaskTable
-from roboco.models.base import AgentStatus, TaskStatus, Team
+from roboco.db.tables import AgentTable, MessageTable, TaskTable
+from roboco.models.base import AgentStatus, Team
+from roboco.models.dashboard import CreateFlagParams
+from roboco.services.dashboard import get_dashboard_service
 from roboco.services.kanban import get_kanban_service
 from roboco.services.metrics import get_metrics_service
-from roboco.utils.converters import require_uuid
 
 router = APIRouter(prefix="/dashboard", tags=["dashboard"])
 
@@ -125,16 +126,6 @@ class CreateReportRequest(BaseModel):
 
 
 # =============================================================================
-# IN-MEMORY STORAGE (Would be database in production)
-# =============================================================================
-
-# Temporary in-memory storage for flags and reports
-# In production, these would be database tables
-_flags: dict[UUID, dict[str, Any]] = {}
-_reports: dict[UUID, dict[str, Any]] = {}
-
-
-# =============================================================================
 # AUDITOR DASHBOARD
 # =============================================================================
 
@@ -153,135 +144,100 @@ async def get_auditor_dashboard(
     - Audit queue
     - Recent reports
     """
-    metrics_service = get_metrics_service(db)
+    service = get_dashboard_service(db)
 
-    # Get live feeds (channel status)
-    channel_result = await db.execute(select(ChannelTable))
-    channels = channel_result.scalars().all()
-
-    live_feeds = []
-    for channel in channels:
-        five_minutes = 5
-        thirty_minutes = 30
-        # Determine status based on last activity
-        if channel.last_activity:
-            minutes_ago = (
-                datetime.now(UTC) - channel.last_activity
-            ).total_seconds() / 60
-            if minutes_ago < five_minutes:
-                status = "streaming"
-            elif minutes_ago < thirty_minutes:
-                status = "idle"
-            else:
-                status = "offline"
-        else:
-            status = "offline"
-
-        live_feeds.append(
-            ChannelFeed(
-                id=require_uuid(channel.id),
-                name=channel.name,
-                status=status,
-                last_activity=channel.last_activity,
-                message_count_24h=channel.message_count,  # Simplified
-            )
+    # Get live feeds
+    feeds = await service.get_channel_feeds()
+    live_feeds = [
+        ChannelFeed(
+            id=f.id,
+            name=f.name,
+            status=f.status,
+            last_activity=f.last_activity,
+            message_count_24h=f.message_count_24h,
         )
+        for f in feeds
+    ]
 
     # Get flagged items
+    flags = service.get_flags(resolved=False)
     flagged_items = [
         AuditorFlag(
-            id=UUID(int=i),
-            **flag,
+            id=f.id,
+            severity=FlagSeverity(f.severity),
+            category=f.category,
+            title=f.title,
+            description=f.description,
+            related_task_id=f.related_task_id,
+            related_agent_id=f.related_agent_id,
+            created_at=f.created_at,
+            resolved_at=f.resolved_at,
+            notes=f.notes,
         )
-        for i, flag in enumerate(_flags.values())
-        if not flag.get("resolved_at")
+        for f in flags
     ]
 
     # Get metrics
-    velocity = await metrics_service.get_velocity(7)
-    blockers = await metrics_service.get_blocker_metrics()
-    comm = await metrics_service.get_communication_volume(24)
+    metrics = await service.get_auditor_metrics()
 
-    metrics = {
-        "tasks_completed_24h": velocity.tasks_completed,
-        "avg_completion_time": velocity.avg_completion_hours,
-        "active_blockers": blockers.active_blockers,
-        "communication_volume": comm["total_messages"],
-    }
+    # Get audit queue
+    queue = await service.get_audit_queue(limit=10)
+    audit_queue = [
+        {"type": q.type, "title": q.title, "task_id": q.task_id, "team": q.team}
+        for q in queue
+    ]
 
-    # Build audit queue from tasks needing attention
-    audit_queue = []
-
-    # Tasks blocked > 24 hours
-    blocked_result = await db.execute(
-        select(TaskTable).where(TaskTable.status == TaskStatus.BLOCKED)
-    )
-    for task in blocked_result.scalars().all():
-        audit_queue.append(
-            {
-                "type": "blocked_task",
-                "title": f"Blocked: {task.title}",
-                "task_id": str(task.id),
-                "team": task.team.value,
-            }
-        )
-
-    # Tasks awaiting QA > 24 hours
-    qa_result = await db.execute(
-        select(TaskTable).where(TaskTable.status == TaskStatus.AWAITING_QA)
-    )
-    for task in qa_result.scalars().all():
-        audit_queue.append(
-            {
-                "type": "qa_review",
-                "title": f"QA Review: {task.title}",
-                "task_id": str(task.id),
-                "team": task.team.value,
-            }
-        )
-
-    # Recent reports
+    # Get recent reports
+    reports = service.get_reports(limit=5)
     recent_reports = [
         AuditorReport(
-            id=UUID(int=i),
-            **report,
+            id=r.id,
+            report_type=r.report_type,
+            title=r.title,
+            summary=r.summary,
+            sections=r.sections,
+            created_at=r.created_at,
+            sent_at=r.sent_at,
         )
-        for i, report in enumerate(_reports.values())
-    ][-5:]  # Last 5
+        for r in reports
+    ]
 
     return AuditorDashboard(
         live_feeds=live_feeds,
         flagged_items=flagged_items,
         metrics=metrics,
-        audit_queue=audit_queue[:10],
+        audit_queue=audit_queue,
         recent_reports=recent_reports,
     )
 
 
 @router.get("/auditor/flags", response_model=list[AuditorFlag])
 async def get_auditor_flags(
-    _db: DbSession,
+    db: DbSession,
     severity: FlagSeverity | None = None,
     resolved: bool = False,
 ) -> list[AuditorFlag]:
     """Get auditor flags with optional filters."""
-    flags = []
-    for i, flag_data in enumerate(_flags.values()):
-        if severity and flag_data.get("severity") != severity.value:
-            continue
-        if not resolved and flag_data.get("resolved_at"):
-            continue
-        if resolved and not flag_data.get("resolved_at"):
-            continue
-
-        flags.append(
-            AuditorFlag(
-                id=UUID(int=i),
-                **flag_data,
-            )
+    service = get_dashboard_service(db)
+    flags = service.get_flags(
+        severity=severity.value if severity else None,
+        resolved=resolved,
+    )
+    return [
+        AuditorFlag(
+            id=f.id,
+            severity=FlagSeverity(f.severity),
+            category=f.category,
+            title=f.title,
+            description=f.description,
+            related_task_id=f.related_task_id,
+            related_agent_id=f.related_agent_id,
+            created_at=f.created_at,
+            resolved_at=f.resolved_at,
+            notes=f.notes,
         )
-
-    return flags
+        for f in flags
+    ]
 
 
 @router.post(
@@ -289,75 +245,69 @@ async def get_auditor_flags(
 )
 async def create_auditor_flag(
     data: CreateFlagRequest,
-    _db: DbSession,
+    db: DbSession,
 ) -> AuditorFlag:
     """Create a new auditor flag."""
-    flag_id = uuid4()
-    created_at = datetime.now(UTC)
-    flag_data = {
-        "severity": data.severity.value,
-        "category": data.category,
-        "title": data.title,
-        "description": data.description,
-        "related_task_id": data.related_task_id,
-        "related_agent_id": data.related_agent_id,
-        "created_at": created_at,
-        "resolved_at": None,
-        "notes": None,
-    }
-    _flags[flag_id] = flag_data
-
-    return AuditorFlag(
-        id=flag_id,
-        severity=data.severity,
+    service = get_dashboard_service(db)
+    params = CreateFlagParams(
+        severity=data.severity.value,
         category=data.category,
         title=data.title,
         description=data.description,
         related_task_id=data.related_task_id,
         related_agent_id=data.related_agent_id,
-        created_at=created_at,
-        resolved_at=None,
-        notes=None,
+    )
+    flag = service.create_flag(params)
+    return AuditorFlag(
+        id=flag.id,
+        severity=data.severity,
+        category=flag.category,
+        title=flag.title,
+        description=flag.description,
+        related_task_id=flag.related_task_id,
+        related_agent_id=flag.related_agent_id,
+        created_at=flag.created_at,
+        resolved_at=flag.resolved_at,
+        notes=flag.notes,
     )
 
 
 @router.put("/auditor/flags/{flag_id}/resolve")
 async def resolve_auditor_flag(
     flag_id: UUID,
+    db: DbSession,
     notes: str | None = None,
 ) -> dict[str, str]:
     """Resolve an auditor flag."""
-    if flag_id not in _flags:
+    service = get_dashboard_service(db)
+    if not service.resolve_flag(flag_id, notes):
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND, detail="Flag not found"
         )
-
-    _flags[flag_id]["resolved_at"] = datetime.now(UTC)
-    if notes:
-        _flags[flag_id]["notes"] = notes
-
     return {"status": "resolved", "flag_id": str(flag_id)}
 
 
 @router.get("/auditor/reports", response_model=list[AuditorReport])
 async def get_auditor_reports(
+    db: DbSession,
     report_type: str | None = None,
     limit: int = Query(default=10, ge=1, le=100),
 ) -> list[AuditorReport]:
     """Get auditor reports."""
-    reports = []
-    for i, report_data in enumerate(_reports.values()):
-        if report_type and report_data.get("report_type") != report_type:
-            continue
-
-        reports.append(
-            AuditorReport(
-                id=UUID(int=i),
-                **report_data,
-            )
+    service = get_dashboard_service(db)
+    reports = service.get_reports(report_type=report_type, limit=limit)
+    return [
+        AuditorReport(
+            id=r.id,
+            report_type=r.report_type,
+            title=r.title,
+            summary=r.summary,
+            sections=r.sections,
+            created_at=r.created_at,
+            sent_at=r.sent_at,
         )
-
-    return reports[-limit:]
+        for r in reports
+    ]
 
 
 @router.post(
@@ -367,136 +317,44 @@ async def get_auditor_reports(
 )
 async def create_auditor_report(
     data: CreateReportRequest,
-    _db: DbSession,
+    db: DbSession,
 ) -> AuditorReport:
     """Create a new auditor report."""
-    report_id = uuid4()
-    created_at = datetime.now(UTC)
-    report_data = {
-        "report_type": data.report_type,
-        "title": data.title,
-        "summary": data.summary,
-        "sections": data.sections,
-        "created_at": created_at,
-        "sent_at": None,
-    }
-    _reports[report_id] = report_data
-
-    return AuditorReport(
-        id=report_id,
+    service = get_dashboard_service(db)
+    report = service.create_report(
         report_type=data.report_type,
         title=data.title,
         summary=data.summary,
         sections=data.sections,
-        created_at=created_at,
-        sent_at=None,
+    )
+    return AuditorReport(
+        id=report.id,
+        report_type=report.report_type,
+        title=report.title,
+        summary=report.summary,
+        sections=report.sections,
+        created_at=report.created_at,
+        sent_at=report.sent_at,
     )
 
 
 @router.post("/auditor/reports/{report_id}/send")
-async def send_auditor_report(report_id: UUID) -> dict[str, str]:
+async def send_auditor_report(
+    report_id: UUID,
+    db: DbSession,
+) -> dict[str, str]:
     """Mark a report as sent to CEO."""
-    if report_id not in _reports:
+    service = get_dashboard_service(db)
+    if not service.send_report(report_id):
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND, detail="Report not found"
         )
-
-    _reports[report_id]["sent_at"] = datetime.now(UTC)
-
     return {"status": "sent", "report_id": str(report_id)}
 
 
 # =============================================================================
 # CEO OVERVIEW
 # =============================================================================
-
-
-async def _get_team_health_list(metrics_service: Any) -> list[TeamHealth]:
-    """Get health status for all teams."""
-    teams = [Team.BACKEND, Team.FRONTEND, Team.UX_UI, Team.BOARD]
-    health_list = []
-    for team in teams:
-        health = await metrics_service.get_health_status(team)
-        health_list.append(
-            TeamHealth(
-                team=team.value,
-                status=health["status"],
-                active_tasks=health["active_tasks"],
-                blocked_tasks=health["blocked_tasks"],
-                blocked_ratio=health["blocked_ratio"],
-                completed_this_week=health["completed_this_week"],
-            )
-        )
-    return health_list
-
-
-async def _get_key_metrics(metrics_service: Any) -> dict[str, Any]:
-    """Get key organization metrics."""
-    velocity = await metrics_service.get_velocity(7)
-    team_metrics = await metrics_service.get_all_team_metrics()
-    blockers = await metrics_service.get_blocker_metrics()
-
-    total_docs = sum(tm.documentation_coverage for tm in team_metrics)
-    avg_doc_coverage = total_docs / len(team_metrics) if team_metrics else 0
-
-    return {
-        "velocity_weekly": velocity.tasks_completed,
-        "completion_rate": velocity.completion_rate,
-        "documentation_coverage": round(avg_doc_coverage, 2),
-        "active_blockers": blockers.active_blockers,
-    }
-
-
-def _count_unresolved_flags(severity: str) -> int:
-    """Count unresolved flags of a given severity."""
-    return sum(
-        1
-        for f in _flags.values()
-        if f.get("severity") == severity and not f.get("resolved_at")
-    )
-
-
-def _get_last_report_time() -> str | None:
-    """Get the timestamp of the most recent report."""
-    recent_reports = [r for r in _reports.values() if r.get("sent_at")]
-    if not recent_reports:
-        return None
-    last_time = max(r["sent_at"] for r in recent_reports)
-    return last_time.isoformat() if last_time else None
-
-
-def _get_auditor_alerts() -> dict[str, Any]:
-    """Get auditor alerts summary."""
-    return {
-        "urgent_count": _count_unresolved_flags("urgent"),
-        "warning_count": _count_unresolved_flags("warning"),
-        "last_report_at": _get_last_report_time(),
-    }
-
-
-async def _get_roadmap_progress(db: DbSession) -> dict[str, Any]:
-    """Get roadmap progress from high-priority tasks."""
-    total_result = await db.execute(
-        select(func.count(TaskTable.id)).where(TaskTable.priority <= 1)
-    )
-    total_priority = total_result.scalar() or 0
-
-    completed_result = await db.execute(
-        select(func.count(TaskTable.id)).where(
-            and_(
-                TaskTable.priority <= 1,
-                TaskTable.status == TaskStatus.COMPLETED,
-            )
-        )
-    )
-    completed_priority = completed_result.scalar() or 0
-    progress = completed_priority / total_priority if total_priority > 0 else 0
-
-    return {
-        "current_quarter_progress": round(progress, 2),
-        "high_priority_total": total_priority,
-        "high_priority_completed": completed_priority,
-    }
 
 
 @router.get("/ceo", response_model=CEOOverview)
@@ -512,13 +370,26 @@ async def get_ceo_overview(
     - Auditor alerts summary
     - Roadmap progress
     """
-    metrics_service = get_metrics_service(db)
+    service = get_dashboard_service(db)
+
+    health_list = await service.get_team_health_list()
+    health_status = [
+        TeamHealth(
+            team=h.team,
+            status=h.status,
+            active_tasks=h.active_tasks,
+            blocked_tasks=h.blocked_tasks,
+            blocked_ratio=h.blocked_ratio,
+            completed_this_week=h.completed_this_week,
+        )
+        for h in health_list
+    ]
 
     return CEOOverview(
-        health_status=await _get_team_health_list(metrics_service),
-        key_metrics=await _get_key_metrics(metrics_service),
-        auditor_alerts=_get_auditor_alerts(),
-        roadmap_progress=await _get_roadmap_progress(db),
+        health_status=health_status,
+        key_metrics=await service.get_key_metrics(),
+        auditor_alerts=service.get_auditor_alerts(),
+        roadmap_progress=await service.get_roadmap_progress(),
     )
 
 
@@ -615,19 +486,19 @@ async def get_all_agent_status(
     agents = result.scalars().all()
 
     # Group by status
-    status_counts = {status.value: 0 for status in AgentStatus}
+    status_counts = {agent_status.value: 0 for agent_status in AgentStatus}
     agent_list = []
 
     for agent in agents:
-        status = agent.status or AgentStatus.IDLE
-        status_counts[status.value] = status_counts.get(status.value, 0) + 1
+        agent_status = agent.status or AgentStatus.IDLE
+        status_counts[agent_status.value] = status_counts.get(agent_status.value, 0) + 1
         agent_list.append(
             {
                 "id": str(agent.id),
                 "name": agent.name,
                 "role": agent.role.value,
                 "team": agent.team.value if agent.team else None,
-                "status": status.value,
+                "status": agent_status.value,
                 "current_task_id": str(agent.current_task_id)
                 if agent.current_task_id
                 else None,

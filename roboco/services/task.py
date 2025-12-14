@@ -5,7 +5,6 @@ Provides CRUD operations and lifecycle management for tasks.
 Handles status transitions, assignments, and queries.
 """
 
-from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import Any, cast
 from uuid import UUID
@@ -21,24 +20,10 @@ from roboco.enforcement import (
     validate_task_ownership,
     validate_task_transition,
 )
-from roboco.models.base import Complexity, HandoffStatus, TaskStatus, Team
+from roboco.models.base import HandoffStatus, TaskStatus, Team
+from roboco.models.task import TaskCreateRequest
 
 logger = structlog.get_logger()
-
-
-@dataclass
-class TaskCreateRequest:
-    """Request data for creating a task."""
-
-    title: str
-    description: str
-    acceptance_criteria: list[str]
-    team: Team
-    created_by: UUID
-    priority: int = 2
-    parent_task_id: UUID | None = None
-    target_date: datetime | None = None
-    estimated_complexity: Complexity = field(default=Complexity.MEDIUM)
 
 
 class TaskService:

@@ -324,6 +324,26 @@ async def create_channel(
     )
 
 
+def _apply_channel_updates(channel: ChannelTable, data: ChannelUpdate) -> None:
+    """Apply updates to channel fields. Explicit assignment for type safety."""
+    if data.name is not None:
+        channel.name = data.name
+    if data.description is not None:
+        channel.description = data.description
+    if data.topic is not None:
+        channel.topic = data.topic
+    if data.is_archived is not None:
+        channel.is_archived = data.is_archived
+    if data.allow_threads is not None:
+        channel.allow_threads = data.allow_threads
+    if data.allow_reactions is not None:
+        channel.allow_reactions = data.allow_reactions
+    if data.message_retention_days is not None:
+        channel.message_retention_days = data.message_retention_days
+    if data.max_message_length is not None:
+        channel.max_message_length = data.max_message_length
+
+
 @router.patch(
     "/{channel_id}",
     response_model=ChannelResponse,
@@ -355,11 +375,7 @@ async def update_channel(
             detail="Not authorized to update channels",
         )
 
-    # Update fields
-    update_data = data.model_dump(exclude_unset=True)
-    for field, value in update_data.items():
-        setattr(channel, field, value)
-
+    _apply_channel_updates(channel, data)
     await db.flush()
 
     return ChannelResponse(

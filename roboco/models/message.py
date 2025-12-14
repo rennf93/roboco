@@ -111,29 +111,9 @@ class ExtractedMessage(TimestampMixin):
         default_factory=list, description="Previous versions if edited"
     )
 
-    def edit(self, new_content: str, reason: str | None = None) -> None:
-        """
-        Edit the message content.
-
-        Only the owning agent should be able to call this.
-        """
-        # Save current state to history
-        self.edit_history.append(
-            MessageEdit(
-                previous_content=self.content,
-                edit_reason=reason,
-            )
-        )
-
-        # Update content
-        self.content = new_content
-        self.content_length = len(new_content)
-        self.edited_at = datetime.now(UTC)
-
-    @property
-    def was_edited(self) -> bool:
-        """Check if message has been edited."""
-        return len(self.edit_history) > 0
+    # NOTE: Message editing should be performed through MessagingService.
+    # The edit() method should be in a service layer. To check if a message
+    # was edited: len(message.edit_history) > 0
 
 
 # =============================================================================

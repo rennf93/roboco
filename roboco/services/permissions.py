@@ -21,10 +21,7 @@ Architecture:
 - No duplicate permission definitions - all derived from agents_config
 """
 
-from dataclasses import dataclass
-from enum import IntEnum
 from typing import Any
-from uuid import UUID
 
 import structlog
 
@@ -38,38 +35,16 @@ from roboco.agents_config import (
     get_agent_role as get_role_string,
 )
 from roboco.models import AgentRole, Team
+from roboco.models.permissions import (
+    COMMUNICATION_MATRIX,
+    ROLE_LEVELS,
+    TASK_PERMISSIONS,
+    AgentContext,
+    PermissionLevel,
+    TaskAction,
+)
 
 logger = structlog.get_logger()
-
-
-# =============================================================================
-# PERMISSION LEVELS
-# =============================================================================
-
-
-class PermissionLevel(IntEnum):
-    """Hierarchical permission levels."""
-
-    CEO = 0  # Full access
-    BOARD = 1  # Cross-org access
-    MAIN_PM = 2  # All cells access
-    CELL_PM = 3  # Own cell + PM channel
-    CELL_MEMBER = 4  # Own cell only
-    AUDITOR = 99  # Special: silent read all
-
-
-# Role to permission level mapping
-ROLE_LEVELS: dict[AgentRole, PermissionLevel] = {
-    AgentRole.CEO: PermissionLevel.CEO,
-    AgentRole.PRODUCT_OWNER: PermissionLevel.BOARD,
-    AgentRole.HEAD_MARKETING: PermissionLevel.BOARD,
-    AgentRole.AUDITOR: PermissionLevel.AUDITOR,
-    AgentRole.MAIN_PM: PermissionLevel.MAIN_PM,
-    AgentRole.CELL_PM: PermissionLevel.CELL_PM,
-    AgentRole.DEVELOPER: PermissionLevel.CELL_MEMBER,
-    AgentRole.QA: PermissionLevel.CELL_MEMBER,
-    AgentRole.DOCUMENTER: PermissionLevel.CELL_MEMBER,
-}
 
 
 # =============================================================================
@@ -112,173 +87,8 @@ def _get_notification_scope(role: AgentRole) -> str | list[str]:
 
 
 # =============================================================================
-# COMMUNICATION MATRIX
-# =============================================================================
-
-# Per HOMELAB_TEAM_V0.md Section 3.5
-# Defines who can directly communicate with whom
-
-COMMUNICATION_MATRIX: dict[AgentRole, set[AgentRole]] = {
-    # CEO can communicate with everyone
-    AgentRole.CEO: set(AgentRole),
-    # Board members
-    AgentRole.PRODUCT_OWNER: {
-        AgentRole.CEO,
-        AgentRole.HEAD_MARKETING,
-        AgentRole.AUDITOR,
-        AgentRole.MAIN_PM,
-    },
-    AgentRole.HEAD_MARKETING: {
-        AgentRole.CEO,
-        AgentRole.PRODUCT_OWNER,
-        AgentRole.AUDITOR,
-        AgentRole.MAIN_PM,
-    },
-    # Auditor can communicate with everyone
-    AgentRole.AUDITOR: set(AgentRole),
-    # Main PM
-    AgentRole.MAIN_PM: {
-        AgentRole.CEO,
-        AgentRole.PRODUCT_OWNER,
-        AgentRole.HEAD_MARKETING,
-        AgentRole.AUDITOR,
-        AgentRole.CELL_PM,
-    },
-    # Cell PM communicates with their cell and other PMs
-    AgentRole.CELL_PM: {
-        AgentRole.CEO,
-        AgentRole.AUDITOR,
-        AgentRole.MAIN_PM,
-        AgentRole.CELL_PM,
-        AgentRole.DEVELOPER,
-        AgentRole.QA,
-        AgentRole.DOCUMENTER,
-    },
-    # Cell members communicate within cell
-    AgentRole.DEVELOPER: {
-        AgentRole.CEO,
-        AgentRole.AUDITOR,
-        AgentRole.CELL_PM,
-        AgentRole.DEVELOPER,
-        AgentRole.QA,
-        AgentRole.DOCUMENTER,
-    },
-    AgentRole.QA: {
-        AgentRole.CEO,
-        AgentRole.AUDITOR,
-        AgentRole.CELL_PM,
-        AgentRole.DEVELOPER,
-        AgentRole.QA,
-        AgentRole.DOCUMENTER,
-    },
-    AgentRole.DOCUMENTER: {
-        AgentRole.CEO,
-        AgentRole.AUDITOR,
-        AgentRole.CELL_PM,
-        AgentRole.DEVELOPER,
-        AgentRole.QA,
-        AgentRole.DOCUMENTER,
-    },
-}
-
-
-# =============================================================================
-# TASK PERMISSIONS
-# =============================================================================
-
-
-class TaskAction:
-    """Task actions that require permission."""
-
-    VIEW_ALL = "view_all"
-    VIEW_OWN = "view_own"
-    CREATE = "create"
-    ASSIGN = "assign"
-    CLAIM = "claim"
-    UPDATE_OWN = "update_own"
-    CLOSE = "close"
-    CHANGE_PRIORITY = "change_priority"
-
-
-# Per HOMELAB_TEAM_V0.md Section 12.3
-TASK_PERMISSIONS: dict[AgentRole, set[str]] = {
-    AgentRole.CEO: {
-        TaskAction.VIEW_ALL,
-        TaskAction.CREATE,
-        TaskAction.ASSIGN,
-        TaskAction.CLOSE,
-        TaskAction.CHANGE_PRIORITY,
-    },
-    AgentRole.PRODUCT_OWNER: {
-        TaskAction.VIEW_ALL,
-        TaskAction.CREATE,
-        TaskAction.ASSIGN,
-        TaskAction.CLOSE,
-        TaskAction.CHANGE_PRIORITY,
-    },
-    AgentRole.HEAD_MARKETING: {
-        TaskAction.VIEW_ALL,
-        TaskAction.CREATE,
-        TaskAction.ASSIGN,
-        TaskAction.CLOSE,
-        TaskAction.CHANGE_PRIORITY,
-    },
-    AgentRole.AUDITOR: {
-        TaskAction.VIEW_ALL,
-        TaskAction.CREATE,
-        TaskAction.ASSIGN,
-        TaskAction.CLOSE,
-        TaskAction.CHANGE_PRIORITY,
-    },
-    AgentRole.MAIN_PM: {
-        TaskAction.VIEW_ALL,
-        TaskAction.CREATE,
-        TaskAction.ASSIGN,
-        TaskAction.CLOSE,
-        TaskAction.CHANGE_PRIORITY,
-    },
-    AgentRole.CELL_PM: {
-        TaskAction.VIEW_OWN,  # Own cell only
-        TaskAction.CREATE,
-        TaskAction.ASSIGN,
-        TaskAction.CLOSE,
-        TaskAction.CHANGE_PRIORITY,
-    },
-    AgentRole.DEVELOPER: {
-        TaskAction.VIEW_OWN,
-        TaskAction.CLAIM,
-        TaskAction.UPDATE_OWN,
-        TaskAction.CLOSE,  # Can close own tasks
-    },
-    AgentRole.QA: {
-        TaskAction.VIEW_OWN,
-        TaskAction.CLAIM,
-        TaskAction.UPDATE_OWN,
-    },
-    AgentRole.DOCUMENTER: {
-        TaskAction.VIEW_OWN,
-        TaskAction.CLAIM,
-        TaskAction.UPDATE_OWN,
-    },
-}
-
-
-# =============================================================================
 # PERMISSION SERVICE
 # =============================================================================
-
-
-@dataclass
-class AgentContext:
-    """Context for permission checks."""
-
-    agent_id: UUID
-    role: AgentRole
-    team: Team | None = None
-
-    @property
-    def level(self) -> PermissionLevel:
-        return ROLE_LEVELS.get(self.role, PermissionLevel.CELL_MEMBER)
 
 
 class PermissionService:

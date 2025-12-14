@@ -5,7 +5,7 @@ CRUD operations for messages within sessions.
 """
 
 from datetime import UTC, datetime
-from typing import Annotated, cast
+from typing import Annotated
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, status
@@ -14,8 +14,14 @@ from sqlalchemy import select
 from sqlalchemy.orm import selectinload
 
 from roboco.api.deps import CurrentAgentId, DbSession
-from roboco.db.tables import ChannelTable, MessageTable, SessionTable
-from roboco.models import MessageType, SessionStatus
+from roboco.db.tables import MessageTable, SessionTable
+from roboco.models import MessageType
+from roboco.services.messaging import (
+    MessageCreateRequest as ServiceMessageRequest,
+)
+from roboco.services.messaging import (
+    get_messaging_service,
+)
 from roboco.utils.converters import require_uuid, to_python_uuid, to_python_uuid_list
 
 router = APIRouter()
@@ -212,77 +218,6 @@ async def get_message(
     )
 
 
-async def _get_session_with_group(
-    db: DbSession,
-    session_id: UUID,
-) -> SessionTable:
-    """Get session with group loaded, or raise 404."""
-    result = await db.execute(
-        select(SessionTable)
-        .where(SessionTable.id == session_id)
-        .options(selectinload(SessionTable.group))
-    )
-    session = result.scalar_one_or_none()
-    if not session:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Session not found",
-        )
-    if session.status != SessionStatus.ACTIVE:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Session is not active",
-        )
-    return session
-
-
-async def _get_channel_with_access(
-    db: DbSession,
-    channel_id: UUID,
-    agent_id: UUID,
-) -> ChannelTable:
-    """Get channel and verify write access, or raise 403."""
-    result = await db.execute(select(ChannelTable).where(ChannelTable.id == channel_id))
-    channel = result.scalar_one_or_none()
-    if not channel or agent_id not in channel.writers:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="You don't have write access to this channel",
-        )
-    return channel
-
-
-async def _validate_reply_target(
-    db: DbSession,
-    reply_to: UUID,
-    session_id: UUID,
-) -> None:
-    """Validate reply target exists in session."""
-    result = await db.execute(
-        select(MessageTable).where(
-            MessageTable.id == reply_to,
-            MessageTable.session_id == session_id,
-        )
-    )
-    if not result.scalar_one_or_none():
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Reply target message not found in this session",
-        )
-
-
-def _check_session_boundaries(session: SessionTable) -> bool:
-    """Check if session should be closed based on boundaries."""
-    msg_limit_exceeded = (
-        session.max_message_count and session.message_count >= session.max_message_count
-    )
-    content_limit_exceeded = (
-        session.max_content_length
-        and session.total_content_length >= session.max_content_length
-    )
-    return bool(msg_limit_exceeded or content_limit_exceeded)
-
-
 @router.post(
     "",
     response_model=MessageResponse,
@@ -295,48 +230,28 @@ async def send_message(
     agent_id: CurrentAgentId,
     data: MessageCreateRequest,
 ) -> MessageResponse:
-    """Send a message to a session."""
-    session = await _get_session_with_group(db, data.session_id)
-    group = session.group
-    channel = await _get_channel_with_access(
-        db, cast("UUID", group.channel_id), agent_id
-    )
+    """Send a message to a session using MessagingService."""
+    service = get_messaging_service(db)
 
-    if data.reply_to:
-        await _validate_reply_target(db, data.reply_to, data.session_id)
-
-    content_length = len(data.content)
-    message = MessageTable(
+    # Convert route request to service request
+    service_request = ServiceMessageRequest(
         agent_id=agent_id,
-        channel_id=channel.id,
-        group_id=group.id,
-        session_id=session.id,
-        type=data.type,
+        session_id=data.session_id,
         content=data.content,
-        content_length=content_length,
-        is_reply=data.is_reply,
+        message_type=data.type,
         reply_to=data.reply_to,
-        mentions=data.mentions,
+        mentions=data.mentions if data.mentions else None,
         task_id=data.task_id,
         commit_ref=data.commit_ref,
     )
-    db.add(message)
 
-    now = datetime.now(UTC)
-    session.message_count += 1
-    session.total_content_length += content_length
-    session.last_activity_at = now
-    group.total_messages += 1
-    group.last_activity = now
-    channel.message_count += 1
-    channel.last_activity = now
-
-    if _check_session_boundaries(session):
-        session.status = SessionStatus.CLOSED
-        session.closed_at = now
-        group.active_session_id = None
-
-    await db.flush()
+    try:
+        message = await service.send_message(service_request)
+    except ValueError as e:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(e),
+        ) from e
 
     return MessageResponse(
         id=require_uuid(message.id),
@@ -354,7 +269,7 @@ async def send_message(
         commit_ref=message.commit_ref,
         timestamp=message.timestamp,
         edited_at=message.edited_at,
-        was_edited=False,
+        was_edited=len(message.edit_history) > 0 if message.edit_history else False,
     )
 
 

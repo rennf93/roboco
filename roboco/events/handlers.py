@@ -2,64 +2,188 @@
 Event Handlers
 
 Workflow trigger handlers that respond to system events.
+Uses dependency injection pattern for services to maintain separation of concerns.
 """
 
-from typing import Any
+from dataclasses import dataclass
+from typing import TYPE_CHECKING, Any, Protocol
 
 import structlog
 
 from roboco.events.bus import Event, EventType, get_event_bus
 
+if TYPE_CHECKING:
+    from roboco.runtime.orchestrator import WaitingRecord
+
 logger = structlog.get_logger()
+
+
+# =============================================================================
+# SERVICE PROTOCOLS (for dependency injection)
+# =============================================================================
+
+
+class NotificationServiceProtocol(Protocol):
+    """Protocol for notification service."""
+
+    async def send_blocker_notification(
+        self,
+        task_id: str,
+        blocker_reason: str,
+        from_agent: str | None,
+        to_pm: str,
+    ) -> None: ...
+
+    async def send_qa_ready_notification(
+        self,
+        task_id: str,
+        from_agent: str | None,
+        to_qa: str,
+    ) -> None: ...
+
+    async def send_qa_failed_notification(
+        self,
+        task_id: str,
+        qa_notes: str,
+        to_developer: str,
+    ) -> None: ...
+
+    async def send_docs_ready_notification(
+        self,
+        task_id: str,
+        from_agent: str | None,
+        to_documenter: str,
+    ) -> None: ...
+
+    async def send_handoff_notification(
+        self,
+        task_id: str,
+        handoff_id: str,
+        from_agent: str | None,
+        to_documenter: str,
+    ) -> None: ...
+
+
+class OrchestratorAccessProtocol(Protocol):
+    """Protocol for orchestrator access."""
+
+    def get_waiting_agents(self) -> dict[str, "WaitingRecord"]: ...
+
+    async def resolve_wait(self, agent_id: str, resolution: dict[str, Any]) -> Any: ...
+
+
+# =============================================================================
+# EVENT CONTEXT (dependency container)
+# =============================================================================
+
+
+@dataclass
+class EventContext:
+    """
+    Dependency container for event handlers.
+
+    Set once during application initialization, then used by all handlers.
+    This avoids runtime imports inside handler functions.
+    """
+
+    notification_service: NotificationServiceProtocol | None = None
+    orchestrator: OrchestratorAccessProtocol | None = None
+
+
+# Global context instance - set during initialization
+_context = EventContext()
+
+
+def set_event_context(
+    notification_service: NotificationServiceProtocol | None = None,
+    orchestrator: OrchestratorAccessProtocol | None = None,
+) -> None:
+    """Set the event context with injected dependencies."""
+    if notification_service:
+        _context.notification_service = notification_service
+    if orchestrator:
+        _context.orchestrator = orchestrator
+
+
+def get_event_context() -> EventContext:
+    """Get the current event context."""
+    return _context
+
+
+# =============================================================================
+# TASK STATUS HANDLERS
+# =============================================================================
+
+
+def _get_pm_id(team: str) -> str:
+    """Build PM ID from team prefix."""
+    return f"{team[:2]}-pm"
+
+
+def _get_qa_id(team: str) -> str:
+    """Build QA ID from team prefix."""
+    return f"{team[:2]}-qa"
+
+
+def _get_doc_id(team: str) -> str:
+    """Build Documenter ID from team prefix."""
+    return f"{team[:2]}-doc"
 
 
 async def _handle_task_blocked(
     event: Event,
     task_id: str,
-    notification_service: Any,
 ) -> None:
     """Handle blocked task notification."""
+    if not _context.notification_service:
+        return
+
     team = event.data.get("team")
     if not team:
         return
+
     blocker_reason = event.data.get("reason", "Unknown blocker")
-    pm_id = f"{team[:2]}-pm"
-    await notification_service.send_blocker_notification(
+    await _context.notification_service.send_blocker_notification(
         task_id=task_id,
         blocker_reason=blocker_reason,
         from_agent=event.source_agent,
-        to_pm=pm_id,
+        to_pm=_get_pm_id(team),
     )
 
 
 async def _handle_task_awaiting_qa(
     event: Event,
     task_id: str,
-    notification_service: Any,
 ) -> None:
     """Handle task awaiting QA notification."""
+    if not _context.notification_service:
+        return
+
     team = event.data.get("team")
     if not team:
         return
-    qa_id = f"{team[:2]}-qa"
-    await notification_service.send_qa_ready_notification(
+
+    await _context.notification_service.send_qa_ready_notification(
         task_id=task_id,
         from_agent=event.source_agent,
-        to_qa=qa_id,
+        to_qa=_get_qa_id(team),
     )
 
 
 async def _handle_task_qa_failed(
     event: Event,
     task_id: str,
-    notification_service: Any,
 ) -> None:
     """Handle QA failed notification."""
+    if not _context.notification_service:
+        return
+
     developer_id = event.data.get("assigned_to")
     if not developer_id:
         return
+
     qa_notes = event.data.get("qa_notes", "See task for details")
-    await notification_service.send_qa_failed_notification(
+    await _context.notification_service.send_qa_failed_notification(
         task_id=task_id,
         qa_notes=qa_notes,
         to_developer=developer_id,
@@ -69,17 +193,19 @@ async def _handle_task_qa_failed(
 async def _handle_task_awaiting_docs(
     event: Event,
     task_id: str,
-    notification_service: Any,
 ) -> None:
     """Handle task awaiting docs notification."""
+    if not _context.notification_service:
+        return
+
     team = event.data.get("team")
     if not team:
         return
-    doc_id = f"{team[:2]}-doc"
-    await notification_service.send_docs_ready_notification(
+
+    await _context.notification_service.send_docs_ready_notification(
         task_id=task_id,
         from_agent=event.source_agent,
-        to_documenter=doc_id,
+        to_documenter=_get_doc_id(team),
     )
 
 
@@ -103,10 +229,6 @@ async def handle_task_status_change(event: Event) -> None:
         agent=event.source_agent,
     )
 
-    from roboco.services.notification import NotificationService  # noqa: PLC0415
-
-    notification_service = NotificationService()
-
     handlers = {
         EventType.TASK_BLOCKED: _handle_task_blocked,
         EventType.TASK_AWAITING_QA: _handle_task_awaiting_qa,
@@ -116,7 +238,12 @@ async def handle_task_status_change(event: Event) -> None:
 
     handler = handlers.get(event.type)
     if handler:
-        await handler(event, task_id, notification_service)
+        await handler(event, task_id)
+
+
+# =============================================================================
+# SESSION HANDLERS
+# =============================================================================
 
 
 async def handle_session_boundary(event: Event) -> None:
@@ -142,6 +269,11 @@ async def handle_session_boundary(event: Event) -> None:
     # Here we just log for metrics/monitoring
 
 
+# =============================================================================
+# HANDOFF HANDLERS
+# =============================================================================
+
+
 async def handle_handoff_created(event: Event) -> None:
     """
     Handle handoff creation events.
@@ -164,18 +296,18 @@ async def handle_handoff_created(event: Event) -> None:
         from_agent=from_agent,
     )
 
-    from roboco.services.notification import NotificationService  # noqa: PLC0415
-
-    notification_service = NotificationService()
-
-    if team:
-        doc_id = f"{team[:2]}-doc"
-        await notification_service.send_handoff_notification(
+    if _context.notification_service and team:
+        await _context.notification_service.send_handoff_notification(
             task_id=task_id,
             handoff_id=handoff_id,
             from_agent=from_agent,
-            to_documenter=doc_id,
+            to_documenter=_get_doc_id(team),
         )
+
+
+# =============================================================================
+# ORCHESTRATOR WAIT RESOLUTION
+# =============================================================================
 
 
 async def _try_resolve_agent_wait(
@@ -183,23 +315,24 @@ async def _try_resolve_agent_wait(
     waiting_for: str,
     resolution: dict[str, Any],
 ) -> None:
-    """Try to resolve a waiting agent if orchestrator is running."""
-    if not agent_id:
+    """Try to resolve a waiting agent if orchestrator is available."""
+    if not agent_id or not _context.orchestrator:
         return
-    try:
-        from roboco.bootstrap import _BootstrapHolder  # noqa: PLC0415
 
-        orchestrator = _BootstrapHolder.orchestrator
-        if not orchestrator:
-            return
-        waiting = orchestrator.get_waiting_agents()
-        if agent_id not in waiting:
-            return
-        record = waiting[agent_id]
-        if record.waiting_for == waiting_for:
-            await orchestrator.resolve_wait(agent_id=agent_id, resolution=resolution)
-    except (ImportError, AttributeError):
-        pass
+    waiting = _context.orchestrator.get_waiting_agents()
+    if agent_id not in waiting:
+        return
+
+    record = waiting[agent_id]
+    if record.waiting_for == waiting_for:
+        await _context.orchestrator.resolve_wait(
+            agent_id=agent_id, resolution=resolution
+        )
+
+
+# =============================================================================
+# QA RESULT HANDLERS
+# =============================================================================
 
 
 async def handle_qa_result(event: Event) -> None:
@@ -222,6 +355,11 @@ async def handle_qa_result(event: Event) -> None:
     )
 
 
+# =============================================================================
+# BLOCKER HANDLERS
+# =============================================================================
+
+
 async def handle_blocker_resolved(event: Event) -> None:
     """Handle blocker resolution events."""
     task_id = event.data.get("task_id")
@@ -237,6 +375,11 @@ async def handle_blocker_resolved(event: Event) -> None:
     )
 
 
+# =============================================================================
+# QUESTION HANDLERS
+# =============================================================================
+
+
 async def handle_question_answered(event: Event) -> None:
     """Handle question answered events."""
     question_id = event.data.get("question_id")
@@ -250,6 +393,11 @@ async def handle_question_answered(event: Event) -> None:
         "answer",
         {"answer": answer, "question_id": question_id},
     )
+
+
+# =============================================================================
+# HANDLER REGISTRATION
+# =============================================================================
 
 
 def register_default_handlers(bus: Any = None) -> None:

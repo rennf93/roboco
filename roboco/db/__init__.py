@@ -5,6 +5,7 @@ SQLAlchemy async ORM with PostgreSQL.
 """
 
 from roboco.db.base import Base, get_db, init_db
+from roboco.db.seed import bootstrap_database
 from roboco.db.tables import (
     AgentTable,
     ChannelTable,
@@ -30,6 +31,7 @@ __all__ = [
     "NotificationTable",
     "SessionTable",
     "TaskTable",
+    "bootstrap_database",
     "get_db",
     "init_db",
 ]

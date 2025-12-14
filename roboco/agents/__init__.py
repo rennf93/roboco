@@ -5,7 +5,12 @@ Base classes, role-specific agents, and orchestration.
 Phase 4: All 17 agent types implemented.
 """
 
-from roboco.agents.base import Agent, AgentConfig, AgentState
+from roboco.agents.base import (
+    Agent,
+    AgentConfig,
+    AgentState,
+    set_reasoning_stream_callback,
+)
 from roboco.agents.board import (
     AuditorAgent,
     HeadMarketingAgent,
@@ -97,4 +102,5 @@ __all__ = [
     "create_ux_qa",
     "get_agent_roster",
     "print_org_chart",
+    "set_reasoning_stream_callback",
 ]

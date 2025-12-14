@@ -212,22 +212,39 @@ class TaskLifecycleError(TaskError):
 
     def __init__(
         self,
-        task_id: str | UUID,
         current_status: str,
         target_status: str,
-        details: dict[str, Any] | None = None,
+        **kwargs: Any,
     ):
-        msg = f"Cannot transition task from '{current_status}' to '{target_status}'"
+        """
+        Initialize a TaskLifecycleError.
+
+        Args:
+            current_status: Current task status
+            target_status: Target status that was rejected
+            **kwargs: Optional: task_id, message, valid_transitions, or other details
+        """
+        valid_transitions = kwargs.pop("valid_transitions", None)
+        message = kwargs.pop("message", None)
+        task_id = kwargs.pop("task_id", None)
+
+        default_msg = f"Cannot transition from '{current_status}' to '{target_status}'"
+        if valid_transitions:
+            default_msg += f". Valid transitions: {valid_transitions}"
+
         super().__init__(
-            message=msg,
+            message=message or default_msg,
             task_id=task_id,
             code="TASK_LIFECYCLE_ERROR",
             details={
                 "current_status": current_status,
                 "target_status": target_status,
-                **(details or {}),
+                "valid_transitions": valid_transitions,
+                **kwargs,
             },
         )
+        self.current_status = current_status
+        self.target_status = target_status
 
 
 class TaskBlockedError(TaskError):

@@ -9,6 +9,7 @@ through the Messaging API.
 import asyncio
 import contextlib
 from abc import ABC, abstractmethod
+from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime
 from enum import Enum
 from typing import TYPE_CHECKING, Any
@@ -22,10 +23,34 @@ from pydantic import BaseModel, Field
 if TYPE_CHECKING:
     from anthropic.types import MessageParam
 
-from roboco.api.websocket import broadcast_agent_chunk
 from roboco.config import settings
 from roboco.llm import ToonAdapter
 from roboco.models import AgentRole, AgentStatus, Team
+
+# Type for reasoning stream callback (injected to avoid API layer coupling)
+ReasoningStreamCallback = Callable[[UUID, str], Awaitable[None]]
+
+
+class _ReasoningStreamHolder:
+    """Holder for reasoning stream callback singleton."""
+
+    callback: ReasoningStreamCallback | None = None
+
+
+def set_reasoning_stream_callback(callback: ReasoningStreamCallback | None) -> None:
+    """
+    Set the callback for streaming agent reasoning.
+
+    This decouples the agent layer from the API/WebSocket layer.
+    Set to None to disable reasoning streaming.
+    """
+    _ReasoningStreamHolder.callback = callback
+
+
+def get_reasoning_stream_callback() -> ReasoningStreamCallback | None:
+    """Get the current reasoning stream callback."""
+    return _ReasoningStreamHolder.callback
+
 
 logger = structlog.get_logger()
 
@@ -413,8 +438,13 @@ class Agent(ABC):
 
         This is the agent's internal thought process,
         visible to the Auditor and monitoring systems.
+
+        The actual streaming mechanism (WebSocket, SSE, etc.) is injected
+        via set_reasoning_stream_callback() during application initialization.
         """
-        await broadcast_agent_chunk(self.id, content)
+        callback = get_reasoning_stream_callback()
+        if callback:
+            await callback(self.id, content)
         self.log.debug("Streamed reasoning", content_length=len(content))
 
     # =========================================================================

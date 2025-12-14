@@ -6,6 +6,7 @@ follows the universal task lifecycle: SCAN → CLAIM → UNDERSTAND →
 PLAN → EXECUTE → VERIFY → NOTES → CLOSE.
 """
 
+from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from uuid import UUID, uuid4
 
@@ -209,92 +210,12 @@ class Task(TimestampMixin):
         description="2-3 sentences for quick context restoration",
     )
 
-    def claim(self, agent_id: UUID) -> None:
-        """Claim this task for an agent."""
-        self.assigned_to = agent_id
-        self.claimed_at = datetime.now(UTC)
-        self.status = TaskStatus.CLAIMED
-
-    def start(self) -> None:
-        """Start working on the task."""
-        self.started_at = datetime.now(UTC)
-        self.status = TaskStatus.IN_PROGRESS
-
-    def block(self, blocker_task_id: UUID) -> None:
-        """Mark task as blocked by another task."""
-        if blocker_task_id not in self.dependency_ids:
-            self.dependency_ids.append(blocker_task_id)
-        self.status = TaskStatus.BLOCKED
-
-    def pause(self) -> None:
-        """Pause the task."""
-        self.status = TaskStatus.PAUSED
-
-    def resume(self) -> None:
-        """Resume the task."""
-        self.status = TaskStatus.IN_PROGRESS
-
-    def submit_for_verification(self) -> None:
-        """Submit task for verification."""
-        self.status = TaskStatus.VERIFYING
-
-    def submit_for_qa(self) -> None:
-        """Submit task for QA review."""
-        self.self_verified = True
-        self.status = TaskStatus.AWAITING_QA
-
-    def fail_qa(self, notes: str) -> None:
-        """Mark task as needing revision after QA."""
-        self.qa_notes = notes
-        self.qa_verified = False
-        self.status = TaskStatus.NEEDS_REVISION
-
-    def pass_qa(self, notes: str | None = None) -> None:
-        """Mark task as passed QA."""
-        if notes:
-            self.qa_notes = notes
-        self.qa_verified = True
-        self.status = TaskStatus.AWAITING_DOCUMENTATION
-
-    def complete(self) -> None:
-        """Mark task as completed."""
-        self.completed_at = datetime.now(UTC)
-        self.status = TaskStatus.COMPLETED
-
-    def cancel(self) -> None:
-        """Cancel the task."""
-        self.status = TaskStatus.CANCELLED
-
-    def add_checkpoint(
-        self, agent_id: UUID, state_summary: str, remaining_work: list[str]
-    ) -> None:
-        """Add a checkpoint for state recovery."""
-        checkpoint = Checkpoint(
-            agent_id=agent_id,
-            state_summary=state_summary,
-            remaining_work=remaining_work,
-        )
-        self.checkpoints.append(checkpoint)
-
-    def add_progress(
-        self, agent_id: UUID, message: str, percentage: int | None = None
-    ) -> None:
-        """Add a progress update."""
-        update = ProgressUpdate(
-            agent_id=agent_id,
-            message=message,
-            percentage=percentage,
-        )
-        self.progress_updates.append(update)
-
-    def add_commit(self, hash: str, message: str, agent_id: UUID | None = None) -> None:
-        """Link a commit to this task."""
-        commit = CommitRef(
-            hash=hash,
-            message=message,
-            author_agent_id=agent_id,
-        )
-        self.commits.append(commit)
+    # NOTE: Task state mutations should be performed through TaskService,
+    # not directly on the model. See roboco/services/task.py for:
+    # - claim(), start(), block(), pause(), resume()
+    # - submit_for_verification(), submit_for_qa()
+    # - fail_qa(), pass_qa(), complete(), cancel()
+    # - add_checkpoint(), add_progress(), add_commit()
 
 
 # =============================================================================
@@ -329,3 +250,23 @@ class TaskUpdate(RobocoBase):
     dev_notes: str | None = None
     qa_notes: str | None = None
     quick_context: str | None = None
+
+
+# =============================================================================
+# SERVICE PARAMETERS
+# =============================================================================
+
+
+@dataclass
+class TaskCreateRequest:
+    """Request data for creating a task via TaskService."""
+
+    title: str
+    description: str
+    acceptance_criteria: list[str]
+    team: Team
+    created_by: UUID
+    priority: int = 2
+    parent_task_id: UUID | None = None
+    target_date: datetime | None = None
+    estimated_complexity: Complexity = field(default=Complexity.MEDIUM)

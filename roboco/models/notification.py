@@ -5,6 +5,7 @@ Notifications are formal signals that require acknowledgment.
 Only PMs, Board members, and the Auditor can send notifications.
 """
 
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from uuid import UUID, uuid4
 
@@ -72,57 +73,10 @@ class Notification(TimestampMixin):
         default_factory=list, description="Agents who have read the notification"
     )
 
-    @property
-    def is_fully_acknowledged(self) -> bool:
-        """Check if all recipients have acknowledged."""
-        if not self.requires_ack:
-            return True
-        return all(agent_id in self.acked_by for agent_id in self.to_agents)
-
-    @property
-    def pending_acks(self) -> list[UUID]:
-        """Get list of agents who haven't acknowledged yet."""
-        return [
-            agent_id for agent_id in self.to_agents if agent_id not in self.acked_by
-        ]
-
-    @property
-    def is_expired(self) -> bool:
-        """Check if notification has expired."""
-        if self.expires_at is None:
-            return False
-        return datetime.now(UTC) > self.expires_at
-
-    def acknowledge(self, agent_id: UUID) -> bool:
-        """
-        Acknowledge the notification.
-
-        Returns True if this was a new acknowledgment.
-        """
-        if agent_id not in self.to_agents:
-            return False
-
-        if agent_id in self.acked_by:
-            return False  # Already acknowledged
-
-        self.acked_by.append(agent_id)
-        self.acked_at[str(agent_id)] = datetime.now(UTC)
-        return True
-
-    def mark_read(self, agent_id: UUID) -> bool:
-        """
-        Mark notification as read.
-
-        Returns True if this was a new read.
-        """
-        if agent_id not in self.to_agents:
-            return False
-
-        if agent_id in self.read_by:
-            return False
-
-        self.read_by.append(agent_id)
-        return True
+    # NOTE: Notification state mutations should be performed through
+    # NotificationService. Methods like acknowledge, mark_read should be
+    # in a service. Status checks (is_fully_acknowledged, pending_acks,
+    # is_expired) should also be in the service layer.
 
 
 # =============================================================================
@@ -283,3 +237,21 @@ class NotificationCreate(RobocoBase):
     related_task_id: UUID | None = None
     related_message_ids: list[UUID] = Field(default_factory=list)
     expires_at: datetime | None = None
+
+
+# =============================================================================
+# SERVICE PARAMETERS
+# =============================================================================
+
+
+@dataclass
+class CreateNotificationParams:
+    """Parameters for creating a notification via NotificationService."""
+
+    notification_type: NotificationType
+    priority: NotificationPriority
+    from_agent: str
+    to_agents: list[str]
+    subject: str
+    body: str
+    related_task_id: str | None = None

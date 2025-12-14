@@ -6,7 +6,7 @@ a Documenter to create production documentation from developer work.
 """
 
 from dataclasses import dataclass, field
-from datetime import UTC, datetime
+from datetime import datetime
 from uuid import UUID, uuid4
 
 from pydantic import Field
@@ -166,59 +166,9 @@ class DocumenterHandoff(TimestampMixin):
     # Documenter feedback
     documenter_notes: str | None = None
 
-    def claim(self, documenter_id: UUID) -> None:
-        """Claim the handoff."""
-        self.assigned_to = documenter_id
-        self.claimed_at = datetime.now(UTC)
-        self.status = HandoffStatus.CLAIMED
-
-    def start(self) -> None:
-        """Start working on documentation."""
-        self.status = HandoffStatus.IN_PROGRESS
-
-    def complete(self, notes: str | None = None) -> None:
-        """Mark handoff as complete."""
-        self.completed_at = datetime.now(UTC)
-        self.status = HandoffStatus.COMPLETED
-        if notes:
-            self.documenter_notes = notes
-
-    def add_required_doc(
-        self,
-        doc_type: str,
-        description: str,
-        output_path: str | None = None,
-    ) -> None:
-        """Add a required documentation item."""
-        self.required_docs.append(
-            DocumentationItem(
-                doc_type=doc_type,
-                description=description,
-                priority=1,
-                output_path=output_path,
-            )
-        )
-
-    def add_code_sample(
-        self,
-        title: str,
-        language: str,
-        code: str,
-        explanation: str | None = None,
-    ) -> None:
-        """Add a code sample for documentation."""
-        self.code_samples.append(
-            CodeSample(
-                title=title,
-                language=language,
-                code=code,
-                explanation=explanation,
-            )
-        )
-
-    def add_gotcha(self, title: str, explanation: str) -> None:
-        """Add a gotcha/warning."""
-        self.gotchas.append({"title": title, "explanation": explanation})
+    # NOTE: Handoff state mutations should be performed through a HandoffService.
+    # Methods like claim, start, complete, add_required_doc, add_code_sample,
+    # add_gotcha should be in a service layer.
 
 
 # =============================================================================
@@ -241,7 +191,14 @@ class HandoffParams:
 
 def create_handoff(params: HandoffParams) -> DocumenterHandoff:
     """Create a basic handoff document."""
-    handoff = DocumenterHandoff(
+    # Create changelog documentation item inline
+    changelog_doc = DocumentationItem(
+        doc_type="changelog",
+        description="Changelog entry for this task",
+        priority=1,
+    )
+
+    return DocumenterHandoff(
         task_id=params.task_id,
         summary=params.summary,
         commits=params.commits,
@@ -249,15 +206,8 @@ def create_handoff(params: HandoffParams) -> DocumenterHandoff:
         new_functionality=params.new_functionality,
         modified_behavior=params.modified_behavior,
         breaking_changes=params.breaking_changes,
+        required_docs=[changelog_doc],  # Always include changelog as required
     )
-
-    # Always add changelog as required
-    handoff.add_required_doc(
-        doc_type="changelog",
-        description="Changelog entry for this task",
-    )
-
-    return handoff
 
 
 # =============================================================================

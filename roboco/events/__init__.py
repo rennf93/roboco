@@ -10,6 +10,7 @@ from roboco.events.handlers import (
     handle_qa_result,
     handle_session_boundary,
     handle_task_status_change,
+    set_event_context,
 )
 
 __all__ = [
@@ -20,4 +21,5 @@ __all__ = [
     "handle_qa_result",
     "handle_session_boundary",
     "handle_task_status_change",
+    "set_event_context",
 ]

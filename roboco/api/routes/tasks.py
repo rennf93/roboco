@@ -18,6 +18,7 @@ from roboco.api.deps import (
 )
 from roboco.db.tables import TaskTable
 from roboco.models.base import Complexity, TaskStatus, Team
+from roboco.models.task import TaskCreate
 from roboco.services.audit import get_audit_service
 from roboco.services.permissions import TaskAction
 from roboco.services.task import TaskCreateRequest, get_task_service
@@ -29,19 +30,6 @@ router = APIRouter(prefix="/tasks", tags=["tasks"])
 # =============================================================================
 # REQUEST/RESPONSE MODELS
 # =============================================================================
-
-
-class TaskCreate(BaseModel):
-    """Request to create a task."""
-
-    title: str = Field(..., min_length=1, max_length=200)
-    description: str
-    acceptance_criteria: list[str] = Field(..., min_length=1)
-    team: Team
-    priority: int = Field(default=2, ge=0, le=3)
-    parent_task_id: UUID | None = None
-    target_date: datetime | None = None
-    estimated_complexity: Complexity = Complexity.MEDIUM
 
 
 class TaskUpdate(BaseModel):

@@ -5,7 +5,7 @@ Channels are the top-level organizational unit for communication.
 They map to team structure (#backend-cell, #pm-all, etc.).
 """
 
-from datetime import UTC, datetime
+from datetime import datetime
 from uuid import UUID, uuid4
 
 from pydantic import Field
@@ -79,44 +79,9 @@ class Channel(TimestampMixin):
     group_count: int = Field(default=0, ge=0)
     last_activity: datetime | None = None
 
-    def add_member(self, agent_id: UUID, can_write: bool = True) -> None:
-        """Add a member to the channel."""
-        if agent_id not in self.members:
-            self.members.append(agent_id)
-        if can_write and agent_id not in self.writers:
-            self.writers.append(agent_id)
-
-    def remove_member(self, agent_id: UUID) -> None:
-        """Remove a member from the channel."""
-        if agent_id in self.members:
-            self.members.remove(agent_id)
-        if agent_id in self.writers:
-            self.writers.remove(agent_id)
-
-    def add_silent_observer(self, agent_id: UUID) -> None:
-        """Add a silent observer (like Auditor)."""
-        if agent_id not in self.silent_observers:
-            self.silent_observers.append(agent_id)
-
-    def can_read(self, agent_id: UUID) -> bool:
-        """Check if an agent can read this channel."""
-        return agent_id in self.members or agent_id in self.silent_observers
-
-    def can_write(self, agent_id: UUID) -> bool:
-        """Check if an agent can write to this channel."""
-        return agent_id in self.writers
-
-    def record_activity(self) -> None:
-        """Record activity in the channel."""
-        self.last_activity = datetime.now(UTC)
-
-    def archive(self) -> None:
-        """Archive the channel."""
-        self.is_archived = True
-
-    def unarchive(self) -> None:
-        """Unarchive the channel."""
-        self.is_archived = False
+    # NOTE: Channel state mutations should be performed through a ChannelService.
+    # See enforcement/channel_access.py for can_read/can_write validation.
+    # Methods like add_member, remove_member, archive should be in a service.
 
 
 # =============================================================================

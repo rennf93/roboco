@@ -81,54 +81,10 @@ class Session(TimestampMixin):
     message_count: int = Field(default=0, ge=0)
     total_content_length: int = Field(default=0, ge=0)
 
-    @property
-    def is_active(self) -> bool:
-        """Check if session is still active."""
-        return self.status == SessionStatus.ACTIVE
-
-    @property
-    def duration(self) -> timedelta:
-        """Get session duration."""
-        end = self.closed_at or datetime.now(UTC)
-        return end - self.started_at
-
-    def should_close(self) -> bool:
-        """Check if any boundary has been reached."""
-        now = datetime.now(UTC)
-
-        # Check time window
-        if self.max_time_window and now - self.started_at >= self.max_time_window:
-            return True
-
-        # Check message count
-        if self.max_message_count and self.message_count >= self.max_message_count:
-            return True
-
-        # Check content length
-        if (
-            self.max_content_length
-            and self.total_content_length >= self.max_content_length
-        ):
-            return True
-
-        # Check timeout
-        if self.timeout_seconds > 0:
-            inactivity = (now - self.last_activity_at).total_seconds()
-            if inactivity >= self.timeout_seconds:
-                return True
-
-        return False
-
-    def add_message(self, content_length: int) -> None:
-        """Record a new message in the session."""
-        self.message_count += 1
-        self.total_content_length += content_length
-        self.last_activity_at = datetime.now(UTC)
-
-    def close(self, timed_out: bool = False) -> None:
-        """Close the session."""
-        self.closed_at = datetime.now(UTC)
-        self.status = SessionStatus.TIMED_OUT if timed_out else SessionStatus.CLOSED
+    # NOTE: Session state mutations and boundary checks should be performed
+    # through a SessionService. Methods like should_close, add_message, close
+    # should be in a service layer. The is_active check is a simple comparison:
+    # session.status == SessionStatus.ACTIVE
 
 
 # =============================================================================

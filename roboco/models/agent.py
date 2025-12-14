@@ -5,7 +5,7 @@ Represents an AI agent in the organization. Each agent has a role,
 team affiliation, capabilities, and permissions.
 """
 
-from datetime import UTC, datetime
+from datetime import datetime
 from uuid import UUID, uuid4
 
 from pydantic import Field
@@ -126,79 +126,13 @@ class Agent(TimestampMixin):
         default=None, description="Human-readable description of this agent"
     )
 
-    @property
-    def is_management(self) -> bool:
-        """Check if agent is in management (PM or above)."""
-        return self.role in (
-            AgentRole.CEO,
-            AgentRole.PRODUCT_OWNER,
-            AgentRole.HEAD_MARKETING,
-            AgentRole.AUDITOR,
-            AgentRole.MAIN_PM,
-            AgentRole.CELL_PM,
-        )
-
-    @property
-    def is_board(self) -> bool:
-        """Check if agent is on the board."""
-        return self.role in (
-            AgentRole.CEO,
-            AgentRole.PRODUCT_OWNER,
-            AgentRole.HEAD_MARKETING,
-            AgentRole.AUDITOR,
-        )
-
-    @property
-    def can_send_notifications(self) -> bool:
-        """Check if agent can send formal notifications."""
-        return self.permissions.can_notify or self.role in (
-            AgentRole.CEO,
-            AgentRole.AUDITOR,
-            AgentRole.MAIN_PM,
-            AgentRole.CELL_PM,
-            AgentRole.PRODUCT_OWNER,
-            AgentRole.HEAD_MARKETING,
-        )
-
-    def go_online(self) -> None:
-        """Mark agent as online/active."""
-        self.status = AgentStatus.ACTIVE
-        self.metrics.last_active = datetime.now(UTC)
-
-    def go_idle(self) -> None:
-        """Mark agent as idle (online but not working)."""
-        self.status = AgentStatus.IDLE
-        self.current_task_id = None
-
-    def go_offline(self) -> None:
-        """Mark agent as offline."""
-        self.status = AgentStatus.OFFLINE
-        self.current_task_id = None
-
-    def assign_task(self, task_id: UUID) -> None:
-        """Assign a task to this agent."""
-        self.current_task_id = task_id
-        self.status = AgentStatus.ACTIVE
-        self.metrics.tasks_in_progress += 1
-
-    def complete_task(self, hours_spent: float | None = None) -> None:
-        """Mark current task as complete."""
-        self.current_task_id = None
-        self.metrics.tasks_completed += 1
-        self.metrics.tasks_in_progress = max(0, self.metrics.tasks_in_progress - 1)
-
-        # Update average completion time
-        if hours_spent is not None:
-            if self.metrics.avg_completion_hours is None:
-                self.metrics.avg_completion_hours = hours_spent
-            else:
-                # Running average
-                total = self.metrics.tasks_completed
-                self.metrics.avg_completion_hours = (
-                    self.metrics.avg_completion_hours * (total - 1) + hours_spent
-                ) / total
-
-        self.status = AgentStatus.IDLE
+    # NOTE: Role-based permission checks should use roboco.agents_config:
+    # - is_management(agent_id) - Check if agent is in management
+    # - is_board_member(agent_id) - Check if agent is on the board
+    # - can_send_notifications(agent_id) - Check if agent can send notifications
+    #
+    # Agent state mutations should be performed through a service layer,
+    # not directly on the model.
 
 
 # =============================================================================

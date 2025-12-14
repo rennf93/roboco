@@ -5,7 +5,7 @@ Groups are role-based chat containers within channels.
 They hold sessions and control access by hierarchy level.
 """
 
-from datetime import UTC, datetime
+from datetime import datetime
 from uuid import UUID, uuid4
 
 from pydantic import Field
@@ -69,43 +69,9 @@ class Group(TimestampMixin):
     total_messages: int = Field(default=0, ge=0)
     last_activity: datetime | None = None
 
-    def add_member(self, agent_id: UUID) -> None:
-        """Add an explicit member to the group."""
-        if agent_id not in self.members:
-            self.members.append(agent_id)
-
-    def remove_member(self, agent_id: UUID) -> None:
-        """Remove a member from the group."""
-        if agent_id in self.members:
-            self.members.remove(agent_id)
-
-    def has_access(self, agent_role: AgentRole, agent_id: UUID) -> bool:
-        """Check if an agent has access to this group."""
-        # Explicit members always have access
-        if agent_id in self.members:
-            return True
-
-        # Check role-based access
-        return agent_role in self.allowed_roles
-
-    def record_activity(self) -> None:
-        """Record activity in the group."""
-        self.last_activity = datetime.now(UTC)
-
-    def increment_messages(self) -> None:
-        """Increment message count."""
-        self.total_messages += 1
-        self.record_activity()
-
-    def start_new_session(self, session_id: UUID) -> None:
-        """Start a new session in this group."""
-        self.active_session_id = session_id
-        self.total_sessions += 1
-        self.record_activity()
-
-    def close_session(self) -> None:
-        """Close the current session."""
-        self.active_session_id = None
+    # NOTE: Group state mutations should be performed through a GroupService.
+    # Methods like add_member, remove_member, has_access, start_new_session,
+    # close_session should be in a service layer.
 
 
 # =============================================================================

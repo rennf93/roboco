@@ -6,7 +6,6 @@ Each agent has their own journal with entries tied to tasks and sessions.
 Integrates with the Optimal API for RAG indexing of entries.
 """
 
-from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any
 from uuid import UUID
@@ -20,10 +19,13 @@ from roboco.models.base import JournalEntryType
 from roboco.models.journal import (
     DecisionLogParams,
     GeneralEntryParams,
+    GrowthMetrics,
     Journal,
     JournalEntry,
     JournalEntryCreate,
+    JournalStats,
     LearningEntryParams,
+    ListEntriesFilter,
     StruggleEntryParams,
     TaskReflectionParams,
     create_decision_log,
@@ -35,40 +37,6 @@ from roboco.models.journal import (
 from roboco.utils.converters import require_uuid, to_python_uuid
 
 logger = structlog.get_logger()
-
-
-@dataclass
-class ListEntriesFilter:
-    """Filter parameters for listing journal entries."""
-
-    entry_type: JournalEntryType | None = None
-    task_id: UUID | None = None
-    limit: int = 50
-    offset: int = 0
-    include_private: bool = False
-
-
-@dataclass
-class JournalStats:
-    """Statistics for a journal."""
-
-    total_entries: int
-    entries_by_type: dict[str, int]
-    last_entry_at: datetime | None
-    has_summary: bool
-
-
-@dataclass
-class GrowthMetrics:
-    """Growth metrics calculated from journal entries."""
-
-    total_reflections: int
-    total_learnings: int
-    total_struggles: int
-    total_decisions: int
-    struggle_resolution_rate: float  # Percentage of struggles that were resolved
-    learning_frequency: float  # Average learnings per day
-    sentiment_trend: str  # "improving", "stable", "declining"
 
 
 class JournalService:

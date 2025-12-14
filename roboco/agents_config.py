@@ -210,6 +210,30 @@ CHANNEL_ACCESS: Final[dict[str, dict[str, list[str]]]] = {
 # NOTIFICATION PERMISSIONS
 # =============================================================================
 
+# =============================================================================
+# PERMISSION LEVEL HIERARCHY
+# =============================================================================
+
+# Maps role strings to permission level names
+# This is the SINGLE SOURCE OF TRUTH for role hierarchy
+# Used by PermissionService to build AgentRole -> PermissionLevel mapping
+ROLE_PERMISSION_LEVELS: Final[dict[str, str]] = {
+    "ceo": "CEO",
+    "product_owner": "BOARD",
+    "head_marketing": "BOARD",
+    "auditor": "AUDITOR",
+    "main_pm": "MAIN_PM",
+    "cell_pm": "CELL_PM",
+    "developer": "CELL_MEMBER",
+    "qa": "CELL_MEMBER",
+    "documenter": "CELL_MEMBER",
+}
+
+
+# =============================================================================
+# NOTIFICATION PERMISSIONS
+# =============================================================================
+
 NOTIFICATION_PERMISSIONS: Final[dict[str, dict]] = {
     # Cell PMs can notify their own cell members
     "cell_pm": {

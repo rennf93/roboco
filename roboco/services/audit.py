@@ -5,61 +5,18 @@ Logs permission denials and security events for visibility by Auditor and CEO.
 All audit logs are persisted and queryable.
 """
 
-from dataclasses import dataclass, field
 from datetime import UTC, datetime
-from enum import Enum
-from typing import Any
 from uuid import UUID
 
 import structlog
 
-
-@dataclass
-class PermissionDenialContext:
-    """Context for a permission denial audit log."""
-
-    agent_id: UUID | str
-    action: str
-    resource: str
-    resource_id: UUID | str | None = None
-    reason: str | None = None
-    details: dict[str, Any] = field(default_factory=dict)
-
-
-@dataclass
-class StateTransitionDenialContext:
-    """Context for a state transition denial audit log."""
-
-    agent_id: UUID | str
-    agent_role: str
-    task_id: UUID | str
-    current_status: str
-    target_status: str
-    reason: str | None = None
-
+from roboco.models.audit import (
+    AuditEventType,
+    PermissionDenialContext,
+    StateTransitionDenialContext,
+)
 
 logger = structlog.get_logger()
-
-
-class AuditEventType(str, Enum):
-    """Types of audit events."""
-
-    # Permission denials
-    PERMISSION_DENIED = "permission_denied"
-    CHANNEL_ACCESS_DENIED = "channel_access_denied"
-    TASK_ACTION_DENIED = "task_action_denied"
-    NOTIFICATION_DENIED = "notification_denied"
-    STATE_TRANSITION_DENIED = "state_transition_denied"
-
-    # Security events
-    UNAUTHORIZED_ACCESS = "unauthorized_access"
-    INVALID_TOKEN = "invalid_token"
-    RATE_LIMIT_EXCEEDED = "rate_limit_exceeded"
-
-    # Administrative events
-    ROLE_CHANGED = "role_changed"
-    ACCESS_GRANTED = "access_granted"
-    ACCESS_REVOKED = "access_revoked"
 
 
 class AuditService:
@@ -115,7 +72,7 @@ class AuditService:
 
     async def log_channel_access_denial(
         self,
-        agent_id: UUID | str,
+        agent_id: str,
         channel_slug: str,
         access_type: str,
         reason: str | None = None,
@@ -133,9 +90,9 @@ class AuditService:
 
     async def log_task_action_denial(
         self,
-        agent_id: UUID | str,
+        agent_id: str | UUID,
         agent_role: str,
-        task_id: UUID | str,
+        task_id: str | UUID,
         action: str,
         reason: str | None = None,
     ) -> None:
@@ -170,7 +127,7 @@ class AuditService:
 
     async def log_notification_denial(
         self,
-        agent_id: UUID | str,
+        agent_id: str,
         agent_role: str,
         notification_type: str,
         reason: str | None = None,
@@ -189,9 +146,9 @@ class AuditService:
     async def log_security_event(
         self,
         event_type: AuditEventType,
-        agent_id: UUID | str | None,
+        agent_id: str | None,
         description: str,
-        details: dict[str, Any] | None = None,
+        details: dict | None = None,
     ) -> None:
         """Log a general security event."""
         self.log.warning(

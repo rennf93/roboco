@@ -32,23 +32,7 @@ from roboco.llm import ToonAdapter
 # Global TOON adapter for encoding task data
 _toon = ToonAdapter()
 
-# =============================================================================
-# VALID STATE TRANSITIONS
-# =============================================================================
-
-VALID_TRANSITIONS: dict[str, list[str]] = {
-    "pending": ["claimed"],
-    "claimed": ["in_progress", "pending"],
-    "in_progress": ["blocked", "paused", "verifying"],
-    "blocked": ["in_progress"],
-    "paused": ["in_progress"],
-    "verifying": ["awaiting_qa", "needs_revision", "awaiting_documentation"],
-    "needs_revision": ["in_progress"],
-    "awaiting_qa": ["awaiting_documentation", "needs_revision"],
-    "awaiting_documentation": ["completed"],
-    "completed": [],
-    "cancelled": [],
-}
+# NOTE: For task lifecycle validation, use enforcement.task_lifecycle.VALID_TRANSITIONS
 
 
 # =============================================================================

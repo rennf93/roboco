@@ -4,36 +4,10 @@ Task Lifecycle State Machine Enforcement
 Validates task state transitions follow the defined lifecycle.
 """
 
-from roboco.exceptions import RobocoError
+from roboco.exceptions import TaskLifecycleError
 
-
-class TaskLifecycleError(RobocoError):
-    """Raised when an invalid task state transition is attempted."""
-
-    def __init__(
-        self,
-        current_status: str,
-        target_status: str,
-        message: str | None = None,
-    ):
-        self.current_status = current_status
-        self.target_status = target_status
-
-        valid = VALID_TRANSITIONS.get(current_status, [])
-        default_message = (
-            f"Cannot transition from '{current_status}' to '{target_status}'. "
-            f"Valid transitions: {valid}"
-        )
-
-        super().__init__(
-            code="INVALID_TASK_TRANSITION",
-            message=message or default_message,
-            details={
-                "current_status": current_status,
-                "target_status": target_status,
-                "valid_transitions": valid,
-            },
-        )
+# Re-export from exceptions for backward compatibility
+__all__ = ["VALID_TRANSITIONS", "TaskLifecycleError", "validate_task_transition"]
 
 
 # =============================================================================
@@ -121,6 +95,7 @@ def validate_task_transition(
         raise TaskLifecycleError(
             current_status=current_status,
             target_status=target_status,
+            valid_transitions=valid,
         )
 
     # Check role-based restrictions if role provided
