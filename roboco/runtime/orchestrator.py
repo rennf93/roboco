@@ -3,6 +3,13 @@ Agent Orchestrator
 
 Manages Claude Code containers for all RoboCo agents.
 Handles spawning, monitoring, health checks, and graceful shutdown.
+
+The orchestrator is the BRAIN of the system:
+- Checks for work BEFORE spawning agents (no wasteful spawns)
+- Claims tasks on behalf of agents before spawning
+- Agents receive their assignment at spawn time
+- Agents scan for more work after completing a task
+- Agents only call roboco_agent_idle() when truly no work remains
 """
 
 import asyncio
@@ -14,8 +21,11 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+import httpx
 import structlog
+from fastapi import status as http_status
 
+from roboco.config import settings
 from roboco.models.runtime import (
     MODEL_MAP,
     ROLE_MODEL_MAP,
@@ -67,14 +77,17 @@ class AgentOrchestrator:
         blueprints_dir: Path | None = None,
         mcp_config_dir: Path | None = None,
         project_root: Path | None = None,
+        dispatcher_interval: int = 30,
     ):
         self.blueprints_dir = blueprints_dir or Path("agents/blueprints")
         self.mcp_config_dir = mcp_config_dir or Path(".mcp")
         self.project_root = project_root or Path.cwd()
+        self.dispatcher_interval = dispatcher_interval
 
         self._instances: dict[str, AgentInstance] = {}
         self._waiting_records: dict[str, WaitingRecord] = {}
         self._health_task: asyncio.Task | None = None
+        self._dispatcher_task: asyncio.Task | None = None
         self._running = False
         self._lock = asyncio.Lock()
 
@@ -89,17 +102,29 @@ class AgentOrchestrator:
         # Ensure agent image is built
         await self._ensure_agent_image()
 
+        # Start background tasks
         self._health_task = asyncio.create_task(self._health_loop())
-        logger.info("Orchestrator started")
+        self._dispatcher_task = asyncio.create_task(self._dispatcher_loop())
+
+        logger.info(
+            "Orchestrator started",
+            dispatcher_interval=self.dispatcher_interval,
+        )
 
     async def stop(self) -> None:
         """Stop the orchestrator and all agents."""
         self._running = False
 
+        # Cancel background tasks
         if self._health_task:
             self._health_task.cancel()
             with contextlib.suppress(asyncio.CancelledError):
                 await self._health_task
+
+        if self._dispatcher_task:
+            self._dispatcher_task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await self._dispatcher_task
 
         # Stop all agents
         for agent_id in list(self._instances.keys()):
@@ -111,7 +136,10 @@ class AgentOrchestrator:
         """Ensure the agent Docker image is built."""
         # Check if image exists
         proc = await asyncio.create_subprocess_exec(
-            "docker", "image", "inspect", AGENT_IMAGE,
+            "docker",
+            "image",
+            "inspect",
+            AGENT_IMAGE,
             stdout=asyncio.subprocess.DEVNULL,
             stderr=asyncio.subprocess.DEVNULL,
         )
@@ -131,9 +159,12 @@ class AgentOrchestrator:
                 build_context = str(self.project_root)
 
             proc = await asyncio.create_subprocess_exec(
-                "docker", "build",
-                "-t", AGENT_IMAGE,
-                "-f", dockerfile_path,
+                "docker",
+                "build",
+                "-t",
+                AGENT_IMAGE,
+                "-f",
+                dockerfile_path,
                 build_context,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
@@ -302,11 +333,14 @@ class AgentOrchestrator:
             "stream-json",
             "--verbose",
             # Always provide a prompt (required for non-interactive mode)
+            # NOTE: With the smart dispatcher, agents should ALWAYS receive
+            # a task assignment at spawn time. This default indicates a bug.
             "-p",
-            initial_prompt or (
-                "You are now online. Run roboco_task_scan() to check for work. "
-                "If no tasks are available, call roboco_agent_idle() to go into "
-                "waiting state and conserve resources."
+            initial_prompt
+            or (
+                "ERROR: You were spawned without a task assignment. "
+                "This is a bug in the orchestrator. "
+                "Call roboco_agent_idle() immediately to shutdown."
             ),
         ]
 
@@ -326,7 +360,10 @@ class AgentOrchestrator:
     async def _remove_container(self, container_name: str) -> None:
         """Remove a container if it exists."""
         proc = await asyncio.create_subprocess_exec(
-            "docker", "rm", "-f", container_name,
+            "docker",
+            "rm",
+            "-f",
+            container_name,
             stdout=asyncio.subprocess.DEVNULL,
             stderr=asyncio.subprocess.DEVNULL,
         )
@@ -335,29 +372,51 @@ class AgentOrchestrator:
     async def _generate_mcp_config(self, agent_id: str) -> Path:
         """Generate MCP config for an agent."""
         # MCP servers run inside the container, connect to API via network
+        # Explicitly use Environment Variables to avoid issues with containerized agents
+        mcp_env = {
+            "ROBOCO_API_URL": settings.internal_api_url,
+            "ROBOCO_AGENT_ID": agent_id,
+        }
+
         config = {
             "mcpServers": {
                 "roboco-task": {
                     "command": "uv",
                     "args": ["run", "python", "-m", "roboco.mcp.task_server", agent_id],
+                    "env": mcp_env,
                 },
                 "roboco-message": {
                     "command": "uv",
                     "args": [
-                        "run", "python", "-m", "roboco.mcp.message_server", agent_id
+                        "run",
+                        "python",
+                        "-m",
+                        "roboco.mcp.message_server",
+                        agent_id,
                     ],
+                    "env": mcp_env,
                 },
                 "roboco-notify": {
                     "command": "uv",
                     "args": [
-                        "run", "python", "-m", "roboco.mcp.notify_server", agent_id
+                        "run",
+                        "python",
+                        "-m",
+                        "roboco.mcp.notify_server",
+                        agent_id,
                     ],
+                    "env": mcp_env,
                 },
                 "roboco-journal": {
                     "command": "uv",
                     "args": [
-                        "run", "python", "-m", "roboco.mcp.journal_server", agent_id
+                        "run",
+                        "python",
+                        "-m",
+                        "roboco.mcp.journal_server",
+                        agent_id,
                     ],
+                    "env": mcp_env,
                 },
             }
         }
@@ -465,7 +524,11 @@ class AgentOrchestrator:
                 if graceful:
                     # Graceful stop with timeout
                     proc = await asyncio.create_subprocess_exec(
-                        "docker", "stop", "-t", "10", container_name,
+                        "docker",
+                        "stop",
+                        "-t",
+                        "10",
+                        container_name,
                         stdout=asyncio.subprocess.DEVNULL,
                         stderr=asyncio.subprocess.DEVNULL,
                     )
@@ -473,7 +536,9 @@ class AgentOrchestrator:
                 else:
                     # Force kill
                     proc = await asyncio.create_subprocess_exec(
-                        "docker", "kill", container_name,
+                        "docker",
+                        "kill",
+                        container_name,
                         stdout=asyncio.subprocess.DEVNULL,
                         stderr=asyncio.subprocess.DEVNULL,
                     )
@@ -644,7 +709,11 @@ Start by:
             # Check if container is still running
             container_name = f"roboco-agent-{agent_id}"
             proc = await asyncio.create_subprocess_exec(
-                "docker", "inspect", "-f", "{{.State.Running}}", container_name,
+                "docker",
+                "inspect",
+                "-f",
+                "{{.State.Running}}",
+                container_name,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.DEVNULL,
             )
@@ -725,3 +794,620 @@ Start by:
             "waiting_count": len(self._waiting_records),
             "agents": agents,
         }
+
+    # =========================================================================
+    # SMART DISPATCHER - API HELPERS
+    # =========================================================================
+
+    @property
+    def _api_url(self) -> str:
+        """Get the internal API URL for task/notification queries."""
+        return settings.internal_api_url
+
+    def _is_agent_active(self, agent_id: str) -> bool:
+        """Check if an agent is currently running."""
+        if agent_id not in self._instances:
+            return False
+        return self._instances[agent_id].state == AgentState.ACTIVE
+
+    def _select_agent_for_cell(self, cell: str, role: str) -> str | None:
+        """
+        Select the best available agent for a cell and role.
+
+        Prefers agents that are not currently active.
+        For developers, uses round-robin among candidates.
+        """
+        prefix_map = {"backend": "be", "frontend": "fe", "uxui": "ux"}
+        prefix = prefix_map.get(cell)
+        if not prefix:
+            return None
+
+        # Build candidate list based on role
+        if role == "dev":
+            if prefix == "ux":
+                candidates = ["ux-dev"]
+            else:
+                candidates = [f"{prefix}-dev-1", f"{prefix}-dev-2"]
+        elif role == "qa":
+            candidates = [f"{prefix}-qa"]
+        elif role == "doc":
+            candidates = [f"{prefix}-doc"]
+        elif role == "pm":
+            candidates = [f"{prefix}-pm"]
+        else:
+            return None
+
+        # Prefer non-active agents
+        for agent_id in candidates:
+            if not self._is_agent_active(agent_id):
+                return agent_id
+
+        # All active - return first (task will queue for them via scan)
+        return candidates[0]
+
+    async def _claim_task_for_agent(
+        self,
+        client: httpx.AsyncClient,
+        task_id: str,
+        agent_id: str,
+    ) -> bool:
+        """Claim a task on behalf of an agent before spawning."""
+        try:
+            resp = await client.post(
+                f"{self._api_url}/tasks/{task_id}/claim",
+                json={"agent_id": agent_id},
+            )
+            if resp.status_code == http_status.HTTP_200_OK:
+                logger.info(
+                    "Task claimed for agent",
+                    task_id=task_id,
+                    agent_id=agent_id,
+                )
+                return True
+            logger.warning(
+                "Failed to claim task",
+                task_id=task_id,
+                agent_id=agent_id,
+                status=resp.status_code,
+            )
+        except Exception as e:
+            logger.error("Claim task error", task_id=task_id, error=str(e))
+        return False
+
+    async def _fetch_tasks(
+        self,
+        client: httpx.AsyncClient,
+        status: str | list[str],
+        team: str | None = None,
+    ) -> list[dict[str, Any]]:
+        """Fetch tasks by status and optional team filter."""
+        params: dict[str, Any] = {}
+        if isinstance(status, list):
+            params["status"] = ",".join(status)
+        else:
+            params["status"] = status
+        if team:
+            params["team"] = team
+
+        try:
+            resp = await client.get(f"{self._api_url}/tasks", params=params)
+            if resp.status_code == http_status.HTTP_200_OK:
+                result: list[dict[str, Any]] = resp.json()
+                return result
+        except Exception as e:
+            logger.error("Fetch tasks error", status=status, error=str(e))
+        return []
+
+    async def _fetch_notifications(
+        self,
+        client: httpx.AsyncClient,
+        notification_type: str,
+        unacknowledged: bool = True,
+    ) -> list[dict[str, Any]]:
+        """Fetch notifications by type."""
+        params: dict[str, Any] = {
+            "type": notification_type,
+            "pending_ack_only": str(unacknowledged).lower(),
+        }
+        try:
+            resp = await client.get(
+                f"{self._api_url}/notifications",
+                params=params,
+            )
+            if resp.status_code == http_status.HTTP_200_OK:
+                data = resp.json()
+                items: list[dict[str, Any]] = data.get("items", [])
+                return items
+        except Exception as e:
+            logger.error(
+                "Fetch notifications error",
+                notification_type=notification_type,
+                error=str(e),
+            )
+        return []
+
+    # =========================================================================
+    # SMART DISPATCHER - MAIN LOOP
+    # =========================================================================
+
+    async def _dispatcher_loop(self) -> None:
+        """
+        Main dispatcher loop - periodically checks for work and spawns agents.
+
+        This is the BRAIN of the orchestrator. It:
+        1. Queries for tasks needing work (pending, awaiting_qa, etc.)
+        2. Queries for events needing attention (blockers, escalations)
+        3. Spawns appropriate agents with task assignments
+        """
+        while self._running:
+            try:
+                await asyncio.sleep(self.dispatcher_interval)
+                await self._dispatch_all_work()
+            except asyncio.CancelledError:
+                break
+            except Exception as e:
+                logger.error("Dispatcher loop error", error=str(e))
+
+    async def _dispatch_all_work(self) -> None:
+        """Run all dispatchers to check for and assign work."""
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            # Task-based dispatchers (check task statuses)
+            await self._dispatch_dev_work(client)
+            await self._dispatch_qa_work(client)
+            await self._dispatch_doc_work(client)
+            await self._dispatch_marketing_work(client)
+
+            # Event-based dispatchers (check blockers, notifications)
+            await self._dispatch_blocker_work(client)
+            await self._dispatch_escalation_work(client)
+            await self._dispatch_approval_work(client)
+
+            # Scheduled dispatchers
+            await self._dispatch_audit_work(client)
+
+    # =========================================================================
+    # SMART DISPATCHER - TASK-BASED DISPATCHERS
+    # =========================================================================
+
+    async def _dispatch_dev_work(self, client: httpx.AsyncClient) -> None:
+        """
+        Dispatch development work to developers.
+
+        Monitors: pending, needs_revision tasks
+        Spawns: be-dev-1, be-dev-2, fe-dev-1, fe-dev-2, ux-dev
+        """
+        # Get tasks needing dev attention
+        tasks = await self._fetch_tasks(client, ["pending", "needs_revision"])
+
+        for task in tasks:
+            # Skip already claimed/assigned tasks
+            if task.get("assigned_to"):
+                continue
+
+            team = task.get("team")
+            if team not in ["backend", "frontend", "uxui"]:
+                continue
+
+            # Select best agent for this task
+            agent_id = self._select_agent_for_cell(team, "dev")
+            if not agent_id:
+                continue
+
+            # If agent is already active, just claim for them
+            # They'll pick it up on their next roboco_task_scan()
+            if self._is_agent_active(agent_id):
+                await self._claim_task_for_agent(client, task["id"], agent_id)
+            # Claim and spawn with assignment
+            elif await self._claim_task_for_agent(client, task["id"], agent_id):
+                await self.spawn_agent(
+                    agent_id=agent_id,
+                    task_id=task["id"],
+                    initial_prompt=self._build_dev_prompt(task),
+                )
+
+    async def _dispatch_qa_work(self, client: httpx.AsyncClient) -> None:
+        """
+        Dispatch QA work to QA agents.
+
+        Monitors: awaiting_qa tasks
+        Spawns: be-qa, fe-qa, ux-qa
+        """
+        tasks = await self._fetch_tasks(client, "awaiting_qa")
+
+        for task in tasks:
+            team = task.get("team")
+            if team not in ["backend", "frontend", "uxui"]:
+                continue
+
+            agent_id = self._select_agent_for_cell(team, "qa")
+            if not agent_id:
+                continue
+
+            if self._is_agent_active(agent_id):
+                # QA already running, they'll pick up on scan
+                continue
+
+            # Spawn QA agent with task assignment
+            await self.spawn_agent(
+                agent_id=agent_id,
+                task_id=task["id"],
+                initial_prompt=self._build_qa_prompt(task),
+            )
+            # Only spawn one QA at a time per cell
+            break
+
+    async def _dispatch_doc_work(self, client: httpx.AsyncClient) -> None:
+        """
+        Dispatch documentation work to documenters.
+
+        Monitors: awaiting_documentation tasks
+        Spawns: be-doc, fe-doc, ux-doc
+        """
+        tasks = await self._fetch_tasks(client, "awaiting_documentation")
+
+        for task in tasks:
+            team = task.get("team")
+            if team not in ["backend", "frontend", "uxui"]:
+                continue
+
+            agent_id = self._select_agent_for_cell(team, "doc")
+            if not agent_id:
+                continue
+
+            if self._is_agent_active(agent_id):
+                continue
+
+            await self.spawn_agent(
+                agent_id=agent_id,
+                task_id=task["id"],
+                initial_prompt=self._build_doc_prompt(task),
+            )
+            break
+
+    async def _dispatch_marketing_work(self, client: httpx.AsyncClient) -> None:
+        """
+        Dispatch marketing work to head-marketing.
+
+        Monitors: pending tasks with team=marketing
+        Spawns: head-marketing
+        """
+        tasks = await self._fetch_tasks(client, "pending", team="marketing")
+
+        for task in tasks:
+            # Skip already claimed/assigned tasks
+            if task.get("assigned_to"):
+                continue
+
+            if self._is_agent_active("head-marketing"):
+                # Already running, they'll pick up on scan
+                continue
+
+            await self.spawn_agent(
+                agent_id="head-marketing",
+                task_id=task["id"],
+                initial_prompt=self._build_marketing_prompt(task),
+            )
+            break
+
+    # =========================================================================
+    # SMART DISPATCHER - EVENT-BASED DISPATCHERS
+    # =========================================================================
+
+    async def _dispatch_blocker_work(self, client: httpx.AsyncClient) -> None:
+        """
+        Dispatch blocker resolution to Cell PMs.
+
+        Monitors: blocked tasks
+        Spawns: be-pm, fe-pm, ux-pm
+        """
+        tasks = await self._fetch_tasks(client, "blocked")
+
+        for task in tasks:
+            team = task.get("team")
+            if team not in ["backend", "frontend", "uxui"]:
+                continue
+
+            agent_id = self._select_agent_for_cell(team, "pm")
+            if not agent_id:
+                continue
+
+            if self._is_agent_active(agent_id):
+                continue
+
+            await self.spawn_agent(
+                agent_id=agent_id,
+                task_id=task["id"],
+                initial_prompt=self._build_pm_blocker_prompt(task),
+            )
+            break
+
+    async def _dispatch_escalation_work(self, client: httpx.AsyncClient) -> None:
+        """
+        Dispatch escalations to appropriate managers.
+
+        Monitors: escalation notifications (unacknowledged)
+        Spawns: be-pm, fe-pm, ux-pm, main-pm, product-owner, head-marketing
+        """
+        notifications = await self._fetch_notifications(client, "escalation")
+
+        for notif in notifications:
+            targets = notif.get("to_agents", [])
+
+            for agent_id in targets:
+                valid_targets = [
+                    "be-pm",
+                    "fe-pm",
+                    "ux-pm",
+                    "main-pm",
+                    "product-owner",
+                    "head-marketing",
+                ]
+                if agent_id not in valid_targets:
+                    continue
+
+                if self._is_agent_active(agent_id):
+                    continue
+
+                await self.spawn_agent(
+                    agent_id=agent_id,
+                    initial_prompt=self._build_escalation_prompt(notif),
+                )
+                break
+
+    async def _dispatch_approval_work(self, client: httpx.AsyncClient) -> None:
+        """
+        Dispatch approval requests to approvers.
+
+        Monitors: approval notifications (unacknowledged)
+        Spawns: product-owner, head-marketing, main-pm
+        """
+        notifications = await self._fetch_notifications(client, "approval")
+
+        for notif in notifications:
+            targets = notif.get("to_agents", [])
+
+            for agent_id in targets:
+                if agent_id not in ["product-owner", "head-marketing", "main-pm"]:
+                    continue
+
+                if self._is_agent_active(agent_id):
+                    continue
+
+                await self.spawn_agent(
+                    agent_id=agent_id,
+                    initial_prompt=self._build_approval_prompt(notif),
+                )
+                break
+
+    async def _dispatch_audit_work(self, client: httpx.AsyncClient) -> None:
+        """
+        Dispatch audit work to the auditor.
+
+        Monitors: quality alert notifications
+        Spawns: auditor
+
+        Note: Periodic scheduled audits can be added here in the future.
+        """
+        alerts = await self._fetch_notifications(client, "alert")
+
+        for alert in alerts:
+            targets = alert.get("to_agents", [])
+            if "auditor" in targets and not self._is_agent_active("auditor"):
+                await self.spawn_agent(
+                    agent_id="auditor",
+                    initial_prompt=self._build_audit_prompt(alert),
+                )
+                return
+
+        # TODO: Add scheduled periodic audits
+        # Check last audit time, spawn if overdue
+
+    # =========================================================================
+    # SMART DISPATCHER - PROMPT BUILDERS
+    # =========================================================================
+
+    def _build_dev_prompt(self, task: dict[str, Any]) -> str:
+        """Build initial prompt for a developer with an assigned task."""
+        task_id = task.get("id", "unknown")
+        title = task.get("title", "Untitled")
+        status = task.get("status", "unknown")
+        team = task.get("team", "unknown")
+
+        return f"""You have been assigned a development task.
+
+TASK ID: {task_id}
+TITLE: {title}
+STATUS: {status}
+TEAM: {team}
+
+This task is already CLAIMED for you. Begin work immediately:
+
+1. Call roboco_task_get("{task_id}") for full details and acceptance criteria
+2. Follow the workflow: UNDERSTAND → PLAN → EXECUTE → VERIFY → SUBMIT QA
+3. When task is submitted for QA, call roboco_task_scan() to check for more work
+4. If more work is assigned to you, continue working
+5. If no more work, call roboco_agent_idle() to shutdown gracefully
+
+Do NOT scan for work first - your task is already assigned. Begin now.
+"""
+
+    def _build_qa_prompt(self, task: dict[str, Any]) -> str:
+        """Build initial prompt for a QA agent."""
+        task_id = task.get("id", "unknown")
+        title = task.get("title", "Untitled")
+        assigned_to = task.get("assigned_to", "unknown")
+        team = task.get("team", "unknown")
+
+        return f"""A task is ready for QA review.
+
+TASK ID: {task_id}
+TITLE: {title}
+DEVELOPER: {assigned_to}
+TEAM: {team}
+
+Begin QA review:
+
+1. Call roboco_task_get("{task_id}") for full details and acceptance criteria
+2. Review the implementation against ALL acceptance criteria
+3. Test the changes thoroughly
+4. Call roboco_task_qa_pass() with notes if approved
+   OR roboco_task_qa_fail() with specific issues if rejected
+5. Call roboco_task_scan() to check for more QA work
+6. If no more work, call roboco_agent_idle() to shutdown gracefully
+"""
+
+    def _build_doc_prompt(self, task: dict[str, Any]) -> str:
+        """Build initial prompt for a documenter."""
+        task_id = task.get("id", "unknown")
+        title = task.get("title", "Untitled")
+        team = task.get("team", "unknown")
+
+        return f"""A task is ready for documentation.
+
+TASK ID: {task_id}
+TITLE: {title}
+TEAM: {team}
+
+Begin documentation:
+
+1. Call roboco_task_get("{task_id}") for full details and dev handoff notes
+2. Create or update documentation based on what was implemented
+3. Ensure code comments, README updates, API docs as needed
+4. Call roboco_task_complete("{task_id}") when documentation is done
+5. Call roboco_task_scan() to check for more documentation work
+6. If no more work, call roboco_agent_idle() to shutdown gracefully
+"""
+
+    def _build_marketing_prompt(self, task: dict[str, Any]) -> str:
+        """Build initial prompt for head-marketing with a marketing task."""
+        task_id = task.get("id", "unknown")
+        title = task.get("title", "Untitled")
+        description = task.get("description", "No description")
+
+        return f"""You have been assigned a marketing task.
+
+TASK ID: {task_id}
+TITLE: {title}
+DESCRIPTION: {description}
+
+Begin work:
+
+1. Call roboco_task_get("{task_id}") for full details and acceptance criteria
+2. Execute the marketing task (content, campaigns, research, etc.)
+3. Coordinate with Product Owner or Main PM if needed
+4. Call roboco_task_complete("{task_id}") when done
+5. Call roboco_task_scan() to check for more marketing work
+6. If no more work, call roboco_agent_idle() to shutdown gracefully
+"""
+
+    def _build_pm_blocker_prompt(self, task: dict[str, Any]) -> str:
+        """Build initial prompt for a Cell PM handling a blocker."""
+        task_id = task.get("id", "unknown")
+        title = task.get("title", "Untitled")
+        assigned_to = task.get("assigned_to", "unknown")
+        blocker = task.get("blocker", {})
+        reason = blocker.get("reason", "Unknown")
+        what_needed = blocker.get("what_needed", "Unknown")
+
+        return f"""A task in your cell is BLOCKED and needs your attention.
+
+TASK ID: {task_id}
+TITLE: {title}
+ASSIGNED TO: {assigned_to}
+BLOCKER REASON: {reason}
+WHAT'S NEEDED: {what_needed}
+
+Your job:
+
+1. Understand the blocker by reviewing task details
+2. Communicate with the blocked developer if needed
+3. Resolve the blocker (coordinate resources, make decisions, escalate if needed)
+4. Once resolved, the developer can call roboco_task_unblock()
+5. Call roboco_task_scan() to check for other blocked tasks in your cell
+6. If no more blockers, call roboco_agent_idle() to shutdown gracefully
+"""
+
+    def _build_escalation_prompt(self, notification: dict[str, Any]) -> str:
+        """Build initial prompt for handling an escalation."""
+        notif_id = notification.get("id", "unknown")
+        from_agent = notification.get("from_agent", "unknown")
+        subject = notification.get("subject", "No subject")
+        priority = notification.get("priority", "normal")
+        body = notification.get("body", "No details provided")
+
+        return f"""You have received an ESCALATION that requires your attention.
+
+FROM: {from_agent}
+SUBJECT: {subject}
+PRIORITY: {priority}
+
+DETAILS:
+{body}
+
+Your job:
+
+1. Acknowledge the notification with roboco_notify_ack("{notif_id}")
+2. Assess the escalation and determine action needed
+3. Communicate decisions via appropriate channels
+4. If this requires further escalation, use roboco_escalate()
+5. When resolved, call roboco_task_scan() for other work
+6. If no more work, call roboco_agent_idle() to shutdown gracefully
+"""
+
+    def _build_approval_prompt(self, notification: dict[str, Any]) -> str:
+        """Build initial prompt for handling an approval request."""
+        notif_id = notification.get("id", "unknown")
+        from_agent = notification.get("from_agent", "unknown")
+        subject = notification.get("subject", "No subject")
+        related_task_id = notification.get("related_task_id", "None")
+        body = notification.get("body", "No details provided")
+
+        return f"""You have received an APPROVAL REQUEST.
+
+FROM: {from_agent}
+SUBJECT: {subject}
+RELATED TASK: {related_task_id}
+
+REQUEST:
+{body}
+
+Your job:
+
+1. Review the approval request carefully
+2. If related to a task, call roboco_task_get() for context
+3. Make your decision and communicate it
+4. Acknowledge with roboco_notify_ack("{notif_id}")
+5. Call roboco_task_scan() for other work
+6. If no more work, call roboco_agent_idle() to shutdown gracefully
+"""
+
+    def _build_audit_prompt(self, alert: dict[str, Any] | None = None) -> str:
+        """Build initial prompt for the auditor."""
+        if alert:
+            subject = alert.get("subject", "Quality issue detected")
+            body = alert.get("body", "Review system quality metrics")
+
+            return f"""QUALITY ALERT triggered your attention.
+
+ALERT: {subject}
+DETAILS: {body}
+
+Your job:
+
+1. Investigate the quality issue
+2. Review relevant channels and task history (you have read access to all)
+3. Compile your findings
+4. Report to CEO via appropriate channel
+5. Call roboco_agent_idle() when complete
+"""
+
+        return """Periodic AUDIT requested.
+
+Your job:
+
+1. Review recent activity across all cells
+2. Check quality metrics (QA pass/fail rates, blocker frequency, etc.)
+3. Identify any concerns or patterns
+4. Compile audit report for CEO
+5. Call roboco_agent_idle() when complete
+"""

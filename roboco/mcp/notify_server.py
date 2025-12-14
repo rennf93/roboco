@@ -30,6 +30,12 @@ from roboco.mcp.schemas import SendNotificationInput
 # =============================================================================
 
 
+def _check_cell_scope(sender_id: str) -> tuple[bool, str]:
+    """Check if sender can notify within their cell."""
+    sender_cell = get_agent_cell(sender_id)
+    return sender_cell is not None, sender_cell or ""
+
+
 def _can_send_notification(sender_id: str, recipient_id: str) -> tuple[bool, str]:
     """Check if sender can send notification to recipient."""
     role = get_agent_role(sender_id)
@@ -44,15 +50,11 @@ def _can_send_notification(sender_id: str, recipient_id: str) -> tuple[bool, str
         return True, "OK"
 
     if scope == "cell":
-        sender_cell = get_agent_cell(sender_id)
+        has_cell, sender_cell = _check_cell_scope(sender_id)
         recipient_cell = get_agent_cell(recipient_id)
-
-        if sender_cell and sender_cell == recipient_cell:
+        if has_cell and sender_cell == recipient_cell:
             return True, "OK"
-        return (
-            False,
-            f"Cell PM can only notify members of their own cell ({sender_cell})",
-        )
+        return False, f"Cell PM can only notify own cell members ({sender_cell})"
 
     if isinstance(scope, list) and recipient_id in scope:
         return True, "OK"
@@ -73,6 +75,33 @@ def _format_error_response(
             "details": details or {},
         }
     }
+
+
+# Valid notification types and priorities
+VALID_NOTIFICATION_TYPES = frozenset(
+    ["info", "alert", "task", "escalation", "approval"]
+)
+VALID_PRIORITIES = frozenset(["low", "normal", "high", "urgent"])
+
+
+def _validate_notification_type(notification_type: str) -> dict[str, Any] | None:
+    """Validate notification type. Returns error dict or None if valid."""
+    if notification_type not in VALID_NOTIFICATION_TYPES:
+        valid = sorted(VALID_NOTIFICATION_TYPES)
+        return _format_error_response(
+            "INVALID_TYPE", f"Invalid type. Must be one of: {valid}"
+        )
+    return None
+
+
+def _validate_priority(priority: str) -> dict[str, Any] | None:
+    """Validate priority. Returns error dict or None if valid."""
+    if priority not in VALID_PRIORITIES:
+        return _format_error_response(
+            "INVALID_PRIORITY",
+            f"Invalid priority. Must be one of: {sorted(VALID_PRIORITIES)}",
+        )
+    return None
 
 
 # =============================================================================
@@ -194,11 +223,10 @@ async def _handle_ack(agent_id: str, notification_id: str) -> dict[str, Any]:
     }
 
 
-async def _handle_send(agent_id: str, data: SendNotificationInput) -> dict[str, Any]:
-    """Handle sending a notification."""
+def _check_send_permission(agent_id: str) -> dict[str, Any] | None:
+    """Check if agent has permission to send notifications."""
     role = get_agent_role(agent_id)
     permissions = NOTIFICATION_PERMISSIONS.get(role, {"can_send": False})
-
     if not permissions.get("can_send", False):
         return _format_error_response(
             "NOT_AUTHORIZED",
@@ -206,31 +234,37 @@ async def _handle_send(agent_id: str, data: SendNotificationInput) -> dict[str, 
             "Only PMs, Board members, and Auditor can send notifications.",
             {"your_role": role},
         )
+    return None
 
-    denied_recipients = []
-    for recipient in data.recipients:
-        can_send, reason = _can_send_notification(agent_id, recipient)
-        if not can_send:
-            denied_recipients.append({"recipient": recipient, "reason": reason})
 
-    if denied_recipients:
+def _check_recipients(agent_id: str, recipients: list[str]) -> dict[str, Any] | None:
+    """Check if agent can send to all recipients."""
+    denied = [
+        {"recipient": r, "reason": reason}
+        for r in recipients
+        for can_send, reason in [_can_send_notification(agent_id, r)]
+        if not can_send
+    ]
+    if denied:
         return _format_error_response(
             "RECIPIENT_DENIED",
             "Cannot send to one or more recipients",
-            {"denied": denied_recipients},
+            {"denied": denied},
         )
+    return None
 
-    valid_types = ["info", "alert", "task", "escalation", "approval"]
-    if data.notification_type not in valid_types:
-        return _format_error_response(
-            "INVALID_TYPE", f"Invalid notification type. Must be one of: {valid_types}"
-        )
 
-    valid_priorities = ["low", "normal", "high", "urgent"]
-    if data.priority not in valid_priorities:
-        return _format_error_response(
-            "INVALID_PRIORITY", f"Invalid priority. Must be one of: {valid_priorities}"
-        )
+async def _handle_send(agent_id: str, data: SendNotificationInput) -> dict[str, Any]:
+    """Handle sending a notification."""
+    # Validate permissions and data
+    if error := _check_send_permission(agent_id):
+        return error
+    if error := _check_recipients(agent_id, data.recipients):
+        return error
+    if error := _validate_notification_type(data.notification_type):
+        return error
+    if error := _validate_priority(data.priority):
+        return error
 
     async with httpx.AsyncClient() as client:
         payload = {

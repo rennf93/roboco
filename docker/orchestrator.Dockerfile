@@ -42,7 +42,8 @@ RUN uv python install 3.13 && uv sync --frozen --python 3.13
 # Expose API port
 EXPOSE 8000
 
-# Default: start with main-pm, be-dev-1, be-qa
-# Override with: docker run ... roboco-orchestrator --spawn main-pm fe-dev-1
+# Start orchestrator WITHOUT spawning agents - the smart dispatcher will spawn
+# agents on-demand when work is available (avoiding wasteful spawns).
+# To manually spawn agents at startup, override: docker run ... roboco-orchestrator --spawn main-pm
 ENTRYPOINT ["uv", "run", "python", "-m", "roboco.cli"]
-CMD ["--spawn", "main-pm", "be-dev-1", "be-qa"]
+CMD []
