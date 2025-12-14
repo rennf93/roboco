@@ -35,16 +35,6 @@ _toon = ToonAdapter()
 # NOTE: For task lifecycle validation, use enforcement.task_lifecycle.VALID_TRANSITIONS
 
 
-# =============================================================================
-# HELPER FUNCTIONS
-# =============================================================================
-
-
-def _get_api_url() -> str:
-    """Get the RoboCo API base URL."""
-    return f"http://{settings.host}:{settings.port}/api/v1"
-
-
 def _format_task_response(
     task: dict[str, Any],
     next_step: str,
@@ -158,7 +148,7 @@ async def _handle_task_scan(team: str | None, agent_id: str) -> dict[str, Any]:
     async with httpx.AsyncClient() as client:
         # Get paused tasks for this agent
         paused_resp = await client.get(
-            f"{_get_api_url()}/tasks",
+            f"{settings.internal_api_url}/tasks",
             params={"assigned_to": agent_id, "status": "paused"},
         )
         paused_tasks = (
@@ -167,7 +157,7 @@ async def _handle_task_scan(team: str | None, agent_id: str) -> dict[str, Any]:
 
         # Get assigned tasks (claimed, in_progress)
         assigned_resp = await client.get(
-            f"{_get_api_url()}/tasks",
+            f"{settings.internal_api_url}/tasks",
             params={"assigned_to": agent_id},
         )
         assigned_data = (
@@ -187,7 +177,7 @@ async def _handle_task_scan(team: str | None, agent_id: str) -> dict[str, Any]:
         if team:
             params["team"] = team
         available_resp = await client.get(
-            f"{_get_api_url()}/tasks",
+            f"{settings.internal_api_url}/tasks",
             params=params,
         )
         available_tasks = (
@@ -229,7 +219,7 @@ async def _handle_task_scan(team: str | None, agent_id: str) -> dict[str, Any]:
 async def _handle_task_get(task_id: str) -> dict[str, Any]:
     """Handle getting task details."""
     async with httpx.AsyncClient() as client:
-        resp = await client.get(f"{_get_api_url()}/tasks/{task_id}")
+        resp = await client.get(f"{settings.internal_api_url}/tasks/{task_id}")
 
         if resp.status_code == status.HTTP_404_NOT_FOUND:
             return _format_error_response(
@@ -285,7 +275,7 @@ def _validate_task_claimable(task: dict) -> dict[str, Any] | None:
 async def _get_project_context(project_id: str) -> dict[str, Any] | None:
     """Fetch project context if available."""
     async with httpx.AsyncClient() as client:
-        resp = await client.get(f"{_get_api_url()}/projects/{project_id}")
+        resp = await client.get(f"{settings.internal_api_url}/projects/{project_id}")
         if resp.status_code == status.HTTP_200_OK:
             result: dict[str, Any] = resp.json()
             return result
@@ -296,7 +286,7 @@ async def _handle_task_claim(task_id: str, agent_id: str) -> dict[str, Any]:
     """Handle task claiming."""
     async with httpx.AsyncClient() as client:
         active_resp = await client.get(
-            f"{_get_api_url()}/tasks",
+            f"{settings.internal_api_url}/tasks",
             params={"assigned_to": agent_id},
         )
         if active_resp.status_code == status.HTTP_200_OK:
@@ -306,7 +296,7 @@ async def _handle_task_claim(task_id: str, agent_id: str) -> dict[str, Any]:
             if error := _check_paused_tasks(active_tasks):
                 return error
 
-        task_resp = await client.get(f"{_get_api_url()}/tasks/{task_id}")
+        task_resp = await client.get(f"{settings.internal_api_url}/tasks/{task_id}")
         if task_resp.status_code == status.HTTP_404_NOT_FOUND:
             return _format_error_response("NOT_FOUND", f"Task {task_id} not found")
 
@@ -315,7 +305,7 @@ async def _handle_task_claim(task_id: str, agent_id: str) -> dict[str, Any]:
             return error
 
         claim_resp = await client.post(
-            f"{_get_api_url()}/tasks/{task_id}/claim",
+            f"{settings.internal_api_url}/tasks/{task_id}/claim",
             json={"agent_id": agent_id},
         )
         if claim_resp.status_code != status.HTTP_200_OK:
@@ -392,7 +382,7 @@ async def _handle_task_plan(
 ) -> dict[str, Any]:
     """Handle task planning."""
     async with httpx.AsyncClient() as client:
-        task_resp = await client.get(f"{_get_api_url()}/tasks/{task_id}")
+        task_resp = await client.get(f"{settings.internal_api_url}/tasks/{task_id}")
         if task_resp.status_code == status.HTTP_404_NOT_FOUND:
             return _format_error_response("NOT_FOUND", f"Task {task_id} not found")
 
@@ -404,7 +394,7 @@ async def _handle_task_plan(
 
         plan_data = _build_plan_data(plan_params)
         update_resp = await client.patch(
-            f"{_get_api_url()}/tasks/{task_id}",
+            f"{settings.internal_api_url}/tasks/{task_id}",
             json={"plan": plan_data},
         )
         if update_resp.status_code != status.HTTP_200_OK:
@@ -470,7 +460,7 @@ def _validate_task_start(task: dict[str, Any], agent_id: str) -> dict[str, Any] 
 async def _handle_task_start(task_id: str, agent_id: str) -> dict[str, Any]:
     """Handle task start."""
     async with httpx.AsyncClient() as client:
-        task_resp = await client.get(f"{_get_api_url()}/tasks/{task_id}")
+        task_resp = await client.get(f"{settings.internal_api_url}/tasks/{task_id}")
         if task_resp.status_code == status.HTTP_404_NOT_FOUND:
             return _format_error_response("NOT_FOUND", f"Task {task_id} not found")
 
@@ -480,7 +470,9 @@ async def _handle_task_start(task_id: str, agent_id: str) -> dict[str, Any]:
             return validation_error
 
         # Start the task
-        start_resp = await client.post(f"{_get_api_url()}/tasks/{task_id}/start")
+        start_resp = await client.post(
+            f"{settings.internal_api_url}/tasks/{task_id}/start"
+        )
 
         if start_resp.status_code != status.HTTP_200_OK:
             return _format_error_response(
@@ -509,7 +501,7 @@ async def _handle_task_progress(
 ) -> dict[str, Any]:
     """Handle task progress update."""
     async with httpx.AsyncClient() as client:
-        task_resp = await client.get(f"{_get_api_url()}/tasks/{task_id}")
+        task_resp = await client.get(f"{settings.internal_api_url}/tasks/{task_id}")
         if task_resp.status_code == status.HTTP_404_NOT_FOUND:
             return _format_error_response("NOT_FOUND", f"Task {task_id} not found")
 
@@ -528,7 +520,7 @@ async def _handle_task_progress(
 
         # Add progress update
         progress_resp = await client.post(
-            f"{_get_api_url()}/tasks/{task_id}/progress",
+            f"{settings.internal_api_url}/tasks/{task_id}/progress",
             json={
                 "agent_id": agent_id,
                 "message": message,
@@ -566,7 +558,7 @@ async def _handle_task_block(
         )
 
     async with httpx.AsyncClient() as client:
-        task_resp = await client.get(f"{_get_api_url()}/tasks/{task_id}")
+        task_resp = await client.get(f"{settings.internal_api_url}/tasks/{task_id}")
         if task_resp.status_code == status.HTTP_404_NOT_FOUND:
             return _format_error_response("NOT_FOUND", f"Task {task_id} not found")
 
@@ -585,7 +577,7 @@ async def _handle_task_block(
 
         # Block the task
         block_resp = await client.post(
-            f"{_get_api_url()}/tasks/{task_id}/block",
+            f"{settings.internal_api_url}/tasks/{task_id}/block",
             json={
                 "reason": reason,
                 "blocker_type": blocker_type,
@@ -614,7 +606,7 @@ async def _handle_task_block(
 async def _handle_task_unblock(task_id: str, agent_id: str) -> dict[str, Any]:
     """Handle task unblocking."""
     async with httpx.AsyncClient() as client:
-        task_resp = await client.get(f"{_get_api_url()}/tasks/{task_id}")
+        task_resp = await client.get(f"{settings.internal_api_url}/tasks/{task_id}")
         if task_resp.status_code == status.HTTP_404_NOT_FOUND:
             return _format_error_response("NOT_FOUND", f"Task {task_id} not found")
 
@@ -631,7 +623,9 @@ async def _handle_task_unblock(task_id: str, agent_id: str) -> dict[str, Any]:
                 "Task is not blocked",
             )
 
-        unblock_resp = await client.post(f"{_get_api_url()}/tasks/{task_id}/unblock")
+        unblock_resp = await client.post(
+            f"{settings.internal_api_url}/tasks/{task_id}/unblock"
+        )
 
         if unblock_resp.status_code != status.HTTP_200_OK:
             return _format_error_response("UNBLOCK_FAILED", "Failed to unblock task")
@@ -654,7 +648,7 @@ async def _handle_task_pause(
 ) -> dict[str, Any]:
     """Handle task pausing."""
     async with httpx.AsyncClient() as client:
-        task_resp = await client.get(f"{_get_api_url()}/tasks/{task_id}")
+        task_resp = await client.get(f"{settings.internal_api_url}/tasks/{task_id}")
         if task_resp.status_code == status.HTTP_404_NOT_FOUND:
             return _format_error_response("NOT_FOUND", f"Task {task_id} not found")
 
@@ -673,7 +667,7 @@ async def _handle_task_pause(
 
         # Add checkpoint
         await client.post(
-            f"{_get_api_url()}/tasks/{task_id}/checkpoint",
+            f"{settings.internal_api_url}/tasks/{task_id}/checkpoint",
             json={
                 "agent_id": agent_id,
                 "state_summary": checkpoint_summary,
@@ -683,7 +677,9 @@ async def _handle_task_pause(
         )
 
         # Pause the task
-        pause_resp = await client.post(f"{_get_api_url()}/tasks/{task_id}/pause")
+        pause_resp = await client.post(
+            f"{settings.internal_api_url}/tasks/{task_id}/pause"
+        )
 
         if pause_resp.status_code != status.HTTP_200_OK:
             return _format_error_response("PAUSE_FAILED", "Failed to pause task")
@@ -705,7 +701,7 @@ async def _handle_task_submit_verification(
 ) -> dict[str, Any]:
     """Handle task verification submission."""
     async with httpx.AsyncClient() as client:
-        task_resp = await client.get(f"{_get_api_url()}/tasks/{task_id}")
+        task_resp = await client.get(f"{settings.internal_api_url}/tasks/{task_id}")
         if task_resp.status_code == status.HTTP_404_NOT_FOUND:
             return _format_error_response("NOT_FOUND", f"Task {task_id} not found")
 
@@ -731,7 +727,9 @@ async def _handle_task_submit_verification(
                 "before verification.",
             )
 
-        verify_resp = await client.post(f"{_get_api_url()}/tasks/{task_id}/verify")
+        verify_resp = await client.post(
+            f"{settings.internal_api_url}/tasks/{task_id}/verify"
+        )
 
         if verify_resp.status_code != status.HTTP_200_OK:
             return _format_error_response(
@@ -768,7 +766,7 @@ async def _handle_task_submit_qa(
         )
 
     async with httpx.AsyncClient() as client:
-        task_resp = await client.get(f"{_get_api_url()}/tasks/{task_id}")
+        task_resp = await client.get(f"{settings.internal_api_url}/tasks/{task_id}")
         if task_resp.status_code == status.HTTP_404_NOT_FOUND:
             return _format_error_response("NOT_FOUND", f"Task {task_id} not found")
 
@@ -787,7 +785,7 @@ async def _handle_task_submit_qa(
 
         # Update with notes
         await client.patch(
-            f"{_get_api_url()}/tasks/{task_id}",
+            f"{settings.internal_api_url}/tasks/{task_id}",
             json={
                 "dev_notes": dev_notes,
                 "documenter_handoff": handoff_summary,
@@ -795,7 +793,9 @@ async def _handle_task_submit_qa(
         )
 
         # Submit for QA
-        qa_resp = await client.post(f"{_get_api_url()}/tasks/{task_id}/submit-qa")
+        qa_resp = await client.post(
+            f"{settings.internal_api_url}/tasks/{task_id}/submit-qa"
+        )
 
         if qa_resp.status_code != status.HTTP_200_OK:
             return _format_error_response("SUBMIT_FAILED", "Failed to submit for QA")
@@ -825,7 +825,7 @@ async def _handle_task_qa_pass(
         )
 
     async with httpx.AsyncClient() as client:
-        task_resp = await client.get(f"{_get_api_url()}/tasks/{task_id}")
+        task_resp = await client.get(f"{settings.internal_api_url}/tasks/{task_id}")
         if task_resp.status_code == status.HTTP_404_NOT_FOUND:
             return _format_error_response("NOT_FOUND", f"Task {task_id} not found")
 
@@ -845,7 +845,7 @@ async def _handle_task_qa_pass(
             )
 
         pass_resp = await client.post(
-            f"{_get_api_url()}/tasks/{task_id}/pass-qa",
+            f"{settings.internal_api_url}/tasks/{task_id}/pass-qa",
             json={"notes": qa_notes},
         )
 
@@ -882,7 +882,7 @@ async def _handle_task_qa_fail(
         )
 
     async with httpx.AsyncClient() as client:
-        task_resp = await client.get(f"{_get_api_url()}/tasks/{task_id}")
+        task_resp = await client.get(f"{settings.internal_api_url}/tasks/{task_id}")
         if task_resp.status_code == status.HTTP_404_NOT_FOUND:
             return _format_error_response("NOT_FOUND", f"Task {task_id} not found")
 
@@ -897,7 +897,7 @@ async def _handle_task_qa_fail(
         full_notes = f"{qa_notes}\n\nIssues:\n" + "\n".join(f"- {i}" for i in issues)
 
         fail_resp = await client.post(
-            f"{_get_api_url()}/tasks/{task_id}/fail-qa",
+            f"{settings.internal_api_url}/tasks/{task_id}/fail-qa",
             json={"notes": full_notes},
         )
 
@@ -918,7 +918,7 @@ async def _handle_task_qa_fail(
 async def _handle_task_complete(task_id: str) -> dict[str, Any]:
     """Handle task completion."""
     async with httpx.AsyncClient() as client:
-        task_resp = await client.get(f"{_get_api_url()}/tasks/{task_id}")
+        task_resp = await client.get(f"{settings.internal_api_url}/tasks/{task_id}")
         if task_resp.status_code == status.HTTP_404_NOT_FOUND:
             return _format_error_response("NOT_FOUND", f"Task {task_id} not found")
 
@@ -930,7 +930,9 @@ async def _handle_task_complete(task_id: str) -> dict[str, Any]:
                 "Task must be awaiting documentation to complete",
             )
 
-        complete_resp = await client.post(f"{_get_api_url()}/tasks/{task_id}/complete")
+        complete_resp = await client.post(
+            f"{settings.internal_api_url}/tasks/{task_id}/complete"
+        )
 
         if complete_resp.status_code != status.HTTP_200_OK:
             return _format_error_response("COMPLETE_FAILED", "Failed to complete task")
@@ -942,6 +944,32 @@ async def _handle_task_complete(task_id: str) -> dict[str, Any]:
         "DONE",
         "Task completed successfully!\nCall roboco_task_scan for new work.",
     )
+
+
+async def _handle_agent_idle(agent_id: str) -> dict[str, Any]:
+    """Handle agent going idle (no work available)."""
+    async with httpx.AsyncClient() as client:
+        # Signal to orchestrator that this agent is idle
+        resp = await client.post(
+            f"{settings.internal_api_url}/orchestrator/agents/{agent_id}/mark-waiting",
+            params={"waiting_for": "task_assignment"},
+        )
+
+        if resp.status_code == status.HTTP_204_NO_CONTENT:
+            return {
+                "status": "idle",
+                "message": (
+                    "You are now in WAITING state. Your container will terminate "
+                    "to save resources. You will be respawned when work is available."
+                ),
+                "action": "EXIT_GRACEFULLY",
+            }
+
+        return _format_error_response(
+            "IDLE_FAILED",
+            "Failed to signal idle state to orchestrator",
+            {"status_code": resp.status_code},
+        )
 
 
 # =============================================================================
@@ -1261,6 +1289,20 @@ def create_task_mcp_server(agent_id: str) -> FastMCP:
             Completed task
         """
         return await _handle_task_complete(task_id)
+
+    @mcp.tool()
+    async def roboco_agent_idle() -> dict[str, Any]:
+        """
+        Signal that you have no work and should go idle.
+
+        Call this when roboco_task_scan returns no tasks.
+        Your container will be terminated to save resources.
+        You will be automatically respawned when new work is available.
+
+        Returns:
+            Confirmation of idle state
+        """
+        return await _handle_agent_idle(agent_id)
 
     return mcp
 

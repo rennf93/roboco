@@ -1,7 +1,7 @@
 """
 Agent Orchestrator
 
-Manages Claude Code instances for all RoboCo agents.
+Manages Claude Code containers for all RoboCo agents.
 Handles spawning, monitoring, health checks, and graceful shutdown.
 """
 
@@ -31,6 +31,19 @@ logger = structlog.get_logger()
 AgentState = OrchestratorAgentState
 AgentConfig = OrchestratorAgentConfig
 
+# Docker configuration
+AGENT_IMAGE = "roboco-agent"
+AGENT_NETWORK = "roboco_default"
+
+# When running in a container, we need host paths for volume mounts.
+# These can be overridden via environment variables.
+CLAUDE_AUTH_HOST_PATH = os.environ.get(
+    "ROBOCO_HOST_CLAUDE_DIR",
+    str(Path.home() / ".claude"),
+)
+PROJECT_HOST_PATH = os.environ.get("ROBOCO_HOST_PROJECT_DIR", "")
+DATA_HOST_PATH = os.environ.get("ROBOCO_HOST_DATA_DIR", "")
+
 
 # =============================================================================
 # ORCHESTRATOR
@@ -39,11 +52,11 @@ AgentConfig = OrchestratorAgentConfig
 
 class AgentOrchestrator:
     """
-    Manages Claude Code instances for all agents.
+    Manages Claude Code containers for all agents.
 
     Responsibilities:
-    - Spawn agents with correct blueprints
-    - Monitor health (heartbeat, errors)
+    - Spawn agents as Docker containers
+    - Monitor health via docker inspect
     - Handle waiting states and respawning
     - Provide status API
     - Cost-efficient on-demand spawning
@@ -53,9 +66,11 @@ class AgentOrchestrator:
         self,
         blueprints_dir: Path | None = None,
         mcp_config_dir: Path | None = None,
+        project_root: Path | None = None,
     ):
         self.blueprints_dir = blueprints_dir or Path("agents/blueprints")
         self.mcp_config_dir = mcp_config_dir or Path(".mcp")
+        self.project_root = project_root or Path.cwd()
 
         self._instances: dict[str, AgentInstance] = {}
         self._waiting_records: dict[str, WaitingRecord] = {}
@@ -70,6 +85,10 @@ class AgentOrchestrator:
     async def start(self) -> None:
         """Start the orchestrator."""
         self._running = True
+
+        # Ensure agent image is built
+        await self._ensure_agent_image()
+
         self._health_task = asyncio.create_task(self._health_loop())
         logger.info("Orchestrator started")
 
@@ -88,6 +107,42 @@ class AgentOrchestrator:
 
         logger.info("Orchestrator stopped")
 
+    async def _ensure_agent_image(self) -> None:
+        """Ensure the agent Docker image is built."""
+        # Check if image exists
+        proc = await asyncio.create_subprocess_exec(
+            "docker", "image", "inspect", AGENT_IMAGE,
+            stdout=asyncio.subprocess.DEVNULL,
+            stderr=asyncio.subprocess.DEVNULL,
+        )
+        await proc.wait()
+
+        if proc.returncode != 0:
+            logger.info("Building agent Docker image...")
+
+            # Determine paths - use host paths when running in container
+            if PROJECT_HOST_PATH:
+                # Running in container - use host paths for Docker build
+                dockerfile_path = f"{PROJECT_HOST_PATH}/docker/agent.Dockerfile"
+                build_context = PROJECT_HOST_PATH
+            else:
+                # Running on host
+                dockerfile_path = str(self.project_root / "docker" / "agent.Dockerfile")
+                build_context = str(self.project_root)
+
+            proc = await asyncio.create_subprocess_exec(
+                "docker", "build",
+                "-t", AGENT_IMAGE,
+                "-f", dockerfile_path,
+                build_context,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+            )
+            _, stderr = await proc.communicate()
+            if proc.returncode != 0:
+                raise RuntimeError(f"Failed to build agent image: {stderr.decode()}")
+            logger.info("Agent Docker image built successfully")
+
     # =========================================================================
     # AGENT SPAWNING
     # =========================================================================
@@ -100,7 +155,7 @@ class AgentOrchestrator:
         model: str | None = None,
     ) -> AgentInstance:
         """
-        Spawn a Claude Code instance for an agent.
+        Spawn a Claude Code container for an agent.
 
         Args:
             agent_id: Agent identifier (e.g., "be-dev-1")
@@ -154,10 +209,10 @@ class AgentOrchestrator:
 
             self._instances[agent_id] = instance
 
-        # Spawn the process
+        # Spawn the container
         try:
-            process = await self._spawn_process(config, initial_prompt)
-            instance.process = process
+            container_id = await self._spawn_container(config, initial_prompt)
+            instance.container_id = container_id
             instance.state = AgentState.ACTIVE
             instance.started_at = datetime.now(UTC)
             instance.last_activity = datetime.now(UTC)
@@ -165,6 +220,7 @@ class AgentOrchestrator:
             logger.info(
                 "Agent spawned",
                 agent_id=agent_id,
+                container_id=container_id[:12],
                 model=model,
                 task_id=task_id,
             )
@@ -181,90 +237,149 @@ class AgentOrchestrator:
             )
             raise
 
-    async def _spawn_process(
+    async def _spawn_container(
         self,
         config: AgentConfig,
         initial_prompt: str | None = None,
-    ) -> asyncio.subprocess.Process:
-        """Spawn the actual Claude Code process."""
+    ) -> str:
+        """Spawn a Docker container for the agent."""
+        container_name = f"roboco-agent-{config.agent_id}"
+
+        # Remove existing container if any
+        await self._remove_container(container_name)
+
+        # Determine host paths for volume mounts
+        # When running in a container, use PROJECT_HOST_PATH; otherwise use local paths
+        if not config.mcp_config_path:
+            raise RuntimeError("MCP config path not set")
+
+        if PROJECT_HOST_PATH:
+            # Running inside orchestrator container - use host paths
+            blueprints_host = f"{PROJECT_HOST_PATH}/agents/blueprints"
+            claude_host = CLAUDE_AUTH_HOST_PATH
+            mcp_config_host = (
+                f"{DATA_HOST_PATH}/mcp-configs/{config.mcp_config_path.name}"
+            )
+        else:
+            # Running directly on host
+            blueprints_host = str(self.blueprints_dir.absolute())
+            claude_host = CLAUDE_AUTH_HOST_PATH
+            mcp_config_host = str(config.mcp_config_path)
+
+        # Build docker run command
         cmd = [
-            "claude",
+            "docker",
+            "run",
+            "-d",
+            "--name",
+            container_name,
+            "--network",
+            AGENT_NETWORK,
+            # Mount Claude auth (needs write access for debug logs)
+            "-v",
+            f"{claude_host}:/home/agent/.claude",
+            # Mount blueprints
+            "-v",
+            f"{blueprints_host}:/app/agents/blueprints:ro",
+            # Mount MCP config
+            "-v",
+            f"{mcp_config_host}:/app/mcp-config.json:ro",
+            # Environment
+            "-e",
+            f"ROBOCO_AGENT_ID={config.agent_id}",
+            "-e",
+            "ROBOCO_API_URL=http://roboco-orchestrator:8000",
+            # The image
+            AGENT_IMAGE,
+            # Claude Code arguments
             "--model",
             MODEL_MAP.get(config.model, config.model),
             "--system-prompt-file",
-            str(config.blueprint_path),
+            f"/app/agents/blueprints/{self._get_blueprint_rel_path(config.agent_id)}",
+            "--mcp-config",
+            "/app/mcp-config.json",
             "--output-format",
             "stream-json",
+            "--verbose",
+            # Always provide a prompt (required for non-interactive mode)
+            "-p",
+            initial_prompt or (
+                "You are now online. Run roboco_task_scan() to check for work. "
+                "If no tasks are available, call roboco_agent_idle() to go into "
+                "waiting state and conserve resources."
+            ),
         ]
 
-        if config.mcp_config_path:
-            cmd.extend(["--mcp-config", str(config.mcp_config_path)])
-
-        if initial_prompt:
-            cmd.extend(["-p", initial_prompt])
-
-        env = os.environ.copy()
-        env["ROBOCO_AGENT_ID"] = config.agent_id
-
-        process = await asyncio.create_subprocess_exec(
+        proc = await asyncio.create_subprocess_exec(
             *cmd,
-            stdin=asyncio.subprocess.PIPE,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
-            env=env,
-            cwd=config.working_directory,
         )
+        stdout, stderr = await proc.communicate()
 
-        return process
+        if proc.returncode != 0:
+            raise RuntimeError(f"Failed to start container: {stderr.decode()}")
+
+        container_id = stdout.decode().strip()
+        return container_id
+
+    async def _remove_container(self, container_name: str) -> None:
+        """Remove a container if it exists."""
+        proc = await asyncio.create_subprocess_exec(
+            "docker", "rm", "-f", container_name,
+            stdout=asyncio.subprocess.DEVNULL,
+            stderr=asyncio.subprocess.DEVNULL,
+        )
+        await proc.wait()
 
     async def _generate_mcp_config(self, agent_id: str) -> Path:
-        """Generate MCP config for an agent with embedded agent_id."""
+        """Generate MCP config for an agent."""
+        # MCP servers run inside the container, connect to API via network
         config = {
             "mcpServers": {
                 "roboco-task": {
-                    "command": "python",
-                    "args": [
-                        "-m",
-                        "roboco.mcp.task_server",
-                        agent_id,
-                    ],
+                    "command": "uv",
+                    "args": ["run", "python", "-m", "roboco.mcp.task_server", agent_id],
                 },
                 "roboco-message": {
-                    "command": "python",
+                    "command": "uv",
                     "args": [
-                        "-m",
-                        "roboco.mcp.message_server",
-                        agent_id,
+                        "run", "python", "-m", "roboco.mcp.message_server", agent_id
                     ],
                 },
                 "roboco-notify": {
-                    "command": "python",
+                    "command": "uv",
                     "args": [
-                        "-m",
-                        "roboco.mcp.notify_server",
-                        agent_id,
+                        "run", "python", "-m", "roboco.mcp.notify_server", agent_id
                     ],
                 },
                 "roboco-journal": {
-                    "command": "python",
+                    "command": "uv",
                     "args": [
-                        "-m",
-                        "roboco.mcp.journal_server",
-                        agent_id,
+                        "run", "python", "-m", "roboco.mcp.journal_server", agent_id
                     ],
                 },
             }
         }
 
-        # Write to temp file
-        config_path = Path(tempfile.gettempdir()) / f"roboco-mcp-{agent_id}.json"
+        # Write to shared config directory (mounted in both orchestrator and agents)
+        # When running in container: /app/mcp-configs -> host's ./data/mcp-configs
+        # When running on host: use temp directory
+        if DATA_HOST_PATH:
+            # Running in container - use shared mounted directory
+            config_dir = Path("/app/mcp-configs")
+            config_dir.mkdir(parents=True, exist_ok=True)
+        else:
+            # Running on host - use temp directory
+            config_dir = Path(tempfile.gettempdir())
+
+        config_path = config_dir / f"roboco-mcp-{agent_id}.json"
         config_path.write_text(json.dumps(config, indent=2))
 
         return config_path
 
     def _get_blueprint_path(self, agent_id: str) -> Path:
         """Get blueprint path for an agent."""
-        # Map agent_id to blueprint
         role = self._get_agent_role(agent_id)
         team = self._get_agent_team(agent_id)
 
@@ -278,8 +393,24 @@ class AgentOrchestrator:
             cell_dir = "board"
 
         blueprint_file = f"{role.replace('_', '-')}.md"
-
         return self.blueprints_dir / cell_dir / blueprint_file
+
+    def _get_blueprint_rel_path(self, agent_id: str) -> str:
+        """Get relative blueprint path for container mount."""
+        role = self._get_agent_role(agent_id)
+        team = self._get_agent_team(agent_id)
+
+        if team == "backend":
+            cell_dir = "backend"
+        elif team == "frontend":
+            cell_dir = "frontend"
+        elif team == "uxui":
+            cell_dir = "ux_ui"
+        else:
+            cell_dir = "board"
+
+        blueprint_file = f"{role.replace('_', '-')}.md"
+        return f"{cell_dir}/{blueprint_file}"
 
     def _get_agent_role(self, agent_id: str) -> str:
         """Get role from agent_id."""
@@ -320,33 +451,39 @@ class AgentOrchestrator:
     # =========================================================================
 
     async def stop_agent(self, agent_id: str, graceful: bool = True) -> None:
-        """Stop an agent."""
+        """Stop an agent container."""
         async with self._lock:
             if agent_id not in self._instances:
                 return
 
             instance = self._instances[agent_id]
 
-            if instance.process and instance.process.returncode is None:
+            if instance.container_id:
                 instance.state = AgentState.STOPPING
+                container_name = f"roboco-agent-{agent_id}"
 
                 if graceful:
-                    # Send interrupt
-                    instance.process.terminate()
-                    try:
-                        await asyncio.wait_for(
-                            instance.process.wait(),
-                            timeout=10.0,
-                        )
-                    except TimeoutError:
-                        instance.process.kill()
-                        await instance.process.wait()
+                    # Graceful stop with timeout
+                    proc = await asyncio.create_subprocess_exec(
+                        "docker", "stop", "-t", "10", container_name,
+                        stdout=asyncio.subprocess.DEVNULL,
+                        stderr=asyncio.subprocess.DEVNULL,
+                    )
+                    await proc.wait()
                 else:
-                    instance.process.kill()
-                    await instance.process.wait()
+                    # Force kill
+                    proc = await asyncio.create_subprocess_exec(
+                        "docker", "kill", container_name,
+                        stdout=asyncio.subprocess.DEVNULL,
+                        stderr=asyncio.subprocess.DEVNULL,
+                    )
+                    await proc.wait()
+
+                # Remove container
+                await self._remove_container(container_name)
 
             instance.state = AgentState.OFFLINE
-            instance.process = None
+            instance.container_id = None
 
             logger.info("Agent stopped", agent_id=agent_id)
 
@@ -501,18 +638,30 @@ Start by:
             if instance.state not in (AgentState.ACTIVE, AgentState.WAITING_SHORT):
                 continue
 
-            if instance.process is None:
+            if instance.container_id is None:
                 continue
 
-            # Check if process died
-            if instance.process.returncode is not None:
+            # Check if container is still running
+            container_name = f"roboco-agent-{agent_id}"
+            proc = await asyncio.create_subprocess_exec(
+                "docker", "inspect", "-f", "{{.State.Running}}", container_name,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.DEVNULL,
+            )
+            stdout, _ = await proc.communicate()
+
+            is_running = stdout.decode().strip() == "true"
+
+            if not is_running:
+                cid = instance.container_id[:12] if instance.container_id else None
                 logger.warning(
-                    "Agent process died",
+                    "Agent container stopped",
                     agent_id=agent_id,
-                    returncode=instance.process.returncode,
+                    container_id=cid,
                 )
                 instance.state = AgentState.OFFLINE
                 instance.error_count += 1
+                instance.container_id = None
 
                 # Auto-restart if not too many errors
                 max_retries = 3
@@ -556,10 +705,12 @@ Start by:
                 by_state[state.value] = count
 
         for agent_id, instance in self._instances.items():
+            cid = instance.container_id[:12] if instance.container_id else None
             agents.append(
                 {
                     "agent_id": agent_id,
                     "state": instance.state.value,
+                    "container_id": cid,
                     "task_id": instance.current_task_id,
                     "error_count": instance.error_count,
                     "started_at": instance.started_at.isoformat()

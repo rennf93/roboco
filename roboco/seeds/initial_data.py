@@ -36,25 +36,25 @@ DEFAULT_CHANNELS = [
         "slug": "dev-all",
         "name": "All Developers",
         "description": "Cross-cell developer discussion",
-        "channel_type": "role",
+        "channel_type": "cross_cell",
     },
     {
         "slug": "qa-all",
         "name": "All QA",
         "description": "Cross-cell QA discussion",
-        "channel_type": "role",
+        "channel_type": "cross_cell",
     },
     {
         "slug": "pm-all",
         "name": "All PMs",
         "description": "Cross-cell PM coordination",
-        "channel_type": "role",
+        "channel_type": "cross_cell",
     },
     {
         "slug": "doc-all",
         "name": "All Documenters",
         "description": "Cross-cell documentation discussion",
-        "channel_type": "role",
+        "channel_type": "cross_cell",
     },
     # Management channels
     {
@@ -74,13 +74,13 @@ DEFAULT_CHANNELS = [
         "slug": "announcements",
         "name": "Announcements",
         "description": "Company-wide announcements (read-only for most)",
-        "channel_type": "broadcast",
+        "channel_type": "special",
     },
     {
         "slug": "all-hands",
         "name": "All Hands",
         "description": "Company-wide open discussion",
-        "channel_type": "broadcast",
+        "channel_type": "special",
     },
 ]
 
@@ -137,15 +137,15 @@ DEFAULT_AGENTS: list[dict[str, Any]] = [
         "agent_id": "ux-dev",
         "name": "UX/UI Developer",
         "role": "developer",
-        "team": "uxui",
+        "team": "ux_ui",
     },
-    {"agent_id": "ux-qa", "name": "UX/UI QA", "role": "qa", "team": "uxui"},
-    {"agent_id": "ux-pm", "name": "UX/UI PM", "role": "cell_pm", "team": "uxui"},
+    {"agent_id": "ux-qa", "name": "UX/UI QA", "role": "qa", "team": "ux_ui"},
+    {"agent_id": "ux-pm", "name": "UX/UI PM", "role": "cell_pm", "team": "ux_ui"},
     {
         "agent_id": "ux-doc",
         "name": "UX/UI Documenter",
         "role": "documenter",
-        "team": "uxui",
+        "team": "ux_ui",
     },
     # Board / Management
     {"agent_id": "main-pm", "name": "Main PM", "role": "main_pm", "team": None},

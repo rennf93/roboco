@@ -28,6 +28,119 @@ upgrade:
 	@uv sync --all-extras
 	@find . | grep -E "(__pycache__|\\.pyc|\\.pyo|\\.pytest_cache|\\.ruff_cache|\\.mypy_cache)" | xargs rm -rf
 
+# =============================================================================
+# INFRASTRUCTURE
+# =============================================================================
+
+# Default agents to spawn
+AGENTS ?= main-pm be-dev-1 be-qa
+
+# Start infrastructure (PostgreSQL + Redis)
+.PHONY: infra
+infra:
+	@echo "Starting infrastructure..."
+	@docker compose up -d postgres redis
+	@echo "Waiting for services to be healthy..."
+	@sleep 3
+	@docker compose ps
+
+# Stop infrastructure
+.PHONY: infra-down
+infra-down:
+	@echo "Stopping infrastructure..."
+	@docker compose down
+
+# Run database migrations
+.PHONY: migrate
+migrate:
+	@echo "Running database migrations..."
+	@uv run alembic upgrade head
+
+# Create new migration
+.PHONY: migration
+migration:
+	@read -p "Migration message: " msg; \
+	uv run alembic revision --autogenerate -m "$$msg"
+
+# =============================================================================
+# RUNNING THE APPLICATION
+# =============================================================================
+
+# Start API server only (development mode with reload)
+.PHONY: api
+api:
+	@echo "Starting RoboCo API (development mode)..."
+	@uv run uvicorn roboco.api.app:app --host 0.0.0.0 --port 8000 --reload
+
+# Start API server (production mode, no reload)
+.PHONY: run
+run:
+	@echo "Starting RoboCo API (production mode)..."
+	@uv run uvicorn roboco.api.app:app --host 0.0.0.0 --port 8000
+
+# Start orchestrator only (spawns agents)
+.PHONY: orchestrator
+orchestrator:
+	@echo "Starting orchestrator with agents: $(AGENTS)..."
+	@uv run python -m roboco.cli --spawn $(AGENTS)
+
+# Start API + Orchestrator (full development mode)
+.PHONY: dev
+dev:
+	@echo "Starting RoboCo in development mode..."
+	@echo "Agents to spawn: $(AGENTS)"
+	@echo ""
+	@echo "Starting API in background..."
+	@uv run uvicorn roboco.api.app:app --host 0.0.0.0 --port 8000 &
+	@sleep 2
+	@echo "Starting orchestrator..."
+	@uv run python -m roboco.cli --spawn $(AGENTS)
+
+# Initialize database only (seed data)
+.PHONY: db-init
+db-init:
+	@echo "Initializing database..."
+	@uv run python -m roboco.cli --db-only
+
+# =============================================================================
+# MONITORING & STATUS
+# =============================================================================
+
+# Show system status
+.PHONY: status
+status:
+	@echo "=== Infrastructure ==="
+	@docker compose ps
+	@echo ""
+	@echo "=== API Health ==="
+	@curl -s http://localhost:8000/health 2>/dev/null | jq . || echo "API not running"
+	@echo ""
+	@echo "=== Orchestrator Status ==="
+	@curl -s http://localhost:8000/api/v1/orchestrator/status 2>/dev/null | jq . || echo "Orchestrator not available"
+
+# Tail all logs
+.PHONY: logs
+logs:
+	@docker compose logs -f
+
+# =============================================================================
+# TMUX SESSION
+# =============================================================================
+
+# Create tmux session with all components
+.PHONY: tmux
+tmux:
+	@echo "Creating tmux session 'roboco'..."
+	@tmux kill-session -t roboco 2>/dev/null || true
+	@tmux new-session -d -s roboco -n infra
+	@tmux send-keys -t roboco:infra "cd $(PWD) && docker compose logs -f" Enter
+	@tmux new-window -t roboco -n api
+	@tmux send-keys -t roboco:api "cd $(PWD) && make api" Enter
+	@tmux new-window -t roboco -n orch
+	@tmux send-keys -t roboco:orch "cd $(PWD) && sleep 3 && make orchestrator AGENTS='$(AGENTS)'" Enter
+	@tmux select-window -t roboco:api
+	@echo "tmux session 'roboco' created. Attach with: tmux attach -t roboco"
+
 # Stop
 .PHONY: stop
 stop:
@@ -254,41 +367,55 @@ clean:
 # Help
 .PHONY: help
 help:
-	@echo "Available commands:"
-	@echo "  make install            	   - Install dependencies"
-	@echo "  make install-dev        	   - Install dev dependencies"
-	@echo "  make lock               	   - Update dependencies"
-	@echo "  make start-example      	   - Start example application with docker compose"
-	@echo "  make run-example        	   - Build and run example container directly"
-	@echo "  make stop               	   - Stop all containers and clean up resources"
-	@echo "  make restart            	   - Restart example application"
-	@echo "  make lint               	   - Run linting checks"
-	@echo "  make fix                	   - Auto-fix linting issues"
-	@echo "  make vulture            	   - Find dead code with Vulture"
-	@echo "  make bandit             	   - Run Bandit security scan"
-	@echo "  make safety             	   - Check dependencies with Safety"
-	@echo "  make pip-audit          	   - Audit dependencies with pip-audit"
-	@echo "  make radon              	   - Analyze code complexity with Radon"
-	@echo "  make xenon              	   - Check complexity thresholds with Xenon"
-	@echo "  make deptry             	   - Analyze dependencies with Deptry"
-	@echo "  make semgrep            	   - Run Semgrep static analysis"
-	@echo "  make security           	   - Run all security checks"
-	@echo "  make quality            	   - Run all code quality checks"
-	@echo "  make analysis           	   - Run all analysis tools"
-	@echo "  make check-all          	   - Run all checks (lint, security, quality, analysis)"
-	@echo "  make test               	   - Run tests with Python $(DEFAULT_PYTHON)"
-	@echo "  make test-all           	   - Run tests with all Python versions ($(PYTHON_VERSIONS))"
-	@echo "  make test-<version>     	   - Run tests with specific Python version (e.g., make test-3.10)"
-	@echo "  make local-test         	   - Run tests locally"
-	@echo "  make stress-test        	   - Run stress test"
-	@echo "  make high-load-stress-test    - Run high-load stress test"
-	@echo "  make serve-docs       		   - Serve documentation"
-	@echo "  make lint-docs        		   - Run markdownlint on documentation"
-	@echo "  make fix-docs         		   - Auto-fix markdownlint issues"
-	@echo "  make prune            		   - Prune docker resources"
+	@echo "RoboCo - AI Agents Company"
+	@echo ""
+	@echo "Infrastructure:"
+	@echo "  make infra                    - Start PostgreSQL + Redis"
+	@echo "  make infra-down               - Stop infrastructure"
+	@echo "  make migrate                  - Run database migrations"
+	@echo "  make migration                - Create new migration"
+	@echo "  make db-init                  - Initialize/seed database"
+	@echo ""
+	@echo "Running:"
+	@echo "  make dev                      - Start API + Orchestrator (development)"
+	@echo "  make dev AGENTS='a b c'       - Start with specific agents"
+	@echo "  make api                      - Start API only (with reload)"
+	@echo "  make run                      - Start API only (production)"
+	@echo "  make orchestrator             - Start orchestrator only"
+	@echo "  make tmux                     - Create tmux session with all components"
+	@echo ""
+	@echo "Monitoring:"
+	@echo "  make status                   - Show system status"
+	@echo "  make logs                     - Tail infrastructure logs"
+	@echo ""
+	@echo "Dependencies:"
+	@echo "  make install                  - Install dependencies"
+	@echo "  make install-dev              - Install dev dependencies"
+	@echo "  make lock                     - Update lock file"
+	@echo "  make upgrade                  - Upgrade all dependencies"
+	@echo ""
+	@echo "Code Quality:"
+	@echo "  make lint                     - Run linting (ruff, mypy, vulture)"
+	@echo "  make fix                      - Auto-fix linting issues"
+	@echo "  make quality                  - Run all quality checks"
+	@echo "  make security                 - Run security checks (bandit, safety, pip-audit)"
+	@echo "  make check-all                - Run ALL checks"
+	@echo ""
+	@echo "Testing:"
+	@echo "  make test                     - Run tests (Python $(DEFAULT_PYTHON))"
+	@echo "  make test-all                 - Run tests (all Python versions)"
+	@echo "  make stress-test              - Run stress test"
+	@echo ""
+	@echo "Documentation:"
+	@echo "  make serve-docs               - Serve documentation"
+	@echo "  make lint-docs                - Lint markdown files"
+	@echo ""
+	@echo "Cleanup:"
+	@echo "  make stop                     - Stop all containers"
 	@echo "  make clean                    - Clean cache files"
-	@echo "  make help             		   - Show this help message"
-	@echo "  make show-python-versions     - Show supported Python versions"
+	@echo "  make prune                    - Prune docker resources"
+	@echo ""
+	@echo "See docs/deployment.md and docs/usage.md for detailed guides."
 
 # Python versions list
 .PHONY: show-python-versions
