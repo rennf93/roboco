@@ -52,11 +52,6 @@ def _check_channel_access(agent_id: str, channel_slug: str, action: str) -> bool
     return bool(action == "read" and agent_id in channel.get("silent", []))
 
 
-def _get_api_url() -> str:
-    """Get the RoboCo API base URL."""
-    return f"http://{settings.host}:{settings.port}/api/v1"
-
-
 def _format_error_response(
     error_code: str,
     message: str,
@@ -122,13 +117,15 @@ async def _get_or_create_session(
     channel_id: str,
 ) -> str | dict[str, Any]:
     """Get or create session for channel. Returns session_id or error dict."""
-    session_resp = await client.get(f"{_get_api_url()}/channels/{channel_id}/session")
+    session_resp = await client.get(
+        f"{settings.internal_api_url}/channels/{channel_id}/session"
+    )
 
     if session_resp.status_code == status.HTTP_200_OK:
         return str(session_resp.json()["id"])
 
     create_resp = await client.post(
-        f"{_get_api_url()}/sessions",
+        f"{settings.internal_api_url}/sessions",
         json={"channel_id": channel_id},
     )
     if create_resp.status_code in [status.HTTP_200_OK, status.HTTP_201_CREATED]:
@@ -184,7 +181,7 @@ async def _handle_channel_history(
 
     async with httpx.AsyncClient() as client:
         channels_resp = await client.get(
-            f"{_get_api_url()}/channels",
+            f"{settings.internal_api_url}/channels",
             params={"slug": channel_slug},
         )
 
@@ -200,7 +197,7 @@ async def _handle_channel_history(
         channel_id = channels[0]["id"]
 
         messages_resp = await client.get(
-            f"{_get_api_url()}/channels/{channel_id}/messages",
+            f"{settings.internal_api_url}/channels/{channel_id}/messages",
             params={"after": since.isoformat(), "limit": limit},
         )
 
@@ -230,7 +227,7 @@ async def _handle_message_send(
 
     async with httpx.AsyncClient() as client:
         channels_resp = await client.get(
-            f"{_get_api_url()}/channels",
+            f"{settings.internal_api_url}/channels",
             params={"slug": data.channel_slug},
         )
 
@@ -258,7 +255,7 @@ async def _handle_message_send(
         }
 
         send_resp = await client.post(
-            f"{_get_api_url()}/messages",
+            f"{settings.internal_api_url}/messages",
             json=message_data,
             headers={"X-Agent-Id": agent_id},
         )
@@ -279,7 +276,7 @@ async def _handle_message_send(
 async def _handle_message_get(message_id: str) -> dict[str, Any]:
     """Handle message retrieval."""
     async with httpx.AsyncClient() as client:
-        resp = await client.get(f"{_get_api_url()}/messages/{message_id}")
+        resp = await client.get(f"{settings.internal_api_url}/messages/{message_id}")
 
         if resp.status_code == status.HTTP_404_NOT_FOUND:
             return _format_error_response(

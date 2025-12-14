@@ -11,9 +11,9 @@ services:
       POSTGRES_PASSWORD: roboco
       POSTGRES_DB: roboco
     ports:
-      - "5432:5432"
+      - "15432:5432"
     volumes:
-      - postgres_data:/var/lib/postgresql/data
+      - ${ROBOCO_DATA_DIR:-./data}/postgres:/var/lib/postgresql/data
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U roboco -d roboco"]
       interval: 10s
@@ -21,23 +21,82 @@ services:
       retries: 5
 
   # ==========================================================================
-  # Redis - Cache, Sessions, Message Queue
+  # Redis - Cache, Sessions, Event Bus
   # ==========================================================================
   redis:
-    image: redis:7-alpine
+    image: redis:8-alpine
     container_name: roboco-redis
     restart: unless-stopped
     command: redis-server --appendonly yes
     ports:
-      - "6379:6379"
+      - "16379:6379"
     volumes:
-      - redis_data:/data
+      - ${ROBOCO_DATA_DIR:-./data}/redis:/data
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
       interval: 10s
       timeout: 5s
       retries: 5
 
-volumes:
-  postgres_data:
-  redis_data:
+  # ==========================================================================
+  # Agent Image Builder (pre-builds the agent image at compose time)
+  # ==========================================================================
+  agent-image:
+    build:
+      context: .
+      dockerfile: docker/agent.Dockerfile
+    image: roboco-agent
+    container_name: roboco-agent-builder
+    entrypoint: ["/bin/sh", "-c", "echo 'Agent image built successfully'"]
+    restart: "no"
+
+  # ==========================================================================
+  # Orchestrator - API Server + Agent Spawner
+  # ==========================================================================
+  orchestrator:
+    build:
+      context: .
+      dockerfile: docker/orchestrator.Dockerfile
+    image: roboco-orchestrator
+    container_name: roboco-orchestrator
+    restart: unless-stopped
+    ports:
+      - "8000:8000"
+    environment:
+      # Database (use container name, not localhost)
+      ROBOCO_DATABASE_HOST: roboco-postgres
+      ROBOCO_DATABASE_PORT: 5432
+      ROBOCO_DATABASE_USER: roboco
+      ROBOCO_DATABASE_PASSWORD: roboco
+      ROBOCO_DATABASE_NAME: roboco
+      # Redis (use container name)
+      ROBOCO_REDIS_HOST: roboco-redis
+      ROBOCO_REDIS_PORT: 6379
+      # API
+      ROBOCO_HOST: 0.0.0.0
+      ROBOCO_PORT: 8000
+      # Host paths for spawning agent containers (required for Docker-in-Docker)
+      # IMPORTANT: These must be ABSOLUTE paths on the host filesystem
+      ROBOCO_HOST_PROJECT_DIR: ${ROBOCO_HOST_PROJECT_DIR:-/volume1/roboco}
+      ROBOCO_HOST_CLAUDE_DIR: ${ROBOCO_HOST_CLAUDE_DIR:-/home/renzof/.claude}
+      ROBOCO_HOST_DATA_DIR: ${ROBOCO_HOST_DATA_DIR:-/volume1/roboco/data}
+    volumes:
+      # Docker socket - allows spawning agent containers
+      - /var/run/docker.sock:/var/run/docker.sock
+      # Claude Code auth - mount your ~/.claude directory
+      - ${CLAUDE_AUTH_DIR:-/home/renzof/.claude}:/root/.claude
+      # Shared config directory for MCP configs (writable)
+      - ${ROBOCO_DATA_DIR:-./data}/mcp-configs:/app/mcp-configs
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      agent-image:
+        condition: service_completed_successfully
+    # Default agents to spawn (override in .env or command line)
+    # command: ["--spawn", "main-pm", "be-dev-1", "be-qa"]
+
+networks:
+  default:
+    name: roboco_default

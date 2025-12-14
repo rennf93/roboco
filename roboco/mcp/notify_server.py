@@ -60,11 +60,6 @@ def _can_send_notification(sender_id: str, recipient_id: str) -> tuple[bool, str
     return False, f"You cannot send notifications to {recipient_id}"
 
 
-def _get_api_url() -> str:
-    """Get the RoboCo API base URL."""
-    return f"http://{settings.host}:{settings.port}/api/v1"
-
-
 def _format_error_response(
     error_code: str,
     message: str,
@@ -100,7 +95,7 @@ async def _handle_list(
         }
 
         resp = await client.get(
-            f"{_get_api_url()}/notifications",
+            f"{settings.internal_api_url}/notifications",
             params=params,
             headers={"X-Agent-Id": agent_id},
         )
@@ -137,7 +132,7 @@ async def _handle_get(agent_id: str, notification_id: str) -> dict[str, Any]:
     """Handle getting a specific notification."""
     async with httpx.AsyncClient() as client:
         resp = await client.get(
-            f"{_get_api_url()}/notifications/{notification_id}",
+            f"{settings.internal_api_url}/notifications/{notification_id}",
             headers={"X-Agent-Id": agent_id},
         )
 
@@ -168,7 +163,7 @@ async def _handle_ack(agent_id: str, notification_id: str) -> dict[str, Any]:
     """Handle acknowledging a notification."""
     async with httpx.AsyncClient() as client:
         resp = await client.post(
-            f"{_get_api_url()}/notifications/{notification_id}/ack",
+            f"{settings.internal_api_url}/notifications/{notification_id}/ack",
             headers={"X-Agent-Id": agent_id},
         )
 
@@ -249,7 +244,7 @@ async def _handle_send(agent_id: str, data: SendNotificationInput) -> dict[str, 
         }
 
         resp = await client.post(
-            f"{_get_api_url()}/notifications",
+            f"{settings.internal_api_url}/notifications",
             json=payload,
             headers={"X-Agent-Id": agent_id},
         )

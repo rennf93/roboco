@@ -40,6 +40,10 @@ class Settings(BaseSettings):
     # ==========================================================================
     host: str = Field(default="127.0.0.1", description="Use 0.0.0.0 for containers")
     port: int = 8000
+    api_url: str | None = Field(
+        default=None,
+        description="Override API URL for containerized agents (e.g., http://roboco-orchestrator:8000)",
+    )
     reload: bool = Field(default=True, description="Auto-reload on code changes")
     workers: int = Field(default=1, ge=1)
 
@@ -48,6 +52,18 @@ class Settings(BaseSettings):
         default=["http://localhost:3000", "http://localhost:5173"]
     )
     cors_allow_credentials: bool = True
+
+    @computed_field  # type: ignore[prop-decorator]
+    @property
+    def internal_api_url(self) -> str:
+        """
+        Internal API base URL for service-to-service communication.
+
+        Uses api_url if set (for containerized agents), otherwise builds from host/port.
+        """
+        if self.api_url:
+            return f"{self.api_url.rstrip('/')}/api/v1"
+        return f"http://{self.host}:{self.port}/api/v1"
 
     # ==========================================================================
     # Database

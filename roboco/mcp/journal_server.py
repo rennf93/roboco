@@ -39,11 +39,6 @@ _toon = ToonAdapter()
 # =============================================================================
 
 
-def _get_api_url() -> str:
-    """Get the RoboCo API base URL."""
-    return f"http://{settings.host}:{settings.port}/api/v1"
-
-
 def _format_error_response(
     error_code: str,
     message: str,
@@ -67,7 +62,7 @@ async def _post_journal_entry(
     """Post to a journal endpoint. Returns (data, error)."""
     async with httpx.AsyncClient() as client:
         resp = await client.post(
-            f"{_get_api_url()}/journals/me/{endpoint}",
+            f"{settings.internal_api_url}/journals/me/{endpoint}",
             json=payload,
             headers={"X-Agent-Id": agent_id},
         )
@@ -224,7 +219,7 @@ async def _handle_search(query: str, top_k: int, agent_id: str) -> dict[str, Any
     async with httpx.AsyncClient() as client:
         payload = {"query": query, "top_k": min(top_k, 20)}
         resp = await client.post(
-            f"{_get_api_url()}/journals/me/search",
+            f"{settings.internal_api_url}/journals/me/search",
             json=payload,
             headers={"X-Agent-Id": agent_id},
         )
@@ -253,11 +248,11 @@ async def _handle_stats(agent_id: str) -> dict[str, Any]:
     """Handle journal stats retrieval."""
     async with httpx.AsyncClient() as client:
         stats_resp = await client.get(
-            f"{_get_api_url()}/journals/me/stats",
+            f"{settings.internal_api_url}/journals/me/stats",
             headers={"X-Agent-Id": agent_id},
         )
         growth_resp = await client.get(
-            f"{_get_api_url()}/journals/me/growth",
+            f"{settings.internal_api_url}/journals/me/growth",
             headers={"X-Agent-Id": agent_id},
         )
 
@@ -302,7 +297,7 @@ async def _handle_recent(
             params["task_id"] = task_id
 
         resp = await client.get(
-            f"{_get_api_url()}/journals/me/entries",
+            f"{settings.internal_api_url}/journals/me/entries",
             params=params,
             headers={"X-Agent-Id": agent_id},
         )

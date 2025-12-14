@@ -91,10 +91,10 @@ class AgentTable(Base):
 
     # Timestamps
     created_at: Mapped[datetime] = mapped_column(
-        DateTime, default=datetime.now(UTC), nullable=False
+        DateTime(timezone=True), default=datetime.now(UTC), nullable=False
     )
     updated_at: Mapped[datetime | None] = mapped_column(
-        DateTime, onupdate=datetime.now(UTC), nullable=True
+        DateTime(timezone=True), onupdate=datetime.now(UTC), nullable=True
     )
 
     # Relationships
@@ -154,15 +154,23 @@ class TaskTable(Base):
 
     # Timestamps
     created_at: Mapped[datetime] = mapped_column(
-        DateTime, default=datetime.now(UTC), nullable=False
+        DateTime(timezone=True), default=datetime.now(UTC), nullable=False
     )
     updated_at: Mapped[datetime | None] = mapped_column(
-        DateTime, onupdate=datetime.now(UTC), nullable=True
+        DateTime(timezone=True), onupdate=datetime.now(UTC), nullable=True
     )
-    claimed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
-    started_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
-    completed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
-    target_date: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    claimed_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    started_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    completed_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    target_date: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
 
     # Planning (stored as JSON)
     plan: Mapped[dict[str, Any] | None] = mapped_column(JSON, nullable=True)
@@ -252,14 +260,16 @@ class ChannelTable(Base):
     # Statistics
     message_count: Mapped[int] = mapped_column(Integer, default=0)
     group_count: Mapped[int] = mapped_column(Integer, default=0)
-    last_activity: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    last_activity: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
 
     # Timestamps
     created_at: Mapped[datetime] = mapped_column(
-        DateTime, default=datetime.now(UTC), nullable=False
+        DateTime(timezone=True), default=datetime.now(UTC), nullable=False
     )
     updated_at: Mapped[datetime | None] = mapped_column(
-        DateTime, onupdate=datetime.now(UTC), nullable=True
+        DateTime(timezone=True), onupdate=datetime.now(UTC), nullable=True
     )
 
     # Relationships
@@ -311,14 +321,16 @@ class GroupTable(Base):
     # Statistics
     total_sessions: Mapped[int] = mapped_column(Integer, default=0)
     total_messages: Mapped[int] = mapped_column(Integer, default=0)
-    last_activity: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    last_activity: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
 
     # Timestamps
     created_at: Mapped[datetime] = mapped_column(
-        DateTime, default=datetime.now(UTC), nullable=False
+        DateTime(timezone=True), default=datetime.now(UTC), nullable=False
     )
     updated_at: Mapped[datetime | None] = mapped_column(
-        DateTime, onupdate=datetime.now(UTC), nullable=True
+        DateTime(timezone=True), onupdate=datetime.now(UTC), nullable=True
     )
 
     # Relationships
@@ -372,12 +384,14 @@ class SessionTable(Base):
 
     # Timestamps
     started_at: Mapped[datetime] = mapped_column(
-        DateTime, default=datetime.now(UTC), nullable=False
+        DateTime(timezone=True), default=datetime.now(UTC), nullable=False
     )
     last_activity_at: Mapped[datetime] = mapped_column(
-        DateTime, default=datetime.now(UTC), nullable=False
+        DateTime(timezone=True), default=datetime.now(UTC), nullable=False
     )
-    closed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    closed_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
 
     # Statistics
     message_count: Mapped[int] = mapped_column(Integer, default=0)
@@ -385,7 +399,7 @@ class SessionTable(Base):
 
     # Timestamps
     created_at: Mapped[datetime] = mapped_column(
-        DateTime, default=datetime.now(UTC), nullable=False
+        DateTime(timezone=True), default=datetime.now(UTC), nullable=False
     )
 
     # Relationships
@@ -464,7 +478,7 @@ class MessageTable(Base):
 
     # Metadata
     timestamp: Mapped[datetime] = mapped_column(
-        DateTime, default=datetime.now(UTC), nullable=False, index=True
+        DateTime(timezone=True), default=datetime.now(UTC), nullable=False, index=True
     )
 
     # Extraction metadata
@@ -472,12 +486,14 @@ class MessageTable(Base):
     raw_excerpt: Mapped[str | None] = mapped_column(Text, nullable=True)
 
     # Edit tracking (stored as JSON)
-    edited_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    edited_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
     edit_history: Mapped[list[dict[str, Any]]] = mapped_column(JSON, default=list)
 
     # Timestamps
     created_at: Mapped[datetime] = mapped_column(
-        DateTime, default=datetime.now(UTC), nullable=False
+        DateTime(timezone=True), default=datetime.now(UTC), nullable=False
     )
 
     # Relationships
@@ -545,9 +561,11 @@ class NotificationTable(Base):
 
     # Timing
     timestamp: Mapped[datetime] = mapped_column(
-        DateTime, default=datetime.now(UTC), nullable=False, index=True
+        DateTime(timezone=True), default=datetime.now(UTC), nullable=False, index=True
     )
-    expires_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    expires_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
 
     # Read tracking
     read_by: Mapped[list[PyUUID]] = mapped_column(
@@ -555,11 +573,13 @@ class NotificationTable(Base):
     )
 
     # Delivery tracking
-    delivered_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    delivered_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
 
     # Timestamps
     created_at: Mapped[datetime] = mapped_column(
-        DateTime, default=datetime.now(UTC), nullable=False
+        DateTime(timezone=True), default=datetime.now(UTC), nullable=False
     )
 
     # Relationships
@@ -592,21 +612,25 @@ class JournalTable(Base):
 
     # Metadata
     total_entries: Mapped[int] = mapped_column(Integer, default=0)
-    last_entry_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    last_entry_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
 
     # Summary
     latest_summary: Mapped[str | None] = mapped_column(Text, nullable=True)
-    summary_updated_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    summary_updated_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
 
     # Growth metrics (stored as JSON)
     entries_by_type: Mapped[dict[str, int]] = mapped_column(JSON, default=dict)
 
     # Timestamps
     created_at: Mapped[datetime] = mapped_column(
-        DateTime, default=datetime.now(UTC), nullable=False
+        DateTime(timezone=True), default=datetime.now(UTC), nullable=False
     )
     updated_at: Mapped[datetime | None] = mapped_column(
-        DateTime, onupdate=datetime.now(UTC), nullable=True
+        DateTime(timezone=True), onupdate=datetime.now(UTC), nullable=True
     )
 
     # Relationships
@@ -651,7 +675,7 @@ class JournalEntryTable(Base):
 
     # Metadata
     timestamp: Mapped[datetime] = mapped_column(
-        DateTime, default=datetime.now(UTC), nullable=False, index=True
+        DateTime(timezone=True), default=datetime.now(UTC), nullable=False, index=True
     )
     tags: Mapped[list[str]] = mapped_column(ARRAY(String), default=list)
 
@@ -663,10 +687,10 @@ class JournalEntryTable(Base):
 
     # Timestamps
     created_at: Mapped[datetime] = mapped_column(
-        DateTime, default=datetime.now(UTC), nullable=False
+        DateTime(timezone=True), default=datetime.now(UTC), nullable=False
     )
     updated_at: Mapped[datetime | None] = mapped_column(
-        DateTime, onupdate=datetime.now(UTC), nullable=True
+        DateTime(timezone=True), onupdate=datetime.now(UTC), nullable=True
     )
 
     # Relationships
@@ -750,13 +774,17 @@ class HandoffTable(Base):
 
     # Timestamps
     created_at: Mapped[datetime] = mapped_column(
-        DateTime, default=datetime.now(UTC), nullable=False
+        DateTime(timezone=True), default=datetime.now(UTC), nullable=False
     )
     updated_at: Mapped[datetime | None] = mapped_column(
-        DateTime, onupdate=datetime.now(UTC), nullable=True
+        DateTime(timezone=True), onupdate=datetime.now(UTC), nullable=True
     )
-    claimed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
-    completed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    claimed_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    completed_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
 
     # Documenter feedback
     documenter_notes: Mapped[str | None] = mapped_column(Text, nullable=True)

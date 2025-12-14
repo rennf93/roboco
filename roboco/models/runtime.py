@@ -4,7 +4,6 @@ Runtime Models
 Domain types for the agent orchestrator system.
 """
 
-import asyncio
 from dataclasses import dataclass, field
 from datetime import datetime
 from enum import Enum
@@ -38,12 +37,12 @@ class OrchestratorAgentConfig:
 
 @dataclass
 class AgentInstance:
-    """A running Claude Code agent instance."""
+    """A running Claude Code agent instance (Docker container)."""
 
     id: UUID = field(default_factory=uuid4)
     agent_id: str = ""
     state: OrchestratorAgentState = OrchestratorAgentState.OFFLINE
-    process: asyncio.subprocess.Process | None = None
+    container_id: str | None = None  # Docker container ID
     config: OrchestratorAgentConfig | None = None
     started_at: datetime | None = None
     last_activity: datetime | None = None
