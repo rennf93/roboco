@@ -19,23 +19,15 @@ Usage:
 """
 
 import json
-from dataclasses import dataclass
 from typing import Any
 
 import structlog
 import toon
 from pydantic import BaseModel
 
+from roboco.models.llm import ToonConfig
+
 logger = structlog.get_logger()
-
-
-@dataclass
-class ToonConfig:
-    """Configuration for TOON encoding."""
-
-    delimiter: str = ","
-    indent: int = 2
-    include_length: bool = True
 
 
 class ToonAdapter:

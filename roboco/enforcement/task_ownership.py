@@ -4,23 +4,10 @@ Task Ownership Enforcement
 Validates task ownership and claim rules.
 """
 
-from dataclasses import dataclass
-
 from roboco.agents_config import get_agent_role, get_agent_team
 from roboco.enforcement.task_lifecycle import is_waiting_state
 from roboco.exceptions import RobocoError
-
-
-@dataclass
-class TaskClaimContext:
-    """Context for validating a task claim."""
-
-    agent_id: str
-    task_id: str
-    task_status: str
-    task_team: str
-    agent_active_tasks: list[dict]
-    agent_paused_tasks: list[dict]
+from roboco.models.enforcement import TaskClaimContext
 
 
 class TaskOwnershipError(RobocoError):

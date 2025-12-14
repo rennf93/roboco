@@ -6,106 +6,16 @@ Redis-based pub/sub event system for workflow triggers.
 
 import asyncio
 import contextlib
-import json
 from collections.abc import Callable, Coroutine
-from dataclasses import dataclass, field
-from datetime import UTC, datetime
-from enum import Enum
 from typing import Any
-from uuid import UUID, uuid4
 
 import redis.asyncio as redis
 import structlog
 
 from roboco.config import settings
+from roboco.models.events import Event, EventType
 
 logger = structlog.get_logger()
-
-
-class EventType(str, Enum):
-    """Types of events in the system."""
-
-    # Task lifecycle events
-    TASK_CREATED = "task.created"
-    TASK_CLAIMED = "task.claimed"
-    TASK_STARTED = "task.started"
-    TASK_BLOCKED = "task.blocked"
-    TASK_UNBLOCKED = "task.unblocked"
-    TASK_PAUSED = "task.paused"
-    TASK_RESUMED = "task.resumed"
-    TASK_VERIFYING = "task.verifying"
-    TASK_AWAITING_QA = "task.awaiting_qa"
-    TASK_QA_PASSED = "task.qa_passed"
-    TASK_QA_FAILED = "task.qa_failed"
-    TASK_AWAITING_DOCS = "task.awaiting_docs"
-    TASK_COMPLETED = "task.completed"
-    TASK_CANCELLED = "task.cancelled"
-
-    # Session events
-    SESSION_CREATED = "session.created"
-    SESSION_CLOSED = "session.closed"
-    SESSION_TIMEOUT = "session.timeout"
-
-    # Handoff events
-    HANDOFF_CREATED = "handoff.created"
-    HANDOFF_ACCEPTED = "handoff.accepted"
-
-    # Agent events
-    AGENT_SPAWNED = "agent.spawned"
-    AGENT_STOPPED = "agent.stopped"
-    AGENT_WAITING = "agent.waiting"
-    AGENT_RESUMED = "agent.resumed"
-    AGENT_ERROR = "agent.error"
-
-    # Notification events
-    NOTIFICATION_SENT = "notification.sent"
-    NOTIFICATION_ACKED = "notification.acked"
-
-    # Blocker events
-    BLOCKER_REPORTED = "blocker.reported"
-    BLOCKER_RESOLVED = "blocker.resolved"
-
-    # Question events
-    QUESTION_ASKED = "question.asked"
-    QUESTION_ANSWERED = "question.answered"
-
-
-@dataclass
-class Event:
-    """An event in the system."""
-
-    type: EventType
-    data: dict[str, Any]
-    id: UUID = field(default_factory=uuid4)
-    timestamp: datetime = field(default_factory=lambda: datetime.now(UTC))
-    source_agent: str | None = None
-    correlation_id: str | None = None  # For tracking related events
-
-    def to_json(self) -> str:
-        """Serialize to JSON."""
-        return json.dumps(
-            {
-                "id": str(self.id),
-                "type": self.type.value,
-                "data": self.data,
-                "timestamp": self.timestamp.isoformat(),
-                "source_agent": self.source_agent,
-                "correlation_id": self.correlation_id,
-            }
-        )
-
-    @classmethod
-    def from_json(cls, json_str: str) -> "Event":
-        """Deserialize from JSON."""
-        data = json.loads(json_str)
-        return cls(
-            id=UUID(data["id"]),
-            type=EventType(data["type"]),
-            data=data["data"],
-            timestamp=datetime.fromisoformat(data["timestamp"]),
-            source_agent=data.get("source_agent"),
-            correlation_id=data.get("correlation_id"),
-        )
 
 
 # Type for event handlers

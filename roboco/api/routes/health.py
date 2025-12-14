@@ -6,9 +6,9 @@ Endpoints for monitoring application health and readiness.
 
 import redis.asyncio as redis
 from fastapi import APIRouter, status
-from pydantic import BaseModel
 from sqlalchemy import text
 
+from roboco.api.schemas.health import HealthResponse, ReadinessResponse
 from roboco.config import settings
 from roboco.db.base import get_db_context
 
@@ -34,22 +34,6 @@ async def _check_redis() -> tuple[str, bool]:
         return "ok", True
     except Exception as e:
         return str(e), False
-
-
-class HealthResponse(BaseModel):
-    """Health check response."""
-
-    status: str
-    version: str
-    environment: str
-
-
-class ReadinessResponse(BaseModel):
-    """Readiness check response."""
-
-    status: str
-    database: str
-    redis: str
 
 
 @router.get(

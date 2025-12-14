@@ -16,7 +16,6 @@ from typing import Any
 import httpx
 from fastapi import status
 from mcp.server.fastmcp import FastMCP
-from pydantic import BaseModel, Field
 
 from roboco.agents_config import (
     NOTIFICATION_PERMISSIONS,
@@ -24,25 +23,7 @@ from roboco.agents_config import (
     get_agent_role,
 )
 from roboco.config import settings
-
-# =============================================================================
-# INPUT MODELS
-# =============================================================================
-
-
-class SendNotificationInput(BaseModel):
-    """Input for sending a notification."""
-
-    recipients: list[str] = Field(..., description="Agent IDs to notify")
-    subject: str = Field(..., description="Notification subject")
-    body: str = Field(..., description="Notification body")
-    notification_type: str = Field(
-        default="info", description="Type: info, alert, task, escalation, approval"
-    )
-    priority: str = Field(default="normal", description="low, normal, high, urgent")
-    requires_ack: bool = Field(default=True, description="Require acknowledgment")
-    related_task_id: str | None = Field(default=None, description="Related task")
-
+from roboco.mcp.schemas import SendNotificationInput
 
 # =============================================================================
 # HELPER FUNCTIONS

@@ -19,33 +19,18 @@ from typing import Any
 import httpx
 from fastapi import status
 from mcp.server.fastmcp import FastMCP
-from pydantic import BaseModel, Field
 
 from roboco.agents_config import CHANNEL_ACCESS
 from roboco.config import settings
 from roboco.llm import ToonAdapter
+from roboco.mcp.schemas import (
+    AskQuestionInput,
+    ReportBlockerInput,
+    SendMessageInput,
+)
 
 # Global TOON adapter for encoding message data
 _toon = ToonAdapter()
-
-
-# =============================================================================
-# INPUT MODELS
-# =============================================================================
-
-
-class SendMessageInput(BaseModel):
-    """Input for sending a message."""
-
-    channel_slug: str = Field(..., description="Channel slug (e.g., 'backend-cell')")
-    content: str = Field(..., description="Message content")
-    message_type: str = Field(
-        default="dialogue",
-        description="Type: reasoning, dialogue, decision, action, blocker, technical",
-    )
-    task_id: str | None = Field(default=None, description="Optional related task ID")
-    reply_to: str | None = Field(default=None, description="Message ID to reply to")
-    mentions: list[str] = Field(default_factory=list, description="Agents to mention")
 
 
 # =============================================================================
@@ -305,24 +290,6 @@ async def _handle_message_get(message_id: str) -> dict[str, Any]:
             return _format_error_response("API_ERROR", "Failed to fetch message")
 
         return {"message": resp.json()}
-
-
-class AskQuestionInput(BaseModel):
-    """Input for asking a question."""
-
-    channel_slug: str
-    question: str
-    context: str | None = None
-    task_id: str | None = None
-
-
-class ReportBlockerInput(BaseModel):
-    """Input for reporting a blocker."""
-
-    channel_slug: str
-    blocker_description: str
-    what_needed: str
-    task_id: str | None = None
 
 
 async def _handle_ask_question(

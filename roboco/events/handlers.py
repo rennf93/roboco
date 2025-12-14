@@ -5,89 +5,18 @@ Workflow trigger handlers that respond to system events.
 Uses dependency injection pattern for services to maintain separation of concerns.
 """
 
-from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any, Protocol
+from typing import Any
 
 import structlog
 
 from roboco.events.bus import Event, EventType, get_event_bus
-
-if TYPE_CHECKING:
-    from roboco.runtime.orchestrator import WaitingRecord
+from roboco.models.events import (
+    EventContext,
+    NotificationServiceProtocol,
+    OrchestratorAccessProtocol,
+)
 
 logger = structlog.get_logger()
-
-
-# =============================================================================
-# SERVICE PROTOCOLS (for dependency injection)
-# =============================================================================
-
-
-class NotificationServiceProtocol(Protocol):
-    """Protocol for notification service."""
-
-    async def send_blocker_notification(
-        self,
-        task_id: str,
-        blocker_reason: str,
-        from_agent: str | None,
-        to_pm: str,
-    ) -> None: ...
-
-    async def send_qa_ready_notification(
-        self,
-        task_id: str,
-        from_agent: str | None,
-        to_qa: str,
-    ) -> None: ...
-
-    async def send_qa_failed_notification(
-        self,
-        task_id: str,
-        qa_notes: str,
-        to_developer: str,
-    ) -> None: ...
-
-    async def send_docs_ready_notification(
-        self,
-        task_id: str,
-        from_agent: str | None,
-        to_documenter: str,
-    ) -> None: ...
-
-    async def send_handoff_notification(
-        self,
-        task_id: str,
-        handoff_id: str,
-        from_agent: str | None,
-        to_documenter: str,
-    ) -> None: ...
-
-
-class OrchestratorAccessProtocol(Protocol):
-    """Protocol for orchestrator access."""
-
-    def get_waiting_agents(self) -> dict[str, "WaitingRecord"]: ...
-
-    async def resolve_wait(self, agent_id: str, resolution: dict[str, Any]) -> Any: ...
-
-
-# =============================================================================
-# EVENT CONTEXT (dependency container)
-# =============================================================================
-
-
-@dataclass
-class EventContext:
-    """
-    Dependency container for event handlers.
-
-    Set once during application initialization, then used by all handlers.
-    This avoids runtime imports inside handler functions.
-    """
-
-    notification_service: NotificationServiceProtocol | None = None
-    orchestrator: OrchestratorAccessProtocol | None = None
 
 
 # Global context instance - set during initialization

@@ -1,0 +1,383 @@
+"""
+Agent Models
+
+Domain types for the agent system including phases, configs, and contexts.
+"""
+
+from dataclasses import dataclass, field
+from datetime import UTC, datetime
+from enum import Enum
+from typing import Any
+from uuid import UUID, uuid4
+
+from pydantic import BaseModel, Field
+
+from roboco.models import AgentRole, AgentStatus, Team
+
+# =============================================================================
+# MODEL PROVIDER
+# =============================================================================
+
+
+class ModelProvider(str, Enum):
+    """LLM provider options."""
+
+    ANTHROPIC = "anthropic"
+    OPENAI = "openai"
+    LOCAL = "local"
+
+
+# =============================================================================
+# AGENT CONFIGURATION
+# =============================================================================
+
+
+class AgentConfig(BaseModel):
+    """Configuration for an agent instance."""
+
+    # Identity
+    id: UUID = Field(default_factory=uuid4)
+    name: str
+    slug: str = Field(..., pattern=r"^[a-z0-9-]+$")
+    role: AgentRole
+    team: Team | None = None
+
+    # Model configuration
+    provider: ModelProvider = ModelProvider.ANTHROPIC
+    model: str = "claude-sonnet-4-20250514"
+    temperature: float = Field(default=0.7, ge=0.0, le=2.0)
+    max_tokens: int = Field(default=4096, ge=1)
+
+    # System prompt (loaded from blueprints)
+    system_prompt: str
+
+    # Capabilities
+    capabilities: list[str] = Field(default_factory=list)
+
+    # Permissions
+    can_notify: bool = False
+    channel_ids: list[UUID] = Field(default_factory=list)
+
+
+class AgentState(BaseModel):
+    """Current state of an agent."""
+
+    status: AgentStatus = AgentStatus.OFFLINE
+    current_task_id: UUID | None = None
+    current_session_id: UUID | None = None
+    last_activity: datetime | None = None
+    error: str | None = None
+
+    # Metrics
+    messages_sent: int = 0
+    tasks_completed: int = 0
+
+
+# =============================================================================
+# DEVELOPER PHASES AND CONTEXT
+# =============================================================================
+
+
+class DevTaskPhase(str, Enum):
+    """Phases of the developer task lifecycle."""
+
+    SCAN = "scan"
+    CLAIM = "claim"
+    UNDERSTAND = "understand"
+    PLAN = "plan"
+    EXECUTE = "execute"
+    VERIFY = "verify"
+    NOTES = "notes"
+    CLOSE = "close"
+    BLOCKED = "blocked"
+
+
+@dataclass
+class TaskContext:
+    """Context for the current task being worked on by a developer."""
+
+    task_id: UUID
+    title: str
+    phase: DevTaskPhase = DevTaskPhase.CLAIM
+    subtasks: list[dict[str, Any]] = field(default_factory=list)
+    current_subtask: int = 0
+    blockers: list[str] = field(default_factory=list)
+    commits: list[str] = field(default_factory=list)
+    started_at: datetime = field(default_factory=lambda: datetime.now(UTC))
+    journal_entries: list[str] = field(default_factory=list)
+
+
+# =============================================================================
+# QA PHASES AND CONTEXT
+# =============================================================================
+
+
+class QATaskPhase(str, Enum):
+    """Phases of the QA lifecycle."""
+
+    MONITOR = "monitor"
+    RECEIVE = "receive"
+    UNDERSTAND = "understand"
+    TEST = "test"
+    VERDICT = "verdict"
+    DOCUMENT = "document"
+    RETURN = "return"
+
+
+class TestResult(str, Enum):
+    """Test result outcomes."""
+
+    PASS = "pass"
+    FAIL = "fail"
+    BLOCKED = "blocked"
+
+
+@dataclass
+class TestCase:
+    """A single test case."""
+
+    name: str
+    description: str
+    steps: list[str]
+    expected: str
+    result: TestResult | None = None
+    actual: str | None = None
+    notes: str | None = None
+
+
+@dataclass
+class ReviewContext:
+    """Context for the current review being conducted by QA."""
+
+    task_id: UUID
+    title: str
+    phase: QATaskPhase = QATaskPhase.RECEIVE
+    test_cases: list[TestCase] = field(default_factory=list)
+    current_test: int = 0
+    findings: list[str] = field(default_factory=list)
+    verdict: TestResult | None = None
+    started_at: datetime = field(default_factory=lambda: datetime.now(UTC))
+    notes: list[str] = field(default_factory=list)
+
+
+# =============================================================================
+# PM PHASES AND CONTEXT
+# =============================================================================
+
+
+class CellPMPhase(str, Enum):
+    """Phases of the Cell PM lifecycle."""
+
+    MONITOR = "monitor"
+    TRIAGE = "triage"
+    ASSIGN = "assign"
+    FACILITATE = "facilitate"
+    ESCALATE = "escalate"
+    TRACK = "track"
+    REPORT = "report"
+
+
+class MainPMPhase(str, Enum):
+    """Phases of the Main PM lifecycle."""
+
+    OVERSEE = "oversee"
+    RECEIVE = "receive"
+    PRIORITIZE = "prioritize"
+    COORDINATE = "coordinate"
+    DISTRIBUTE = "distribute"
+    REPORT_UP = "report_up"
+    FACILITATE = "facilitate"
+
+
+@dataclass
+class CellStatus:
+    """Status of a cell."""
+
+    name: str
+    active_tasks: int = 0
+    blocked_tasks: int = 0
+    completed_today: int = 0
+    available_devs: int = 0
+    concerns: list[str] = field(default_factory=list)
+
+
+@dataclass
+class TaskAssignment:
+    """A task assignment decision."""
+
+    task_id: UUID
+    agent_id: UUID
+    agent_name: str
+    reason: str
+
+
+@dataclass
+class Escalation:
+    """An escalation to higher management."""
+
+    issue: str
+    severity: str  # low, medium, high, critical
+    task_id: UUID | None = None
+    proposed_solution: str | None = None
+
+
+# =============================================================================
+# DOCUMENTER PHASES AND CONTEXT
+# =============================================================================
+
+
+class DocTaskPhase(str, Enum):
+    """Phases of the Documenter lifecycle."""
+
+    MONITOR = "monitor"
+    RECEIVE = "receive"
+    GATHER = "gather"
+    SYNTHESIZE = "synthesize"
+    WRITE = "write"
+    REVIEW = "review"
+    PUBLISH = "publish"
+
+
+class DocType(str, Enum):
+    """Types of documentation."""
+
+    API = "api"
+    README = "readme"
+    ARCHITECTURE = "architecture"
+    CHANGELOG = "changelog"
+    KNOWLEDGE_BASE = "knowledge_base"
+    COMPONENT = "component"
+    DESIGN_SYSTEM = "design_system"
+
+
+@dataclass
+class DocumentSpec:
+    """Specification for a document to create/update."""
+
+    doc_type: DocType
+    title: str
+    path: str
+    priority: str = "required"  # required, optional
+    content: str | None = None
+
+
+@dataclass
+class DocContext:
+    """Context for the current documentation task."""
+
+    task_id: UUID
+    title: str
+    phase: DocTaskPhase = DocTaskPhase.RECEIVE
+    # Gathered materials
+    dev_notes: str | None = None
+    qa_feedback: str | None = None
+    commits: list[str] = field(default_factory=list)
+    conversations: list[str] = field(default_factory=list)
+    code_changes: list[str] = field(default_factory=list)
+    # Synthesis
+    summary: str | None = None
+    documents_needed: list[DocumentSpec] = field(default_factory=list)
+    current_doc: int = 0
+    # Output
+    written_docs: list[str] = field(default_factory=list)
+    started_at: datetime = field(default_factory=lambda: datetime.now(UTC))
+    notes: list[str] = field(default_factory=list)
+
+
+# =============================================================================
+# BOARD PHASES AND CONTEXT
+# =============================================================================
+
+
+class ProductOwnerPhase(str, Enum):
+    """Phases of the Product Owner lifecycle."""
+
+    VISION = "vision"
+    ROADMAP = "roadmap"
+    DEFINE = "define"
+    PRIORITIZE = "prioritize"
+    REVIEW = "review"
+    FEEDBACK = "feedback"
+
+
+@dataclass
+class Feature:
+    """A feature or epic."""
+
+    id: UUID
+    title: str
+    description: str
+    acceptance_criteria: list[str]
+    priority: int  # 0-3
+    status: str = "backlog"
+
+
+class HeadMarketingPhase(str, Enum):
+    """Phases of the Head of Marketing lifecycle."""
+
+    RESEARCH = "research"
+    STRATEGY = "strategy"
+    PLAN = "plan"
+    CREATE = "create"
+    EXECUTE = "execute"
+    ANALYZE = "analyze"
+
+
+@dataclass
+class Campaign:
+    """A marketing campaign."""
+
+    id: UUID
+    name: str
+    objective: str
+    channels: list[str]
+    start_date: datetime | None = None
+    end_date: datetime | None = None
+    status: str = "planning"
+    metrics: dict[str, Any] = field(default_factory=dict)
+
+
+class AuditorPhase(str, Enum):
+    """Phases of the Auditor lifecycle."""
+
+    OBSERVE = "observe"
+    ANALYZE = "analyze"
+    FLAG = "flag"
+    REPORT = "report"
+    AUDIT = "audit"
+    ADVISE = "advise"
+
+
+class AuditorFlagSeverity(str, Enum):
+    """Severity of flagged issues from auditor."""
+
+    INFO = "info"
+    WARNING = "warning"
+    CONCERN = "concern"
+    CRITICAL = "critical"
+
+
+@dataclass
+class AuditFlag:
+    """A flagged issue from audit observation."""
+
+    id: UUID
+    severity: AuditorFlagSeverity
+    category: str  # quality, process, communication, efficiency
+    description: str
+    evidence: list[str]
+    recommendation: str | None = None
+    reported_to_ceo: bool = False
+    timestamp: datetime = field(default_factory=lambda: datetime.now(UTC))
+
+
+@dataclass
+class AuditReport:
+    """A report to the CEO."""
+
+    period: str
+    summary: str
+    flags: list[AuditFlag]
+    metrics: dict[str, Any]
+    recommendations: list[str]
+    timestamp: datetime = field(default_factory=lambda: datetime.now(UTC))

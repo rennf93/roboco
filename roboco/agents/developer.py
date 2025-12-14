@@ -7,48 +7,17 @@ Handles task lifecycle:
 """
 
 import re
-from dataclasses import dataclass, field
 from datetime import UTC, datetime
-from enum import Enum
 from pathlib import Path
-from typing import Any
 from uuid import UUID
 
 import structlog
 
-from roboco.agents.base import Agent, AgentConfig
+from roboco.agents.base import Agent
 from roboco.models import AgentRole, TaskStatus, Team
+from roboco.models.agents import AgentConfig, DevTaskPhase, TaskContext
 
 logger = structlog.get_logger()
-
-
-class DevTaskPhase(str, Enum):
-    """Phases of the developer task lifecycle."""
-
-    SCAN = "scan"
-    CLAIM = "claim"
-    UNDERSTAND = "understand"
-    PLAN = "plan"
-    EXECUTE = "execute"
-    VERIFY = "verify"
-    NOTES = "notes"
-    CLOSE = "close"
-    BLOCKED = "blocked"
-
-
-@dataclass
-class TaskContext:
-    """Context for the current task being worked on."""
-
-    task_id: UUID
-    title: str
-    phase: DevTaskPhase = DevTaskPhase.CLAIM
-    subtasks: list[dict[str, Any]] = field(default_factory=list)
-    current_subtask: int = 0
-    blockers: list[str] = field(default_factory=list)
-    commits: list[str] = field(default_factory=list)
-    started_at: datetime = field(default_factory=lambda: datetime.now(UTC))
-    journal_entries: list[str] = field(default_factory=list)
 
 
 class DeveloperAgent(Agent):
