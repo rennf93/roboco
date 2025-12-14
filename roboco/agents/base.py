@@ -11,14 +11,12 @@ import contextlib
 from abc import ABC, abstractmethod
 from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime
-from enum import Enum
 from typing import TYPE_CHECKING, Any
-from uuid import UUID, uuid4
+from uuid import UUID
 
 import httpx
 import structlog
 from anthropic import AsyncAnthropic
-from pydantic import BaseModel, Field
 
 if TYPE_CHECKING:
     from anthropic.types import MessageParam
@@ -26,6 +24,7 @@ if TYPE_CHECKING:
 from roboco.config import settings
 from roboco.llm import ToonAdapter
 from roboco.models import AgentRole, AgentStatus, Team
+from roboco.models.agents import AgentConfig, AgentState
 
 # Type for reasoning stream callback (injected to avoid API layer coupling)
 ReasoningStreamCallback = Callable[[UUID, str], Awaitable[None]]
@@ -53,65 +52,6 @@ def get_reasoning_stream_callback() -> ReasoningStreamCallback | None:
 
 
 logger = structlog.get_logger()
-
-
-# =============================================================================
-# CONFIGURATION
-# =============================================================================
-
-
-class ModelProvider(str, Enum):
-    """LLM provider options."""
-
-    ANTHROPIC = "anthropic"
-    OPENAI = "openai"
-    LOCAL = "local"
-
-
-class AgentConfig(BaseModel):
-    """Configuration for an agent instance."""
-
-    # Identity
-    id: UUID = Field(default_factory=uuid4)
-    name: str
-    slug: str = Field(..., pattern=r"^[a-z0-9-]+$")
-    role: AgentRole
-    team: Team | None = None
-
-    # Model configuration
-    provider: ModelProvider = ModelProvider.ANTHROPIC
-    model: str = "claude-sonnet-4-20250514"
-    temperature: float = Field(default=0.7, ge=0.0, le=2.0)
-    max_tokens: int = Field(default=4096, ge=1)
-
-    # System prompt (loaded from blueprints)
-    system_prompt: str
-
-    # Capabilities
-    capabilities: list[str] = Field(default_factory=list)
-
-    # Permissions
-    can_notify: bool = False
-    channel_ids: list[UUID] = Field(default_factory=list)
-
-
-# =============================================================================
-# AGENT LIFECYCLE STATE
-# =============================================================================
-
-
-class AgentState(BaseModel):
-    """Current state of an agent."""
-
-    status: AgentStatus = AgentStatus.OFFLINE
-    current_task_id: UUID | None = None
-    current_session_id: UUID | None = None
-    last_activity: datetime | None = None
-    error: str | None = None
-
-    # Metrics
-    messages_sent: int = 0
-    tasks_completed: int = 0
 
 
 # =============================================================================

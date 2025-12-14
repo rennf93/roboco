@@ -9,74 +9,24 @@ Main PM:
 """
 
 import re
-from dataclasses import dataclass, field
-from enum import Enum
 from pathlib import Path
 from typing import Any
 from uuid import UUID
 
 import structlog
 
-from roboco.agents.base import Agent, AgentConfig
+from roboco.agents.base import Agent
 from roboco.models import AgentRole, NotificationType, TaskStatus, Team
+from roboco.models.agents import (
+    AgentConfig,
+    CellPMPhase,
+    CellStatus,
+    Escalation,
+    MainPMPhase,
+    TaskAssignment,
+)
 
 logger = structlog.get_logger()
-
-
-class CellPMPhase(str, Enum):
-    """Phases of the Cell PM lifecycle."""
-
-    MONITOR = "monitor"
-    TRIAGE = "triage"
-    ASSIGN = "assign"
-    FACILITATE = "facilitate"
-    ESCALATE = "escalate"
-    TRACK = "track"
-    REPORT = "report"
-
-
-class MainPMPhase(str, Enum):
-    """Phases of the Main PM lifecycle."""
-
-    OVERSEE = "oversee"
-    RECEIVE = "receive"
-    PRIORITIZE = "prioritize"
-    COORDINATE = "coordinate"
-    DISTRIBUTE = "distribute"
-    REPORT_UP = "report_up"
-    FACILITATE = "facilitate"
-
-
-@dataclass
-class CellStatus:
-    """Status of a cell."""
-
-    name: str
-    active_tasks: int = 0
-    blocked_tasks: int = 0
-    completed_today: int = 0
-    available_devs: int = 0
-    concerns: list[str] = field(default_factory=list)
-
-
-@dataclass
-class TaskAssignment:
-    """A task assignment decision."""
-
-    task_id: UUID
-    agent_id: UUID
-    agent_name: str
-    reason: str
-
-
-@dataclass
-class Escalation:
-    """An escalation to higher management."""
-
-    issue: str
-    severity: str  # low, medium, high, critical
-    task_id: UUID | None = None
-    proposed_solution: str | None = None
 
 
 class CellPMAgent(Agent):

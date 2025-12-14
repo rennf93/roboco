@@ -5,17 +5,26 @@ Implementation of Board-level workflows from the blueprint.
 """
 
 import re
-from dataclasses import dataclass, field
 from datetime import UTC, datetime
-from enum import Enum
 from pathlib import Path
 from typing import Any
 from uuid import UUID, uuid4
 
 import structlog
 
-from roboco.agents.base import Agent, AgentConfig
+from roboco.agents.base import Agent
 from roboco.models import AgentRole, Team
+from roboco.models.agents import (
+    AgentConfig,
+    AuditFlag,
+    AuditorFlagSeverity,
+    AuditorPhase,
+    AuditReport,
+    Campaign,
+    Feature,
+    HeadMarketingPhase,
+    ProductOwnerPhase,
+)
 
 logger = structlog.get_logger()
 
@@ -23,29 +32,6 @@ logger = structlog.get_logger()
 # =============================================================================
 # PRODUCT OWNER
 # =============================================================================
-
-
-class ProductOwnerPhase(str, Enum):
-    """Phases of the Product Owner lifecycle."""
-
-    VISION = "vision"
-    ROADMAP = "roadmap"
-    DEFINE = "define"
-    PRIORITIZE = "prioritize"
-    REVIEW = "review"
-    FEEDBACK = "feedback"
-
-
-@dataclass
-class Feature:
-    """A feature or epic."""
-
-    id: UUID
-    title: str
-    description: str
-    acceptance_criteria: list[str]
-    priority: int  # 0-3
-    status: str = "backlog"
 
 
 class ProductOwnerAgent(Agent):
@@ -193,31 +179,6 @@ ACCEPTED: [reason] or NEEDS_CHANGES: [what's missing]
 # =============================================================================
 
 
-class HeadMarketingPhase(str, Enum):
-    """Phases of the Head of Marketing lifecycle."""
-
-    RESEARCH = "research"
-    STRATEGY = "strategy"
-    PLAN = "plan"
-    CREATE = "create"
-    EXECUTE = "execute"
-    ANALYZE = "analyze"
-
-
-@dataclass
-class Campaign:
-    """A marketing campaign."""
-
-    id: UUID
-    name: str
-    objective: str
-    channels: list[str]
-    start_date: datetime | None = None
-    end_date: datetime | None = None
-    status: str = "planning"
-    metrics: dict[str, Any] = field(default_factory=dict)
-
-
 class HeadMarketingAgent(Agent):
     """
     Head of Marketing agent.
@@ -318,52 +279,6 @@ class HeadMarketingAgent(Agent):
 # =============================================================================
 # AUDITOR
 # =============================================================================
-
-
-class AuditorPhase(str, Enum):
-    """Phases of the Auditor lifecycle."""
-
-    OBSERVE = "observe"
-    ANALYZE = "analyze"
-    FLAG = "flag"
-    REPORT = "report"
-    AUDIT = "audit"
-    ADVISE = "advise"
-
-
-class FlagSeverity(str, Enum):
-    """Severity of flagged issues."""
-
-    INFO = "info"
-    WARNING = "warning"
-    CONCERN = "concern"
-    CRITICAL = "critical"
-
-
-@dataclass
-class AuditFlag:
-    """A flagged issue from audit observation."""
-
-    id: UUID
-    severity: FlagSeverity
-    category: str  # quality, process, communication, efficiency
-    description: str
-    evidence: list[str]
-    recommendation: str | None = None
-    reported_to_ceo: bool = False
-    timestamp: datetime = field(default_factory=lambda: datetime.now(UTC))
-
-
-@dataclass
-class AuditReport:
-    """A report to the CEO."""
-
-    period: str
-    summary: str
-    flags: list[AuditFlag]
-    metrics: dict[str, Any]
-    recommendations: list[str]
-    timestamp: datetime = field(default_factory=lambda: datetime.now(UTC))
 
 
 class AuditorAgent(Agent):
@@ -527,7 +442,7 @@ efficiency,warning,Unclear handoff process,3 tasks delayed,Document handoff step
             self._flags.append(
                 AuditFlag(
                     id=uuid4(),
-                    severity=FlagSeverity.CONCERN,
+                    severity=AuditorFlagSeverity.CONCERN,
                     category="analysis",
                     description=analysis[:500],
                     evidence=["Automated analysis"],
@@ -542,7 +457,9 @@ efficiency,warning,Unclear handoff process,3 tasks delayed,Document handoff step
         """
         self.log.debug("FLAG phase")
 
-        critical_flags = [f for f in self._flags if f.severity == FlagSeverity.CRITICAL]
+        critical_flags = [
+            f for f in self._flags if f.severity == AuditorFlagSeverity.CRITICAL
+        ]
         if critical_flags:
             # Immediate alert to CEO
             await self._alert_ceo(critical_flags)
@@ -564,7 +481,8 @@ efficiency,warning,Unclear handoff process,3 tasks delayed,Document handoff step
             self._last_report is None
             or hours_elapsed >= hours_in_day
             or any(
-                f.severity in [FlagSeverity.CONCERN, FlagSeverity.CRITICAL]
+                f.severity
+                in [AuditorFlagSeverity.CONCERN, AuditorFlagSeverity.CRITICAL]
                 for f in self._flags
             )
         )
@@ -607,7 +525,7 @@ efficiency,warning,Unclear handoff process,3 tasks delayed,Document handoff step
                 self._flags.append(
                     AuditFlag(
                         id=uuid4(),
-                        severity=FlagSeverity.INFO,
+                        severity=AuditorFlagSeverity.INFO,
                         category=audit_type,
                         description=findings,
                         evidence=[f"{audit_type} audit"],

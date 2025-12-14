@@ -7,66 +7,23 @@ Handles review lifecycle:
 """
 
 import re
-from dataclasses import dataclass, field
 from datetime import UTC, datetime
-from enum import Enum
 from pathlib import Path
 from uuid import UUID
 
 import structlog
 
-from roboco.agents.base import Agent, AgentConfig
+from roboco.agents.base import Agent
 from roboco.models import AgentRole, TaskStatus, Team
+from roboco.models.agents import (
+    AgentConfig,
+    QATaskPhase,
+    ReviewContext,
+    TestCase,
+    TestResult,
+)
 
 logger = structlog.get_logger()
-
-
-class QATaskPhase(str, Enum):
-    """Phases of the QA lifecycle."""
-
-    MONITOR = "monitor"
-    RECEIVE = "receive"
-    UNDERSTAND = "understand"
-    TEST = "test"
-    VERDICT = "verdict"
-    DOCUMENT = "document"
-    RETURN = "return"
-
-
-class TestResult(str, Enum):
-    """Test result outcomes."""
-
-    PASS = "pass"
-    FAIL = "fail"
-    BLOCKED = "blocked"
-
-
-@dataclass
-class TestCase:
-    """A single test case."""
-
-    name: str
-    description: str
-    steps: list[str]
-    expected: str
-    result: TestResult | None = None
-    actual: str | None = None
-    notes: str | None = None
-
-
-@dataclass
-class ReviewContext:
-    """Context for the current review being conducted."""
-
-    task_id: UUID
-    title: str
-    phase: QATaskPhase = QATaskPhase.RECEIVE
-    test_cases: list[TestCase] = field(default_factory=list)
-    current_test: int = 0
-    findings: list[str] = field(default_factory=list)
-    verdict: TestResult | None = None
-    started_at: datetime = field(default_factory=lambda: datetime.now(UTC))
-    notes: list[str] = field(default_factory=list)
 
 
 class QAAgent(Agent):

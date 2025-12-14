@@ -6,72 +6,22 @@ transcription and extraction pipelines.
 """
 
 from typing import Any
-from uuid import UUID
 
 from fastapi import APIRouter, HTTPException, Request, status
-from pydantic import BaseModel, Field
 
 from roboco.api.deps import CurrentAgentContext, CurrentAgentId, PermissionServiceDep
+from roboco.api.schemas.stream import (
+    ExtractedMessageResponse,
+    ExtractionResponse,
+    ExtractRequest,
+    StreamChunkRequest,
+    StreamCompleteRequest,
+    TranscriptionStatsResponse,
+)
 from roboco.models import MessageType
 from roboco.models.message import RawStream
 
 router = APIRouter()
-
-
-# =============================================================================
-# REQUEST/RESPONSE SCHEMAS
-# =============================================================================
-
-
-class StreamChunkRequest(BaseModel):
-    """Request to process a stream chunk."""
-
-    channel_id: UUID = Field(..., description="Target channel")
-    session_id: UUID = Field(..., description="Current session")
-    chunk: str = Field(..., description="Raw LLM output chunk")
-
-
-class StreamCompleteRequest(BaseModel):
-    """Request to mark a stream as complete."""
-
-    session_id: UUID = Field(..., description="Session to complete")
-
-
-class ExtractRequest(BaseModel):
-    """Request to extract messages from content."""
-
-    channel_id: UUID = Field(..., description="Target channel")
-    session_id: UUID = Field(..., description="Current session")
-    group_id: UUID = Field(..., description="Group within channel")
-    content: str = Field(..., description="Content to extract from")
-    task_id: UUID | None = Field(default=None, description="Related task")
-
-
-class ExtractedMessageResponse(BaseModel):
-    """Response for an extracted message."""
-
-    id: UUID
-    type: str
-    content: str
-    content_length: int
-    confidence: float
-
-
-class ExtractionResponse(BaseModel):
-    """Response from extraction."""
-
-    message_count: int
-    messages: list[ExtractedMessageResponse]
-    types_extracted: list[str]
-
-
-class TranscriptionStatsResponse(BaseModel):
-    """Response for transcription service stats."""
-
-    active_agents: int
-    total_buffers: int
-    total_buffered_chars: int
-    running: bool
 
 
 # =============================================================================

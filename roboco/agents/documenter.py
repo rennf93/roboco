@@ -7,77 +7,24 @@ Handles documentation lifecycle:
 """
 
 import re
-from dataclasses import dataclass, field
 from datetime import UTC, datetime
-from enum import Enum
 from pathlib import Path
 from uuid import UUID
 
 import aiofiles
 import structlog
 
-from roboco.agents.base import Agent, AgentConfig
+from roboco.agents.base import Agent
 from roboco.models import AgentRole, TaskStatus, Team
+from roboco.models.agents import (
+    AgentConfig,
+    DocContext,
+    DocTaskPhase,
+    DocType,
+    DocumentSpec,
+)
 
 logger = structlog.get_logger()
-
-
-class DocTaskPhase(str, Enum):
-    """Phases of the Documenter lifecycle."""
-
-    MONITOR = "monitor"
-    RECEIVE = "receive"
-    GATHER = "gather"
-    SYNTHESIZE = "synthesize"
-    WRITE = "write"
-    REVIEW = "review"
-    PUBLISH = "publish"
-
-
-class DocType(str, Enum):
-    """Types of documentation."""
-
-    API = "api"
-    README = "readme"
-    ARCHITECTURE = "architecture"
-    CHANGELOG = "changelog"
-    KNOWLEDGE_BASE = "knowledge_base"
-    COMPONENT = "component"
-    DESIGN_SYSTEM = "design_system"
-
-
-@dataclass
-class DocumentSpec:
-    """Specification for a document to create/update."""
-
-    doc_type: DocType
-    title: str
-    path: str
-    priority: str = "required"  # required, optional
-    content: str | None = None
-
-
-@dataclass
-class DocContext:
-    """Context for the current documentation task."""
-
-    task_id: UUID
-    title: str
-    phase: DocTaskPhase = DocTaskPhase.RECEIVE
-    # Gathered materials
-    dev_notes: str | None = None
-    qa_feedback: str | None = None
-    commits: list[str] = field(default_factory=list)
-    conversations: list[str] = field(default_factory=list)
-    code_changes: list[str] = field(default_factory=list)
-    # Synthesis
-    summary: str | None = None
-    documents_needed: list[DocumentSpec] = field(default_factory=list)
-    current_doc: int = 0
-    # Output
-    written_docs: list[str] = field(default_factory=list)
-    started_at: datetime = field(default_factory=lambda: datetime.now(UTC))
-    notes: list[str] = field(default_factory=list)
 
 
 class DocumenterAgent(Agent):

@@ -4,20 +4,29 @@ Task API Routes
 Full CRUD operations and lifecycle management for tasks.
 """
 
-from datetime import datetime
 from typing import Annotated
 from uuid import UUID
 
 from fastapi import APIRouter, HTTPException, Query, status
-from pydantic import BaseModel, Field
 
 from roboco.api.deps import (
     CurrentAgentContext,
     DbSession,
     PermissionServiceDep,
 )
+from roboco.api.schemas.tasks import (
+    CheckpointRequest,
+    CommitRequest,
+    ListTasksQuery,
+    ProgressRequest,
+    QANotes,
+    TaskCountResponse,
+    TaskResponse,
+    TaskUpdate,
+    TeamTasksQuery,
+)
 from roboco.db.tables import TaskTable
-from roboco.models.base import Complexity, TaskStatus, Team
+from roboco.models.base import TaskStatus, Team
 from roboco.models.task import TaskCreate
 from roboco.services.audit import get_audit_service
 from roboco.services.permissions import TaskAction
@@ -25,56 +34,6 @@ from roboco.services.task import TaskCreateRequest, get_task_service
 from roboco.utils.converters import require_uuid, to_python_uuid, to_python_uuid_list
 
 router = APIRouter(prefix="/tasks", tags=["tasks"])
-
-
-# =============================================================================
-# REQUEST/RESPONSE MODELS
-# =============================================================================
-
-
-class TaskUpdate(BaseModel):
-    """Request to update a task."""
-
-    title: str | None = None
-    description: str | None = None
-    acceptance_criteria: list[str] | None = None
-    priority: int | None = Field(default=None, ge=0, le=3)
-    target_date: datetime | None = None
-    estimated_complexity: Complexity | None = None
-    dev_notes: str | None = None
-    quick_context: str | None = None
-
-
-class TaskResponse(BaseModel):
-    """Task response model."""
-
-    id: UUID
-    title: str
-    description: str
-    acceptance_criteria: list[str]
-    status: TaskStatus
-    priority: int
-    team: Team
-    created_by: UUID
-    assigned_to: UUID | None
-    parent_task_id: UUID | None
-    dependency_ids: list[UUID]
-    blocker_ids: list[UUID]
-    created_at: datetime
-    updated_at: datetime | None
-    claimed_at: datetime | None
-    started_at: datetime | None
-    completed_at: datetime | None
-    target_date: datetime | None
-    estimated_complexity: Complexity
-    self_verified: bool
-    qa_verified: bool | None
-    dev_notes: str | None
-    qa_notes: str | None
-    quick_context: str | None
-
-    class Config:
-        from_attributes = True
 
 
 def _to_response(task: TaskTable) -> TaskResponse:
@@ -110,61 +69,6 @@ def _to_response(task: TaskTable) -> TaskResponse:
 def _to_response_list(tasks: list[TaskTable]) -> list[TaskResponse]:
     """Convert list of TaskTable to list of TaskResponse."""
     return [_to_response(t) for t in tasks]
-
-
-class ProgressRequest(BaseModel):
-    """Request to add progress update."""
-
-    message: str
-    percentage: int | None = Field(default=None, ge=0, le=100)
-
-
-class CheckpointRequest(BaseModel):
-    """Request to add checkpoint."""
-
-    state_summary: str
-    remaining_work: list[str]
-    notes: str | None = None
-
-
-class CommitRequest(BaseModel):
-    """Request to link a commit."""
-
-    hash: str = Field(..., min_length=7, max_length=40)
-    message: str
-
-
-class QANotes(BaseModel):
-    """QA review notes."""
-
-    notes: str
-
-
-class TaskCountResponse(BaseModel):
-    """Task count by category."""
-
-    counts: dict[str, int]
-
-
-# =============================================================================
-# QUERY PARAMETER MODELS
-# =============================================================================
-
-
-class ListTasksQuery(BaseModel):
-    """Query params for listing tasks."""
-
-    team: Team | None = None
-    status: TaskStatus | None = None
-    limit: int = Field(100, ge=1, le=500)
-    offset: int = Field(0, ge=0)
-
-
-class TeamTasksQuery(BaseModel):
-    """Query params for team tasks."""
-
-    task_status: TaskStatus | None = None
-    limit: int = Field(100, ge=1, le=500)
 
 
 # =============================================================================
