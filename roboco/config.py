@@ -52,10 +52,6 @@ class Settings(BaseSettings):
         default=[
             "http://localhost:3000",
             "http://localhost:5173",
-            "http://192.168.50.111:3000",
-            "http://192.168.50.111:5173",
-            "http://192.168.50.112:3000",
-            "http://192.168.50.112:5173",
         ]
     )
     cors_allow_credentials: bool = True
