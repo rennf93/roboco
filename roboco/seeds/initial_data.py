@@ -162,6 +162,13 @@ DEFAULT_AGENTS: list[dict[str, Any]] = [
         "team": None,
     },
     {"agent_id": "auditor", "name": "Auditor", "role": "auditor", "team": None},
+    # CEO (Human)
+    {
+        "agent_id": "00000000-0000-0000-0000-000000000001",
+        "name": "Renzo",
+        "role": "ceo",
+        "team": None,
+    },
 ]
 
 
@@ -169,25 +176,29 @@ DEFAULT_AGENTS: list[dict[str, Any]] = [
 # CHANNEL MEMBERSHIP
 # =============================================================================
 
+CEO_AGENT_ID = "00000000-0000-0000-0000-000000000001"
+
 CHANNEL_MEMBERSHIPS = {
-    # Cell channels - cell members
-    "backend-cell": ["be-dev-1", "be-dev-2", "be-qa", "be-pm", "be-doc"],
-    "frontend-cell": ["fe-dev-1", "fe-dev-2", "fe-qa", "fe-pm", "fe-doc"],
-    "uxui-cell": ["ux-dev", "ux-qa", "ux-pm", "ux-doc"],
-    # Role channels
-    "dev-all": ["be-dev-1", "be-dev-2", "fe-dev-1", "fe-dev-2", "ux-dev"],
-    "qa-all": ["be-qa", "fe-qa", "ux-qa"],
-    "pm-all": ["be-pm", "fe-pm", "ux-pm", "main-pm"],
-    "doc-all": ["be-doc", "fe-doc", "ux-doc"],
-    # Management channels
-    "main-pm-board": ["main-pm", "product-owner", "head-marketing", "auditor"],
-    "board-private": ["product-owner", "head-marketing", "auditor"],
-    # Broadcast channels - everyone
+    # Cell channels - cell members + CEO
+    "backend-cell": ["be-dev-1", "be-dev-2", "be-qa", "be-pm", "be-doc", CEO_AGENT_ID],
+    "frontend-cell": ["fe-dev-1", "fe-dev-2", "fe-qa", "fe-pm", "fe-doc", CEO_AGENT_ID],
+    "uxui-cell": ["ux-dev", "ux-qa", "ux-pm", "ux-doc", CEO_AGENT_ID],
+    # Role channels + CEO
+    "dev-all": ["be-dev-1", "be-dev-2", "fe-dev-1", "fe-dev-2", "ux-dev", CEO_AGENT_ID],
+    "qa-all": ["be-qa", "fe-qa", "ux-qa", CEO_AGENT_ID],
+    "pm-all": ["be-pm", "fe-pm", "ux-pm", "main-pm", CEO_AGENT_ID],
+    "doc-all": ["be-doc", "fe-doc", "ux-doc", CEO_AGENT_ID],
+    # Management channels + CEO
+    "main-pm-board": [
+        "main-pm", "product-owner", "head-marketing", "auditor", CEO_AGENT_ID
+    ],
+    "board-private": ["product-owner", "head-marketing", "auditor", CEO_AGENT_ID],
+    # Broadcast channels - everyone (CEO included via DEFAULT_AGENTS)
     "announcements": [a["agent_id"] for a in DEFAULT_AGENTS],
     "all-hands": [a["agent_id"] for a in DEFAULT_AGENTS],
 }
 
-# Auditor has silent read access to all channels
+# Auditor has silent read access to cell/role channels
 AUDITOR_SILENT_ACCESS = [
     "backend-cell",
     "frontend-cell",
