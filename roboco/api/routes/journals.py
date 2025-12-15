@@ -35,7 +35,7 @@ from roboco.models.journal import (
 )
 from roboco.services.journal import ListEntriesFilter, get_journal_service
 
-router = APIRouter(prefix="/journals", tags=["journals"])
+router = APIRouter()
 
 
 # =============================================================================

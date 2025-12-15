@@ -31,7 +31,7 @@ from roboco.services.dashboard import get_dashboard_service
 from roboco.services.kanban import get_kanban_service
 from roboco.services.metrics import get_metrics_service
 
-router = APIRouter(prefix="/dashboard", tags=["dashboard"])
+router = APIRouter()
 
 
 # =============================================================================

@@ -13,7 +13,7 @@ from roboco.models.base import Team
 from roboco.models.kanban import KanbanBoard
 from roboco.services.kanban import get_kanban_service
 
-router = APIRouter(prefix="/kanban", tags=["kanban"])
+router = APIRouter()
 
 
 # =============================================================================
