@@ -882,22 +882,26 @@ Start by:
         team: str | None = None,
     ) -> list[dict[str, Any]]:
         """Fetch tasks by status and optional team filter."""
-        params: dict[str, Any] = {}
-        if isinstance(status, list):
-            params["status"] = ",".join(status)
-        else:
-            params["status"] = status
-        if team:
-            params["team"] = team
+        # If multiple statuses, make separate requests and combine results
+        statuses = status if isinstance(status, list) else [status]
+        all_tasks: list[dict[str, Any]] = []
 
-        try:
-            resp = await client.get(f"{self._api_url}/tasks", params=params)
-            if resp.status_code == http_status.HTTP_200_OK:
-                result: list[dict[str, Any]] = resp.json()
-                return result
-        except Exception as e:
-            logger.error("Fetch tasks error", status=status, error=str(e))
-        return []
+        for single_status in statuses:
+            params: dict[str, Any] = {"status": single_status}
+            if team:
+                params["team"] = team
+
+            try:
+                resp = await client.get(f"{self._api_url}/tasks", params=params)
+                if resp.status_code == http_status.HTTP_200_OK:
+                    tasks: list[dict[str, Any]] = resp.json()
+                    all_tasks.extend(tasks)
+            except Exception as e:
+                logger.error(
+                    "Fetch tasks error", status=single_status, team=team, error=str(e)
+                )
+
+        return all_tasks
 
     async def _fetch_notifications(
         self,

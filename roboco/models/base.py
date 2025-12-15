@@ -47,6 +47,7 @@ class Team(str, Enum):
     FRONTEND = "frontend"
     UX_UI = "ux_ui"
     BOARD = "board"
+    MARKETING = "marketing"
 
 
 class AgentRole(str, Enum):
