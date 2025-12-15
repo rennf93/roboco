@@ -1,7 +1,7 @@
 """
 RoboCo Bootstrap Script
 
-Orchestrates system initialization: database, event bus, and agent runtime.
+Orchestrates system initialization: database, event bus, API server, and agent runtime.
 Data constants are in roboco/seeds/, database operations in roboco/db/seed.py.
 """
 
@@ -9,10 +9,12 @@ import asyncio
 from pathlib import Path
 
 import structlog
+import uvicorn
 
 from roboco.agents import set_reasoning_stream_callback
 from roboco.api.routes.orchestrator import set_orchestrator
 from roboco.api.websocket import broadcast_agent_chunk
+from roboco.config import settings
 from roboco.db import bootstrap_database
 from roboco.events import EventBus, set_event_context
 from roboco.events.handlers import register_default_handlers
@@ -26,6 +28,19 @@ class _BootstrapHolder:
     """Holder for bootstrap singleton instances."""
 
     orchestrator: AgentOrchestrator | None = None
+
+
+async def _run_api_server() -> None:
+    """Run the uvicorn API server."""
+    config = uvicorn.Config(
+        "roboco.api.app:app",
+        host=settings.host,
+        port=settings.port,
+        log_level="info",
+        reload=False,  # Don't reload in production/container
+    )
+    server = uvicorn.Server(config)
+    await server.serve()
 
 
 async def main(
@@ -76,6 +91,13 @@ async def main(
     # Wire up agent reasoning stream (dependency injection)
     set_reasoning_stream_callback(broadcast_agent_chunk)
 
+    # Start API server in background task
+    api_task = asyncio.create_task(_run_api_server())
+    logger.info("API server starting", host=settings.host, port=settings.port)
+
+    # Wait a moment for API to start before orchestrator begins polling
+    await asyncio.sleep(2)
+
     await orchestrator.start()
 
     # Spawn requested agents
@@ -93,9 +115,8 @@ async def main(
                 logger.error("Failed to spawn agent", agent_id=agent_id, error=str(e))
 
     try:
-        # Keep running
-        while True:
-            await asyncio.sleep(60)
+        # Wait for API server task (runs forever unless cancelled)
+        await api_task
     except asyncio.CancelledError:
         pass
     finally:

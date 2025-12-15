@@ -52,6 +52,9 @@ class Team(str, Enum):
 class AgentRole(str, Enum):
     """Agent roles in the organization."""
 
+    # System (internal orchestrator operations)
+    SYSTEM = "system"
+
     # Executive
     CEO = "ceo"
 

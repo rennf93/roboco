@@ -60,10 +60,12 @@ class Settings(BaseSettings):
         Internal API base URL for service-to-service communication.
 
         Uses api_url if set (for containerized agents), otherwise builds from host/port.
+        Note: 0.0.0.0 is only valid for binding, not connecting - use 127.0.0.1 instead.
         """
         if self.api_url:
             return f"{self.api_url.rstrip('/')}/api/v1"
-        return f"http://{self.host}:{self.port}/api/v1"
+        connect_host = "127.0.0.1" if self.host == "0.0.0.0" else self.host
+        return f"http://{connect_host}:{self.port}/api/v1"
 
     # ==========================================================================
     # Database
@@ -153,8 +155,14 @@ class Settings(BaseSettings):
 
     # Default models
     default_llm_model: str = "claude-3-opus-20240229"
-    default_embedding_model: str = "text-embedding-3-small"
-    embedding_dimensions: int = 1536
+    default_embedding_model: str = Field(
+        default="all-MiniLM-L6-v2",
+        description="HuggingFace model for local or OpenAI name with API key",
+    )
+    embedding_dimensions: int = Field(
+        default=384,
+        description="Embedding dimensions (384 for MiniLM, 1536 for OpenAI)",
+    )
 
     # ==========================================================================
     # Security
