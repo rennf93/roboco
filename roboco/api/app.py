@@ -180,32 +180,32 @@ def create_app() -> FastAPI:
     # Phase 3: Intelligence - Optimal API and Journal API
     app.include_router(
         optimal_router,
-        prefix=api_prefix,
+        prefix=f"{api_prefix}/optimal",
         tags=["Optimal API"],
     )
 
     app.include_router(
         journals_router,
-        prefix=api_prefix,
+        prefix=f"{api_prefix}/journals",
         tags=["Journals"],
     )
 
     # Phase 5: Management - Tasks, Kanban, Dashboards
     app.include_router(
         tasks_router,
-        prefix=api_prefix,
+        prefix=f"{api_prefix}/tasks",
         tags=["Tasks"],
     )
 
     app.include_router(
         kanban_router,
-        prefix=api_prefix,
+        prefix=f"{api_prefix}/kanban",
         tags=["Kanban"],
     )
 
     app.include_router(
         dashboard_router,
-        prefix=api_prefix,
+        prefix=f"{api_prefix}/dashboard",
         tags=["Dashboard"],
     )
 

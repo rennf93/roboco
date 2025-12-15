@@ -22,3 +22,7 @@ tests
 !README.md
 Makefile
 .pre-commit-config.yaml
+
+# NAS recycle bin (UGREEN NAS)
+\#recycle
+Recycling Bin
