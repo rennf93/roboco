@@ -116,8 +116,8 @@ def create_app() -> FastAPI:
         title="RoboCo API",
         description="AI Agents Company - Messaging and Task Management API",
         version=settings.app_version,
-        docs_url="/docs" if settings.debug else None,
-        redoc_url="/redoc" if settings.debug else None,
+        docs_url="/docs", # if settings.debug else None,
+        redoc_url="/redoc", # if settings.debug else None,
         lifespan=lifespan,
     )
 

@@ -33,7 +33,7 @@ from roboco.services.permissions import TaskAction
 from roboco.services.task import TaskCreateRequest, get_task_service
 from roboco.utils.converters import require_uuid, to_python_uuid, to_python_uuid_list
 
-router = APIRouter(prefix="/tasks", tags=["tasks"])
+router = APIRouter()
 
 
 def _to_response(task: TaskTable) -> TaskResponse:

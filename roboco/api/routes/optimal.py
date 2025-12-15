@@ -36,7 +36,7 @@ from roboco.services.optimal import (
     get_optimal_service,
 )
 
-router = APIRouter(prefix="/optimal", tags=["optimal"])
+router = APIRouter()
 
 
 # =============================================================================
