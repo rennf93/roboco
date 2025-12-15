@@ -109,6 +109,7 @@ class AgentOrchestrator:
         logger.info(
             "Orchestrator started",
             dispatcher_interval=self.dispatcher_interval,
+            internal_api_url=self._api_url,
         )
 
     async def stop(self) -> None:
@@ -950,7 +951,13 @@ Start by:
 
     async def _dispatch_all_work(self) -> None:
         """Run all dispatchers to check for and assign work."""
-        async with httpx.AsyncClient(timeout=30.0) as client:
+        # Orchestrator uses SYSTEM role for internal API calls
+        # Using a well-known UUID for the orchestrator identity
+        headers = {
+            "X-Agent-ID": "00000000-0000-0000-0000-000000000000",
+            "X-Agent-Role": "system",
+        }
+        async with httpx.AsyncClient(timeout=30.0, headers=headers) as client:
             # Task-based dispatchers (check task statuses)
             await self._dispatch_dev_work(client)
             await self._dispatch_qa_work(client)

@@ -75,9 +75,17 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None]:
     app.state.transcription = _AppServices.transcription
     app.state.extraction = _AppServices.extraction
 
-    # Initialize Phase 3 services
-    optimal_service = await get_optimal_service()
-    app.state.optimal = optimal_service
+    # Initialize Phase 3 services (RAG - optional, non-blocking)
+    try:
+        optimal_service = await get_optimal_service()
+        app.state.optimal = optimal_service
+        logger.info("OptimalService (RAG) initialized successfully")
+    except Exception as e:
+        logger.warning(
+            "OptimalService (RAG) initialization failed - RAG features disabled",
+            error=str(e),
+        )
+        app.state.optimal = None
 
     logger.info("All services initialized")
 
