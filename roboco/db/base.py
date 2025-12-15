@@ -5,7 +5,8 @@ Database base configuration and session management.
 from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
 
-from sqlalchemy import MetaData
+import structlog
+from sqlalchemy import MetaData, text
 from sqlalchemy.ext.asyncio import (
     AsyncEngine,
     AsyncSession,
@@ -15,6 +16,8 @@ from sqlalchemy.ext.asyncio import (
 from sqlalchemy.orm import DeclarativeBase
 
 from roboco.config import settings
+
+logger = structlog.get_logger()
 
 # Naming convention for constraints (helps with migrations)
 convention = {
@@ -110,6 +113,16 @@ async def init_db() -> None:
     """
     engine = get_engine()
     async with engine.begin() as conn:
+        # Create pgvector extension if available (required for RAG)
+        try:
+            await conn.execute(text("CREATE EXTENSION IF NOT EXISTS vector"))
+            logger.info("pgvector extension enabled")
+        except Exception as e:
+            logger.warning(
+                "pgvector extension not available - RAG features will be disabled",
+                error=str(e),
+            )
+
         await conn.run_sync(Base.metadata.create_all)
 
 
