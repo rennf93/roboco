@@ -16,11 +16,16 @@ from roboco.api.deps import (
 )
 from roboco.api.schemas.tasks import (
     CheckpointRequest,
+    CheckpointResponse,
+    CommitRefResponse,
     CommitRequest,
     ListTasksQuery,
     ProgressRequest,
+    ProgressUpdateResponse,
     QANotes,
+    SubTaskResponse,
     TaskCountResponse,
+    TaskPlanResponse,
     TaskResponse,
     TaskUpdate,
     TeamTasksQuery,
@@ -34,6 +39,92 @@ from roboco.services.task import TaskCreateRequest, get_task_service
 from roboco.utils.converters import require_uuid, to_python_uuid, to_python_uuid_list
 
 router = APIRouter()
+
+
+def _convert_plan(plan_data: dict | None) -> TaskPlanResponse | None:
+    """Convert plan JSON dict to TaskPlanResponse."""
+    if not plan_data:
+        return None
+
+    sub_tasks = []
+    for st in plan_data.get("sub_tasks", []):
+        sub_tasks.append(
+            SubTaskResponse(
+                id=st.get("id"),
+                title=st.get("title", ""),
+                description=st.get("description"),
+                completed=st.get("completed", False),
+                order=st.get("order", 0),
+                estimated_hours=st.get("estimated_hours"),
+                notes=st.get("notes"),
+            )
+        )
+
+    return TaskPlanResponse(
+        approach=plan_data.get("approach", ""),
+        sub_tasks=sub_tasks,
+        technical_considerations=plan_data.get("technical_considerations", []),
+        risks=plan_data.get("risks", []),
+        open_questions=plan_data.get("open_questions", []),
+    )
+
+
+def _convert_checkpoints(checkpoints_data: list | None) -> list[CheckpointResponse]:
+    """Convert checkpoints JSON list to CheckpointResponse list."""
+    if not checkpoints_data:
+        return []
+
+    result = []
+    for cp in checkpoints_data:
+        result.append(
+            CheckpointResponse(
+                id=cp.get("id"),
+                timestamp=cp.get("timestamp"),
+                agent_id=cp.get("agent_id"),
+                state_summary=cp.get("state_summary", ""),
+                remaining_work=cp.get("remaining_work", []),
+                notes=cp.get("notes"),
+            )
+        )
+    return result
+
+
+def _convert_progress_updates(
+    updates_data: list | None,
+) -> list[ProgressUpdateResponse]:
+    """Convert progress_updates JSON list to ProgressUpdateResponse list."""
+    if not updates_data:
+        return []
+
+    result = []
+    for pu in updates_data:
+        result.append(
+            ProgressUpdateResponse(
+                timestamp=pu.get("timestamp"),
+                agent_id=pu.get("agent_id"),
+                message=pu.get("message", ""),
+                percentage=pu.get("percentage"),
+            )
+        )
+    return result
+
+
+def _convert_commits(commits_data: list | None) -> list[CommitRefResponse]:
+    """Convert commits JSON list to CommitRefResponse list."""
+    if not commits_data:
+        return []
+
+    result = []
+    for cm in commits_data:
+        result.append(
+            CommitRefResponse(
+                hash=cm.get("hash", ""),
+                message=cm.get("message", ""),
+                timestamp=cm.get("timestamp"),
+                author_agent_id=cm.get("author_agent_id"),
+            )
+        )
+    return result
 
 
 def _to_response(task: TaskTable) -> TaskResponse:
@@ -58,11 +149,21 @@ def _to_response(task: TaskTable) -> TaskResponse:
         completed_at=task.completed_at,
         target_date=task.target_date,
         estimated_complexity=task.estimated_complexity,
-        self_verified=task.self_verified,
-        qa_verified=task.qa_verified,
+        # Planning
+        plan=_convert_plan(task.plan),
+        # Execution
+        checkpoints=_convert_checkpoints(task.checkpoints),
+        progress_updates=_convert_progress_updates(task.progress_updates),
+        # Artifacts
+        commits=_convert_commits(task.commits),
+        # Documentation
         dev_notes=task.dev_notes,
         qa_notes=task.qa_notes,
+        auditor_notes=task.auditor_notes,
         quick_context=task.quick_context,
+        # Review Status
+        self_verified=task.self_verified,
+        qa_verified=task.qa_verified,
     )
 
 

@@ -5,11 +5,72 @@ Request/response models for task endpoints.
 """
 
 from datetime import datetime
+from typing import Any
 from uuid import UUID
 
 from pydantic import BaseModel, Field
 
 from roboco.models.base import Complexity, TaskStatus, Team
+
+# =============================================================================
+# NESTED RESPONSE MODELS
+# =============================================================================
+
+
+class ProgressUpdateResponse(BaseModel):
+    """A progress update on a task."""
+
+    timestamp: datetime
+    agent_id: UUID
+    message: str
+    percentage: int | None = None
+
+
+class CheckpointResponse(BaseModel):
+    """A saved state checkpoint for task recovery."""
+
+    id: UUID
+    timestamp: datetime
+    agent_id: UUID
+    state_summary: str
+    remaining_work: list[str] = []
+    notes: str | None = None
+
+
+class CommitRefResponse(BaseModel):
+    """Reference to a git commit."""
+
+    hash: str
+    message: str
+    timestamp: datetime
+    author_agent_id: UUID | None = None
+
+
+class SubTaskResponse(BaseModel):
+    """A sub-task within a task plan."""
+
+    id: UUID
+    title: str
+    description: str | None = None
+    completed: bool = False
+    order: int
+    estimated_hours: float | None = None
+    notes: str | None = None
+
+
+class TaskPlanResponse(BaseModel):
+    """Implementation plan for a task."""
+
+    approach: str
+    sub_tasks: list[SubTaskResponse] = []
+    technical_considerations: list[str] = []
+    risks: list[dict[str, str]] = []
+    open_questions: list[dict[str, Any]] = []
+
+
+# =============================================================================
+# REQUEST MODELS
+# =============================================================================
 
 
 class TaskUpdate(BaseModel):
@@ -25,33 +86,79 @@ class TaskUpdate(BaseModel):
     quick_context: str | None = None
 
 
-class TaskResponse(BaseModel):
-    """Task response model."""
+# =============================================================================
+# RESPONSE MODELS
+# =============================================================================
 
+
+class TaskResponse(BaseModel):
+    """Task response model with full detail."""
+
+    # Identity
     id: UUID
     title: str
     description: str
     acceptance_criteria: list[str]
+
+    # Status
     status: TaskStatus
     priority: int
+
+    # Ownership
     team: Team
     created_by: UUID
     assigned_to: UUID | None
+
+    # Relationships
     parent_task_id: UUID | None
     dependency_ids: list[UUID]
     blocker_ids: list[UUID]
+
+    # Timestamps
     created_at: datetime
     updated_at: datetime | None
     claimed_at: datetime | None
     started_at: datetime | None
     completed_at: datetime | None
     target_date: datetime | None
+
+    # Planning
     estimated_complexity: Complexity
-    self_verified: bool
-    qa_verified: bool | None
+    plan: TaskPlanResponse | None = None
+
+    # Execution
+    checkpoints: list[CheckpointResponse] = []
+    progress_updates: list[ProgressUpdateResponse] = []
+
+    # Artifacts
+    commits: list[CommitRefResponse] = []
+
+    # Documentation
     dev_notes: str | None
     qa_notes: str | None
+    auditor_notes: str | None = None
     quick_context: str | None
+
+    # Review Status
+    self_verified: bool
+    qa_verified: bool | None
+
+    class Config:
+        from_attributes = True
+
+
+class TaskSummaryResponse(BaseModel):
+    """Lightweight task response for list views."""
+
+    id: UUID
+    title: str
+    status: TaskStatus
+    priority: int
+    team: Team
+    assigned_to: UUID | None
+    created_at: datetime
+    updated_at: datetime | None
+    estimated_complexity: Complexity
 
     class Config:
         from_attributes = True
