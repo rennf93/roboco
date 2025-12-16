@@ -14,7 +14,7 @@ import structlog
 from sqlalchemy import and_, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from roboco.db.tables import JournalEntryTable, JournalTable
+from roboco.db.tables import AgentTable, JournalEntryTable, JournalTable
 from roboco.models.base import JournalEntryType
 from roboco.models.journal import (
     DecisionLogParams,
@@ -58,6 +58,34 @@ class JournalService:
 
             self._optimal_service = await get_optimal_service()
         return self._optimal_service
+
+    async def resolve_agent_id(self, agent_id_or_slug: str) -> UUID | None:
+        """
+        Resolve an agent identifier to a UUID.
+
+        Accepts either a UUID string or an agent slug (e.g., "be-dev-1").
+
+        Args:
+            agent_id_or_slug: UUID string or agent slug
+
+        Returns:
+            The agent's UUID, or None if not found
+        """
+        # Try to parse as UUID first
+        try:
+            return UUID(agent_id_or_slug)
+        except ValueError:
+            pass
+
+        # Look up by slug
+        result = await self._db.execute(
+            select(AgentTable).where(AgentTable.slug == agent_id_or_slug)
+        )
+        agent = result.scalar_one_or_none()
+        if agent:
+            return UUID(str(agent.id))
+
+        return None
 
     # =========================================================================
     # JOURNAL CRUD
