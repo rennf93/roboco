@@ -102,6 +102,9 @@ class AgentOrchestrator:
         # Ensure agent image is built
         await self._ensure_agent_image()
 
+        # Ensure agent Claude settings have MCP tools allowed
+        self._ensure_agent_claude_settings()
+
         # Start background tasks
         self._health_task = asyncio.create_task(self._health_loop())
         self._dispatcher_task = asyncio.create_task(self._dispatcher_loop())
@@ -175,6 +178,69 @@ class AgentOrchestrator:
                 raise RuntimeError(f"Failed to build agent image: {stderr.decode()}")
             logger.info("Agent Docker image built successfully")
 
+    def _ensure_agent_claude_settings(self) -> None:
+        """
+        Ensure agent Claude settings have RoboCo MCP tools pre-allowed.
+
+        This prevents agents from needing interactive permission approval
+        for essential MCP tools like roboco_agent_idle.
+        """
+        # RoboCo MCP tools that should always be allowed for agents
+        roboco_allowed_tools = [
+            # Task management - always needed
+            "mcp__roboco-task__*",
+            # Messaging - always needed for communication
+            "mcp__roboco-message__*",
+            # Notifications - always needed
+            "mcp__roboco-notify__*",
+            # Journal - always needed for reflection
+            "mcp__roboco-journal__*",
+        ]
+
+        # Path to agent Claude settings (shared across all agents)
+        # When running in container: Claude auth is mounted to /root/.claude
+        # When running on host: use CLAUDE_AUTH_HOST_PATH directly
+        if PROJECT_HOST_PATH:
+            # Running in container - use the mounted path
+            claude_dir = Path("/root/.claude")
+        else:
+            # Running on host
+            claude_dir = Path(CLAUDE_AUTH_HOST_PATH)
+
+        settings_path = claude_dir / "settings.json"
+
+        # Load existing settings or create new
+        if settings_path.exists():
+            try:
+                settings = json.loads(settings_path.read_text())
+            except json.JSONDecodeError:
+                settings = {}
+        else:
+            settings = {}
+
+        # Ensure permissions structure exists
+        if "permissions" not in settings:
+            settings["permissions"] = {}
+        if "allow" not in settings["permissions"]:
+            settings["permissions"]["allow"] = []
+
+        # Add RoboCo tools if not already present
+        existing_allow = set(settings["permissions"]["allow"])
+        tools_added = []
+        for tool in roboco_allowed_tools:
+            if tool not in existing_allow:
+                settings["permissions"]["allow"].append(tool)
+                tools_added.append(tool)
+
+        # Only write if we added tools
+        if tools_added:
+            claude_dir.mkdir(parents=True, exist_ok=True)
+            settings_path.write_text(json.dumps(settings, indent=2))
+            logger.info(
+                "Updated agent Claude settings with allowed MCP tools",
+                tools_added=tools_added,
+            )
+
     # =========================================================================
     # AGENT SPAWNING
     # =========================================================================
@@ -214,6 +280,9 @@ class AgentOrchestrator:
             blueprint_path = self._get_blueprint_path(agent_id)
             if not blueprint_path.exists():
                 raise FileNotFoundError(f"Blueprint not found: {blueprint_path}")
+
+            # Ensure agent Claude settings have MCP tools allowed
+            self._ensure_agent_claude_settings()
 
             # Generate MCP config
             mcp_config_path = await self._generate_mcp_config(agent_id)
@@ -372,10 +441,19 @@ class AgentOrchestrator:
 
     async def _generate_mcp_config(self, agent_id: str) -> Path:
         """Generate MCP config for an agent."""
-        # MCP servers run inside the container, connect to API via network
-        # Explicitly use Environment Variables to avoid issues with containerized agents
+        # MCP servers run inside agent containers, need to connect via Docker network
+        # When orchestrator is in a container: use container hostname
+        # When orchestrator is on host: use localhost
+        # NOTE: internal_api_url adds /api/v1, so we just need the base URL here
+        if PROJECT_HOST_PATH:
+            # Running in container - agents connect via Docker network
+            api_url = "http://roboco-orchestrator:8000"
+        else:
+            # Running on host - agents connect to localhost
+            api_url = f"http://127.0.0.1:{settings.port}"
+
         mcp_env = {
-            "ROBOCO_API_URL": settings.internal_api_url,
+            "ROBOCO_API_URL": api_url,
             "ROBOCO_AGENT_ID": agent_id,
         }
 
