@@ -66,7 +66,7 @@ class TaskService:
             "Task created",
             task_id=str(task.id),
             title=req.title,
-            team=req.team.value,
+            team=req.team if isinstance(req.team, str) else req.team.value,
         )
         return task
 

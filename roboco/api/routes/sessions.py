@@ -22,6 +22,7 @@ from roboco.api.schemas.sessions import (
 )
 from roboco.db.tables import GroupTable, SessionTable
 from roboco.models import SessionStatus
+from roboco.services.permissions import has_privileged_access
 from roboco.utils.converters import require_uuid
 
 router = APIRouter()
@@ -58,9 +59,14 @@ async def list_sessions(
             detail="Group not found",
         )
 
-    # Check channel access
+    # Check channel access (privileged roles bypass membership check)
     channel = group.channel
-    if agent_id not in channel.members and agent_id not in channel.silent_observers:
+    has_access = (
+        agent_id in channel.members
+        or agent_id in channel.silent_observers
+        or await has_privileged_access(db, agent_id)
+    )
+    if not has_access:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="You don't have access to this group",
@@ -163,9 +169,12 @@ async def create_session(
             detail="Group not found",
         )
 
-    # Check write access to channel
+    # Check write access to channel (privileged roles bypass membership check)
     channel = group.channel
-    if agent_id not in channel.writers:
+    has_write_access = agent_id in channel.writers or await has_privileged_access(
+        db, agent_id
+    )
+    if not has_write_access:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="You don't have write access to this group",

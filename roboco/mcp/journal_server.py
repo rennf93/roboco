@@ -20,6 +20,7 @@ import httpx
 from fastapi import status
 from mcp.server.fastmcp import FastMCP
 
+from roboco.agents_config import get_agent_role
 from roboco.config import settings
 from roboco.llm import ToonAdapter
 from roboco.mcp.schemas import (
@@ -54,6 +55,14 @@ def _format_error_response(
     }
 
 
+def _get_agent_headers(agent_id: str) -> dict[str, str]:
+    """Get standard headers for API calls."""
+    return {
+        "X-Agent-Id": agent_id,
+        "X-Agent-Role": get_agent_role(agent_id),
+    }
+
+
 async def _post_journal_entry(
     endpoint: str,
     payload: dict[str, Any],
@@ -64,7 +73,7 @@ async def _post_journal_entry(
         resp = await client.post(
             f"{settings.internal_api_url}/journals/me/{endpoint}",
             json=payload,
-            headers={"X-Agent-Id": agent_id},
+            headers=_get_agent_headers(agent_id),
         )
         if resp.status_code not in [200, 201]:
             return None, _format_error_response(
@@ -221,7 +230,7 @@ async def _handle_search(query: str, top_k: int, agent_id: str) -> dict[str, Any
         resp = await client.post(
             f"{settings.internal_api_url}/journals/me/search",
             json=payload,
-            headers={"X-Agent-Id": agent_id},
+            headers=_get_agent_headers(agent_id),
         )
 
         if resp.status_code != status.HTTP_200_OK:
@@ -249,11 +258,11 @@ async def _handle_stats(agent_id: str) -> dict[str, Any]:
     async with httpx.AsyncClient() as client:
         stats_resp = await client.get(
             f"{settings.internal_api_url}/journals/me/stats",
-            headers={"X-Agent-Id": agent_id},
+            headers=_get_agent_headers(agent_id),
         )
         growth_resp = await client.get(
             f"{settings.internal_api_url}/journals/me/growth",
-            headers={"X-Agent-Id": agent_id},
+            headers=_get_agent_headers(agent_id),
         )
 
         stats = (
@@ -299,7 +308,7 @@ async def _handle_recent(
         resp = await client.get(
             f"{settings.internal_api_url}/journals/me/entries",
             params=params,
-            headers={"X-Agent-Id": agent_id},
+            headers=_get_agent_headers(agent_id),
         )
 
         if resp.status_code != status.HTTP_200_OK:

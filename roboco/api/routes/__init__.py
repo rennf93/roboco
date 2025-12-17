@@ -5,6 +5,7 @@ All FastAPI route modules.
 """
 
 from roboco.api.routes import (
+    agents,
     channels,
     dashboard,
     health,
@@ -20,6 +21,7 @@ from roboco.api.routes import (
 )
 
 __all__ = [
+    "agents",
     "channels",
     "dashboard",
     "health",

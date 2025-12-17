@@ -186,6 +186,16 @@ class CommitRequest(BaseModel):
     message: str
 
 
+class ClaimRequest(BaseModel):
+    """Request to claim a task on behalf of an agent.
+
+    Used by privileged roles (system, PM) to claim tasks for other agents.
+    Accepts either a UUID or agent slug (e.g., "be-dev-1").
+    """
+
+    agent_id: str = Field(..., description="The agent ID (UUID) or slug to claim for")
+
+
 class QANotes(BaseModel):
     """QA review notes."""
 

@@ -30,6 +30,14 @@ from roboco.mcp.schemas import SendNotificationInput
 # =============================================================================
 
 
+def _get_agent_headers(agent_id: str) -> dict[str, str]:
+    """Get standard headers for API calls."""
+    return {
+        "X-Agent-Id": agent_id,
+        "X-Agent-Role": get_agent_role(agent_id),
+    }
+
+
 def _check_cell_scope(sender_id: str) -> tuple[bool, str]:
     """Check if sender can notify within their cell."""
     sender_cell = get_agent_cell(sender_id)
@@ -126,7 +134,7 @@ async def _handle_list(
         resp = await client.get(
             f"{settings.internal_api_url}/notifications",
             params=params,
-            headers={"X-Agent-Id": agent_id},
+            headers=_get_agent_headers(agent_id),
         )
 
         if resp.status_code != status.HTTP_200_OK:
@@ -162,7 +170,7 @@ async def _handle_get(agent_id: str, notification_id: str) -> dict[str, Any]:
     async with httpx.AsyncClient() as client:
         resp = await client.get(
             f"{settings.internal_api_url}/notifications/{notification_id}",
-            headers={"X-Agent-Id": agent_id},
+            headers=_get_agent_headers(agent_id),
         )
 
         if resp.status_code == status.HTTP_404_NOT_FOUND:
@@ -193,7 +201,7 @@ async def _handle_ack(agent_id: str, notification_id: str) -> dict[str, Any]:
     async with httpx.AsyncClient() as client:
         resp = await client.post(
             f"{settings.internal_api_url}/notifications/{notification_id}/ack",
-            headers={"X-Agent-Id": agent_id},
+            headers=_get_agent_headers(agent_id),
         )
 
         if resp.status_code == status.HTTP_404_NOT_FOUND:
@@ -280,7 +288,7 @@ async def _handle_send(agent_id: str, data: SendNotificationInput) -> dict[str, 
         resp = await client.post(
             f"{settings.internal_api_url}/notifications",
             json=payload,
-            headers={"X-Agent-Id": agent_id},
+            headers=_get_agent_headers(agent_id),
         )
 
         if resp.status_code not in [status.HTTP_200_OK, status.HTTP_201_CREATED]:

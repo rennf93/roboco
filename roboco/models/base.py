@@ -170,8 +170,6 @@ class RobocoBase(BaseModel):
         validate_assignment=True,
         # Allow population by field name
         populate_by_name=True,
-        # Strict mode for better type checking
-        strict=True,
         # Extra fields are forbidden
         extra="forbid",
     )

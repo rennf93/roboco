@@ -5,6 +5,7 @@ Functions to populate the database with initial data.
 Separates database operations from bootstrap orchestration.
 """
 
+import contextlib
 from uuid import UUID as UUIDType
 
 import structlog
@@ -100,8 +101,15 @@ async def create_agents(session: AsyncSession) -> dict[str, str]:
         team_str = agent_data.get("team")
         team = Team(team_str) if team_str else None
 
+        # If slug is a valid UUID, use it as the database ID
+        # (important for CEO so X-Agent-ID header matches the DB id)
+        explicit_id: UUIDType | None = None
+        with contextlib.suppress(ValueError):
+            explicit_id = UUIDType(slug)
+
         # Create agent using ORM
         agent = AgentTable(
+            id=explicit_id,  # Will use slug as ID if it's a valid UUID
             name=agent_data["name"],
             slug=slug,
             role=role,

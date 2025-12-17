@@ -91,6 +91,7 @@ from roboco.api.schemas.stream import (
 )
 from roboco.api.schemas.tasks import (
     CheckpointRequest,
+    ClaimRequest,
     CommitRequest,
     ListTasksQuery,
     ProgressRequest,
@@ -116,6 +117,7 @@ __all__ = [
     "ChannelResponse",
     # Tasks
     "CheckpointRequest",
+    "ClaimRequest",
     # Optimal
     "ClearIndexResponse",
     "CommitRequest",

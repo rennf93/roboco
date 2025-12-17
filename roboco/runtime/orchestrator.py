@@ -403,14 +403,20 @@ class AgentOrchestrator:
             "stream-json",
             "--verbose",
             # Always provide a prompt (required for non-interactive mode)
-            # NOTE: With the smart dispatcher, agents should ALWAYS receive
-            # a task assignment at spawn time. This default indicates a bug.
+            # If no task assignment provided, agent should follow standard workflow:
+            # SCAN for work -> CLAIM if available -> or IDLE if no work
             "-p",
             initial_prompt
             or (
-                "ERROR: You were spawned without a task assignment. "
-                "This is a bug in the orchestrator. "
-                "Call roboco_agent_idle() immediately to shutdown."
+                "You may have been spawned without a specific task assignment. "
+                "Follow your standard workflow:\n\n"
+                "1. Call `roboco_task_scan()` to find available work for your role\n"
+                "2. If tasks are found, claim one with `roboco_task_claim(task_id)` "
+                "and begin the full task lifecycle "
+                "(UNDERSTAND -> PLAN -> EXECUTE -> VERIFY -> HANDOFF)\n"
+                "3. If no tasks are available, call `roboco_agent_idle()` "
+                "to shutdown gracefully\n\n"
+                "Start now by scanning for work."
             ),
         ]
 
@@ -525,7 +531,7 @@ class AgentOrchestrator:
             cell_dir = "backend"
         elif team == "frontend":
             cell_dir = "frontend"
-        elif team == "uxui":
+        elif team == "ux_ui":
             cell_dir = "ux_ui"
         else:
             cell_dir = "board"
@@ -542,7 +548,7 @@ class AgentOrchestrator:
             cell_dir = "backend"
         elif team == "frontend":
             cell_dir = "frontend"
-        elif team == "uxui":
+        elif team == "ux_ui":
             cell_dir = "ux_ui"
         else:
             cell_dir = "board"
@@ -581,7 +587,7 @@ class AgentOrchestrator:
         if agent_id.startswith("fe-"):
             return "frontend"
         if agent_id.startswith("ux-"):
-            return "uxui"
+            return "ux_ui"
         return None
 
     # =========================================================================
@@ -896,7 +902,7 @@ Start by:
         Prefers agents that are not currently active.
         For developers, uses round-robin among candidates.
         """
-        prefix_map = {"backend": "be", "frontend": "fe", "uxui": "ux"}
+        prefix_map = {"backend": "be", "frontend": "fe", "ux_ui": "ux"}
         prefix = prefix_map.get(cell)
         if not prefix:
             return None
@@ -1074,7 +1080,7 @@ Start by:
                 continue
 
             team = task.get("team")
-            if team not in ["backend", "frontend", "uxui"]:
+            if team not in ["backend", "frontend", "ux_ui"]:
                 continue
 
             # Select best agent for this task
@@ -1105,7 +1111,7 @@ Start by:
 
         for task in tasks:
             team = task.get("team")
-            if team not in ["backend", "frontend", "uxui"]:
+            if team not in ["backend", "frontend", "ux_ui"]:
                 continue
 
             agent_id = self._select_agent_for_cell(team, "qa")
@@ -1136,7 +1142,7 @@ Start by:
 
         for task in tasks:
             team = task.get("team")
-            if team not in ["backend", "frontend", "uxui"]:
+            if team not in ["backend", "frontend", "ux_ui"]:
                 continue
 
             agent_id = self._select_agent_for_cell(team, "doc")
@@ -1193,7 +1199,7 @@ Start by:
 
         for task in tasks:
             team = task.get("team")
-            if team not in ["backend", "frontend", "uxui"]:
+            if team not in ["backend", "frontend", "ux_ui"]:
                 continue
 
             agent_id = self._select_agent_for_cell(team, "pm")

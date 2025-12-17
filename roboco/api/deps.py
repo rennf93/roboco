@@ -6,18 +6,55 @@ Shared dependencies for FastAPI routes.
 
 import contextlib
 from collections.abc import Callable, Coroutine
-from typing import Annotated, Any
+from typing import Annotated, Any, cast
 from uuid import UUID
 
 from fastapi import Depends, Header, HTTPException, status
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from roboco.db.base import get_db
+from roboco.db.tables import AgentTable
 from roboco.models import AgentRole, Team
 from roboco.services.permissions import AgentContext, PermissionService
 
 # Type alias for database session dependency
 DbSession = Annotated[AsyncSession, Depends(get_db)]
+
+
+async def resolve_agent_id(agent_id_str: str, db: AsyncSession) -> UUID:
+    """
+    Resolve agent ID from string (UUID or slug).
+
+    Args:
+        agent_id_str: Either a UUID string or agent slug (e.g., "be-dev-1")
+        db: Database session
+
+    Returns:
+        UUID of the agent
+
+    Raises:
+        HTTPException: If agent not found or invalid format
+    """
+    # First, try to parse as UUID
+    try:
+        return UUID(agent_id_str)
+    except ValueError:
+        pass
+
+    # Not a UUID, try to look up by slug
+    result = await db.execute(
+        select(AgentTable.id).where(AgentTable.slug == agent_id_str)
+    )
+    agent_uuid = result.scalar_one_or_none()
+
+    if agent_uuid is None:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Agent not found: {agent_id_str}",
+        )
+
+    return cast("UUID", agent_uuid)
 
 
 class _ServiceHolder:
@@ -37,22 +74,25 @@ PermissionServiceDep = Annotated[PermissionService, Depends(get_permission_servi
 
 
 async def get_current_agent_id(
+    db: DbSession,
     x_agent_id: Annotated[str | None, Header()] = None,
 ) -> UUID:
     """
     Get the current agent ID from request headers.
 
+    Accepts either a UUID string or agent slug (e.g., "be-dev-1").
     In production, this would validate a JWT token and extract the agent ID.
     For now, we use a simple header-based approach for development.
 
     Args:
-        x_agent_id: Agent ID from X-Agent-ID header
+        x_agent_id: Agent ID (UUID or slug) from X-Agent-ID header
+        db: Database session for slug resolution
 
     Returns:
         UUID of the current agent
 
     Raises:
-        HTTPException: If agent ID is missing or invalid
+        HTTPException: If agent ID is missing or invalid/not found
     """
     if not x_agent_id:
         raise HTTPException(
@@ -60,13 +100,7 @@ async def get_current_agent_id(
             detail="Missing X-Agent-ID header",
         )
 
-    try:
-        return UUID(x_agent_id)
-    except ValueError as e:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=f"Invalid agent ID format: {e}",
-        ) from e
+    return await resolve_agent_id(x_agent_id, db)
 
 
 # Type alias for current agent dependency
@@ -74,19 +108,21 @@ CurrentAgentId = Annotated[UUID, Depends(get_current_agent_id)]
 
 
 async def get_optional_agent_id(
+    db: DbSession,
     x_agent_id: Annotated[str | None, Header()] = None,
 ) -> UUID | None:
     """
     Get the current agent ID if provided.
 
+    Accepts either a UUID string or agent slug (e.g., "be-dev-1").
     Unlike get_current_agent_id, this doesn't raise an error if missing.
     """
     if not x_agent_id:
         return None
 
     try:
-        return UUID(x_agent_id)
-    except ValueError:
+        return await resolve_agent_id(x_agent_id, db)
+    except HTTPException:
         return None
 
 
@@ -94,6 +130,7 @@ OptionalAgentId = Annotated[UUID | None, Depends(get_optional_agent_id)]
 
 
 async def get_agent_context(
+    db: DbSession,
     x_agent_id: Annotated[str | None, Header()] = None,
     x_agent_role: Annotated[str | None, Header()] = None,
     x_agent_team: Annotated[str | None, Header()] = None,
@@ -105,7 +142,7 @@ async def get_agent_context(
     For development, we use headers.
 
     Required headers:
-        X-Agent-ID: UUID of the agent
+        X-Agent-ID: UUID or slug of the agent (e.g., "be-dev-1")
         X-Agent-Role: Role (e.g., 'developer', 'cell_pm')
 
     Optional headers:
@@ -123,13 +160,8 @@ async def get_agent_context(
             detail="Missing X-Agent-Role header",
         )
 
-    try:
-        agent_id = UUID(x_agent_id)
-    except ValueError as e:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=f"Invalid agent ID format: {e}",
-        ) from e
+    # Resolve agent ID (UUID or slug)
+    agent_id = await resolve_agent_id(x_agent_id, db)
 
     try:
         role = AgentRole(x_agent_role.lower())

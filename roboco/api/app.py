@@ -12,6 +12,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from roboco.api.middleware import setup_middleware
+from roboco.api.routes.agents import router as agents_router
 from roboco.api.routes.channels import router as channels_router
 from roboco.api.routes.dashboard import router as dashboard_router
 from roboco.api.routes.health import router as health_router
@@ -145,6 +146,12 @@ def create_app() -> FastAPI:
 
     # API v1
     api_prefix = "/api/v1"
+
+    app.include_router(
+        agents_router,
+        prefix=f"{api_prefix}/agents",
+        tags=["Agents"],
+    )
 
     app.include_router(
         channels_router,

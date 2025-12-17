@@ -218,6 +218,7 @@ CHANNEL_ACCESS: Final[dict[str, dict[str, list[str]]]] = {
 # This is the SINGLE SOURCE OF TRUTH for role hierarchy
 # Used by PermissionService to build AgentRole -> PermissionLevel mapping
 ROLE_PERMISSION_LEVELS: Final[dict[str, str]] = {
+    "system": "CEO",  # System/orchestrator has CEO-level access for internal operations
     "ceo": "CEO",
     "product_owner": "BOARD",
     "head_marketing": "BOARD",

@@ -21,9 +21,14 @@ Architecture:
 - No duplicate permission definitions - all derived from agents_config
 """
 
-from typing import Any
+from typing import TYPE_CHECKING, Any
+from uuid import UUID
 
 import structlog
+from sqlalchemy import select
+
+if TYPE_CHECKING:
+    from sqlalchemy.ext.asyncio import AsyncSession
 
 from roboco.agents_config import (
     AGENT_ROLE_MAP,
@@ -382,3 +387,30 @@ class PermissionService:
         role = get_role_string(agent_slug)
         perms = NOTIFICATION_PERMISSIONS.get(role, {})
         return bool(perms.get("can_send", False))
+
+
+# =============================================================================
+# ASYNC DATABASE LOOKUPS
+# =============================================================================
+
+# Roles with full access to all channels (bypass membership checks)
+PRIVILEGED_ROLES = frozenset({AgentRole.CEO, AgentRole.AUDITOR, AgentRole.MAIN_PM})
+
+
+async def has_privileged_access(db: "AsyncSession", agent_id: UUID) -> bool:
+    """
+    Check if agent has a privileged role (CEO, Auditor, Main PM).
+
+    These roles have full access to all channels regardless of membership.
+    Queries by both id and slug since agent_id could be either
+    (CEO uses UUID-style slug, others use short slugs like "be-dev-1").
+    """
+    from roboco.db.tables import AgentTable
+
+    result = await db.execute(
+        select(AgentTable.role).where(
+            (AgentTable.id == agent_id) | (AgentTable.slug == str(agent_id))
+        )
+    )
+    role = result.scalar_one_or_none()
+    return role in PRIVILEGED_ROLES if role else False

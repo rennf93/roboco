@@ -7,7 +7,8 @@ Full CRUD operations and lifecycle management for tasks.
 from typing import Annotated
 from uuid import UUID
 
-from fastapi import APIRouter, HTTPException, Query, status
+from fastapi import APIRouter, Body, HTTPException, Query, status
+from sqlalchemy import select
 
 from roboco.api.deps import (
     CurrentAgentContext,
@@ -17,6 +18,7 @@ from roboco.api.deps import (
 from roboco.api.schemas.tasks import (
     CheckpointRequest,
     CheckpointResponse,
+    ClaimRequest,
     CommitRefResponse,
     CommitRequest,
     ListTasksQuery,
@@ -30,7 +32,7 @@ from roboco.api.schemas.tasks import (
     TaskUpdate,
     TeamTasksQuery,
 )
-from roboco.db.tables import TaskTable
+from roboco.db.tables import AgentTable, TaskTable
 from roboco.models.base import TaskStatus, Team
 from roboco.models.task import TaskCreate
 from roboco.services.audit import get_audit_service
@@ -421,6 +423,7 @@ async def get_task(
 
 
 @router.put("/{task_id}", response_model=TaskResponse)
+@router.patch("/{task_id}", response_model=TaskResponse)
 async def update_task(
     task_id: UUID,
     data: TaskUpdate,
@@ -428,7 +431,7 @@ async def update_task(
     agent: CurrentAgentContext,
     permissions: PermissionServiceDep,
 ) -> TaskResponse:
-    """Update a task."""
+    """Update a task. Supports both PUT and PATCH for partial updates."""
     service = get_task_service(db)
     task = await service.get(task_id)
     if not task:
@@ -515,8 +518,14 @@ async def claim_task(
     db: DbSession,
     agent: CurrentAgentContext,
     permissions: PermissionServiceDep,
+    data: Annotated[ClaimRequest | None, Body()] = None,
 ) -> TaskResponse:
-    """Claim a task."""
+    """
+    Claim a task.
+
+    Privileged roles (system, PM) can claim tasks on behalf of other agents
+    by providing agent_id in the request body.
+    """
     service = get_task_service(db)
     task = await service.get(task_id)
     if not task:
@@ -531,7 +540,33 @@ async def claim_task(
             detail="Not authorized to claim tasks",
         )
 
-    task = await service.claim(task_id, agent.agent_id)
+    # Determine the agent to claim for
+    # Privileged roles can claim on behalf of other agents
+    can_assign = permissions.can_perform_task_action(
+        agent, TaskAction.ASSIGN, task.team
+    )
+    if data and data.agent_id and can_assign:
+        # Resolve agent_id from UUID string or slug
+        agent_id_str = data.agent_id
+        try:
+            # Try parsing as UUID first
+            claim_agent_id = UUID(agent_id_str)
+        except ValueError:
+            # Not a UUID, look up by slug
+            result = await db.execute(
+                select(AgentTable.id).where(AgentTable.slug == agent_id_str)
+            )
+            agent_uuid = result.scalar_one_or_none()
+            if not agent_uuid:
+                raise HTTPException(
+                    status_code=status.HTTP_404_NOT_FOUND,
+                    detail=f"Agent not found: {agent_id_str}",
+                ) from None
+            claim_agent_id = agent_uuid
+    else:
+        claim_agent_id = agent.agent_id
+
+    task = await service.claim(task_id, claim_agent_id)
     if not task:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,

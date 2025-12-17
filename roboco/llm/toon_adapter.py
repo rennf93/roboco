@@ -62,7 +62,9 @@ class ToonAdapter:
         if isinstance(data, BaseModel):
             data = data.model_dump()
 
-        result: str = toon.encode(data, indent=self.config.indent)
+        # Note: toon.encode() does not support indent parameter
+        # TOON format is already compact by design
+        result: str = toon.encode(data)
         return result
 
     def decode(self, toon_str: str) -> dict[str, Any] | list[Any]:

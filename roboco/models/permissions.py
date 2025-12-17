@@ -134,6 +134,16 @@ COMMUNICATION_MATRIX: dict[AgentRole, set[AgentRole]] = {
 
 # Per HOMELAB_TEAM_V0.md Section 12.3
 TASK_PERMISSIONS: dict[AgentRole, set[str]] = {
+    # System role (orchestrator) has full access for internal operations
+    AgentRole.SYSTEM: {
+        TaskAction.VIEW_ALL,
+        TaskAction.CREATE,
+        TaskAction.ASSIGN,
+        TaskAction.CLAIM,
+        TaskAction.UPDATE_OWN,
+        TaskAction.CLOSE,
+        TaskAction.CHANGE_PRIORITY,
+    },
     AgentRole.CEO: {
         TaskAction.VIEW_ALL,
         TaskAction.CREATE,
