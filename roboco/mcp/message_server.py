@@ -20,7 +20,7 @@ import httpx
 from fastapi import status
 from mcp.server.fastmcp import FastMCP
 
-from roboco.agents_config import CHANNEL_ACCESS, get_agent_role
+from roboco.agents_config import CHANNEL_ACCESS, get_agent_role, get_agent_team
 from roboco.config import settings
 from roboco.llm import ToonAdapter
 from roboco.mcp.schemas import (
@@ -35,10 +35,14 @@ _toon = ToonAdapter()
 
 def _get_agent_headers(agent_id: str) -> dict[str, str]:
     """Get standard headers for API calls."""
-    return {
-        "X-Agent-Id": agent_id,
+    headers = {
+        "X-Agent-ID": agent_id,
         "X-Agent-Role": get_agent_role(agent_id),
     }
+    team = get_agent_team(agent_id)
+    if team:
+        headers["X-Agent-Team"] = team
+    return headers
 
 
 # =============================================================================
@@ -364,19 +368,11 @@ async def _handle_message_send(
 
     headers = _get_agent_headers(agent_id)
     async with httpx.AsyncClient() as client:
-        channels_resp = await client.get(
-            f"{settings.internal_api_url}/channels",
-            params={"slug": data.channel_slug},
-            headers=headers,
-        )
-
-        if channels_resp.status_code != status.HTTP_200_OK or not channels_resp.json():
-            return _format_error_response(
-                "NOT_FOUND", f"Channel #{data.channel_slug} not found"
-            )
-
-        channel = channels_resp.json()[0]
-        channel_id = channel["id"]
+        # Use the helper function that properly handles paginated responses
+        channel_result = await _get_channel_by_slug(client, data.channel_slug, headers)
+        if isinstance(channel_result, dict):
+            return channel_result  # Error response
+        channel_id = channel_result
 
         session_result = await _get_or_create_session(client, channel_id, headers)
         if isinstance(session_result, dict):
