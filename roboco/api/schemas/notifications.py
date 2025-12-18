@@ -5,11 +5,17 @@ Request/response models for the notification system.
 """
 
 from datetime import datetime
+from typing import TYPE_CHECKING, Any
 from uuid import UUID
 
 from pydantic import BaseModel, Field
+from sqlalchemy import select
 
 from roboco.models import NotificationPriority, NotificationType
+from roboco.utils.converters import require_uuid, to_python_uuid, to_python_uuid_list
+
+if TYPE_CHECKING:
+    from roboco.db.tables import NotificationTable
 
 
 class ListNotificationsParams(BaseModel):
@@ -60,3 +66,52 @@ class NotificationCreateRequest(BaseModel):
     requires_ack: bool = True
     related_task_id: UUID | None = None
     expires_at: datetime | None = None
+
+
+# =============================================================================
+# CONVERTERS AND QUERY BUILDERS
+# =============================================================================
+
+
+def build_notification_query(
+    notification_table: type["NotificationTable"],
+    agent_id: UUID,
+    params: ListNotificationsParams,
+) -> Any:
+    """Build the notification query with filters."""
+    query = select(notification_table).where(
+        notification_table.to_agents.contains([agent_id])
+    )
+    if params.unread_only:
+        query = query.where(~notification_table.read_by.contains([agent_id]))
+    if params.pending_ack_only:
+        query = query.where(
+            notification_table.requires_ack.is_(True),
+            ~notification_table.acked_by.contains([agent_id]),
+        )
+    if params.type_filter:
+        query = query.where(notification_table.type == params.type_filter)
+    return query.order_by(notification_table.timestamp.desc()).limit(params.limit)
+
+
+def notification_to_response(
+    n: "NotificationTable",
+    agent_id: UUID,
+) -> NotificationResponse:
+    """Convert a notification to response format."""
+    return NotificationResponse(
+        id=require_uuid(n.id),
+        type=n.type,
+        priority=n.priority,
+        from_agent=require_uuid(n.from_agent),
+        to_agents=to_python_uuid_list(n.to_agents),
+        subject=n.subject,
+        body=n.body,
+        requires_ack=n.requires_ack,
+        is_acknowledged=agent_id in n.acked_by,
+        is_fully_acknowledged=all(a in n.acked_by for a in n.to_agents),
+        is_read=agent_id in n.read_by,
+        related_task_id=to_python_uuid(n.related_task_id),
+        timestamp=n.timestamp,
+        expires_at=n.expires_at,
+    )

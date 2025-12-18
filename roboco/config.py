@@ -67,7 +67,7 @@ class Settings(BaseSettings):
         """
         if self.api_url:
             return f"{self.api_url.rstrip('/')}/api/v1"
-        connect_host = "127.0.0.1" if self.host == "0.0.0.0" else self.host
+        connect_host = "127.0.0.1" if self.host == "0.0.0.0" else self.host  # nosec B104
         return f"http://{connect_host}:{self.port}/api/v1"
 
     # ==========================================================================

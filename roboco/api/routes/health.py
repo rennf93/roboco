@@ -4,36 +4,13 @@ Health Check Routes
 Endpoints for monitoring application health and readiness.
 """
 
-import redis.asyncio as redis
 from fastapi import APIRouter, status
-from sqlalchemy import text
 
 from roboco.api.schemas.health import HealthResponse, ReadinessResponse
 from roboco.config import settings
-from roboco.db.base import get_db_context
+from roboco.services.health import check_database, check_redis
 
 router = APIRouter()
-
-
-async def _check_database() -> tuple[str, bool]:
-    """Check database connectivity."""
-    try:
-        async with get_db_context() as session:
-            await session.execute(text("SELECT 1"))
-        return "ok", True
-    except Exception as e:
-        return str(e), False
-
-
-async def _check_redis() -> tuple[str, bool]:
-    """Check Redis connectivity."""
-    try:
-        client = redis.from_url(settings.redis_url)
-        await client.ping()
-        await client.close()
-        return "ok", True
-    except Exception as e:
-        return str(e), False
 
 
 @router.get(
@@ -61,8 +38,8 @@ async def health_check() -> HealthResponse:
 )
 async def readiness_check() -> ReadinessResponse:
     """Check if all dependencies are ready."""
-    db_status, db_ok = await _check_database()
-    redis_status, redis_ok = await _check_redis()
+    db_status, db_ok = await check_database()
+    redis_status, redis_ok = await check_redis()
 
     overall = "ok" if (db_ok and redis_ok) else "degraded"
 

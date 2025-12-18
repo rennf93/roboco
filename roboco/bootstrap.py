@@ -12,7 +12,7 @@ import structlog
 import uvicorn
 
 from roboco.agents import set_reasoning_stream_callback
-from roboco.api.routes.orchestrator import set_orchestrator
+from roboco.api.deps import set_orchestrator
 from roboco.api.websocket import broadcast_agent_chunk
 from roboco.config import settings
 from roboco.db import bootstrap_database

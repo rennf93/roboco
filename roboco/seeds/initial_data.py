@@ -190,7 +190,11 @@ CHANNEL_MEMBERSHIPS = {
     "doc-all": ["be-doc", "fe-doc", "ux-doc", CEO_AGENT_ID],
     # Management channels + CEO
     "main-pm-board": [
-        "main-pm", "product-owner", "head-marketing", "auditor", CEO_AGENT_ID
+        "main-pm",
+        "product-owner",
+        "head-marketing",
+        "auditor",
+        CEO_AGENT_ID,
     ],
     "board-private": ["product-owner", "head-marketing", "auditor", CEO_AGENT_ID],
     # Broadcast channels - everyone (CEO included via DEFAULT_AGENTS)

@@ -4,11 +4,20 @@ Channels API Schemas
 Request/response models for channel endpoints.
 """
 
+from typing import TYPE_CHECKING
 from uuid import UUID
 
+from fastapi import HTTPException, status
 from pydantic import BaseModel, Field
+from sqlalchemy import select
 
-from roboco.models import ChannelType
+from roboco.models import AgentRole, ChannelType, ChannelUpdate
+
+if TYPE_CHECKING:
+    from sqlalchemy.ext.asyncio import AsyncSession
+
+    from roboco.db.tables import ChannelTable
+    from roboco.services.permissions import AgentContext
 
 
 class ChannelResponse(BaseModel):
@@ -60,3 +69,59 @@ class ListChannelsQuery(BaseModel):
     page: int = Field(1, ge=1)
     page_size: int = Field(20, ge=1, le=100)
     include_archived: bool = False
+
+
+# =============================================================================
+# HELPERS AND UTILITIES
+# =============================================================================
+
+# Roles authorized to manage channels
+CHANNEL_ADMIN_ROLES = frozenset(
+    {AgentRole.CEO, AgentRole.PRODUCT_OWNER, AgentRole.MAIN_PM}
+)
+
+# Fields that can be updated on a channel
+CHANNEL_UPDATE_FIELDS = (
+    "name",
+    "description",
+    "topic",
+    "is_archived",
+    "allow_threads",
+    "allow_reactions",
+    "message_retention_days",
+    "max_message_length",
+)
+
+
+def require_channel_admin(agent: "AgentContext") -> None:
+    """Raise 403 if agent is not authorized to manage channels."""
+    if agent.role not in CHANNEL_ADMIN_ROLES:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Not authorized to manage channels",
+        )
+
+
+async def get_channel_or_404(
+    db: "AsyncSession",
+    channel_table: type["ChannelTable"],
+    channel_id: UUID,
+) -> "ChannelTable":
+    """Get channel by ID or raise 404."""
+    query = select(channel_table).where(channel_table.id == channel_id)
+    result = await db.execute(query)
+    channel = result.scalar_one_or_none()
+    if not channel:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Channel not found",
+        )
+    return channel
+
+
+def apply_channel_updates(channel: "ChannelTable", data: ChannelUpdate) -> None:
+    """Apply updates to channel fields."""
+    for field in CHANNEL_UPDATE_FIELDS:
+        value = getattr(data, field, None)
+        if value is not None:
+            setattr(channel, field, value)

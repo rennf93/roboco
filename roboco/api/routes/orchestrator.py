@@ -8,6 +8,7 @@ from datetime import datetime
 
 from fastapi import APIRouter, HTTPException, status
 
+from roboco.api.deps import get_orchestrator, set_orchestrator
 from roboco.api.schemas.orchestrator import (
     AgentStatusResponse,
     OrchestratorStatusResponse,
@@ -15,30 +16,11 @@ from roboco.api.schemas.orchestrator import (
     SpawnAgentRequest,
     WaitingAgentResponse,
 )
-from roboco.runtime import AgentOrchestrator
 
 router = APIRouter()
 
-
-class _OrchestratorHolder:
-    """Holder for orchestrator instance (set by bootstrap)."""
-
-    instance: AgentOrchestrator | None = None
-
-
-def set_orchestrator(orchestrator: AgentOrchestrator) -> None:
-    """Set the global orchestrator instance."""
-    _OrchestratorHolder.instance = orchestrator
-
-
-def get_orchestrator() -> AgentOrchestrator:
-    """Get the global orchestrator instance."""
-    if _OrchestratorHolder.instance is None:
-        raise HTTPException(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail="Orchestrator not initialized",
-        )
-    return _OrchestratorHolder.instance
+# Re-export set_orchestrator for bootstrap code
+__all__ = ["router", "set_orchestrator"]
 
 
 # =============================================================================

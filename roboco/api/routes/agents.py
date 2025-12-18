@@ -8,29 +8,14 @@ from typing import cast
 from uuid import UUID
 
 from fastapi import APIRouter, HTTPException, Query, status
-from pydantic import BaseModel
 from sqlalchemy import select
 
 from roboco.api.deps import DbSession
+from roboco.api.schemas.agents import AgentResponse
 from roboco.db.tables import AgentTable
 from roboco.models import AgentRole, Team
 
 router = APIRouter()
-
-
-class AgentResponse(BaseModel):
-    """Response model for agent information."""
-
-    id: UUID
-    name: str
-    slug: str
-    role: AgentRole
-    team: Team | None
-
-    class Config:
-        """Pydantic config."""
-
-        from_attributes = True
 
 
 @router.get("")
@@ -96,14 +81,10 @@ async def get_agent(
     # Try to parse as UUID first
     try:
         uuid = UUID(agent_id)
-        result = await db.execute(
-            select(AgentTable).where(AgentTable.id == uuid)
-        )
+        result = await db.execute(select(AgentTable).where(AgentTable.id == uuid))
     except ValueError:
         # Not a UUID, try slug lookup
-        result = await db.execute(
-            select(AgentTable).where(AgentTable.slug == agent_id)
-        )
+        result = await db.execute(select(AgentTable).where(AgentTable.slug == agent_id))
 
     agent = result.scalar_one_or_none()
 
