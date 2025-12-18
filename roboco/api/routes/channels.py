@@ -18,43 +18,15 @@ from roboco.api.schemas.channels import (
     ChannelResponse,
     GroupResponse,
     ListChannelsQuery,
+    apply_channel_updates,
+    get_channel_or_404,
+    require_channel_admin,
 )
 from roboco.db.tables import ChannelTable
 from roboco.models import AgentRole, ChannelCreate, ChannelUpdate
 from roboco.utils.converters import require_uuid, to_python_uuid
 
 router = APIRouter()
-
-# Roles authorized to manage channels
-CHANNEL_ADMIN_ROLES = frozenset(
-    {AgentRole.CEO, AgentRole.PRODUCT_OWNER, AgentRole.MAIN_PM}
-)
-
-
-# =============================================================================
-# Helpers
-# =============================================================================
-
-
-def _require_channel_admin(agent: CurrentAgentContext) -> None:
-    """Raise 403 if agent is not authorized to manage channels."""
-    if agent.role not in CHANNEL_ADMIN_ROLES:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="Not authorized to manage channels",
-        )
-
-
-async def _get_channel_or_404(db: DbSession, channel_id: UUID) -> ChannelTable:
-    """Get channel by ID or raise 404."""
-    result = await db.execute(select(ChannelTable).where(ChannelTable.id == channel_id))
-    channel = result.scalar_one_or_none()
-    if not channel:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Channel not found",
-        )
-    return channel
 
 
 # =============================================================================
@@ -300,27 +272,6 @@ async def create_channel(
     )
 
 
-# Fields that can be updated on a channel
-_CHANNEL_UPDATE_FIELDS = (
-    "name",
-    "description",
-    "topic",
-    "is_archived",
-    "allow_threads",
-    "allow_reactions",
-    "message_retention_days",
-    "max_message_length",
-)
-
-
-def _apply_channel_updates(channel: ChannelTable, data: ChannelUpdate) -> None:
-    """Apply updates to channel fields."""
-    for field in _CHANNEL_UPDATE_FIELDS:
-        value = getattr(data, field, None)
-        if value is not None:
-            setattr(channel, field, value)
-
-
 @router.patch(
     "/{channel_id}",
     response_model=ChannelResponse,
@@ -335,9 +286,9 @@ async def update_channel(
     data: ChannelUpdate,
 ) -> ChannelResponse:
     """Update channel settings."""
-    _require_channel_admin(agent)
-    channel = await _get_channel_or_404(db, channel_id)
-    _apply_channel_updates(channel, data)
+    require_channel_admin(agent)
+    channel = await get_channel_or_404(db, ChannelTable, channel_id)
+    apply_channel_updates(channel, data)
     await db.flush()
 
     return ChannelResponse(
@@ -370,8 +321,8 @@ async def add_member(
     can_write: bool = Query(True),
 ) -> None:
     """Add a member to the channel."""
-    _require_channel_admin(agent)
-    channel = await _get_channel_or_404(db, channel_id)
+    require_channel_admin(agent)
+    channel = await get_channel_or_404(db, ChannelTable, channel_id)
 
     # Add to members if not already present
     if member_id not in channel.members:
@@ -397,8 +348,8 @@ async def remove_member(
     member_id: UUID,
 ) -> None:
     """Remove a member from the channel."""
-    _require_channel_admin(agent)
-    channel = await _get_channel_or_404(db, channel_id)
+    require_channel_admin(agent)
+    channel = await get_channel_or_404(db, ChannelTable, channel_id)
 
     # Remove from members and writers
     channel.members = [m for m in channel.members if m != member_id]

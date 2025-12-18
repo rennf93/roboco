@@ -222,7 +222,78 @@ async def _handle_channel_list(agent_id: str) -> dict[str, Any]:
     }
 
 
-async def _handle_channel_history(  # noqa: PLR0911
+async def _get_channel_by_slug(
+    client: httpx.AsyncClient,
+    channel_slug: str,
+    headers: dict[str, str],
+) -> str | dict[str, Any]:
+    """Get channel ID by slug. Returns channel_id or error dict."""
+    resp = await client.get(
+        f"{settings.internal_api_url}/channels",
+        params={"slug": channel_slug},
+        headers=headers,
+    )
+
+    if resp.status_code != status.HTTP_200_OK:
+        return _format_error_response("API_ERROR", "Failed to fetch channels")
+
+    data = resp.json()
+    items = data.get("items", data)
+    if not items:
+        return _format_error_response("NOT_FOUND", f"Channel #{channel_slug} not found")
+
+    channel = items[0] if isinstance(items, list) else items
+    return str(channel["id"])
+
+
+async def _get_sessions_for_group(
+    client: httpx.AsyncClient,
+    group_id: str,
+    headers: dict[str, str],
+) -> list | dict[str, Any]:
+    """Get sessions for a group. Returns session list or error dict."""
+    resp = await client.get(
+        f"{settings.internal_api_url}/sessions",
+        params={"group_id": group_id, "limit": 5},
+        headers=headers,
+    )
+
+    if resp.status_code != status.HTTP_200_OK:
+        return _format_error_response("API_ERROR", "Failed to fetch sessions")
+
+    items: list = resp.json().get("items", [])
+    return items
+
+
+async def _fetch_messages_from_sessions(
+    client: httpx.AsyncClient,
+    sessions: list,
+    since: datetime,
+    limit: int,
+    headers: dict[str, str],
+) -> list:
+    """Fetch messages from multiple sessions."""
+    all_messages: list = []
+    for session in sessions:
+        resp = await client.get(
+            f"{settings.internal_api_url}/messages",
+            params={
+                "session_id": session["id"],
+                "after": since.isoformat(),
+                "limit": limit,
+            },
+            headers=headers,
+        )
+        if resp.status_code == status.HTTP_200_OK:
+            all_messages.extend(resp.json().get("items", []))
+        if len(all_messages) >= limit:
+            break
+
+    all_messages.sort(key=lambda m: m.get("timestamp", ""), reverse=True)
+    return all_messages[:limit]
+
+
+async def _handle_channel_history(
     agent_id: str,
     channel_slug: str,
     limit: int,
@@ -236,48 +307,28 @@ async def _handle_channel_history(  # noqa: PLR0911
 
     limit = min(limit, 100)
     since = datetime.now(UTC) - timedelta(hours=hours_back)
-
     headers = _get_agent_headers(agent_id)
+
     async with httpx.AsyncClient() as client:
-        # Get channel by slug
-        channels_resp = await client.get(
-            f"{settings.internal_api_url}/channels",
-            params={"slug": channel_slug},
-            headers=headers,
-        )
+        # Get channel
+        channel_result = await _get_channel_by_slug(client, channel_slug, headers)
+        if isinstance(channel_result, dict):
+            return channel_result
+        channel_id = channel_result
 
-        if channels_resp.status_code != status.HTTP_200_OK:
-            return _format_error_response("API_ERROR", "Failed to fetch channels")
-
-        channels_data = channels_resp.json()
-        items = channels_data.get("items", channels_data)
-        if not items:
-            return _format_error_response(
-                "NOT_FOUND", f"Channel #{channel_slug} not found"
-            )
-
-        channel = items[0] if isinstance(items, list) else items
-        channel_id = channel["id"]
-
-        # Get groups for this channel
+        # Get group
         group_result = await _get_default_group(client, channel_id, headers)
         if isinstance(group_result, dict):
-            return group_result  # Error response
+            return group_result
         group_id = group_result
 
-        # Get sessions for this group
-        sessions_resp = await client.get(
-            f"{settings.internal_api_url}/sessions",
-            params={"group_id": group_id, "limit": 5},
-            headers=headers,
-        )
+        # Get sessions
+        sessions_result = await _get_sessions_for_group(client, group_id, headers)
+        if isinstance(sessions_result, dict):
+            return sessions_result
+        sessions = sessions_result
 
-        if sessions_resp.status_code != status.HTTP_200_OK:
-            return _format_error_response("API_ERROR", "Failed to fetch sessions")
-
-        sessions_data = sessions_resp.json()
-        sessions = sessions_data.get("items", [])
-
+        # Early return for no sessions
         if not sessions:
             return {
                 "channel": channel_slug,
@@ -287,36 +338,16 @@ async def _handle_channel_history(  # noqa: PLR0911
                 "since": since.isoformat(),
             }
 
-        # Get messages from all recent sessions
-        all_messages = []
-        for session in sessions:
-            session_id = session["id"]
-            messages_resp = await client.get(
-                f"{settings.internal_api_url}/messages",
-                params={
-                    "session_id": session_id,
-                    "after": since.isoformat(),
-                    "limit": limit,
-                },
-                headers=headers,
-            )
-
-            if messages_resp.status_code == status.HTTP_200_OK:
-                msg_data = messages_resp.json()
-                all_messages.extend(msg_data.get("items", []))
-
-            if len(all_messages) >= limit:
-                break
-
-        # Sort by timestamp descending and limit
-        all_messages.sort(key=lambda m: m.get("timestamp", ""), reverse=True)
-        all_messages = all_messages[:limit]
+        # Fetch messages
+        messages = await _fetch_messages_from_sessions(
+            client, sessions, since, limit, headers
+        )
 
     return {
         "channel": channel_slug,
-        "messages": all_messages,
-        "total": len(all_messages),
-        "has_more": len(all_messages) >= limit,
+        "messages": messages,
+        "total": len(messages),
+        "has_more": len(messages) >= limit,
         "since": since.isoformat(),
     }
 

@@ -17,161 +17,27 @@ from roboco.api.deps import (
 )
 from roboco.api.schemas.tasks import (
     CheckpointRequest,
-    CheckpointResponse,
     ClaimRequest,
-    CommitRefResponse,
     CommitRequest,
     ListTasksQuery,
     ProgressRequest,
-    ProgressUpdateResponse,
     QANotes,
-    SubTaskResponse,
     TaskCountResponse,
-    TaskPlanResponse,
     TaskResponse,
     TaskUpdate,
     TeamTasksQuery,
+    task_list_to_response,
+    task_to_response,
+    transform_update_data,
 )
-from roboco.db.tables import AgentTable, TaskTable
+from roboco.db.tables import AgentTable
 from roboco.models.base import TaskStatus, Team
 from roboco.models.task import TaskCreate
 from roboco.services.audit import get_audit_service
 from roboco.services.permissions import TaskAction
 from roboco.services.task import TaskCreateRequest, get_task_service
-from roboco.utils.converters import require_uuid, to_python_uuid, to_python_uuid_list
 
 router = APIRouter()
-
-
-def _convert_plan(plan_data: dict | None) -> TaskPlanResponse | None:
-    """Convert plan JSON dict to TaskPlanResponse."""
-    if not plan_data:
-        return None
-
-    sub_tasks = []
-    for st in plan_data.get("sub_tasks", []):
-        sub_tasks.append(
-            SubTaskResponse(
-                id=st.get("id"),
-                title=st.get("title", ""),
-                description=st.get("description"),
-                completed=st.get("completed", False),
-                order=st.get("order", 0),
-                estimated_hours=st.get("estimated_hours"),
-                notes=st.get("notes"),
-            )
-        )
-
-    return TaskPlanResponse(
-        approach=plan_data.get("approach", ""),
-        sub_tasks=sub_tasks,
-        technical_considerations=plan_data.get("technical_considerations", []),
-        risks=plan_data.get("risks", []),
-        open_questions=plan_data.get("open_questions", []),
-    )
-
-
-def _convert_checkpoints(checkpoints_data: list | None) -> list[CheckpointResponse]:
-    """Convert checkpoints JSON list to CheckpointResponse list."""
-    if not checkpoints_data:
-        return []
-
-    result = []
-    for cp in checkpoints_data:
-        result.append(
-            CheckpointResponse(
-                id=cp.get("id"),
-                timestamp=cp.get("timestamp"),
-                agent_id=cp.get("agent_id"),
-                state_summary=cp.get("state_summary", ""),
-                remaining_work=cp.get("remaining_work", []),
-                notes=cp.get("notes"),
-            )
-        )
-    return result
-
-
-def _convert_progress_updates(
-    updates_data: list | None,
-) -> list[ProgressUpdateResponse]:
-    """Convert progress_updates JSON list to ProgressUpdateResponse list."""
-    if not updates_data:
-        return []
-
-    result = []
-    for pu in updates_data:
-        result.append(
-            ProgressUpdateResponse(
-                timestamp=pu.get("timestamp"),
-                agent_id=pu.get("agent_id"),
-                message=pu.get("message", ""),
-                percentage=pu.get("percentage"),
-            )
-        )
-    return result
-
-
-def _convert_commits(commits_data: list | None) -> list[CommitRefResponse]:
-    """Convert commits JSON list to CommitRefResponse list."""
-    if not commits_data:
-        return []
-
-    result = []
-    for cm in commits_data:
-        result.append(
-            CommitRefResponse(
-                hash=cm.get("hash", ""),
-                message=cm.get("message", ""),
-                timestamp=cm.get("timestamp"),
-                author_agent_id=cm.get("author_agent_id"),
-            )
-        )
-    return result
-
-
-def _to_response(task: TaskTable) -> TaskResponse:
-    """Convert TaskTable to TaskResponse with proper UUID conversion."""
-    return TaskResponse(
-        id=require_uuid(task.id),
-        title=task.title,
-        description=task.description,
-        acceptance_criteria=task.acceptance_criteria or [],
-        status=task.status,
-        priority=task.priority,
-        team=task.team,
-        created_by=require_uuid(task.created_by),
-        assigned_to=to_python_uuid(task.assigned_to),
-        parent_task_id=to_python_uuid(task.parent_task_id),
-        dependency_ids=to_python_uuid_list(task.dependency_ids),
-        blocker_ids=to_python_uuid_list(task.blocker_ids),
-        created_at=task.created_at,
-        updated_at=task.updated_at,
-        claimed_at=task.claimed_at,
-        started_at=task.started_at,
-        completed_at=task.completed_at,
-        target_date=task.target_date,
-        estimated_complexity=task.estimated_complexity,
-        # Planning
-        plan=_convert_plan(task.plan),
-        # Execution
-        checkpoints=_convert_checkpoints(task.checkpoints),
-        progress_updates=_convert_progress_updates(task.progress_updates),
-        # Artifacts
-        commits=_convert_commits(task.commits),
-        # Documentation
-        dev_notes=task.dev_notes,
-        qa_notes=task.qa_notes,
-        auditor_notes=task.auditor_notes,
-        quick_context=task.quick_context,
-        # Review Status
-        self_verified=task.self_verified,
-        qa_verified=task.qa_verified,
-    )
-
-
-def _to_response_list(tasks: list[TaskTable]) -> list[TaskResponse]:
-    """Convert list of TaskTable to list of TaskResponse."""
-    return [_to_response(t) for t in tasks]
 
 
 # =============================================================================
@@ -217,7 +83,7 @@ async def create_task(
     )
     task = await service.create(req)
     await db.commit()
-    return _to_response(task)
+    return task_to_response(task)
 
 
 @router.get("", response_model=list[TaskResponse])
@@ -258,7 +124,7 @@ async def list_tasks(
     else:
         tasks = await service.list_all(params.limit, params.offset)
 
-    return _to_response_list(tasks)
+    return task_list_to_response(tasks)
 
 
 @router.get("/my", response_model=list[TaskResponse])
@@ -270,7 +136,7 @@ async def get_my_tasks(
     """Get tasks assigned to the current agent."""
     service = get_task_service(db)
     tasks = await service.list_by_assignee(agent.agent_id, status)
-    return _to_response_list(tasks)
+    return task_list_to_response(tasks)
 
 
 @router.get("/pending", response_model=list[TaskResponse])
@@ -288,7 +154,7 @@ async def get_pending_tasks(
     effective_team = team if can_view_all else agent.team
 
     tasks = await service.list_pending(effective_team)
-    return _to_response_list(tasks)
+    return task_list_to_response(tasks)
 
 
 @router.get("/blocked", response_model=list[TaskResponse])
@@ -306,7 +172,7 @@ async def get_blocked_tasks(
     effective_team = team if can_view_all else agent.team
 
     tasks = await service.list_blocked(effective_team)
-    return _to_response_list(tasks)
+    return task_list_to_response(tasks)
 
 
 @router.get("/awaiting-qa", response_model=list[TaskResponse])
@@ -324,7 +190,7 @@ async def get_awaiting_qa_tasks(
     effective_team = team if can_view_all else agent.team
 
     tasks = await service.list_awaiting_qa(effective_team)
-    return _to_response_list(tasks)
+    return task_list_to_response(tasks)
 
 
 @router.get("/awaiting-docs", response_model=list[TaskResponse])
@@ -342,7 +208,7 @@ async def get_awaiting_docs_tasks(
     effective_team = team if can_view_all else agent.team
 
     tasks = await service.list_awaiting_docs(effective_team)
-    return _to_response_list(tasks)
+    return task_list_to_response(tasks)
 
 
 @router.get("/team/{team}", response_model=list[TaskResponse])
@@ -366,7 +232,7 @@ async def get_team_tasks(
 
     service = get_task_service(db)
     tasks = await service.list_by_team(team, params.task_status, params.limit)
-    return _to_response_list(tasks)
+    return task_list_to_response(tasks)
 
 
 @router.get("/stats", response_model=TaskCountResponse)
@@ -419,7 +285,7 @@ async def get_task(
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND, detail="Task not found"
         )
-    return _to_response(task)
+    return task_to_response(task)
 
 
 @router.put("/{task_id}", response_model=TaskResponse)
@@ -431,7 +297,17 @@ async def update_task(
     agent: CurrentAgentContext,
     permissions: PermissionServiceDep,
 ) -> TaskResponse:
-    """Update a task. Supports both PUT and PATCH for partial updates."""
+    """Update a task. Supports both PUT and PATCH for partial updates.
+
+    CEO and privileged roles can update any field including:
+    - Basic info (title, description, acceptance_criteria, priority, etc.)
+    - Ownership (team, assigned_to)
+    - Relationships (parent_task_id, dependency_ids, blocker_ids)
+    - Planning (plan with sub_tasks, risks, open_questions)
+    - Execution tracking (progress_updates, checkpoints)
+    - Artifacts (commits)
+    - Notes (dev_notes, qa_notes, auditor_notes, quick_context)
+    """
     service = get_task_service(db)
     task = await service.get(task_id)
     if not task:
@@ -455,14 +331,17 @@ async def update_task(
             detail="Not authorized to update this task",
         )
 
-    task = await service.update(task_id, **data.model_dump(exclude_unset=True))
+    # Transform input data for database storage
+    updates = transform_update_data(data)
+
+    task = await service.update(task_id, **updates)
     if not task:
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Task update failed unexpectedly",
         )
     await db.commit()
-    return _to_response(task)
+    return task_to_response(task)
 
 
 @router.delete("/{task_id}", status_code=status.HTTP_204_NO_CONTENT)
@@ -504,7 +383,7 @@ async def get_subtasks(
     """Get subtasks of a task."""
     service = get_task_service(db)
     tasks = await service.get_subtasks(task_id)
-    return _to_response_list(tasks)
+    return task_list_to_response(tasks)
 
 
 # =============================================================================
@@ -573,7 +452,7 @@ async def claim_task(
             detail="Cannot claim task - not pending",
         )
     await db.commit()
-    return _to_response(task)
+    return task_to_response(task)
 
 
 @router.post("/{task_id}/start", response_model=TaskResponse)
@@ -604,7 +483,7 @@ async def start_task(
             detail="Cannot start task - invalid status",
         )
     await db.commit()
-    return _to_response(task)
+    return task_to_response(task)
 
 
 @router.post("/{task_id}/block", response_model=TaskResponse)
@@ -639,7 +518,7 @@ async def block_task(
             detail="Task block failed unexpectedly",
         )
     await db.commit()
-    return _to_response(task)
+    return task_to_response(task)
 
 
 @router.post("/{task_id}/unblock", response_model=TaskResponse)
@@ -673,7 +552,7 @@ async def unblock_task(
             detail="Cannot unblock task - not blocked",
         )
     await db.commit()
-    return _to_response(task)
+    return task_to_response(task)
 
 
 @router.post("/{task_id}/pause", response_model=TaskResponse)
@@ -704,7 +583,7 @@ async def pause_task(
             detail="Cannot pause task - not in progress",
         )
     await db.commit()
-    return _to_response(task)
+    return task_to_response(task)
 
 
 @router.post("/{task_id}/resume", response_model=TaskResponse)
@@ -735,7 +614,7 @@ async def resume_task(
             detail="Cannot resume task - not paused",
         )
     await db.commit()
-    return _to_response(task)
+    return task_to_response(task)
 
 
 @router.post("/{task_id}/verify", response_model=TaskResponse)
@@ -766,7 +645,7 @@ async def submit_for_verification(
             detail="Cannot verify task - not in progress",
         )
     await db.commit()
-    return _to_response(task)
+    return task_to_response(task)
 
 
 @router.post("/{task_id}/submit-qa", response_model=TaskResponse)
@@ -797,7 +676,7 @@ async def submit_for_qa(
             detail="Cannot submit for QA - not verifying",
         )
     await db.commit()
-    return _to_response(task)
+    return task_to_response(task)
 
 
 @router.post("/{task_id}/pass-qa", response_model=TaskResponse)
@@ -853,7 +732,7 @@ async def pass_qa(
             detail="Cannot pass QA - not awaiting QA",
         )
     await db.commit()
-    return _to_response(task)
+    return task_to_response(task)
 
 
 @router.post("/{task_id}/fail-qa", response_model=TaskResponse)
@@ -892,7 +771,7 @@ async def fail_qa(
             detail="Cannot fail QA - not awaiting QA",
         )
     await db.commit()
-    return _to_response(task)
+    return task_to_response(task)
 
 
 @router.post("/{task_id}/complete", response_model=TaskResponse)
@@ -927,7 +806,7 @@ async def complete_task(
             detail="Cannot complete task - invalid status",
         )
     await db.commit()
-    return _to_response(task)
+    return task_to_response(task)
 
 
 @router.post("/{task_id}/cancel", response_model=TaskResponse)
@@ -962,7 +841,7 @@ async def cancel_task(
             detail="Task cancel failed unexpectedly",
         )
     await db.commit()
-    return _to_response(task)
+    return task_to_response(task)
 
 
 # =============================================================================
@@ -1001,7 +880,7 @@ async def add_progress(
             detail="Add progress failed unexpectedly",
         )
     await db.commit()
-    return _to_response(task)
+    return task_to_response(task)
 
 
 @router.post("/{task_id}/checkpoint", response_model=TaskResponse)
@@ -1039,7 +918,7 @@ async def add_checkpoint(
             detail="Add checkpoint failed unexpectedly",
         )
     await db.commit()
-    return _to_response(task)
+    return task_to_response(task)
 
 
 @router.post("/{task_id}/commit", response_model=TaskResponse)
@@ -1071,4 +950,4 @@ async def add_commit(
             detail="Add commit failed unexpectedly",
         )
     await db.commit()
-    return _to_response(task)
+    return task_to_response(task)

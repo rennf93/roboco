@@ -5,12 +5,16 @@ Request/response models for task endpoints.
 """
 
 from datetime import datetime
-from typing import Any
+from typing import TYPE_CHECKING, Any
 from uuid import UUID
 
 from pydantic import BaseModel, Field
 
 from roboco.models.base import Complexity, TaskStatus, Team
+from roboco.utils.converters import require_uuid, to_python_uuid, to_python_uuid_list
+
+if TYPE_CHECKING:
+    from roboco.db.tables import TaskTable
 
 # =============================================================================
 # NESTED RESPONSE MODELS
@@ -69,20 +73,103 @@ class TaskPlanResponse(BaseModel):
 
 
 # =============================================================================
+# INPUT MODELS (for creating/updating nested data)
+# =============================================================================
+
+
+class SubTaskInput(BaseModel):
+    """Input for creating/updating a sub-task."""
+
+    id: str  # Client-generated ID
+    title: str
+    description: str | None = None
+    completed: bool = False
+    order: int
+    estimated_hours: float | None = None
+    notes: str | None = None
+
+
+class TaskPlanInput(BaseModel):
+    """Input for creating/updating a task plan."""
+
+    approach: str
+    sub_tasks: list[SubTaskInput] = []
+    technical_considerations: list[str] = []
+    risks: list[dict[str, Any]] = []
+    open_questions: list[dict[str, Any]] = []
+
+
+class ProgressUpdateInput(BaseModel):
+    """Input for adding a progress update."""
+
+    timestamp: datetime
+    agent_id: str  # Can be agent slug or "CEO"
+    message: str
+    percentage: int | None = None
+
+
+class CheckpointInput(BaseModel):
+    """Input for adding a checkpoint."""
+
+    id: str  # Client-generated ID
+    timestamp: datetime
+    agent_id: str  # Can be agent slug or "CEO"
+    state_summary: str
+    remaining_work: list[str] = []
+    notes: str | None = None
+
+
+class CommitRefInput(BaseModel):
+    """Input for linking a commit."""
+
+    hash: str
+    message: str
+    timestamp: datetime
+    author_agent_id: str | None = None  # Can be agent slug or "CEO"
+
+
+# =============================================================================
 # REQUEST MODELS
 # =============================================================================
 
 
 class TaskUpdate(BaseModel):
-    """Request to update a task."""
+    """Request to update a task.
 
+    CEO can update any field. All fields are optional for partial updates.
+    """
+
+    # Basic info
     title: str | None = None
     description: str | None = None
     acceptance_criteria: list[str] | None = None
     priority: int | None = Field(default=None, ge=0, le=3)
     target_date: datetime | None = None
     estimated_complexity: Complexity | None = None
+
+    # Ownership & assignment
+    team: Team | None = None
+    assigned_to: str | None = None  # UUID string or null to unassign
+
+    # Relationships
+    parent_task_id: str | None = None  # UUID string or null
+    dependency_ids: list[str] | None = None  # List of UUID strings
+    blocker_ids: list[str] | None = None  # List of UUID strings
+
+    # Planning
+    plan: TaskPlanInput | None = None
+
+    # Execution tracking
+    progress_updates: list[ProgressUpdateInput] | None = None
+    checkpoints: list[CheckpointInput] | None = None
+
+    # Artifacts
+    commits: list[CommitRefInput] | None = None
+
+    # Notes
     dev_notes: str | None = None
+    qa_notes: str | None = None
+    auditor_notes: str | None = None
     quick_context: str | None = None
 
 
@@ -222,3 +309,180 @@ class TeamTasksQuery(BaseModel):
 
     task_status: TaskStatus | None = None
     limit: int = Field(100, ge=1, le=500)
+
+
+# =============================================================================
+# CONVERTERS (from database/dict to response models)
+# =============================================================================
+
+
+def convert_plan(plan_data: dict | None) -> TaskPlanResponse | None:
+    """Convert plan JSON dict to TaskPlanResponse."""
+    if not plan_data:
+        return None
+
+    sub_tasks = []
+    for st in plan_data.get("sub_tasks", []):
+        sub_tasks.append(
+            SubTaskResponse(
+                id=st.get("id"),
+                title=st.get("title", ""),
+                description=st.get("description"),
+                completed=st.get("completed", False),
+                order=st.get("order", 0),
+                estimated_hours=st.get("estimated_hours"),
+                notes=st.get("notes"),
+            )
+        )
+
+    return TaskPlanResponse(
+        approach=plan_data.get("approach", ""),
+        sub_tasks=sub_tasks,
+        technical_considerations=plan_data.get("technical_considerations", []),
+        risks=plan_data.get("risks", []),
+        open_questions=plan_data.get("open_questions", []),
+    )
+
+
+def convert_checkpoints(checkpoints_data: list | None) -> list[CheckpointResponse]:
+    """Convert checkpoints JSON list to CheckpointResponse list."""
+    if not checkpoints_data:
+        return []
+
+    result = []
+    for cp in checkpoints_data:
+        result.append(
+            CheckpointResponse(
+                id=cp.get("id"),
+                timestamp=cp.get("timestamp"),
+                agent_id=cp.get("agent_id"),
+                state_summary=cp.get("state_summary", ""),
+                remaining_work=cp.get("remaining_work", []),
+                notes=cp.get("notes"),
+            )
+        )
+    return result
+
+
+def convert_progress_updates(
+    updates_data: list | None,
+) -> list[ProgressUpdateResponse]:
+    """Convert progress_updates JSON list to ProgressUpdateResponse list."""
+    if not updates_data:
+        return []
+
+    result = []
+    for pu in updates_data:
+        result.append(
+            ProgressUpdateResponse(
+                timestamp=pu.get("timestamp"),
+                agent_id=pu.get("agent_id"),
+                message=pu.get("message", ""),
+                percentage=pu.get("percentage"),
+            )
+        )
+    return result
+
+
+def convert_commits(commits_data: list | None) -> list[CommitRefResponse]:
+    """Convert commits JSON list to CommitRefResponse list."""
+    if not commits_data:
+        return []
+
+    result = []
+    for cm in commits_data:
+        result.append(
+            CommitRefResponse(
+                hash=cm.get("hash", ""),
+                message=cm.get("message", ""),
+                timestamp=cm.get("timestamp"),
+                author_agent_id=cm.get("author_agent_id"),
+            )
+        )
+    return result
+
+
+def task_to_response(task: "TaskTable") -> TaskResponse:
+    """Convert TaskTable to TaskResponse with proper UUID conversion."""
+    return TaskResponse(
+        id=require_uuid(task.id),
+        title=task.title,
+        description=task.description,
+        acceptance_criteria=task.acceptance_criteria or [],
+        status=task.status,
+        priority=task.priority,
+        team=task.team,
+        created_by=require_uuid(task.created_by),
+        assigned_to=to_python_uuid(task.assigned_to),
+        parent_task_id=to_python_uuid(task.parent_task_id),
+        dependency_ids=to_python_uuid_list(task.dependency_ids),
+        blocker_ids=to_python_uuid_list(task.blocker_ids),
+        created_at=task.created_at,
+        updated_at=task.updated_at,
+        claimed_at=task.claimed_at,
+        started_at=task.started_at,
+        completed_at=task.completed_at,
+        target_date=task.target_date,
+        estimated_complexity=task.estimated_complexity,
+        # Planning
+        plan=convert_plan(task.plan),
+        # Execution
+        checkpoints=convert_checkpoints(task.checkpoints),
+        progress_updates=convert_progress_updates(task.progress_updates),
+        # Artifacts
+        commits=convert_commits(task.commits),
+        # Documentation
+        dev_notes=task.dev_notes,
+        qa_notes=task.qa_notes,
+        auditor_notes=task.auditor_notes,
+        quick_context=task.quick_context,
+        # Review Status
+        self_verified=task.self_verified,
+        qa_verified=task.qa_verified,
+    )
+
+
+def task_list_to_response(tasks: list["TaskTable"]) -> list[TaskResponse]:
+    """Convert list of TaskTable to list of TaskResponse."""
+    return [task_to_response(t) for t in tasks]
+
+
+def parse_uuid_or_none(value: str | None) -> UUID | None:
+    """Parse a string to UUID, returning None if empty or None."""
+    if not value:
+        return None
+    try:
+        return UUID(value)
+    except ValueError:
+        return None
+
+
+def _parse_uuid_list(id_strings: list[str] | None) -> list[UUID]:
+    """Parse a list of UUID strings to UUID objects, filtering empty values."""
+    if not id_strings:
+        return []
+    return [UUID(id_str) for id_str in id_strings if id_str]
+
+
+# Fields that need UUID parsing (single value)
+_SINGLE_UUID_FIELDS = ("assigned_to", "parent_task_id")
+
+# Fields that need UUID list parsing
+_UUID_LIST_FIELDS = ("dependency_ids", "blocker_ids")
+
+
+def transform_update_data(data: TaskUpdate) -> dict:
+    """Transform TaskUpdate input to format suitable for database storage."""
+    updates = data.model_dump(exclude_unset=True)
+
+    # Convert single UUID fields
+    for field in _SINGLE_UUID_FIELDS:
+        if field in updates:
+            updates[field] = parse_uuid_or_none(updates[field])
+
+    # Convert UUID list fields
+    for field in _UUID_LIST_FIELDS:
+        if field in updates:
+            updates[field] = _parse_uuid_list(updates[field])
+
+    return updates

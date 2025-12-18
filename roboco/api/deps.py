@@ -4,9 +4,10 @@ API Dependencies
 Shared dependencies for FastAPI routes.
 """
 
+from __future__ import annotations
+
 import contextlib
-from collections.abc import Callable, Coroutine
-from typing import Annotated, Any, cast
+from typing import TYPE_CHECKING, Annotated, Any, cast
 from uuid import UUID
 
 from fastapi import Depends, Header, HTTPException, status
@@ -16,7 +17,11 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from roboco.db.base import get_db
 from roboco.db.tables import AgentTable
 from roboco.models import AgentRole, Team
+from roboco.runtime import AgentOrchestrator
 from roboco.services.permissions import AgentContext, PermissionService
+
+if TYPE_CHECKING:
+    from collections.abc import Callable, Coroutine
 
 # Type alias for database session dependency
 DbSession = Annotated[AsyncSession, Depends(get_db)]
@@ -61,6 +66,7 @@ class _ServiceHolder:
     """Holder for singleton service instances."""
 
     permission_service: PermissionService | None = None
+    orchestrator: AgentOrchestrator | None = None
 
 
 def get_permission_service() -> PermissionService:
@@ -71,6 +77,24 @@ def get_permission_service() -> PermissionService:
 
 
 PermissionServiceDep = Annotated[PermissionService, Depends(get_permission_service)]
+
+
+def set_orchestrator(orchestrator: AgentOrchestrator) -> None:
+    """Set the global orchestrator instance."""
+    _ServiceHolder.orchestrator = orchestrator
+
+
+def get_orchestrator() -> AgentOrchestrator:
+    """Get the global orchestrator instance."""
+    if _ServiceHolder.orchestrator is None:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Orchestrator not initialized",
+        )
+    return _ServiceHolder.orchestrator
+
+
+OrchestratorDep = Annotated[AgentOrchestrator, Depends(get_orchestrator)]
 
 
 async def get_current_agent_id(
