@@ -50,6 +50,15 @@ async def list_channels(
     # Get accessible channels based on permissions
     accessible_slugs = permissions.get_accessible_channels(agent)
 
+    # If slug filter provided, intersect with accessible slugs
+    if params.slug:
+        if params.slug not in accessible_slugs:
+            # Return empty response if requested slug isn't accessible
+            return ChannelListResponse(
+                items=[], total=0, page=params.page, page_size=params.page_size
+            )
+        accessible_slugs = [params.slug]
+
     # Query channels by slug
     query = select(ChannelTable).where(ChannelTable.slug.in_(accessible_slugs))
 

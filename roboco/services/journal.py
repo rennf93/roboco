@@ -647,20 +647,19 @@ class JournalService:
             # Extract entry IDs from results and fetch full entries
             entries = []
             for result in results:
-                # Parse entry ID from the indexed content
-                # (This is a simplified approach - in production we'd store
-                # entry ID in metadata)
-                if "Entry ID:" in result.content:
+                # Get entry_id from metadata (stored during indexing)
+                entry_id_str = result.metadata.get("entry_id")
+                if entry_id_str:
                     try:
-                        entry_id_str = (
-                            result.content.split("Entry ID:")[1].split("\n")[0].strip()
-                        )
                         entry_id = UUID(entry_id_str)
                         entry = await self.get_entry(entry_id)
                         if entry:
                             entries.append(entry)
-                    except (ValueError, IndexError):
-                        pass
+                    except ValueError:
+                        logger.warning(
+                            "Invalid entry_id in search result",
+                            entry_id=entry_id_str,
+                        )
 
             return entries[:top_k]
 

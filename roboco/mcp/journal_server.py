@@ -20,7 +20,7 @@ import httpx
 from fastapi import status
 from mcp.server.fastmcp import FastMCP
 
-from roboco.agents_config import get_agent_role
+from roboco.agents_config import get_agent_role, get_agent_team
 from roboco.config import settings
 from roboco.llm import ToonAdapter
 from roboco.mcp.schemas import (
@@ -57,10 +57,14 @@ def _format_error_response(
 
 def _get_agent_headers(agent_id: str) -> dict[str, str]:
     """Get standard headers for API calls."""
-    return {
-        "X-Agent-Id": agent_id,
+    headers = {
+        "X-Agent-ID": agent_id,
         "X-Agent-Role": get_agent_role(agent_id),
     }
+    team = get_agent_team(agent_id)
+    if team:
+        headers["X-Agent-Team"] = team
+    return headers
 
 
 async def _post_journal_entry(
@@ -69,17 +73,29 @@ async def _post_journal_entry(
     agent_id: str,
 ) -> tuple[dict[str, Any] | None, dict[str, Any] | None]:
     """Post to a journal endpoint. Returns (data, error)."""
-    async with httpx.AsyncClient() as client:
-        resp = await client.post(
-            f"{settings.internal_api_url}/journals/me/{endpoint}",
-            json=payload,
-            headers=_get_agent_headers(agent_id),
-        )
+    async with httpx.AsyncClient(timeout=30.0) as client:
+        try:
+            resp = await client.post(
+                f"{settings.internal_api_url}/journals/me/{endpoint}",
+                json=payload,
+                headers=_get_agent_headers(agent_id),
+            )
+        except httpx.TimeoutException:
+            return None, _format_error_response(
+                "TIMEOUT",
+                f"Request to create {endpoint.rstrip('s')} timed out",
+            )
+        except httpx.RequestError as e:
+            return None, _format_error_response(
+                "CONNECTION_ERROR",
+                f"Failed to connect to API: {type(e).__name__}",
+            )
+
         if resp.status_code not in [200, 201]:
             return None, _format_error_response(
                 "CREATE_FAILED",
                 f"Failed to create {endpoint.rstrip('s')}",
-                {"api_error": resp.text},
+                {"status_code": resp.status_code, "detail": resp.text},
             )
         return resp.json(), None
 
@@ -225,17 +241,29 @@ async def _handle_struggle(data: StruggleInput, agent_id: str) -> dict[str, Any]
 
 async def _handle_search(query: str, top_k: int, agent_id: str) -> dict[str, Any]:
     """Handle journal search."""
-    async with httpx.AsyncClient() as client:
+    async with httpx.AsyncClient(timeout=30.0) as client:
         payload = {"query": query, "top_k": min(top_k, 20)}
-        resp = await client.post(
-            f"{settings.internal_api_url}/journals/me/search",
-            json=payload,
-            headers=_get_agent_headers(agent_id),
-        )
+        try:
+            resp = await client.post(
+                f"{settings.internal_api_url}/journals/me/search",
+                json=payload,
+                headers=_get_agent_headers(agent_id),
+            )
+        except httpx.TimeoutException:
+            return _format_error_response(
+                "TIMEOUT", "Search request timed out"
+            )
+        except httpx.RequestError as e:
+            return _format_error_response(
+                "CONNECTION_ERROR",
+                f"Failed to connect to API: {type(e).__name__}",
+            )
 
         if resp.status_code != status.HTTP_200_OK:
             return _format_error_response(
-                "SEARCH_FAILED", "Failed to search journal", {"api_error": resp.text}
+                "SEARCH_FAILED",
+                "Failed to search journal",
+                {"status_code": resp.status_code, "detail": resp.text},
             )
 
         entries = resp.json()
@@ -255,21 +283,30 @@ async def _handle_search(query: str, top_k: int, agent_id: str) -> dict[str, Any
 
 async def _handle_stats(agent_id: str) -> dict[str, Any]:
     """Handle journal stats retrieval."""
-    async with httpx.AsyncClient() as client:
-        stats_resp = await client.get(
-            f"{settings.internal_api_url}/journals/me/stats",
-            headers=_get_agent_headers(agent_id),
-        )
-        growth_resp = await client.get(
-            f"{settings.internal_api_url}/journals/me/growth",
-            headers=_get_agent_headers(agent_id),
-        )
+    async with httpx.AsyncClient(timeout=30.0) as client:
+        try:
+            stats_resp = await client.get(
+                f"{settings.internal_api_url}/journals/me/stats",
+                headers=_get_agent_headers(agent_id),
+            )
+            growth_resp = await client.get(
+                f"{settings.internal_api_url}/journals/me/growth",
+                headers=_get_agent_headers(agent_id),
+            )
+        except httpx.RequestError:
+            # Return empty stats on connection error
+            stats_resp = None
+            growth_resp = None
 
         stats = (
-            stats_resp.json() if stats_resp.status_code == status.HTTP_200_OK else {}
+            stats_resp.json()
+            if stats_resp and stats_resp.status_code == status.HTTP_200_OK
+            else {}
         )
         growth = (
-            growth_resp.json() if growth_resp.status_code == status.HTTP_200_OK else {}
+            growth_resp.json()
+            if growth_resp and growth_resp.status_code == status.HTTP_200_OK
+            else {}
         )
 
     return {
@@ -298,21 +335,35 @@ async def _handle_recent(
     agent_id: str,
 ) -> dict[str, Any]:
     """Handle recent entries retrieval."""
-    async with httpx.AsyncClient() as client:
+    async with httpx.AsyncClient(timeout=30.0) as client:
         params: dict[str, Any] = {"limit": min(limit, 50)}
         if entry_type:
             params["entry_type"] = entry_type
         if task_id:
             params["task_id"] = task_id
 
-        resp = await client.get(
-            f"{settings.internal_api_url}/journals/me/entries",
-            params=params,
-            headers=_get_agent_headers(agent_id),
-        )
+        try:
+            resp = await client.get(
+                f"{settings.internal_api_url}/journals/me/entries",
+                params=params,
+                headers=_get_agent_headers(agent_id),
+            )
+        except httpx.TimeoutException:
+            return _format_error_response(
+                "TIMEOUT", "Request to list entries timed out"
+            )
+        except httpx.RequestError as e:
+            return _format_error_response(
+                "CONNECTION_ERROR",
+                f"Failed to connect to API: {type(e).__name__}",
+            )
 
         if resp.status_code != status.HTTP_200_OK:
-            return _format_error_response("LIST_FAILED", "Failed to list entries")
+            return _format_error_response(
+                "LIST_FAILED",
+                "Failed to list entries",
+                {"status_code": resp.status_code, "detail": resp.text},
+            )
 
         entries = resp.json()
 

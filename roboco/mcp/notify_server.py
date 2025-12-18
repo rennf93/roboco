@@ -21,6 +21,7 @@ from roboco.agents_config import (
     NOTIFICATION_PERMISSIONS,
     get_agent_cell,
     get_agent_role,
+    get_agent_team,
 )
 from roboco.config import settings
 from roboco.mcp.schemas import SendNotificationInput
@@ -32,10 +33,14 @@ from roboco.mcp.schemas import SendNotificationInput
 
 def _get_agent_headers(agent_id: str) -> dict[str, str]:
     """Get standard headers for API calls."""
-    return {
-        "X-Agent-Id": agent_id,
+    headers = {
+        "X-Agent-ID": agent_id,
         "X-Agent-Role": get_agent_role(agent_id),
     }
+    team = get_agent_team(agent_id)
+    if team:
+        headers["X-Agent-Team"] = team
+    return headers
 
 
 def _check_cell_scope(sender_id: str) -> tuple[bool, str]:

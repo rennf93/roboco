@@ -327,7 +327,7 @@ class OptimalService:
                             source=chunk.source,
                             score=chunk.score,
                             index_type=index_type,
-                            metadata={},
+                            metadata=chunk.metadata or {},
                         )
                     )
             except Exception as e:

@@ -26,17 +26,21 @@ import httpx
 from fastapi import status
 from mcp.server.fastmcp import FastMCP
 
-from roboco.agents_config import get_agent_role
+from roboco.agents_config import get_agent_role, get_agent_team
 from roboco.config import settings
 from roboco.llm import ToonAdapter
 
 
 def _get_agent_headers(agent_id: str) -> dict[str, str]:
     """Get standard headers for API calls."""
-    return {
-        "X-Agent-Id": agent_id,
+    headers = {
+        "X-Agent-ID": agent_id,
         "X-Agent-Role": get_agent_role(agent_id),
     }
+    team = get_agent_team(agent_id)
+    if team:
+        headers["X-Agent-Team"] = team
+    return headers
 
 
 # Cache for agent slug -> UUID resolution
@@ -438,10 +442,13 @@ def _validate_task_status_claimed(task: dict) -> dict[str, Any] | None:
 
 def _build_plan_data(plan_params: dict[str, Any]) -> dict[str, Any]:
     """Build the plan data structure from params."""
+    from uuid import uuid4
+
     return {
         "approach": plan_params["approach"],
         "sub_tasks": [
             {
+                "id": st.get("id") or str(uuid4()),  # Use provided ID or generate one
                 "title": st.get("title", ""),
                 "description": st.get("description", ""),
                 "order": i,
@@ -1077,13 +1084,24 @@ async def _handle_task_complete(task_id: str, agent_id: str) -> dict[str, Any]:
 async def _handle_agent_idle(agent_id: str) -> dict[str, Any]:
     """Handle agent going idle (no work available)."""
     headers = _get_agent_headers(agent_id)
-    async with httpx.AsyncClient() as client:
-        # Signal to orchestrator that this agent is idle
-        resp = await client.post(
-            f"{settings.internal_api_url}/orchestrator/agents/{agent_id}/mark-waiting",
-            params={"waiting_for": "task_assignment"},
-            headers=headers,
-        )
+    async with httpx.AsyncClient(timeout=30.0) as client:
+        try:
+            # Signal to orchestrator that this agent is idle
+            resp = await client.post(
+                f"{settings.internal_api_url}/orchestrator/agents/{agent_id}/mark-waiting",
+                params={"waiting_for": "task_assignment"},
+                headers=headers,
+            )
+        except httpx.TimeoutException:
+            return _format_error_response(
+                "TIMEOUT",
+                "Request to mark idle timed out",
+            )
+        except httpx.RequestError as e:
+            return _format_error_response(
+                "CONNECTION_ERROR",
+                f"Failed to connect to orchestrator: {type(e).__name__}",
+            )
 
         if resp.status_code == status.HTTP_204_NO_CONTENT:
             return {
@@ -1095,10 +1113,18 @@ async def _handle_agent_idle(agent_id: str) -> dict[str, Any]:
                 "action": "EXIT_GRACEFULLY",
             }
 
+        # Handle specific error codes
+        if resp.status_code == status.HTTP_503_SERVICE_UNAVAILABLE:
+            return _format_error_response(
+                "ORCHESTRATOR_UNAVAILABLE",
+                "Orchestrator is not running. Cannot mark idle state.",
+                {"detail": resp.text},
+            )
+
         return _format_error_response(
             "IDLE_FAILED",
             "Failed to signal idle state to orchestrator",
-            {"status_code": resp.status_code},
+            {"status_code": resp.status_code, "detail": resp.text},
         )
 
 
