@@ -5,7 +5,6 @@ Functions to populate the database with initial data.
 Separates database operations from bootstrap orchestration.
 """
 
-import contextlib
 from uuid import UUID as UUIDType
 
 import structlog
@@ -75,12 +74,13 @@ async def create_channels(session: AsyncSession) -> dict[str, str]:
 
 
 async def create_agents(session: AsyncSession) -> dict[str, str]:
-    """Create default agents. Returns agent_id (slug) -> db_id mapping."""
+    """Create default agents. Returns slug -> db_id (UUID) mapping."""
 
     agent_ids = {}
 
     for agent_data in DEFAULT_AGENTS:
-        slug = agent_data["agent_id"]
+        slug = agent_data["slug"]
+        static_id = agent_data["id"]  # Static UUID from initial_data.py
 
         # Check if exists
         result = await session.execute(
@@ -90,7 +90,7 @@ async def create_agents(session: AsyncSession) -> dict[str, str]:
 
         if existing:
             agent_ids[slug] = str(existing.id)
-            logger.info("Agent exists", agent_id=slug)
+            logger.info("Agent exists", slug=slug, id=str(existing.id))
             continue
 
         # Map role string to enum
@@ -101,15 +101,12 @@ async def create_agents(session: AsyncSession) -> dict[str, str]:
         team_str = agent_data.get("team")
         team = Team(team_str) if team_str else None
 
-        # If slug is a valid UUID, use it as the database ID
-        # (important for CEO so X-Agent-ID header matches the DB id)
-        explicit_id: UUIDType | None = None
-        with contextlib.suppress(ValueError):
-            explicit_id = UUIDType(slug)
+        # Use the static UUID from initial_data.py
+        agent_uuid = UUIDType(static_id)
 
-        # Create agent using ORM
+        # Create agent using ORM with static UUID
         agent = AgentTable(
-            id=explicit_id,  # Will use slug as ID if it's a valid UUID
+            id=agent_uuid,
             name=agent_data["name"],
             slug=slug,
             role=role,
@@ -121,7 +118,7 @@ async def create_agents(session: AsyncSession) -> dict[str, str]:
         await session.flush()
 
         agent_ids[slug] = str(agent.id)
-        logger.info("Agent created", agent_id=slug)
+        logger.info("Agent created", slug=slug, id=str(agent.id))
 
     return agent_ids
 

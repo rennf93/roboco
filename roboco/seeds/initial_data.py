@@ -87,84 +87,183 @@ DEFAULT_CHANNELS = [
 
 # =============================================================================
 # DEFAULT AGENTS
+#
+# All agents have static UUIDs for consistent mapping between:
+# - Database records
+# - Task assignments
+# - Container orchestration
+#
+# UUID scheme:
+# - 0000-0000: CEO (human)
+# - 0001-000X: Backend cell
+# - 0002-000X: Frontend cell
+# - 0003-000X: UX/UI cell
+# - 0004-000X: Board/Management
 # =============================================================================
+
+# Static agent UUIDs - NEVER change these after initial deployment
+AGENT_UUIDS = {
+    # CEO (Human)
+    "ceo": "00000000-0000-0000-0000-000000000001",
+    # Backend Cell
+    "be-dev-1": "00000000-0000-0000-0001-000000000001",
+    "be-dev-2": "00000000-0000-0000-0001-000000000002",
+    "be-qa": "00000000-0000-0000-0001-000000000003",
+    "be-pm": "00000000-0000-0000-0001-000000000004",
+    "be-doc": "00000000-0000-0000-0001-000000000005",
+    # Frontend Cell
+    "fe-dev-1": "00000000-0000-0000-0002-000000000001",
+    "fe-dev-2": "00000000-0000-0000-0002-000000000002",
+    "fe-qa": "00000000-0000-0000-0002-000000000003",
+    "fe-pm": "00000000-0000-0000-0002-000000000004",
+    "fe-doc": "00000000-0000-0000-0002-000000000005",
+    # UX/UI Cell
+    "ux-dev": "00000000-0000-0000-0003-000000000001",
+    "ux-qa": "00000000-0000-0000-0003-000000000002",
+    "ux-pm": "00000000-0000-0000-0003-000000000003",
+    "ux-doc": "00000000-0000-0000-0003-000000000004",
+    # Board / Management
+    "main-pm": "00000000-0000-0000-0004-000000000001",
+    "product-owner": "00000000-0000-0000-0004-000000000002",
+    "head-marketing": "00000000-0000-0000-0004-000000000003",
+    "auditor": "00000000-0000-0000-0004-000000000004",
+}
 
 DEFAULT_AGENTS: list[dict[str, Any]] = [
     # Backend Cell
     {
-        "agent_id": "be-dev-1",
+        "id": AGENT_UUIDS["be-dev-1"],
+        "slug": "be-dev-1",
         "name": "Backend Developer 1",
         "role": "developer",
         "team": "backend",
     },
     {
-        "agent_id": "be-dev-2",
+        "id": AGENT_UUIDS["be-dev-2"],
+        "slug": "be-dev-2",
         "name": "Backend Developer 2",
         "role": "developer",
         "team": "backend",
     },
-    {"agent_id": "be-qa", "name": "Backend QA", "role": "qa", "team": "backend"},
-    {"agent_id": "be-pm", "name": "Backend PM", "role": "cell_pm", "team": "backend"},
     {
-        "agent_id": "be-doc",
+        "id": AGENT_UUIDS["be-qa"],
+        "slug": "be-qa",
+        "name": "Backend QA",
+        "role": "qa",
+        "team": "backend",
+    },
+    {
+        "id": AGENT_UUIDS["be-pm"],
+        "slug": "be-pm",
+        "name": "Backend PM",
+        "role": "cell_pm",
+        "team": "backend",
+    },
+    {
+        "id": AGENT_UUIDS["be-doc"],
+        "slug": "be-doc",
         "name": "Backend Documenter",
         "role": "documenter",
         "team": "backend",
     },
     # Frontend Cell
     {
-        "agent_id": "fe-dev-1",
+        "id": AGENT_UUIDS["fe-dev-1"],
+        "slug": "fe-dev-1",
         "name": "Frontend Developer 1",
         "role": "developer",
         "team": "frontend",
     },
     {
-        "agent_id": "fe-dev-2",
+        "id": AGENT_UUIDS["fe-dev-2"],
+        "slug": "fe-dev-2",
         "name": "Frontend Developer 2",
         "role": "developer",
         "team": "frontend",
     },
-    {"agent_id": "fe-qa", "name": "Frontend QA", "role": "qa", "team": "frontend"},
-    {"agent_id": "fe-pm", "name": "Frontend PM", "role": "cell_pm", "team": "frontend"},
     {
-        "agent_id": "fe-doc",
+        "id": AGENT_UUIDS["fe-qa"],
+        "slug": "fe-qa",
+        "name": "Frontend QA",
+        "role": "qa",
+        "team": "frontend",
+    },
+    {
+        "id": AGENT_UUIDS["fe-pm"],
+        "slug": "fe-pm",
+        "name": "Frontend PM",
+        "role": "cell_pm",
+        "team": "frontend",
+    },
+    {
+        "id": AGENT_UUIDS["fe-doc"],
+        "slug": "fe-doc",
         "name": "Frontend Documenter",
         "role": "documenter",
         "team": "frontend",
     },
     # UX/UI Cell
     {
-        "agent_id": "ux-dev",
+        "id": AGENT_UUIDS["ux-dev"],
+        "slug": "ux-dev",
         "name": "UX/UI Developer",
         "role": "developer",
         "team": "ux_ui",
     },
-    {"agent_id": "ux-qa", "name": "UX/UI QA", "role": "qa", "team": "ux_ui"},
-    {"agent_id": "ux-pm", "name": "UX/UI PM", "role": "cell_pm", "team": "ux_ui"},
     {
-        "agent_id": "ux-doc",
+        "id": AGENT_UUIDS["ux-qa"],
+        "slug": "ux-qa",
+        "name": "UX/UI QA",
+        "role": "qa",
+        "team": "ux_ui",
+    },
+    {
+        "id": AGENT_UUIDS["ux-pm"],
+        "slug": "ux-pm",
+        "name": "UX/UI PM",
+        "role": "cell_pm",
+        "team": "ux_ui",
+    },
+    {
+        "id": AGENT_UUIDS["ux-doc"],
+        "slug": "ux-doc",
         "name": "UX/UI Documenter",
         "role": "documenter",
         "team": "ux_ui",
     },
     # Board / Management
-    {"agent_id": "main-pm", "name": "Main PM", "role": "main_pm", "team": None},
     {
-        "agent_id": "product-owner",
+        "id": AGENT_UUIDS["main-pm"],
+        "slug": "main-pm",
+        "name": "Main PM",
+        "role": "main_pm",
+        "team": None,
+    },
+    {
+        "id": AGENT_UUIDS["product-owner"],
+        "slug": "product-owner",
         "name": "Product Owner",
         "role": "product_owner",
         "team": None,
     },
     {
-        "agent_id": "head-marketing",
+        "id": AGENT_UUIDS["head-marketing"],
+        "slug": "head-marketing",
         "name": "Head of Marketing",
         "role": "head_marketing",
         "team": None,
     },
-    {"agent_id": "auditor", "name": "Auditor", "role": "auditor", "team": None},
+    {
+        "id": AGENT_UUIDS["auditor"],
+        "slug": "auditor",
+        "name": "Auditor",
+        "role": "auditor",
+        "team": None,
+    },
     # CEO (Human)
     {
-        "agent_id": "00000000-0000-0000-0000-000000000001",
+        "id": AGENT_UUIDS["ceo"],
+        "slug": "ceo",
         "name": "Renzo",
         "role": "ceo",
         "team": None,
@@ -176,30 +275,30 @@ DEFAULT_AGENTS: list[dict[str, Any]] = [
 # CHANNEL MEMBERSHIP
 # =============================================================================
 
-CEO_AGENT_ID = "00000000-0000-0000-0000-000000000001"
+CEO_AGENT_ID = AGENT_UUIDS["ceo"]
 
 CHANNEL_MEMBERSHIPS = {
     # Cell channels - cell members + CEO
-    "backend-cell": ["be-dev-1", "be-dev-2", "be-qa", "be-pm", "be-doc", CEO_AGENT_ID],
-    "frontend-cell": ["fe-dev-1", "fe-dev-2", "fe-qa", "fe-pm", "fe-doc", CEO_AGENT_ID],
-    "uxui-cell": ["ux-dev", "ux-qa", "ux-pm", "ux-doc", CEO_AGENT_ID],
+    "backend-cell": ["be-dev-1", "be-dev-2", "be-qa", "be-pm", "be-doc", "ceo"],
+    "frontend-cell": ["fe-dev-1", "fe-dev-2", "fe-qa", "fe-pm", "fe-doc", "ceo"],
+    "uxui-cell": ["ux-dev", "ux-qa", "ux-pm", "ux-doc", "ceo"],
     # Role channels + CEO
-    "dev-all": ["be-dev-1", "be-dev-2", "fe-dev-1", "fe-dev-2", "ux-dev", CEO_AGENT_ID],
-    "qa-all": ["be-qa", "fe-qa", "ux-qa", CEO_AGENT_ID],
-    "pm-all": ["be-pm", "fe-pm", "ux-pm", "main-pm", CEO_AGENT_ID],
-    "doc-all": ["be-doc", "fe-doc", "ux-doc", CEO_AGENT_ID],
+    "dev-all": ["be-dev-1", "be-dev-2", "fe-dev-1", "fe-dev-2", "ux-dev", "ceo"],
+    "qa-all": ["be-qa", "fe-qa", "ux-qa", "ceo"],
+    "pm-all": ["be-pm", "fe-pm", "ux-pm", "main-pm", "ceo"],
+    "doc-all": ["be-doc", "fe-doc", "ux-doc", "ceo"],
     # Management channels + CEO
     "main-pm-board": [
         "main-pm",
         "product-owner",
         "head-marketing",
         "auditor",
-        CEO_AGENT_ID,
+        "ceo",
     ],
-    "board-private": ["product-owner", "head-marketing", "auditor", CEO_AGENT_ID],
+    "board-private": ["product-owner", "head-marketing", "auditor", "ceo"],
     # Broadcast channels - everyone (CEO included via DEFAULT_AGENTS)
-    "announcements": [a["agent_id"] for a in DEFAULT_AGENTS],
-    "all-hands": [a["agent_id"] for a in DEFAULT_AGENTS],
+    "announcements": [a["slug"] for a in DEFAULT_AGENTS],
+    "all-hands": [a["slug"] for a in DEFAULT_AGENTS],
 }
 
 # Auditor has silent read access to cell/role channels

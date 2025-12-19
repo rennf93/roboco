@@ -44,8 +44,9 @@ class TaskReflectionInput(BaseModel):
 class DecisionOption(BaseModel):
     """A decision option with pros/cons."""
 
-    option: str
-    pros_cons: str
+    name: str = Field(..., description="Option name/title")
+    pros: str = Field(default="", description="Pros/advantages of this option")
+    cons: str = Field(default="", description="Cons/disadvantages of this option")
 
 
 class DecisionLogInput(BaseModel):

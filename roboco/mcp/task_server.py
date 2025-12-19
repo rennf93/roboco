@@ -1084,7 +1084,40 @@ async def _handle_task_complete(task_id: str, agent_id: str) -> dict[str, Any]:
 async def _handle_agent_idle(agent_id: str) -> dict[str, Any]:
     """Handle agent going idle (no work available)."""
     headers = _get_agent_headers(agent_id)
+
     async with httpx.AsyncClient(timeout=30.0) as client:
+        # First, check if agent has any in-progress tasks
+        try:
+            agent_uuid = await _resolve_agent_uuid(agent_id, headers)
+            if agent_uuid:
+                scan_resp = await client.get(
+                    f"{settings.internal_api_url}/tasks",
+                    params={"assigned_to": agent_uuid, "status": "in_progress"},
+                    headers=headers,
+                )
+                if scan_resp.status_code == status.HTTP_200_OK:
+                    data = scan_resp.json()
+                    tasks = data.get("items", [])
+                    if tasks:
+                        # Agent has in-progress tasks - they must handle them first
+                        task_info = [
+                            {"id": t.get("id"), "title": t.get("title")}
+                            for t in tasks
+                        ]
+                        return _format_error_response(
+                            "TASKS_IN_PROGRESS",
+                            (
+                                "You have in-progress tasks. Handle them before going "
+                                "idle using: roboco_task_pause (to pause), "
+                                "roboco_task_submit_qa (if done), or "
+                                "roboco_task_complete (if approved)."
+                            ),
+                            {"tasks": task_info},
+                        )
+        except Exception:
+            # If check fails, continue to mark idle (fail open)
+            pass
+
         try:
             # Signal to orchestrator that this agent is idle
             resp = await client.post(
