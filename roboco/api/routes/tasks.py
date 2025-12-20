@@ -445,11 +445,14 @@ async def claim_task(
     else:
         claim_agent_id = agent.agent_id
 
-    task = await service.claim(task_id, claim_agent_id)
+    # Allow reassignment if PM is assigning on behalf of another agent
+    allow_reassign = bool(can_assign and data and data.agent_id is not None)
+    task = await service.claim(task_id, claim_agent_id, allow_reassign=allow_reassign)
     if not task:
+        status_msg = "not pending or claimed" if allow_reassign else "not pending"
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Cannot claim task - not pending",
+            detail=f"Cannot claim task - {status_msg}",
         )
     await db.commit()
     return task_to_response(task)
@@ -710,7 +713,12 @@ async def pass_qa(
         )
 
     # QA cannot review their own tasks (prevent self-review)
-    if task.assigned_to == agent.agent_id:
+    # Check against original developer stored in quick_context, not current assigned_to
+    original_dev = None
+    if task.quick_context and task.quick_context.startswith("original_developer:"):
+        original_dev = task.quick_context.split(":", 1)[1]
+
+    if original_dev and str(agent.agent_id) == original_dev:
         audit = get_audit_service()
         await audit.log_task_action_denial(
             agent_id=agent.agent_id,
@@ -758,7 +766,12 @@ async def fail_qa(
         )
 
     # QA cannot review their own tasks (prevent self-review)
-    if task.assigned_to == agent.agent_id:
+    # Check against original developer stored in quick_context, not current assigned_to
+    original_dev = None
+    if task.quick_context and task.quick_context.startswith("original_developer:"):
+        original_dev = task.quick_context.split(":", 1)[1]
+
+    if original_dev and str(agent.agent_id) == original_dev:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Cannot QA review your own task",

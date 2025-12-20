@@ -176,6 +176,7 @@ TASK_PERMISSIONS: dict[AgentRole, set[str]] = {
         TaskAction.VIEW_ALL,
         TaskAction.CREATE,
         TaskAction.ASSIGN,
+        TaskAction.CLAIM,  # Required to assign tasks via claim endpoint
         TaskAction.CLOSE,
         TaskAction.CHANGE_PRIORITY,
     },
@@ -183,6 +184,7 @@ TASK_PERMISSIONS: dict[AgentRole, set[str]] = {
         TaskAction.VIEW_OWN,  # Own cell only
         TaskAction.CREATE,
         TaskAction.ASSIGN,
+        TaskAction.CLAIM,  # Required to assign tasks via claim endpoint
         TaskAction.CLOSE,
         TaskAction.CHANGE_PRIORITY,
     },
@@ -201,5 +203,6 @@ TASK_PERMISSIONS: dict[AgentRole, set[str]] = {
         TaskAction.VIEW_OWN,
         TaskAction.CLAIM,
         TaskAction.UPDATE_OWN,
+        TaskAction.CLOSE,  # Documenters complete tasks after documentation
     },
 }

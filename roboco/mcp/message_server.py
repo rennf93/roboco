@@ -45,6 +45,42 @@ def _get_agent_headers(agent_id: str) -> dict[str, str]:
     return headers
 
 
+# Cache for agent slug -> UUID resolution
+_agent_uuid_cache: dict[str, str] = {}
+
+
+async def _resolve_agent_uuid(agent_id: str, headers: dict[str, str]) -> str | None:
+    """Resolve agent slug to UUID. Returns None if not found."""
+    from uuid import UUID
+
+    # Check if already a valid UUID
+    try:
+        UUID(agent_id)
+        return agent_id  # Already a UUID
+    except ValueError:
+        pass
+
+    # Check cache
+    if agent_id in _agent_uuid_cache:
+        return _agent_uuid_cache[agent_id]
+
+    # Query API to resolve slug to UUID
+    async with httpx.AsyncClient() as client:
+        resp = await client.get(
+            f"{settings.internal_api_url}/agents",
+            params={"slug": agent_id},
+            headers=headers,
+        )
+        if resp.status_code == status.HTTP_200_OK:
+            agents = resp.json()
+            if agents:
+                uuid: str | None = agents[0].get("id")
+                if uuid:
+                    _agent_uuid_cache[agent_id] = uuid
+                    return uuid
+    return None
+
+
 # =============================================================================
 # HELPER FUNCTIONS
 # =============================================================================
@@ -379,13 +415,22 @@ async def _handle_message_send(
             return session_result
         session_id = session_result
 
+        # Resolve mentions (slugs) to UUIDs
+        resolved_mentions: list[str] = []
+        if data.mentions:
+            for mention in data.mentions:
+                resolved = await _resolve_agent_uuid(mention, headers)
+                if resolved:
+                    resolved_mentions.append(resolved)
+                # Skip unresolved mentions rather than failing
+
         message_data = {
             "session_id": session_id,
             "type": data.message_type,
             "content": data.content,
             "is_reply": data.reply_to is not None,
             "reply_to": data.reply_to,
-            "mentions": data.mentions,
+            "mentions": resolved_mentions if resolved_mentions else None,
             "task_id": data.task_id,
         }
 
