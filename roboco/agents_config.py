@@ -76,6 +76,43 @@ BOARD_MEMBERS: Final[list[str]] = ["product-owner", "head-marketing", "auditor"]
 # All PMs
 ALL_PMS: Final[list[str]] = ["be-pm", "fe-pm", "ux-pm", "main-pm"]
 
+# PM-capable roles (can create and assign tasks)
+PM_ROLES: Final[set[str]] = {
+    "cell_pm",
+    "main_pm",
+    "product_owner",
+    "head_marketing",
+    "ceo",
+}
+
+# Escalation chain - who each agent escalates to
+ESCALATION_CHAIN: Final[dict[str, str]] = {
+    # Developers → Cell PM
+    "be-dev-1": "be-pm",
+    "be-dev-2": "be-pm",
+    "fe-dev-1": "fe-pm",
+    "fe-dev-2": "fe-pm",
+    "ux-dev": "ux-pm",
+    # QA → Cell PM
+    "be-qa": "be-pm",
+    "fe-qa": "fe-pm",
+    "ux-qa": "ux-pm",
+    # Documenters → Cell PM
+    "be-doc": "be-pm",
+    "fe-doc": "fe-pm",
+    "ux-doc": "ux-pm",
+    # Cell PM → Main PM
+    "be-pm": "main-pm",
+    "fe-pm": "main-pm",
+    "ux-pm": "main-pm",
+    # Main PM → Product Owner
+    "main-pm": "product-owner",
+    # Product Owner → CEO (final escalation)
+    "product-owner": "ceo",
+    "head-marketing": "ceo",
+    "auditor": "ceo",
+}
+
 
 # =============================================================================
 # HELPER FUNCTIONS
@@ -137,6 +174,23 @@ def can_send_notifications(agent_id: str) -> bool:
         "auditor",
         "ceo",
     )
+
+
+def can_create_tasks(agent_id: str) -> bool:
+    """Check if agent can create tasks (PMs and management only)."""
+    role = get_agent_role(agent_id)
+    return role in PM_ROLES
+
+
+def can_assign_tasks(agent_id: str) -> bool:
+    """Check if agent can assign tasks (PMs and management only)."""
+    role = get_agent_role(agent_id)
+    return role in PM_ROLES
+
+
+def get_escalation_target(agent_id: str) -> str | None:
+    """Get the escalation target for an agent."""
+    return ESCALATION_CHAIN.get(agent_id)
 
 
 # =============================================================================

@@ -19,7 +19,7 @@ import os
 import tempfile
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, ClassVar
 
 import httpx
 import structlog
@@ -34,8 +34,12 @@ from roboco.models.runtime import (
     OrchestratorAgentState,
     WaitingRecord,
 )
+from roboco.seeds.initial_data import AGENT_UUIDS
 
 logger = structlog.get_logger()
+
+# Reverse mapping: UUID -> slug
+UUID_TO_SLUG = {uuid: slug for slug, uuid in AGENT_UUIDS.items()}
 
 # Re-export for backwards compatibility
 AgentState = OrchestratorAgentState
@@ -357,6 +361,7 @@ class AgentOrchestrator:
         if PROJECT_HOST_PATH:
             # Running inside orchestrator container - use host paths
             blueprints_host = f"{PROJECT_HOST_PATH}/agents/blueprints"
+            docs_host = f"{PROJECT_HOST_PATH}/docs"
             claude_host = CLAUDE_AUTH_HOST_PATH
             mcp_config_host = (
                 f"{DATA_HOST_PATH}/mcp-configs/{config.mcp_config_path.name}"
@@ -364,6 +369,7 @@ class AgentOrchestrator:
         else:
             # Running directly on host
             blueprints_host = str(self.blueprints_dir.absolute())
+            docs_host = str(self.blueprints_dir.parent / "docs")
             claude_host = CLAUDE_AUTH_HOST_PATH
             mcp_config_host = str(config.mcp_config_path)
 
@@ -382,6 +388,9 @@ class AgentOrchestrator:
             # Mount blueprints
             "-v",
             f"{blueprints_host}:/app/agents/blueprints:ro",
+            # Mount docs directory (documenters need write access)
+            "-v",
+            f"{docs_host}:/app/docs",
             # Mount MCP config
             "-v",
             f"{mcp_config_host}:/app/mcp-config.json:ro",
@@ -589,6 +598,14 @@ class AgentOrchestrator:
         if agent_id.startswith("ux-"):
             return "ux_ui"
         return None
+
+    def _resolve_agent_slug(self, agent_id_or_uuid: str) -> str:
+        """Resolve agent UUID to slug. Returns input if already a slug."""
+        # Check if it's a known UUID and convert to slug
+        if agent_id_or_uuid in UUID_TO_SLUG:
+            return UUID_TO_SLUG[agent_id_or_uuid]
+        # Already a slug or unknown UUID
+        return agent_id_or_uuid
 
     # =========================================================================
     # AGENT STOPPING
@@ -1016,6 +1033,205 @@ Start by:
         return []
 
     # =========================================================================
+    # SMART ROUTING - TASK CLASSIFICATION
+    # =========================================================================
+
+    # Keywords that indicate strategic/board-level tasks
+    _BOARD_KEYWORDS = frozenset({
+        "roadmap", "architecture", "security", "budget", "hiring",
+        "strategy", "vision", "milestone", "release", "launch",
+    })
+
+    # Keywords that indicate PM coordination is needed
+    _PM_KEYWORDS = frozenset({
+        "coordinate", "integration", "cross-team", "sync",
+        "planning", "milestone", "dependencies", "review",
+    })
+
+    def _classify_task_routing(self, task: dict[str, Any]) -> str:
+        """
+        Classify a task for routing based on complexity, keywords, and team.
+
+        Returns one of: "board", "main_pm", "cell_pm", "dev"
+        """
+        title = (task.get("title") or "").lower()
+        description = (task.get("description") or "").lower()
+        text = f"{title} {description}"
+        complexity = task.get("complexity", "medium").lower()
+        team = task.get("team")
+
+        # Check for strategic/board-level keywords
+        if any(kw in text for kw in self._BOARD_KEYWORDS):
+            return "board"
+
+        # High/critical complexity → Main PM
+        if complexity in ("high", "critical"):
+            return "main_pm"
+
+        # Cross-team or no specific team → Main PM
+        if not team or team == "all":
+            return "main_pm"
+
+        # PM keywords → Cell PM for coordination
+        if any(kw in text for kw in self._PM_KEYWORDS):
+            return "cell_pm"
+
+        # Medium complexity → Cell PM for planning
+        if complexity == "medium":
+            return "cell_pm"
+
+        # Low complexity, single team → Direct to dev
+        return "dev"
+
+    # Team to PM mapping for routing
+    _TEAM_PM_MAP: ClassVar[dict[str, str]] = {
+        "backend": "be-pm",
+        "frontend": "fe-pm",
+        "ux_ui": "ux-pm",
+    }
+
+    def _get_routing_target(self, routing: str, task: dict[str, Any]) -> str | None:
+        """
+        Resolve a routing decision to a specific agent slug.
+
+        Args:
+            routing: One of "board", "main_pm", "cell_pm", "dev"
+            task: The task being routed
+
+        Returns:
+            Agent slug (e.g., "main-pm", "be-pm", "be-dev-1") or None
+        """
+        team = task.get("team")
+
+        # Static routing targets
+        static_targets = {"board": "product-owner", "main_pm": "main-pm"}
+        if routing in static_targets:
+            return static_targets[routing]
+
+        # Cell PM routing - requires team lookup
+        if routing == "cell_pm":
+            return self._TEAM_PM_MAP.get(team, "main-pm") if team else "main-pm"
+
+        # Dev routing - requires agent selection
+        if routing == "dev" and team:
+            return self._select_agent_for_cell(team, "dev")
+
+        return None
+
+    def _build_pm_triage_prompt(self, task: dict[str, Any]) -> str:
+        """Build prompt for PM to triage and delegate a task."""
+        task_id = task.get("id", "unknown")
+        title = task.get("title", "Untitled")
+        complexity = task.get("complexity", "medium")
+        team = task.get("team", "unknown")
+
+        # Build team-specific info
+        channel = f"{team}-cell" if team != "ux_ui" else "uxui-cell"
+        dev_map = {
+            "backend": ("be-dev-1", "be-dev-2"),
+            "frontend": ("fe-dev-1", "fe-dev-2"),
+            "ux_ui": ("ux-dev",),
+        }
+        devs = dev_map.get(team, ("be-dev-1",))
+        primary_dev = devs[0]
+        dev_options = " or ".join(devs)
+
+        return f"""You are the PM for {team} team. This task is assigned to YOU.
+
+TASK: {task_id}
+TITLE: {title}
+COMPLEXITY: {complexity}
+TEAM: {team}
+
+YOUR JOB: Break down this task, create subtasks, and delegate to developers.
+You do NOT code. You coordinate and assign. Developers do the actual work.
+
+== IMPORTANT: PLAN vs SUBTASKS ==
+
+These are TWO DIFFERENT THINGS:
+
+1. PLAN = Your PM approach (HOW to do the task)
+   - Created with roboco_task_plan()
+   - Just a checklist/strategy attached to the task
+   - NOT work items
+
+2. SUBTASKS = Real child tasks (WHAT to do)
+   - Created with roboco_task_create(parent_task_id=...)
+   - Actual tasks in the database that devs claim and work on
+   - Parent task DEPENDS on these completing
+
+For any non-trivial task, you MUST create BOTH:
+- A plan (your approach)
+- Subtasks (the actual work items for devs)
+
+== TASK LIFECYCLE ==
+
+1. You create subtasks with parent_task_id
+2. Devs work on subtasks, complete them
+3. When ALL subtasks are done → You get respawned
+4. You close the parent task
+
+== PM WORKFLOW ==
+
+1. GET TASK DETAILS
+   roboco_task_get("{task_id}")
+   Read: description, acceptance criteria, blockers.
+
+2. CREATE YOUR PLAN
+   roboco_task_plan("{task_id}", ...) with:
+   - approach: Your PM strategy for this task
+   - steps: High-level phases (NOT the subtasks)
+   - risks: Concerns or blockers
+
+3. LOG YOUR DECISION
+   roboco_journal_decision(data) with:
+   - title: "PM triage: {{short title}}"
+   - context, options, chosen, rationale, task_id
+
+4. CREATE SUBTASKS (for medium/complex tasks)
+   For each piece of work, create a REAL subtask:
+
+   roboco_task_create(
+     title="Specific subtask title",
+     description="What the dev needs to do",
+     team="{team}",
+     acceptance_criteria=["criterion 1", "criterion 2"],
+     parent_task_id="{task_id}",  # REQUIRED - links to parent
+     assigned_to="{primary_dev}"  # Assign to a dev
+   )
+
+   Create 2-5 subtasks that cover all the work.
+   Available developers: {dev_options}
+
+5. START PARENT TASK
+   roboco_task_start("{task_id}")
+   This puts the parent in "in_progress" while subtasks are worked on.
+
+6. NOTIFY TEAM
+   roboco_message_send(data) to "{channel}":
+   - content: Task overview, subtasks created, who's assigned
+   - message_type: "action"
+
+7. FINISH
+   roboco_agent_idle()
+
+== FOR TRIVIAL TASKS ONLY ==
+
+If task is truly trivial (single file change, obvious fix):
+- Skip subtasks, just assign directly:
+  roboco_task_assign("{task_id}", "{primary_dev}")
+- Do NOT call roboco_task_start (dev will do it)
+
+== CRITICAL RULES ==
+- NEVER keep tasks for yourself - you delegate, devs execute
+- Subtasks MUST have parent_task_id="{task_id}"
+- Subtasks MUST have assigned_to (a dev slug like "{primary_dev}")
+- When in doubt, create subtasks - it's better to over-structure
+
+Start now: roboco_task_get("{task_id}")
+"""
+
+    # =========================================================================
     # SMART DISPATCHER - MAIN LOOP
     # =========================================================================
 
@@ -1046,7 +1262,14 @@ Start by:
             "X-Agent-Role": "system",
         }
         async with httpx.AsyncClient(timeout=30.0, headers=headers) as client:
+            # PM triage first - routes new tasks to appropriate level
+            await self._dispatch_pm_work(client)
+
+            # PM closure - check parent tasks ready to close
+            await self._dispatch_pm_closure_work(client)
+
             # Task-based dispatchers (check task statuses)
+            # Dev work only picks up pre-assigned tasks now
             await self._dispatch_dev_work(client)
             await self._dispatch_qa_work(client)
             await self._dispatch_doc_work(client)
@@ -1064,38 +1287,232 @@ Start by:
     # SMART DISPATCHER - TASK-BASED DISPATCHERS
     # =========================================================================
 
+    async def _dispatch_pm_work(self, client: httpx.AsyncClient) -> None:
+        """
+        Dispatch PM triage work - routes new tasks to appropriate level.
+
+        This is the FIRST dispatcher called - it classifies unassigned tasks
+        and routes them to Board, Main PM, Cell PM, or directly to devs.
+
+        Monitors: pending tasks with no assigned_to
+        Spawns: product-owner, main-pm, be-pm, fe-pm, ux-pm (or devs for simple)
+        """
+        # Get pending tasks that haven't been assigned yet
+        tasks = await self._fetch_tasks(client, "pending")
+
+        for task in tasks:
+            # Skip already assigned tasks
+            if task.get("assigned_to"):
+                continue
+
+            # Classify the task
+            routing = self._classify_task_routing(task)
+            agent_id = self._get_routing_target(routing, task)
+
+            if not agent_id:
+                logger.warning(
+                    "No routing target found",
+                    task_id=task.get("id"),
+                    routing=routing,
+                )
+                continue
+
+            logger.info(
+                "Routing task",
+                task_id=task.get("id"),
+                routing=routing,
+                agent_id=agent_id,
+            )
+
+            # If target agent is already active, claim for them
+            if self._is_agent_active(agent_id):
+                await self._claim_task_for_agent(client, task["id"], agent_id)
+                continue
+
+            # Claim and spawn with appropriate prompt
+            if await self._claim_task_for_agent(client, task["id"], agent_id):
+                # Use PM triage prompt for PMs, dev prompt for devs
+                if routing == "dev":
+                    prompt = self._build_dev_prompt(task)
+                else:
+                    prompt = self._build_pm_triage_prompt(task)
+
+                await self.spawn_agent(
+                    agent_id=agent_id,
+                    task_id=task["id"],
+                    initial_prompt=prompt,
+                )
+
+    async def _dispatch_pm_closure_work(self, client: httpx.AsyncClient) -> None:
+        """
+        Dispatch PM closure work - check parent tasks ready to close.
+
+        When all subtasks of a parent task are completed, spawn the PM
+        to review and close the parent task.
+
+        Monitors: tasks with completed subtasks but parent still open
+        Spawns: be-pm, fe-pm, ux-pm (based on parent team)
+        """
+        # Find tasks that have subtasks (check for children)
+        # We look for claimed/in_progress tasks that might have children
+        parent_statuses = ["claimed", "in_progress"]
+
+        for status in parent_statuses:
+            tasks = await self._fetch_tasks(client, status)
+
+            for task in tasks:
+                task_id = task.get("id")
+                if not task_id:
+                    continue
+
+                # Check if this task has subtasks
+                subtasks = await self._fetch_subtasks(client, task_id)
+                if not subtasks:
+                    continue  # Not a parent task
+
+                # Check if all subtasks are completed
+                all_completed = all(
+                    st.get("status") == "completed" for st in subtasks
+                )
+
+                if not all_completed:
+                    continue  # Not ready for closure
+
+                # Parent has all subtasks completed - spawn PM to close
+                team = task.get("team", "backend")
+                pm_id = self._TEAM_PM_MAP.get(team, "be-pm")
+
+                if self._is_agent_active(pm_id):
+                    continue  # PM already working
+
+                logger.info(
+                    "Parent task ready for closure",
+                    task_id=task_id,
+                    subtasks_count=len(subtasks),
+                    pm_id=pm_id,
+                )
+
+                prompt = self._build_pm_closure_prompt(task, subtasks)
+                await self.spawn_agent(
+                    agent_id=pm_id,
+                    task_id=task_id,
+                    initial_prompt=prompt,
+                )
+
+    async def _fetch_subtasks(
+        self, client: httpx.AsyncClient, parent_id: str
+    ) -> list[dict[str, Any]]:
+        """Fetch subtasks for a parent task."""
+        try:
+            resp = await client.get(
+                f"{self._api_url}/tasks",
+                params={"parent_task_id": parent_id},
+            )
+            if resp.status_code == http_status.HTTP_200_OK:
+                data = resp.json()
+                tasks = data.get("tasks", data) if isinstance(data, dict) else data
+                return list(tasks) if tasks else []
+        except Exception as e:
+            logger.warning(
+                "Failed to fetch subtasks", parent_id=parent_id, error=str(e)
+            )
+        return []
+
+    def _build_pm_closure_prompt(
+        self, task: dict[str, Any], subtasks: list[dict[str, Any]]
+    ) -> str:
+        """Build prompt for PM to review and close a parent task."""
+        task_id = task.get("id", "unknown")
+        title = task.get("title", "Untitled")
+        team = task.get("team", "unknown")
+
+        subtask_summary = "\n".join(
+            f"  - {st.get('title', 'Untitled')} ({st.get('status', 'unknown')})"
+            for st in subtasks
+        )
+
+        channel = f"{team}-cell" if team != "ux_ui" else "uxui-cell"
+
+        return f"""You are reviewing a parent task for closure.
+
+TASK: {task_id}
+TITLE: {title}
+TEAM: {team}
+
+ALL SUBTASKS COMPLETED:
+{subtask_summary}
+
+== YOUR PM CLOSURE WORKFLOW ==
+
+1. REVIEW
+   Call roboco_task_get("{task_id}") to review the parent task.
+   Check: Were all acceptance criteria met by the subtasks?
+
+2. ASSESS SUBTASKS
+   Review each subtask's completion notes and outcomes.
+   Were there any issues, learnings, or concerns?
+
+3. JOURNAL (log closure decision)
+   Call roboco_journal_decision(data) with:
+   - title: "Task closure: {title}"
+   - context: Summary of what was accomplished
+   - options: Close vs Needs refinement
+   - chosen: Your decision
+   - rationale: Why
+   - task_id: "{task_id}"
+
+4. COMMUNICATE
+   Call roboco_message_send(data) to #{channel}:
+   - Announce task completion or any follow-up needed
+
+5. CLOSE OR REFINE
+   - If all criteria met: Call roboco_task_complete("{task_id}")
+   - If needs more work: Create new subtasks with parent_task_id
+
+6. FINISH
+   Call roboco_agent_idle()
+
+Begin with step 1: roboco_task_get("{task_id}")
+"""
+
     async def _dispatch_dev_work(self, client: httpx.AsyncClient) -> None:
         """
         Dispatch development work to developers.
 
-        Monitors: pending, needs_revision tasks
+        NOTE: This now only handles PRE-ASSIGNED tasks (assigned by PM) and
+        needs_revision tasks. New unassigned pending tasks are handled by
+        _dispatch_pm_work() which routes them through the PM hierarchy.
+
+        Monitors: assigned pending tasks, needs_revision tasks
         Spawns: be-dev-1, be-dev-2, fe-dev-1, fe-dev-2, ux-dev
         """
         # Get tasks needing dev attention
         tasks = await self._fetch_tasks(client, ["pending", "needs_revision"])
 
         for task in tasks:
-            # Skip already claimed/assigned tasks
-            if task.get("assigned_to"):
-                continue
-
             team = task.get("team")
             if team not in ["backend", "frontend", "ux_ui"]:
                 continue
 
-            # Select best agent for this task
-            agent_id = self._select_agent_for_cell(team, "dev")
-            if not agent_id:
+            assigned_to = task.get("assigned_to")
+            # Resolve UUID to slug for agent operations
+            agent_slug = self._resolve_agent_slug(assigned_to) if assigned_to else None
+
+            # For needs_revision, spawn the assigned dev to fix
+            if task.get("status") == "needs_revision" and agent_slug:
+                if not self._is_agent_active(agent_slug):
+                    await self.spawn_agent(
+                        agent_id=agent_slug,
+                        task_id=task["id"],
+                        initial_prompt=self._build_dev_prompt(task),
+                    )
                 continue
 
-            # If agent is already active, just claim for them
-            # They'll pick it up on their next roboco_task_scan()
-            if self._is_agent_active(agent_id):
-                await self._claim_task_for_agent(client, task["id"], agent_id)
-            # Claim and spawn with assignment
-            elif await self._claim_task_for_agent(client, task["id"], agent_id):
+            # For pending tasks that ARE already assigned (by PM),
+            # spawn the assigned dev if not active
+            if agent_slug and not self._is_agent_active(agent_slug):
                 await self.spawn_agent(
-                    agent_id=agent_id,
+                    agent_id=agent_slug,
                     task_id=task["id"],
                     initial_prompt=self._build_dev_prompt(task),
                 )

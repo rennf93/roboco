@@ -153,3 +153,44 @@ class SendNotificationInput(BaseModel):
     priority: str = Field(default="normal", description="low, normal, high, urgent")
     requires_ack: bool = Field(default=True, description="Require acknowledgment")
     related_task_id: str | None = Field(default=None, description="Related task")
+
+
+# =============================================================================
+# TASK MANAGEMENT SCHEMAS (PM Tools)
+# =============================================================================
+
+
+class TaskCreateInput(BaseModel):
+    """Input for creating a task (PM only)."""
+
+    title: str = Field(..., description="Task title")
+    description: str = Field(..., description="Task description")
+    acceptance_criteria: list[str] = Field(
+        ..., min_length=1, description="At least one acceptance criterion"
+    )
+    team: str = Field(..., description="Team: backend, frontend, ux_ui")
+    parent_task_id: str | None = Field(
+        default=None, description="Parent task for subtasks"
+    )
+    assigned_to: str | None = Field(default=None, description="Agent slug to assign to")
+    priority: int = Field(default=2, ge=0, le=3, description="Priority 0-3 (0=lowest)")
+    complexity: str = Field(
+        default="medium", description="Complexity: low, medium, high, critical"
+    )
+
+
+class TaskAssignInput(BaseModel):
+    """Input for assigning a task (PM only)."""
+
+    task_id: str = Field(..., description="Task ID to assign")
+    assignee: str = Field(..., description="Agent slug to assign to (e.g., 'be-dev-1')")
+
+
+class TaskEscalateInput(BaseModel):
+    """Input for escalating a task."""
+
+    task_id: str = Field(..., description="Task ID to escalate")
+    reason: str = Field(..., description="Reason for escalation")
+    escalate_to: str | None = Field(
+        default=None, description="Override default escalation target"
+    )

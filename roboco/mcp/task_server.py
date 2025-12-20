@@ -18,6 +18,9 @@ Tools:
 - roboco_task_qa_pass: Pass QA (QA role only)
 - roboco_task_qa_fail: Fail QA (QA role only)
 - roboco_task_complete: Mark task complete
+- roboco_task_create: Create new task (PM only)
+- roboco_task_assign: Assign task to agent (PM only)
+- roboco_task_escalate: Escalate task up hierarchy (all agents)
 """
 
 from typing import Any
@@ -26,9 +29,16 @@ import httpx
 from fastapi import status
 from mcp.server.fastmcp import FastMCP
 
-from roboco.agents_config import get_agent_role, get_agent_team
+from roboco.agents_config import (
+    can_assign_tasks,
+    can_create_tasks,
+    get_agent_role,
+    get_agent_team,
+    get_escalation_target,
+)
 from roboco.config import settings
 from roboco.llm import ToonAdapter
+from roboco.mcp.schemas import TaskAssignInput, TaskCreateInput, TaskEscalateInput
 
 
 def _get_agent_headers(agent_id: str) -> dict[str, str]:
@@ -197,20 +207,18 @@ async def _handle_task_scan(team: str | None, agent_id: str) -> dict[str, Any]:
     """Handle task scanning."""
     headers = _get_agent_headers(agent_id)
     async with httpx.AsyncClient() as client:
-        # Get paused tasks for this agent
         paused_resp = await client.get(
-            f"{settings.internal_api_url}/tasks",
-            params={"assigned_to": agent_id, "status": "paused"},
+            f"{settings.internal_api_url}/tasks/my",
+            params={"status": "paused"},
             headers=headers,
         )
         paused_tasks = (
             paused_resp.json() if paused_resp.status_code == status.HTTP_200_OK else []
         )
 
-        # Get assigned tasks (claimed, in_progress)
+        # Get assigned tasks (claimed, in_progress) using /tasks/my
         assigned_resp = await client.get(
-            f"{settings.internal_api_url}/tasks",
-            params={"assigned_to": agent_id},
+            f"{settings.internal_api_url}/tasks/my",
             headers=headers,
         )
         assigned_data = (
@@ -318,14 +326,25 @@ def _check_paused_tasks(active_tasks: list[dict]) -> dict[str, Any] | None:
     return None
 
 
-def _validate_task_claimable(task: dict) -> dict[str, Any] | None:
-    """Validate task can be claimed. Returns error or None."""
-    if task.get("status") != "pending":
+def _validate_task_claimable(task: dict, agent_role: str) -> dict[str, Any] | None:
+    """Validate task can be claimed based on agent role. Returns error or None."""
+    task_status = task.get("status")
+
+    # Role-based claimable statuses
+    claimable_statuses = {
+        "qa": ["awaiting_qa"],
+        "documenter": ["awaiting_documentation"],
+    }
+
+    # Default: developers and PMs can claim pending tasks
+    allowed = claimable_statuses.get(agent_role, ["pending"])
+
+    if task_status not in allowed:
         return _format_error_response(
             "INVALID_STATE",
-            f"Cannot claim task in '{task.get('status')}' status. "
-            "Only 'pending' tasks can be claimed.",
-            {"current_status": task.get("status")},
+            f"Cannot claim task in '{task_status}' status. "
+            f"Your role ({agent_role}) can claim: {', '.join(allowed)}.",
+            {"current_status": task_status, "allowed_statuses": allowed},
         )
     return None
 
@@ -349,8 +368,7 @@ async def _handle_task_claim(task_id: str, agent_id: str) -> dict[str, Any]:
     headers = _get_agent_headers(agent_id)
     async with httpx.AsyncClient() as client:
         active_resp = await client.get(
-            f"{settings.internal_api_url}/tasks",
-            params={"assigned_to": agent_id},
+            f"{settings.internal_api_url}/tasks/my",
             headers=headers,
         )
         if active_resp.status_code == status.HTTP_200_OK:
@@ -368,7 +386,8 @@ async def _handle_task_claim(task_id: str, agent_id: str) -> dict[str, Any]:
             return _format_error_response("NOT_FOUND", f"Task {task_id} not found")
 
         task = task_resp.json()
-        if error := _validate_task_claimable(task):
+        agent_role = get_agent_role(agent_id)
+        if error := _validate_task_claimable(task, agent_role):
             return error
 
         claim_resp = await client.post(
@@ -680,19 +699,34 @@ async def _handle_task_block(
                 "Can only block in_progress tasks",
             )
 
-        # Block the task
-        block_resp = await client.post(
-            f"{settings.internal_api_url}/tasks/{task_id}/block",
+        # Build blocker note for dev_notes
+        blocker_note = (
+            f"[BLOCKED - {blocker_type.upper()}]\n"
+            f"Reason: {reason}\n"
+            f"What's needed: {what_needed}"
+        )
+        existing_notes = task.get("dev_notes") or ""
+        if existing_notes:
+            updated_notes = f"{existing_notes}\n\n{blocker_note}"
+        else:
+            updated_notes = blocker_note
+
+        # Block the task using PATCH to update status and notes
+        block_resp = await client.patch(
+            f"{settings.internal_api_url}/tasks/{task_id}",
             json={
-                "reason": reason,
-                "blocker_type": blocker_type,
-                "what_needed": what_needed,
+                "status": "blocked",
+                "dev_notes": updated_notes,
             },
             headers=headers,
         )
 
         if block_resp.status_code != status.HTTP_200_OK:
-            return _format_error_response("BLOCK_FAILED", "Failed to block task")
+            return _format_error_response(
+                "BLOCK_FAILED",
+                "Failed to block task",
+                {"status_code": block_resp.status_code, "detail": block_resp.text},
+            )
 
         blocked_task = block_resp.json()
 
@@ -833,13 +867,17 @@ async def _handle_task_submit_verification(
                 "Can only submit in_progress tasks for verification",
             )
 
-        # Check for commits
-        if not task.get("commits"):
+        # Check for evidence of work done (commits OR progress updates)
+        # Non-code tasks (testing, research, docs) may not have commits
+        has_commits = bool(task.get("commits"))
+        has_progress = bool(task.get("progress_updates"))
+        has_checkpoints = bool(task.get("checkpoints"))
+
+        if not (has_commits or has_progress or has_checkpoints):
             return _format_error_response(
-                "NO_COMMITS",
-                "No commits linked to this task. "
-                "Add commits with roboco_task_add_commit "
-                "before verification.",
+                "NO_WORK_EVIDENCE",
+                "No evidence of work found. Add commits with roboco_task_add_commit "
+                "or update progress with roboco_task_progress before verification.",
             )
 
         verify_resp = await client.post(
@@ -962,7 +1000,13 @@ async def _handle_task_qa_pass(
             )
 
         # Check QA is not reviewing own work
-        if task.get("assigned_to") == agent_id:
+        # Check against original developer stored in quick_context
+        quick_context = task.get("quick_context") or ""
+        original_dev = None
+        if quick_context.startswith("original_developer:"):
+            original_dev = quick_context.split(":", 1)[1]
+
+        if original_dev and agent_id == original_dev:
             return _format_error_response(
                 "SELF_REVIEW",
                 "Cannot review your own work.",
@@ -975,7 +1019,11 @@ async def _handle_task_qa_pass(
         )
 
         if pass_resp.status_code != status.HTTP_200_OK:
-            return _format_error_response("QA_FAILED", "Failed to pass QA")
+            return _format_error_response(
+                "QA_FAILED",
+                "Failed to pass QA",
+                {"status_code": pass_resp.status_code, "api_error": pass_resp.text},
+            )
 
         passed_task = pass_resp.json()
 
@@ -1032,7 +1080,11 @@ async def _handle_task_qa_fail(
         )
 
         if fail_resp.status_code != status.HTTP_200_OK:
-            return _format_error_response("QA_FAILED", "Failed to fail QA")
+            return _format_error_response(
+                "QA_FAILED",
+                "Failed to fail QA",
+                {"status_code": fail_resp.status_code, "api_error": fail_resp.text},
+            )
 
         failed_task = fail_resp.json()
 
@@ -1070,7 +1122,14 @@ async def _handle_task_complete(task_id: str, agent_id: str) -> dict[str, Any]:
         )
 
         if complete_resp.status_code != status.HTTP_200_OK:
-            return _format_error_response("COMPLETE_FAILED", "Failed to complete task")
+            return _format_error_response(
+                "COMPLETE_FAILED",
+                "Failed to complete task",
+                {
+                    "status_code": complete_resp.status_code,
+                    "api_error": complete_resp.text,
+                },
+            )
 
         completed_task = complete_resp.json()
 
@@ -1087,33 +1146,30 @@ async def _handle_agent_idle(agent_id: str) -> dict[str, Any]:
 
     async with httpx.AsyncClient(timeout=30.0) as client:
         # First, check if agent has any in-progress tasks
+        # Use /tasks/my endpoint which properly uses authenticated agent context
         try:
-            agent_uuid = await _resolve_agent_uuid(agent_id, headers)
-            if agent_uuid:
-                scan_resp = await client.get(
-                    f"{settings.internal_api_url}/tasks",
-                    params={"assigned_to": agent_uuid, "status": "in_progress"},
-                    headers=headers,
-                )
-                if scan_resp.status_code == status.HTTP_200_OK:
-                    data = scan_resp.json()
-                    tasks = data.get("items", [])
-                    if tasks:
-                        # Agent has in-progress tasks - they must handle them first
-                        task_info = [
-                            {"id": t.get("id"), "title": t.get("title")}
-                            for t in tasks
-                        ]
-                        return _format_error_response(
-                            "TASKS_IN_PROGRESS",
-                            (
-                                "You have in-progress tasks. Handle them before going "
-                                "idle using: roboco_task_pause (to pause), "
-                                "roboco_task_submit_qa (if done), or "
-                                "roboco_task_complete (if approved)."
-                            ),
-                            {"tasks": task_info},
-                        )
+            scan_resp = await client.get(
+                f"{settings.internal_api_url}/tasks/my",
+                params={"status": "in_progress"},
+                headers=headers,
+            )
+            if scan_resp.status_code == status.HTTP_200_OK:
+                tasks = scan_resp.json()  # /tasks/my returns list directly
+                if tasks:
+                    # Agent has in-progress tasks - they must handle them first
+                    task_info = [
+                        {"id": t.get("id"), "title": t.get("title")} for t in tasks
+                    ]
+                    return _format_error_response(
+                        "TASKS_IN_PROGRESS",
+                        (
+                            "You have in-progress tasks. Handle them before going "
+                            "idle using: roboco_task_pause (to pause), "
+                            "roboco_task_submit_qa (if done), or "
+                            "roboco_task_complete (if approved)."
+                        ),
+                        {"tasks": task_info},
+                    )
         except Exception:
             # If check fails, continue to mark idle (fail open)
             pass
@@ -1159,6 +1215,321 @@ async def _handle_agent_idle(agent_id: str) -> dict[str, Any]:
             "Failed to signal idle state to orchestrator",
             {"status_code": resp.status_code, "detail": resp.text},
         )
+
+
+# =============================================================================
+# PM DELEGATION HANDLERS
+# =============================================================================
+
+
+async def _handle_task_create(
+    input_data: TaskCreateInput,
+    agent_id: str,
+) -> dict[str, Any]:
+    """Handle task creation by PM."""
+    headers = _get_agent_headers(agent_id)
+    agent_team = get_agent_team(agent_id)
+
+    # Validate PM role
+    if not can_create_tasks(agent_id):
+        return _format_error_response(
+            "PERMISSION_DENIED",
+            "Only PMs and management can create tasks",
+            {"role": get_agent_role(agent_id)},
+        )
+
+    # Cell PM can only create tasks for their team
+    role = get_agent_role(agent_id)
+    if role == "cell_pm" and input_data.team != agent_team:
+        return _format_error_response(
+            "TEAM_MISMATCH",
+            f"Cell PM can only create tasks for their team ({agent_team})",
+            {"requested_team": input_data.team, "agent_team": agent_team},
+        )
+
+    async with httpx.AsyncClient(timeout=30.0) as client:
+        # Build task payload
+        payload: dict[str, Any] = {
+            "title": input_data.title,
+            "description": input_data.description,
+            "acceptance_criteria": input_data.acceptance_criteria,
+            "team": input_data.team,
+            "priority": input_data.priority,
+            "estimated_complexity": input_data.complexity,
+        }
+        if input_data.parent_task_id:
+            payload["parent_task_id"] = input_data.parent_task_id
+
+        # Create the task
+        try:
+            create_resp = await client.post(
+                f"{settings.internal_api_url}/tasks",
+                json=payload,
+                headers=headers,
+            )
+        except httpx.RequestError as e:
+            return _format_error_response(
+                "CONNECTION_ERROR",
+                f"Failed to connect to API: {type(e).__name__}",
+            )
+
+        if create_resp.status_code != status.HTTP_201_CREATED:
+            return _format_error_response(
+                "CREATE_FAILED",
+                "Failed to create task",
+                {"status_code": create_resp.status_code, "detail": create_resp.text},
+            )
+
+        task = create_resp.json()
+
+        # If assigned_to specified, set assignee but keep pending (don't claim)
+        # Orchestrator will spawn the agent who will then claim it
+        if input_data.assigned_to:
+            assigned_task, _ = await _assign_task_to_agent(
+                client, task["id"], input_data.assigned_to, headers
+            )
+            if assigned_task:
+                task = assigned_task
+
+    guidance = f"Task created successfully. ID: {task['id']}. "
+    if input_data.assigned_to:
+        guidance += (
+            f"Assigned to: {input_data.assigned_to} (pending). "
+            "Orchestrator will spawn them to claim and work on it."
+        )
+    else:
+        guidance += "Task is pending - assign it or let orchestrator route it."
+
+    return _format_task_response(task, "CREATED", guidance)
+
+
+def _validate_cell_pm_assignment(
+    role: str,
+    agent_team: str | None,
+    task: dict[str, Any],
+    assignee: str,
+) -> dict[str, Any] | None:
+    """Validate Cell PM assignment restrictions. Returns error dict or None if valid."""
+    if role != "cell_pm":
+        return None
+
+    task_team = task.get("team")
+    if task_team != agent_team:
+        return _format_error_response(
+            "TEAM_MISMATCH",
+            f"Cell PM can only assign tasks in their team ({agent_team})",
+            {"task_team": task_team},
+        )
+
+    assignee_team = get_agent_team(assignee)
+    if assignee_team and assignee_team != agent_team:
+        return _format_error_response(
+            "ASSIGNEE_MISMATCH",
+            "Cannot assign to agent outside your team",
+            {"assignee_team": assignee_team, "your_team": agent_team},
+        )
+
+    return None
+
+
+async def _fetch_task_for_assignment(
+    client: httpx.AsyncClient,
+    task_id: str,
+    headers: dict[str, str],
+) -> tuple[dict[str, Any] | None, dict[str, Any] | None]:
+    """Fetch task for assignment. Returns (task, error) tuple."""
+    try:
+        task_resp = await client.get(
+            f"{settings.internal_api_url}/tasks/{task_id}",
+            headers=headers,
+        )
+    except httpx.RequestError as e:
+        return None, _format_error_response(
+            "CONNECTION_ERROR",
+            f"Failed to connect to API: {type(e).__name__}",
+        )
+
+    if task_resp.status_code == status.HTTP_404_NOT_FOUND:
+        return None, _format_error_response("NOT_FOUND", f"Task {task_id} not found")
+
+    if task_resp.status_code != status.HTTP_200_OK:
+        return None, _format_error_response(
+            "FETCH_FAILED",
+            "Failed to fetch task",
+            {"status_code": task_resp.status_code},
+        )
+
+    return task_resp.json(), None
+
+
+async def _assign_task_to_agent(
+    client: httpx.AsyncClient,
+    task_id: str,
+    assignee: str,
+    headers: dict[str, str],
+) -> tuple[dict[str, Any] | None, dict[str, Any] | None]:
+    """
+    Assign task to agent by setting assigned_to and resetting to pending.
+
+    This is different from claiming - assignment means "this agent should work
+    on this task". The orchestrator will then spawn the agent who will claim it.
+
+    Returns (assigned_task, error) tuple.
+    """
+    # Resolve assignee slug to UUID
+    assignee_id = await _resolve_agent_uuid(assignee, headers)
+    if not assignee_id:
+        return None, _format_error_response(
+            "INVALID_ASSIGNEE",
+            f"Could not resolve agent: {assignee}",
+            {"assignee": assignee},
+        )
+
+    try:
+        # PATCH to set assigned_to and reset status to pending
+        assign_resp = await client.patch(
+            f"{settings.internal_api_url}/tasks/{task_id}",
+            json={"assigned_to": assignee_id, "status": "pending"},
+            headers=headers,
+        )
+    except httpx.RequestError as e:
+        return None, _format_error_response(
+            "CONNECTION_ERROR",
+            f"Failed to connect to API: {type(e).__name__}",
+        )
+
+    if assign_resp.status_code != status.HTTP_200_OK:
+        return None, _format_error_response(
+            "ASSIGN_FAILED",
+            "Failed to assign task",
+            {"status_code": assign_resp.status_code, "detail": assign_resp.text},
+        )
+
+    return assign_resp.json(), None
+
+
+async def _handle_task_assign(
+    input_data: TaskAssignInput,
+    agent_id: str,
+) -> dict[str, Any]:
+    """Handle task assignment by PM."""
+    headers = _get_agent_headers(agent_id)
+    agent_team = get_agent_team(agent_id)
+    role = get_agent_role(agent_id)
+
+    # Validate PM role
+    if not can_assign_tasks(agent_id):
+        return _format_error_response(
+            "PERMISSION_DENIED",
+            "Only PMs and management can assign tasks",
+            {"role": role},
+        )
+
+    async with httpx.AsyncClient(timeout=30.0) as client:
+        # Get task details first
+        task, error = await _fetch_task_for_assignment(
+            client, input_data.task_id, headers
+        )
+        if error or task is None:
+            return error or _format_error_response("FETCH_FAILED", "No task returned")
+
+        # Validate Cell PM restrictions
+        validation_error = _validate_cell_pm_assignment(
+            role, agent_team, task, input_data.assignee
+        )
+        if validation_error:
+            return validation_error
+
+        # Assign task to agent (sets assigned_to and resets to pending)
+        # This is NOT claiming - the dev will claim when spawned
+        assigned_task, assign_error = await _assign_task_to_agent(
+            client, input_data.task_id, input_data.assignee, headers
+        )
+        if assign_error or assigned_task is None:
+            return assign_error or _format_error_response("ASSIGN_FAILED", "No task")
+
+    guidance = (
+        f"Task assigned to {input_data.assignee} and set to pending. "
+        "Orchestrator will spawn them to claim and work on it."
+    )
+    return _format_task_response(assigned_task, "ASSIGNED", guidance)
+
+
+async def _handle_task_escalate(
+    input_data: TaskEscalateInput,
+    agent_id: str,
+) -> dict[str, Any]:
+    """Handle task escalation up the hierarchy."""
+    headers = _get_agent_headers(agent_id)
+
+    # Determine and resolve escalation target upfront
+    target = input_data.escalate_to or get_escalation_target(agent_id)
+    if not target:
+        return _format_error_response(
+            "NO_ESCALATION_PATH",
+            f"No escalation path from agent: {agent_id}",
+            {"role": get_agent_role(agent_id)},
+        )
+
+    target_uuid = await _resolve_agent_uuid(target, headers)
+    if not target_uuid:
+        return _format_error_response(
+            "INVALID_TARGET",
+            f"Could not resolve escalation target: {target}",
+        )
+
+    try:
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            # Get task details
+            task_resp = await client.get(
+                f"{settings.internal_api_url}/tasks/{input_data.task_id}",
+                headers=headers,
+            )
+
+            if task_resp.status_code == status.HTTP_404_NOT_FOUND:
+                return _format_error_response(
+                    "NOT_FOUND", f"Task {input_data.task_id} not found"
+                )
+
+            task = task_resp.json()
+
+            # Create escalation notification
+            notif_resp = await client.post(
+                f"{settings.internal_api_url}/notifications",
+                json={
+                    "type": "blocker_escalation",
+                    "to_agents": [target_uuid],
+                    "subject": f"Escalation: {task.get('title', 'Unknown task')}",
+                    "body": (
+                        f"Task {input_data.task_id} escalated by {agent_id}.\n\n"
+                        f"Reason: {input_data.reason}"
+                    ),
+                    "related_task_id": input_data.task_id,
+                    "priority": "high",
+                },
+                headers=headers,
+            )
+
+            if notif_resp.status_code not in (
+                status.HTTP_200_OK,
+                status.HTTP_201_CREATED,
+            ):
+                return _format_error_response(
+                    "ESCALATION_FAILED",
+                    "Failed to send escalation notification",
+                    {"status_code": notif_resp.status_code, "detail": notif_resp.text},
+                )
+    except httpx.RequestError as e:
+        return _format_error_response(
+            "CONNECTION_ERROR",
+            f"Failed to connect to API: {type(e).__name__}",
+        )
+
+    guidance = (
+        f"Task escalated to {target}. Reason: {input_data.reason}. "
+        "They will be notified and can reassign or provide guidance."
+    )
+    return _format_task_response(task, "ESCALATED", guidance)
 
 
 # =============================================================================
@@ -1235,12 +1606,17 @@ def create_task_mcp_server(agent_id: str) -> FastMCP:
     async def roboco_task_plan(
         task_id: str,
         approach: str,
-        sub_tasks: list[dict[str, str]],
+        steps: list[dict[str, str]],
         risks: list[str] | None = None,
         open_questions: list[str] | None = None,
     ) -> dict[str, Any]:
         """
         Submit implementation plan for a task.
+
+        NOTE: The 'steps' parameter creates a CHECKLIST within this task's plan.
+        These are NOT real database subtasks. To create actual subtasks that
+        other agents can claim and work on, use roboco_task_create() with
+        parent_task_id instead.
 
         ENFORCEMENT:
         - Task must be in 'claimed' status
@@ -1249,7 +1625,7 @@ def create_task_mcp_server(agent_id: str) -> FastMCP:
         Args:
             task_id: The task UUID
             approach: High-level approach description
-            sub_tasks: List of sub-tasks with 'title' and 'description'
+            steps: List of plan steps (checklist) with 'title' and 'description'
             risks: Optional list of identified risks
             open_questions: Optional questions (BLOCKS start if present)
 
@@ -1258,7 +1634,7 @@ def create_task_mcp_server(agent_id: str) -> FastMCP:
         """
         plan_params = {
             "approach": approach,
-            "sub_tasks": sub_tasks,
+            "sub_tasks": steps,  # Internal storage still uses sub_tasks
             "risks": risks,
             "open_questions": open_questions,
         }
@@ -1492,6 +1868,96 @@ def create_task_mcp_server(agent_id: str) -> FastMCP:
             Confirmation of idle state
         """
         return await _handle_agent_idle(agent_id)
+
+    # =========================================================================
+    # PM DELEGATION TOOLS
+    # =========================================================================
+
+    @mcp.tool()
+    async def roboco_task_create(data: TaskCreateInput) -> dict[str, Any]:
+        """
+        Create a new task (PM and management only).
+
+        Use this to:
+        - Create subtasks when breaking down complex work
+        - Create new tasks for your team (Cell PM)
+        - Create tasks for any team (Main PM, Board)
+
+        ENFORCEMENT:
+        - Only PMs and management can create tasks
+        - Cell PMs can only create tasks for their own team
+
+        Args:
+            data: TaskCreateInput with title, description, acceptance_criteria,
+                  team, and optional parent_task_id, assigned_to, priority, complexity
+
+        Returns:
+            Created task with next step guidance
+        """
+        return await _handle_task_create(data, agent_id)
+
+    @mcp.tool()
+    async def roboco_task_assign(
+        task_id: str,
+        assignee: str,
+    ) -> dict[str, Any]:
+        """
+        Assign a task to an agent (PM and management only).
+
+        Use this to:
+        - Delegate work to team members
+        - Reassign tasks to different agents
+        - Hand off tasks to other PMs for their teams
+
+        ENFORCEMENT:
+        - Only PMs and management can assign tasks
+        - Cell PMs can only assign within their own team
+        - Task must be in a claimable state (pending/paused)
+
+        Args:
+            task_id: The task UUID to assign
+            assignee: Agent slug to assign (e.g., "be-dev-1", "fe-pm", "main-pm")
+
+        Returns:
+            Updated task with assignment confirmation
+        """
+        input_data = TaskAssignInput(task_id=task_id, assignee=assignee)
+        return await _handle_task_assign(input_data, agent_id)
+
+    @mcp.tool()
+    async def roboco_task_escalate(
+        task_id: str,
+        reason: str,
+        escalate_to: str | None = None,
+    ) -> dict[str, Any]:
+        """
+        Escalate a task up the management hierarchy.
+
+        Use this when:
+        - Task is blocked by something outside your control
+        - You need PM guidance or decision
+        - Task scope has grown beyond your authority
+        - Cross-team coordination is needed
+
+        Escalation chain:
+        - Developer/QA/Doc -> Cell PM
+        - Cell PM -> Main PM
+        - Main PM -> Product Owner
+
+        Args:
+            task_id: The task UUID to escalate
+            reason: Why this task needs escalation (be specific)
+            escalate_to: Optional specific target (overrides default chain)
+
+        Returns:
+            Task with escalation confirmation
+        """
+        input_data = TaskEscalateInput(
+            task_id=task_id,
+            reason=reason,
+            escalate_to=escalate_to,
+        )
+        return await _handle_task_escalate(input_data, agent_id)
 
     return mcp
 

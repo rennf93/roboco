@@ -116,32 +116,60 @@ class TaskService:
     # STATUS TRANSITIONS
     # =========================================================================
 
-    async def claim(self, task_id: UUID, agent_id: UUID) -> TaskTable | None:
+    async def claim(
+        self, task_id: UUID, agent_id: UUID, allow_reassign: bool = False
+    ) -> TaskTable | None:
         """
         Claim a task for an agent.
 
         Validates:
-        - Task exists and is in PENDING status
+        - Task exists and is in a claimable status for the agent's role
         - Agent belongs to the same team as the task
+
+        Role-based claiming:
+        - Developers/PMs: can claim PENDING tasks
+        - QA: can claim AWAITING_QA tasks
+        - Documenters: can claim AWAITING_DOCUMENTATION tasks
+
+        Args:
+            task_id: Task to claim
+            agent_id: Agent claiming the task
+            allow_reassign: If True, allows reassigning CLAIMED tasks
         """
         task = await self.get(task_id)
         if not task:
             return None
 
-        if task.status != TaskStatus.PENDING:
-            logger.warning(
-                "Cannot claim task - not pending",
-                task_id=str(task_id),
-                current_status=task.status.value,
-            )
-            return None
-
-        # Validate agent belongs to the task's team
+        # Get agent to determine role-based valid statuses
         agent_result = await self.session.execute(
             select(AgentTable).where(AgentTable.id == agent_id)
         )
         agent = agent_result.scalar_one_or_none()
 
+        # Base valid statuses for claiming
+        valid_statuses = {TaskStatus.PENDING}
+        if allow_reassign:
+            valid_statuses.add(TaskStatus.CLAIMED)
+
+        # Role-based claiming: QA and Documenters can claim specific statuses
+        if agent and agent.role:
+            role = agent.role.value if hasattr(agent.role, "value") else str(agent.role)
+            if role == "qa":
+                valid_statuses.add(TaskStatus.AWAITING_QA)
+            elif role == "documenter":
+                valid_statuses.add(TaskStatus.AWAITING_DOCUMENTATION)
+
+        if task.status not in valid_statuses:
+            logger.warning(
+                "Cannot claim task - invalid status for role",
+                task_id=str(task_id),
+                current_status=task.status.value,
+                agent_role=agent.role.value if agent and agent.role else "unknown",
+                valid_statuses=[s.value for s in valid_statuses],
+            )
+            return None
+
+        # Validate agent belongs to the task's team (agent already fetched above)
         if agent and task.team and agent.team != task.team:
             logger.warning(
                 "Cannot claim task - agent not in task's team",
@@ -151,9 +179,25 @@ class TaskService:
             )
             return None
 
+        # For QA/Documenter claiming, store previous owner for self-review checks
+        # before changing assigned_to
+        if agent and agent.role:
+            role = agent.role.value if hasattr(agent.role, "value") else str(agent.role)
+            if role in ("qa", "documenter"):
+                # Store original developer in quick_context for self-review check
+                original_dev = str(task.assigned_to) if task.assigned_to else None
+                if original_dev:
+                    task.quick_context = f"original_developer:{original_dev}"
+
+        # All roles: update assigned_to and claimed_at
         task.assigned_to = cast("Any", agent_id)
         task.claimed_at = datetime.now(UTC)
-        task.status = TaskStatus.CLAIMED
+
+        # Only change status to CLAIMED for developers/PMs (pending tasks)
+        # QA/Documenter keep the awaiting_qa/awaiting_documentation status
+        if task.status == TaskStatus.PENDING:
+            task.status = TaskStatus.CLAIMED
+
         await self.session.flush()
 
         logger.info(
