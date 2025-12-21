@@ -654,17 +654,33 @@ class JournalService:
                         entry_id = UUID(entry_id_str)
                         entry = await self.get_entry(entry_id)
                         if entry:
-                            entries.append(entry)
+                            # Filter by agent_id to ensure we only
+                            # return this agent's entries
+                            journal = await self.get_journal(agent_id)
+                            if journal and entry.journal_id == journal.id:
+                                entries.append(entry)
                     except ValueError:
                         logger.warning(
                             "Invalid entry_id in search result",
                             entry_id=entry_id_str,
                         )
 
+            logger.debug(
+                "Journal search completed",
+                agent_id=str(agent_id),
+                query=query[:50],
+                results_found=len(entries),
+            )
             return entries[:top_k]
 
         except Exception as e:
-            logger.warning("Journal search failed", error=str(e))
+            logger.error(
+                "Journal search failed",
+                agent_id=str(agent_id),
+                query=query[:50] if query else "empty",
+                error=str(e),
+                error_type=type(e).__name__,
+            )
             return []
 
 

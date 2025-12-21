@@ -259,7 +259,7 @@ Respond with structured analysis.
                 DocumentSpec(
                     doc_type=DocType.API,
                     title=f"API documentation for {ctx.title}",
-                    path="docs/api/",
+                    path="docs/backend/api/",
                     priority="required",
                 )
             )
@@ -270,7 +270,7 @@ Respond with structured analysis.
                 DocumentSpec(
                     doc_type=DocType.COMPONENT,
                     title=f"Component documentation for {ctx.title}",
-                    path="docs/components/",
+                    path="docs/frontend/components/",
                     priority="required",
                 )
             )

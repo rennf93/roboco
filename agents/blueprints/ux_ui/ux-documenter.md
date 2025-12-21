@@ -85,8 +85,8 @@ If none: `roboco_agent_idle()`
 ### 6. WRITE
 **File Paths** - Write documentation to `/app/docs/`:
 - `/app/docs/ux_ui/` - UX/UI documentation
-- `/app/docs/design-system/` - Design system documentation
-- `/app/docs/changelog.md` - Changelog
+- `/app/docs/ux_ui/design-system/` - Design system documentation
+- `/app/docs/ux_ui/changelog.md` - Changelog
 
 **Component Guidelines**
 - When to use this component

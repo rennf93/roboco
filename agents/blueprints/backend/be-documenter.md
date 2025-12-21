@@ -85,8 +85,8 @@ If none: `roboco_agent_idle()`
 ### 6. WRITE
 **File Paths** - Write documentation to `/app/docs/`:
 - `/app/docs/backend/` - Backend documentation
-- `/app/docs/api/` - API documentation
-- `/app/docs/changelog.md` - Changelog
+- `/app/docs/backend/api/` - API documentation
+- `/app/docs/backend/changelog.md` - Changelog
 
 **API Documentation** (if new/changed endpoints)
 - Endpoint URL, method

@@ -394,7 +394,7 @@ You should NOT:
 BE-Dev-1: Anyone know if we have a standard approach for rate limiting?
 
 Auditor: I recall seeing something about this in the backend docs.
-Auditor: Check docs/patterns/rate-limiting.md if it exists.
+Auditor: Check docs/auditor/patterns/rate-limiting.md if it exists.
 Auditor: If not, might be worth creating one after TASK-042 wraps up.
 ```
 (Note: You knew about TASK-042 from observation, but phrased naturally)

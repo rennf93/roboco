@@ -35,7 +35,11 @@ from roboco.models.base import TaskStatus, Team
 from roboco.models.task import TaskCreate
 from roboco.services.audit import get_audit_service
 from roboco.services.permissions import TaskAction
-from roboco.services.task import TaskCreateRequest, get_task_service
+from roboco.services.task import (
+    TaskCreateRequest,
+    extract_original_developer,
+    get_task_service,
+)
 
 router = APIRouter()
 
@@ -714,9 +718,7 @@ async def pass_qa(
 
     # QA cannot review their own tasks (prevent self-review)
     # Check against original developer stored in quick_context, not current assigned_to
-    original_dev = None
-    if task.quick_context and task.quick_context.startswith("original_developer:"):
-        original_dev = task.quick_context.split(":", 1)[1]
+    original_dev = extract_original_developer(task.quick_context)
 
     if original_dev and str(agent.agent_id) == original_dev:
         audit = get_audit_service()
@@ -767,9 +769,7 @@ async def fail_qa(
 
     # QA cannot review their own tasks (prevent self-review)
     # Check against original developer stored in quick_context, not current assigned_to
-    original_dev = None
-    if task.quick_context and task.quick_context.startswith("original_developer:"):
-        original_dev = task.quick_context.split(":", 1)[1]
+    original_dev = extract_original_developer(task.quick_context)
 
     if original_dev and str(agent.agent_id) == original_dev:
         raise HTTPException(

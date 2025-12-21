@@ -39,6 +39,7 @@ from roboco.agents_config import (
 from roboco.config import settings
 from roboco.llm import ToonAdapter
 from roboco.mcp.schemas import TaskAssignInput, TaskCreateInput, TaskEscalateInput
+from roboco.services.task import extract_original_developer
 
 
 def _get_agent_headers(agent_id: str) -> dict[str, str]:
@@ -216,7 +217,8 @@ async def _handle_task_scan(team: str | None, agent_id: str) -> dict[str, Any]:
             paused_resp.json() if paused_resp.status_code == status.HTTP_200_OK else []
         )
 
-        # Get assigned tasks (claimed, in_progress) using /tasks/my
+        # Get assigned tasks using /tasks/my
+        # Includes: PM-assigned pending tasks + tasks being actively worked on
         assigned_resp = await client.get(
             f"{settings.internal_api_url}/tasks/my",
             headers=headers,
@@ -226,27 +228,55 @@ async def _handle_task_scan(team: str | None, agent_id: str) -> dict[str, Any]:
             if assigned_resp.status_code == status.HTTP_200_OK
             else []
         )
+        # Include pending tasks (PM assigned) + active work statuses
         assigned_tasks = [
             t
             for t in assigned_data
             if t.get("status")
-            in ["claimed", "in_progress", "verifying", "needs_revision"]
+            in ["pending", "claimed", "in_progress", "verifying", "needs_revision"]
         ]
 
-        # Get available tasks (pending, team pool)
-        params: dict[str, Any] = {"status": "pending"}
-        if team:
-            params["team"] = team
-        available_resp = await client.get(
-            f"{settings.internal_api_url}/tasks",
-            params=params,
-            headers=headers,
-        )
-        available_tasks = (
-            available_resp.json()
-            if available_resp.status_code == status.HTTP_200_OK
-            else []
-        )
+        # Get available tasks based on agent role
+        # QA agents need awaiting_qa tasks, Documenters need awaiting_documentation
+        agent_role = get_agent_role(agent_id)
+
+        available_tasks: list[dict[str, Any]] = []
+
+        if agent_role == "qa":
+            # QA agents look for tasks awaiting QA review
+            qa_resp = await client.get(
+                f"{settings.internal_api_url}/tasks/awaiting-qa",
+                params={"team": team} if team else {},
+                headers=headers,
+            )
+            if qa_resp.status_code == status.HTTP_200_OK:
+                available_tasks = qa_resp.json()
+        elif agent_role == "documenter":
+            # Documenters look for tasks awaiting documentation
+            doc_resp = await client.get(
+                f"{settings.internal_api_url}/tasks/awaiting-docs",
+                params={"team": team} if team else {},
+                headers=headers,
+            )
+            if doc_resp.status_code == status.HTTP_200_OK:
+                available_tasks = doc_resp.json()
+        else:
+            # Developers and PMs look for pending tasks
+            params: dict[str, Any] = {"status": "pending"}
+            if team:
+                params["team"] = team
+            pending_resp = await client.get(
+                f"{settings.internal_api_url}/tasks",
+                params=params,
+                headers=headers,
+            )
+            if pending_resp.status_code == status.HTTP_200_OK:
+                available_tasks = pending_resp.json()
+
+    # Filter out tasks already in assigned_tasks from available_tasks
+    # (prevents PM-assigned pending tasks from appearing in both lists)
+    assigned_ids = {t.get("id") for t in assigned_tasks}
+    available_tasks = [t for t in available_tasks if t.get("id") not in assigned_ids]
 
     # Determine guidance
     if paused_tasks:
@@ -939,13 +969,12 @@ async def _handle_task_submit_qa(
                 "Can only submit verified tasks for QA",
             )
 
-        # Update with notes
+        # Update with notes - combine dev_notes and handoff summary
+        # (handoff summary goes into dev_notes for documenter to read)
+        combined_notes = f"{dev_notes}\n\n---\nHandoff Summary:\n{handoff_summary}"
         await client.patch(
             f"{settings.internal_api_url}/tasks/{task_id}",
-            json={
-                "dev_notes": dev_notes,
-                "documenter_handoff": handoff_summary,
-            },
+            json={"dev_notes": combined_notes},
             headers=headers,
         )
 
@@ -1001,12 +1030,12 @@ async def _handle_task_qa_pass(
 
         # Check QA is not reviewing own work
         # Check against original developer stored in quick_context
-        quick_context = task.get("quick_context") or ""
-        original_dev = None
-        if quick_context.startswith("original_developer:"):
-            original_dev = quick_context.split(":", 1)[1]
+        quick_context = task.get("quick_context")
+        original_dev = extract_original_developer(quick_context)
 
-        if original_dev and agent_id == original_dev:
+        # Resolve agent_id to UUID for proper comparison
+        agent_uuid = await _resolve_agent_uuid(agent_id, headers)
+        if original_dev and agent_uuid and agent_uuid == original_dev:
             return _format_error_response(
                 "SELF_REVIEW",
                 "Cannot review your own work.",

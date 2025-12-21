@@ -34,8 +34,8 @@ VALID_TRANSITIONS: dict[str, list[str]] = {
     ],
     # Needs revision - back to work or cancel
     "needs_revision": ["in_progress", "cancelled"],
-    # Awaiting QA - can pass (to docs) or fail (needs revision) or cancel
-    "awaiting_qa": ["awaiting_documentation", "needs_revision", "cancelled"],
+    # Awaiting QA - can pass (to docs), fail (needs revision), block, or cancel
+    "awaiting_qa": ["awaiting_documentation", "needs_revision", "blocked", "cancelled"],
     # Awaiting documentation - can complete or cancel
     "awaiting_documentation": ["completed", "cancelled"],
     # Terminal states - cannot transition out
