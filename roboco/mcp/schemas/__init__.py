@@ -194,3 +194,25 @@ class TaskEscalateInput(BaseModel):
     escalate_to: str | None = Field(
         default=None, description="Override default escalation target"
     )
+
+
+class TaskBlockInput(BaseModel):
+    """Input for blocking a task."""
+
+    task_id: str = Field(..., description="Task ID to block")
+    reason: str = Field(..., description="Why the task is blocked")
+    blocker_type: str = Field(
+        ..., description="Type: external, internal, question, dependency"
+    )
+    what_needed: str = Field(..., description="What is needed to unblock")
+
+
+class TaskPauseInput(BaseModel):
+    """Input for pausing a task."""
+
+    task_id: str = Field(..., description="Task ID to pause")
+    reason: str = Field(..., description="Why pausing")
+    checkpoint_summary: str = Field(..., description="Summary of current state")
+    remaining_work: list[str] = Field(
+        default_factory=list, description="List of remaining sub-tasks"
+    )

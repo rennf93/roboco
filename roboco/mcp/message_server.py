@@ -12,73 +12,36 @@ Tools:
 - roboco_channel_history: Get channel message history
 """
 
-from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
-import httpx
 from fastapi import status
 from mcp.server.fastmcp import FastMCP
 
-from roboco.agents_config import CHANNEL_ACCESS, get_agent_role, get_agent_team
-from roboco.config import settings
+from roboco.agents_config import CHANNEL_ACCESS
 from roboco.llm import ToonAdapter
 from roboco.mcp.schemas import (
     AskQuestionInput,
     ReportBlockerInput,
     SendMessageInput,
 )
+from roboco.mcp.utils import ApiClient, format_error_response, resolve_agent_uuid
 
 # Global TOON adapter for encoding message data
 _toon = ToonAdapter()
-
-
-def _get_agent_headers(agent_id: str) -> dict[str, str]:
-    """Get standard headers for API calls."""
-    headers = {
-        "X-Agent-ID": agent_id,
-        "X-Agent-Role": get_agent_role(agent_id),
-    }
-    team = get_agent_team(agent_id)
-    if team:
-        headers["X-Agent-Team"] = team
-    return headers
-
 
 # Cache for agent slug -> UUID resolution
 _agent_uuid_cache: dict[str, str] = {}
 
 
-async def _resolve_agent_uuid(agent_id: str, headers: dict[str, str]) -> str | None:
-    """Resolve agent slug to UUID. Returns None if not found."""
-    from uuid import UUID
-
-    # Check if already a valid UUID
-    try:
-        UUID(agent_id)
-        return agent_id  # Already a UUID
-    except ValueError:
-        pass
-
-    # Check cache
+async def _resolve_agent_uuid_cached(agent_id: str, client: ApiClient) -> str | None:
+    """Resolve agent slug to UUID with caching. Returns None if not found."""
     if agent_id in _agent_uuid_cache:
         return _agent_uuid_cache[agent_id]
-
-    # Query API to resolve slug to UUID
-    async with httpx.AsyncClient() as client:
-        resp = await client.get(
-            f"{settings.internal_api_url}/agents",
-            params={"slug": agent_id},
-            headers=headers,
-        )
-        if resp.status_code == status.HTTP_200_OK:
-            agents = resp.json()
-            if agents:
-                uuid: str | None = agents[0].get("id")
-                if uuid:
-                    _agent_uuid_cache[agent_id] = uuid
-                    return uuid
-    return None
+    result = await resolve_agent_uuid(agent_id, client._get_headers())
+    if result:
+        _agent_uuid_cache[agent_id] = result
+    return result
 
 
 # =============================================================================
@@ -100,21 +63,6 @@ def _check_channel_access(agent_id: str, channel_slug: str, action: str) -> bool
     return bool(action == "read" and agent_id in channel.get("silent", []))
 
 
-def _format_error_response(
-    error_code: str,
-    message: str,
-    details: dict[str, Any] | None = None,
-) -> dict[str, Any]:
-    """Format a standardized error response."""
-    return {
-        "error": {
-            "code": error_code,
-            "message": message,
-            "details": details or {},
-        }
-    }
-
-
 def _validate_message_send(
     agent_id: str,
     channel_slug: str,
@@ -131,7 +79,7 @@ def _validate_message_send(
         "technical",
     ]
     if message_type not in valid_types:
-        return _format_error_response(
+        return format_error_response(
             "INVALID_TYPE",
             f"Invalid message type '{message_type}'. Must be one of: {valid_types}",
         )
@@ -140,20 +88,20 @@ def _validate_message_send(
         writable = [
             ch for ch in CHANNEL_ACCESS if _check_channel_access(agent_id, ch, "write")
         ]
-        return _format_error_response(
+        return format_error_response(
             "ACCESS_DENIED",
             f"You don't have write access to #{channel_slug}",
             {"your_writable_channels": writable},
         )
 
     if agent_id in CHANNEL_ACCESS.get(channel_slug, {}).get("silent", []):
-        return _format_error_response(
+        return format_error_response(
             "SILENT_OBSERVER",
             "You are a silent observer on this channel and cannot post messages.",
         )
 
     if not content or not content.strip():
-        return _format_error_response(
+        return format_error_response(
             "EMPTY_CONTENT", "Message content cannot be empty."
         )
 
@@ -161,26 +109,22 @@ def _validate_message_send(
 
 
 async def _get_default_group(
-    client: httpx.AsyncClient,
+    client: ApiClient,
     channel_id: str,
-    headers: dict[str, str],
 ) -> str | dict[str, Any]:
     """Get the default (first) group for a channel. Returns group_id or error dict."""
-    groups_resp = await client.get(
-        f"{settings.internal_api_url}/channels/{channel_id}/groups",
-        headers=headers,
-    )
+    resp = await client.get(f"/channels/{channel_id}/groups")
 
-    if groups_resp.status_code != status.HTTP_200_OK:
-        return _format_error_response(
+    if not resp.ok:
+        return format_error_response(
             "GROUPS_ERROR",
             "Failed to get channel groups",
-            {"status": groups_resp.status_code},
+            {"status": resp.status_code},
         )
 
-    groups = groups_resp.json()
+    groups = resp.json()
     if not groups:
-        return _format_error_response("NO_GROUPS", "Channel has no groups")
+        return format_error_response("NO_GROUPS", "Channel has no groups")
 
     # Return first active group, or first group if none are active
     for group in groups:
@@ -190,26 +134,21 @@ async def _get_default_group(
 
 
 async def _get_or_create_session(
-    client: httpx.AsyncClient,
+    client: ApiClient,
     channel_id: str,
-    headers: dict[str, str],
 ) -> str | dict[str, Any]:
     """Get or create session for channel. Returns session_id or error dict."""
     # First get the default group for this channel
-    group_result = await _get_default_group(client, channel_id, headers)
+    group_result = await _get_default_group(client, channel_id)
     if isinstance(group_result, dict):
         return group_result  # Error response
     group_id = group_result
 
     # Check if group has an active session
-    sessions_resp = await client.get(
-        f"{settings.internal_api_url}/sessions",
-        params={"group_id": group_id, "limit": 1},
-        headers=headers,
-    )
+    resp = await client.get("/sessions", params={"group_id": group_id, "limit": 1})
 
-    if sessions_resp.status_code == status.HTTP_200_OK:
-        data = sessions_resp.json()
+    if resp.ok:
+        data = resp.json()
         items = data.get("items", [])
         # Find an active session
         for session in items:
@@ -217,15 +156,11 @@ async def _get_or_create_session(
                 return str(session["id"])
 
     # Create new session
-    create_resp = await client.post(
-        f"{settings.internal_api_url}/sessions",
-        json={"group_id": group_id},
-        headers=headers,
-    )
-    if create_resp.status_code in [status.HTTP_200_OK, status.HTTP_201_CREATED]:
+    create_resp = await client.post("/sessions", json={"group_id": group_id})
+    if create_resp.ok:
         return str(create_resp.json()["id"])
 
-    return _format_error_response(
+    return format_error_response(
         "SESSION_ERROR",
         "Failed to create session",
         {"api_error": create_resp.text},
@@ -263,68 +198,56 @@ async def _handle_channel_list(agent_id: str) -> dict[str, Any]:
 
 
 async def _get_channel_by_slug(
-    client: httpx.AsyncClient,
+    client: ApiClient,
     channel_slug: str,
-    headers: dict[str, str],
 ) -> str | dict[str, Any]:
     """Get channel ID by slug. Returns channel_id or error dict."""
-    resp = await client.get(
-        f"{settings.internal_api_url}/channels",
-        params={"slug": channel_slug},
-        headers=headers,
-    )
+    resp = await client.get("/channels", params={"slug": channel_slug})
 
-    if resp.status_code != status.HTTP_200_OK:
-        return _format_error_response("API_ERROR", "Failed to fetch channels")
+    if not resp.ok:
+        return format_error_response("API_ERROR", "Failed to fetch channels")
 
     data = resp.json()
     items = data.get("items", data)
     if not items:
-        return _format_error_response("NOT_FOUND", f"Channel #{channel_slug} not found")
+        return format_error_response("NOT_FOUND", f"Channel #{channel_slug} not found")
 
     channel = items[0] if isinstance(items, list) else items
     return str(channel["id"])
 
 
 async def _get_sessions_for_group(
-    client: httpx.AsyncClient,
+    client: ApiClient,
     group_id: str,
-    headers: dict[str, str],
 ) -> list | dict[str, Any]:
     """Get sessions for a group. Returns session list or error dict."""
-    resp = await client.get(
-        f"{settings.internal_api_url}/sessions",
-        params={"group_id": group_id, "limit": 5},
-        headers=headers,
-    )
+    resp = await client.get("/sessions", params={"group_id": group_id, "limit": 5})
 
-    if resp.status_code != status.HTTP_200_OK:
-        return _format_error_response("API_ERROR", "Failed to fetch sessions")
+    if not resp.ok:
+        return format_error_response("API_ERROR", "Failed to fetch sessions")
 
     items: list = resp.json().get("items", [])
     return items
 
 
 async def _fetch_messages_from_sessions(
-    client: httpx.AsyncClient,
+    client: ApiClient,
     sessions: list,
     since: datetime,
     limit: int,
-    headers: dict[str, str],
 ) -> list:
     """Fetch messages from multiple sessions."""
     all_messages: list = []
     for session in sessions:
         resp = await client.get(
-            f"{settings.internal_api_url}/messages",
+            "/messages",
             params={
                 "session_id": session["id"],
                 "after": since.isoformat(),
                 "limit": limit,
             },
-            headers=headers,
         )
-        if resp.status_code == status.HTTP_200_OK:
+        if resp.ok:
             all_messages.extend(resp.json().get("items", []))
         if len(all_messages) >= limit:
             break
@@ -334,6 +257,7 @@ async def _fetch_messages_from_sessions(
 
 
 async def _handle_channel_history(
+    client: ApiClient,
     agent_id: str,
     channel_slug: str,
     limit: int,
@@ -341,47 +265,44 @@ async def _handle_channel_history(
 ) -> dict[str, Any]:
     """Handle channel history retrieval."""
     if not _check_channel_access(agent_id, channel_slug, "read"):
-        return _format_error_response(
+        return format_error_response(
             "ACCESS_DENIED", f"You don't have read access to #{channel_slug}"
         )
 
-    limit = min(limit, 100)
+    max_limit = 100
+    limit = min(limit, max_limit)
     since = datetime.now(UTC) - timedelta(hours=hours_back)
-    headers = _get_agent_headers(agent_id)
 
-    async with httpx.AsyncClient() as client:
-        # Get channel
-        channel_result = await _get_channel_by_slug(client, channel_slug, headers)
-        if isinstance(channel_result, dict):
-            return channel_result
-        channel_id = channel_result
+    # Get channel
+    channel_result = await _get_channel_by_slug(client, channel_slug)
+    if isinstance(channel_result, dict):
+        return channel_result
+    channel_id = channel_result
 
-        # Get group
-        group_result = await _get_default_group(client, channel_id, headers)
-        if isinstance(group_result, dict):
-            return group_result
-        group_id = group_result
+    # Get group
+    group_result = await _get_default_group(client, channel_id)
+    if isinstance(group_result, dict):
+        return group_result
+    group_id = group_result
 
-        # Get sessions
-        sessions_result = await _get_sessions_for_group(client, group_id, headers)
-        if isinstance(sessions_result, dict):
-            return sessions_result
-        sessions = sessions_result
+    # Get sessions
+    sessions_result = await _get_sessions_for_group(client, group_id)
+    if isinstance(sessions_result, dict):
+        return sessions_result
+    sessions = sessions_result
 
-        # Early return for no sessions
-        if not sessions:
-            return {
-                "channel": channel_slug,
-                "messages": [],
-                "total": 0,
-                "has_more": False,
-                "since": since.isoformat(),
-            }
+    # Early return for no sessions
+    if not sessions:
+        return {
+            "channel": channel_slug,
+            "messages": [],
+            "total": 0,
+            "has_more": False,
+            "since": since.isoformat(),
+        }
 
-        # Fetch messages
-        messages = await _fetch_messages_from_sessions(
-            client, sessions, since, limit, headers
-        )
+    # Fetch messages
+    messages = await _fetch_messages_from_sessions(client, sessions, since, limit)
 
     return {
         "channel": channel_slug,
@@ -393,6 +314,7 @@ async def _handle_channel_history(
 
 
 async def _handle_message_send(
+    client: ApiClient,
     agent_id: str,
     data: SendMessageInput,
 ) -> dict[str, Any]:
@@ -402,80 +324,68 @@ async def _handle_message_send(
     ):
         return validation_error
 
-    headers = _get_agent_headers(agent_id)
-    async with httpx.AsyncClient() as client:
-        # Use the helper function that properly handles paginated responses
-        channel_result = await _get_channel_by_slug(client, data.channel_slug, headers)
-        if isinstance(channel_result, dict):
-            return channel_result  # Error response
-        channel_id = channel_result
+    # Get channel by slug
+    channel_result = await _get_channel_by_slug(client, data.channel_slug)
+    if isinstance(channel_result, dict):
+        return channel_result  # Error response
+    channel_id = channel_result
 
-        session_result = await _get_or_create_session(client, channel_id, headers)
-        if isinstance(session_result, dict):
-            return session_result
-        session_id = session_result
+    session_result = await _get_or_create_session(client, channel_id)
+    if isinstance(session_result, dict):
+        return session_result
+    session_id = session_result
 
-        # Resolve mentions (slugs) to UUIDs
-        resolved_mentions: list[str] = []
-        if data.mentions:
-            for mention in data.mentions:
-                resolved = await _resolve_agent_uuid(mention, headers)
-                if resolved:
-                    resolved_mentions.append(resolved)
-                # Skip unresolved mentions rather than failing
+    # Resolve mentions (slugs) to UUIDs
+    resolved_mentions: list[str] = []
+    if data.mentions:
+        for mention in data.mentions:
+            resolved = await _resolve_agent_uuid_cached(mention, client)
+            if resolved:
+                resolved_mentions.append(resolved)
+            # Skip unresolved mentions rather than failing
 
-        message_data = {
-            "session_id": session_id,
-            "type": data.message_type,
-            "content": data.content,
-            "is_reply": data.reply_to is not None,
-            "reply_to": data.reply_to,
-            "mentions": resolved_mentions,
-            "task_id": data.task_id,
-        }
+    message_data = {
+        "session_id": session_id,
+        "type": data.message_type,
+        "content": data.content,
+        "is_reply": data.reply_to is not None,
+        "reply_to": data.reply_to,
+        "mentions": resolved_mentions,
+        "task_id": data.task_id,
+    }
 
-        send_resp = await client.post(
-            f"{settings.internal_api_url}/messages",
-            json=message_data,
-            headers=headers,
+    resp = await client.post("/messages", json=message_data)
+
+    if not resp.ok:
+        return format_error_response(
+            "SEND_FAILED", "Failed to send message", {"api_error": resp.text}
         )
 
-        if send_resp.status_code not in [status.HTTP_200_OK, status.HTTP_201_CREATED]:
-            return _format_error_response(
-                "SEND_FAILED", "Failed to send message", {"api_error": send_resp.text}
-            )
-
-        return {
-            "status": "sent",
-            "message": send_resp.json(),
-            "channel": data.channel_slug,
-            "guidance": "Message sent successfully.",
-        }
+    return {
+        "status": "sent",
+        "message": resp.json(),
+        "channel": data.channel_slug,
+        "guidance": "Message sent successfully.",
+    }
 
 
-async def _handle_message_get(message_id: str, agent_id: str) -> dict[str, Any]:
+async def _handle_message_get(client: ApiClient, message_id: str) -> dict[str, Any]:
     """Handle message retrieval."""
-    headers = _get_agent_headers(agent_id)
-    async with httpx.AsyncClient() as client:
-        resp = await client.get(
-            f"{settings.internal_api_url}/messages/{message_id}",
-            headers=headers,
-        )
+    resp = await client.get(f"/messages/{message_id}")
 
-        if resp.status_code == status.HTTP_404_NOT_FOUND:
-            return _format_error_response(
-                "NOT_FOUND", f"Message {message_id} not found"
-            )
+    if resp.is_status(status.HTTP_404_NOT_FOUND):
+        return format_error_response("NOT_FOUND", f"Message {message_id} not found")
 
-        if resp.status_code != status.HTTP_200_OK:
-            return _format_error_response("API_ERROR", "Failed to fetch message")
+    if not resp.ok:
+        return format_error_response("API_ERROR", "Failed to fetch message")
 
-        return {"message": resp.json()}
+    return {"message": resp.json()}
 
 
 async def _handle_ask_question(
+    client: ApiClient,
+    agent_id: str,
     data: AskQuestionInput,
-    send_fn: Callable[[SendMessageInput], Awaitable[dict[str, Any]]],
 ) -> dict[str, Any]:
     """Handle asking a question."""
     content = f"**Question**: {data.question}"
@@ -488,7 +398,7 @@ async def _handle_ask_question(
         message_type="dialogue",
         task_id=data.task_id,
     )
-    result = await send_fn(msg_data)
+    result = await _handle_message_send(client, agent_id, msg_data)
 
     if "error" in result:
         return result
@@ -503,8 +413,9 @@ async def _handle_ask_question(
 
 
 async def _handle_report_blocker(
+    client: ApiClient,
+    agent_id: str,
     data: ReportBlockerInput,
-    send_fn: Callable[[SendMessageInput], Awaitable[dict[str, Any]]],
 ) -> dict[str, Any]:
     """Handle reporting a blocker."""
     content = (
@@ -519,7 +430,7 @@ async def _handle_report_blocker(
         message_type="blocker",
         task_id=data.task_id,
     )
-    result = await send_fn(msg_data)
+    result = await _handle_message_send(client, agent_id, msg_data)
 
     if "error" in result:
         return result
@@ -550,6 +461,9 @@ def create_message_mcp_server(agent_id: str) -> FastMCP:
     """
     mcp = FastMCP(f"roboco-message-{agent_id}", json_response=True)
 
+    # Create shared API client for this agent
+    client = ApiClient(agent_id)
+
     @mcp.tool()
     async def roboco_channel_list() -> dict[str, Any]:
         """List channels you have access to."""
@@ -566,7 +480,9 @@ def create_message_mcp_server(agent_id: str) -> FastMCP:
 
         You must have read access to the channel.
         """
-        return await _handle_channel_history(agent_id, channel_slug, limit, hours_back)
+        return await _handle_channel_history(
+            client, agent_id, channel_slug, limit, hours_back
+        )
 
     @mcp.tool()
     async def roboco_message_send(data: SendMessageInput) -> dict[str, Any]:
@@ -575,12 +491,12 @@ def create_message_mcp_server(agent_id: str) -> FastMCP:
 
         You must have write access to the channel.
         """
-        return await _handle_message_send(agent_id, data)
+        return await _handle_message_send(client, agent_id, data)
 
     @mcp.tool()
     async def roboco_message_get(message_id: str) -> dict[str, Any]:
         """Get a specific message by ID."""
-        return await _handle_message_get(message_id, agent_id)
+        return await _handle_message_get(client, message_id)
 
     @mcp.tool()
     async def roboco_ask_question(
@@ -594,17 +510,13 @@ def create_message_mcp_server(agent_id: str) -> FastMCP:
 
         After asking, wait for an answer before proceeding.
         """
-
-        async def send_fn(d: SendMessageInput) -> dict[str, Any]:
-            return await _handle_message_send(agent_id, d)
-
         data = AskQuestionInput(
             channel_slug=channel_slug,
             question=question,
             context=context,
             task_id=task_id,
         )
-        return await _handle_ask_question(data, send_fn)
+        return await _handle_ask_question(client, agent_id, data)
 
     @mcp.tool()
     async def roboco_report_blocker(
@@ -618,17 +530,13 @@ def create_message_mcp_server(agent_id: str) -> FastMCP:
 
         The PM will be notified automatically.
         """
-
-        async def send_fn(d: SendMessageInput) -> dict[str, Any]:
-            return await _handle_message_send(agent_id, d)
-
         data = ReportBlockerInput(
             channel_slug=channel_slug,
             blocker_description=blocker_description,
             what_needed=what_needed,
             task_id=task_id,
         )
-        return await _handle_report_blocker(data, send_fn)
+        return await _handle_report_blocker(client, agent_id, data)
 
     return mcp
 

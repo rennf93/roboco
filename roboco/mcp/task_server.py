@@ -25,7 +25,6 @@ Tools:
 
 from typing import Any
 
-import httpx
 from fastapi import status
 from mcp.server.fastmcp import FastMCP
 
@@ -36,58 +35,36 @@ from roboco.agents_config import (
     get_agent_team,
     get_escalation_target,
 )
-from roboco.config import settings
 from roboco.llm import ToonAdapter
-from roboco.mcp.schemas import TaskAssignInput, TaskCreateInput, TaskEscalateInput
+from roboco.mcp.schemas import (
+    TaskAssignInput,
+    TaskBlockInput,
+    TaskCreateInput,
+    TaskEscalateInput,
+    TaskPauseInput,
+)
+from roboco.mcp.utils import (
+    ApiClient,
+    format_error_response,
+    resolve_agent_uuid,
+)
 from roboco.services.task import extract_original_developer
 
-
-def _get_agent_headers(agent_id: str) -> dict[str, str]:
-    """Get standard headers for API calls."""
-    headers = {
-        "X-Agent-ID": agent_id,
-        "X-Agent-Role": get_agent_role(agent_id),
-    }
-    team = get_agent_team(agent_id)
-    if team:
-        headers["X-Agent-Team"] = team
-    return headers
-
+# Alias for backwards compatibility
+_format_error_response = format_error_response
 
 # Cache for agent slug -> UUID resolution
 _agent_uuid_cache: dict[str, str] = {}
 
 
-async def _resolve_agent_uuid(agent_id: str, headers: dict[str, str]) -> str | None:
-    """Resolve agent slug to UUID. Returns None if not found."""
-    # Check if already a valid UUID
-    try:
-        from uuid import UUID
-
-        UUID(agent_id)
-        return agent_id  # Already a UUID
-    except ValueError:
-        pass
-
-    # Check cache
+async def _resolve_agent_uuid_cached(agent_id: str, client: ApiClient) -> str | None:
+    """Resolve agent slug to UUID with caching. Returns None if not found."""
     if agent_id in _agent_uuid_cache:
         return _agent_uuid_cache[agent_id]
-
-    # Query API to resolve slug to UUID
-    async with httpx.AsyncClient() as client:
-        resp = await client.get(
-            f"{settings.internal_api_url}/agents",
-            params={"slug": agent_id},
-            headers=headers,
-        )
-        if resp.status_code == status.HTTP_200_OK:
-            agents = resp.json()
-            if agents:
-                uuid_str = str(agents[0]["id"])
-                _agent_uuid_cache[agent_id] = uuid_str
-                return uuid_str
-
-    return None
+    result = await resolve_agent_uuid(agent_id, client._get_headers())
+    if result:
+        _agent_uuid_cache[agent_id] = result
+    return result
 
 
 # Global TOON adapter for encoding task data
@@ -122,21 +99,6 @@ def _format_task_response(
         response["project"] = project
         response["project_toon"] = _toon.encode(project)
     return response
-
-
-def _format_error_response(
-    error_code: str,
-    message: str,
-    details: dict[str, Any] | None = None,
-) -> dict[str, Any]:
-    """Format a standardized error response."""
-    return {
-        "error": {
-            "code": error_code,
-            "message": message,
-            "details": details or {},
-        }
-    }
 
 
 def _get_next_step_guidance(status: str) -> tuple[str, str]:
@@ -204,74 +166,55 @@ def _get_next_step_guidance(status: str) -> tuple[str, str]:
 # =============================================================================
 
 
-async def _handle_task_scan(team: str | None, agent_id: str) -> dict[str, Any]:
+async def _handle_task_scan(
+    client: ApiClient, team: str | None, agent_id: str
+) -> dict[str, Any]:
     """Handle task scanning."""
-    headers = _get_agent_headers(agent_id)
-    async with httpx.AsyncClient() as client:
-        paused_resp = await client.get(
-            f"{settings.internal_api_url}/tasks/my",
-            params={"status": "paused"},
-            headers=headers,
-        )
-        paused_tasks = (
-            paused_resp.json() if paused_resp.status_code == status.HTTP_200_OK else []
-        )
+    paused_resp = await client.get("/tasks/my", params={"status": "paused"})
+    paused_tasks = paused_resp.json() if paused_resp.ok else []
 
-        # Get assigned tasks using /tasks/my
-        # Includes: PM-assigned pending tasks + tasks being actively worked on
-        assigned_resp = await client.get(
-            f"{settings.internal_api_url}/tasks/my",
-            headers=headers,
+    # Get assigned tasks using /tasks/my
+    # Includes: PM-assigned pending tasks + tasks being actively worked on
+    assigned_resp = await client.get("/tasks/my")
+    assigned_data = assigned_resp.json() if assigned_resp.ok else []
+    # Include pending tasks (PM assigned) + active work statuses
+    assigned_tasks = [
+        t
+        for t in assigned_data
+        if t.get("status")
+        in ["pending", "claimed", "in_progress", "verifying", "needs_revision"]
+    ]
+
+    # Get available tasks based on agent role
+    # QA agents need awaiting_qa tasks, Documenters need awaiting_documentation
+    agent_role = get_agent_role(agent_id)
+
+    available_tasks: list[dict[str, Any]] = []
+
+    if agent_role == "qa":
+        # QA agents look for tasks awaiting QA review
+        qa_resp = await client.get(
+            "/tasks/awaiting-qa",
+            params={"team": team} if team else {},
         )
-        assigned_data = (
-            assigned_resp.json()
-            if assigned_resp.status_code == status.HTTP_200_OK
-            else []
+        if qa_resp.ok:
+            available_tasks = qa_resp.json()
+    elif agent_role == "documenter":
+        # Documenters look for tasks awaiting documentation
+        doc_resp = await client.get(
+            "/tasks/awaiting-docs",
+            params={"team": team} if team else {},
         )
-        # Include pending tasks (PM assigned) + active work statuses
-        assigned_tasks = [
-            t
-            for t in assigned_data
-            if t.get("status")
-            in ["pending", "claimed", "in_progress", "verifying", "needs_revision"]
-        ]
-
-        # Get available tasks based on agent role
-        # QA agents need awaiting_qa tasks, Documenters need awaiting_documentation
-        agent_role = get_agent_role(agent_id)
-
-        available_tasks: list[dict[str, Any]] = []
-
-        if agent_role == "qa":
-            # QA agents look for tasks awaiting QA review
-            qa_resp = await client.get(
-                f"{settings.internal_api_url}/tasks/awaiting-qa",
-                params={"team": team} if team else {},
-                headers=headers,
-            )
-            if qa_resp.status_code == status.HTTP_200_OK:
-                available_tasks = qa_resp.json()
-        elif agent_role == "documenter":
-            # Documenters look for tasks awaiting documentation
-            doc_resp = await client.get(
-                f"{settings.internal_api_url}/tasks/awaiting-docs",
-                params={"team": team} if team else {},
-                headers=headers,
-            )
-            if doc_resp.status_code == status.HTTP_200_OK:
-                available_tasks = doc_resp.json()
-        else:
-            # Developers and PMs look for pending tasks
-            params: dict[str, Any] = {"status": "pending"}
-            if team:
-                params["team"] = team
-            pending_resp = await client.get(
-                f"{settings.internal_api_url}/tasks",
-                params=params,
-                headers=headers,
-            )
-            if pending_resp.status_code == status.HTTP_200_OK:
-                available_tasks = pending_resp.json()
+        if doc_resp.ok:
+            available_tasks = doc_resp.json()
+    else:
+        # Developers and PMs look for pending tasks
+        params: dict[str, Any] = {"status": "pending"}
+        if team:
+            params["team"] = team
+        pending_resp = await client.get("/tasks", params=params)
+        if pending_resp.ok:
+            available_tasks = pending_resp.json()
 
     # Filter out tasks already in assigned_tasks from available_tasks
     # (prevents PM-assigned pending tasks from appearing in both lists)
@@ -308,23 +251,17 @@ async def _handle_task_scan(team: str | None, agent_id: str) -> dict[str, Any]:
     }
 
 
-async def _handle_task_get(task_id: str, agent_id: str) -> dict[str, Any]:
+async def _handle_task_get(client: ApiClient, task_id: str) -> dict[str, Any]:
     """Handle getting task details."""
-    headers = _get_agent_headers(agent_id)
-    async with httpx.AsyncClient() as client:
-        resp = await client.get(
-            f"{settings.internal_api_url}/tasks/{task_id}",
-            headers=headers,
+    resp = await client.get(f"/tasks/{task_id}")
+
+    if resp.is_status(status.HTTP_404_NOT_FOUND):
+        return _format_error_response(
+            "NOT_FOUND",
+            f"Task {task_id} not found",
         )
 
-        if resp.status_code == status.HTTP_404_NOT_FOUND:
-            return _format_error_response(
-                "NOT_FOUND",
-                f"Task {task_id} not found",
-            )
-
-        task = resp.json()
-
+    task = resp.json()
     next_step, guidance = _get_next_step_guidance(task.get("status", ""))
     return _format_task_response(task, next_step, guidance)
 
@@ -379,64 +316,54 @@ def _validate_task_claimable(task: dict, agent_role: str) -> dict[str, Any] | No
     return None
 
 
-async def _get_project_context(project_id: str, agent_id: str) -> dict[str, Any] | None:
+async def _get_project_context(
+    client: ApiClient, project_id: str
+) -> dict[str, Any] | None:
     """Fetch project context if available."""
-    headers = _get_agent_headers(agent_id)
-    async with httpx.AsyncClient() as client:
-        resp = await client.get(
-            f"{settings.internal_api_url}/projects/{project_id}",
-            headers=headers,
-        )
-        if resp.status_code == status.HTTP_200_OK:
-            result: dict[str, Any] = resp.json()
-            return result
+    resp = await client.get(f"/projects/{project_id}")
+    if resp.ok:
+        result: dict[str, Any] = resp.json()
+        return result
     return None
 
 
-async def _handle_task_claim(task_id: str, agent_id: str) -> dict[str, Any]:
+async def _handle_task_claim(
+    client: ApiClient, task_id: str, agent_id: str
+) -> dict[str, Any]:
     """Handle task claiming."""
-    headers = _get_agent_headers(agent_id)
-    async with httpx.AsyncClient() as client:
-        active_resp = await client.get(
-            f"{settings.internal_api_url}/tasks/my",
-            headers=headers,
-        )
-        if active_resp.status_code == status.HTTP_200_OK:
-            active_tasks = active_resp.json()
-            if error := _check_blocking_tasks(active_tasks):
-                return error
-            if error := _check_paused_tasks(active_tasks):
-                return error
-
-        task_resp = await client.get(
-            f"{settings.internal_api_url}/tasks/{task_id}",
-            headers=headers,
-        )
-        if task_resp.status_code == status.HTTP_404_NOT_FOUND:
-            return _format_error_response("NOT_FOUND", f"Task {task_id} not found")
-
-        task = task_resp.json()
-        agent_role = get_agent_role(agent_id)
-        if error := _validate_task_claimable(task, agent_role):
+    active_resp = await client.get("/tasks/my")
+    if active_resp.ok:
+        active_tasks = active_resp.json()
+        if error := _check_blocking_tasks(active_tasks):
+            return error
+        if error := _check_paused_tasks(active_tasks):
             return error
 
-        claim_resp = await client.post(
-            f"{settings.internal_api_url}/tasks/{task_id}/claim",
-            json={"agent_id": agent_id},
-            headers=headers,
-        )
-        if claim_resp.status_code != status.HTTP_200_OK:
-            return _format_error_response(
-                "CLAIM_FAILED",
-                "Failed to claim task",
-                {"api_error": claim_resp.text},
-            )
+    task_resp = await client.get(f"/tasks/{task_id}")
+    if task_resp.is_status(status.HTTP_404_NOT_FOUND):
+        return _format_error_response("NOT_FOUND", f"Task {task_id} not found")
 
-        claimed_task = claim_resp.json()
+    task = task_resp.json()
+    agent_role = get_agent_role(agent_id)
+    if error := _validate_task_claimable(task, agent_role):
+        return error
+
+    claim_resp = await client.post(
+        f"/tasks/{task_id}/claim",
+        json={"agent_id": agent_id},
+    )
+    if not claim_resp.ok:
+        return _format_error_response(
+            "CLAIM_FAILED",
+            "Failed to claim task",
+            {"api_error": claim_resp.text},
+        )
+
+    claimed_task = claim_resp.json()
 
     project = None
     if claimed_task.get("project_id"):
-        project = await _get_project_context(claimed_task["project_id"], agent_id)
+        project = await _get_project_context(client, claimed_task["project_id"])
 
     return _format_task_response(
         claimed_task,
@@ -450,7 +377,7 @@ async def _handle_task_claim(task_id: str, agent_id: str) -> dict[str, Any]:
 
 
 async def _validate_task_ownership(
-    task: dict, agent_id: str, headers: dict[str, str]
+    task: dict, agent_id: str, client: ApiClient
 ) -> dict[str, Any] | None:
     """Validate agent owns the task. Returns error or None."""
     assigned_to = task.get("assigned_to")
@@ -461,7 +388,7 @@ async def _validate_task_ownership(
         )
 
     # Resolve agent_id (which may be a slug) to UUID for comparison
-    agent_uuid = await _resolve_agent_uuid(agent_id, headers)
+    agent_uuid = await resolve_agent_uuid(agent_id, client._get_headers())
     if not agent_uuid:
         return _format_error_response(
             "AGENT_NOT_FOUND",
@@ -513,40 +440,32 @@ def _build_plan_data(plan_params: dict[str, Any]) -> dict[str, Any]:
 
 
 async def _handle_task_plan(
+    client: ApiClient,
     task_id: str,
     plan_params: dict[str, Any],
     agent_id: str,
 ) -> dict[str, Any]:
     """Handle task planning."""
-    headers = _get_agent_headers(agent_id)
-    async with httpx.AsyncClient() as client:
-        task_resp = await client.get(
-            f"{settings.internal_api_url}/tasks/{task_id}",
-            headers=headers,
+    task_resp = await client.get(f"/tasks/{task_id}")
+    if task_resp.is_status(status.HTTP_404_NOT_FOUND):
+        return _format_error_response("NOT_FOUND", f"Task {task_id} not found")
+
+    task = task_resp.json()
+    if error := await _validate_task_ownership(task, agent_id, client):
+        return error
+    if error := _validate_task_status_claimed(task):
+        return error
+
+    plan_data = _build_plan_data(plan_params)
+    update_resp = await client.patch(f"/tasks/{task_id}", json={"plan": plan_data})
+    if not update_resp.ok:
+        return _format_error_response(
+            "UPDATE_FAILED",
+            "Failed to save plan",
+            {"api_error": update_resp.text},
         )
-        if task_resp.status_code == status.HTTP_404_NOT_FOUND:
-            return _format_error_response("NOT_FOUND", f"Task {task_id} not found")
 
-        task = task_resp.json()
-        if error := await _validate_task_ownership(task, agent_id, headers):
-            return error
-        if error := _validate_task_status_claimed(task):
-            return error
-
-        plan_data = _build_plan_data(plan_params)
-        update_resp = await client.patch(
-            f"{settings.internal_api_url}/tasks/{task_id}",
-            json={"plan": plan_data},
-            headers=headers,
-        )
-        if update_resp.status_code != status.HTTP_200_OK:
-            return _format_error_response(
-                "UPDATE_FAILED",
-                "Failed to save plan",
-                {"api_error": update_resp.text},
-            )
-
-        updated_task = update_resp.json()
+    updated_task = update_resp.json()
 
     open_questions = plan_params.get("open_questions")
     if open_questions:
@@ -566,10 +485,10 @@ async def _handle_task_plan(
 
 
 async def _validate_task_start(
-    task: dict[str, Any], agent_id: str, headers: dict[str, str]
+    task: dict[str, Any], agent_id: str, client: ApiClient
 ) -> dict[str, Any] | None:
     """Validate task can be started. Returns error dict or None."""
-    if error := await _validate_task_ownership(task, agent_id, headers):
+    if error := await _validate_task_ownership(task, agent_id, client):
         return error
 
     task_status = task.get("status")
@@ -601,92 +520,81 @@ async def _validate_task_start(
     return None
 
 
-async def _handle_task_start(task_id: str, agent_id: str) -> dict[str, Any]:
+async def _handle_task_start(
+    client: ApiClient, task_id: str, agent_id: str
+) -> dict[str, Any]:
     """Handle task start."""
-    headers = _get_agent_headers(agent_id)
-    async with httpx.AsyncClient() as client:
-        task_resp = await client.get(
-            f"{settings.internal_api_url}/tasks/{task_id}",
-            headers=headers,
+    task_resp = await client.get(f"/tasks/{task_id}")
+    if task_resp.is_status(status.HTTP_404_NOT_FOUND):
+        return _format_error_response("NOT_FOUND", f"Task {task_id} not found")
+
+    task = task_resp.json()
+
+    if validation_error := await _validate_task_start(task, agent_id, client):
+        return validation_error
+
+    # Start the task
+    start_resp = await client.post(f"/tasks/{task_id}/start")
+
+    if not start_resp.ok:
+        return _format_error_response(
+            "START_FAILED",
+            "Failed to start task",
+            {"api_error": start_resp.text},
         )
-        if task_resp.status_code == status.HTTP_404_NOT_FOUND:
-            return _format_error_response("NOT_FOUND", f"Task {task_id} not found")
 
-        task = task_resp.json()
-
-        if validation_error := await _validate_task_start(task, agent_id, headers):
-            return validation_error
-
-        # Start the task
-        start_resp = await client.post(
-            f"{settings.internal_api_url}/tasks/{task_id}/start",
-            headers=headers,
-        )
-
-        if start_resp.status_code != status.HTTP_200_OK:
-            return _format_error_response(
-                "START_FAILED",
-                "Failed to start task",
-                {"api_error": start_resp.text},
-            )
-
-        return _format_task_response(
-            start_resp.json(),
-            "EXECUTE",
-            "Task started. Work through your plan step by step:\n"
-            "1. Implement each sub-task\n"
-            "2. Commit frequently with clear messages\n"
-            "3. Call roboco_task_progress to update status\n"
-            "4. If blocked, call roboco_task_block immediately\n"
-            "5. When done, call roboco_task_submit_verification",
-        )
+    return _format_task_response(
+        start_resp.json(),
+        "EXECUTE",
+        "Task started. Work through your plan step by step:\n"
+        "1. Implement each sub-task\n"
+        "2. Commit frequently with clear messages\n"
+        "3. Call roboco_task_progress to update status\n"
+        "4. If blocked, call roboco_task_block immediately\n"
+        "5. When done, call roboco_task_submit_verification",
+    )
 
 
 async def _handle_task_progress(
+    client: ApiClient,
     task_id: str,
     message: str,
     percentage: int | None,
     agent_id: str,
 ) -> dict[str, Any]:
     """Handle task progress update."""
-    headers = _get_agent_headers(agent_id)
-    async with httpx.AsyncClient() as client:
-        task_resp = await client.get(
-            f"{settings.internal_api_url}/tasks/{task_id}",
-            headers=headers,
-        )
-        if task_resp.status_code == status.HTTP_404_NOT_FOUND:
-            return _format_error_response("NOT_FOUND", f"Task {task_id} not found")
+    task_resp = await client.get(f"/tasks/{task_id}")
+    if task_resp.is_status(status.HTTP_404_NOT_FOUND):
+        return _format_error_response("NOT_FOUND", f"Task {task_id} not found")
 
-        task = task_resp.json()
+    task = task_resp.json()
 
-        if error := await _validate_task_ownership(task, agent_id, headers):
-            return error
+    if error := await _validate_task_ownership(task, agent_id, client):
+        return error
 
-        if task.get("status") != "in_progress":
-            return _format_error_response(
-                "INVALID_STATE",
-                "Can only update progress for in_progress tasks",
-            )
-
-        # Add progress update
-        progress_resp = await client.post(
-            f"{settings.internal_api_url}/tasks/{task_id}/progress",
-            json={
-                "agent_id": agent_id,
-                "message": message,
-                "percentage": percentage,
-            },
-            headers=headers,
+    if task.get("status") != "in_progress":
+        return _format_error_response(
+            "INVALID_STATE",
+            "Can only update progress for in_progress tasks",
         )
 
-        if progress_resp.status_code != status.HTTP_200_OK:
-            return _format_error_response(
-                "UPDATE_FAILED",
-                "Failed to update progress",
-            )
+    # Add progress update
+    progress_resp = await client.post(
+        f"/tasks/{task_id}/progress",
+        json={
+            "agent_id": agent_id,
+            "message": message,
+            "percentage": percentage,
+        },
+    )
 
-        updated_task = progress_resp.json()
+    if not progress_resp.ok:
+        return _format_error_response(
+            "UPDATE_FAILED",
+            "Failed to update progress",
+        )
+
+    updated_task = progress_resp.json()
 
     return _format_task_response(
         updated_task,
@@ -696,74 +604,60 @@ async def _handle_task_progress(
 
 
 async def _handle_task_block(
-    task_id: str,
-    reason: str,
-    blocker_type: str,
-    what_needed: str,
+    client: ApiClient,
+    data: TaskBlockInput,
     agent_id: str,
 ) -> dict[str, Any]:
     """Handle task blocking."""
-    if not reason or not what_needed:
+    task_resp = await client.get(f"/tasks/{data.task_id}")
+    if task_resp.is_status(status.HTTP_404_NOT_FOUND):
+        return _format_error_response("NOT_FOUND", f"Task {data.task_id} not found")
+
+    task = task_resp.json()
+
+    if error := await _validate_task_ownership(task, agent_id, client):
+        return error
+
+    if task.get("status") != "in_progress":
         return _format_error_response(
-            "MISSING_DETAILS",
-            "Both 'reason' and 'what_needed' are required to block a task.",
+            "INVALID_STATE",
+            "Can only block in_progress tasks",
         )
 
-    headers = _get_agent_headers(agent_id)
-    async with httpx.AsyncClient() as client:
-        task_resp = await client.get(
-            f"{settings.internal_api_url}/tasks/{task_id}",
-            headers=headers,
-        )
-        if task_resp.status_code == status.HTTP_404_NOT_FOUND:
-            return _format_error_response("NOT_FOUND", f"Task {task_id} not found")
+    # Build blocker note for dev_notes
+    blocker_note = (
+        f"[BLOCKED - {data.blocker_type.upper()}]\n"
+        f"Reason: {data.reason}\n"
+        f"What's needed: {data.what_needed}"
+    )
+    existing_notes = task.get("dev_notes") or ""
+    if existing_notes:
+        updated_notes = f"{existing_notes}\n\n{blocker_note}"
+    else:
+        updated_notes = blocker_note
 
-        task = task_resp.json()
+    # Block the task using PATCH to update status and notes
+    block_resp = await client.patch(
+        f"/tasks/{data.task_id}",
+        json={
+            "status": "blocked",
+            "dev_notes": updated_notes,
+        },
+    )
 
-        if error := await _validate_task_ownership(task, agent_id, headers):
-            return error
-
-        if task.get("status") != "in_progress":
-            return _format_error_response(
-                "INVALID_STATE",
-                "Can only block in_progress tasks",
-            )
-
-        # Build blocker note for dev_notes
-        blocker_note = (
-            f"[BLOCKED - {blocker_type.upper()}]\n"
-            f"Reason: {reason}\n"
-            f"What's needed: {what_needed}"
-        )
-        existing_notes = task.get("dev_notes") or ""
-        if existing_notes:
-            updated_notes = f"{existing_notes}\n\n{blocker_note}"
-        else:
-            updated_notes = blocker_note
-
-        # Block the task using PATCH to update status and notes
-        block_resp = await client.patch(
-            f"{settings.internal_api_url}/tasks/{task_id}",
-            json={
-                "status": "blocked",
-                "dev_notes": updated_notes,
-            },
-            headers=headers,
+    if not block_resp.ok:
+        return _format_error_response(
+            "BLOCK_FAILED",
+            "Failed to block task",
+            {"status_code": block_resp.status_code, "detail": block_resp.text},
         )
 
-        if block_resp.status_code != status.HTTP_200_OK:
-            return _format_error_response(
-                "BLOCK_FAILED",
-                "Failed to block task",
-                {"status_code": block_resp.status_code, "detail": block_resp.text},
-            )
-
-        blocked_task = block_resp.json()
+    blocked_task = block_resp.json()
 
     return _format_task_response(
         blocked_task,
         "WAIT_OR_SWITCH",
-        f"Task blocked: {reason}\n\n"
+        f"Task blocked: {data.reason}\n\n"
         "Options:\n"
         "1. WAIT - If resolution expected soon, poll for updates\n"
         "2. SWITCH - Call roboco_task_scan to work on another task\n"
@@ -773,37 +667,31 @@ async def _handle_task_block(
     )
 
 
-async def _handle_task_unblock(task_id: str, agent_id: str) -> dict[str, Any]:
+async def _handle_task_unblock(
+    client: ApiClient, task_id: str, agent_id: str
+) -> dict[str, Any]:
     """Handle task unblocking."""
-    headers = _get_agent_headers(agent_id)
-    async with httpx.AsyncClient() as client:
-        task_resp = await client.get(
-            f"{settings.internal_api_url}/tasks/{task_id}",
-            headers=headers,
-        )
-        if task_resp.status_code == status.HTTP_404_NOT_FOUND:
-            return _format_error_response("NOT_FOUND", f"Task {task_id} not found")
+    task_resp = await client.get(f"/tasks/{task_id}")
+    if task_resp.is_status(status.HTTP_404_NOT_FOUND):
+        return _format_error_response("NOT_FOUND", f"Task {task_id} not found")
 
-        task = task_resp.json()
+    task = task_resp.json()
 
-        if error := await _validate_task_ownership(task, agent_id, headers):
-            return error
+    if error := await _validate_task_ownership(task, agent_id, client):
+        return error
 
-        if task.get("status") != "blocked":
-            return _format_error_response(
-                "INVALID_STATE",
-                "Task is not blocked",
-            )
-
-        unblock_resp = await client.post(
-            f"{settings.internal_api_url}/tasks/{task_id}/unblock",
-            headers=headers,
+    if task.get("status") != "blocked":
+        return _format_error_response(
+            "INVALID_STATE",
+            "Task is not blocked",
         )
 
-        if unblock_resp.status_code != status.HTTP_200_OK:
-            return _format_error_response("UNBLOCK_FAILED", "Failed to unblock task")
+    unblock_resp = await client.post(f"/tasks/{task_id}/unblock")
 
-        unblocked_task = unblock_resp.json()
+    if not unblock_resp.ok:
+        return _format_error_response("UNBLOCK_FAILED", "Failed to unblock task")
+
+    unblocked_task = unblock_resp.json()
 
     return _format_task_response(
         unblocked_task,
@@ -813,114 +701,95 @@ async def _handle_task_unblock(task_id: str, agent_id: str) -> dict[str, Any]:
 
 
 async def _handle_task_pause(
-    task_id: str,
-    reason: str,
-    checkpoint_summary: str,
-    remaining_work: list[str],
+    client: ApiClient,
+    data: TaskPauseInput,
     agent_id: str,
 ) -> dict[str, Any]:
     """Handle task pausing."""
-    headers = _get_agent_headers(agent_id)
-    async with httpx.AsyncClient() as client:
-        task_resp = await client.get(
-            f"{settings.internal_api_url}/tasks/{task_id}",
-            headers=headers,
-        )
-        if task_resp.status_code == status.HTTP_404_NOT_FOUND:
-            return _format_error_response("NOT_FOUND", f"Task {task_id} not found")
+    task_resp = await client.get(f"/tasks/{data.task_id}")
+    if task_resp.is_status(status.HTTP_404_NOT_FOUND):
+        return _format_error_response("NOT_FOUND", f"Task {data.task_id} not found")
 
-        task = task_resp.json()
+    task = task_resp.json()
 
-        if error := await _validate_task_ownership(task, agent_id, headers):
-            return error
+    if error := await _validate_task_ownership(task, agent_id, client):
+        return error
 
-        if task.get("status") != "in_progress":
-            return _format_error_response(
-                "INVALID_STATE",
-                "Can only pause in_progress tasks",
-            )
-
-        # Add checkpoint
-        await client.post(
-            f"{settings.internal_api_url}/tasks/{task_id}/checkpoint",
-            json={
-                "agent_id": agent_id,
-                "state_summary": checkpoint_summary,
-                "remaining_work": remaining_work,
-                "notes": reason,
-            },
-            headers=headers,
+    if task.get("status") != "in_progress":
+        return _format_error_response(
+            "INVALID_STATE",
+            "Can only pause in_progress tasks",
         )
 
-        # Pause the task
-        pause_resp = await client.post(
-            f"{settings.internal_api_url}/tasks/{task_id}/pause",
-            headers=headers,
-        )
+    # Add checkpoint
+    await client.post(
+        f"/tasks/{data.task_id}/checkpoint",
+        json={
+            "agent_id": agent_id,
+            "state_summary": data.checkpoint_summary,
+            "remaining_work": data.remaining_work,
+            "notes": data.reason,
+        },
+    )
 
-        if pause_resp.status_code != status.HTTP_200_OK:
-            return _format_error_response("PAUSE_FAILED", "Failed to pause task")
+    # Pause the task
+    pause_resp = await client.post(f"/tasks/{data.task_id}/pause")
 
-        paused_task = pause_resp.json()
+    if not pause_resp.ok:
+        return _format_error_response("PAUSE_FAILED", "Failed to pause task")
+
+    paused_task = pause_resp.json()
 
     return _format_task_response(
         paused_task,
         "SCAN_FOR_WORK",
         f"Task paused. Checkpoint saved.\n"
-        f"Reason: {reason}\n\n"
+        f"Reason: {data.reason}\n\n"
         "To resume later, call roboco_task_start with this task_id.\n"
         "Now call roboco_task_scan to find your next task.",
     )
 
 
 async def _handle_task_submit_verification(
-    task_id: str, agent_id: str
+    client: ApiClient, task_id: str, agent_id: str
 ) -> dict[str, Any]:
     """Handle task verification submission."""
-    headers = _get_agent_headers(agent_id)
-    async with httpx.AsyncClient() as client:
-        task_resp = await client.get(
-            f"{settings.internal_api_url}/tasks/{task_id}",
-            headers=headers,
-        )
-        if task_resp.status_code == status.HTTP_404_NOT_FOUND:
-            return _format_error_response("NOT_FOUND", f"Task {task_id} not found")
+    task_resp = await client.get(f"/tasks/{task_id}")
+    if task_resp.is_status(status.HTTP_404_NOT_FOUND):
+        return _format_error_response("NOT_FOUND", f"Task {task_id} not found")
 
-        task = task_resp.json()
+    task = task_resp.json()
 
-        if error := await _validate_task_ownership(task, agent_id, headers):
-            return error
+    if error := await _validate_task_ownership(task, agent_id, client):
+        return error
 
-        if task.get("status") != "in_progress":
-            return _format_error_response(
-                "INVALID_STATE",
-                "Can only submit in_progress tasks for verification",
-            )
-
-        # Check for evidence of work done (commits OR progress updates)
-        # Non-code tasks (testing, research, docs) may not have commits
-        has_commits = bool(task.get("commits"))
-        has_progress = bool(task.get("progress_updates"))
-        has_checkpoints = bool(task.get("checkpoints"))
-
-        if not (has_commits or has_progress or has_checkpoints):
-            return _format_error_response(
-                "NO_WORK_EVIDENCE",
-                "No evidence of work found. Add commits with roboco_task_add_commit "
-                "or update progress with roboco_task_progress before verification.",
-            )
-
-        verify_resp = await client.post(
-            f"{settings.internal_api_url}/tasks/{task_id}/verify",
-            headers=headers,
+    if task.get("status") != "in_progress":
+        return _format_error_response(
+            "INVALID_STATE",
+            "Can only submit in_progress tasks for verification",
         )
 
-        if verify_resp.status_code != status.HTTP_200_OK:
-            return _format_error_response(
-                "VERIFY_FAILED", "Failed to submit for verification"
-            )
+    # Check for evidence of work done (commits OR progress updates)
+    # Non-code tasks (testing, research, docs) may not have commits
+    has_commits = bool(task.get("commits"))
+    has_progress = bool(task.get("progress_updates"))
+    has_checkpoints = bool(task.get("checkpoints"))
 
-        verifying_task = verify_resp.json()
+    if not (has_commits or has_progress or has_checkpoints):
+        return _format_error_response(
+            "NO_WORK_EVIDENCE",
+            "No evidence of work found. Add commits with roboco_task_add_commit "
+            "or update progress with roboco_task_progress before verification.",
+        )
+
+    verify_resp = await client.post(f"/tasks/{task_id}/verify")
+
+    if not verify_resp.ok:
+        return _format_error_response(
+            "VERIFY_FAILED", "Failed to submit for verification"
+        )
+
+    verifying_task = verify_resp.json()
 
     # Build verification checklist from acceptance criteria
     criteria = task.get("acceptance_criteria", [])
@@ -937,6 +806,7 @@ async def _handle_task_submit_verification(
 
 
 async def _handle_task_submit_qa(
+    client: ApiClient,
     task_id: str,
     dev_notes: str,
     handoff_summary: str,
@@ -949,45 +819,33 @@ async def _handle_task_submit_qa(
             "Both dev_notes and handoff_summary are required for QA submission.",
         )
 
-    headers = _get_agent_headers(agent_id)
-    async with httpx.AsyncClient() as client:
-        task_resp = await client.get(
-            f"{settings.internal_api_url}/tasks/{task_id}",
-            headers=headers,
-        )
-        if task_resp.status_code == status.HTTP_404_NOT_FOUND:
-            return _format_error_response("NOT_FOUND", f"Task {task_id} not found")
+    task_resp = await client.get(f"/tasks/{task_id}")
+    if task_resp.is_status(status.HTTP_404_NOT_FOUND):
+        return _format_error_response("NOT_FOUND", f"Task {task_id} not found")
 
-        task = task_resp.json()
+    task = task_resp.json()
 
-        if error := await _validate_task_ownership(task, agent_id, headers):
-            return error
+    if error := await _validate_task_ownership(task, agent_id, client):
+        return error
 
-        if task.get("status") != "verifying":
-            return _format_error_response(
-                "INVALID_STATE",
-                "Can only submit verified tasks for QA",
-            )
-
-        # Update with notes - combine dev_notes and handoff summary
-        # (handoff summary goes into dev_notes for documenter to read)
-        combined_notes = f"{dev_notes}\n\n---\nHandoff Summary:\n{handoff_summary}"
-        await client.patch(
-            f"{settings.internal_api_url}/tasks/{task_id}",
-            json={"dev_notes": combined_notes},
-            headers=headers,
+    if task.get("status") != "verifying":
+        return _format_error_response(
+            "INVALID_STATE",
+            "Can only submit verified tasks for QA",
         )
 
-        # Submit for QA
-        qa_resp = await client.post(
-            f"{settings.internal_api_url}/tasks/{task_id}/submit-qa",
-            headers=headers,
-        )
+    # Update with notes - combine dev_notes and handoff summary
+    # (handoff summary goes into dev_notes for documenter to read)
+    combined_notes = f"{dev_notes}\n\n---\nHandoff Summary:\n{handoff_summary}"
+    await client.patch(f"/tasks/{task_id}", json={"dev_notes": combined_notes})
 
-        if qa_resp.status_code != status.HTTP_200_OK:
-            return _format_error_response("SUBMIT_FAILED", "Failed to submit for QA")
+    # Submit for QA
+    qa_resp = await client.post(f"/tasks/{task_id}/submit-qa")
 
-        qa_task = qa_resp.json()
+    if not qa_resp.ok:
+        return _format_error_response("SUBMIT_FAILED", "Failed to submit for QA")
+
+    qa_task = qa_resp.json()
 
     return _format_task_response(
         qa_task,
@@ -999,6 +857,7 @@ async def _handle_task_submit_qa(
 
 
 async def _handle_task_qa_pass(
+    client: ApiClient,
     task_id: str,
     qa_notes: str,
     agent_id: str,
@@ -1011,50 +870,44 @@ async def _handle_task_qa_pass(
             "Only QA agents can pass tasks through QA review.",
         )
 
-    headers = _get_agent_headers(agent_id)
-    async with httpx.AsyncClient() as client:
-        task_resp = await client.get(
-            f"{settings.internal_api_url}/tasks/{task_id}",
-            headers=headers,
-        )
-        if task_resp.status_code == status.HTTP_404_NOT_FOUND:
-            return _format_error_response("NOT_FOUND", f"Task {task_id} not found")
+    task_resp = await client.get(f"/tasks/{task_id}")
+    if task_resp.is_status(status.HTTP_404_NOT_FOUND):
+        return _format_error_response("NOT_FOUND", f"Task {task_id} not found")
 
-        task = task_resp.json()
+    task = task_resp.json()
 
-        if task.get("status") != "awaiting_qa":
-            return _format_error_response(
-                "INVALID_STATE",
-                "Task is not awaiting QA",
-            )
-
-        # Check QA is not reviewing own work
-        # Check against original developer stored in quick_context
-        quick_context = task.get("quick_context")
-        original_dev = extract_original_developer(quick_context)
-
-        # Resolve agent_id to UUID for proper comparison
-        agent_uuid = await _resolve_agent_uuid(agent_id, headers)
-        if original_dev and agent_uuid and agent_uuid == original_dev:
-            return _format_error_response(
-                "SELF_REVIEW",
-                "Cannot review your own work.",
-            )
-
-        pass_resp = await client.post(
-            f"{settings.internal_api_url}/tasks/{task_id}/pass-qa",
-            json={"notes": qa_notes},
-            headers=headers,
+    if task.get("status") != "awaiting_qa":
+        return _format_error_response(
+            "INVALID_STATE",
+            "Task is not awaiting QA",
         )
 
-        if pass_resp.status_code != status.HTTP_200_OK:
-            return _format_error_response(
-                "QA_FAILED",
-                "Failed to pass QA",
-                {"status_code": pass_resp.status_code, "api_error": pass_resp.text},
-            )
+    # Check QA is not reviewing own work
+    # Check against original developer stored in quick_context
+    quick_context = task.get("quick_context")
+    original_dev = extract_original_developer(quick_context)
 
-        passed_task = pass_resp.json()
+    # Resolve agent_id to UUID for proper comparison
+    agent_uuid = await resolve_agent_uuid(agent_id, client._get_headers())
+    if original_dev and agent_uuid and agent_uuid == original_dev:
+        return _format_error_response(
+            "SELF_REVIEW",
+            "Cannot review your own work.",
+        )
+
+    pass_resp = await client.post(
+        f"/tasks/{task_id}/pass-qa",
+        json={"notes": qa_notes},
+    )
+
+    if not pass_resp.ok:
+        return _format_error_response(
+            "QA_FAILED",
+            "Failed to pass QA",
+            {"status_code": pass_resp.status_code, "api_error": pass_resp.text},
+        )
+
+    passed_task = pass_resp.json()
 
     return _format_task_response(
         passed_task,
@@ -1065,6 +918,7 @@ async def _handle_task_qa_pass(
 
 
 async def _handle_task_qa_fail(
+    client: ApiClient,
     task_id: str,
     qa_notes: str,
     issues: list[str],
@@ -1083,39 +937,33 @@ async def _handle_task_qa_fail(
             "Must specify at least one issue when failing QA.",
         )
 
-    headers = _get_agent_headers(agent_id)
-    async with httpx.AsyncClient() as client:
-        task_resp = await client.get(
-            f"{settings.internal_api_url}/tasks/{task_id}",
-            headers=headers,
-        )
-        if task_resp.status_code == status.HTTP_404_NOT_FOUND:
-            return _format_error_response("NOT_FOUND", f"Task {task_id} not found")
+    task_resp = await client.get(f"/tasks/{task_id}")
+    if task_resp.is_status(status.HTTP_404_NOT_FOUND):
+        return _format_error_response("NOT_FOUND", f"Task {task_id} not found")
 
-        task = task_resp.json()
+    task = task_resp.json()
 
-        if task.get("status") != "awaiting_qa":
-            return _format_error_response(
-                "INVALID_STATE",
-                "Task is not awaiting QA",
-            )
-
-        full_notes = f"{qa_notes}\n\nIssues:\n" + "\n".join(f"- {i}" for i in issues)
-
-        fail_resp = await client.post(
-            f"{settings.internal_api_url}/tasks/{task_id}/fail-qa",
-            json={"notes": full_notes},
-            headers=headers,
+    if task.get("status") != "awaiting_qa":
+        return _format_error_response(
+            "INVALID_STATE",
+            "Task is not awaiting QA",
         )
 
-        if fail_resp.status_code != status.HTTP_200_OK:
-            return _format_error_response(
-                "QA_FAILED",
-                "Failed to fail QA",
-                {"status_code": fail_resp.status_code, "api_error": fail_resp.text},
-            )
+    full_notes = f"{qa_notes}\n\nIssues:\n" + "\n".join(f"- {i}" for i in issues)
 
-        failed_task = fail_resp.json()
+    fail_resp = await client.post(
+        f"/tasks/{task_id}/fail-qa",
+        json={"notes": full_notes},
+    )
+
+    if not fail_resp.ok:
+        return _format_error_response(
+            "QA_FAILED",
+            "Failed to fail QA",
+            {"status_code": fail_resp.status_code, "api_error": fail_resp.text},
+        )
+
+    failed_task = fail_resp.json()
 
     return _format_task_response(
         failed_task,
@@ -1126,41 +974,33 @@ async def _handle_task_qa_fail(
     )
 
 
-async def _handle_task_complete(task_id: str, agent_id: str) -> dict[str, Any]:
+async def _handle_task_complete(client: ApiClient, task_id: str) -> dict[str, Any]:
     """Handle task completion."""
-    headers = _get_agent_headers(agent_id)
-    async with httpx.AsyncClient() as client:
-        task_resp = await client.get(
-            f"{settings.internal_api_url}/tasks/{task_id}",
-            headers=headers,
-        )
-        if task_resp.status_code == status.HTTP_404_NOT_FOUND:
-            return _format_error_response("NOT_FOUND", f"Task {task_id} not found")
+    task_resp = await client.get(f"/tasks/{task_id}")
+    if task_resp.is_status(status.HTTP_404_NOT_FOUND):
+        return _format_error_response("NOT_FOUND", f"Task {task_id} not found")
 
-        task = task_resp.json()
+    task = task_resp.json()
 
-        if task.get("status") != "awaiting_documentation":
-            return _format_error_response(
-                "INVALID_STATE",
-                "Task must be awaiting documentation to complete",
-            )
-
-        complete_resp = await client.post(
-            f"{settings.internal_api_url}/tasks/{task_id}/complete",
-            headers=headers,
+    if task.get("status") != "awaiting_documentation":
+        return _format_error_response(
+            "INVALID_STATE",
+            "Task must be awaiting documentation to complete",
         )
 
-        if complete_resp.status_code != status.HTTP_200_OK:
-            return _format_error_response(
-                "COMPLETE_FAILED",
-                "Failed to complete task",
-                {
-                    "status_code": complete_resp.status_code,
-                    "api_error": complete_resp.text,
-                },
-            )
+    complete_resp = await client.post(f"/tasks/{task_id}/complete")
 
-        completed_task = complete_resp.json()
+    if not complete_resp.ok:
+        return _format_error_response(
+            "COMPLETE_FAILED",
+            "Failed to complete task",
+            {
+                "status_code": complete_resp.status_code,
+                "api_error": complete_resp.text,
+            },
+        )
+
+    completed_task = complete_resp.json()
 
     return _format_task_response(
         completed_task,
@@ -1169,81 +1009,68 @@ async def _handle_task_complete(task_id: str, agent_id: str) -> dict[str, Any]:
     )
 
 
-async def _handle_agent_idle(agent_id: str) -> dict[str, Any]:
+async def _handle_agent_idle(client: ApiClient, agent_id: str) -> dict[str, Any]:
     """Handle agent going idle (no work available)."""
-    headers = _get_agent_headers(agent_id)
+    # First, check if agent has any in-progress tasks
+    # Use /tasks/my endpoint which properly uses authenticated agent context
+    try:
+        scan_resp = await client.get("/tasks/my", params={"status": "in_progress"})
+        if scan_resp.ok:
+            tasks = scan_resp.json()  # /tasks/my returns list directly
+            if tasks:
+                # Agent has in-progress tasks - they must handle them first
+                task_info = [
+                    {"id": t.get("id"), "title": t.get("title")} for t in tasks
+                ]
+                return _format_error_response(
+                    "TASKS_IN_PROGRESS",
+                    (
+                        "You have in-progress tasks. Handle them before going "
+                        "idle using: roboco_task_pause (to pause), "
+                        "roboco_task_submit_qa (if done), or "
+                        "roboco_task_complete (if approved)."
+                    ),
+                    {"tasks": task_info},
+                )
+    except Exception:
+        # If check fails, continue to mark idle (fail open)
+        pass
 
-    async with httpx.AsyncClient(timeout=30.0) as client:
-        # First, check if agent has any in-progress tasks
-        # Use /tasks/my endpoint which properly uses authenticated agent context
-        try:
-            scan_resp = await client.get(
-                f"{settings.internal_api_url}/tasks/my",
-                params={"status": "in_progress"},
-                headers=headers,
-            )
-            if scan_resp.status_code == status.HTTP_200_OK:
-                tasks = scan_resp.json()  # /tasks/my returns list directly
-                if tasks:
-                    # Agent has in-progress tasks - they must handle them first
-                    task_info = [
-                        {"id": t.get("id"), "title": t.get("title")} for t in tasks
-                    ]
-                    return _format_error_response(
-                        "TASKS_IN_PROGRESS",
-                        (
-                            "You have in-progress tasks. Handle them before going "
-                            "idle using: roboco_task_pause (to pause), "
-                            "roboco_task_submit_qa (if done), or "
-                            "roboco_task_complete (if approved)."
-                        ),
-                        {"tasks": task_info},
-                    )
-        except Exception:
-            # If check fails, continue to mark idle (fail open)
-            pass
-
-        try:
-            # Signal to orchestrator that this agent is idle
-            resp = await client.post(
-                f"{settings.internal_api_url}/orchestrator/agents/{agent_id}/mark-waiting",
-                params={"waiting_for": "task_assignment"},
-                headers=headers,
-            )
-        except httpx.TimeoutException:
-            return _format_error_response(
-                "TIMEOUT",
-                "Request to mark idle timed out",
-            )
-        except httpx.RequestError as e:
-            return _format_error_response(
-                "CONNECTION_ERROR",
-                f"Failed to connect to orchestrator: {type(e).__name__}",
-            )
-
-        if resp.status_code == status.HTTP_204_NO_CONTENT:
-            return {
-                "status": "idle",
-                "message": (
-                    "You are now in WAITING state. Your container will terminate "
-                    "to save resources. You will be respawned when work is available."
-                ),
-                "action": "EXIT_GRACEFULLY",
-            }
-
-        # Handle specific error codes
-        if resp.status_code == status.HTTP_503_SERVICE_UNAVAILABLE:
-            return _format_error_response(
-                "ORCHESTRATOR_UNAVAILABLE",
-                "Orchestrator is not running. Cannot mark idle state.",
-                {"detail": resp.text},
-            )
-
-        return _format_error_response(
-            "IDLE_FAILED",
-            "Failed to signal idle state to orchestrator",
-            {"status_code": resp.status_code, "detail": resp.text},
+    try:
+        # Signal to orchestrator that this agent is idle
+        resp = await client.post(
+            f"/orchestrator/agents/{agent_id}/mark-waiting",
+            params={"waiting_for": "task_assignment"},
         )
+    except Exception as e:
+        return _format_error_response(
+            "CONNECTION_ERROR",
+            f"Failed to connect to orchestrator: {type(e).__name__}",
+        )
+
+    if resp.is_status(status.HTTP_204_NO_CONTENT):
+        return {
+            "status": "idle",
+            "message": (
+                "You are now in WAITING state. Your container will terminate "
+                "to save resources. You will be respawned when work is available."
+            ),
+            "action": "EXIT_GRACEFULLY",
+        }
+
+    # Handle specific error codes
+    if resp.is_status(status.HTTP_503_SERVICE_UNAVAILABLE):
+        return _format_error_response(
+            "ORCHESTRATOR_UNAVAILABLE",
+            "Orchestrator is not running. Cannot mark idle state.",
+            {"detail": resp.text},
+        )
+
+    return _format_error_response(
+        "IDLE_FAILED",
+        "Failed to signal idle state to orchestrator",
+        {"status_code": resp.status_code, "detail": resp.text},
+    )
 
 
 # =============================================================================
@@ -1252,11 +1079,11 @@ async def _handle_agent_idle(agent_id: str) -> dict[str, Any]:
 
 
 async def _handle_task_create(
+    client: ApiClient,
     input_data: TaskCreateInput,
     agent_id: str,
 ) -> dict[str, Any]:
     """Handle task creation by PM."""
-    headers = _get_agent_headers(agent_id)
     agent_team = get_agent_team(agent_id)
 
     # Validate PM role
@@ -1276,49 +1103,44 @@ async def _handle_task_create(
             {"requested_team": input_data.team, "agent_team": agent_team},
         )
 
-    async with httpx.AsyncClient(timeout=30.0) as client:
-        # Build task payload
-        payload: dict[str, Any] = {
-            "title": input_data.title,
-            "description": input_data.description,
-            "acceptance_criteria": input_data.acceptance_criteria,
-            "team": input_data.team,
-            "priority": input_data.priority,
-            "estimated_complexity": input_data.complexity,
-        }
-        if input_data.parent_task_id:
-            payload["parent_task_id"] = input_data.parent_task_id
+    # Build task payload
+    payload: dict[str, Any] = {
+        "title": input_data.title,
+        "description": input_data.description,
+        "acceptance_criteria": input_data.acceptance_criteria,
+        "team": input_data.team,
+        "priority": input_data.priority,
+        "estimated_complexity": input_data.complexity,
+    }
+    if input_data.parent_task_id:
+        payload["parent_task_id"] = input_data.parent_task_id
 
-        # Create the task
-        try:
-            create_resp = await client.post(
-                f"{settings.internal_api_url}/tasks",
-                json=payload,
-                headers=headers,
-            )
-        except httpx.RequestError as e:
-            return _format_error_response(
-                "CONNECTION_ERROR",
-                f"Failed to connect to API: {type(e).__name__}",
-            )
+    # Create the task
+    try:
+        create_resp = await client.post("/tasks", json=payload)
+    except Exception as e:
+        return _format_error_response(
+            "CONNECTION_ERROR",
+            f"Failed to connect to API: {type(e).__name__}",
+        )
 
-        if create_resp.status_code != status.HTTP_201_CREATED:
-            return _format_error_response(
-                "CREATE_FAILED",
-                "Failed to create task",
-                {"status_code": create_resp.status_code, "detail": create_resp.text},
-            )
+    if not create_resp.is_status(status.HTTP_201_CREATED):
+        return _format_error_response(
+            "CREATE_FAILED",
+            "Failed to create task",
+            {"status_code": create_resp.status_code, "detail": create_resp.text},
+        )
 
-        task = create_resp.json()
+    task = create_resp.json()
 
-        # If assigned_to specified, set assignee but keep pending (don't claim)
-        # Orchestrator will spawn the agent who will then claim it
-        if input_data.assigned_to:
-            assigned_task, _ = await _assign_task_to_agent(
-                client, task["id"], input_data.assigned_to, headers
-            )
-            if assigned_task:
-                task = assigned_task
+    # If assigned_to specified, set assignee but keep pending (don't claim)
+    # Orchestrator will spawn the agent who will then claim it
+    if input_data.assigned_to:
+        assigned_task, _ = await _assign_task_to_agent(
+            client, task["id"], input_data.assigned_to
+        )
+        if assigned_task:
+            task = assigned_task
 
     guidance = f"Task created successfully. ID: {task['id']}. "
     if input_data.assigned_to:
@@ -1362,26 +1184,22 @@ def _validate_cell_pm_assignment(
 
 
 async def _fetch_task_for_assignment(
-    client: httpx.AsyncClient,
+    client: ApiClient,
     task_id: str,
-    headers: dict[str, str],
 ) -> tuple[dict[str, Any] | None, dict[str, Any] | None]:
     """Fetch task for assignment. Returns (task, error) tuple."""
     try:
-        task_resp = await client.get(
-            f"{settings.internal_api_url}/tasks/{task_id}",
-            headers=headers,
-        )
-    except httpx.RequestError as e:
+        task_resp = await client.get(f"/tasks/{task_id}")
+    except Exception as e:
         return None, _format_error_response(
             "CONNECTION_ERROR",
             f"Failed to connect to API: {type(e).__name__}",
         )
 
-    if task_resp.status_code == status.HTTP_404_NOT_FOUND:
+    if task_resp.is_status(status.HTTP_404_NOT_FOUND):
         return None, _format_error_response("NOT_FOUND", f"Task {task_id} not found")
 
-    if task_resp.status_code != status.HTTP_200_OK:
+    if not task_resp.ok:
         return None, _format_error_response(
             "FETCH_FAILED",
             "Failed to fetch task",
@@ -1392,10 +1210,9 @@ async def _fetch_task_for_assignment(
 
 
 async def _assign_task_to_agent(
-    client: httpx.AsyncClient,
+    client: ApiClient,
     task_id: str,
     assignee: str,
-    headers: dict[str, str],
 ) -> tuple[dict[str, Any] | None, dict[str, Any] | None]:
     """
     Assign task to agent by setting assigned_to and resetting to pending.
@@ -1406,7 +1223,7 @@ async def _assign_task_to_agent(
     Returns (assigned_task, error) tuple.
     """
     # Resolve assignee slug to UUID
-    assignee_id = await _resolve_agent_uuid(assignee, headers)
+    assignee_id = await resolve_agent_uuid(assignee, client._get_headers())
     if not assignee_id:
         return None, _format_error_response(
             "INVALID_ASSIGNEE",
@@ -1417,17 +1234,16 @@ async def _assign_task_to_agent(
     try:
         # PATCH to set assigned_to and reset status to pending
         assign_resp = await client.patch(
-            f"{settings.internal_api_url}/tasks/{task_id}",
+            f"/tasks/{task_id}",
             json={"assigned_to": assignee_id, "status": "pending"},
-            headers=headers,
         )
-    except httpx.RequestError as e:
+    except Exception as e:
         return None, _format_error_response(
             "CONNECTION_ERROR",
             f"Failed to connect to API: {type(e).__name__}",
         )
 
-    if assign_resp.status_code != status.HTTP_200_OK:
+    if not assign_resp.ok:
         return None, _format_error_response(
             "ASSIGN_FAILED",
             "Failed to assign task",
@@ -1438,11 +1254,11 @@ async def _assign_task_to_agent(
 
 
 async def _handle_task_assign(
+    client: ApiClient,
     input_data: TaskAssignInput,
     agent_id: str,
 ) -> dict[str, Any]:
     """Handle task assignment by PM."""
-    headers = _get_agent_headers(agent_id)
     agent_team = get_agent_team(agent_id)
     role = get_agent_role(agent_id)
 
@@ -1454,28 +1270,25 @@ async def _handle_task_assign(
             {"role": role},
         )
 
-    async with httpx.AsyncClient(timeout=30.0) as client:
-        # Get task details first
-        task, error = await _fetch_task_for_assignment(
-            client, input_data.task_id, headers
-        )
-        if error or task is None:
-            return error or _format_error_response("FETCH_FAILED", "No task returned")
+    # Get task details first
+    task, error = await _fetch_task_for_assignment(client, input_data.task_id)
+    if error or task is None:
+        return error or _format_error_response("FETCH_FAILED", "No task returned")
 
-        # Validate Cell PM restrictions
-        validation_error = _validate_cell_pm_assignment(
-            role, agent_team, task, input_data.assignee
-        )
-        if validation_error:
-            return validation_error
+    # Validate Cell PM restrictions
+    validation_error = _validate_cell_pm_assignment(
+        role, agent_team, task, input_data.assignee
+    )
+    if validation_error:
+        return validation_error
 
-        # Assign task to agent (sets assigned_to and resets to pending)
-        # This is NOT claiming - the dev will claim when spawned
-        assigned_task, assign_error = await _assign_task_to_agent(
-            client, input_data.task_id, input_data.assignee, headers
-        )
-        if assign_error or assigned_task is None:
-            return assign_error or _format_error_response("ASSIGN_FAILED", "No task")
+    # Assign task to agent (sets assigned_to and resets to pending)
+    # This is NOT claiming - the dev will claim when spawned
+    assigned_task, assign_error = await _assign_task_to_agent(
+        client, input_data.task_id, input_data.assignee
+    )
+    if assign_error or assigned_task is None:
+        return assign_error or _format_error_response("ASSIGN_FAILED", "No task")
 
     guidance = (
         f"Task assigned to {input_data.assignee} and set to pending. "
@@ -1485,12 +1298,11 @@ async def _handle_task_assign(
 
 
 async def _handle_task_escalate(
+    client: ApiClient,
     input_data: TaskEscalateInput,
     agent_id: str,
 ) -> dict[str, Any]:
     """Handle task escalation up the hierarchy."""
-    headers = _get_agent_headers(agent_id)
-
     # Determine and resolve escalation target upfront
     target = input_data.escalate_to or get_escalation_target(agent_id)
     if not target:
@@ -1500,7 +1312,7 @@ async def _handle_task_escalate(
             {"role": get_agent_role(agent_id)},
         )
 
-    target_uuid = await _resolve_agent_uuid(target, headers)
+    target_uuid = await resolve_agent_uuid(target, client._get_headers())
     if not target_uuid:
         return _format_error_response(
             "INVALID_TARGET",
@@ -1508,47 +1320,39 @@ async def _handle_task_escalate(
         )
 
     try:
-        async with httpx.AsyncClient(timeout=30.0) as client:
-            # Get task details
-            task_resp = await client.get(
-                f"{settings.internal_api_url}/tasks/{input_data.task_id}",
-                headers=headers,
+        # Get task details
+        task_resp = await client.get(f"/tasks/{input_data.task_id}")
+
+        if task_resp.is_status(status.HTTP_404_NOT_FOUND):
+            return _format_error_response(
+                "NOT_FOUND", f"Task {input_data.task_id} not found"
             )
 
-            if task_resp.status_code == status.HTTP_404_NOT_FOUND:
-                return _format_error_response(
-                    "NOT_FOUND", f"Task {input_data.task_id} not found"
-                )
+        task = task_resp.json()
 
-            task = task_resp.json()
+        # Create escalation notification
+        notif_resp = await client.post(
+            "/notifications",
+            json={
+                "type": "blocker_escalation",
+                "to_agents": [target_uuid],
+                "subject": f"Escalation: {task.get('title', 'Unknown task')}",
+                "body": (
+                    f"Task {input_data.task_id} escalated by {agent_id}.\n\n"
+                    f"Reason: {input_data.reason}"
+                ),
+                "related_task_id": input_data.task_id,
+                "priority": "high",
+            },
+        )
 
-            # Create escalation notification
-            notif_resp = await client.post(
-                f"{settings.internal_api_url}/notifications",
-                json={
-                    "type": "blocker_escalation",
-                    "to_agents": [target_uuid],
-                    "subject": f"Escalation: {task.get('title', 'Unknown task')}",
-                    "body": (
-                        f"Task {input_data.task_id} escalated by {agent_id}.\n\n"
-                        f"Reason: {input_data.reason}"
-                    ),
-                    "related_task_id": input_data.task_id,
-                    "priority": "high",
-                },
-                headers=headers,
+        if not notif_resp.ok and not notif_resp.is_status(status.HTTP_201_CREATED):
+            return _format_error_response(
+                "ESCALATION_FAILED",
+                "Failed to send escalation notification",
+                {"status_code": notif_resp.status_code, "detail": notif_resp.text},
             )
-
-            if notif_resp.status_code not in (
-                status.HTTP_200_OK,
-                status.HTTP_201_CREATED,
-            ):
-                return _format_error_response(
-                    "ESCALATION_FAILED",
-                    "Failed to send escalation notification",
-                    {"status_code": notif_resp.status_code, "detail": notif_resp.text},
-                )
-    except httpx.RequestError as e:
+    except Exception as e:
         return _format_error_response(
             "CONNECTION_ERROR",
             f"Failed to connect to API: {type(e).__name__}",
@@ -1580,6 +1384,9 @@ def create_task_mcp_server(agent_id: str) -> FastMCP:
     """
     mcp = FastMCP(f"roboco-task-{agent_id}", json_response=True)
 
+    # Create shared API client for this agent
+    client = ApiClient(agent_id)
+
     @mcp.tool()
     async def roboco_task_scan(
         team: str | None = None,
@@ -1598,7 +1405,7 @@ def create_task_mcp_server(agent_id: str) -> FastMCP:
         Returns:
             Dict with paused/assigned/available tasks and guidance
         """
-        return await _handle_task_scan(team, agent_id)
+        return await _handle_task_scan(client, team, agent_id)
 
     @mcp.tool()
     async def roboco_task_get(task_id: str) -> dict[str, Any]:
@@ -1611,7 +1418,7 @@ def create_task_mcp_server(agent_id: str) -> FastMCP:
         Returns:
             Task details with current status and guidance
         """
-        return await _handle_task_get(task_id, agent_id)
+        return await _handle_task_get(client, task_id)
 
     @mcp.tool()
     async def roboco_task_claim(task_id: str) -> dict[str, Any]:
@@ -1629,7 +1436,7 @@ def create_task_mcp_server(agent_id: str) -> FastMCP:
         Returns:
             Claimed task with project context and next step guidance
         """
-        return await _handle_task_claim(task_id, agent_id)
+        return await _handle_task_claim(client, task_id, agent_id)
 
     @mcp.tool()
     async def roboco_task_plan(
@@ -1667,7 +1474,7 @@ def create_task_mcp_server(agent_id: str) -> FastMCP:
             "risks": risks,
             "open_questions": open_questions,
         }
-        return await _handle_task_plan(task_id, plan_params, agent_id)
+        return await _handle_task_plan(client, task_id, plan_params, agent_id)
 
     @mcp.tool()
     async def roboco_task_start(task_id: str) -> dict[str, Any]:
@@ -1685,7 +1492,7 @@ def create_task_mcp_server(agent_id: str) -> FastMCP:
         Returns:
             Updated task with execution guidance
         """
-        return await _handle_task_start(task_id, agent_id)
+        return await _handle_task_start(client, task_id, agent_id)
 
     @mcp.tool()
     async def roboco_task_progress(
@@ -1704,7 +1511,9 @@ def create_task_mcp_server(agent_id: str) -> FastMCP:
         Returns:
             Updated task
         """
-        return await _handle_task_progress(task_id, message, percentage, agent_id)
+        return await _handle_task_progress(
+            client, task_id, message, percentage, agent_id
+        )
 
     @mcp.tool()
     async def roboco_task_block(
@@ -1729,9 +1538,13 @@ def create_task_mcp_server(agent_id: str) -> FastMCP:
         Returns:
             Updated task with options
         """
-        return await _handle_task_block(
-            task_id, reason, blocker_type, what_needed, agent_id
+        data = TaskBlockInput(
+            task_id=task_id,
+            reason=reason,
+            blocker_type=blocker_type,
+            what_needed=what_needed,
         )
+        return await _handle_task_block(client, data, agent_id)
 
     @mcp.tool()
     async def roboco_task_unblock(task_id: str) -> dict[str, Any]:
@@ -1748,7 +1561,7 @@ def create_task_mcp_server(agent_id: str) -> FastMCP:
         Returns:
             Updated task ready for work
         """
-        return await _handle_task_unblock(task_id, agent_id)
+        return await _handle_task_unblock(client, task_id, agent_id)
 
     @mcp.tool()
     async def roboco_task_pause(
@@ -1773,9 +1586,13 @@ def create_task_mcp_server(agent_id: str) -> FastMCP:
         Returns:
             Paused task with resume instructions
         """
-        return await _handle_task_pause(
-            task_id, reason, checkpoint_summary, remaining_work, agent_id
+        data = TaskPauseInput(
+            task_id=task_id,
+            reason=reason,
+            checkpoint_summary=checkpoint_summary,
+            remaining_work=remaining_work,
         )
+        return await _handle_task_pause(client, data, agent_id)
 
     @mcp.tool()
     async def roboco_task_submit_verification(
@@ -1794,7 +1611,7 @@ def create_task_mcp_server(agent_id: str) -> FastMCP:
         Returns:
             Task in verifying status with checklist
         """
-        return await _handle_task_submit_verification(task_id, agent_id)
+        return await _handle_task_submit_verification(client, task_id, agent_id)
 
     @mcp.tool()
     async def roboco_task_submit_qa(
@@ -1818,7 +1635,7 @@ def create_task_mcp_server(agent_id: str) -> FastMCP:
             Task submitted for QA
         """
         return await _handle_task_submit_qa(
-            task_id, dev_notes, handoff_summary, agent_id
+            client, task_id, dev_notes, handoff_summary, agent_id
         )
 
     @mcp.tool()
@@ -1841,7 +1658,7 @@ def create_task_mcp_server(agent_id: str) -> FastMCP:
         Returns:
             Task ready for documentation
         """
-        return await _handle_task_qa_pass(task_id, qa_notes, agent_id)
+        return await _handle_task_qa_pass(client, task_id, qa_notes, agent_id)
 
     @mcp.tool()
     async def roboco_task_qa_fail(
@@ -1865,7 +1682,7 @@ def create_task_mcp_server(agent_id: str) -> FastMCP:
         Returns:
             Task returned for revision
         """
-        return await _handle_task_qa_fail(task_id, qa_notes, issues, agent_id)
+        return await _handle_task_qa_fail(client, task_id, qa_notes, issues, agent_id)
 
     @mcp.tool()
     async def roboco_task_complete(task_id: str) -> dict[str, Any]:
@@ -1882,7 +1699,7 @@ def create_task_mcp_server(agent_id: str) -> FastMCP:
         Returns:
             Completed task
         """
-        return await _handle_task_complete(task_id, agent_id)
+        return await _handle_task_complete(client, task_id)
 
     @mcp.tool()
     async def roboco_agent_idle() -> dict[str, Any]:
@@ -1896,7 +1713,7 @@ def create_task_mcp_server(agent_id: str) -> FastMCP:
         Returns:
             Confirmation of idle state
         """
-        return await _handle_agent_idle(agent_id)
+        return await _handle_agent_idle(client, agent_id)
 
     # =========================================================================
     # PM DELEGATION TOOLS
@@ -1923,7 +1740,7 @@ def create_task_mcp_server(agent_id: str) -> FastMCP:
         Returns:
             Created task with next step guidance
         """
-        return await _handle_task_create(data, agent_id)
+        return await _handle_task_create(client, data, agent_id)
 
     @mcp.tool()
     async def roboco_task_assign(
@@ -1951,7 +1768,7 @@ def create_task_mcp_server(agent_id: str) -> FastMCP:
             Updated task with assignment confirmation
         """
         input_data = TaskAssignInput(task_id=task_id, assignee=assignee)
-        return await _handle_task_assign(input_data, agent_id)
+        return await _handle_task_assign(client, input_data, agent_id)
 
     @mcp.tool()
     async def roboco_task_escalate(
@@ -1986,7 +1803,7 @@ def create_task_mcp_server(agent_id: str) -> FastMCP:
             reason=reason,
             escalate_to=escalate_to,
         )
-        return await _handle_task_escalate(input_data, agent_id)
+        return await _handle_task_escalate(client, input_data, agent_id)
 
     return mcp
 

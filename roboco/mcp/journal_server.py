@@ -16,12 +16,8 @@ Tools:
 
 from typing import Any
 
-import httpx
-from fastapi import status
 from mcp.server.fastmcp import FastMCP
 
-from roboco.agents_config import get_agent_role, get_agent_team
-from roboco.config import settings
 from roboco.llm import ToonAdapter
 from roboco.mcp.schemas import (
     DecisionLogInput,
@@ -30,74 +26,15 @@ from roboco.mcp.schemas import (
     StruggleInput,
     TaskReflectionInput,
 )
+from roboco.mcp.utils import ApiClient, format_error_response
 
 # Global TOON adapter for encoding journal data
 _toon = ToonAdapter()
 
-
-# =============================================================================
-# HELPER FUNCTIONS
-# =============================================================================
-
-
-def _format_error_response(
-    error_code: str,
-    message: str,
-    details: dict[str, Any] | None = None,
-) -> dict[str, Any]:
-    """Format a standardized error response."""
-    return {
-        "error": {
-            "code": error_code,
-            "message": message,
-            "details": details or {},
-        }
-    }
-
-
-def _get_agent_headers(agent_id: str) -> dict[str, str]:
-    """Get standard headers for API calls."""
-    headers = {
-        "X-Agent-ID": agent_id,
-        "X-Agent-Role": get_agent_role(agent_id),
-    }
-    team = get_agent_team(agent_id)
-    if team:
-        headers["X-Agent-Team"] = team
-    return headers
-
-
-async def _post_journal_entry(
-    endpoint: str,
-    payload: dict[str, Any],
-    agent_id: str,
-) -> tuple[dict[str, Any] | None, dict[str, Any] | None]:
-    """Post to a journal endpoint. Returns (data, error)."""
-    async with httpx.AsyncClient(timeout=30.0) as client:
-        try:
-            resp = await client.post(
-                f"{settings.internal_api_url}/journals/me/{endpoint}",
-                json=payload,
-                headers=_get_agent_headers(agent_id),
-            )
-        except httpx.TimeoutException:
-            return None, _format_error_response(
-                "TIMEOUT",
-                f"Request to create {endpoint.rstrip('s')} timed out",
-            )
-        except httpx.RequestError as e:
-            return None, _format_error_response(
-                "CONNECTION_ERROR",
-                f"Failed to connect to API: {type(e).__name__}",
-            )
-
-        if resp.status_code not in [200, 201]:
-            return None, _format_error_response(
-                "CREATE_FAILED",
-                f"Failed to create {endpoint.rstrip('s')}",
-                {"status_code": resp.status_code, "detail": resp.text},
-            )
-        return resp.json(), None
+# Valid entry types
+VALID_ENTRY_TYPES = frozenset(
+    ["general", "task_reflection", "decision_log", "learning", "struggle"]
+)
 
 
 # =============================================================================
@@ -106,14 +43,13 @@ async def _post_journal_entry(
 
 
 async def _handle_journal_entry(
-    data: JournalEntryInput, agent_id: str
+    data: JournalEntryInput, client: ApiClient
 ) -> dict[str, Any]:
     """Handle journal entry creation."""
-    valid_types = ["general", "task_reflection", "decision_log", "learning", "struggle"]
-    if data.entry_type not in valid_types:
-        return _format_error_response(
+    if data.entry_type not in VALID_ENTRY_TYPES:
+        return format_error_response(
             "INVALID_TYPE",
-            f"Invalid entry type. Must be one of: {valid_types}",
+            f"Invalid entry type. Must be one of: {list(VALID_ENTRY_TYPES)}",
         )
 
     payload = {
@@ -125,9 +61,14 @@ async def _handle_journal_entry(
         "is_private": data.is_private,
     }
 
-    entry, error = await _post_journal_entry("entries", payload, agent_id)
+    entry, error = await client.post_or_error(
+        "/journals/me/entries",
+        json=payload,
+        error_code="CREATE_FAILED",
+        error_message="Failed to create entry",
+    )
     if error or entry is None:
-        return error or _format_error_response("ERROR", "Failed to create entry")
+        return error or format_error_response("ERROR", "Failed to create entry")
 
     return {
         "status": "created",
@@ -139,7 +80,9 @@ async def _handle_journal_entry(
     }
 
 
-async def _handle_reflect(data: TaskReflectionInput, agent_id: str) -> dict[str, Any]:
+async def _handle_reflect(
+    data: TaskReflectionInput, client: ApiClient
+) -> dict[str, Any]:
     """Handle task reflection creation."""
     payload = {
         "task_id": data.task_id,
@@ -151,7 +94,12 @@ async def _handle_reflect(data: TaskReflectionInput, agent_id: str) -> dict[str,
         "tags": data.tags,
     }
 
-    entry, error = await _post_journal_entry("reflections", payload, agent_id)
+    entry, error = await client.post_or_error(
+        "/journals/me/reflections",
+        json=payload,
+        error_code="CREATE_FAILED",
+        error_message="Failed to create reflection",
+    )
     if error:
         return error
 
@@ -165,7 +113,7 @@ async def _handle_reflect(data: TaskReflectionInput, agent_id: str) -> dict[str,
     }
 
 
-async def _handle_decision(data: DecisionLogInput, agent_id: str) -> dict[str, Any]:
+async def _handle_decision(data: DecisionLogInput, client: ApiClient) -> dict[str, Any]:
     """Handle decision log creation."""
     payload = {
         "title": data.title,
@@ -178,7 +126,12 @@ async def _handle_decision(data: DecisionLogInput, agent_id: str) -> dict[str, A
         "tags": data.tags,
     }
 
-    entry, error = await _post_journal_entry("decisions", payload, agent_id)
+    entry, error = await client.post_or_error(
+        "/journals/me/decisions",
+        json=payload,
+        error_code="CREATE_FAILED",
+        error_message="Failed to create decision log",
+    )
     if error:
         return error
 
@@ -192,7 +145,7 @@ async def _handle_decision(data: DecisionLogInput, agent_id: str) -> dict[str, A
     }
 
 
-async def _handle_learning(data: LearningInput, agent_id: str) -> dict[str, Any]:
+async def _handle_learning(data: LearningInput, client: ApiClient) -> dict[str, Any]:
     """Handle learning entry creation."""
     payload = {
         "title": data.title,
@@ -203,7 +156,12 @@ async def _handle_learning(data: LearningInput, agent_id: str) -> dict[str, Any]
         "tags": data.tags,
     }
 
-    entry, error = await _post_journal_entry("learnings", payload, agent_id)
+    entry, error = await client.post_or_error(
+        "/journals/me/learnings",
+        json=payload,
+        error_code="CREATE_FAILED",
+        error_message="Failed to create learning entry",
+    )
     if error:
         return error
 
@@ -214,7 +172,7 @@ async def _handle_learning(data: LearningInput, agent_id: str) -> dict[str, Any]
     }
 
 
-async def _handle_struggle(data: StruggleInput, agent_id: str) -> dict[str, Any]:
+async def _handle_struggle(data: StruggleInput, client: ApiClient) -> dict[str, Any]:
     """Handle struggle entry creation."""
     payload = {
         "title": data.title,
@@ -226,7 +184,12 @@ async def _handle_struggle(data: StruggleInput, agent_id: str) -> dict[str, Any]
         "tags": data.tags,
     }
 
-    entry, error = await _post_journal_entry("struggles", payload, agent_id)
+    entry, error = await client.post_or_error(
+        "/journals/me/struggles",
+        json=payload,
+        error_code="CREATE_FAILED",
+        error_message="Failed to create struggle entry",
+    )
     if error:
         return error
 
@@ -239,34 +202,19 @@ async def _handle_struggle(data: StruggleInput, agent_id: str) -> dict[str, Any]
     return {"status": "created", "entry": entry, "guidance": guidance}
 
 
-async def _handle_search(query: str, top_k: int, agent_id: str) -> dict[str, Any]:
+async def _handle_search(query: str, top_k: int, client: ApiClient) -> dict[str, Any]:
     """Handle journal search."""
-    async with httpx.AsyncClient(timeout=30.0) as client:
-        payload = {"query": query, "top_k": min(top_k, 20)}
-        try:
-            resp = await client.post(
-                f"{settings.internal_api_url}/journals/me/search",
-                json=payload,
-                headers=_get_agent_headers(agent_id),
-            )
-        except httpx.TimeoutException:
-            return _format_error_response(
-                "TIMEOUT", "Search request timed out"
-            )
-        except httpx.RequestError as e:
-            return _format_error_response(
-                "CONNECTION_ERROR",
-                f"Failed to connect to API: {type(e).__name__}",
-            )
+    max_results = 20
+    payload = {"query": query, "top_k": min(top_k, max_results)}
 
-        if resp.status_code != status.HTTP_200_OK:
-            return _format_error_response(
-                "SEARCH_FAILED",
-                "Failed to search journal",
-                {"status_code": resp.status_code, "detail": resp.text},
-            )
-
-        entries = resp.json()
+    entries, error = await client.post_or_error(
+        "/journals/me/search",
+        json=payload,
+        error_code="SEARCH_FAILED",
+        error_message="Failed to search journal",
+    )
+    if error:
+        return error
 
     if not entries:
         return {
@@ -281,33 +229,14 @@ async def _handle_search(query: str, top_k: int, agent_id: str) -> dict[str, Any
     }
 
 
-async def _handle_stats(agent_id: str) -> dict[str, Any]:
+async def _handle_stats(client: ApiClient) -> dict[str, Any]:
     """Handle journal stats retrieval."""
-    async with httpx.AsyncClient(timeout=30.0) as client:
-        try:
-            stats_resp = await client.get(
-                f"{settings.internal_api_url}/journals/me/stats",
-                headers=_get_agent_headers(agent_id),
-            )
-            growth_resp = await client.get(
-                f"{settings.internal_api_url}/journals/me/growth",
-                headers=_get_agent_headers(agent_id),
-            )
-        except httpx.RequestError:
-            # Return empty stats on connection error
-            stats_resp = None
-            growth_resp = None
+    # Fetch stats and growth in parallel would be better but keep simple for now
+    stats_resp = await client.get("/journals/me/stats")
+    growth_resp = await client.get("/journals/me/growth")
 
-        stats = (
-            stats_resp.json()
-            if stats_resp and stats_resp.status_code == status.HTTP_200_OK
-            else {}
-        )
-        growth = (
-            growth_resp.json()
-            if growth_resp and growth_resp.status_code == status.HTTP_200_OK
-            else {}
-        )
+    stats = stats_resp.json() if stats_resp.ok else {}
+    growth = growth_resp.json() if growth_resp.ok else {}
 
     return {
         "total_entries": stats.get("total_entries", 0),
@@ -332,42 +261,26 @@ async def _handle_recent(
     entry_type: str | None,
     task_id: str | None,
     limit: int,
-    agent_id: str,
+    client: ApiClient,
 ) -> dict[str, Any]:
     """Handle recent entries retrieval."""
-    async with httpx.AsyncClient(timeout=30.0) as client:
-        params: dict[str, Any] = {"limit": min(limit, 50)}
-        if entry_type:
-            params["entry_type"] = entry_type
-        if task_id:
-            params["task_id"] = task_id
+    max_limit = 50
+    params: dict[str, Any] = {"limit": min(limit, max_limit)}
+    if entry_type:
+        params["entry_type"] = entry_type
+    if task_id:
+        params["task_id"] = task_id
 
-        try:
-            resp = await client.get(
-                f"{settings.internal_api_url}/journals/me/entries",
-                params=params,
-                headers=_get_agent_headers(agent_id),
-            )
-        except httpx.TimeoutException:
-            return _format_error_response(
-                "TIMEOUT", "Request to list entries timed out"
-            )
-        except httpx.RequestError as e:
-            return _format_error_response(
-                "CONNECTION_ERROR",
-                f"Failed to connect to API: {type(e).__name__}",
-            )
+    entries, error = await client.get_or_error(
+        "/journals/me/entries",
+        params=params,
+        error_code="LIST_FAILED",
+        error_message="Failed to list entries",
+    )
+    if error:
+        return error
 
-        if resp.status_code != status.HTTP_200_OK:
-            return _format_error_response(
-                "LIST_FAILED",
-                "Failed to list entries",
-                {"status_code": resp.status_code, "detail": resp.text},
-            )
-
-        entries = resp.json()
-
-    return {"entries": entries, "count": len(entries)}
+    return {"entries": entries, "count": len(entries) if entries else 0}
 
 
 # =============================================================================
@@ -387,6 +300,9 @@ def create_journal_mcp_server(agent_id: str) -> FastMCP:
     """
     mcp = FastMCP(f"roboco-journal-{agent_id}", json_response=True)
 
+    # Create shared API client for this agent
+    client = ApiClient(agent_id)
+
     @mcp.tool()
     async def roboco_journal_entry(data: JournalEntryInput) -> dict[str, Any]:
         """
@@ -395,7 +311,7 @@ def create_journal_mcp_server(agent_id: str) -> FastMCP:
         Your journal is personal - use it to track thoughts, progress,
         and document your journey on tasks.
         """
-        return await _handle_journal_entry(data, agent_id)
+        return await _handle_journal_entry(data, client)
 
     @mcp.tool()
     async def roboco_journal_reflect(data: TaskReflectionInput) -> dict[str, Any]:
@@ -405,7 +321,7 @@ def create_journal_mcp_server(agent_id: str) -> FastMCP:
         IMPORTANT: Call this when completing a task. Reflections help build
         institutional memory and track your growth.
         """
-        return await _handle_reflect(data, agent_id)
+        return await _handle_reflect(data, client)
 
     @mcp.tool()
     async def roboco_journal_decision(data: DecisionLogInput) -> dict[str, Any]:
@@ -415,7 +331,7 @@ def create_journal_mcp_server(agent_id: str) -> FastMCP:
         Use when choosing between approaches. Creates a record of WHY
         you made the decision for future context.
         """
-        return await _handle_decision(data, agent_id)
+        return await _handle_decision(data, client)
 
     @mcp.tool()
     async def roboco_journal_learning(data: LearningInput) -> dict[str, Any]:
@@ -424,7 +340,7 @@ def create_journal_mcp_server(agent_id: str) -> FastMCP:
 
         Track learnings to build your knowledge base and help future you.
         """
-        return await _handle_learning(data, agent_id)
+        return await _handle_learning(data, client)
 
     @mcp.tool()
     async def roboco_journal_struggle(data: StruggleInput) -> dict[str, Any]:
@@ -434,7 +350,7 @@ def create_journal_mcp_server(agent_id: str) -> FastMCP:
         Recording struggles helps track problem-solving patterns and
         create documentation for others.
         """
-        return await _handle_struggle(data, agent_id)
+        return await _handle_struggle(data, client)
 
     @mcp.tool()
     async def roboco_journal_search(query: str, top_k: int = 5) -> dict[str, Any]:
@@ -443,7 +359,7 @@ def create_journal_mcp_server(agent_id: str) -> FastMCP:
 
         Uses semantic search to find relevant entries based on meaning.
         """
-        return await _handle_search(query, top_k, agent_id)
+        return await _handle_search(query, top_k, client)
 
     @mcp.tool()
     async def roboco_journal_stats() -> dict[str, Any]:
@@ -452,7 +368,7 @@ def create_journal_mcp_server(agent_id: str) -> FastMCP:
 
         Returns counts by entry type, growth metrics, and other stats.
         """
-        return await _handle_stats(agent_id)
+        return await _handle_stats(client)
 
     @mcp.tool()
     async def roboco_journal_recent(
@@ -466,7 +382,7 @@ def create_journal_mcp_server(agent_id: str) -> FastMCP:
         Filter by entry_type (general, task_reflection, decision_log,
         learning, struggle) or by task_id.
         """
-        return await _handle_recent(entry_type, task_id, limit, agent_id)
+        return await _handle_recent(entry_type, task_id, limit, client)
 
     return mcp
 
