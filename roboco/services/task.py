@@ -15,10 +15,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from roboco.db.tables import AgentTable, TaskTable
 from roboco.enforcement import (
-    TaskLifecycleError,
     TaskOwnershipError,
     validate_task_ownership,
-    validate_task_transition,
 )
 from roboco.models.base import TaskStatus, Team
 from roboco.models.task import TaskCreateRequest
@@ -180,19 +178,24 @@ class TaskService:
         )
         agent = agent_result.scalar_one_or_none()
 
-        # Base valid statuses for claiming
-        valid_statuses = {TaskStatus.PENDING}
-        if allow_reassign:
-            valid_statuses.add(TaskStatus.CLAIMED)
+        # Role-based claiming: each role can only claim specific statuses
+        # QA → awaiting_qa only, Documenter → awaiting_documentation only
+        # Developers/PMs → pending (and claimed if allow_reassign)
+        valid_statuses: set[TaskStatus] = set()
 
-        # Role-based claiming: QA and Documenters can claim specific statuses
-        # If role is missing but task requires specific role, reject the claim
         if agent and agent.role:
             role = agent.role.value if hasattr(agent.role, "value") else str(agent.role)
             if role == "qa":
+                # QA can ONLY claim awaiting_qa tasks
                 valid_statuses.add(TaskStatus.AWAITING_QA)
             elif role == "documenter":
+                # Documenter can ONLY claim awaiting_documentation tasks
                 valid_statuses.add(TaskStatus.AWAITING_DOCUMENTATION)
+            else:
+                # Developer, PM, and other roles claim pending tasks
+                valid_statuses.add(TaskStatus.PENDING)
+                if allow_reassign:
+                    valid_statuses.add(TaskStatus.CLAIMED)
         elif task.status in {TaskStatus.AWAITING_QA, TaskStatus.AWAITING_DOCUMENTATION}:
             # No role information - reject claims for role-specific statuses
             logger.warning(
@@ -204,6 +207,11 @@ class TaskService:
                 agent_role="none",
             )
             return None
+        else:
+            # No role info but task is pending - allow claim (fallback)
+            valid_statuses.add(TaskStatus.PENDING)
+            if allow_reassign:
+                valid_statuses.add(TaskStatus.CLAIMED)
 
         if task.status not in valid_statuses:
             logger.warning(
@@ -225,15 +233,18 @@ class TaskService:
             )
             return None
 
-        # For QA/Documenter claiming, store previous owner for self-review checks
-        # before changing assigned_to
+        # For QA/Documenter claiming, ensure original_developer is set for
+        # self-review checks. Primary storage is in submit_for_qa, but we set
+        # here as fallback (e.g., if task was created directly in awaiting_qa)
         if agent and agent.role:
             role = agent.role.value if hasattr(agent.role, "value") else str(agent.role)
             if role in ("qa", "documenter"):
-                # Store original developer in quick_context for self-review check
-                original_dev = str(task.assigned_to) if task.assigned_to else None
-                if original_dev:
-                    task.quick_context = f"original_developer:{original_dev}"
+                # Only set if not already stored by submit_for_qa
+                existing_context = task.quick_context or ""
+                if "original_developer:" not in existing_context:
+                    original_dev = str(task.assigned_to) if task.assigned_to else None
+                    if original_dev:
+                        task.quick_context = f"original_developer:{original_dev}"
 
         # All roles: update assigned_to and claimed_at
         task.assigned_to = cast("Any", agent_id)
@@ -290,7 +301,16 @@ class TaskService:
                 )
                 return None
 
-        if task.status not in (TaskStatus.CLAIMED, TaskStatus.PAUSED):
+        # Valid statuses to start/resume work:
+        # - CLAIMED: Developer just claimed a pending task
+        # - PAUSED: Developer resuming paused work
+        # - NEEDS_REVISION: Developer resuming after QA rejection
+        valid_start_statuses = (
+            TaskStatus.CLAIMED,
+            TaskStatus.PAUSED,
+            TaskStatus.NEEDS_REVISION,
+        )
+        if task.status not in valid_start_statuses:
             logger.warning(
                 "Cannot start task - invalid status",
                 task_id=str(task_id),
@@ -298,7 +318,9 @@ class TaskService:
             )
             return None
 
-        task.started_at = datetime.now(UTC)
+        # Only update started_at if this is the first time starting
+        if task.started_at is None:
+            task.started_at = datetime.now(UTC)
         task.status = TaskStatus.IN_PROGRESS
         await self.session.flush()
 
@@ -327,6 +349,61 @@ class TaskService:
             "Task blocked",
             task_id=str(task_id),
             blocker_id=str(blocker_task_id),
+        )
+        return task
+
+    async def soft_block(
+        self,
+        task_id: UUID,
+        reason: str,
+        blocker_type: str,
+        what_needed: str,
+    ) -> TaskTable | None:
+        """
+        Block a task due to an external factor (not a task dependency).
+
+        Unlike `block()` which requires another task as the blocker,
+        this method handles soft blocks like:
+        - External dependencies (waiting for API access, credentials)
+        - Questions that need PM/stakeholder input
+        - Technical blockers (infrastructure issues)
+
+        Args:
+            task_id: The task to block
+            reason: Why the task is blocked
+            blocker_type: Type of blocker (external/internal/question/dependency)
+            what_needed: What is needed to unblock
+
+        Returns:
+            The blocked task, or None if blocking not allowed
+        """
+        task = await self.get(task_id)
+        if not task:
+            return None
+
+        if task.status != TaskStatus.IN_PROGRESS:
+            return None
+
+        # Build blocker note for dev_notes
+        blocker_note = (
+            f"[BLOCKED - {blocker_type.upper()}]\n"
+            f"Reason: {reason}\n"
+            f"What's needed: {what_needed}"
+        )
+        existing_notes = task.dev_notes or ""
+        if existing_notes:
+            task.dev_notes = f"{existing_notes}\n\n{blocker_note}"
+        else:
+            task.dev_notes = blocker_note
+
+        task.status = TaskStatus.BLOCKED
+        await self.session.flush()
+
+        logger.info(
+            "Task soft-blocked",
+            task_id=str(task_id),
+            blocker_type=blocker_type,
+            reason=reason,
         )
         return task
 
@@ -399,11 +476,22 @@ class TaskService:
         if task.status != TaskStatus.VERIFYING:
             return None
 
+        # Store original developer BEFORE QA claims - this is the authoritative record
+        # for self-review prevention. Storing here ensures we capture the developer
+        # even if the task is reassigned before QA claims it.
+        original_dev = str(task.assigned_to) if task.assigned_to else None
+        if original_dev:
+            task.quick_context = f"original_developer:{original_dev}"
+
         task.self_verified = True
         task.status = TaskStatus.AWAITING_QA
         await self.session.flush()
 
-        logger.info("Task submitted for QA", task_id=str(task_id))
+        logger.info(
+            "Task submitted for QA",
+            task_id=str(task_id),
+            original_developer=original_dev,
+        )
         return task
 
     async def pass_qa(
@@ -427,7 +515,13 @@ class TaskService:
         return task
 
     async def fail_qa(self, task_id: UUID, notes: str) -> TaskTable | None:
-        """Mark task as failed QA."""
+        """
+        Mark task as failed QA and reassign to original developer.
+
+        When QA fails a task, it goes back to the original developer for revision.
+        The original developer is extracted from quick_context which stores
+        "original_developer:{uuid}" when the task was submitted to QA.
+        """
         task = await self.get(task_id)
         if not task:
             return None
@@ -438,25 +532,105 @@ class TaskService:
         task.qa_notes = notes
         task.qa_verified = False
         task.status = TaskStatus.NEEDS_REVISION
+
+        # Reassign to original developer so they can work on revisions
+        original_dev = extract_original_developer(task.quick_context)
+        if original_dev:
+            task.assigned_to = cast("Any", UUID(original_dev))
+            logger.info(
+                "Task reassigned to original developer for revision",
+                task_id=str(task_id),
+                original_developer=original_dev,
+            )
+        else:
+            # If no original developer found, unassign so it can be claimed
+            task.assigned_to = None
+            logger.warning(
+                "No original developer found, task unassigned",
+                task_id=str(task_id),
+            )
+
         await self.session.flush()
 
         logger.info("Task failed QA", task_id=str(task_id))
         return task
 
+    async def docs_complete(
+        self,
+        task_id: UUID,
+        doc_notes: str | None = None,
+    ) -> TaskTable | None:
+        """
+        Mark documentation as complete (documenter only).
+
+        Transitions task from AWAITING_DOCUMENTATION to AWAITING_PM_REVIEW.
+        The Cell PM will then review and call complete() to finish the task.
+
+        Args:
+            task_id: The task to mark docs complete
+            doc_notes: Optional notes about the documentation
+
+        Returns:
+            The updated task or None if not allowed
+        """
+        task = await self.get(task_id)
+        if not task:
+            return None
+
+        if task.status != TaskStatus.AWAITING_DOCUMENTATION:
+            logger.warning(
+                "Cannot mark docs complete - not awaiting documentation",
+                task_id=str(task_id),
+                current_status=task.status.value,
+            )
+            return None
+
+        # Store doc notes in quick_context (no dedicated field for doc_notes)
+        if doc_notes:
+            existing_context = task.quick_context or ""
+            doc_note_entry = f"doc_notes:{doc_notes}"
+            task.quick_context = (
+                f"{existing_context}\n{doc_note_entry}".strip()
+                if existing_context
+                else doc_note_entry
+            )
+
+        task.status = TaskStatus.AWAITING_PM_REVIEW
+
+        # Reassign to the cell PM for final review
+        # Store documenter in quick_context for reference
+        if task.assigned_to:
+            existing_context = task.quick_context or ""
+            if "documenter:" not in existing_context:
+                doc_context = f"documenter:{task.assigned_to}"
+                task.quick_context = (
+                    f"{existing_context}\n{doc_context}".strip()
+                    if existing_context
+                    else doc_context
+                )
+
+        # Note: We don't auto-assign to PM here - PM will pick it up via scan
+        # The task remains assigned to documenter until PM claims it
+        await self.session.flush()
+
+        logger.info(
+            "Documentation complete, awaiting PM review",
+            task_id=str(task_id),
+        )
+        return task
+
     async def complete(
         self,
         task_id: UUID,
-        skip_handoff_check: bool = False,
     ) -> TaskTable | None:
         """
-        Mark task as completed.
+        Mark task as completed (PM only).
 
-        Enforces handoff requirement: tasks in AWAITING_DOCUMENTATION
-        must have an accepted handoff before completion.
+        Only PMs can complete tasks, and only from AWAITING_PM_REVIEW status.
+        This ensures the full workflow: Dev → QA → Documenter → PM.
 
         Args:
             task_id: The task to complete
-            skip_handoff_check: Skip handoff requirement (for small tasks)
 
         Returns:
             The completed task or None if completion not allowed
@@ -465,28 +639,13 @@ class TaskService:
         if not task:
             return None
 
-        # Validate transition using enforcement layer
-        try:
-            validate_task_transition(task.status.value, TaskStatus.COMPLETED.value)
-        except TaskLifecycleError:
-            # Allow from specific states
-            if task.status not in (
-                TaskStatus.AWAITING_DOCUMENTATION,
-                TaskStatus.AWAITING_QA,  # Small tasks may skip docs
-                TaskStatus.VERIFYING,  # Solo dev may skip QA
-            ):
-                return None
-
-        # Enforce lifecycle: tasks awaiting documentation must have passed QA
-        if (
-            task.status == TaskStatus.AWAITING_DOCUMENTATION
-            and not skip_handoff_check
-            and not task.qa_verified
-        ):
+        # Only allow completion from AWAITING_PM_REVIEW
+        # This enforces the workflow: documenter calls docs_complete, PM calls complete
+        if task.status != TaskStatus.AWAITING_PM_REVIEW:
             logger.warning(
-                "Cannot complete task - QA verification required",
+                "Cannot complete task - must be in awaiting_pm_review status",
                 task_id=str(task_id),
-                status=task.status.value,
+                current_status=task.status.value,
             )
             return None
 

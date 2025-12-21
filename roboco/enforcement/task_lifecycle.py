@@ -36,8 +36,10 @@ VALID_TRANSITIONS: dict[str, list[str]] = {
     "needs_revision": ["in_progress", "cancelled"],
     # Awaiting QA - can pass (to docs), fail (needs revision), block, or cancel
     "awaiting_qa": ["awaiting_documentation", "needs_revision", "blocked", "cancelled"],
-    # Awaiting documentation - can complete or cancel
-    "awaiting_documentation": ["completed", "cancelled"],
+    # Awaiting documentation - documenter marks docs done, goes to PM review
+    "awaiting_documentation": ["awaiting_pm_review", "cancelled"],
+    # Awaiting PM review - PM reviews and completes, or cancels
+    "awaiting_pm_review": ["completed", "cancelled"],
     # Terminal states - cannot transition out
     "completed": [],
     "cancelled": [],
@@ -57,6 +59,10 @@ ROLE_RESTRICTED_TRANSITIONS: dict[tuple[str, str], list[str]] = {
     # Only QA can pass or fail QA
     ("awaiting_qa", "awaiting_documentation"): ["qa"],
     ("awaiting_qa", "needs_revision"): ["qa"],
+    # Only documenter can mark docs complete
+    ("awaiting_documentation", "awaiting_pm_review"): ["documenter"],
+    # Only PM can complete after PM review
+    ("awaiting_pm_review", "completed"): _CANCEL_ROLES,  # PMs complete tasks
     # Only PM or higher can cancel tasks (all states that allow cancel)
     ("pending", "cancelled"): _CANCEL_ROLES,
     ("claimed", "cancelled"): _CANCEL_ROLES,
@@ -67,6 +73,7 @@ ROLE_RESTRICTED_TRANSITIONS: dict[tuple[str, str], list[str]] = {
     ("needs_revision", "cancelled"): _CANCEL_ROLES,
     ("awaiting_qa", "cancelled"): _CANCEL_ROLES,
     ("awaiting_documentation", "cancelled"): _CANCEL_ROLES,
+    ("awaiting_pm_review", "cancelled"): _CANCEL_ROLES,
 }
 
 
@@ -155,7 +162,13 @@ def is_terminal_state(status: str) -> bool:
 
 def is_waiting_state(status: str) -> bool:
     """Check if a status is a waiting state (agent can work on other tasks)."""
-    return status in ("blocked", "paused", "awaiting_qa", "awaiting_documentation")
+    return status in (
+        "blocked",
+        "paused",
+        "awaiting_qa",
+        "awaiting_documentation",
+        "awaiting_pm_review",
+    )
 
 
 def is_active_state(status: str) -> bool:

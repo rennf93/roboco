@@ -188,6 +188,21 @@ def can_assign_tasks(agent_id: str) -> bool:
     return role in PM_ROLES
 
 
+# Cancel roles match task_lifecycle.py - CEO and Auditor cannot cancel (they observe)
+_CANCEL_ROLES: Final[set[str]] = {
+    "cell_pm",
+    "main_pm",
+    "product_owner",
+    "head_marketing",
+}
+
+
+def can_cancel_tasks(agent_id: str) -> bool:
+    """Check if agent can cancel tasks (PMs and board, not CEO/Auditor)."""
+    role = get_agent_role(agent_id)
+    return role in _CANCEL_ROLES
+
+
 def get_escalation_target(agent_id: str) -> str | None:
     """Get the escalation target for an agent."""
     return ESCALATION_CHAIN.get(agent_id)

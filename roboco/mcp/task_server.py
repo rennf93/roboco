@@ -17,9 +17,11 @@ Tools:
 - roboco_task_submit_qa: Submit for QA review
 - roboco_task_qa_pass: Pass QA (QA role only)
 - roboco_task_qa_fail: Fail QA (QA role only)
-- roboco_task_complete: Mark task complete
+- roboco_task_docs_complete: Mark docs complete (Documenter only)
+- roboco_task_complete: Mark task complete (PM only, after docs)
 - roboco_task_create: Create new task (PM only)
 - roboco_task_assign: Assign task to agent (PM only)
+- roboco_task_cancel: Cancel a task (PM/Board only)
 - roboco_task_escalate: Escalate task up hierarchy (all agents)
 """
 
@@ -30,6 +32,7 @@ from mcp.server.fastmcp import FastMCP
 
 from roboco.agents_config import (
     can_assign_tasks,
+    can_cancel_tasks,
     can_create_tasks,
     get_agent_role,
     get_agent_team,
@@ -69,6 +72,10 @@ async def _resolve_agent_uuid_cached(agent_id: str, client: ApiClient) -> str | 
 
 # Global TOON adapter for encoding task data
 _toon = ToonAdapter()
+
+# Progress percentage bounds
+_MIN_PERCENTAGE = 0
+_MAX_PERCENTAGE = 100
 
 # NOTE: For task lifecycle validation, use enforcement.task_lifecycle.VALID_TRANSITIONS
 
@@ -166,6 +173,57 @@ def _get_next_step_guidance(status: str) -> tuple[str, str]:
 # =============================================================================
 
 
+def _get_available_tasks_guidance(
+    available_tasks: list[dict[str, Any]], agent_role: str
+) -> str:
+    """Generate guidance for available tasks based on agent role."""
+    review_count = sum(
+        1 for t in available_tasks if t.get("status") == "awaiting_pm_review"
+    )
+    pending_count = len(available_tasks) - review_count
+
+    if agent_role in ("cell_pm", "main_pm") and review_count > 0:
+        return (
+            f"Found {review_count} task(s) awaiting your review. "
+            "Use roboco_task_get to review, then roboco_task_complete to finalize. "
+            f"Also {pending_count} pending task(s) need triage."
+        )
+    return (
+        f"Found {len(available_tasks)} available task(s). "
+        "Review and claim one that matches your skills."
+    )
+
+
+async def _get_available_tasks_for_role(
+    client: ApiClient, agent_role: str, team: str | None
+) -> list[dict[str, Any]]:
+    """Get available tasks based on agent role."""
+    params = {"team": team} if team else {}
+
+    if agent_role == "qa":
+        resp = await client.get("/tasks/awaiting-qa", params=params)
+        return resp.json() if resp.ok else []
+
+    if agent_role == "documenter":
+        resp = await client.get("/tasks/awaiting-docs", params=params)
+        return resp.json() if resp.ok else []
+
+    if agent_role in ("cell_pm", "main_pm"):
+        # PMs get pending tasks AND tasks awaiting their review
+        pending_params = {**params, "status": "pending"}
+        pending_resp = await client.get("/tasks", params=pending_params)
+        pending = pending_resp.json() if pending_resp.ok else []
+        review_resp = await client.get(
+            "/tasks", params={**params, "status": "awaiting_pm_review"}
+        )
+        review = review_resp.json() if review_resp.ok else []
+        return pending + review
+
+    # Developers get pending tasks only
+    resp = await client.get("/tasks", params={**params, "status": "pending"})
+    return resp.json() if resp.ok else []
+
+
 async def _handle_task_scan(
     client: ApiClient, team: str | None, agent_id: str
 ) -> dict[str, Any]:
@@ -186,42 +244,15 @@ async def _handle_task_scan(
     ]
 
     # Get available tasks based on agent role
-    # QA agents need awaiting_qa tasks, Documenters need awaiting_documentation
     agent_role = get_agent_role(agent_id)
-
-    available_tasks: list[dict[str, Any]] = []
-
-    if agent_role == "qa":
-        # QA agents look for tasks awaiting QA review
-        qa_resp = await client.get(
-            "/tasks/awaiting-qa",
-            params={"team": team} if team else {},
-        )
-        if qa_resp.ok:
-            available_tasks = qa_resp.json()
-    elif agent_role == "documenter":
-        # Documenters look for tasks awaiting documentation
-        doc_resp = await client.get(
-            "/tasks/awaiting-docs",
-            params={"team": team} if team else {},
-        )
-        if doc_resp.ok:
-            available_tasks = doc_resp.json()
-    else:
-        # Developers and PMs look for pending tasks
-        params: dict[str, Any] = {"status": "pending"}
-        if team:
-            params["team"] = team
-        pending_resp = await client.get("/tasks", params=params)
-        if pending_resp.ok:
-            available_tasks = pending_resp.json()
+    available_tasks = await _get_available_tasks_for_role(client, agent_role, team)
 
     # Filter out tasks already in assigned_tasks from available_tasks
     # (prevents PM-assigned pending tasks from appearing in both lists)
     assigned_ids = {t.get("id") for t in assigned_tasks}
     available_tasks = [t for t in available_tasks if t.get("id") not in assigned_ids]
 
-    # Determine guidance
+    # Determine guidance based on role and available tasks
     if paused_tasks:
         guidance = (
             f"You have {len(paused_tasks)} paused task(s). "
@@ -233,10 +264,7 @@ async def _handle_task_scan(
             "Continue working on your assigned tasks."
         )
     elif available_tasks:
-        guidance = (
-            f"Found {len(available_tasks)} available task(s). "
-            "Review and claim one that matches your skills."
-        )
+        guidance = _get_available_tasks_guidance(available_tasks, agent_role)
     else:
         guidance = (
             "No tasks available. Call roboco_agent_idle() "
@@ -492,30 +520,40 @@ async def _validate_task_start(
         return error
 
     task_status = task.get("status")
-    if task_status not in ["claimed", "paused"]:
+    # Valid statuses to start/resume work:
+    # - claimed: Developer just claimed a pending task
+    # - paused: Developer resuming paused work
+    # - needs_revision: Developer resuming after QA rejection
+    valid_start_statuses = ["claimed", "paused", "needs_revision"]
+    if task_status not in valid_start_statuses:
         return _format_error_response(
             "INVALID_STATE",
             f"Cannot start task in '{task_status}' status. "
-            "Task must be 'claimed' or 'paused'.",
+            "Task must be 'claimed', 'paused', or 'needs_revision'.",
             {"current_status": task_status},
         )
 
+    # Only require plan for newly claimed tasks, not for resuming revision
     if task_status == "claimed" and not task.get("plan"):
         return _format_error_response(
             "NO_PLAN",
             "Cannot start without a plan. Call roboco_task_plan first.",
         )
 
-    plan = task.get("plan", {})
-    unanswered = [q for q in plan.get("open_questions", []) if not q.get("answered")]
-    if unanswered:
-        return _format_error_response(
-            "UNANSWERED_QUESTIONS",
-            f"Cannot start with {len(unanswered)} "
-            "unanswered question(s). "
-            "Get answers first, then update the plan.",
-            {"questions": [q.get("question") for q in unanswered]},
-        )
+    # Only check open questions for newly claimed tasks
+    if task_status == "claimed":
+        plan = task.get("plan", {})
+        unanswered = [
+            q for q in plan.get("open_questions", []) if not q.get("answered")
+        ]
+        if unanswered:
+            return _format_error_response(
+                "UNANSWERED_QUESTIONS",
+                f"Cannot start with {len(unanswered)} "
+                "unanswered question(s). "
+                "Get answers first, then update the plan.",
+                {"questions": [q.get("question") for q in unanswered]},
+            )
 
     return None
 
@@ -559,10 +597,17 @@ async def _handle_task_progress(
     client: ApiClient,
     task_id: str,
     message: str,
-    percentage: int | None,
+    percentage: int,
     agent_id: str,
 ) -> dict[str, Any]:
     """Handle task progress update."""
+    # Validate percentage is in valid range
+    if not _MIN_PERCENTAGE <= percentage <= _MAX_PERCENTAGE:
+        return _format_error_response(
+            "INVALID_PERCENTAGE",
+            f"Percentage must be between {_MIN_PERCENTAGE} and {_MAX_PERCENTAGE}",
+        )
+
     task_resp = await client.get(f"/tasks/{task_id}")
     if task_resp.is_status(status.HTTP_404_NOT_FOUND):
         return _format_error_response("NOT_FOUND", f"Task {task_id} not found")
@@ -572,10 +617,17 @@ async def _handle_task_progress(
     if error := await _validate_task_ownership(task, agent_id, client):
         return error
 
-    if task.get("status") != "in_progress":
+    # Allow progress updates for active work statuses
+    active_statuses = {
+        "in_progress",
+        "verifying",
+        "awaiting_qa",
+        "awaiting_documentation",
+    }
+    if task.get("status") not in active_statuses:
         return _format_error_response(
             "INVALID_STATE",
-            "Can only update progress for in_progress tasks",
+            f"Can only update progress for active tasks. Current: {task.get('status')}",
         )
 
     # Add progress update
@@ -608,7 +660,7 @@ async def _handle_task_block(
     data: TaskBlockInput,
     agent_id: str,
 ) -> dict[str, Any]:
-    """Handle task blocking."""
+    """Handle task blocking via the soft-block endpoint."""
     task_resp = await client.get(f"/tasks/{data.task_id}")
     if task_resp.is_status(status.HTTP_404_NOT_FOUND):
         return _format_error_response("NOT_FOUND", f"Task {data.task_id} not found")
@@ -624,24 +676,13 @@ async def _handle_task_block(
             "Can only block in_progress tasks",
         )
 
-    # Build blocker note for dev_notes
-    blocker_note = (
-        f"[BLOCKED - {data.blocker_type.upper()}]\n"
-        f"Reason: {data.reason}\n"
-        f"What's needed: {data.what_needed}"
-    )
-    existing_notes = task.get("dev_notes") or ""
-    if existing_notes:
-        updated_notes = f"{existing_notes}\n\n{blocker_note}"
-    else:
-        updated_notes = blocker_note
-
-    # Block the task using PATCH to update status and notes
-    block_resp = await client.patch(
-        f"/tasks/{data.task_id}",
+    # Use the soft-block endpoint which handles status change and notes
+    block_resp = await client.post(
+        f"/tasks/{data.task_id}/soft-block",
         json={
-            "status": "blocked",
-            "dev_notes": updated_notes,
+            "reason": data.reason,
+            "blocker_type": data.blocker_type,
+            "what_needed": data.what_needed,
         },
     )
 
@@ -813,46 +854,50 @@ async def _handle_task_submit_qa(
     agent_id: str,
 ) -> dict[str, Any]:
     """Handle task QA submission."""
+    # Validate inputs
     if not dev_notes or not handoff_summary:
         return _format_error_response(
             "MISSING_NOTES",
             "Both dev_notes and handoff_summary are required for QA submission.",
         )
 
+    # Validate task exists and ownership
     task_resp = await client.get(f"/tasks/{task_id}")
     if task_resp.is_status(status.HTTP_404_NOT_FOUND):
         return _format_error_response("NOT_FOUND", f"Task {task_id} not found")
 
     task = task_resp.json()
-
     if error := await _validate_task_ownership(task, agent_id, client):
         return error
 
+    # Validate state
     if task.get("status") != "verifying":
         return _format_error_response(
-            "INVALID_STATE",
-            "Can only submit verified tasks for QA",
+            "INVALID_STATE", "Can only submit verified tasks for QA"
         )
 
-    # Update with notes - combine dev_notes and handoff summary
-    # (handoff summary goes into dev_notes for documenter to read)
+    # Save dev notes and handoff summary, then submit for QA
     combined_notes = f"{dev_notes}\n\n---\nHandoff Summary:\n{handoff_summary}"
-    await client.patch(f"/tasks/{task_id}", json={"dev_notes": combined_notes})
+    notes_resp = await client.patch(
+        f"/tasks/{task_id}", json={"dev_notes": combined_notes}
+    )
+    if not notes_resp.ok:
+        return _format_error_response(
+            "NOTES_SAVE_FAILED",
+            "Failed to save dev notes. QA submission aborted.",
+        )
 
-    # Submit for QA
     qa_resp = await client.post(f"/tasks/{task_id}/submit-qa")
-
-    if not qa_resp.ok:
-        return _format_error_response("SUBMIT_FAILED", "Failed to submit for QA")
-
-    qa_task = qa_resp.json()
-
-    return _format_task_response(
-        qa_task,
-        "WAIT_FOR_QA",
-        "Task submitted for QA review.\n"
-        "You will be notified of the result.\n"
-        "In the meantime, call roboco_task_scan for other work.",
+    return (
+        _format_task_response(
+            qa_resp.json(),
+            "WAIT_FOR_QA",
+            "Task submitted for QA review.\n"
+            "You will be notified of the result.\n"
+            "In the meantime, call roboco_task_scan for other work.",
+        )
+        if qa_resp.ok
+        else _format_error_response("SUBMIT_FAILED", "Failed to submit for QA")
     )
 
 
@@ -863,11 +908,13 @@ async def _handle_task_qa_pass(
     agent_id: str,
 ) -> dict[str, Any]:
     """Handle task QA pass."""
-    # Check if agent has QA role (simple check - real impl would verify)
-    if "qa" not in agent_id.lower():
+    # Check if agent has QA role using canonical role lookup
+    agent_role = get_agent_role(agent_id)
+    if agent_role != "qa":
         return _format_error_response(
             "NOT_QA",
             "Only QA agents can pass tasks through QA review.",
+            {"your_role": agent_role},
         )
 
     task_resp = await client.get(f"/tasks/{task_id}")
@@ -925,10 +972,13 @@ async def _handle_task_qa_fail(
     agent_id: str,
 ) -> dict[str, Any]:
     """Handle task QA failure."""
-    if "qa" not in agent_id.lower():
+    # Check if agent has QA role using canonical role lookup
+    agent_role = get_agent_role(agent_id)
+    if agent_role != "qa":
         return _format_error_response(
             "NOT_QA",
             "Only QA agents can fail tasks in QA review.",
+            {"your_role": agent_role},
         )
 
     if not issues:
@@ -974,8 +1024,22 @@ async def _handle_task_qa_fail(
     )
 
 
-async def _handle_task_complete(client: ApiClient, task_id: str) -> dict[str, Any]:
-    """Handle task completion."""
+async def _handle_docs_complete(
+    client: ApiClient,
+    task_id: str,
+    agent_id: str,
+    doc_notes: str | None = None,
+) -> dict[str, Any]:
+    """Handle documentation completion (documenter only)."""
+    # Check if agent is a documenter
+    agent_role = get_agent_role(agent_id)
+    if agent_role != "documenter":
+        return _format_error_response(
+            "NOT_DOCUMENTER",
+            "Only documenters can mark documentation as complete.",
+            {"your_role": agent_role},
+        )
+
     task_resp = await client.get(f"/tasks/{task_id}")
     if task_resp.is_status(status.HTTP_404_NOT_FOUND):
         return _format_error_response("NOT_FOUND", f"Task {task_id} not found")
@@ -985,7 +1049,56 @@ async def _handle_task_complete(client: ApiClient, task_id: str) -> dict[str, An
     if task.get("status") != "awaiting_documentation":
         return _format_error_response(
             "INVALID_STATE",
-            "Task must be awaiting documentation to complete",
+            "Task must be awaiting documentation to mark docs complete",
+        )
+
+    payload = {"notes": doc_notes} if doc_notes else {}
+    docs_resp = await client.post(f"/tasks/{task_id}/docs-complete", json=payload)
+
+    if not docs_resp.ok:
+        return _format_error_response(
+            "DOCS_COMPLETE_FAILED",
+            "Failed to mark documentation complete",
+            {"status_code": docs_resp.status_code, "api_error": docs_resp.text},
+        )
+
+    updated_task = docs_resp.json()
+
+    return _format_task_response(
+        updated_task,
+        "AWAITING_PM",
+        "Documentation complete! Task is now awaiting PM review.\n"
+        "The Cell PM will review and complete the task.\n"
+        "Call roboco_task_scan for next documentation task.",
+    )
+
+
+async def _handle_task_complete(
+    client: ApiClient,
+    task_id: str,
+    agent_id: str,
+) -> dict[str, Any]:
+    """Handle task completion (PM only)."""
+    # Check if agent can complete tasks (PM role)
+    if not can_cancel_tasks(agent_id):  # Same roles that can cancel can complete
+        role = get_agent_role(agent_id)
+        return _format_error_response(
+            "NOT_PM",
+            "Only PMs can complete tasks after reviewing.",
+            {"your_role": role},
+        )
+
+    task_resp = await client.get(f"/tasks/{task_id}")
+    if task_resp.is_status(status.HTTP_404_NOT_FOUND):
+        return _format_error_response("NOT_FOUND", f"Task {task_id} not found")
+
+    task = task_resp.json()
+
+    if task.get("status") != "awaiting_pm_review":
+        return _format_error_response(
+            "INVALID_STATE",
+            "Task must be awaiting PM review to complete. "
+            "Documenter should call roboco_task_docs_complete first.",
         )
 
     complete_resp = await client.post(f"/tasks/{task_id}/complete")
@@ -994,10 +1107,7 @@ async def _handle_task_complete(client: ApiClient, task_id: str) -> dict[str, An
         return _format_error_response(
             "COMPLETE_FAILED",
             "Failed to complete task",
-            {
-                "status_code": complete_resp.status_code,
-                "api_error": complete_resp.text,
-            },
+            {"status_code": complete_resp.status_code, "api_error": complete_resp.text},
         )
 
     completed_task = complete_resp.json()
@@ -1005,7 +1115,60 @@ async def _handle_task_complete(client: ApiClient, task_id: str) -> dict[str, An
     return _format_task_response(
         completed_task,
         "DONE",
-        "Task completed successfully!\nCall roboco_task_scan for new work.",
+        "Task completed successfully!\nCall roboco_task_scan for more work.",
+    )
+
+
+async def _handle_task_cancel(
+    client: ApiClient,
+    task_id: str,
+    agent_id: str,
+    reason: str | None = None,
+) -> dict[str, Any]:
+    """Handle task cancellation (PM and board only)."""
+    # Check permission first
+    if not can_cancel_tasks(agent_id):
+        role = get_agent_role(agent_id)
+        return _format_error_response(
+            "NOT_AUTHORIZED",
+            "Only PMs and board members can cancel tasks",
+            {"your_role": role},
+        )
+
+    # Get task to verify it exists
+    task_resp = await client.get(f"/tasks/{task_id}")
+    if not task_resp.ok:
+        return _format_error_response("NOT_FOUND", f"Task {task_id} not found")
+
+    task = task_resp.json()
+    current_status = task.get("status")
+
+    # Terminal states can't be cancelled
+    if current_status in ("completed", "cancelled"):
+        return _format_error_response(
+            "INVALID_STATE",
+            f"Cannot cancel task in '{current_status}' status",
+        )
+
+    # Cancel the task
+    cancel_resp = await client.post(f"/tasks/{task_id}/cancel")
+
+    if not cancel_resp.ok:
+        return _format_error_response(
+            "CANCEL_FAILED",
+            "Failed to cancel task",
+            {
+                "status_code": cancel_resp.status_code,
+                "api_error": cancel_resp.text,
+            },
+        )
+
+    cancelled_task = cancel_resp.json()
+
+    return _format_task_response(
+        cancelled_task,
+        "CANCELLED",
+        f"Task cancelled.{' Reason: ' + reason if reason else ''}",
     )
 
 
@@ -1498,15 +1661,19 @@ def create_task_mcp_server(agent_id: str) -> FastMCP:
     async def roboco_task_progress(
         task_id: str,
         message: str,
-        percentage: int | None = None,
+        percentage: int,
     ) -> dict[str, Any]:
         """
         Update task progress.
 
+        ENFORCEMENT:
+        - Percentage is REQUIRED (0-100) to show real progress
+        - Message must describe what was accomplished
+
         Args:
             task_id: The task UUID
-            message: Progress update message
-            percentage: Optional completion percentage (0-100)
+            message: Progress update message describing work done
+            percentage: Completion percentage (0-100), required
 
         Returns:
             Updated task
@@ -1685,13 +1852,41 @@ def create_task_mcp_server(agent_id: str) -> FastMCP:
         return await _handle_task_qa_fail(client, task_id, qa_notes, issues, agent_id)
 
     @mcp.tool()
-    async def roboco_task_complete(task_id: str) -> dict[str, Any]:
+    async def roboco_task_docs_complete(
+        task_id: str,
+        doc_notes: str | None = None,
+    ) -> dict[str, Any]:
         """
-        Mark task as completed (typically by Documenter).
+        Mark documentation as complete (documenter only).
+
+        Transitions task from awaiting_documentation to awaiting_pm_review.
+        The Cell PM will then review and complete the task.
 
         ENFORCEMENT:
+        - Only documenters can use this tool
         - Task must be in 'awaiting_documentation' status
-        - Documentation must exist
+        - Cannot document your own task (self-review prevention)
+
+        Args:
+            task_id: The task UUID
+            doc_notes: Optional notes about the documentation completed
+
+        Returns:
+            Task now awaiting PM review
+        """
+        return await _handle_docs_complete(client, task_id, agent_id, doc_notes)
+
+    @mcp.tool()
+    async def roboco_task_complete(task_id: str) -> dict[str, Any]:
+        """
+        Mark task as completed (PM only).
+
+        Only PMs can complete tasks, after documenter marks docs complete.
+        This is the final step in the workflow: Dev → QA → Documenter → PM.
+
+        ENFORCEMENT:
+        - Only PMs can use this tool
+        - Task must be in 'awaiting_pm_review' status
 
         Args:
             task_id: The task UUID
@@ -1699,7 +1894,7 @@ def create_task_mcp_server(agent_id: str) -> FastMCP:
         Returns:
             Completed task
         """
-        return await _handle_task_complete(client, task_id)
+        return await _handle_task_complete(client, task_id, agent_id)
 
     @mcp.tool()
     async def roboco_agent_idle() -> dict[str, Any]:
@@ -1769,6 +1964,33 @@ def create_task_mcp_server(agent_id: str) -> FastMCP:
         """
         input_data = TaskAssignInput(task_id=task_id, assignee=assignee)
         return await _handle_task_assign(client, input_data, agent_id)
+
+    @mcp.tool()
+    async def roboco_task_cancel(
+        task_id: str,
+        reason: str | None = None,
+    ) -> dict[str, Any]:
+        """
+        Cancel a task (PM and board only).
+
+        Use this to:
+        - Cancel obsolete or duplicate tasks
+        - Cancel tasks that are no longer needed
+        - Cancel blocked tasks that cannot be resolved
+
+        ENFORCEMENT:
+        - Only PMs and board members can cancel tasks
+        - CEO and Auditor cannot cancel (they observe only)
+        - Cannot cancel completed or already-cancelled tasks
+
+        Args:
+            task_id: The task UUID to cancel
+            reason: Optional reason for cancellation
+
+        Returns:
+            Cancelled task confirmation
+        """
+        return await _handle_task_cancel(client, task_id, agent_id, reason)
 
     @mcp.tool()
     async def roboco_task_escalate(

@@ -31,8 +31,8 @@ class DeveloperAgent(Agent):
     4. PLAN - Break into subtasks, create plan
     5. EXECUTE - Work through subtasks, commit frequently
     6. VERIFY - Self-test, run quality checks
-    7. NOTES - Document journey, create handoff
-    8. CLOSE - After QA approval, mark complete
+    7. NOTES - Document journey, create handoff, submit for QA
+    8. DONE - Return to SCAN (QA → Documenter → PM complete the task)
     """
 
     def __init__(self, config: AgentConfig) -> None:
@@ -96,7 +96,8 @@ class DeveloperAgent(Agent):
         """
         Execute task through the developer lifecycle phases.
 
-        Returns True when task is completed (after QA + docs).
+        Returns True when developer's work is complete (submitted for QA).
+        QA, Documenter, and PM handle the rest of the lifecycle.
         """
         # Initialize or restore task context
         if self._task_context is None or self._task_context.task_id != task_id:
@@ -128,7 +129,6 @@ class DeveloperAgent(Agent):
             DevTaskPhase.EXECUTE: self._handle_execute_phase,
             DevTaskPhase.VERIFY: self._handle_verify_phase,
             DevTaskPhase.NOTES: self._handle_notes_phase,
-            DevTaskPhase.CLOSE: self._handle_close_phase,
             DevTaskPhase.BLOCKED: self._handle_blocked_phase,
         }
         handler = phase_handlers.get(ctx.phase)
@@ -169,14 +169,11 @@ class DeveloperAgent(Agent):
         return False
 
     async def _handle_notes_phase(self, ctx: TaskContext) -> bool:
-        """Handle NOTES phase transition."""
+        """Handle NOTES phase transition. This is the developer's final phase."""
         await self._phase_notes(ctx)
-        ctx.phase = DevTaskPhase.CLOSE
-        return False
-
-    async def _handle_close_phase(self, ctx: TaskContext) -> bool:
-        """Handle CLOSE phase transition."""
-        return await self._phase_close(ctx)
+        # Developer is done - task is now awaiting_qa
+        # QA → Documenter → PM will complete the task
+        return True
 
     async def _handle_blocked_phase(self, ctx: TaskContext) -> bool:
         """Handle BLOCKED phase transition."""
@@ -385,11 +382,18 @@ Respond with the implementation.
         commit_hash = f"commit_{ctx.current_subtask}"
         ctx.commits.append(commit_hash)
 
-        # Progress update
-        progress = f"{ctx.current_subtask + 1}/{len(ctx.subtasks)}"
+        # Progress update - save to task AND send message
+        completed = ctx.current_subtask + 1
+        total = len(ctx.subtasks)
+        percentage = int((completed / total) * 100) if total > 0 else 0
+        progress_msg = f"Completed subtask {completed}/{total}: {subtask['title']}"
+
+        # Save progress to task (QA will see this!)
+        await self._add_progress(ctx.task_id, progress_msg, percentage)
+
         await self.send_message(
             self._cell_channel_id or ctx.task_id,
-            f"TASK-{str(ctx.task_id)[:8]} progress: subtask {progress} complete",
+            f"TASK-{str(ctx.task_id)[:8]} ({percentage}%) {progress_msg}",
             message_type="action",
         )
 
@@ -442,62 +446,46 @@ Respond with the implementation.
         """
         NOTES phase: Document journey and create handoff.
 
-        - Complete journey notes
+        - Complete journey notes (stored in task dev_notes for QA)
         - Link commits
-        - Create documenter handoff
+        - Create documenter handoff summary
         """
         self.log.info("NOTES phase", task_id=str(ctx.task_id))
 
-        # Generate handoff using LLM
-        prompt = f"""
-Create a documentation handoff for this completed task:
+        # Generate dev_notes for QA verification (what was built, where, key decisions)
+        dev_notes_prompt = f"""
+Summarize the work done for QA verification:
 
 Task: {ctx.title}
 Commits: {", ".join(ctx.commits)}
-Journal:
+Work log:
 {chr(10).join(ctx.journal_entries)}
 
-Create a handoff summary including:
-1. What was built
-2. Key changes
-3. Documentation needed
-4. Code samples to include
+Create a brief summary for QA including:
+1. What was built and where (files/modules)
+2. Key implementation decisions
+3. Tests added
+4. Any gotchas or important context
 """
-        _handoff = await self.think(prompt)  # Handoff content is for documenter
+        dev_notes = await self.think(dev_notes_prompt)
+
+        # Generate handoff summary for documenter
+        handoff_prompt = f"""
+Create a handoff summary for the documenter:
+
+Task: {ctx.title}
+What was built: {dev_notes[:500]}
+
+Summarize in 2-3 sentences what documentation is needed.
+"""
+        handoff_summary = await self.think(handoff_prompt)
+
+        # Store notes in task via API (this is what QA will see!)
+        await self._submit_for_qa(ctx.task_id, dev_notes, handoff_summary)
 
         ctx.journal_entries.append(
-            f"[{datetime.now(UTC).isoformat()}] Handoff created for documenter"
+            f"[{datetime.now(UTC).isoformat()}] Submitted for QA with dev_notes"
         )
-
-        # Update task status
-        await self._update_task_status(ctx.task_id, TaskStatus.AWAITING_QA)
-
-    async def _phase_close(self, ctx: TaskContext) -> bool:
-        """
-        CLOSE phase: After QA + documentation approval.
-
-        - Verify QA approved
-        - Verify documentation complete
-        - Mark task completed
-
-        Returns True if closed, False if waiting.
-        """
-        self.log.info("CLOSE phase", task_id=str(ctx.task_id))
-
-        # Check if QA approved (simulated - would check actual status)
-        qa_approved = await self._check_qa_approved(ctx.task_id)
-        doc_complete = await self._check_docs_complete(ctx.task_id)
-
-        if qa_approved and doc_complete:
-            await self._update_task_status(ctx.task_id, TaskStatus.COMPLETED)
-            await self.send_message(
-                self._cell_channel_id or ctx.task_id,
-                f"TASK-{str(ctx.task_id)[:8]} completed!",
-                message_type="action",
-            )
-            return True
-
-        return False
 
     async def _handle_blocked(self, ctx: TaskContext) -> bool:
         """
@@ -603,32 +591,52 @@ Create a handoff summary including:
         except Exception as e:
             self.log.error("Failed to update task status", error=str(e))
 
-    async def _check_qa_approved(self, task_id: UUID) -> bool:
-        """Check if QA has approved the task."""
-        try:
-            result = await self._api_call("GET", f"/tasks/{task_id}")
-            status = result.get("status", "")
-            # QA approved if status moved past awaiting_qa
-            return status in ["awaiting_documentation", "completed"]
-        except Exception as e:
-            self.log.warning("Failed to check QA status", error=str(e))
-            return False
+    async def _add_progress(self, task_id: UUID, message: str, percentage: int) -> None:
+        """
+        Add progress update to task.
 
-    async def _check_docs_complete(self, task_id: UUID) -> bool:
-        """Check if documentation is complete."""
+        This is saved to task.progress_updates and visible to QA.
+        Percentage is required (0-100) to show real progress.
+        """
         try:
-            result = await self._api_call("GET", f"/tasks/{task_id}/handoffs")
-            handoffs = result.get("items", [])
-            # Check if documenter handoff is complete
-            for handoff in handoffs:
-                is_doc = handoff.get("type") == "documentation"
-                is_done = handoff.get("status") == "completed"
-                if is_doc and is_done:
-                    return True
-            return False
+            await self._api_call(
+                "POST",
+                f"/tasks/{task_id}/progress",
+                json={
+                    "message": message,
+                    "percentage": percentage,
+                },
+            )
+            self.log.info("Progress saved", task_id=str(task_id), percentage=percentage)
         except Exception as e:
-            self.log.warning("Failed to check docs status", error=str(e))
-            return False
+            self.log.warning("Failed to save progress", error=str(e))
+
+    async def _submit_for_qa(
+        self, task_id: UUID, dev_notes: str, handoff_summary: str
+    ) -> None:
+        """
+        Submit task for QA review with notes.
+
+        This stores dev_notes in the task (visible to QA) and transitions
+        the task to awaiting_qa status.
+        """
+        try:
+            # First store dev_notes (this is what QA will see!)
+            combined_notes = f"{dev_notes}\n\n---\nHandoff Summary:\n{handoff_summary}"
+            await self._api_call(
+                "PATCH",
+                f"/tasks/{task_id}",
+                json={"dev_notes": combined_notes},
+            )
+            self.log.info("Dev notes saved to task", task_id=str(task_id))
+
+            # Then transition to awaiting_qa
+            await self._api_call("POST", f"/tasks/{task_id}/submit-qa")
+            self.log.info("Task submitted for QA", task_id=str(task_id))
+
+        except Exception as e:
+            self.log.error("Failed to submit for QA", error=str(e))
+            raise  # Re-raise so caller knows submission failed
 
 
 def create_backend_developer(

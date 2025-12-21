@@ -34,6 +34,7 @@ from roboco.models.journal import (
     create_struggle_entry,
     create_task_reflection,
 )
+from roboco.models.optimal import IndexJournalEntryParams
 from roboco.utils.converters import require_uuid, to_python_uuid
 
 logger = structlog.get_logger()
@@ -242,14 +243,16 @@ class JournalService:
         try:
             optimal = await self._get_optimal_service()
             await optimal.index_journal_entry(
-                entry_id=entry_row.id,
-                agent_id=journal_row.agent_id
-                if journal_row
-                else entry_create.journal_id,
-                content=entry_create.content,
-                entry_type=type_key,
-                task_id=entry_create.task_id,
-                tags=entry_create.tags,
+                IndexJournalEntryParams(
+                    entry_id=entry_row.id,
+                    agent_id=journal_row.agent_id
+                    if journal_row
+                    else entry_create.journal_id,
+                    content=entry_create.content,
+                    entry_type=type_key,
+                    task_id=entry_create.task_id,
+                    tags=entry_create.tags,
+                )
             )
         except Exception as e:
             logger.warning("Failed to index journal entry in RAG", error=str(e))

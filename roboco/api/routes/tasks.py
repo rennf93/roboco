@@ -22,6 +22,7 @@ from roboco.api.schemas.tasks import (
     ListTasksQuery,
     ProgressRequest,
     QANotes,
+    SoftBlockRequest,
     TaskCountResponse,
     TaskResponse,
     TaskUpdate,
@@ -528,6 +529,51 @@ async def block_task(
     return task_to_response(task)
 
 
+@router.post("/{task_id}/soft-block", response_model=TaskResponse)
+async def soft_block_task(
+    task_id: UUID,
+    data: SoftBlockRequest,
+    db: DbSession,
+    agent: CurrentAgentContext,
+) -> TaskResponse:
+    """Soft-block a task due to an external factor (not a task dependency).
+
+    Use this when blocked by:
+    - External dependencies (waiting for API access, credentials)
+    - Questions that need PM/stakeholder input
+    - Technical blockers (infrastructure issues)
+
+    For blocking due to another task, use the /block endpoint instead.
+    """
+    service = get_task_service(db)
+    task = await service.get(task_id)
+    if not task:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="Task not found"
+        )
+
+    # Only assigned agent or PM can block a task
+    if task.assigned_to != agent.agent_id and agent.role.value not in (
+        "cell_pm",
+        "main_pm",
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Not authorized to block this task",
+        )
+
+    task = await service.soft_block(
+        task_id, data.reason, data.blocker_type, data.what_needed
+    )
+    if not task:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Cannot block task - must be in_progress",
+        )
+    await db.commit()
+    return task_to_response(task)
+
+
 @router.post("/{task_id}/unblock", response_model=TaskResponse)
 async def unblock_task(
     task_id: UUID,
@@ -787,14 +833,18 @@ async def fail_qa(
     return task_to_response(task)
 
 
-@router.post("/{task_id}/complete", response_model=TaskResponse)
-async def complete_task(
+@router.post("/{task_id}/docs-complete", response_model=TaskResponse)
+async def docs_complete(
     task_id: UUID,
     db: DbSession,
     agent: CurrentAgentContext,
-    permissions: PermissionServiceDep,
+    data: QANotes | None = None,
 ) -> TaskResponse:
-    """Mark task as completed."""
+    """Mark documentation as complete (documenter only).
+
+    Transitions task from awaiting_documentation to awaiting_pm_review.
+    The Cell PM will then review and complete the task.
+    """
     service = get_task_service(db)
     task = await service.get(task_id)
     if not task:
@@ -802,14 +852,65 @@ async def complete_task(
             status_code=status.HTTP_404_NOT_FOUND, detail="Task not found"
         )
 
-    # Check close permission - assigned agent or those with CLOSE permission
-    is_assigned = task.assigned_to == agent.agent_id
-    can_close = permissions.can_perform_task_action(agent, TaskAction.CLOSE, task.team)
-
-    if not (is_assigned or can_close):
+    # Only documenter role can mark docs complete
+    if agent.role.value != "documenter":
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
-            detail="Not authorized to complete this task",
+            detail="Only documenters can mark documentation as complete",
+        )
+
+    # Documenter cannot document their own work (self-review prevention)
+    original_dev = extract_original_developer(task.quick_context)
+    if original_dev and str(agent.agent_id) == original_dev:
+        audit = get_audit_service()
+        await audit.log_task_action_denial(
+            agent_id=agent.agent_id,
+            agent_role=agent.role.value,
+            task_id=task_id,
+            action="docs_complete",
+            reason="Self-documentation not permitted",
+        )
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Cannot document your own task",
+        )
+
+    doc_notes = data.notes if data else None
+    task = await service.docs_complete(task_id, doc_notes)
+    if not task:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Cannot mark docs complete - task not awaiting documentation",
+        )
+    await db.commit()
+    return task_to_response(task)
+
+
+@router.post("/{task_id}/complete", response_model=TaskResponse)
+async def complete_task(
+    task_id: UUID,
+    db: DbSession,
+    agent: CurrentAgentContext,
+    permissions: PermissionServiceDep,
+) -> TaskResponse:
+    """Mark task as completed (PM only).
+
+    Only PMs can complete tasks, and only from awaiting_pm_review status.
+    This ensures the full workflow: Dev → QA → Documenter → PM.
+    """
+    service = get_task_service(db)
+    task = await service.get(task_id)
+    if not task:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="Task not found"
+        )
+
+    # Only PMs can complete tasks
+    can_close = permissions.can_perform_task_action(agent, TaskAction.CLOSE, task.team)
+    if not can_close:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Only PMs can complete tasks",
         )
 
     task = await service.complete(task_id)
