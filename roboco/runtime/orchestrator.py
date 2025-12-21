@@ -199,6 +199,13 @@ class AgentOrchestrator:
             "mcp__roboco-notify__*",
             # Journal - always needed for reflection
             "mcp__roboco-journal__*",
+            # File operations for documenters and developers
+            "Write(path:/app/docs/**)",
+            "Write(path:/app/CHANGELOG.md)",
+            "Write(path:/app/README.md)",
+            "Edit(path:/app/docs/**)",
+            "Edit(path:/app/CHANGELOG.md)",
+            "Edit(path:/app/README.md)",
         ]
 
         # Path to agent Claude settings (shared across all agents)
@@ -1037,16 +1044,34 @@ Start by:
     # =========================================================================
 
     # Keywords that indicate strategic/board-level tasks
-    _BOARD_KEYWORDS = frozenset({
-        "roadmap", "architecture", "security", "budget", "hiring",
-        "strategy", "vision", "milestone", "release", "launch",
-    })
+    _BOARD_KEYWORDS = frozenset(
+        {
+            "roadmap",
+            "architecture",
+            "security",
+            "budget",
+            "hiring",
+            "strategy",
+            "vision",
+            "milestone",
+            "release",
+            "launch",
+        }
+    )
 
     # Keywords that indicate PM coordination is needed
-    _PM_KEYWORDS = frozenset({
-        "coordinate", "integration", "cross-team", "sync",
-        "planning", "milestone", "dependencies", "review",
-    })
+    _PM_KEYWORDS = frozenset(
+        {
+            "coordinate",
+            "integration",
+            "cross-team",
+            "sync",
+            "planning",
+            "milestone",
+            "dependencies",
+            "review",
+        }
+    )
 
     def _classify_task_routing(self, task: dict[str, Any]) -> str:
         """
@@ -1371,9 +1396,7 @@ Start now: roboco_task_get("{task_id}")
                     continue  # Not a parent task
 
                 # Check if all subtasks are completed
-                all_completed = all(
-                    st.get("status") == "completed" for st in subtasks
-                )
+                all_completed = all(st.get("status") == "completed" for st in subtasks)
 
                 if not all_completed:
                     continue  # Not ready for closure

@@ -176,7 +176,7 @@ async def send_message(
         content=data.content,
         message_type=data.type,
         reply_to=data.reply_to,
-        mentions=data.mentions if data.mentions else None,
+        mentions=data.mentions if data.mentions else [],
         task_id=data.task_id,
         commit_ref=data.commit_ref,
     )

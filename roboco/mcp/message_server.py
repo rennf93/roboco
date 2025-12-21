@@ -430,7 +430,7 @@ async def _handle_message_send(
             "content": data.content,
             "is_reply": data.reply_to is not None,
             "reply_to": data.reply_to,
-            "mentions": resolved_mentions if resolved_mentions else None,
+            "mentions": resolved_mentions,
             "task_id": data.task_id,
         }
 

@@ -13,17 +13,51 @@ import structlog
 from sqlalchemy import and_, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from roboco.db.tables import AgentTable, HandoffTable, TaskTable
+from roboco.db.tables import AgentTable, TaskTable
 from roboco.enforcement import (
     TaskLifecycleError,
     TaskOwnershipError,
     validate_task_ownership,
     validate_task_transition,
 )
-from roboco.models.base import HandoffStatus, TaskStatus, Team
+from roboco.models.base import TaskStatus, Team
 from roboco.models.task import TaskCreateRequest
 
 logger = structlog.get_logger()
+
+# UUID format constants for validation
+_UUID_LENGTH = 36  # Standard UUID string length
+_UUID_HYPHEN_COUNT = 4  # Number of hyphens in a UUID
+
+
+def extract_original_developer(quick_context: str | None) -> str | None:
+    """
+    Safely extract original developer ID from quick_context.
+
+    The quick_context stores original developer as: "original_developer:{uuid}"
+    This is used to prevent self-review (QA reviewing their own work).
+
+    Args:
+        quick_context: The task's quick_context field value
+
+    Returns:
+        UUID string of original developer, or None if not found/invalid
+    """
+    if not quick_context:
+        return None
+
+    prefix = "original_developer:"
+    if not quick_context.startswith(prefix):
+        return None
+
+    try:
+        dev_id = quick_context[len(prefix) :].strip()
+        # Validate it looks like a UUID
+        if len(dev_id) == _UUID_LENGTH and dev_id.count("-") == _UUID_HYPHEN_COUNT:
+            return dev_id
+        return None
+    except Exception:
+        return None
 
 
 class TaskService:
@@ -152,12 +186,24 @@ class TaskService:
             valid_statuses.add(TaskStatus.CLAIMED)
 
         # Role-based claiming: QA and Documenters can claim specific statuses
+        # If role is missing but task requires specific role, reject the claim
         if agent and agent.role:
             role = agent.role.value if hasattr(agent.role, "value") else str(agent.role)
             if role == "qa":
                 valid_statuses.add(TaskStatus.AWAITING_QA)
             elif role == "documenter":
                 valid_statuses.add(TaskStatus.AWAITING_DOCUMENTATION)
+        elif task.status in {TaskStatus.AWAITING_QA, TaskStatus.AWAITING_DOCUMENTATION}:
+            # No role information - reject claims for role-specific statuses
+            logger.warning(
+                "Cannot claim task - role required for this status",
+                task_id=str(task_id),
+                task_status=task.status.value,
+                agent_id=str(agent_id),
+                has_agent=agent is not None,
+                agent_role="none",
+            )
+            return None
 
         if task.status not in valid_statuses:
             logger.warning(
@@ -431,23 +477,18 @@ class TaskService:
             ):
                 return None
 
-        # Enforce handoff requirement for tasks that went through full lifecycle
-        if task.status == TaskStatus.AWAITING_DOCUMENTATION and not skip_handoff_check:
-            handoff_result = await self.session.execute(
-                select(HandoffTable).where(
-                    HandoffTable.task_id == task_id,
-                    HandoffTable.status == HandoffStatus.ACCEPTED,
-                )
+        # Enforce lifecycle: tasks awaiting documentation must have passed QA
+        if (
+            task.status == TaskStatus.AWAITING_DOCUMENTATION
+            and not skip_handoff_check
+            and not task.qa_verified
+        ):
+            logger.warning(
+                "Cannot complete task - QA verification required",
+                task_id=str(task_id),
+                status=task.status.value,
             )
-            handoff = handoff_result.scalar_one_or_none()
-
-            if not handoff:
-                logger.warning(
-                    "Cannot complete task - handoff required",
-                    task_id=str(task_id),
-                    status=task.status.value,
-                )
-                return None
+            return None
 
         task.completed_at = datetime.now(UTC)
         task.status = TaskStatus.COMPLETED

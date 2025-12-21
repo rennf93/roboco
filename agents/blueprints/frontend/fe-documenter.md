@@ -85,8 +85,8 @@ If none: `roboco_agent_idle()`
 ### 6. WRITE
 **File Paths** - Write documentation to `/app/docs/`:
 - `/app/docs/frontend/` - Frontend documentation
-- `/app/docs/components/` - Component documentation
-- `/app/docs/changelog.md` - Changelog
+- `/app/docs/frontend/components/` - Component documentation
+- `/app/docs/frontend/changelog.md` - Changelog
 
 **Component Documentation**
 - Props interface
