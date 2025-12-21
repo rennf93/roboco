@@ -453,11 +453,25 @@ PASS,All criteria verified successfully,No issues found
             return "Requirements unavailable"
 
     async def _read_dev_notes(self, task_id: UUID) -> str:
-        """Read developer's journey notes."""
+        """Read developer's journey notes (dev_notes + progress_updates)."""
         try:
             result = await self._api_call("GET", f"/tasks/{task_id}")
-            notes: str = result.get("dev_notes", "No developer notes available")
-            return notes
+            notes: str = result.get("dev_notes") or ""
+
+            # Also include progress updates as they contain developer's work log
+            progress_updates = result.get("progress_updates", [])
+            if progress_updates:
+                progress_text = "\n".join(
+                    f"[{u.get('timestamp', 'N/A')}] ({u.get('percentage', 0)}%) "
+                    f"{u.get('message', '')}"
+                    for u in progress_updates
+                )
+                if notes:
+                    notes = f"{notes}\n\nProgress Updates:\n{progress_text}"
+                else:
+                    notes = f"Progress Updates:\n{progress_text}"
+
+            return notes if notes else "No developer notes available"
         except Exception as e:
             self.log.warning("Failed to read dev notes", error=str(e))
             return "Dev notes unavailable"

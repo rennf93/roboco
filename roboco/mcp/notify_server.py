@@ -4,11 +4,18 @@ Notify MCP Server
 Exposes notification tools to Claude Code agents with built-in
 enforcement of notification permissions.
 
-Tools:
+Tools available to ALL agents:
 - roboco_notify_list: List your notifications
 - roboco_notify_get: Get a specific notification
 - roboco_notify_ack: Acknowledge a notification
-- roboco_notify_send: Send a notification (PM/Board/Auditor only)
+
+Tools available ONLY to PM/Board/Auditor:
+- roboco_notify_send: Send a notification
+- roboco_escalate: Escalate an issue (PMs only)
+- roboco_request_approval: Request approval (PMs/Board only)
+
+Note: Developers, QA, and Documenters do not see the sending tools.
+They should use message channels and blocker reporting instead.
 """
 
 from typing import Any
@@ -18,6 +25,7 @@ from mcp.server.fastmcp import FastMCP
 
 from roboco.agents_config import (
     NOTIFICATION_PERMISSIONS,
+    can_send_notifications,
     get_agent_cell,
     get_agent_role,
 )
@@ -301,71 +309,71 @@ def create_notify_mcp_server(agent_id: str) -> FastMCP:
         """Acknowledge a notification."""
         return await _handle_ack(client, notification_id)
 
-    @mcp.tool()
-    async def roboco_notify_send(data: SendNotificationInput) -> dict[str, Any]:
-        """
-        Send a notification to one or more agents.
+    # Only register send/escalate/approval tools for agents who can send notifications
+    # This prevents developers, QA, and documenters from even seeing these tools
+    if can_send_notifications(agent_id):
 
-        Only PMs, Board members, and Auditor can send notifications.
-        Cell PMs can only notify their own cell.
-        """
-        return await _handle_send(client, agent_id, data)
+        @mcp.tool()
+        async def roboco_notify_send(data: SendNotificationInput) -> dict[str, Any]:
+            """
+            Send a notification to one or more agents.
 
-    @mcp.tool()
-    async def roboco_escalate(
-        escalate_to: str,
-        subject: str,
-        description: str,
-        task_id: str | None = None,
-    ) -> dict[str, Any]:
-        """
-        Escalate an issue to a higher level (PM only).
+            Cell PMs can only notify their own cell.
+            Main PM, Board, and Auditor can notify anyone.
+            """
+            return await _handle_send(client, agent_id, data)
 
-        Sends a high-priority notification requiring acknowledgment.
-        """
         role = get_agent_role(agent_id)
-        if role not in ["cell_pm", "main_pm"]:
-            return format_error_response(
-                "NOT_PM", "Only PMs can use the escalate function"
-            )
 
-        input_data = SendNotificationInput(
-            recipients=[escalate_to],
-            subject=f"[ESCALATION] {subject}",
-            body=description,
-            notification_type="escalation",
-            priority="high",
-            requires_ack=True,
-            related_task_id=task_id,
-        )
-        return await _handle_send(client, agent_id, input_data)
+        # Only PMs can escalate
+        if role in ["cell_pm", "main_pm"]:
 
-    @mcp.tool()
-    async def roboco_request_approval(
-        approver: str,
-        subject: str,
-        what_needs_approval: str,
-        task_id: str | None = None,
-    ) -> dict[str, Any]:
-        """
-        Request approval from someone (PM/Board only).
-        """
-        role = get_agent_role(agent_id)
-        if role not in ["cell_pm", "main_pm", "product_owner", "head_marketing"]:
-            return format_error_response(
-                "NOT_AUTHORIZED", "Only PMs and Board can request approvals"
-            )
+            @mcp.tool()
+            async def roboco_escalate(
+                escalate_to: str,
+                subject: str,
+                description: str,
+                task_id: str | None = None,
+            ) -> dict[str, Any]:
+                """
+                Escalate an issue to a higher level.
 
-        input_data = SendNotificationInput(
-            recipients=[approver],
-            subject=f"[APPROVAL NEEDED] {subject}",
-            body=what_needs_approval,
-            notification_type="approval",
-            priority="normal",
-            requires_ack=True,
-            related_task_id=task_id,
-        )
-        return await _handle_send(client, agent_id, input_data)
+                Sends a high-priority notification requiring acknowledgment.
+                """
+                input_data = SendNotificationInput(
+                    recipients=[escalate_to],
+                    subject=f"[ESCALATION] {subject}",
+                    body=description,
+                    notification_type="escalation",
+                    priority="high",
+                    requires_ack=True,
+                    related_task_id=task_id,
+                )
+                return await _handle_send(client, agent_id, input_data)
+
+        # Only PMs and Board can request approvals
+        if role in ["cell_pm", "main_pm", "product_owner", "head_marketing"]:
+
+            @mcp.tool()
+            async def roboco_request_approval(
+                approver: str,
+                subject: str,
+                what_needs_approval: str,
+                task_id: str | None = None,
+            ) -> dict[str, Any]:
+                """
+                Request approval from someone.
+                """
+                input_data = SendNotificationInput(
+                    recipients=[approver],
+                    subject=f"[APPROVAL NEEDED] {subject}",
+                    body=what_needs_approval,
+                    notification_type="approval",
+                    priority="normal",
+                    requires_ack=True,
+                    related_task_id=task_id,
+                )
+                return await _handle_send(client, agent_id, input_data)
 
     return mcp
 

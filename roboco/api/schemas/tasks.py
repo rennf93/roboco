@@ -289,6 +289,16 @@ class QANotes(BaseModel):
     notes: str
 
 
+class SoftBlockRequest(BaseModel):
+    """Request to soft-block a task due to an external factor."""
+
+    reason: str = Field(..., description="Why the task is blocked")
+    blocker_type: str = Field(
+        ..., description="Type of blocker: external, internal, question, dependency"
+    )
+    what_needed: str = Field(..., description="What is needed to unblock the task")
+
+
 class TaskCountResponse(BaseModel):
     """Task count by category."""
 

@@ -97,11 +97,11 @@ async def resolve_agent_uuid(
     if len(agent_id) == _UUID_LENGTH and agent_id.count("-") == _UUID_HYPHEN_COUNT:
         return agent_id
 
-    # Look up by slug
+    # Look up by slug - GET /agents/{id} accepts both UUID and slug
     async with httpx.AsyncClient() as client:
         try:
             resp = await client.get(
-                f"{settings.internal_api_url}/agents/by-slug/{agent_id}",
+                f"{settings.internal_api_url}/agents/{agent_id}",
                 headers=headers,
             )
             if resp.status_code == _HTTP_OK:

@@ -25,6 +25,7 @@ import httpx
 import structlog
 from fastapi import status as http_status
 
+from roboco.agents_config import get_agent_role
 from roboco.config import settings
 from roboco.models.runtime import (
     MODEL_MAP,
@@ -200,23 +201,18 @@ class AgentOrchestrator:
             # Journal - always needed for reflection
             "mcp__roboco-journal__*",
             # File operations for documenters and developers
-            "Write(path:/app/docs/**)",
-            "Write(path:/app/CHANGELOG.md)",
-            "Write(path:/app/README.md)",
-            "Edit(path:/app/docs/**)",
-            "Edit(path:/app/CHANGELOG.md)",
-            "Edit(path:/app/README.md)",
+            # Note: // prefix = absolute path (container paths like /app/docs)
+            "Write(//app/docs/**)",
+            "Write(//app/CHANGELOG.md)",
+            "Write(//app/README.md)",
+            "Edit(//app/docs/**)",
+            "Edit(//app/CHANGELOG.md)",
+            "Edit(//app/README.md)",
         ]
 
         # Path to agent Claude settings (shared across all agents)
-        # When running in container: Claude auth is mounted to /root/.claude
-        # When running on host: use CLAUDE_AUTH_HOST_PATH directly
-        if PROJECT_HOST_PATH:
-            # Running in container - use the mounted path
-            claude_dir = Path("/root/.claude")
-        else:
-            # Running on host
-            claude_dir = Path(CLAUDE_AUTH_HOST_PATH)
+        # Always use CLAUDE_AUTH_HOST_PATH - agents mount from this location
+        claude_dir = Path(CLAUDE_AUTH_HOST_PATH)
 
         settings_path = claude_dir / "settings.json"
 
@@ -298,10 +294,10 @@ class AgentOrchestrator:
             # Generate MCP config
             mcp_config_path = await self._generate_mcp_config(agent_id)
 
-            # Determine model
+            # Determine model using canonical role name from agents_config
             if not model:
-                role = self._get_agent_role(agent_id)
-                model = ROLE_MODEL_MAP.get(role, "sonnet")
+                canonical_role = get_agent_role(agent_id)
+                model = ROLE_MODEL_MAP.get(canonical_role, "sonnet")
 
             # Create config
             config = AgentConfig(
@@ -540,7 +536,7 @@ class AgentOrchestrator:
 
     def _get_blueprint_path(self, agent_id: str) -> Path:
         """Get blueprint path for an agent."""
-        role = self._get_agent_role(agent_id)
+        role = self._get_blueprint_role(agent_id)
         team = self._get_agent_team(agent_id)
 
         if team == "backend":
@@ -557,7 +553,7 @@ class AgentOrchestrator:
 
     def _get_blueprint_rel_path(self, agent_id: str) -> str:
         """Get relative blueprint path for container mount."""
-        role = self._get_agent_role(agent_id)
+        role = self._get_blueprint_role(agent_id)
         team = self._get_agent_team(agent_id)
 
         if team == "backend":
@@ -572,8 +568,8 @@ class AgentOrchestrator:
         blueprint_file = f"{role.replace('_', '-')}.md"
         return f"{cell_dir}/{blueprint_file}"
 
-    def _get_agent_role(self, agent_id: str) -> str:
-        """Get role from agent_id."""
+    def _get_blueprint_role(self, agent_id: str) -> str:
+        """Get blueprint-specific role name from agent_id (used for file paths)."""
         role_map = {
             "be-dev-1": "be-dev",
             "be-dev-2": "be-dev",
@@ -1298,6 +1294,7 @@ Start now: roboco_task_get("{task_id}")
             await self._dispatch_dev_work(client)
             await self._dispatch_qa_work(client)
             await self._dispatch_doc_work(client)
+            await self._dispatch_pm_review_work(client)
             await self._dispatch_marketing_work(client)
 
             # Event-based dispatchers (check blockers, notifications)
@@ -1599,6 +1596,32 @@ Begin with step 1: roboco_task_get("{task_id}")
             )
             break
 
+    async def _dispatch_pm_review_work(self, client: httpx.AsyncClient) -> None:
+        """
+        Dispatch PM review work to cell PMs.
+
+        Monitors: awaiting_pm_review tasks
+        Spawns: be-pm, fe-pm, ux-pm
+        """
+        tasks = await self._fetch_tasks(client, "awaiting_pm_review")
+
+        for task in tasks:
+            team = task.get("team")
+            if team not in ["backend", "frontend", "ux_ui"]:
+                continue
+
+            pm_id = self._TEAM_PM_MAP.get(team, "be-pm")
+
+            if self._is_agent_active(pm_id):
+                continue
+
+            await self.spawn_agent(
+                agent_id=pm_id,
+                task_id=task["id"],
+                initial_prompt=self._build_pm_review_prompt(task),
+            )
+            break
+
     async def _dispatch_marketing_work(self, client: httpx.AsyncClient) -> None:
         """
         Dispatch marketing work to head-marketing.
@@ -1808,8 +1831,30 @@ Begin documentation:
 1. Call roboco_task_get("{task_id}") for full details and dev handoff notes
 2. Create or update documentation based on what was implemented
 3. Ensure code comments, README updates, API docs as needed
-4. Call roboco_task_complete("{task_id}") when documentation is done
+4. Call roboco_task_docs_complete("{task_id}") when documentation is done
 5. Call roboco_task_scan() to check for more documentation work
+6. If no more work, call roboco_agent_idle() to shutdown gracefully
+"""
+
+    def _build_pm_review_prompt(self, task: dict[str, Any]) -> str:
+        """Build initial prompt for PM to review and complete a task."""
+        task_id = task.get("id", "unknown")
+        title = task.get("title", "Untitled")
+        team = task.get("team", "unknown")
+
+        return f"""A task is awaiting your PM review for final completion.
+
+TASK ID: {task_id}
+TITLE: {title}
+TEAM: {team}
+
+This task has passed QA and documentation. Review and complete:
+
+1. Call roboco_task_get("{task_id}") to review the task details
+2. Verify dev_notes, QA notes, and documentation are satisfactory
+3. If this task has subtasks, verify all subtasks are completed
+4. Call roboco_task_complete("{task_id}") to finalize the task
+5. Call roboco_task_scan() to check for more tasks needing review
 6. If no more work, call roboco_agent_idle() to shutdown gracefully
 """
 

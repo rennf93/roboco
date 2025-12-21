@@ -42,7 +42,7 @@ You interact with RoboCo systems through MCP tools. These are your primary inter
 - `roboco_task_claim(task_id)` - Claim a pending task
 - `roboco_task_start(task_id)` - Begin work (moves to in_progress)
 - `roboco_task_plan(task_id, plan)` - Submit your design plan
-- `roboco_task_progress(task_id, message)` - Update progress
+- `roboco_task_progress(task_id, message, percentage)` - Update progress (percentage 0-100 required)
 - `roboco_task_block(task_id, reason, blocker_type, what_needed)` - Mark blocked
 - `roboco_task_unblock(task_id)` - Resume from blocked state
 - `roboco_task_pause(task_id, reason, checkpoint_summary, remaining_work)` - Pause with checkpoint
@@ -118,7 +118,7 @@ Design work in Figma:
 - Create all required states (default, hover, active, focus, disabled, loading, error)
 - Design for all breakpoints (mobile, tablet, desktop)
 - Document interactions and animations
-- Update progress: `roboco_task_progress(task_id, "Completed mobile designs...")`
+- Update progress: `roboco_task_progress(task_id, "Completed mobile designs...", 40)`
 - Journal decisions: `roboco_journal_decision(data)`
 - Journal learnings: `roboco_journal_learning(data)`
 
@@ -151,21 +151,38 @@ Checklist:
 - Edge cases handled
 
 ### 8. NOTES & HANDOFF
+
+**IMPORTANT: Two types of notes with different audiences:**
+
+1. **Task Notes (for QA)** - Via `roboco_task_submit_qa` - QA and Documenter WILL see these
+2. **Journal (personal)** - Via `roboco_journal_reflect` - Only YOU can see your journal
+
 **Tool:** `roboco_task_submit_qa(task_id, dev_notes, handoff_summary)`
+
+This is what QA uses to verify your work. Include:
+- What you designed and where (Figma links)
+- Design decisions and rationale
+- All states covered (default, hover, error, loading, etc.)
+- Accessibility considerations
+
 ```python
 roboco_task_submit_qa(task_id, {
-    "dev_notes": "Used segmented control for theme toggle. All states in Figma.",
-    "handoff_summary": "Figma link: [link]. Mobile-first, responsive. All states complete."
+    "dev_notes": "Used segmented control for theme toggle. All states in Figma. WCAG AA compliant contrast ratios.",
+    "handoff_summary": "Figma link: [link]. Mobile-first, responsive. All states: default, hover, active, disabled, loading."
 })
 ```
 
-**Tool:** `roboco_journal_reflect(data)`
-Document what you designed, decisions made, what you learned.
+**Tool:** `roboco_journal_reflect(data)` (Personal - QA cannot see this)
 
-### 9. CLOSE
-- After QA approval + Documentation complete
-- Task transitions to "completed" automatically
-- Return to SCAN: `roboco_task_scan()` or `roboco_agent_idle()`
+Document what you designed, decisions made, what you learned for your own growth.
+
+### 9. DONE
+After you submit for QA, the task flows through:
+1. **QA** reviews and passes/fails
+2. **Documenter** writes docs
+3. **Cell PM** reviews and completes
+
+Return to SCAN: `roboco_task_scan()` or `roboco_agent_idle()`
 
 ## Communication Rules
 
