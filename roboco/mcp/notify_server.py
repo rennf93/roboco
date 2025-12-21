@@ -13,7 +13,6 @@ Tools:
 
 from typing import Any
 
-import httpx
 from fastapi import status
 from mcp.server.fastmcp import FastMCP
 
@@ -21,26 +20,13 @@ from roboco.agents_config import (
     NOTIFICATION_PERMISSIONS,
     get_agent_cell,
     get_agent_role,
-    get_agent_team,
 )
-from roboco.config import settings
 from roboco.mcp.schemas import SendNotificationInput
+from roboco.mcp.utils import ApiClient, format_error_response
 
 # =============================================================================
 # HELPER FUNCTIONS
 # =============================================================================
-
-
-def _get_agent_headers(agent_id: str) -> dict[str, str]:
-    """Get standard headers for API calls."""
-    headers = {
-        "X-Agent-ID": agent_id,
-        "X-Agent-Role": get_agent_role(agent_id),
-    }
-    team = get_agent_team(agent_id)
-    if team:
-        headers["X-Agent-Team"] = team
-    return headers
 
 
 def _check_cell_scope(sender_id: str) -> tuple[bool, str]:
@@ -75,21 +61,6 @@ def _can_send_notification(sender_id: str, recipient_id: str) -> tuple[bool, str
     return False, f"You cannot send notifications to {recipient_id}"
 
 
-def _format_error_response(
-    error_code: str,
-    message: str,
-    details: dict[str, Any] | None = None,
-) -> dict[str, Any]:
-    """Format a standardized error response."""
-    return {
-        "error": {
-            "code": error_code,
-            "message": message,
-            "details": details or {},
-        }
-    }
-
-
 # Valid notification types and priorities
 VALID_NOTIFICATION_TYPES = frozenset(
     ["info", "alert", "task", "escalation", "approval"]
@@ -101,7 +72,7 @@ def _validate_notification_type(notification_type: str) -> dict[str, Any] | None
     """Validate notification type. Returns error dict or None if valid."""
     if notification_type not in VALID_NOTIFICATION_TYPES:
         valid = sorted(VALID_NOTIFICATION_TYPES)
-        return _format_error_response(
+        return format_error_response(
             "INVALID_TYPE", f"Invalid type. Must be one of: {valid}"
         )
     return None
@@ -110,7 +81,7 @@ def _validate_notification_type(notification_type: str) -> dict[str, Any] | None
 def _validate_priority(priority: str) -> dict[str, Any] | None:
     """Validate priority. Returns error dict or None if valid."""
     if priority not in VALID_PRIORITIES:
-        return _format_error_response(
+        return format_error_response(
             "INVALID_PRIORITY",
             f"Invalid priority. Must be one of: {sorted(VALID_PRIORITIES)}",
         )
@@ -123,30 +94,23 @@ def _validate_priority(priority: str) -> dict[str, Any] | None:
 
 
 async def _handle_list(
-    agent_id: str,
+    client: ApiClient,
     unread_only: bool,
     pending_ack_only: bool,
     limit: int,
 ) -> dict[str, Any]:
     """Handle notification listing."""
-    async with httpx.AsyncClient() as client:
-        params: dict[str, str | int] = {
-            "unread_only": str(unread_only).lower(),
-            "pending_ack_only": str(pending_ack_only).lower(),
-            "limit": limit,
-        }
+    params: dict[str, str | int] = {
+        "unread_only": str(unread_only).lower(),
+        "pending_ack_only": str(pending_ack_only).lower(),
+        "limit": limit,
+    }
 
-        resp = await client.get(
-            f"{settings.internal_api_url}/notifications",
-            params=params,
-            headers=_get_agent_headers(agent_id),
-        )
+    resp = await client.get("/notifications", params=params)
+    if not resp.ok:
+        return format_error_response("API_ERROR", "Failed to fetch notifications")
 
-        if resp.status_code != status.HTTP_200_OK:
-            return _format_error_response("API_ERROR", "Failed to fetch notifications")
-
-        data = resp.json()
-
+    data = resp.json()
     unread = data.get("unread_count", 0)
     pending_ack = data.get("pending_ack_count", 0)
 
@@ -170,27 +134,22 @@ async def _handle_list(
     }
 
 
-async def _handle_get(agent_id: str, notification_id: str) -> dict[str, Any]:
+async def _handle_get(client: ApiClient, notification_id: str) -> dict[str, Any]:
     """Handle getting a specific notification."""
-    async with httpx.AsyncClient() as client:
-        resp = await client.get(
-            f"{settings.internal_api_url}/notifications/{notification_id}",
-            headers=_get_agent_headers(agent_id),
+    resp = await client.get(f"/notifications/{notification_id}")
+
+    if resp.is_status(status.HTTP_404_NOT_FOUND):
+        return format_error_response("NOT_FOUND", "Notification not found")
+
+    if resp.is_status(status.HTTP_403_FORBIDDEN):
+        return format_error_response(
+            "NOT_RECIPIENT", "You are not a recipient of this notification"
         )
 
-        if resp.status_code == status.HTTP_404_NOT_FOUND:
-            return _format_error_response("NOT_FOUND", "Notification not found")
+    if not resp.ok:
+        return format_error_response("API_ERROR", "Failed to fetch notification")
 
-        if resp.status_code == status.HTTP_403_FORBIDDEN:
-            return _format_error_response(
-                "NOT_RECIPIENT", "You are not a recipient of this notification"
-            )
-
-        if resp.status_code != status.HTTP_200_OK:
-            return _format_error_response("API_ERROR", "Failed to fetch notification")
-
-        notification = resp.json()
-
+    notification = resp.json()
     guidance = ""
     if notification.get("requires_ack") and not notification.get("is_acknowledged"):
         guidance = (
@@ -201,34 +160,27 @@ async def _handle_get(agent_id: str, notification_id: str) -> dict[str, Any]:
     return {"notification": notification, "guidance": guidance}
 
 
-async def _handle_ack(agent_id: str, notification_id: str) -> dict[str, Any]:
+async def _handle_ack(client: ApiClient, notification_id: str) -> dict[str, Any]:
     """Handle acknowledging a notification."""
-    async with httpx.AsyncClient() as client:
-        resp = await client.post(
-            f"{settings.internal_api_url}/notifications/{notification_id}/ack",
-            headers=_get_agent_headers(agent_id),
+    resp = await client.post(f"/notifications/{notification_id}/ack")
+
+    if resp.is_status(status.HTTP_404_NOT_FOUND):
+        return format_error_response("NOT_FOUND", "Notification not found")
+
+    if resp.is_status(status.HTTP_403_FORBIDDEN):
+        return format_error_response(
+            "NOT_RECIPIENT", "You are not a recipient of this notification"
         )
 
-        if resp.status_code == status.HTTP_404_NOT_FOUND:
-            return _format_error_response("NOT_FOUND", "Notification not found")
+    if resp.is_status(status.HTTP_400_BAD_REQUEST):
+        return format_error_response(
+            "NO_ACK_REQUIRED", "This notification does not require acknowledgment"
+        )
 
-        if resp.status_code == status.HTTP_403_FORBIDDEN:
-            return _format_error_response(
-                "NOT_RECIPIENT", "You are not a recipient of this notification"
-            )
+    if not resp.ok:
+        return format_error_response("API_ERROR", "Failed to acknowledge notification")
 
-        if resp.status_code == status.HTTP_400_BAD_REQUEST:
-            return _format_error_response(
-                "NO_ACK_REQUIRED", "This notification does not require acknowledgment"
-            )
-
-        if resp.status_code != status.HTTP_200_OK:
-            return _format_error_response(
-                "API_ERROR", "Failed to acknowledge notification"
-            )
-
-        notification = resp.json()
-
+    notification = resp.json()
     return {
         "status": "acknowledged",
         "notification": notification,
@@ -241,7 +193,7 @@ def _check_send_permission(agent_id: str) -> dict[str, Any] | None:
     role = get_agent_role(agent_id)
     permissions = NOTIFICATION_PERMISSIONS.get(role, {"can_send": False})
     if not permissions.get("can_send", False):
-        return _format_error_response(
+        return format_error_response(
             "NOT_AUTHORIZED",
             f"Agents with role '{role}' cannot send notifications. "
             "Only PMs, Board members, and Auditor can send notifications.",
@@ -259,7 +211,7 @@ def _check_recipients(agent_id: str, recipients: list[str]) -> dict[str, Any] | 
         if not can_send
     ]
     if denied:
-        return _format_error_response(
+        return format_error_response(
             "RECIPIENT_DENIED",
             "Cannot send to one or more recipients",
             {"denied": denied},
@@ -267,7 +219,9 @@ def _check_recipients(agent_id: str, recipients: list[str]) -> dict[str, Any] | 
     return None
 
 
-async def _handle_send(agent_id: str, data: SendNotificationInput) -> dict[str, Any]:
+async def _handle_send(
+    client: ApiClient, agent_id: str, data: SendNotificationInput
+) -> dict[str, Any]:
     """Handle sending a notification."""
     # Validate permissions and data
     if error := _check_send_permission(agent_id):
@@ -279,30 +233,24 @@ async def _handle_send(agent_id: str, data: SendNotificationInput) -> dict[str, 
     if error := _validate_priority(data.priority):
         return error
 
-    async with httpx.AsyncClient() as client:
-        payload = {
-            "type": data.notification_type,
-            "priority": data.priority,
-            "to_agents": data.recipients,
-            "subject": data.subject,
-            "body": data.body,
-            "requires_ack": data.requires_ack,
-            "related_task_id": data.related_task_id,
-        }
+    payload = {
+        "type": data.notification_type,
+        "priority": data.priority,
+        "to_agents": data.recipients,
+        "subject": data.subject,
+        "body": data.body,
+        "requires_ack": data.requires_ack,
+        "related_task_id": data.related_task_id,
+    }
 
-        resp = await client.post(
-            f"{settings.internal_api_url}/notifications",
-            json=payload,
-            headers=_get_agent_headers(agent_id),
+    resp = await client.post("/notifications", json=payload)
+
+    if not resp.ok:
+        return format_error_response(
+            "SEND_FAILED", "Failed to send notification", {"api_error": resp.text}
         )
 
-        if resp.status_code not in [status.HTTP_200_OK, status.HTTP_201_CREATED]:
-            return _format_error_response(
-                "SEND_FAILED", "Failed to send notification", {"api_error": resp.text}
-            )
-
-        notification = resp.json()
-
+    notification = resp.json()
     ack_note = "Recipients must acknowledge." if data.requires_ack else ""
     count = len(data.recipients)
 
@@ -331,6 +279,9 @@ def create_notify_mcp_server(agent_id: str) -> FastMCP:
     """
     mcp = FastMCP(f"roboco-notify-{agent_id}", json_response=True)
 
+    # Create shared API client for this agent
+    client = ApiClient(agent_id)
+
     @mcp.tool()
     async def roboco_notify_list(
         unread_only: bool = False,
@@ -338,17 +289,17 @@ def create_notify_mcp_server(agent_id: str) -> FastMCP:
         limit: int = 50,
     ) -> dict[str, Any]:
         """List your notifications."""
-        return await _handle_list(agent_id, unread_only, pending_ack_only, limit)
+        return await _handle_list(client, unread_only, pending_ack_only, limit)
 
     @mcp.tool()
     async def roboco_notify_get(notification_id: str) -> dict[str, Any]:
         """Get a specific notification. Also marks it as read."""
-        return await _handle_get(agent_id, notification_id)
+        return await _handle_get(client, notification_id)
 
     @mcp.tool()
     async def roboco_notify_ack(notification_id: str) -> dict[str, Any]:
         """Acknowledge a notification."""
-        return await _handle_ack(agent_id, notification_id)
+        return await _handle_ack(client, notification_id)
 
     @mcp.tool()
     async def roboco_notify_send(data: SendNotificationInput) -> dict[str, Any]:
@@ -358,7 +309,7 @@ def create_notify_mcp_server(agent_id: str) -> FastMCP:
         Only PMs, Board members, and Auditor can send notifications.
         Cell PMs can only notify their own cell.
         """
-        return await _handle_send(agent_id, data)
+        return await _handle_send(client, agent_id, data)
 
     @mcp.tool()
     async def roboco_escalate(
@@ -374,7 +325,7 @@ def create_notify_mcp_server(agent_id: str) -> FastMCP:
         """
         role = get_agent_role(agent_id)
         if role not in ["cell_pm", "main_pm"]:
-            return _format_error_response(
+            return format_error_response(
                 "NOT_PM", "Only PMs can use the escalate function"
             )
 
@@ -387,7 +338,7 @@ def create_notify_mcp_server(agent_id: str) -> FastMCP:
             requires_ack=True,
             related_task_id=task_id,
         )
-        return await _handle_send(agent_id, input_data)
+        return await _handle_send(client, agent_id, input_data)
 
     @mcp.tool()
     async def roboco_request_approval(
@@ -401,7 +352,7 @@ def create_notify_mcp_server(agent_id: str) -> FastMCP:
         """
         role = get_agent_role(agent_id)
         if role not in ["cell_pm", "main_pm", "product_owner", "head_marketing"]:
-            return _format_error_response(
+            return format_error_response(
                 "NOT_AUTHORIZED", "Only PMs and Board can request approvals"
             )
 
@@ -414,7 +365,7 @@ def create_notify_mcp_server(agent_id: str) -> FastMCP:
             requires_ack=True,
             related_task_id=task_id,
         )
-        return await _handle_send(agent_id, input_data)
+        return await _handle_send(client, agent_id, input_data)
 
     return mcp
 
