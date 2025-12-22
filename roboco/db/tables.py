@@ -16,6 +16,7 @@ from sqlalchemy import (
     Enum,
     Float,
     ForeignKey,
+    Index,
     Integer,
     Interval,
     String,
@@ -97,9 +98,9 @@ class AgentTable(Base):
         DateTime(timezone=True), onupdate=datetime.now(UTC), nullable=True
     )
 
-    # Relationships
+    # Relationships - use lazy="joined" for single optional relationship
     current_task: Mapped["TaskTable | None"] = relationship(
-        "TaskTable", foreign_keys=[current_task_id], lazy="selectin"
+        "TaskTable", foreign_keys=[current_task_id], lazy="joined"
     )
 
 
@@ -202,13 +203,20 @@ class TaskTable(Base):
 
     # Relationships
     creator: Mapped["AgentTable"] = relationship(
-        "AgentTable", foreign_keys=[created_by], lazy="selectin"
+        "AgentTable", foreign_keys=[created_by], lazy="joined"
     )
     assignee: Mapped["AgentTable | None"] = relationship(
-        "AgentTable", foreign_keys=[assigned_to], lazy="selectin"
+        "AgentTable", foreign_keys=[assigned_to], lazy="joined"
     )
     parent_task: Mapped["TaskTable | None"] = relationship(
-        "TaskTable", remote_side=[id], lazy="selectin"
+        "TaskTable", remote_side=[id], lazy="select"
+    )
+
+    __table_args__ = (
+        # Composite indexes for common queries
+        Index("ix_tasks_team_status", "team", "status"),
+        Index("ix_tasks_assigned_status", "assigned_to", "status"),
+        Index("ix_tasks_created_by_status", "created_by", "status"),
     )
 
 
@@ -272,9 +280,9 @@ class ChannelTable(Base):
         DateTime(timezone=True), onupdate=datetime.now(UTC), nullable=True
     )
 
-    # Relationships
+    # Relationships - use lazy="select" for collections to avoid N+1
     groups: Mapped[list["GroupTable"]] = relationship(
-        "GroupTable", back_populates="channel", lazy="selectin"
+        "GroupTable", back_populates="channel", lazy="select"
     )
 
 
@@ -333,12 +341,12 @@ class GroupTable(Base):
         DateTime(timezone=True), onupdate=datetime.now(UTC), nullable=True
     )
 
-    # Relationships
+    # Relationships - use lazy="select" for collections to avoid N+1
     channel: Mapped["ChannelTable"] = relationship(
         "ChannelTable", back_populates="groups"
     )
     sessions: Mapped[list["SessionTable"]] = relationship(
-        "SessionTable", back_populates="group", lazy="selectin"
+        "SessionTable", back_populates="group", lazy="select"
     )
 
 
@@ -402,10 +410,16 @@ class SessionTable(Base):
         DateTime(timezone=True), default=datetime.now(UTC), nullable=False
     )
 
-    # Relationships
+    # Relationships - CRITICAL: use lazy="select" for messages (sessions can have 100+)
     group: Mapped["GroupTable"] = relationship("GroupTable", back_populates="sessions")
     messages: Mapped[list["MessageTable"]] = relationship(
-        "MessageTable", back_populates="session", lazy="selectin"
+        "MessageTable", back_populates="session", lazy="select"
+    )
+
+    __table_args__ = (
+        # Composite indexes for common queries
+        Index("ix_sessions_group_status", "group_id", "status"),
+        Index("ix_sessions_status_started", "status", "started_at"),
     )
 
 
@@ -496,18 +510,20 @@ class MessageTable(Base):
         DateTime(timezone=True), default=datetime.now(UTC), nullable=False
     )
 
-    # Relationships
-    agent: Mapped["AgentTable"] = relationship("AgentTable", lazy="selectin")
+    # Relationships - use lazy="joined" for agent to avoid N+1 on message lists
+    agent: Mapped["AgentTable"] = relationship("AgentTable", lazy="joined")
     session: Mapped["SessionTable"] = relationship(
         "SessionTable", back_populates="messages"
     )
     parent_message: Mapped["MessageTable | None"] = relationship(
-        "MessageTable", remote_side=[id], lazy="selectin"
+        "MessageTable", remote_side=[id], lazy="select"
     )
 
     __table_args__ = (
-        # Index for efficient channel message queries
-        # Index"ix_messages_channel_timestamp", channel_id, timestamp.desc()),
+        # Composite indexes for efficient queries
+        Index("ix_messages_channel_timestamp", "channel_id", "timestamp"),
+        Index("ix_messages_agent_timestamp", "agent_id", "timestamp"),
+        Index("ix_messages_session_timestamp", "session_id", "timestamp"),
     )
 
 
@@ -583,9 +599,14 @@ class NotificationTable(Base):
     )
 
     # Relationships
-    sender: Mapped["AgentTable"] = relationship("AgentTable", lazy="selectin")
-    related_task: Mapped["TaskTable | None"] = relationship(
-        "TaskTable", lazy="selectin"
+    sender: Mapped["AgentTable"] = relationship("AgentTable", lazy="joined")
+    related_task: Mapped["TaskTable | None"] = relationship("TaskTable", lazy="select")
+
+    __table_args__ = (
+        # Composite indexes for notification queries
+        Index("ix_notifications_from_agent_timestamp", "from_agent", "timestamp"),
+        Index("ix_notifications_type_priority", "type", "priority"),
+        Index("ix_notifications_timestamp_priority", "timestamp", "priority"),
     )
 
 
@@ -633,10 +654,10 @@ class JournalTable(Base):
         DateTime(timezone=True), onupdate=datetime.now(UTC), nullable=True
     )
 
-    # Relationships
-    agent: Mapped["AgentTable"] = relationship("AgentTable", lazy="selectin")
+    # Relationships - use lazy="select" for entries collection to avoid N+1
+    agent: Mapped["AgentTable"] = relationship("AgentTable", lazy="joined")
     entries: Mapped[list["JournalEntryTable"]] = relationship(
-        "JournalEntryTable", back_populates="journal", lazy="selectin"
+        "JournalEntryTable", back_populates="journal", lazy="select"
     )
 
 
@@ -696,6 +717,13 @@ class JournalEntryTable(Base):
     # Relationships
     journal: Mapped["JournalTable"] = relationship(
         "JournalTable", back_populates="entries"
+    )
+
+    __table_args__ = (
+        # Composite indexes for journal entry queries
+        Index("ix_journal_entries_journal_timestamp", "journal_id", "timestamp"),
+        Index("ix_journal_entries_journal_type", "journal_id", "type"),
+        Index("ix_journal_entries_task_id", "task_id"),
     )
 
 
@@ -790,7 +818,12 @@ class HandoffTable(Base):
     documenter_notes: Mapped[str | None] = mapped_column(Text, nullable=True)
 
     # Relationships
-    task: Mapped["TaskTable"] = relationship("TaskTable", lazy="selectin")
-    assignee: Mapped["AgentTable | None"] = relationship("AgentTable", lazy="selectin")
+    task: Mapped["TaskTable"] = relationship("TaskTable", lazy="joined")
+    assignee: Mapped["AgentTable | None"] = relationship("AgentTable", lazy="joined")
 
-    __table_args__ = (UniqueConstraint("task_id", name="uq_handoffs_task_id"),)
+    __table_args__ = (
+        UniqueConstraint("task_id", name="uq_handoffs_task_id"),
+        # Indexes for handoff queries
+        Index("ix_handoffs_assigned_status", "assigned_to", "status"),
+        Index("ix_handoffs_status_created", "status", "created_at"),
+    )

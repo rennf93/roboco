@@ -21,10 +21,9 @@ Architecture:
 - No duplicate permission definitions - all derived from agents_config
 """
 
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, ClassVar
 from uuid import UUID
 
-import structlog
 from sqlalchemy import select
 
 if TYPE_CHECKING:
@@ -42,15 +41,14 @@ from roboco.agents_config import (
 from roboco.models import AgentRole, Team
 from roboco.models.permissions import (
     COMMUNICATION_MATRIX,
+    KB_PERMISSIONS,
     ROLE_LEVELS,
     TASK_PERMISSIONS,
     AgentContext,
     PermissionLevel,
     TaskAction,
 )
-
-logger = structlog.get_logger()
-
+from roboco.services.base import SingletonService
 
 # =============================================================================
 # CHANNEL PERMISSIONS (derived from agents_config.CHANNEL_ACCESS)
@@ -96,7 +94,7 @@ def _get_notification_scope(role: AgentRole) -> str | list[str]:
 # =============================================================================
 
 
-class PermissionService:
+class PermissionService(SingletonService):
     """
     Service for checking and enforcing permissions.
 
@@ -115,9 +113,8 @@ class PermissionService:
             await send_notification(...)
     """
 
-    def __init__(self) -> None:
-        self.log = logger.bind(component="permissions")
-        # No duplicate storage - uses agents_config.CHANNEL_ACCESS directly
+    service_name: ClassVar[str] = "permissions"
+    # No duplicate storage - uses agents_config.CHANNEL_ACCESS directly
 
     # =========================================================================
     # CHANNEL PERMISSIONS (uses agents_config.CHANNEL_ACCESS)
@@ -321,6 +318,26 @@ class PermissionService:
     ) -> set[str]:
         """Get all task actions an agent can perform."""
         return TASK_PERMISSIONS.get(agent.role, set())
+
+    # =========================================================================
+    # KNOWLEDGE BASE PERMISSIONS
+    # =========================================================================
+
+    def can_perform_kb_action(
+        self,
+        agent: AgentContext,
+        action: str,
+    ) -> bool:
+        """Check if agent can perform a knowledge base action."""
+        allowed_actions = KB_PERMISSIONS.get(agent.role, set())
+        return action in allowed_actions
+
+    def get_kb_actions(
+        self,
+        agent: AgentContext,
+    ) -> set[str]:
+        """Get all KB actions an agent can perform."""
+        return KB_PERMISSIONS.get(agent.role, set())
 
     # =========================================================================
     # UTILITY

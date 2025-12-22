@@ -4,18 +4,15 @@ Board Agents (Product Owner, Head of Marketing, Auditor)
 Implementation of Board-level workflows from the blueprint.
 """
 
-import re
 from datetime import UTC, datetime
-from pathlib import Path
 from typing import Any
 from uuid import UUID, uuid4
 
 import structlog
 
-from roboco.agents.base import Agent
-from roboco.models import AgentRole, Team
+from roboco.agents.base import Agent, AgentConfig
+from roboco.agents.mixins import CyclicPhaseConfig, CyclicPhaseRunner
 from roboco.models.agents import (
-    AgentConfig,
     AuditFlag,
     AuditorFlagSeverity,
     AuditorPhase,
@@ -34,7 +31,7 @@ logger = structlog.get_logger()
 # =============================================================================
 
 
-class ProductOwnerAgent(Agent):
+class ProductOwnerAgent(Agent, CyclicPhaseRunner[ProductOwnerPhase]):
     """
     Product Owner agent that defines what to build.
 
@@ -64,45 +61,67 @@ class ProductOwnerAgent(Agent):
         self._pending_reviews.clear()
         self.log.debug("Product Owner agent cleanup complete", agent_id=str(self.id))
 
+    # =========================================================================
+    # CYCLIC PHASE RUNNER IMPLEMENTATION
+    # =========================================================================
+
+    def _get_cyclic_phase_configs(
+        self,
+    ) -> list[CyclicPhaseConfig[ProductOwnerPhase]]:
+        """Define the Product Owner workflow phases."""
+        return [
+            CyclicPhaseConfig(
+                ProductOwnerPhase.VISION,
+                self._phase_vision,
+                ProductOwnerPhase.ROADMAP,
+            ),
+            CyclicPhaseConfig(
+                ProductOwnerPhase.ROADMAP,
+                self._phase_roadmap,
+                ProductOwnerPhase.DEFINE,
+            ),
+            CyclicPhaseConfig(
+                ProductOwnerPhase.DEFINE,
+                self._phase_define,
+                ProductOwnerPhase.PRIORITIZE,
+            ),
+            CyclicPhaseConfig(
+                ProductOwnerPhase.PRIORITIZE,
+                self._phase_prioritize,
+                ProductOwnerPhase.REVIEW,
+            ),
+            CyclicPhaseConfig(
+                ProductOwnerPhase.REVIEW,
+                self._phase_review,
+                ProductOwnerPhase.FEEDBACK,
+            ),
+            CyclicPhaseConfig(
+                ProductOwnerPhase.FEEDBACK,
+                self._phase_feedback,
+                ProductOwnerPhase.VISION,  # Cycle back
+            ),
+        ]
+
+    # =========================================================================
+    # LIFECYCLE IMPLEMENTATION
+    # =========================================================================
+
     async def find_work(self) -> UUID | None:
         """Product Owner always has work."""
         return self.id
 
     async def execute_task(self, _task_id: UUID) -> bool:
         """Execute Product Owner duties."""
-        try:
-            match self._current_phase:
-                case ProductOwnerPhase.VISION:
-                    await self._phase_vision()
-                    self._current_phase = ProductOwnerPhase.ROADMAP
-
-                case ProductOwnerPhase.ROADMAP:
-                    await self._phase_roadmap()
-                    self._current_phase = ProductOwnerPhase.DEFINE
-
-                case ProductOwnerPhase.DEFINE:
-                    await self._phase_define()
-                    self._current_phase = ProductOwnerPhase.PRIORITIZE
-
-                case ProductOwnerPhase.PRIORITIZE:
-                    await self._phase_prioritize()
-                    self._current_phase = ProductOwnerPhase.REVIEW
-
-                case ProductOwnerPhase.REVIEW:
-                    await self._phase_review()
-                    self._current_phase = ProductOwnerPhase.FEEDBACK
-
-                case ProductOwnerPhase.FEEDBACK:
-                    await self._phase_feedback()
-                    self._current_phase = ProductOwnerPhase.VISION
-
-            return False
-
-        except Exception as e:
+        error = await self._run_phase_cycle()
+        if error:
             self.log.error(
-                "Error in PO phase", phase=self._current_phase.value, error=str(e)
+                "Error in PO phase", phase=self._current_phase.value, error=error
             )
-            return False
+        return False  # Never complete - continuous duty
+
+    # =========================================================================
+    # PHASE IMPLEMENTATIONS
+    # =========================================================================
 
     async def _phase_vision(self) -> None:
         """VISION phase: Maintain product vision."""
@@ -179,7 +198,7 @@ ACCEPTED: [reason] or NEEDS_CHANGES: [what's missing]
 # =============================================================================
 
 
-class HeadMarketingAgent(Agent):
+class HeadMarketingAgent(Agent, CyclicPhaseRunner[HeadMarketingPhase]):
     """
     Head of Marketing agent.
 
@@ -209,47 +228,69 @@ class HeadMarketingAgent(Agent):
         self._market_insights.clear()
         self.log.debug("Head Marketing cleanup complete", agent_id=str(self.id))
 
+    # =========================================================================
+    # CYCLIC PHASE RUNNER IMPLEMENTATION
+    # =========================================================================
+
+    def _get_cyclic_phase_configs(
+        self,
+    ) -> list[CyclicPhaseConfig[HeadMarketingPhase]]:
+        """Define the Head of Marketing workflow phases."""
+        return [
+            CyclicPhaseConfig(
+                HeadMarketingPhase.RESEARCH,
+                self._phase_research,
+                HeadMarketingPhase.STRATEGY,
+            ),
+            CyclicPhaseConfig(
+                HeadMarketingPhase.STRATEGY,
+                self._phase_strategy,
+                HeadMarketingPhase.PLAN,
+            ),
+            CyclicPhaseConfig(
+                HeadMarketingPhase.PLAN,
+                self._phase_plan,
+                HeadMarketingPhase.CREATE,
+            ),
+            CyclicPhaseConfig(
+                HeadMarketingPhase.CREATE,
+                self._phase_create,
+                HeadMarketingPhase.EXECUTE,
+            ),
+            CyclicPhaseConfig(
+                HeadMarketingPhase.EXECUTE,
+                self._phase_execute,
+                HeadMarketingPhase.ANALYZE,
+            ),
+            CyclicPhaseConfig(
+                HeadMarketingPhase.ANALYZE,
+                self._phase_analyze,
+                HeadMarketingPhase.RESEARCH,  # Cycle back
+            ),
+        ]
+
+    # =========================================================================
+    # LIFECYCLE IMPLEMENTATION
+    # =========================================================================
+
     async def find_work(self) -> UUID | None:
         """Head of Marketing always has work."""
         return self.id
 
     async def execute_task(self, _task_id: UUID) -> bool:
         """Execute marketing duties."""
-        try:
-            match self._current_phase:
-                case HeadMarketingPhase.RESEARCH:
-                    await self._phase_research()
-                    self._current_phase = HeadMarketingPhase.STRATEGY
-
-                case HeadMarketingPhase.STRATEGY:
-                    await self._phase_strategy()
-                    self._current_phase = HeadMarketingPhase.PLAN
-
-                case HeadMarketingPhase.PLAN:
-                    await self._phase_plan()
-                    self._current_phase = HeadMarketingPhase.CREATE
-
-                case HeadMarketingPhase.CREATE:
-                    await self._phase_create()
-                    self._current_phase = HeadMarketingPhase.EXECUTE
-
-                case HeadMarketingPhase.EXECUTE:
-                    await self._phase_execute()
-                    self._current_phase = HeadMarketingPhase.ANALYZE
-
-                case HeadMarketingPhase.ANALYZE:
-                    await self._phase_analyze()
-                    self._current_phase = HeadMarketingPhase.RESEARCH
-
-            return False
-
-        except Exception as e:
+        error = await self._run_phase_cycle()
+        if error:
             self.log.error(
                 "Error in marketing phase",
                 phase=self._current_phase.value,
-                error=str(e),
+                error=error,
             )
-            return False
+        return False  # Never complete - continuous duty
+
+    # =========================================================================
+    # PHASE IMPLEMENTATIONS
+    # =========================================================================
 
     async def _phase_research(self) -> None:
         """RESEARCH phase: Market and competitor analysis."""
@@ -281,7 +322,7 @@ class HeadMarketingAgent(Agent):
 # =============================================================================
 
 
-class AuditorAgent(Agent):
+class AuditorAgent(Agent, CyclicPhaseRunner[AuditorPhase]):
     """
     Auditor agent - the CEO's secret ally.
 
@@ -319,45 +360,65 @@ class AuditorAgent(Agent):
         self._observations.clear()
         self.log.debug("Auditor agent cleanup complete", agent_id=str(self.id))
 
+    # =========================================================================
+    # CYCLIC PHASE RUNNER IMPLEMENTATION
+    # =========================================================================
+
+    def _get_cyclic_phase_configs(self) -> list[CyclicPhaseConfig[AuditorPhase]]:
+        """Define the Auditor workflow phases."""
+        return [
+            CyclicPhaseConfig(
+                AuditorPhase.OBSERVE,
+                self._phase_observe,
+                AuditorPhase.ANALYZE,
+            ),
+            CyclicPhaseConfig(
+                AuditorPhase.ANALYZE,
+                self._phase_analyze,
+                AuditorPhase.FLAG,
+            ),
+            CyclicPhaseConfig(
+                AuditorPhase.FLAG,
+                self._phase_flag,
+                AuditorPhase.REPORT,
+            ),
+            CyclicPhaseConfig(
+                AuditorPhase.REPORT,
+                self._phase_report,
+                AuditorPhase.AUDIT,
+            ),
+            CyclicPhaseConfig(
+                AuditorPhase.AUDIT,
+                self._phase_audit,
+                AuditorPhase.ADVISE,
+            ),
+            CyclicPhaseConfig(
+                AuditorPhase.ADVISE,
+                self._phase_advise,
+                AuditorPhase.OBSERVE,  # Cycle back
+            ),
+        ]
+
+    # =========================================================================
+    # LIFECYCLE IMPLEMENTATION
+    # =========================================================================
+
     async def find_work(self) -> UUID | None:
         """Auditor always has work - watching everything."""
         return self.id
 
     async def execute_task(self, _task_id: UUID) -> bool:
         """Execute Auditor duties."""
-        try:
-            match self._current_phase:
-                case AuditorPhase.OBSERVE:
-                    await self._phase_observe()
-                    self._current_phase = AuditorPhase.ANALYZE
-
-                case AuditorPhase.ANALYZE:
-                    await self._phase_analyze()
-                    self._current_phase = AuditorPhase.FLAG
-
-                case AuditorPhase.FLAG:
-                    await self._phase_flag()
-                    self._current_phase = AuditorPhase.REPORT
-
-                case AuditorPhase.REPORT:
-                    await self._phase_report()
-                    self._current_phase = AuditorPhase.AUDIT
-
-                case AuditorPhase.AUDIT:
-                    await self._phase_audit()
-                    self._current_phase = AuditorPhase.ADVISE
-
-                case AuditorPhase.ADVISE:
-                    await self._phase_advise()
-                    self._current_phase = AuditorPhase.OBSERVE
-
-            return False
-
-        except Exception as e:
+        error = await self._run_phase_cycle()
+        if error:
             self.log.error(
-                "Error in auditor phase", phase=self._current_phase.value, error=str(e)
+                "Error in auditor phase", phase=self._current_phase.value, error=error
             )
-            return False
+        return False  # Never complete - continuous duty
+
+    # =========================================================================
+    # PHASE IMPLEMENTATIONS
+    # =========================================================================
 
     async def _phase_observe(self) -> None:
         """
@@ -599,14 +660,17 @@ efficiency,warning,Unclear handoff process,3 tasks delayed,Document handoff step
         except Exception as e:
             self.log.error("Failed to send CEO report", error=str(e))
 
-    async def _audit_code_quality(self, tasks: list[dict]) -> str | None:
+    async def _audit_code_quality(self, tasks: list[dict[str, Any]]) -> str | None:
         """Audit code quality from completed tasks."""
         if not tasks:
             return None
+        task_lines = [
+            f"- {t.get('title')}: {t.get('description', '')[:100]}" for t in tasks
+        ]
         prompt = f"""
 Analyze these completed tasks for code quality patterns:
 
-{chr(10).join(f"- {t.get('title')}: {t.get('description', '')[:100]}" for t in tasks)}
+{chr(10).join(task_lines)}
 
 Look for:
 - Rushed work patterns
@@ -618,14 +682,16 @@ Report findings or None if all looks good.
 """
         return await self.think(prompt)
 
-    async def _audit_documentation(self, tasks: list[dict]) -> str | None:
+    async def _audit_documentation(self, tasks: list[dict[str, Any]]) -> str | None:
         """Audit documentation completeness."""
         missing_docs = [t for t in tasks if not t.get("documentation_complete")]
         if missing_docs:
             return f"Found {len(missing_docs)} tasks with incomplete documentation"
         return None
 
-    async def _audit_process_compliance(self, tasks: list[dict]) -> str | None:
+    async def _audit_process_compliance(
+        self, tasks: list[dict[str, Any]]
+    ) -> str | None:
         """Audit process compliance."""
         violations = [
             f"{t.get('title')} - no QA" for t in tasks if not t.get("qa_passed")
@@ -657,89 +723,3 @@ Report findings or None if all looks good.
         except Exception as e:
             self.log.warning("Failed to perform audit", error=str(e))
             return None
-
-
-# =============================================================================
-# FACTORY FUNCTIONS
-# =============================================================================
-
-
-def create_product_owner(
-    name: str = "Product Owner",
-    system_prompt: str | None = None,
-) -> ProductOwnerAgent:
-    """Factory function to create the Product Owner agent."""
-    if system_prompt is None:
-        blueprint_path = Path("agents/blueprints/board/product-owner.md")
-        if blueprint_path.exists():
-            content = blueprint_path.read_text()
-            match = re.search(r"## System Prompt\s*```\s*(.*?)```", content, re.DOTALL)
-            system_prompt = match.group(1).strip() if match else ""
-        else:
-            system_prompt = "You are the Product Owner."
-
-    config = AgentConfig(
-        name=name,
-        slug="product-owner",
-        role=AgentRole.PRODUCT_OWNER,
-        team=Team.BOARD,
-        system_prompt=system_prompt,
-        capabilities=["requirements", "prioritization", "acceptance"],
-        can_notify=True,
-    )
-
-    return ProductOwnerAgent(config)
-
-
-def create_head_marketing(
-    name: str = "Head of Marketing",
-    system_prompt: str | None = None,
-) -> HeadMarketingAgent:
-    """Factory function to create the Head of Marketing agent."""
-    if system_prompt is None:
-        blueprint_path = Path("agents/blueprints/board/head-marketing.md")
-        if blueprint_path.exists():
-            content = blueprint_path.read_text()
-            match = re.search(r"## System Prompt\s*```\s*(.*?)```", content, re.DOTALL)
-            system_prompt = match.group(1).strip() if match else ""
-        else:
-            system_prompt = "You are the Head of Marketing."
-
-    config = AgentConfig(
-        name=name,
-        slug="head-marketing",
-        role=AgentRole.HEAD_MARKETING,
-        team=Team.BOARD,
-        system_prompt=system_prompt,
-        capabilities=["marketing", "campaigns", "analytics"],
-        can_notify=True,
-    )
-
-    return HeadMarketingAgent(config)
-
-
-def create_auditor(
-    name: str = "Auditor",
-    system_prompt: str | None = None,
-) -> AuditorAgent:
-    """Factory function to create the Auditor agent."""
-    if system_prompt is None:
-        blueprint_path = Path("agents/blueprints/board/auditor.md")
-        if blueprint_path.exists():
-            content = blueprint_path.read_text()
-            match = re.search(r"## System Prompt\s*```\s*(.*?)```", content, re.DOTALL)
-            system_prompt = match.group(1).strip() if match else ""
-        else:
-            system_prompt = "You are the Auditor - the CEO's silent ally."
-
-    config = AgentConfig(
-        name=name,
-        slug="auditor",
-        role=AgentRole.AUDITOR,
-        team=Team.BOARD,
-        system_prompt=system_prompt,
-        capabilities=["observation", "analysis", "audit", "ceo_reporting"],
-        can_notify=True,
-    )
-
-    return AuditorAgent(config)

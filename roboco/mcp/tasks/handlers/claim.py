@@ -1,0 +1,81 @@
+"""
+Task Claim Handler
+
+Handler for claiming tasks.
+"""
+
+from typing import Any
+
+from roboco.agents_config import get_agent_role
+from roboco.mcp.tasks import format_task_response
+from roboco.mcp.tasks.handlers._helpers import (
+    check_blocking_tasks,
+    check_paused_tasks,
+    fetch_task_or_error,
+    get_project_context,
+    validate_task_claimable,
+)
+from roboco.mcp.utils import ApiClient, format_error_response
+
+
+async def _check_active_tasks(client: ApiClient) -> dict[str, Any] | None:
+    """Check for blocking or paused tasks. Returns error or None."""
+    active_resp = await client.get("/tasks/my")
+    if not active_resp.ok:
+        return None
+    active_tasks = active_resp.json()
+    if error := check_blocking_tasks(active_tasks):
+        return error
+    return check_paused_tasks(active_tasks)
+
+
+async def _execute_claim(
+    client: ApiClient, task_id: str, agent_id: str
+) -> tuple[dict[str, Any] | None, dict[str, Any] | None]:
+    """Execute the claim API call. Returns (task, None) or (None, error)."""
+    claim_resp = await client.post(
+        f"/tasks/{task_id}/claim",
+        json={"agent_id": agent_id},
+    )
+    if not claim_resp.ok:
+        return None, format_error_response(
+            "CLAIM_FAILED", "Failed to claim task", {"api_error": claim_resp.text}
+        )
+    claimed: dict[str, Any] = claim_resp.json()
+    return claimed, None
+
+
+async def handle_task_claim(
+    client: ApiClient, task_id: str, agent_id: str
+) -> dict[str, Any]:
+    """Handle task claiming."""
+    if error := await _check_active_tasks(client):
+        return error
+
+    task, error = await fetch_task_or_error(client, task_id)
+    if error:
+        return error
+    assert task is not None
+
+    agent_role = get_agent_role(agent_id)
+    if error := validate_task_claimable(task, agent_role):
+        return error
+
+    claimed_task, error = await _execute_claim(client, task_id, agent_id)
+    if error:
+        return error
+    assert claimed_task is not None
+
+    project = None
+    if claimed_task.get("project_id"):
+        project = await get_project_context(client, claimed_task["project_id"])
+
+    return format_task_response(
+        claimed_task,
+        "UNDERSTAND",
+        "Task claimed successfully. "
+        "Read the description and acceptance criteria carefully. "
+        "Ask questions if ANYTHING is unclear - do not guess. "
+        "When ready, create your plan with roboco_task_plan.",
+        project=project,
+    )

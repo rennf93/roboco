@@ -6,10 +6,9 @@ Tracks velocity, blockers, completion rates, and agent performance.
 """
 
 from datetime import UTC, datetime, timedelta
-from typing import Any
+from typing import Any, ClassVar
 from uuid import UUID
 
-import structlog
 from sqlalchemy import and_, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -21,12 +20,45 @@ from roboco.models.metrics import (
     TeamMetrics,
     VelocityMetrics,
 )
+from roboco.services.base import BaseService
 from roboco.utils.converters import to_python_uuid
 
-logger = structlog.get_logger()
+# Constants
+DEFAULT_VELOCITY_DAYS = 7
+DEFAULT_COMM_HOURS = 24
+HOURS_PER_DAY = 24
+SECONDS_PER_HOUR = 3600
+
+# Active task statuses for queries
+ACTIVE_STATUSES = frozenset({
+    TaskStatus.CLAIMED,
+    TaskStatus.IN_PROGRESS,
+    TaskStatus.VERIFYING,
+    TaskStatus.AWAITING_QA,
+})
+
+# Health thresholds
+CRITICAL_BLOCKED_RATIO = 0.3
+SLOW_BLOCKED_RATIO = 0.15
+STALE_TASK_THRESHOLD = 5
 
 
-class MetricsService:
+def _calculate_completion_rate(completed: int, created: int) -> float:
+    """Calculate task completion rate."""
+    return completed / created if created > 0 else 0.0
+
+
+def _calculate_avg_blocked_hours(blocked_hours: list[float]) -> float | None:
+    """Calculate average blocked hours from list."""
+    return sum(blocked_hours) / len(blocked_hours) if blocked_hours else None
+
+
+def _format_period(days: int) -> str:
+    """Format days as period string."""
+    return f"{days}d"
+
+
+class MetricsService(BaseService):
     """
     Service for collecting and aggregating metrics.
 
@@ -37,8 +69,7 @@ class MetricsService:
     - Communication volume
     """
 
-    def __init__(self, session: AsyncSession):
-        self.session = session
+    service_name: ClassVar[str] = "metrics"
 
     # =========================================================================
     # VELOCITY METRICS
@@ -97,13 +128,10 @@ class MetricsService:
         avg_result = await self.session.execute(avg_query)
         avg_hours = avg_result.scalar()
 
-        # Completion rate
-        completion_rate = 0.0
-        if tasks_created > 0:
-            completion_rate = tasks_completed / tasks_created
+        completion_rate = _calculate_completion_rate(tasks_completed, tasks_created)
 
         return VelocityMetrics(
-            period=f"{days}d",
+            period=_format_period(days),
             tasks_completed=tasks_completed,
             tasks_created=tasks_created,
             avg_completion_hours=round(avg_hours, 2) if avg_hours else None,
@@ -146,7 +174,7 @@ class MetricsService:
                 longest_hours = hours
                 longest_task_id = task.id
 
-        avg_blocked = sum(blocked_hours) / len(blocked_hours) if blocked_hours else None
+        avg_blocked = _calculate_avg_blocked_hours(blocked_hours)
 
         # Count blockers by team
         team_result = await self.session.execute(
@@ -404,15 +432,11 @@ class MetricsService:
         completed_count: int,
     ) -> str:
         """Determine health status from metrics."""
-        critical_threshold = 0.3
-        slow_threshold = 0.15
-        stale_threshold = 5
-
-        if blocked_ratio > critical_threshold:
+        if blocked_ratio > CRITICAL_BLOCKED_RATIO:
             return "critical"
-        if blocked_ratio > slow_threshold:
+        if blocked_ratio > SLOW_BLOCKED_RATIO:
             return "slow"
-        if active_count > stale_threshold and completed_count == 0:
+        if active_count > STALE_TASK_THRESHOLD and completed_count == 0:
             return "slow"
         return "ok"
 

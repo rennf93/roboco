@@ -53,6 +53,18 @@ class TaskAction:
     CHANGE_PRIORITY = "change_priority"
 
 
+class KBAction:
+    """Knowledge base actions that require permission."""
+
+    INDEX_CODE = "index_code"
+    INDEX_DOCS = "index_docs"
+    SEARCH = "search"
+    QUERY = "query"
+    VIEW_STATS = "view_stats"
+    CLEAR_INDEX = "clear_index"
+    REFRESH_INDEX = "refresh_index"
+
+
 @dataclass
 class AgentContext:
     """Context for permission checks."""
@@ -204,5 +216,66 @@ TASK_PERMISSIONS: dict[AgentRole, set[str]] = {
         TaskAction.CLAIM,
         TaskAction.UPDATE_OWN,
         TaskAction.CLOSE,  # Documenters complete tasks after documentation
+    },
+}
+
+
+# Knowledge Base permissions - defines who can perform KB operations
+KB_PERMISSIONS: dict[AgentRole, set[str]] = {
+    AgentRole.CEO: {
+        KBAction.INDEX_CODE,
+        KBAction.INDEX_DOCS,
+        KBAction.SEARCH,
+        KBAction.QUERY,
+        KBAction.VIEW_STATS,
+        KBAction.CLEAR_INDEX,
+        KBAction.REFRESH_INDEX,
+    },
+    AgentRole.PRODUCT_OWNER: {
+        KBAction.INDEX_DOCS,
+        KBAction.SEARCH,
+        KBAction.QUERY,
+        KBAction.VIEW_STATS,
+    },
+    AgentRole.HEAD_MARKETING: {
+        KBAction.INDEX_DOCS,
+        KBAction.SEARCH,
+        KBAction.QUERY,
+    },
+    AgentRole.AUDITOR: {
+        KBAction.SEARCH,
+        KBAction.QUERY,
+        KBAction.VIEW_STATS,
+    },
+    AgentRole.MAIN_PM: {
+        KBAction.INDEX_CODE,
+        KBAction.INDEX_DOCS,
+        KBAction.SEARCH,
+        KBAction.QUERY,
+        KBAction.VIEW_STATS,
+        KBAction.CLEAR_INDEX,
+        KBAction.REFRESH_INDEX,
+    },
+    AgentRole.CELL_PM: {
+        KBAction.INDEX_CODE,
+        KBAction.INDEX_DOCS,
+        KBAction.SEARCH,
+        KBAction.QUERY,
+        KBAction.VIEW_STATS,
+    },
+    AgentRole.DEVELOPER: {
+        KBAction.INDEX_CODE,
+        KBAction.INDEX_DOCS,
+        KBAction.SEARCH,
+        KBAction.QUERY,
+    },
+    AgentRole.QA: {
+        KBAction.SEARCH,
+        KBAction.QUERY,
+    },
+    AgentRole.DOCUMENTER: {
+        KBAction.INDEX_DOCS,
+        KBAction.SEARCH,
+        KBAction.QUERY,
     },
 }

@@ -21,14 +21,11 @@ from roboco.api.schemas.notifications import (
     build_notification_query,
     notification_to_response,
 )
+from roboco.api.utils import get_or_404, require_recipient
 from roboco.db.tables import AgentTable, NotificationTable
 from roboco.enforcement import (
     NotificationPermissionError,
     validate_notification_permission,
-)
-from roboco.services.notification import (
-    get_notification_or_404,
-    require_notification_recipient,
 )
 
 router = APIRouter()
@@ -81,8 +78,10 @@ async def get_notification(
     notification_id: UUID,
 ) -> NotificationResponse:
     """Get a notification."""
-    notification = await get_notification_or_404(db, notification_id)
-    require_notification_recipient(notification, agent_id)
+    notification = await get_or_404(
+        db, NotificationTable, notification_id, "Notification"
+    )
+    require_recipient(notification.to_agents, agent_id, "view notification")
 
     # Mark as read
     if agent_id not in notification.read_by:
@@ -174,8 +173,10 @@ async def acknowledge_notification(
     notification_id: UUID,
 ) -> NotificationResponse:
     """Acknowledge a notification."""
-    notification = await get_notification_or_404(db, notification_id)
-    require_notification_recipient(notification, agent_id)
+    notification = await get_or_404(
+        db, NotificationTable, notification_id, "Notification"
+    )
+    require_recipient(notification.to_agents, agent_id, "acknowledge notification")
 
     if not notification.requires_ack:
         raise HTTPException(
@@ -211,8 +212,10 @@ async def mark_as_read(
     notification_id: UUID,
 ) -> None:
     """Mark a notification as read."""
-    notification = await get_notification_or_404(db, notification_id)
-    require_notification_recipient(notification, agent_id)
+    notification = await get_or_404(
+        db, NotificationTable, notification_id, "Notification"
+    )
+    require_recipient(notification.to_agents, agent_id, "mark notification read")
 
     if agent_id not in notification.read_by:
         notification.read_by = [*notification.read_by, agent_id]

@@ -6,7 +6,7 @@ Manages flags, reports, and aggregated metrics.
 """
 
 from datetime import UTC, datetime
-from typing import Any
+from typing import Any, ClassVar
 from uuid import UUID, uuid4
 
 from sqlalchemy import and_, func, select
@@ -23,6 +23,7 @@ from roboco.models.dashboard import (
     ReportData,
     TeamHealthData,
 )
+from roboco.services.base import BaseService
 from roboco.services.metrics import MetricsService, get_metrics_service
 from roboco.utils.converters import require_uuid
 
@@ -54,7 +55,7 @@ def reset_storage() -> None:
 # =============================================================================
 
 
-class DashboardService:
+class DashboardService(BaseService):
     """
     Service for dashboard business logic.
 
@@ -65,8 +66,10 @@ class DashboardService:
     - Channel status computations
     """
 
+    service_name: ClassVar[str] = "dashboard"
+
     def __init__(self, db: AsyncSession) -> None:
-        self.db = db
+        super().__init__(db)
         self._storage = get_storage()
         self._metrics: MetricsService | None = None
 
@@ -74,7 +77,7 @@ class DashboardService:
     def metrics(self) -> MetricsService:
         """Lazy-load metrics service."""
         if self._metrics is None:
-            self._metrics = get_metrics_service(self.db)
+            self._metrics = get_metrics_service(self.session)
         return self._metrics
 
     # =========================================================================
@@ -199,7 +202,7 @@ class DashboardService:
 
     async def get_channel_feeds(self) -> list[ChannelFeedData]:
         """Get live feed status for all channels."""
-        result = await self.db.execute(select(ChannelTable))
+        result = await self.session.execute(select(ChannelTable))
         channels = result.scalars().all()
 
         feeds = []
@@ -240,7 +243,7 @@ class DashboardService:
         queue: list[AuditQueueItem] = []
 
         # Tasks blocked
-        blocked_result = await self.db.execute(
+        blocked_result = await self.session.execute(
             select(TaskTable).where(TaskTable.status == TaskStatus.BLOCKED)
         )
         for task in blocked_result.scalars().all():
@@ -254,7 +257,7 @@ class DashboardService:
             )
 
         # Tasks awaiting QA
-        qa_result = await self.db.execute(
+        qa_result = await self.session.execute(
             select(TaskTable).where(TaskTable.status == TaskStatus.AWAITING_QA)
         )
         for task in qa_result.scalars().all():
@@ -320,12 +323,12 @@ class DashboardService:
 
     async def get_roadmap_progress(self) -> dict[str, Any]:
         """Get roadmap progress from high-priority tasks."""
-        total_result = await self.db.execute(
+        total_result = await self.session.execute(
             select(func.count(TaskTable.id)).where(TaskTable.priority <= 1)
         )
         total_priority = total_result.scalar() or 0
 
-        completed_result = await self.db.execute(
+        completed_result = await self.session.execute(
             select(func.count(TaskTable.id)).where(
                 and_(
                     TaskTable.priority <= 1,

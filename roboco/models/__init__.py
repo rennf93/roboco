@@ -9,6 +9,7 @@ from roboco.models.agent import (
     Agent,
     AgentCreate,
     AgentUpdate,
+    ModelConfig,
 )
 from roboco.models.base import (
     AgentRole,
@@ -18,6 +19,7 @@ from roboco.models.base import (
     HandoffStatus,
     JournalEntryType,
     MessageType,
+    ModelProvider,
     NotificationPriority,
     NotificationType,
     # Base types
@@ -117,6 +119,8 @@ __all__ = [
     "MessageCreate",
     "MessageEdit",
     "MessageType",
+    "ModelConfig",
+    "ModelProvider",
     "Notification",
     "NotificationCreate",
     "NotificationPriority",

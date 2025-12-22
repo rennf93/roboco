@@ -6,20 +6,18 @@ All audit logs are persisted and queryable.
 """
 
 from datetime import UTC, datetime
+from typing import ClassVar
 from uuid import UUID
-
-import structlog
 
 from roboco.models.audit import (
     AuditEventType,
     PermissionDenialContext,
     StateTransitionDenialContext,
 )
+from roboco.services.base import SingletonService
 
-logger = structlog.get_logger()
 
-
-class AuditService:
+class AuditService(SingletonService):
     """
     Service for logging audit events.
 
@@ -41,8 +39,7 @@ class AuditService:
         logs = await audit.get_recent_denials(limit=50)
     """
 
-    def __init__(self) -> None:
-        self.log = logger.bind(service="audit")
+    service_name: ClassVar[str] = "audit"
 
     # =========================================================================
     # LOGGING METHODS

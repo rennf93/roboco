@@ -1,7 +1,10 @@
 """
-Agent Models
+Agent Runtime Models
 
-Domain types for the agent system including phases, configs, and contexts.
+Domain types for the agent runtime system including phases, configs, and contexts.
+These models are used by the agent implementations (developer, qa, pm, etc.) at runtime.
+
+For API/persistence models, see roboco.models.agent.
 """
 
 from dataclasses import dataclass, field
@@ -13,27 +16,22 @@ from uuid import UUID, uuid4
 from pydantic import BaseModel, Field
 
 from roboco.models import AgentRole, AgentStatus, Team
+from roboco.models.agent import ModelConfig
+from roboco.models.base import ModelProvider
 
 # =============================================================================
-# MODEL PROVIDER
-# =============================================================================
-
-
-class ModelProvider(str, Enum):
-    """LLM provider options."""
-
-    ANTHROPIC = "anthropic"
-    OPENAI = "openai"
-    LOCAL = "local"
-
-
-# =============================================================================
-# AGENT CONFIGURATION
+# AGENT RUNTIME CONFIGURATION
 # =============================================================================
 
 
 class AgentConfig(BaseModel):
-    """Configuration for an agent instance."""
+    """
+    Runtime configuration for an agent instance.
+
+    This is used by the agent runtime (base.py, developer.py, etc.) to configure
+    agent behavior. It aligns with the Agent model in roboco.models.agent but is
+    optimized for runtime use.
+    """
 
     # Identity
     id: UUID = Field(default_factory=uuid4)
@@ -42,11 +40,11 @@ class AgentConfig(BaseModel):
     role: AgentRole
     team: Team | None = None
 
-    # Model configuration
-    provider: ModelProvider = ModelProvider.ANTHROPIC
-    model: str = "claude-sonnet-4-20250514"
-    temperature: float = Field(default=0.7, ge=0.0, le=2.0)
-    max_tokens: int = Field(default=4096, ge=1)
+    # Model configuration (aligned with agent.py ModelConfig)
+    model_config_data: ModelConfig = Field(
+        default_factory=lambda: ModelConfig(),
+        description="LLM model configuration",
+    )
 
     # System prompt (loaded from blueprints)
     system_prompt: str
@@ -57,6 +55,27 @@ class AgentConfig(BaseModel):
     # Permissions
     can_notify: bool = False
     channel_ids: list[UUID] = Field(default_factory=list)
+
+    # Convenience properties for backward compatibility
+    @property
+    def provider(self) -> ModelProvider:
+        """Get the model provider."""
+        return self.model_config_data.provider
+
+    @property
+    def model(self) -> str:
+        """Get the model name."""
+        return self.model_config_data.name
+
+    @property
+    def temperature(self) -> float:
+        """Get the temperature setting."""
+        return self.model_config_data.temperature
+
+    @property
+    def max_tokens(self) -> int:
+        """Get the max tokens setting."""
+        return self.model_config_data.max_tokens
 
 
 class AgentState(BaseModel):

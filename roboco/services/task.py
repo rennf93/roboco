@@ -6,10 +6,9 @@ Handles status transitions, assignments, and queries.
 """
 
 from datetime import UTC, datetime
-from typing import Any, cast
+from typing import Any, ClassVar, cast
 from uuid import UUID
 
-import structlog
 from sqlalchemy import and_, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -20,12 +19,51 @@ from roboco.enforcement import (
 )
 from roboco.models.base import TaskStatus, Team
 from roboco.models.task import TaskCreateRequest
-
-logger = structlog.get_logger()
+from roboco.services.base import BaseService
 
 # UUID format constants for validation
 _UUID_LENGTH = 36  # Standard UUID string length
 _UUID_HYPHEN_COUNT = 4  # Number of hyphens in a UUID
+
+
+def _get_valid_claim_statuses(
+    agent: AgentTable | None,
+    allow_reassign: bool,
+) -> set[TaskStatus]:
+    """
+    Get valid task statuses an agent can claim based on their role.
+
+    Role-based claiming:
+    - QA: can only claim AWAITING_QA tasks
+    - Documenter: can only claim AWAITING_DOCUMENTATION tasks
+    - Developers/PMs: can claim PENDING (and CLAIMED if allow_reassign)
+
+    Args:
+        agent: The agent attempting to claim
+        allow_reassign: Whether to allow claiming already-claimed tasks
+
+    Returns:
+        Set of valid TaskStatus values the agent can claim
+    """
+    if not agent or not agent.role:
+        # No role info - default to pending tasks only
+        statuses = {TaskStatus.PENDING}
+        if allow_reassign:
+            statuses.add(TaskStatus.CLAIMED)
+        return statuses
+
+    role = agent.role.value if hasattr(agent.role, "value") else str(agent.role)
+
+    if role == "qa":
+        return {TaskStatus.AWAITING_QA}
+    elif role == "documenter":
+        return {TaskStatus.AWAITING_DOCUMENTATION}
+    else:
+        # Developer, PM, and other roles
+        statuses = {TaskStatus.PENDING}
+        if allow_reassign:
+            statuses.add(TaskStatus.CLAIMED)
+        return statuses
 
 
 def extract_original_developer(quick_context: str | None) -> str | None:
@@ -58,7 +96,7 @@ def extract_original_developer(quick_context: str | None) -> str | None:
         return None
 
 
-class TaskService:
+class TaskService(BaseService):
     """
     Service for managing tasks.
 
@@ -70,8 +108,7 @@ class TaskService:
     - Dependency management
     """
 
-    def __init__(self, session: AsyncSession):
-        self.session = session
+    service_name: ClassVar[str] = "task"
 
     # =========================================================================
     # CRUD OPERATIONS
@@ -94,7 +131,7 @@ class TaskService:
         self.session.add(task)
         await self.session.flush()
 
-        logger.info(
+        self.log.info(
             "Task created",
             task_id=str(task.id),
             title=req.title,
@@ -125,7 +162,7 @@ class TaskService:
 
         await self.session.flush()
 
-        logger.info(
+        self.log.info(
             "Task updated",
             task_id=str(task_id),
             updates=list(updates.keys()),
@@ -141,12 +178,59 @@ class TaskService:
         await self.session.delete(task)
         await self.session.flush()
 
-        logger.info("Task deleted", task_id=str(task_id))
+        self.log.info("Task deleted", task_id=str(task_id))
         return True
 
     # =========================================================================
     # STATUS TRANSITIONS
     # =========================================================================
+
+    def _validate_claim_status(
+        self,
+        task: TaskTable,
+        agent: AgentTable | None,
+        valid_statuses: set[TaskStatus],
+    ) -> str | None:
+        """
+        Validate task status for claiming.
+
+        Returns:
+            Error message if invalid, None if valid
+        """
+        role_specific = {TaskStatus.AWAITING_QA, TaskStatus.AWAITING_DOCUMENTATION}
+        if not agent and task.status in role_specific:
+            return "role required for this status"
+        if task.status not in valid_statuses:
+            return "invalid status for role"
+        return None
+
+    def _validate_claim_team(
+        self, task: TaskTable, agent: AgentTable | None
+    ) -> str | None:
+        """
+        Validate agent belongs to task's team.
+
+        Returns:
+            Error message if invalid, None if valid
+        """
+        if agent and task.team and agent.team != task.team:
+            return "agent not in task's team"
+        return None
+
+    def _set_original_developer_context(
+        self, task: TaskTable, agent: AgentTable | None
+    ) -> None:
+        """Set original developer context for QA/Documenter claims."""
+        if not agent or not agent.role:
+            return
+        role = agent.role.value if hasattr(agent.role, "value") else str(agent.role)
+        if role not in ("qa", "documenter"):
+            return
+        existing_context = task.quick_context or ""
+        if "original_developer:" in existing_context:
+            return
+        if task.assigned_to:
+            task.quick_context = f"original_developer:{task.assigned_to}"
 
     async def claim(
         self, task_id: UUID, agent_id: UUID, allow_reassign: bool = False
@@ -154,114 +238,43 @@ class TaskService:
         """
         Claim a task for an agent.
 
-        Validates:
-        - Task exists and is in a claimable status for the agent's role
-        - Agent belongs to the same team as the task
-
         Role-based claiming:
         - Developers/PMs: can claim PENDING tasks
         - QA: can claim AWAITING_QA tasks
         - Documenters: can claim AWAITING_DOCUMENTATION tasks
-
-        Args:
-            task_id: Task to claim
-            agent_id: Agent claiming the task
-            allow_reassign: If True, allows reassigning CLAIMED tasks
         """
         task = await self.get(task_id)
         if not task:
             return None
 
-        # Get agent to determine role-based valid statuses
+        # Get agent for role-based validation
         agent_result = await self.session.execute(
             select(AgentTable).where(AgentTable.id == agent_id)
         )
         agent = agent_result.scalar_one_or_none()
+        valid_statuses = _get_valid_claim_statuses(agent, allow_reassign)
 
-        # Role-based claiming: each role can only claim specific statuses
-        # QA → awaiting_qa only, Documenter → awaiting_documentation only
-        # Developers/PMs → pending (and claimed if allow_reassign)
-        valid_statuses: set[TaskStatus] = set()
-
-        if agent and agent.role:
-            role = agent.role.value if hasattr(agent.role, "value") else str(agent.role)
-            if role == "qa":
-                # QA can ONLY claim awaiting_qa tasks
-                valid_statuses.add(TaskStatus.AWAITING_QA)
-            elif role == "documenter":
-                # Documenter can ONLY claim awaiting_documentation tasks
-                valid_statuses.add(TaskStatus.AWAITING_DOCUMENTATION)
-            else:
-                # Developer, PM, and other roles claim pending tasks
-                valid_statuses.add(TaskStatus.PENDING)
-                if allow_reassign:
-                    valid_statuses.add(TaskStatus.CLAIMED)
-        elif task.status in {TaskStatus.AWAITING_QA, TaskStatus.AWAITING_DOCUMENTATION}:
-            # No role information - reject claims for role-specific statuses
-            logger.warning(
-                "Cannot claim task - role required for this status",
-                task_id=str(task_id),
-                task_status=task.status.value,
-                agent_id=str(agent_id),
-                has_agent=agent is not None,
-                agent_role="none",
-            )
-            return None
-        else:
-            # No role info but task is pending - allow claim (fallback)
-            valid_statuses.add(TaskStatus.PENDING)
-            if allow_reassign:
-                valid_statuses.add(TaskStatus.CLAIMED)
-
-        if task.status not in valid_statuses:
-            logger.warning(
-                "Cannot claim task - invalid status for role",
-                task_id=str(task_id),
-                current_status=task.status.value,
-                agent_role=agent.role.value if agent and agent.role else "unknown",
-                valid_statuses=[s.value for s in valid_statuses],
-            )
+        # Validate status
+        if error := self._validate_claim_status(task, agent, valid_statuses):
+            self.log.warning(f"Cannot claim task - {error}", task_id=str(task_id))
             return None
 
-        # Validate agent belongs to the task's team (agent already fetched above)
-        if agent and task.team and agent.team != task.team:
-            logger.warning(
-                "Cannot claim task - agent not in task's team",
-                task_id=str(task_id),
-                agent_team=agent.team.value if agent.team else None,
-                task_team=task.team.value,
-            )
+        # Validate team
+        if error := self._validate_claim_team(task, agent):
+            self.log.warning(f"Cannot claim task - {error}", task_id=str(task_id))
             return None
 
-        # For QA/Documenter claiming, ensure original_developer is set for
-        # self-review checks. Primary storage is in submit_for_qa, but we set
-        # here as fallback (e.g., if task was created directly in awaiting_qa)
-        if agent and agent.role:
-            role = agent.role.value if hasattr(agent.role, "value") else str(agent.role)
-            if role in ("qa", "documenter"):
-                # Only set if not already stored by submit_for_qa
-                existing_context = task.quick_context or ""
-                if "original_developer:" not in existing_context:
-                    original_dev = str(task.assigned_to) if task.assigned_to else None
-                    if original_dev:
-                        task.quick_context = f"original_developer:{original_dev}"
+        # Set context for QA/Documenter claims
+        self._set_original_developer_context(task, agent)
 
-        # All roles: update assigned_to and claimed_at
+        # Update assignment
         task.assigned_to = cast("Any", agent_id)
         task.claimed_at = datetime.now(UTC)
-
-        # Only change status to CLAIMED for developers/PMs (pending tasks)
-        # QA/Documenter keep the awaiting_qa/awaiting_documentation status
         if task.status == TaskStatus.PENDING:
             task.status = TaskStatus.CLAIMED
 
         await self.session.flush()
-
-        logger.info(
-            "Task claimed",
-            task_id=str(task_id),
-            agent_id=str(agent_id),
-        )
+        self.log.info("Task claimed", task_id=str(task_id), agent_id=str(agent_id))
         return task
 
     async def start(
@@ -293,7 +306,7 @@ class TaskService:
                     action="start",
                 )
             except TaskOwnershipError as e:
-                logger.warning(
+                self.log.warning(
                     "Cannot start task - ownership validation failed",
                     task_id=str(task_id),
                     agent_id=str(agent_id),
@@ -311,7 +324,7 @@ class TaskService:
             TaskStatus.NEEDS_REVISION,
         )
         if task.status not in valid_start_statuses:
-            logger.warning(
+            self.log.warning(
                 "Cannot start task - invalid status",
                 task_id=str(task_id),
                 current_status=task.status.value,
@@ -324,7 +337,7 @@ class TaskService:
         task.status = TaskStatus.IN_PROGRESS
         await self.session.flush()
 
-        logger.info("Task started", task_id=str(task_id))
+        self.log.info("Task started", task_id=str(task_id))
         return task
 
     async def block(self, task_id: UUID, blocker_task_id: UUID) -> TaskTable | None:
@@ -345,7 +358,7 @@ class TaskService:
             blocker.blocker_ids = [*blocker.blocker_ids, task_id]
             await self.session.flush()
 
-        logger.info(
+        self.log.info(
             "Task blocked",
             task_id=str(task_id),
             blocker_id=str(blocker_task_id),
@@ -399,7 +412,7 @@ class TaskService:
         task.status = TaskStatus.BLOCKED
         await self.session.flush()
 
-        logger.info(
+        self.log.info(
             "Task soft-blocked",
             task_id=str(task_id),
             blocker_type=blocker_type,
@@ -419,7 +432,7 @@ class TaskService:
         task.status = TaskStatus.IN_PROGRESS
         await self.session.flush()
 
-        logger.info("Task unblocked", task_id=str(task_id))
+        self.log.info("Task unblocked", task_id=str(task_id))
         return task
 
     async def pause(self, task_id: UUID) -> TaskTable | None:
@@ -434,7 +447,7 @@ class TaskService:
         task.status = TaskStatus.PAUSED
         await self.session.flush()
 
-        logger.info("Task paused", task_id=str(task_id))
+        self.log.info("Task paused", task_id=str(task_id))
         return task
 
     async def resume(self, task_id: UUID) -> TaskTable | None:
@@ -449,7 +462,7 @@ class TaskService:
         task.status = TaskStatus.IN_PROGRESS
         await self.session.flush()
 
-        logger.info("Task resumed", task_id=str(task_id))
+        self.log.info("Task resumed", task_id=str(task_id))
         return task
 
     async def submit_for_verification(self, task_id: UUID) -> TaskTable | None:
@@ -464,7 +477,7 @@ class TaskService:
         task.status = TaskStatus.VERIFYING
         await self.session.flush()
 
-        logger.info("Task submitted for verification", task_id=str(task_id))
+        self.log.info("Task submitted for verification", task_id=str(task_id))
         return task
 
     async def submit_for_qa(self, task_id: UUID) -> TaskTable | None:
@@ -487,7 +500,7 @@ class TaskService:
         task.status = TaskStatus.AWAITING_QA
         await self.session.flush()
 
-        logger.info(
+        self.log.info(
             "Task submitted for QA",
             task_id=str(task_id),
             original_developer=original_dev,
@@ -511,7 +524,7 @@ class TaskService:
         task.status = TaskStatus.AWAITING_DOCUMENTATION
         await self.session.flush()
 
-        logger.info("Task passed QA", task_id=str(task_id))
+        self.log.info("Task passed QA", task_id=str(task_id))
         return task
 
     async def fail_qa(self, task_id: UUID, notes: str) -> TaskTable | None:
@@ -537,7 +550,7 @@ class TaskService:
         original_dev = extract_original_developer(task.quick_context)
         if original_dev:
             task.assigned_to = cast("Any", UUID(original_dev))
-            logger.info(
+            self.log.info(
                 "Task reassigned to original developer for revision",
                 task_id=str(task_id),
                 original_developer=original_dev,
@@ -545,14 +558,14 @@ class TaskService:
         else:
             # If no original developer found, unassign so it can be claimed
             task.assigned_to = None
-            logger.warning(
+            self.log.warning(
                 "No original developer found, task unassigned",
                 task_id=str(task_id),
             )
 
         await self.session.flush()
 
-        logger.info("Task failed QA", task_id=str(task_id))
+        self.log.info("Task failed QA", task_id=str(task_id))
         return task
 
     async def docs_complete(
@@ -578,7 +591,7 @@ class TaskService:
             return None
 
         if task.status != TaskStatus.AWAITING_DOCUMENTATION:
-            logger.warning(
+            self.log.warning(
                 "Cannot mark docs complete - not awaiting documentation",
                 task_id=str(task_id),
                 current_status=task.status.value,
@@ -613,7 +626,7 @@ class TaskService:
         # The task remains assigned to documenter until PM claims it
         await self.session.flush()
 
-        logger.info(
+        self.log.info(
             "Documentation complete, awaiting PM review",
             task_id=str(task_id),
         )
@@ -642,7 +655,7 @@ class TaskService:
         # Only allow completion from AWAITING_PM_REVIEW
         # This enforces the workflow: documenter calls docs_complete, PM calls complete
         if task.status != TaskStatus.AWAITING_PM_REVIEW:
-            logger.warning(
+            self.log.warning(
                 "Cannot complete task - must be in awaiting_pm_review status",
                 task_id=str(task_id),
                 current_status=task.status.value,
@@ -656,7 +669,7 @@ class TaskService:
         # Unblock any tasks waiting on this one
         await self._unblock_dependents(task_id)
 
-        logger.info("Task completed", task_id=str(task_id))
+        self.log.info("Task completed", task_id=str(task_id))
         return task
 
     async def cancel(self, task_id: UUID) -> TaskTable | None:
@@ -668,7 +681,7 @@ class TaskService:
         task.status = TaskStatus.CANCELLED
         await self.session.flush()
 
-        logger.info("Task cancelled", task_id=str(task_id))
+        self.log.info("Task cancelled", task_id=str(task_id))
         return task
 
     async def _unblock_dependents(self, completed_task_id: UUID) -> None:
@@ -688,7 +701,7 @@ class TaskService:
             # If no more dependencies, unblock
             if not task.dependency_ids and task.status == TaskStatus.BLOCKED:
                 task.status = TaskStatus.IN_PROGRESS
-                logger.info(
+                self.log.info(
                     "Task auto-unblocked",
                     task_id=str(task.id),
                     completed_dependency=str(completed_task_id),

@@ -19,6 +19,8 @@ from roboco.api.schemas.messages import (
     MessageEditRequest,
     MessageListResponse,
     MessageResponse,
+    message_list_to_response,
+    message_to_response,
 )
 from roboco.db.tables import MessageTable, SessionTable
 from roboco.services.messaging import (
@@ -27,7 +29,6 @@ from roboco.services.messaging import (
 from roboco.services.messaging import (
     get_messaging_service,
 )
-from roboco.utils.converters import require_uuid, to_python_uuid, to_python_uuid_list
 
 router = APIRouter()
 
@@ -84,27 +85,7 @@ async def list_messages(
     if has_more:
         messages = messages[: params.limit]
 
-    items = [
-        MessageResponse(
-            id=require_uuid(m.id),
-            agent_id=require_uuid(m.agent_id),
-            channel_id=require_uuid(m.channel_id),
-            group_id=require_uuid(m.group_id),
-            session_id=require_uuid(m.session_id),
-            type=m.type,
-            content=m.content,
-            content_length=m.content_length,
-            is_reply=m.is_reply,
-            reply_to=to_python_uuid(m.reply_to),
-            mentions=to_python_uuid_list(m.mentions),
-            task_id=to_python_uuid(m.task_id),
-            commit_ref=m.commit_ref,
-            timestamp=m.timestamp,
-            edited_at=m.edited_at,
-            was_edited=len(m.edit_history) > 0,
-        )
-        for m in messages
-    ]
+    items = message_list_to_response(list(messages))
 
     return MessageListResponse(
         items=items,
@@ -134,24 +115,7 @@ async def get_message(
             detail="Message not found",
         )
 
-    return MessageResponse(
-        id=require_uuid(message.id),
-        agent_id=require_uuid(message.agent_id),
-        channel_id=require_uuid(message.channel_id),
-        group_id=require_uuid(message.group_id),
-        session_id=require_uuid(message.session_id),
-        type=message.type,
-        content=message.content,
-        content_length=message.content_length,
-        is_reply=message.is_reply,
-        reply_to=to_python_uuid(message.reply_to),
-        mentions=to_python_uuid_list(message.mentions),
-        task_id=to_python_uuid(message.task_id),
-        commit_ref=message.commit_ref,
-        timestamp=message.timestamp,
-        edited_at=message.edited_at,
-        was_edited=len(message.edit_history) > 0,
-    )
+    return message_to_response(message)
 
 
 @router.post(
@@ -189,24 +153,7 @@ async def send_message(
             detail=str(e),
         ) from e
 
-    return MessageResponse(
-        id=require_uuid(message.id),
-        agent_id=require_uuid(message.agent_id),
-        channel_id=require_uuid(message.channel_id),
-        group_id=require_uuid(message.group_id),
-        session_id=require_uuid(message.session_id),
-        type=message.type,
-        content=message.content,
-        content_length=message.content_length,
-        is_reply=message.is_reply,
-        reply_to=to_python_uuid(message.reply_to),
-        mentions=to_python_uuid_list(message.mentions),
-        task_id=to_python_uuid(message.task_id),
-        commit_ref=message.commit_ref,
-        timestamp=message.timestamp,
-        edited_at=message.edited_at,
-        was_edited=len(message.edit_history) > 0 if message.edit_history else False,
-    )
+    return message_to_response(message)
 
 
 @router.patch(
@@ -262,24 +209,7 @@ async def edit_message(
 
     await db.flush()
 
-    return MessageResponse(
-        id=require_uuid(message.id),
-        agent_id=require_uuid(message.agent_id),
-        channel_id=require_uuid(message.channel_id),
-        group_id=require_uuid(message.group_id),
-        session_id=require_uuid(message.session_id),
-        type=message.type,
-        content=message.content,
-        content_length=message.content_length,
-        is_reply=message.is_reply,
-        reply_to=to_python_uuid(message.reply_to),
-        mentions=to_python_uuid_list(message.mentions),
-        task_id=to_python_uuid(message.task_id),
-        commit_ref=message.commit_ref,
-        timestamp=message.timestamp,
-        edited_at=message.edited_at,
-        was_edited=True,
-    )
+    return message_to_response(message, was_edited=True)
 
 
 @router.delete(

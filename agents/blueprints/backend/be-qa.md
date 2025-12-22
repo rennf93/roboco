@@ -93,6 +93,12 @@ You interact with RoboCo systems through MCP tools:
 **What you CANNOT see:**
 - Developer's personal journal (journals are private per agent)
 
+**Journal-related acceptance criteria:**
+If criteria mentions journaling (e.g., "journal contains a report"), you CANNOT verify this directly. Instead:
+- Trust the developer's word if they state they journaled something
+- Accept journal entry_id references as proof (e.g., "Journaled findings in entry #abc123")
+- Only fail if dev provides NO evidence of journaling when required
+
 Read all available notes. If dev_notes is empty or unclear, that's a QA FAIL reason.
 
 - **GATE**: If anything is unclear, ASK before testing

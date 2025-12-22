@@ -7,14 +7,13 @@ Integrates with the Optimal API for RAG indexing of entries.
 """
 
 from datetime import UTC, datetime
-from typing import Any
+from typing import Any, ClassVar
 from uuid import UUID
 
-import structlog
 from sqlalchemy import and_, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from roboco.db.tables import AgentTable, JournalEntryTable, JournalTable
+from roboco.db.tables import JournalEntryTable, JournalTable
 from roboco.models.base import JournalEntryType
 from roboco.models.journal import (
     DecisionLogParams,
@@ -35,12 +34,11 @@ from roboco.models.journal import (
     create_task_reflection,
 )
 from roboco.models.optimal import IndexJournalEntryParams
+from roboco.services.base import BaseService
 from roboco.utils.converters import require_uuid, to_python_uuid
 
-logger = structlog.get_logger()
 
-
-class JournalService:
+class JournalService(BaseService):
     """
     Service for managing agent journals.
 
@@ -48,8 +46,10 @@ class JournalService:
     plus analytics and growth tracking.
     """
 
+    service_name: ClassVar[str] = "journal"
+
     def __init__(self, db: AsyncSession) -> None:
-        self._db = db
+        super().__init__(db)
         self._optimal_service: Any = None  # Lazy loaded to avoid circular import
 
     async def _get_optimal_service(self) -> Any:
@@ -72,21 +72,9 @@ class JournalService:
         Returns:
             The agent's UUID, or None if not found
         """
-        # Try to parse as UUID first
-        try:
-            return UUID(agent_id_or_slug)
-        except ValueError:
-            pass
+        from roboco.services.repositories import resolve_agent_uuid
 
-        # Look up by slug
-        result = await self._db.execute(
-            select(AgentTable).where(AgentTable.slug == agent_id_or_slug)
-        )
-        agent = result.scalar_one_or_none()
-        if agent:
-            return UUID(str(agent.id))
-
-        return None
+        return await resolve_agent_uuid(self.session, agent_id_or_slug)
 
     # =========================================================================
     # JOURNAL CRUD
@@ -102,7 +90,7 @@ class JournalService:
         Returns:
             The agent's journal
         """
-        result = await self._db.execute(
+        result = await self.session.execute(
             select(JournalTable).where(JournalTable.agent_id == agent_id)
         )
         journal_row = result.scalar_one_or_none()
@@ -122,11 +110,11 @@ class JournalService:
 
         # Create new journal
         new_journal = JournalTable(agent_id=agent_id)
-        self._db.add(new_journal)
-        await self._db.commit()
-        await self._db.refresh(new_journal)
+        self.session.add(new_journal)
+        await self.session.commit()
+        await self.session.refresh(new_journal)
 
-        logger.info(
+        self.log.info(
             "Created new journal",
             agent_id=str(agent_id),
             journal_id=str(new_journal.id),
@@ -141,7 +129,7 @@ class JournalService:
 
     async def get_journal(self, journal_id: UUID) -> Journal | None:
         """Get a journal by ID."""
-        result = await self._db.execute(
+        result = await self.session.execute(
             select(JournalTable).where(JournalTable.id == journal_id)
         )
         journal_row = result.scalar_one_or_none()
@@ -163,7 +151,7 @@ class JournalService:
 
     async def get_journal_by_agent(self, agent_id: UUID) -> Journal | None:
         """Get a journal by agent ID."""
-        result = await self._db.execute(
+        result = await self.session.execute(
             select(JournalTable).where(JournalTable.agent_id == agent_id)
         )
         journal_row = result.scalar_one_or_none()
@@ -209,10 +197,10 @@ class JournalService:
             sentiment=entry_create.sentiment,
             is_private=entry_create.is_private,
         )
-        self._db.add(entry_row)
+        self.session.add(entry_row)
 
         # Update journal metadata
-        result = await self._db.execute(
+        result = await self.session.execute(
             select(JournalTable).where(JournalTable.id == entry_create.journal_id)
         )
         journal_row = result.scalar_one_or_none()
@@ -229,10 +217,10 @@ class JournalService:
             entries_by_type[type_key] = entries_by_type.get(type_key, 0) + 1
             journal_row.entries_by_type = entries_by_type
 
-        await self._db.commit()
-        await self._db.refresh(entry_row)
+        await self.session.commit()
+        await self.session.refresh(entry_row)
 
-        logger.info(
+        self.log.info(
             "Created journal entry",
             entry_id=str(entry_row.id),
             journal_id=str(entry_create.journal_id),
@@ -242,12 +230,16 @@ class JournalService:
         # Index in RAG - non-blocking
         try:
             optimal = await self._get_optimal_service()
+            # Convert SQLAlchemy UUIDs to Python UUIDs for the params
+            agent_id_for_index = (
+                require_uuid(journal_row.agent_id)
+                if journal_row
+                else entry_create.journal_id
+            )
             await optimal.index_journal_entry(
                 IndexJournalEntryParams(
-                    entry_id=entry_row.id,
-                    agent_id=journal_row.agent_id
-                    if journal_row
-                    else entry_create.journal_id,
+                    entry_id=require_uuid(entry_row.id),
+                    agent_id=agent_id_for_index,
                     content=entry_create.content,
                     entry_type=type_key,
                     task_id=entry_create.task_id,
@@ -255,7 +247,7 @@ class JournalService:
                 )
             )
         except Exception as e:
-            logger.warning("Failed to index journal entry in RAG", error=str(e))
+            self.log.warning("Failed to index journal entry in RAG", error=str(e))
 
         return JournalEntry(
             id=require_uuid(entry_row.id),
@@ -274,7 +266,7 @@ class JournalService:
 
     async def get_entry(self, entry_id: UUID) -> JournalEntry | None:
         """Get a journal entry by ID."""
-        result = await self._db.execute(
+        result = await self.session.execute(
             select(JournalEntryTable).where(JournalEntryTable.id == entry_id)
         )
         entry_row = result.scalar_one_or_none()
@@ -330,7 +322,7 @@ class JournalService:
         query = query.order_by(JournalEntryTable.timestamp.desc())
         query = query.limit(f.limit).offset(f.offset)
 
-        result = await self._db.execute(query)
+        result = await self.session.execute(query)
         rows = result.scalars().all()
 
         return [
@@ -354,7 +346,7 @@ class JournalService:
 
     async def delete_entry(self, entry_id: UUID) -> bool:
         """Delete a journal entry."""
-        result = await self._db.execute(
+        result = await self.session.execute(
             select(JournalEntryTable).where(JournalEntryTable.id == entry_id)
         )
         entry_row = result.scalar_one_or_none()
@@ -363,7 +355,7 @@ class JournalService:
             return False
 
         # Update journal metadata
-        journal_result = await self._db.execute(
+        journal_result = await self.session.execute(
             select(JournalTable).where(JournalTable.id == entry_row.journal_id)
         )
         journal_row = journal_result.scalar_one_or_none()
@@ -380,10 +372,10 @@ class JournalService:
                 entries_by_type[type_key] = max(0, entries_by_type[type_key] - 1)
             journal_row.entries_by_type = entries_by_type
 
-        await self._db.delete(entry_row)
-        await self._db.commit()
+        await self.session.delete(entry_row)
+        await self.session.commit()
 
-        logger.info("Deleted journal entry", entry_id=str(entry_id))
+        self.log.info("Deleted journal entry", entry_id=str(entry_id))
         return True
 
     # =========================================================================
@@ -545,7 +537,7 @@ class JournalService:
 
     async def get_journal_stats(self, journal_id: UUID) -> JournalStats | None:
         """Get statistics for a journal."""
-        result = await self._db.execute(
+        result = await self.session.execute(
             select(JournalTable).where(JournalTable.id == journal_id)
         )
         journal_row = result.scalar_one_or_none()
@@ -583,7 +575,7 @@ class JournalService:
         # (struggles with "Resolution" section / total struggles)
         resolution_rate = 0.0
         if struggles > 0:
-            result = await self._db.execute(
+            result = await self.session.execute(
                 select(func.count(JournalEntryTable.id)).where(
                     and_(
                         JournalEntryTable.journal_id == journal.id,
@@ -663,12 +655,12 @@ class JournalService:
                             if journal and entry.journal_id == journal.id:
                                 entries.append(entry)
                     except ValueError:
-                        logger.warning(
+                        self.log.warning(
                             "Invalid entry_id in search result",
                             entry_id=entry_id_str,
                         )
 
-            logger.debug(
+            self.log.debug(
                 "Journal search completed",
                 agent_id=str(agent_id),
                 query=query[:50],
@@ -677,7 +669,7 @@ class JournalService:
             return entries[:top_k]
 
         except Exception as e:
-            logger.error(
+            self.log.error(
                 "Journal search failed",
                 agent_id=str(agent_id),
                 query=query[:50] if query else "empty",

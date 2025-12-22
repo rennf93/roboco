@@ -23,7 +23,7 @@ if TYPE_CHECKING:
 
 from roboco.config import settings
 from roboco.llm import ToonAdapter
-from roboco.models import AgentRole, AgentStatus, Team
+from roboco.models import AgentRole, AgentStatus, TaskStatus, Team
 from roboco.models.agents import AgentConfig, AgentState
 
 # Type for reasoning stream callback (injected to avoid API layer coupling)
@@ -481,6 +481,337 @@ class Agent(ABC):
             response.raise_for_status()
             result: dict[str, Any] = response.json()
             return result
+
+    # =========================================================================
+    # COMMON TASK HELPERS
+    # =========================================================================
+
+    @property
+    def cell_name(self) -> str:
+        """Get the cell name based on team."""
+        if self.team == Team.BACKEND:
+            return "backend-cell"
+        elif self.team == Team.FRONTEND:
+            return "frontend-cell"
+        elif self.team == Team.UX_UI:
+            return "uxui-cell"
+        return "unknown-cell"
+
+    @property
+    def cell_channel_id(self) -> UUID | None:
+        """
+        Get the cell channel ID.
+
+        Override in subclass or set via _set_cell_channel_id.
+        """
+        return getattr(self, "_cell_channel_id", None)
+
+    def _set_cell_channel_id(self, channel_id: UUID | None) -> None:
+        """Set the cell channel ID."""
+        self._cell_channel_id = channel_id
+
+    async def _get_task_title(self, task_id: UUID) -> str:
+        """Get task title from API."""
+        try:
+            result = await self._api_call("GET", f"/tasks/{task_id}")
+            title: str = result.get("title", f"Task {str(task_id)[:8]}")
+            return title
+        except Exception as e:
+            self.log.warning("Failed to get task title", error=str(e))
+            return f"Task {str(task_id)[:8]}"
+
+    async def _read_task_requirements(self, task_id: UUID) -> str:
+        """Read task requirements from task record."""
+        try:
+            result = await self._api_call("GET", f"/tasks/{task_id}")
+            description = result.get("description", "")
+            acceptance_criteria = result.get("acceptance_criteria", [])
+            criteria_text = "\n".join(f"- {c}" for c in acceptance_criteria)
+            return f"{description}\n\nAcceptance Criteria:\n{criteria_text}"
+        except Exception as e:
+            self.log.warning("Failed to read task requirements", error=str(e))
+            return "Requirements unavailable"
+
+    async def _read_dev_notes(self, task_id: UUID) -> str:
+        """Read developer's journey notes (dev_notes + progress_updates)."""
+        try:
+            result = await self._api_call("GET", f"/tasks/{task_id}")
+            notes: str = result.get("dev_notes") or ""
+
+            # Also include progress updates as they contain developer's work log
+            progress_updates = result.get("progress_updates", [])
+            if progress_updates:
+                progress_text = "\n".join(
+                    f"[{u.get('timestamp', 'N/A')}] ({u.get('percentage', 0)}%) "
+                    f"{u.get('message', '')}"
+                    for u in progress_updates
+                )
+                if notes:
+                    notes = f"{notes}\n\nProgress Updates:\n{progress_text}"
+                else:
+                    notes = f"Progress Updates:\n{progress_text}"
+
+            return notes if notes else "No developer notes available"
+        except Exception as e:
+            self.log.warning("Failed to read dev notes", error=str(e))
+            return "Dev notes unavailable"
+
+    async def _get_task_commits(self, task_id: UUID) -> list[str]:
+        """Get commits for the task."""
+        try:
+            result = await self._api_call("GET", f"/tasks/{task_id}")
+            commits: list[str] = result.get("commits", [])
+            return commits
+        except Exception as e:
+            self.log.warning("Failed to get task commits", error=str(e))
+            return []
+
+    async def _update_task_status(self, task_id: UUID, status: TaskStatus) -> None:
+        """Update task status via API."""
+        try:
+            await self._api_call(
+                "PUT",
+                f"/tasks/{task_id}",
+                json={"status": status.value},
+            )
+            self.log.info(
+                "Task status updated", task_id=str(task_id), status=status.value
+            )
+        except Exception as e:
+            self.log.error("Failed to update task status", error=str(e))
+
+    # =========================================================================
+    # SEMANTIC STATUS HELPERS
+    # =========================================================================
+
+    async def _mark_claimed(self, task_id: UUID) -> None:
+        """Mark task as claimed."""
+        await self._update_task_status(task_id, TaskStatus.CLAIMED)
+
+    async def _mark_in_progress(self, task_id: UUID) -> None:
+        """Mark task as in progress."""
+        await self._update_task_status(task_id, TaskStatus.IN_PROGRESS)
+
+    async def _mark_blocked(self, task_id: UUID) -> None:
+        """Mark task as blocked."""
+        await self._update_task_status(task_id, TaskStatus.BLOCKED)
+
+    async def _mark_awaiting_qa(self, task_id: UUID) -> None:
+        """Mark task as awaiting QA review."""
+        await self._update_task_status(task_id, TaskStatus.AWAITING_QA)
+
+    async def _mark_needs_revision(self, task_id: UUID) -> None:
+        """Mark task as needing revision (QA failed)."""
+        await self._update_task_status(task_id, TaskStatus.NEEDS_REVISION)
+
+    async def _mark_awaiting_documentation(self, task_id: UUID) -> None:
+        """Mark task as awaiting documentation."""
+        await self._update_task_status(task_id, TaskStatus.AWAITING_DOCUMENTATION)
+
+    async def _mark_awaiting_pm_review(self, task_id: UUID) -> None:
+        """Mark task as awaiting PM review."""
+        await self._update_task_status(task_id, TaskStatus.AWAITING_PM_REVIEW)
+
+    async def _mark_completed(self, task_id: UUID) -> None:
+        """Mark task as completed."""
+        await self._update_task_status(task_id, TaskStatus.COMPLETED)
+
+    # =========================================================================
+    # API QUERY HELPERS
+    # =========================================================================
+
+    async def _find_tasks(
+        self,
+        status: str | TaskStatus | None = None,
+        team: Team | None = None,
+        assigned_to: UUID | None = None,
+        limit: int = 10,
+    ) -> list[dict[str, Any]]:
+        """
+        Find tasks matching criteria.
+
+        Args:
+            status: Task status to filter by
+            team: Team to filter by
+            assigned_to: Agent ID to filter by assignment
+            limit: Maximum results to return
+
+        Returns:
+            List of task dictionaries
+        """
+        params: dict[str, Any] = {"limit": limit}
+
+        if status:
+            status_val = status.value if isinstance(status, TaskStatus) else status
+            params["status"] = status_val
+        if team:
+            params["team"] = team.value
+        if assigned_to:
+            params["assigned_to"] = str(assigned_to)
+
+        try:
+            result = await self._api_call("GET", "/tasks", params=params)
+            items: list[dict[str, Any]] = result.get("items", [])
+            return items
+        except Exception as e:
+            self.log.warning("Failed to find tasks", error=str(e))
+            return []
+
+    async def _find_first_task(
+        self,
+        status: str | TaskStatus | None = None,
+        team: Team | None = None,
+        assigned_to: UUID | None = None,
+    ) -> UUID | None:
+        """
+        Find first task matching criteria.
+
+        Returns:
+            Task ID if found, None otherwise
+        """
+        tasks = await self._find_tasks(status, team, assigned_to, limit=1)
+        return UUID(tasks[0]["id"]) if tasks else None
+
+    async def _count_tasks(
+        self,
+        status: str | TaskStatus | None = None,
+        team: Team | None = None,
+    ) -> int:
+        """Count tasks matching criteria."""
+        tasks = await self._find_tasks(status, team, limit=100)
+        return len(tasks)
+
+    # =========================================================================
+    # PROGRESS HELPERS
+    # =========================================================================
+
+    async def _add_progress(
+        self,
+        task_id: UUID,
+        message: str,
+        percentage: int,
+    ) -> None:
+        """
+        Add progress update to task.
+
+        This is saved to task.progress_updates and visible to QA/PM.
+
+        Args:
+            task_id: Task to update
+            message: Progress message
+            percentage: Completion percentage (0-100)
+        """
+        try:
+            await self._api_call(
+                "POST",
+                f"/tasks/{task_id}/progress",
+                json={"message": message, "percentage": percentage},
+            )
+            self.log.info("Progress saved", task_id=str(task_id), percentage=percentage)
+        except Exception as e:
+            self.log.warning("Failed to save progress", error=str(e))
+
+    async def _report_progress(
+        self,
+        task_id: UUID,
+        message: str,
+        percentage: int,
+        channel_id: UUID | None = None,
+    ) -> None:
+        """
+        Report progress: save to task AND send channel message.
+
+        Args:
+            task_id: Task to update
+            message: Progress message
+            percentage: Completion percentage (0-100)
+            channel_id: Channel to notify (uses cell_channel_id or task_id)
+        """
+        await self._add_progress(task_id, message, percentage)
+
+        target_channel = channel_id or self.cell_channel_id or task_id
+        task_ref = str(task_id)[:8]
+        await self.send_message(
+            target_channel,
+            f"TASK-{task_ref} ({percentage}%) {message}",
+            message_type="action",
+        )
+
+    # =========================================================================
+    # TOON FORMATTER HELPERS
+    # =========================================================================
+
+    def _format_task_context(
+        self,
+        task_id: UUID,
+        title: str,
+        requirements: str | None = None,
+        dev_notes: str | None = None,
+    ) -> str:
+        """Format task context for LLM prompts."""
+        data: dict[str, Any] = {
+            "task_id": str(task_id)[:8],
+            "title": title,
+        }
+        if requirements:
+            data["requirements"] = requirements
+        if dev_notes:
+            data["dev_notes"] = dev_notes
+        return self.format_context_labeled("Task Context", data)
+
+    def _format_execution_context(
+        self,
+        task_title: str,
+        subtask_num: int,
+        total_subtasks: int,
+        description: str,
+        files: list[str] | None = None,
+    ) -> str:
+        """Format execution context for LLM prompts."""
+        data: dict[str, Any] = {
+            "task": task_title,
+            "subtask": f"{subtask_num}/{total_subtasks}",
+            "description": description,
+        }
+        if files:
+            data["files"] = files
+        return self.format_context_labeled("Execution Context", data)
+
+    def _format_review_context(
+        self,
+        title: str,
+        requirements: str,
+        dev_notes: str,
+        commits: str,
+    ) -> str:
+        """Format review context for QA/PM prompts."""
+        return self.format_context_labeled(
+            "Review Context",
+            {
+                "title": title,
+                "requirements": requirements,
+                "dev_notes": dev_notes,
+                "commits": commits,
+            },
+        )
+
+    def _format_test_context(
+        self,
+        name: str,
+        description: str,
+        steps: list[str],
+        expected: str,
+    ) -> str:
+        """Format test case context for QA prompts."""
+        return self.format_context_labeled(
+            "Test Case",
+            {
+                "name": name,
+                "description": description,
+                "steps": steps,
+                "expected": expected,
+            },
+        )
 
     # =========================================================================
     # UTILITY METHODS

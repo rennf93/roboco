@@ -7,18 +7,17 @@ Shared dependencies for FastAPI routes.
 from __future__ import annotations
 
 import contextlib
-from typing import TYPE_CHECKING, Annotated, Any, cast
+from typing import TYPE_CHECKING, Annotated, Any
 from uuid import UUID
 
 from fastapi import Depends, Header, HTTPException, status
-from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from roboco.db.base import get_db
-from roboco.db.tables import AgentTable
 from roboco.models import AgentRole, Team
 from roboco.runtime import AgentOrchestrator
 from roboco.services.permissions import AgentContext, PermissionService
+from roboco.services.repositories import resolve_agent_uuid
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Coroutine
@@ -41,25 +40,15 @@ async def resolve_agent_id(agent_id_str: str, db: AsyncSession) -> UUID:
     Raises:
         HTTPException: If agent not found or invalid format
     """
-    # First, try to parse as UUID
-    try:
-        return UUID(agent_id_str)
-    except ValueError:
-        pass
+    result = await resolve_agent_uuid(db, agent_id_str)
 
-    # Not a UUID, try to look up by slug
-    result = await db.execute(
-        select(AgentTable.id).where(AgentTable.slug == agent_id_str)
-    )
-    agent_uuid = result.scalar_one_or_none()
-
-    if agent_uuid is None:
+    if result is None:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=f"Agent not found: {agent_id_str}",
         )
 
-    return cast("UUID", agent_uuid)
+    return result
 
 
 class _ServiceHolder:

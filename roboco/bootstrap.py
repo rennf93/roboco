@@ -16,8 +16,7 @@ from roboco.api.deps import set_orchestrator
 from roboco.api.websocket import broadcast_agent_chunk
 from roboco.config import settings
 from roboco.db import bootstrap_database
-from roboco.events import EventBus, set_event_context
-from roboco.events.handlers import register_default_handlers
+from roboco.events import EventBus, register_default_handlers, set_event_context
 from roboco.runtime import AgentOrchestrator
 from roboco.services.notification import NotificationService
 

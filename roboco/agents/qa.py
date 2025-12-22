@@ -6,17 +6,14 @@ Handles review lifecycle:
     MONITOR → RECEIVE → UNDERSTAND → TEST → VERDICT → DOCUMENT → RETURN
 """
 
-import re
 from datetime import UTC, datetime
-from pathlib import Path
 from uuid import UUID
 
 import structlog
 
-from roboco.agents.base import Agent
-from roboco.models import AgentRole, TaskStatus, Team
+from roboco.agents.base import Agent, AgentConfig
+from roboco.agents.mixins import PhaseConfig, PhaseEngine
 from roboco.models.agents import (
-    AgentConfig,
     QATaskPhase,
     ReviewContext,
     TestCase,
@@ -26,7 +23,7 @@ from roboco.models.agents import (
 logger = structlog.get_logger()
 
 
-class QAAgent(Agent):
+class QAAgent(Agent, PhaseEngine[QATaskPhase, ReviewContext]):
     """
     QA agent that follows the QA Lifecycle.
 
@@ -57,16 +54,53 @@ class QAAgent(Agent):
         self._pending_reviews.clear()
         self.log.debug("QA agent cleanup complete", agent_id=str(self.id))
 
-    @property
-    def cell_name(self) -> str:
-        """Get the cell name based on team."""
-        if self.team == Team.BACKEND:
-            return "backend-cell"
-        elif self.team == Team.FRONTEND:
-            return "frontend-cell"
-        elif self.team == Team.UX_UI:
-            return "uxui-cell"
-        return "unknown-cell"
+    # =========================================================================
+    # PHASE ENGINE IMPLEMENTATION
+    # =========================================================================
+
+    def _get_phase_configs(self) -> list[PhaseConfig[QATaskPhase]]:
+        """Define the QA workflow phases."""
+        return [
+            PhaseConfig(
+                QATaskPhase.RECEIVE,
+                self._phase_receive,
+                next_phase=QATaskPhase.UNDERSTAND,
+            ),
+            PhaseConfig(
+                QATaskPhase.UNDERSTAND,
+                self._phase_understand,
+                next_phase=QATaskPhase.TEST,
+            ),
+            PhaseConfig(
+                QATaskPhase.TEST,
+                self._phase_test,
+                next_phase=QATaskPhase.VERDICT,
+                requires_completion=True,
+            ),
+            PhaseConfig(
+                QATaskPhase.VERDICT,
+                self._phase_verdict,
+                next_phase=QATaskPhase.DOCUMENT,
+            ),
+            PhaseConfig(
+                QATaskPhase.DOCUMENT,
+                self._phase_document,
+                next_phase=QATaskPhase.RETURN,
+            ),
+            PhaseConfig(
+                QATaskPhase.RETURN,
+                self._phase_return,
+                next_phase=None,  # Terminal
+            ),
+        ]
+
+    def _get_current_phase(self, ctx: ReviewContext) -> QATaskPhase:
+        """Get the current phase from context."""
+        return ctx.phase
+
+    def _set_current_phase(self, ctx: ReviewContext, phase: QATaskPhase) -> None:
+        """Set the current phase in context."""
+        ctx.phase = phase
 
     # =========================================================================
     # LIFECYCLE IMPLEMENTATION
@@ -92,49 +126,6 @@ class QAAgent(Agent):
 
         return None
 
-    async def _run_phase(self, ctx: ReviewContext) -> bool | None:
-        """
-        Run the current phase and return transition info.
-
-        Returns:
-            True if review is complete
-            None if phase completed (advance to next phase)
-        """
-        phase_transitions: dict[QATaskPhase, QATaskPhase | None] = {
-            QATaskPhase.RECEIVE: QATaskPhase.UNDERSTAND,
-            QATaskPhase.UNDERSTAND: QATaskPhase.TEST,
-            QATaskPhase.VERDICT: QATaskPhase.DOCUMENT,
-            QATaskPhase.DOCUMENT: QATaskPhase.RETURN,
-            QATaskPhase.RETURN: None,  # Terminal phase
-        }
-
-        phase_handlers = {
-            QATaskPhase.RECEIVE: self._phase_receive,
-            QATaskPhase.UNDERSTAND: self._phase_understand,
-            QATaskPhase.VERDICT: self._phase_verdict,
-            QATaskPhase.DOCUMENT: self._phase_document,
-        }
-
-        if ctx.phase == QATaskPhase.TEST:
-            completed = await self._phase_test(ctx)
-            if completed:
-                ctx.phase = QATaskPhase.VERDICT
-            return None
-
-        if ctx.phase == QATaskPhase.RETURN:
-            self._review_context = None
-            return True
-
-        handler = phase_handlers.get(ctx.phase)
-        if handler:
-            await handler(ctx)
-
-        next_phase = phase_transitions.get(ctx.phase)
-        if next_phase:
-            ctx.phase = next_phase
-
-        return None
-
     async def execute_task(self, task_id: UUID) -> bool:
         """
         Execute review through QA lifecycle phases.
@@ -147,16 +138,33 @@ class QAAgent(Agent):
                 title=await self._get_task_title(task_id),
             )
 
+        ctx = self._review_context
+
         try:
-            result = await self._run_phase(self._review_context)
-            return result is True
+            result = await self._run_phase_engine(ctx)
+
+            if result.error:
+                self.log.error(
+                    "Error in review phase",
+                    phase=ctx.phase.value,
+                    error=result.error,
+                )
+                ctx.findings.append(f"Error during review: {result.error}")
+                return False
+
+            if result.completed:
+                self._review_context = None
+                return True
+
+            return False
+
         except Exception as e:
             self.log.error(
                 "Error in review phase",
-                phase=self._review_context.phase.value,
+                phase=ctx.phase.value,
                 error=str(e),
             )
-            self._review_context.findings.append(f"Error during review: {e}")
+            ctx.findings.append(f"Error during review: {e}")
             return False
 
     # =========================================================================
@@ -185,26 +193,24 @@ class QAAgent(Agent):
         UNDERSTAND phase: Read requirements and dev notes.
 
         - Read task requirements and acceptance criteria
-        - Read dev's journey notes
+        - Read dev's handoff notes (from task's dev_notes field)
         - Review commits
         - Check conversation history
+
+        NOTE: Journals are PRIVATE. If acceptance criteria mentions journal entries,
+        trust the developer's word. If they reference a journal entry_id, accept
+        that as proof without attempting to read the private content.
         """
         self.log.info("UNDERSTAND phase", task_id=str(ctx.task_id))
 
         # Read task context
         requirements = await self._read_task_requirements(ctx.task_id)
         dev_notes = await self._read_dev_notes(ctx.task_id)
-        commits = await self._get_task_commits(ctx.task_id)
+        commits = await self._get_task_commits_formatted(ctx.task_id)
 
         # Use TOON for token-efficient context encoding
-        task_context = self.format_context_labeled(
-            "QA Review Context",
-            {
-                "title": ctx.title,
-                "requirements": requirements,
-                "dev_notes": dev_notes,
-                "commits": commits,
-            },
+        task_context = self._format_review_context(
+            ctx.title, requirements, dev_notes, commits
         )
 
         prompt = f"""You are a QA engineer reviewing a completed task.
@@ -219,11 +225,17 @@ Focus on:
 - Integration points
 - Error handling
 
+IMPORTANT: Journals are PRIVATE and personal to each agent. You cannot read
+another agent's journal entries. If acceptance criteria mentions journaling:
+- Trust the developer's word if they say they journaled something
+- Accept journal entry_id references as proof (you don't need to verify content)
+- Only verify the deliverable outputs, not private reflection logs
+
 Format response as TOON tabular:
 [N,]{{name,description,steps,expected}}:
 Acceptance Criteria,Verify all criteria met,Review implementation|Check each criterion,All criteria satisfied
 """  # noqa: E501
-        _response = await self.think(prompt)  # Response informs test case structure
+        _response = await self.think(prompt)
 
         # Create test cases (simplified parsing)
         ctx.test_cases = [
@@ -272,14 +284,11 @@ Acceptance Criteria,Verify all criteria met,Review implementation|Check each cri
         test_case = ctx.test_cases[ctx.current_test]
 
         # Use TOON for token-efficient context encoding
-        test_context = self.format_context_labeled(
-            "Test Case",
-            {
-                "name": test_case.name,
-                "description": test_case.description,
-                "steps": test_case.steps,
-                "expected": test_case.expected,
-            },
+        test_context = self._format_test_context(
+            test_case.name,
+            test_case.description,
+            test_case.steps,
+            test_case.expected,
         )
 
         prompt = f"""Execute this test case:
@@ -347,7 +356,7 @@ PASS,All criteria verified successfully,No issues found
             )
 
             # Update task status
-            await self._update_task_status(ctx.task_id, TaskStatus.NEEDS_REVISION)
+            await self._mark_needs_revision(ctx.task_id)
 
         else:
             ctx.verdict = TestResult.PASS
@@ -361,9 +370,7 @@ PASS,All criteria verified successfully,No issues found
             )
 
             # Update task status
-            await self._update_task_status(
-                ctx.task_id, TaskStatus.AWAITING_DOCUMENTATION
-            )
+            await self._mark_awaiting_documentation(ctx.task_id)
 
         ctx.notes.append(
             f"[{datetime.now(UTC).isoformat()}] Verdict: {ctx.verdict.value.upper()}"
@@ -411,6 +418,13 @@ PASS,All criteria verified successfully,No issues found
 
         ctx.notes.append(f"[{datetime.now(UTC).isoformat()}] QA documentation complete")
 
+    async def _phase_return(self, ctx: ReviewContext) -> None:
+        """
+        RETURN phase: Clean up and return to monitoring.
+        """
+        self.log.info("RETURN phase", task_id=str(ctx.task_id))
+        # Context will be cleared by execute_task on completion
+
     # =========================================================================
     # HELPER METHODS
     # =========================================================================
@@ -430,150 +444,7 @@ PASS,All criteria verified successfully,No issues found
             self.log.warning("Failed to find awaiting QA task", error=str(e))
             return None
 
-    async def _get_task_title(self, task_id: UUID) -> str:
-        """Get task title."""
-        try:
-            result = await self._api_call("GET", f"/tasks/{task_id}")
-            title: str = result.get("title", f"Task {str(task_id)[:8]}")
-            return title
-        except Exception as e:
-            self.log.warning("Failed to get task title", error=str(e))
-            return f"Task {str(task_id)[:8]}"
-
-    async def _read_task_requirements(self, task_id: UUID) -> str:
-        """Read task requirements."""
-        try:
-            result = await self._api_call("GET", f"/tasks/{task_id}")
-            description = result.get("description", "")
-            acceptance_criteria = result.get("acceptance_criteria", [])
-            criteria_text = "\n".join(f"- {c}" for c in acceptance_criteria)
-            return f"{description}\n\nAcceptance Criteria:\n{criteria_text}"
-        except Exception as e:
-            self.log.warning("Failed to read task requirements", error=str(e))
-            return "Requirements unavailable"
-
-    async def _read_dev_notes(self, task_id: UUID) -> str:
-        """Read developer's journey notes (dev_notes + progress_updates)."""
-        try:
-            result = await self._api_call("GET", f"/tasks/{task_id}")
-            notes: str = result.get("dev_notes") or ""
-
-            # Also include progress updates as they contain developer's work log
-            progress_updates = result.get("progress_updates", [])
-            if progress_updates:
-                progress_text = "\n".join(
-                    f"[{u.get('timestamp', 'N/A')}] ({u.get('percentage', 0)}%) "
-                    f"{u.get('message', '')}"
-                    for u in progress_updates
-                )
-                if notes:
-                    notes = f"{notes}\n\nProgress Updates:\n{progress_text}"
-                else:
-                    notes = f"Progress Updates:\n{progress_text}"
-
-            return notes if notes else "No developer notes available"
-        except Exception as e:
-            self.log.warning("Failed to read dev notes", error=str(e))
-            return "Dev notes unavailable"
-
-    async def _get_task_commits(self, task_id: UUID) -> str:
-        """Get commits for the task."""
-        try:
-            result = await self._api_call("GET", f"/tasks/{task_id}")
-            commits = result.get("commits", [])
-            return "\n".join(commits) if commits else "No commits recorded"
-        except Exception as e:
-            self.log.warning("Failed to get task commits", error=str(e))
-            return "Commits unavailable"
-
-    async def _update_task_status(self, task_id: UUID, status: TaskStatus) -> None:
-        """Update task status."""
-        try:
-            await self._api_call(
-                "PUT",
-                f"/tasks/{task_id}",
-                json={"status": status.value},
-            )
-            self.log.info(
-                "Task status updated", task_id=str(task_id), status=status.value
-            )
-        except Exception as e:
-            self.log.error("Failed to update task status", error=str(e))
-
-
-def create_backend_qa(
-    name: str = "BE-QA",
-    system_prompt: str | None = None,
-) -> QAAgent:
-    """Factory function to create a backend QA agent."""
-    if system_prompt is None:
-        blueprint_path = Path("agents/blueprints/backend/be-qa.md")
-        if blueprint_path.exists():
-            content = blueprint_path.read_text()
-            match = re.search(r"## System Prompt\s*```\s*(.*?)```", content, re.DOTALL)
-            system_prompt = match.group(1).strip() if match else ""
-        else:
-            system_prompt = "You are a backend QA engineer."
-
-    config = AgentConfig(
-        name=name,
-        slug=name.lower().replace(" ", "-"),
-        role=AgentRole.QA,
-        team=Team.BACKEND,
-        system_prompt=system_prompt,
-        capabilities=["code_review", "test_execution", "security_analysis"],
-    )
-
-    return QAAgent(config)
-
-
-def create_frontend_qa(
-    name: str = "FE-QA",
-    system_prompt: str | None = None,
-) -> QAAgent:
-    """Factory function to create a frontend QA agent."""
-    if system_prompt is None:
-        blueprint_path = Path("agents/blueprints/frontend/fe-qa.md")
-        if blueprint_path.exists():
-            content = blueprint_path.read_text()
-            match = re.search(r"## System Prompt\s*```\s*(.*?)```", content, re.DOTALL)
-            system_prompt = match.group(1).strip() if match else ""
-        else:
-            system_prompt = "You are a frontend QA engineer."
-
-    config = AgentConfig(
-        name=name,
-        slug=name.lower().replace(" ", "-"),
-        role=AgentRole.QA,
-        team=Team.FRONTEND,
-        system_prompt=system_prompt,
-        capabilities=["visual_testing", "a11y_testing", "browser_testing"],
-    )
-
-    return QAAgent(config)
-
-
-def create_ux_qa(
-    name: str = "UX-QA",
-    system_prompt: str | None = None,
-) -> QAAgent:
-    """Factory function to create a UX/UI QA agent."""
-    if system_prompt is None:
-        blueprint_path = Path("agents/blueprints/ux_ui/ux-qa.md")
-        if blueprint_path.exists():
-            content = blueprint_path.read_text()
-            match = re.search(r"## System Prompt\s*```\s*(.*?)```", content, re.DOTALL)
-            system_prompt = match.group(1).strip() if match else ""
-        else:
-            system_prompt = "You are a UX/UI QA engineer."
-
-    config = AgentConfig(
-        name=name,
-        slug=name.lower().replace(" ", "-"),
-        role=AgentRole.QA,
-        team=Team.UX_UI,
-        system_prompt=system_prompt,
-        capabilities=["design_review", "consistency_check", "a11y_testing"],
-    )
-
-    return QAAgent(config)
+    async def _get_task_commits_formatted(self, task_id: UUID) -> str:
+        """Get commits for the task as formatted string."""
+        commits = await self._get_task_commits(task_id)
+        return "\n".join(commits) if commits else "No commits recorded"

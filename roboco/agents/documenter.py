@@ -6,7 +6,6 @@ Handles documentation lifecycle:
     MONITOR → RECEIVE → GATHER → SYNTHESIZE → WRITE → REVIEW → PUBLISH
 """
 
-import re
 from datetime import UTC, datetime
 from pathlib import Path
 from uuid import UUID
@@ -14,10 +13,10 @@ from uuid import UUID
 import aiofiles
 import structlog
 
-from roboco.agents.base import Agent
-from roboco.models import AgentRole, TaskStatus, Team
+from roboco.agents.base import Agent, AgentConfig
+from roboco.agents.mixins import PhaseConfig, PhaseEngine
+from roboco.models import Team
 from roboco.models.agents import (
-    AgentConfig,
     DocContext,
     DocTaskPhase,
     DocType,
@@ -27,7 +26,7 @@ from roboco.models.agents import (
 logger = structlog.get_logger()
 
 
-class DocumenterAgent(Agent):
+class DocumenterAgent(Agent, PhaseEngine[DocTaskPhase, DocContext]):
     """
     Documenter agent that follows the Documenter Lifecycle.
 
@@ -58,16 +57,53 @@ class DocumenterAgent(Agent):
         self._pending_docs.clear()
         self.log.debug("Documenter agent cleanup complete", agent_id=str(self.id))
 
-    @property
-    def cell_name(self) -> str:
-        """Get the cell name based on team."""
-        if self.team == Team.BACKEND:
-            return "backend-cell"
-        elif self.team == Team.FRONTEND:
-            return "frontend-cell"
-        elif self.team == Team.UX_UI:
-            return "uxui-cell"
-        return "unknown-cell"
+    # =========================================================================
+    # PHASE ENGINE IMPLEMENTATION
+    # =========================================================================
+
+    def _get_phase_configs(self) -> list[PhaseConfig[DocTaskPhase]]:
+        """Define the documenter workflow phases."""
+        return [
+            PhaseConfig(
+                DocTaskPhase.RECEIVE,
+                self._phase_receive,
+                next_phase=DocTaskPhase.GATHER,
+            ),
+            PhaseConfig(
+                DocTaskPhase.GATHER,
+                self._phase_gather,
+                next_phase=DocTaskPhase.SYNTHESIZE,
+            ),
+            PhaseConfig(
+                DocTaskPhase.SYNTHESIZE,
+                self._phase_synthesize,
+                next_phase=DocTaskPhase.WRITE,
+            ),
+            PhaseConfig(
+                DocTaskPhase.WRITE,
+                self._phase_write,
+                next_phase=DocTaskPhase.REVIEW,
+                requires_completion=True,
+            ),
+            PhaseConfig(
+                DocTaskPhase.REVIEW,
+                self._phase_review,
+                next_phase=DocTaskPhase.PUBLISH,
+            ),
+            PhaseConfig(
+                DocTaskPhase.PUBLISH,
+                self._phase_publish,
+                next_phase=None,  # Terminal
+            ),
+        ]
+
+    def _get_current_phase(self, ctx: DocContext) -> DocTaskPhase:
+        """Get the current phase from context."""
+        return ctx.phase
+
+    def _set_current_phase(self, ctx: DocContext, phase: DocTaskPhase) -> None:
+        """Set the current phase in context."""
+        ctx.phase = phase
 
     # =========================================================================
     # LIFECYCLE IMPLEMENTATION
@@ -91,51 +127,6 @@ class DocumenterAgent(Agent):
 
         return None
 
-    async def _run_phase(self, ctx: DocContext) -> bool | None:
-        """
-        Run the current phase and return transition info.
-
-        Returns:
-            True if task is complete
-            False if phase didn't complete (stay in current phase)
-            None if phase completed (advance to next phase)
-        """
-        phase_transitions: dict[DocTaskPhase, tuple[DocTaskPhase | None, bool]] = {
-            DocTaskPhase.RECEIVE: (DocTaskPhase.GATHER, True),
-            DocTaskPhase.GATHER: (DocTaskPhase.SYNTHESIZE, True),
-            DocTaskPhase.SYNTHESIZE: (DocTaskPhase.WRITE, True),
-            DocTaskPhase.REVIEW: (DocTaskPhase.PUBLISH, True),
-            DocTaskPhase.PUBLISH: (None, True),  # Terminal phase
-        }
-
-        phase_handlers = {
-            DocTaskPhase.RECEIVE: self._phase_receive,
-            DocTaskPhase.GATHER: self._phase_gather,
-            DocTaskPhase.SYNTHESIZE: self._phase_synthesize,
-            DocTaskPhase.REVIEW: self._phase_review,
-            DocTaskPhase.PUBLISH: self._phase_publish,
-        }
-
-        if ctx.phase == DocTaskPhase.WRITE:
-            completed = await self._phase_write(ctx)
-            if completed:
-                ctx.phase = DocTaskPhase.REVIEW
-            return None
-
-        handler = phase_handlers.get(ctx.phase)
-        if handler:
-            await handler(ctx)
-
-        transition = phase_transitions.get(ctx.phase)
-        if transition:
-            next_phase, _ = transition
-            if next_phase is None:
-                self._doc_context = None
-                return True
-            ctx.phase = next_phase
-
-        return None
-
     async def execute_task(self, task_id: UUID) -> bool:
         """
         Execute documentation through lifecycle phases.
@@ -148,13 +139,29 @@ class DocumenterAgent(Agent):
                 title=await self._get_task_title(task_id),
             )
 
+        ctx = self._doc_context
+
         try:
-            result = await self._run_phase(self._doc_context)
-            return result is True
+            result = await self._run_phase_engine(ctx)
+
+            if result.error:
+                self.log.error(
+                    "Error in doc phase",
+                    phase=ctx.phase.value,
+                    error=result.error,
+                )
+                return False
+
+            if result.completed:
+                self._doc_context = None
+                return True
+
+            return False
+
         except Exception as e:
             self.log.error(
                 "Error in doc phase",
-                phase=self._doc_context.phase.value,
+                phase=ctx.phase.value,
                 error=str(e),
             )
             return False
@@ -405,7 +412,7 @@ good,complete,clear,helpful,None
                     )
 
         # Mark docs complete - task goes to PM for final review
-        await self._update_task_status(ctx.task_id, TaskStatus.AWAITING_PM_REVIEW)
+        await self._mark_awaiting_pm_review(ctx.task_id)
 
         await self.send_message(
             self._cell_channel_id or ctx.task_id,
@@ -435,40 +442,6 @@ good,complete,clear,helpful,None
             self.log.warning("Failed to find awaiting documentation task", error=str(e))
             return None
 
-    async def _get_task_title(self, task_id: UUID) -> str:
-        """Get task title."""
-        try:
-            result = await self._api_call("GET", f"/tasks/{task_id}")
-            title: str = result.get("title", f"Task {str(task_id)[:8]}")
-            return title
-        except Exception as e:
-            self.log.warning("Failed to get task title", error=str(e))
-            return f"Task {str(task_id)[:8]}"
-
-    async def _read_dev_notes(self, task_id: UUID) -> str:
-        """Read developer's journey notes (dev_notes + progress_updates)."""
-        try:
-            result = await self._api_call("GET", f"/tasks/{task_id}")
-            notes: str = result.get("dev_notes") or ""
-
-            # Also include progress updates as they contain developer's work log
-            progress_updates = result.get("progress_updates", [])
-            if progress_updates:
-                progress_text = "\n".join(
-                    f"[{u.get('timestamp', 'N/A')}] ({u.get('percentage', 0)}%) "
-                    f"{u.get('message', '')}"
-                    for u in progress_updates
-                )
-                if notes:
-                    notes = f"{notes}\n\nProgress Updates:\n{progress_text}"
-                else:
-                    notes = f"Progress Updates:\n{progress_text}"
-
-            return notes if notes else "No developer notes available"
-        except Exception as e:
-            self.log.warning("Failed to read dev notes", error=str(e))
-            return "Dev notes unavailable"
-
     async def _read_qa_feedback(self, task_id: UUID) -> str:
         """Read QA feedback."""
         try:
@@ -478,16 +451,6 @@ good,complete,clear,helpful,None
         except Exception as e:
             self.log.warning("Failed to read QA feedback", error=str(e))
             return "QA feedback unavailable"
-
-    async def _get_task_commits(self, task_id: UUID) -> list[str]:
-        """Get commits for the task."""
-        try:
-            result = await self._api_call("GET", f"/tasks/{task_id}")
-            commits: list[str] = result.get("commits", [])
-            return commits
-        except Exception as e:
-            self.log.warning("Failed to get task commits", error=str(e))
-            return []
 
     async def _get_conversations(self, task_id: UUID) -> list[str]:
         """Get relevant conversations."""
@@ -508,95 +471,3 @@ good,complete,clear,helpful,None
         except Exception as e:
             self.log.warning("Failed to get code changes", error=str(e))
             return []
-
-    async def _update_task_status(self, task_id: UUID, status: TaskStatus) -> None:
-        """Update task status."""
-        try:
-            await self._api_call(
-                "PUT",
-                f"/tasks/{task_id}",
-                json={"status": status.value},
-            )
-            self.log.info(
-                "Task status updated", task_id=str(task_id), status=status.value
-            )
-        except Exception as e:
-            self.log.error("Failed to update task status", error=str(e))
-
-
-def create_backend_documenter(
-    name: str = "BE-Documenter",
-    system_prompt: str | None = None,
-) -> DocumenterAgent:
-    """Factory function to create a backend documenter agent."""
-    if system_prompt is None:
-        blueprint_path = Path("agents/blueprints/backend/be-documenter.md")
-        if blueprint_path.exists():
-            content = blueprint_path.read_text()
-            match = re.search(r"## System Prompt\s*```\s*(.*?)```", content, re.DOTALL)
-            system_prompt = match.group(1).strip() if match else ""
-        else:
-            system_prompt = "You are a backend documenter."
-
-    config = AgentConfig(
-        name=name,
-        slug=name.lower().replace(" ", "-"),
-        role=AgentRole.DOCUMENTER,
-        team=Team.BACKEND,
-        system_prompt=system_prompt,
-        capabilities=["documentation", "file_management"],
-    )
-
-    return DocumenterAgent(config)
-
-
-def create_frontend_documenter(
-    name: str = "FE-Documenter",
-    system_prompt: str | None = None,
-) -> DocumenterAgent:
-    """Factory function to create a frontend documenter agent."""
-    if system_prompt is None:
-        blueprint_path = Path("agents/blueprints/frontend/fe-documenter.md")
-        if blueprint_path.exists():
-            content = blueprint_path.read_text()
-            match = re.search(r"## System Prompt\s*```\s*(.*?)```", content, re.DOTALL)
-            system_prompt = match.group(1).strip() if match else ""
-        else:
-            system_prompt = "You are a frontend documenter."
-
-    config = AgentConfig(
-        name=name,
-        slug=name.lower().replace(" ", "-"),
-        role=AgentRole.DOCUMENTER,
-        team=Team.FRONTEND,
-        system_prompt=system_prompt,
-        capabilities=["documentation", "storybook", "file_management"],
-    )
-
-    return DocumenterAgent(config)
-
-
-def create_ux_documenter(
-    name: str = "UX-Documenter",
-    system_prompt: str | None = None,
-) -> DocumenterAgent:
-    """Factory function to create a UX/UI documenter agent."""
-    if system_prompt is None:
-        blueprint_path = Path("agents/blueprints/ux_ui/ux-documenter.md")
-        if blueprint_path.exists():
-            content = blueprint_path.read_text()
-            match = re.search(r"## System Prompt\s*```\s*(.*?)```", content, re.DOTALL)
-            system_prompt = match.group(1).strip() if match else ""
-        else:
-            system_prompt = "You are a UX/UI documenter."
-
-    config = AgentConfig(
-        name=name,
-        slug=name.lower().replace(" ", "-"),
-        role=AgentRole.DOCUMENTER,
-        team=Team.UX_UI,
-        system_prompt=system_prompt,
-        capabilities=["documentation", "design_system_docs"],
-    )
-
-    return DocumenterAgent(config)

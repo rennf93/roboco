@@ -13,6 +13,7 @@ from pydantic import Field
 from roboco.models.base import (
     AgentRole,
     AgentStatus,
+    ModelProvider,
     RobocoBase,
     Team,
     TimestampMixin,
@@ -26,8 +27,14 @@ from roboco.models.base import (
 class ModelConfig(RobocoBase):
     """Configuration for the LLM model an agent uses."""
 
-    provider: str = Field(..., description="Model provider (anthropic, local, etc.)")
-    name: str = Field(..., description="Model name (claude-3-opus, llama-70b, etc.)")
+    provider: ModelProvider = Field(
+        default=ModelProvider.ANTHROPIC,
+        description="Model provider (anthropic, openai, local)",
+    )
+    name: str = Field(
+        default="claude-sonnet-4-20250514",
+        description="Model name (claude-sonnet-4-20250514, etc.)",
+    )
     fallback: str | None = Field(
         default=None, description="Fallback model if primary unavailable"
     )

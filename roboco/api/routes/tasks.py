@@ -396,6 +396,27 @@ async def get_subtasks(
 # =============================================================================
 
 
+async def _resolve_claim_agent_id(
+    db: DbSession, agent_id_str: str
+) -> UUID:
+    """Resolve agent ID from UUID string or slug."""
+    try:
+        return UUID(agent_id_str)
+    except ValueError:
+        pass
+
+    result = await db.execute(
+        select(AgentTable.id).where(AgentTable.slug == agent_id_str)
+    )
+    agent_uuid = result.scalar_one_or_none()
+    if not agent_uuid:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Agent not found: {agent_id_str}",
+        )
+    return UUID(str(agent_uuid))
+
+
 @router.post("/{task_id}/claim", response_model=TaskResponse)
 async def claim_task(
     task_id: UUID,
@@ -425,30 +446,12 @@ async def claim_task(
         )
 
     # Determine the agent to claim for
-    # Privileged roles can claim on behalf of other agents
     can_assign = permissions.can_perform_task_action(
         agent, TaskAction.ASSIGN, task.team
     )
+    claim_agent_id = agent.agent_id
     if data and data.agent_id and can_assign:
-        # Resolve agent_id from UUID string or slug
-        agent_id_str = data.agent_id
-        try:
-            # Try parsing as UUID first
-            claim_agent_id = UUID(agent_id_str)
-        except ValueError:
-            # Not a UUID, look up by slug
-            result = await db.execute(
-                select(AgentTable.id).where(AgentTable.slug == agent_id_str)
-            )
-            agent_uuid = result.scalar_one_or_none()
-            if not agent_uuid:
-                raise HTTPException(
-                    status_code=status.HTTP_404_NOT_FOUND,
-                    detail=f"Agent not found: {agent_id_str}",
-                ) from None
-            claim_agent_id = agent_uuid
-    else:
-        claim_agent_id = agent.agent_id
+        claim_agent_id = await _resolve_claim_agent_id(db, data.agent_id)
 
     # Allow reassignment if PM is assigning on behalf of another agent
     allow_reassign = bool(can_assign and data and data.agent_id is not None)

@@ -5,8 +5,9 @@ Shared utilities for all MCP servers to avoid code duplication.
 Contains common functions for:
 - Agent header generation
 - Error response formatting
-- Agent UUID resolution
+- Agent UUID resolution with caching
 - API client for internal API calls
+- Shared caches for cross-server data
 """
 
 from typing import Any
@@ -15,6 +16,14 @@ import httpx
 
 from roboco.agents_config import get_agent_role, get_agent_team
 from roboco.config import settings
+
+# =============================================================================
+# SHARED CACHES (Module-level for cross-request persistence)
+# =============================================================================
+
+# Agent UUID cache: maps slug -> UUID for quick lookups
+# This cache is shared across all MCP servers to avoid redundant API calls
+_agent_uuid_cache: dict[str, str] = {}
 
 # UUID format constants
 _UUID_LENGTH = 36  # Standard UUID string length
@@ -111,6 +120,52 @@ async def resolve_agent_uuid(
         except Exception:
             pass
     return None
+
+
+async def resolve_agent_uuid_cached(
+    agent_id: str,
+    client: "ApiClient",
+) -> str | None:
+    """
+    Resolve an agent identifier to its UUID with caching.
+
+    This is the preferred method for MCP servers as it caches results
+    to avoid redundant API calls across tool invocations.
+
+    Args:
+        agent_id: Agent identifier (slug like "be-dev-1" or UUID string)
+        client: ApiClient instance for making API calls
+
+    Returns:
+        UUID string if found, None otherwise
+    """
+    # Check cache first
+    if agent_id in _agent_uuid_cache:
+        return _agent_uuid_cache[agent_id]
+
+    # Resolve using the non-cached method
+    result = await resolve_agent_uuid(agent_id, client._get_headers())
+
+    # Cache the result if found
+    if result:
+        _agent_uuid_cache[agent_id] = result
+
+    return result
+
+
+def clear_agent_uuid_cache() -> None:
+    """Clear the agent UUID cache. Useful for testing."""
+    _agent_uuid_cache.clear()
+
+
+def get_cached_agent_uuid(agent_id: str) -> str | None:
+    """
+    Get cached agent UUID without making API call.
+
+    Returns:
+        Cached UUID if available, None otherwise
+    """
+    return _agent_uuid_cache.get(agent_id)
 
 
 # =============================================================================

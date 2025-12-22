@@ -11,10 +11,9 @@ Implements the communication model from HOMELAB_TEAM_V0.md.
 """
 
 from datetime import UTC, datetime
-from typing import cast
+from typing import ClassVar, cast
 from uuid import UUID
 
-import structlog
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -24,8 +23,8 @@ from roboco.db.tables import (
     MessageTable,
     SessionTable,
 )
-from roboco.enforcement.channel_access import validate_channel_access
-from roboco.events.bus import Event, EventType, get_event_bus
+from roboco.enforcement import validate_channel_access
+from roboco.events import Event, EventType, get_event_bus
 from roboco.models.base import (
     MessageType,
     SessionStatus,
@@ -36,16 +35,14 @@ from roboco.models.messaging import (
     MessageCreateRequest,
     SessionCreateRequest,
 )
-
-logger = structlog.get_logger()
-
+from roboco.services.base import BaseService
 
 # =============================================================================
 # MESSAGING SERVICE
 # =============================================================================
 
 
-class MessagingService:
+class MessagingService(BaseService):
     """
     Service for managing all messaging operations.
 
@@ -65,9 +62,7 @@ class MessagingService:
         message = await service.send_message(MessageCreateRequest(...))
     """
 
-    def __init__(self, session: AsyncSession):
-        self.session = session
-        self.log = logger.bind(service="messaging")
+    service_name: ClassVar[str] = "messaging"
 
     # =========================================================================
     # CHANNEL OPERATIONS (TASK-013)

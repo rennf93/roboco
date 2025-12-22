@@ -8,17 +8,15 @@ Main PM:
     OVERSEE → RECEIVE → PRIORITIZE → COORDINATE → DISTRIBUTE → REPORT UP → FACILITATE
 """
 
-import re
-from pathlib import Path
 from typing import Any
 from uuid import UUID
 
 import structlog
 
-from roboco.agents.base import Agent
-from roboco.models import AgentRole, NotificationType, TaskStatus, Team
+from roboco.agents.base import Agent, AgentConfig
+from roboco.agents.mixins import CyclicPhaseConfig, CyclicPhaseRunner
+from roboco.models import NotificationType, TaskStatus
 from roboco.models.agents import (
-    AgentConfig,
     CellPMPhase,
     CellStatus,
     Escalation,
@@ -29,7 +27,7 @@ from roboco.models.agents import (
 logger = structlog.get_logger()
 
 
-class CellPMAgent(Agent):
+class CellPMAgent(Agent, CyclicPhaseRunner[CellPMPhase]):
     """
     Cell PM agent that manages a single cell (Backend, Frontend, or UX/UI).
 
@@ -62,23 +60,59 @@ class CellPMAgent(Agent):
         self._pending_escalations.clear()
         self.log.debug("Cell PM agent cleanup complete", agent_id=str(self.id))
 
-    @property
-    def cell_name(self) -> str:
-        """Get the cell name."""
-        if self.team == Team.BACKEND:
-            return "backend-cell"
-        elif self.team == Team.FRONTEND:
-            return "frontend-cell"
-        elif self.team == Team.UX_UI:
-            return "uxui-cell"
-        return "unknown-cell"
+    # =========================================================================
+    # CYCLIC PHASE RUNNER IMPLEMENTATION
+    # =========================================================================
+
+    def _get_cyclic_phase_configs(self) -> list[CyclicPhaseConfig[CellPMPhase]]:
+        """Define the Cell PM workflow phases."""
+        return [
+            CyclicPhaseConfig(
+                CellPMPhase.MONITOR,
+                self._phase_monitor,
+                CellPMPhase.TRIAGE,
+            ),
+            CyclicPhaseConfig(
+                CellPMPhase.TRIAGE,
+                self._phase_triage,
+                CellPMPhase.ASSIGN,
+            ),
+            CyclicPhaseConfig(
+                CellPMPhase.ASSIGN,
+                self._phase_assign,
+                CellPMPhase.FACILITATE,
+            ),
+            CyclicPhaseConfig(
+                CellPMPhase.FACILITATE,
+                self._phase_facilitate,
+                CellPMPhase.ESCALATE,
+            ),
+            CyclicPhaseConfig(
+                CellPMPhase.ESCALATE,
+                self._phase_escalate,
+                CellPMPhase.TRACK,
+            ),
+            CyclicPhaseConfig(
+                CellPMPhase.TRACK,
+                self._phase_track,
+                CellPMPhase.REPORT,
+            ),
+            CyclicPhaseConfig(
+                CellPMPhase.REPORT,
+                self._phase_report,
+                CellPMPhase.MONITOR,  # Cycle back
+            ),
+        ]
+
+    # =========================================================================
+    # LIFECYCLE IMPLEMENTATION
+    # =========================================================================
 
     async def find_work(self) -> UUID | None:
         """
         PM always has work - returns a pseudo task ID for management duties.
         """
-        # PMs are always active, cycling through phases
-        return self.id  # Use own ID as "task" since PM work is continuous
+        return self.id
 
     async def execute_task(self, _task_id: UUID) -> bool:
         """
@@ -86,43 +120,12 @@ class CellPMAgent(Agent):
 
         Returns False to keep running continuously.
         """
-        try:
-            match self._current_phase:
-                case CellPMPhase.MONITOR:
-                    await self._phase_monitor()
-                    self._current_phase = CellPMPhase.TRIAGE
-
-                case CellPMPhase.TRIAGE:
-                    await self._phase_triage()
-                    self._current_phase = CellPMPhase.ASSIGN
-
-                case CellPMPhase.ASSIGN:
-                    await self._phase_assign()
-                    self._current_phase = CellPMPhase.FACILITATE
-
-                case CellPMPhase.FACILITATE:
-                    await self._phase_facilitate()
-                    self._current_phase = CellPMPhase.ESCALATE
-
-                case CellPMPhase.ESCALATE:
-                    await self._phase_escalate()
-                    self._current_phase = CellPMPhase.TRACK
-
-                case CellPMPhase.TRACK:
-                    await self._phase_track()
-                    self._current_phase = CellPMPhase.REPORT
-
-                case CellPMPhase.REPORT:
-                    await self._phase_report()
-                    self._current_phase = CellPMPhase.MONITOR
-
-            return False  # Never complete - continuous duty
-
-        except Exception as e:
+        error = await self._run_phase_cycle()
+        if error:
             self.log.error(
-                "Error in PM phase", phase=self._current_phase.value, error=str(e)
+                "Error in PM phase", phase=self._current_phase.value, error=error
             )
-            return False
+        return False  # Never complete - continuous duty
 
     # =========================================================================
     # CELL PM PHASES
@@ -480,7 +483,7 @@ Please review and provide guidance.
             }
 
 
-class MainPMAgent(Agent):
+class MainPMAgent(Agent, CyclicPhaseRunner[MainPMPhase]):
     """
     Main PM agent that coordinates all cells.
 
@@ -513,49 +516,66 @@ class MainPMAgent(Agent):
         self._cross_cell_issues.clear()
         self.log.debug("Main PM agent cleanup complete", agent_id=str(self.id))
 
+    # =========================================================================
+    # CYCLIC PHASE RUNNER IMPLEMENTATION
+    # =========================================================================
+
+    def _get_cyclic_phase_configs(self) -> list[CyclicPhaseConfig[MainPMPhase]]:
+        """Define the Main PM workflow phases."""
+        return [
+            CyclicPhaseConfig(
+                MainPMPhase.OVERSEE,
+                self._phase_oversee,
+                MainPMPhase.RECEIVE,
+            ),
+            CyclicPhaseConfig(
+                MainPMPhase.RECEIVE,
+                self._phase_receive,
+                MainPMPhase.PRIORITIZE,
+            ),
+            CyclicPhaseConfig(
+                MainPMPhase.PRIORITIZE,
+                self._phase_prioritize,
+                MainPMPhase.COORDINATE,
+            ),
+            CyclicPhaseConfig(
+                MainPMPhase.COORDINATE,
+                self._phase_coordinate,
+                MainPMPhase.DISTRIBUTE,
+            ),
+            CyclicPhaseConfig(
+                MainPMPhase.DISTRIBUTE,
+                self._phase_distribute,
+                MainPMPhase.REPORT_UP,
+            ),
+            CyclicPhaseConfig(
+                MainPMPhase.REPORT_UP,
+                self._phase_report_up,
+                MainPMPhase.FACILITATE,
+            ),
+            CyclicPhaseConfig(
+                MainPMPhase.FACILITATE,
+                self._phase_facilitate,
+                MainPMPhase.OVERSEE,  # Cycle back
+            ),
+        ]
+
+    # =========================================================================
+    # LIFECYCLE IMPLEMENTATION
+    # =========================================================================
+
     async def find_work(self) -> UUID | None:
         """Main PM always has work."""
         return self.id
 
     async def execute_task(self, _task_id: UUID) -> bool:
         """Execute Main PM duties in a cycle."""
-        try:
-            match self._current_phase:
-                case MainPMPhase.OVERSEE:
-                    await self._phase_oversee()
-                    self._current_phase = MainPMPhase.RECEIVE
-
-                case MainPMPhase.RECEIVE:
-                    await self._phase_receive()
-                    self._current_phase = MainPMPhase.PRIORITIZE
-
-                case MainPMPhase.PRIORITIZE:
-                    await self._phase_prioritize()
-                    self._current_phase = MainPMPhase.COORDINATE
-
-                case MainPMPhase.COORDINATE:
-                    await self._phase_coordinate()
-                    self._current_phase = MainPMPhase.DISTRIBUTE
-
-                case MainPMPhase.DISTRIBUTE:
-                    await self._phase_distribute()
-                    self._current_phase = MainPMPhase.REPORT_UP
-
-                case MainPMPhase.REPORT_UP:
-                    await self._phase_report_up()
-                    self._current_phase = MainPMPhase.FACILITATE
-
-                case MainPMPhase.FACILITATE:
-                    await self._phase_facilitate()
-                    self._current_phase = MainPMPhase.OVERSEE
-
-            return False
-
-        except Exception as e:
+        error = await self._run_phase_cycle()
+        if error:
             self.log.error(
-                "Error in Main PM phase", phase=self._current_phase.value, error=str(e)
+                "Error in Main PM phase", phase=self._current_phase.value, error=error
             )
-            return False
+        return False  # Never complete - continuous duty
 
     # =========================================================================
     # MAIN PM PHASES
@@ -794,116 +814,3 @@ Propose a resolution that unblocks all parties.
     async def _notify_cell_pm(self, cell: str, directive: str) -> None:
         """Notify a Cell PM of a directive."""
         self.log.info("Directive sent", cell=cell, directive=directive[:50])
-
-
-# =========================================================================
-# FACTORY FUNCTIONS
-# =========================================================================
-
-
-def create_backend_pm(
-    name: str = "BE-PM",
-    system_prompt: str | None = None,
-) -> CellPMAgent:
-    """Factory function to create a backend PM agent."""
-    if system_prompt is None:
-        blueprint_path = Path("agents/blueprints/backend/be-pm.md")
-        if blueprint_path.exists():
-            content = blueprint_path.read_text()
-            match = re.search(r"## System Prompt\s*```\s*(.*?)```", content, re.DOTALL)
-            system_prompt = match.group(1).strip() if match else ""
-        else:
-            system_prompt = "You are the Backend Cell PM."
-
-    config = AgentConfig(
-        name=name,
-        slug=name.lower().replace(" ", "-"),
-        role=AgentRole.CELL_PM,
-        team=Team.BACKEND,
-        system_prompt=system_prompt,
-        capabilities=["task_management", "notifications"],
-        can_notify=True,
-    )
-
-    return CellPMAgent(config)
-
-
-def create_frontend_pm(
-    name: str = "FE-PM",
-    system_prompt: str | None = None,
-) -> CellPMAgent:
-    """Factory function to create a frontend PM agent."""
-    if system_prompt is None:
-        blueprint_path = Path("agents/blueprints/frontend/fe-pm.md")
-        if blueprint_path.exists():
-            content = blueprint_path.read_text()
-            match = re.search(r"## System Prompt\s*```\s*(.*?)```", content, re.DOTALL)
-            system_prompt = match.group(1).strip() if match else ""
-        else:
-            system_prompt = "You are the Frontend Cell PM."
-
-    config = AgentConfig(
-        name=name,
-        slug=name.lower().replace(" ", "-"),
-        role=AgentRole.CELL_PM,
-        team=Team.FRONTEND,
-        system_prompt=system_prompt,
-        capabilities=["task_management", "notifications"],
-        can_notify=True,
-    )
-
-    return CellPMAgent(config)
-
-
-def create_ux_pm(
-    name: str = "UX-PM",
-    system_prompt: str | None = None,
-) -> CellPMAgent:
-    """Factory function to create a UX/UI PM agent."""
-    if system_prompt is None:
-        blueprint_path = Path("agents/blueprints/ux_ui/ux-pm.md")
-        if blueprint_path.exists():
-            content = blueprint_path.read_text()
-            match = re.search(r"## System Prompt\s*```\s*(.*?)```", content, re.DOTALL)
-            system_prompt = match.group(1).strip() if match else ""
-        else:
-            system_prompt = "You are the UX/UI Cell PM."
-
-    config = AgentConfig(
-        name=name,
-        slug=name.lower().replace(" ", "-"),
-        role=AgentRole.CELL_PM,
-        team=Team.UX_UI,
-        system_prompt=system_prompt,
-        capabilities=["task_management", "notifications"],
-        can_notify=True,
-    )
-
-    return CellPMAgent(config)
-
-
-def create_main_pm(
-    name: str = "Main PM",
-    system_prompt: str | None = None,
-) -> MainPMAgent:
-    """Factory function to create the Main PM agent."""
-    if system_prompt is None:
-        blueprint_path = Path("agents/blueprints/board/main-pm.md")
-        if blueprint_path.exists():
-            content = blueprint_path.read_text()
-            match = re.search(r"## System Prompt\s*```\s*(.*?)```", content, re.DOTALL)
-            system_prompt = match.group(1).strip() if match else ""
-        else:
-            system_prompt = "You are the Main PM coordinating all cells."
-
-    config = AgentConfig(
-        name=name,
-        slug="main-pm",
-        role=AgentRole.MAIN_PM,
-        team=Team.BOARD,
-        system_prompt=system_prompt,
-        capabilities=["task_management", "notifications", "cross_cell_coordination"],
-        can_notify=True,
-    )
-
-    return MainPMAgent(config)

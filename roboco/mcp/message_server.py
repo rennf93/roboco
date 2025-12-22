@@ -25,23 +25,14 @@ from roboco.mcp.schemas import (
     ReportBlockerInput,
     SendMessageInput,
 )
-from roboco.mcp.utils import ApiClient, format_error_response, resolve_agent_uuid
+from roboco.mcp.utils import (
+    ApiClient,
+    format_error_response,
+    resolve_agent_uuid_cached,
+)
 
 # Global TOON adapter for encoding message data
 _toon = ToonAdapter()
-
-# Cache for agent slug -> UUID resolution
-_agent_uuid_cache: dict[str, str] = {}
-
-
-async def _resolve_agent_uuid_cached(agent_id: str, client: ApiClient) -> str | None:
-    """Resolve agent slug to UUID with caching. Returns None if not found."""
-    if agent_id in _agent_uuid_cache:
-        return _agent_uuid_cache[agent_id]
-    result = await resolve_agent_uuid(agent_id, client._get_headers())
-    if result:
-        _agent_uuid_cache[agent_id] = result
-    return result
 
 
 # =============================================================================
@@ -335,11 +326,11 @@ async def _handle_message_send(
         return session_result
     session_id = session_result
 
-    # Resolve mentions (slugs) to UUIDs
+    # Resolve mentions (slugs) to UUIDs using shared cache
     resolved_mentions: list[str] = []
     if data.mentions:
         for mention in data.mentions:
-            resolved = await _resolve_agent_uuid_cached(mention, client)
+            resolved = await resolve_agent_uuid_cached(mention, client)
             if resolved:
                 resolved_mentions.append(resolved)
             # Skip unresolved mentions rather than failing

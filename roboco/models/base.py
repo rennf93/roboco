@@ -151,6 +151,14 @@ class HandoffStatus(str, Enum):
     COMPLETED = "completed"
 
 
+class ModelProvider(str, Enum):
+    """LLM provider options."""
+
+    ANTHROPIC = "anthropic"
+    OPENAI = "openai"
+    LOCAL = "local"
+
+
 # =============================================================================
 # BASE MODEL
 # =============================================================================

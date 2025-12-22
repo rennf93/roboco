@@ -5,11 +5,16 @@ Request/response models for message endpoints.
 """
 
 from datetime import datetime
+from typing import TYPE_CHECKING
 from uuid import UUID
 
 from pydantic import BaseModel, Field
 
 from roboco.models import MessageType
+from roboco.utils.converters import require_uuid, to_python_uuid, to_python_uuid_list
+
+if TYPE_CHECKING:
+    from roboco.db.tables import MessageTable
 
 
 class ListMessagesParams(BaseModel):
@@ -69,3 +74,52 @@ class MessageEditRequest(BaseModel):
 
     content: str = Field(..., min_length=1, max_length=10000)
     reason: str | None = None
+
+
+# =============================================================================
+# RESPONSE TRANSFORMERS
+# =============================================================================
+
+
+def message_to_response(
+    message: "MessageTable",
+    *,
+    was_edited: bool | None = None,
+) -> MessageResponse:
+    """
+    Transform a MessageTable to MessageResponse.
+
+    Args:
+        message: The database message object
+        was_edited: Override for was_edited flag (useful when already known)
+
+    Returns:
+        MessageResponse for the API
+    """
+    # Determine was_edited flag
+    if was_edited is None:
+        was_edited = bool(message.edit_history and len(message.edit_history) > 0)
+
+    return MessageResponse(
+        id=require_uuid(message.id),
+        agent_id=require_uuid(message.agent_id),
+        channel_id=require_uuid(message.channel_id),
+        group_id=require_uuid(message.group_id),
+        session_id=require_uuid(message.session_id),
+        type=message.type,
+        content=message.content,
+        content_length=message.content_length,
+        is_reply=message.is_reply,
+        reply_to=to_python_uuid(message.reply_to),
+        mentions=to_python_uuid_list(message.mentions),
+        task_id=to_python_uuid(message.task_id),
+        commit_ref=message.commit_ref,
+        timestamp=message.timestamp,
+        edited_at=message.edited_at,
+        was_edited=was_edited,
+    )
+
+
+def message_list_to_response(messages: list["MessageTable"]) -> list[MessageResponse]:
+    """Transform a list of MessageTable to MessageResponse list."""
+    return [message_to_response(m) for m in messages]

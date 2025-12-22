@@ -82,6 +82,12 @@ If none: `roboco_agent_idle()`
 **What you CANNOT see:**
 - Developer's personal journal (private)
 
+**Journal-related acceptance criteria:**
+If criteria mentions journaling, you CANNOT verify this directly. Instead:
+- Trust the developer's word if they state they journaled something
+- Accept journal entry_id references as proof
+- Only fail if dev provides NO evidence of journaling when required
+
 If dev_notes is empty, that's a valid FAIL reason.
 
 ### 4. START

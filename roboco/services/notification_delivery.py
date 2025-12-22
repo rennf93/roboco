@@ -10,21 +10,19 @@ Also implements the ACK system for tracking acknowledgments.
 """
 
 from datetime import UTC, datetime
-from typing import Literal
+from typing import ClassVar, Literal
 from uuid import UUID
 
-import structlog
 from sqlalchemy import and_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from roboco.db.tables import NotificationTable
-from roboco.events.bus import Event, EventType, get_event_bus
+from roboco.events import Event, EventType, get_event_bus
 from roboco.models.base import NotificationPriority
+from roboco.services.base import BaseService
 
-logger = structlog.get_logger()
 
-
-class NotificationDeliveryService:
+class NotificationDeliveryService(BaseService):
     """
     Service for delivering notifications to agents.
 
@@ -44,9 +42,7 @@ class NotificationDeliveryService:
         await service.acknowledge(notification_id, agent_id, "received")
     """
 
-    def __init__(self, session: AsyncSession):
-        self.session = session
-        self.log = logger.bind(service="notification_delivery")
+    service_name: ClassVar[str] = "notification_delivery"
 
     # =========================================================================
     # DELIVERY OPERATIONS (TASK-016)

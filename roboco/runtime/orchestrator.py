@@ -1069,6 +1069,14 @@ Start by:
         }
     )
 
+    def _has_board_keywords(self, text: str) -> bool:
+        """Check if text contains board-level keywords."""
+        return any(kw in text for kw in self._BOARD_KEYWORDS)
+
+    def _has_pm_keywords(self, text: str) -> bool:
+        """Check if text contains PM coordination keywords."""
+        return any(kw in text for kw in self._PM_KEYWORDS)
+
     def _classify_task_routing(self, task: dict[str, Any]) -> str:
         """
         Classify a task for routing based on complexity, keywords, and team.
@@ -1081,24 +1089,16 @@ Start by:
         complexity = task.get("complexity", "medium").lower()
         team = task.get("team")
 
-        # Check for strategic/board-level keywords
-        if any(kw in text for kw in self._BOARD_KEYWORDS):
+        # Board-level keywords → Board
+        if self._has_board_keywords(text):
             return "board"
 
-        # High/critical complexity → Main PM
-        if complexity in ("high", "critical"):
+        # High complexity or cross-team → Main PM
+        if complexity in ("high", "critical") or not team or team == "all":
             return "main_pm"
 
-        # Cross-team or no specific team → Main PM
-        if not team or team == "all":
-            return "main_pm"
-
-        # PM keywords → Cell PM for coordination
-        if any(kw in text for kw in self._PM_KEYWORDS):
-            return "cell_pm"
-
-        # Medium complexity → Cell PM for planning
-        if complexity == "medium":
+        # PM keywords or medium complexity → Cell PM
+        if self._has_pm_keywords(text) or complexity == "medium":
             return "cell_pm"
 
         # Low complexity, single team → Direct to dev

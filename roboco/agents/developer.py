@@ -6,21 +6,20 @@ Handles task lifecycle:
     SCAN → CLAIM → UNDERSTAND → PLAN → EXECUTE → VERIFY → NOTES → CLOSE
 """
 
-import re
 from datetime import UTC, datetime
-from pathlib import Path
 from uuid import UUID
 
 import structlog
 
-from roboco.agents.base import Agent
-from roboco.models import AgentRole, TaskStatus, Team
-from roboco.models.agents import AgentConfig, DevTaskPhase, TaskContext
+from roboco.agents.base import Agent, AgentConfig
+from roboco.agents.mixins import PhaseConfig, PhaseEngine
+from roboco.models import TaskStatus
+from roboco.models.agents import DevTaskPhase, TaskContext
 
 logger = structlog.get_logger()
 
 
-class DeveloperAgent(Agent):
+class DeveloperAgent(Agent, PhaseEngine[DevTaskPhase, TaskContext]):
     """
     Developer agent that follows the Dev Lifecycle.
 
@@ -50,16 +49,62 @@ class DeveloperAgent(Agent):
         self._task_context = None
         self.log.debug("Developer agent cleanup complete", agent_id=str(self.id))
 
-    @property
-    def cell_name(self) -> str:
-        """Get the cell name based on team."""
-        if self.team == Team.BACKEND:
-            return "backend-cell"
-        elif self.team == Team.FRONTEND:
-            return "frontend-cell"
-        elif self.team == Team.UX_UI:
-            return "uxui-cell"
-        return "unknown-cell"
+    # =========================================================================
+    # PHASE ENGINE IMPLEMENTATION
+    # =========================================================================
+
+    def _get_phase_configs(self) -> list[PhaseConfig[DevTaskPhase]]:
+        """Define the developer workflow phases."""
+        return [
+            PhaseConfig(
+                DevTaskPhase.CLAIM,
+                self._phase_claim,
+                next_phase=DevTaskPhase.UNDERSTAND,
+            ),
+            PhaseConfig(
+                DevTaskPhase.UNDERSTAND,
+                self._phase_understand,
+                next_phase=DevTaskPhase.PLAN,
+                requires_completion=True,
+            ),
+            PhaseConfig(
+                DevTaskPhase.PLAN,
+                self._phase_plan,
+                next_phase=DevTaskPhase.EXECUTE,
+            ),
+            PhaseConfig(
+                DevTaskPhase.EXECUTE,
+                self._phase_execute,
+                next_phase=DevTaskPhase.VERIFY,
+                requires_completion=True,
+            ),
+            PhaseConfig(
+                DevTaskPhase.VERIFY,
+                self._phase_verify,
+                next_phase=DevTaskPhase.NOTES,
+                fail_phase=DevTaskPhase.EXECUTE,  # Back to execute on failure
+                requires_completion=True,
+            ),
+            PhaseConfig(
+                DevTaskPhase.NOTES,
+                self._phase_notes,
+                next_phase=None,  # Terminal - developer done
+            ),
+            PhaseConfig(
+                DevTaskPhase.BLOCKED,
+                self._phase_blocked,
+                next_phase=DevTaskPhase.EXECUTE,  # Resume execution when unblocked
+                requires_completion=True,
+            ),
+        ]
+
+    def _get_current_phase(self, ctx: TaskContext) -> DevTaskPhase:
+        """Get the current phase from context."""
+        return ctx.phase
+
+    def _set_current_phase(self, ctx: TaskContext, phase: DevTaskPhase) -> None:
+        """Set the current phase in context."""
+        ctx.phase = phase
 
     # =========================================================================
     # LIFECYCLE IMPLEMENTATION
@@ -109,77 +154,25 @@ class DeveloperAgent(Agent):
         ctx = self._task_context
 
         try:
-            completed = await self._dispatch_phase(ctx)
-            if completed:
+            result = await self._run_phase_engine(ctx)
+
+            if result.error:
+                self.log.error("Phase error", error=result.error)
+                ctx.blockers.append(result.error)
+                ctx.phase = DevTaskPhase.BLOCKED
+                return False
+
+            if result.completed:
                 self._task_context = None
-            return completed
+                return True
+
+            return False
 
         except Exception as e:
             self.log.error("Error in task phase", phase=ctx.phase.value, error=str(e))
             ctx.blockers.append(str(e))
             ctx.phase = DevTaskPhase.BLOCKED
             return False
-
-    async def _dispatch_phase(self, ctx: TaskContext) -> bool:
-        """Dispatch to the appropriate phase handler. Returns True if task complete."""
-        phase_handlers = {
-            DevTaskPhase.CLAIM: self._handle_claim_phase,
-            DevTaskPhase.UNDERSTAND: self._handle_understand_phase,
-            DevTaskPhase.PLAN: self._handle_plan_phase,
-            DevTaskPhase.EXECUTE: self._handle_execute_phase,
-            DevTaskPhase.VERIFY: self._handle_verify_phase,
-            DevTaskPhase.NOTES: self._handle_notes_phase,
-            DevTaskPhase.BLOCKED: self._handle_blocked_phase,
-        }
-        handler = phase_handlers.get(ctx.phase)
-        if handler:
-            return await handler(ctx)
-        return False
-
-    async def _handle_claim_phase(self, ctx: TaskContext) -> bool:
-        """Handle CLAIM phase transition."""
-        await self._phase_claim(ctx)
-        ctx.phase = DevTaskPhase.UNDERSTAND
-        return False
-
-    async def _handle_understand_phase(self, ctx: TaskContext) -> bool:
-        """Handle UNDERSTAND phase transition."""
-        if await self._phase_understand(ctx):
-            ctx.phase = DevTaskPhase.PLAN
-        return False
-
-    async def _handle_plan_phase(self, ctx: TaskContext) -> bool:
-        """Handle PLAN phase transition."""
-        await self._phase_plan(ctx)
-        ctx.phase = DevTaskPhase.EXECUTE
-        return False
-
-    async def _handle_execute_phase(self, ctx: TaskContext) -> bool:
-        """Handle EXECUTE phase transition."""
-        if await self._phase_execute(ctx):
-            ctx.phase = DevTaskPhase.VERIFY
-        return False
-
-    async def _handle_verify_phase(self, ctx: TaskContext) -> bool:
-        """Handle VERIFY phase transition."""
-        if await self._phase_verify(ctx):
-            ctx.phase = DevTaskPhase.NOTES
-        else:
-            ctx.phase = DevTaskPhase.EXECUTE
-        return False
-
-    async def _handle_notes_phase(self, ctx: TaskContext) -> bool:
-        """Handle NOTES phase transition. This is the developer's final phase."""
-        await self._phase_notes(ctx)
-        # Developer is done - task is now awaiting_qa
-        # QA → Documenter → PM will complete the task
-        return True
-
-    async def _handle_blocked_phase(self, ctx: TaskContext) -> bool:
-        """Handle BLOCKED phase transition."""
-        if await self._handle_blocked(ctx):
-            ctx.phase = DevTaskPhase.EXECUTE
-        return False
 
     # =========================================================================
     # PHASE IMPLEMENTATIONS
@@ -199,7 +192,7 @@ class DeveloperAgent(Agent):
 
         # Announce in channel
         await self.send_message(
-            self._cell_channel_id or ctx.task_id,  # Fallback if no channel
+            self._cell_channel_id or ctx.task_id,
             f"Claiming TASK-{str(ctx.task_id)[:8]}: {ctx.title}",
             message_type="action",
         )
@@ -452,7 +445,7 @@ Respond with the implementation.
         """
         self.log.info("NOTES phase", task_id=str(ctx.task_id))
 
-        # Generate dev_notes for QA verification (what was built, where, key decisions)
+        # Generate dev_notes for QA verification
         dev_notes_prompt = f"""
 Summarize the work done for QA verification:
 
@@ -487,9 +480,9 @@ Summarize in 2-3 sentences what documentation is needed.
             f"[{datetime.now(UTC).isoformat()}] Submitted for QA with dev_notes"
         )
 
-    async def _handle_blocked(self, ctx: TaskContext) -> bool:
+    async def _phase_blocked(self, ctx: TaskContext) -> bool:
         """
-        Handle blocked state.
+        BLOCKED phase: Handle blocked state.
 
         - Document blocker
         - Notify PM
@@ -555,62 +548,6 @@ Summarize in 2-3 sentences what documentation is needed.
             message_type="dialogue",
         )
 
-    async def _get_task_title(self, task_id: UUID) -> str:
-        """Get task title from API."""
-        try:
-            result = await self._api_call("GET", f"/tasks/{task_id}")
-            title: str = result.get("title", f"Task {str(task_id)[:8]}")
-            return title
-        except Exception as e:
-            self.log.warning("Failed to get task title", error=str(e))
-            return f"Task {str(task_id)[:8]}"
-
-    async def _read_task_requirements(self, task_id: UUID) -> str:
-        """Read task requirements from task record."""
-        try:
-            result = await self._api_call("GET", f"/tasks/{task_id}")
-            description = result.get("description", "")
-            acceptance_criteria = result.get("acceptance_criteria", [])
-            criteria_text = "\n".join(f"- {c}" for c in acceptance_criteria)
-            return f"{description}\n\nAcceptance Criteria:\n{criteria_text}"
-        except Exception as e:
-            self.log.warning("Failed to read task requirements", error=str(e))
-            return "Requirements unavailable"
-
-    async def _update_task_status(self, task_id: UUID, status: TaskStatus) -> None:
-        """Update task status via API."""
-        try:
-            await self._api_call(
-                "PUT",
-                f"/tasks/{task_id}",
-                json={"status": status.value},
-            )
-            self.log.info(
-                "Task status updated", task_id=str(task_id), status=status.value
-            )
-        except Exception as e:
-            self.log.error("Failed to update task status", error=str(e))
-
-    async def _add_progress(self, task_id: UUID, message: str, percentage: int) -> None:
-        """
-        Add progress update to task.
-
-        This is saved to task.progress_updates and visible to QA.
-        Percentage is required (0-100) to show real progress.
-        """
-        try:
-            await self._api_call(
-                "POST",
-                f"/tasks/{task_id}/progress",
-                json={
-                    "message": message,
-                    "percentage": percentage,
-                },
-            )
-            self.log.info("Progress saved", task_id=str(task_id), percentage=percentage)
-        except Exception as e:
-            self.log.warning("Failed to save progress", error=str(e))
-
     async def _submit_for_qa(
         self, task_id: UUID, dev_notes: str, handoff_summary: str
     ) -> None:
@@ -636,84 +573,4 @@ Summarize in 2-3 sentences what documentation is needed.
 
         except Exception as e:
             self.log.error("Failed to submit for QA", error=str(e))
-            raise  # Re-raise so caller knows submission failed
-
-
-def create_backend_developer(
-    name: str = "BE-Dev-1",
-    system_prompt: str | None = None,
-) -> DeveloperAgent:
-    """Factory function to create a backend developer agent."""
-    if system_prompt is None:
-        # Load from blueprint file
-        blueprint_path = Path("agents/blueprints/backend/be-dev.md")
-        if blueprint_path.exists():
-            content = blueprint_path.read_text()
-            # Extract system prompt section (between ```blocks after ## System Prompt)
-            match = re.search(r"## System Prompt\s*```\s*(.*?)```", content, re.DOTALL)
-            system_prompt = match.group(1).strip() if match else ""
-        else:
-            system_prompt = "You are a backend developer."
-
-    config = AgentConfig(
-        name=name,
-        slug=name.lower().replace(" ", "-"),
-        role=AgentRole.DEVELOPER,
-        team=Team.BACKEND,
-        system_prompt=system_prompt,
-        capabilities=["code_execution", "git_operations", "file_management"],
-    )
-
-    return DeveloperAgent(config)
-
-
-def create_frontend_developer(
-    name: str = "FE-Dev-1",
-    system_prompt: str | None = None,
-) -> DeveloperAgent:
-    """Factory function to create a frontend developer agent."""
-    if system_prompt is None:
-        blueprint_path = Path("agents/blueprints/frontend/fe-dev.md")
-        if blueprint_path.exists():
-            content = blueprint_path.read_text()
-            match = re.search(r"## System Prompt\s*```\s*(.*?)```", content, re.DOTALL)
-            system_prompt = match.group(1).strip() if match else ""
-        else:
-            system_prompt = "You are a frontend developer."
-
-    config = AgentConfig(
-        name=name,
-        slug=name.lower().replace(" ", "-"),
-        role=AgentRole.DEVELOPER,
-        team=Team.FRONTEND,
-        system_prompt=system_prompt,
-        capabilities=["code_execution", "git_operations", "file_management"],
-    )
-
-    return DeveloperAgent(config)
-
-
-def create_ux_developer(
-    name: str = "UX-Dev-1",
-    system_prompt: str | None = None,
-) -> DeveloperAgent:
-    """Factory function to create a UX/UI developer agent."""
-    if system_prompt is None:
-        blueprint_path = Path("agents/blueprints/ux_ui/ux-dev.md")
-        if blueprint_path.exists():
-            content = blueprint_path.read_text()
-            match = re.search(r"## System Prompt\s*```\s*(.*?)```", content, re.DOTALL)
-            system_prompt = match.group(1).strip() if match else ""
-        else:
-            system_prompt = "You are a UX/UI developer."
-
-    config = AgentConfig(
-        name=name,
-        slug=name.lower().replace(" ", "-"),
-        role=AgentRole.DEVELOPER,
-        team=Team.UX_UI,
-        system_prompt=system_prompt,
-        capabilities=["design_tools", "file_management"],
-    )
-
-    return DeveloperAgent(config)
+            raise

@@ -6,21 +6,12 @@ Sends notifications through the API with proper enforcement.
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
-
 import structlog
-from fastapi import HTTPException, status
-from sqlalchemy import select
 
 from roboco.db.base import get_db_context
 from roboco.db.tables import NotificationTable
 from roboco.models import NotificationPriority, NotificationType
 from roboco.models.notification import CreateNotificationParams
-
-if TYPE_CHECKING:
-    from uuid import UUID
-
-    from sqlalchemy.ext.asyncio import AsyncSession
 
 logger = structlog.get_logger()
 
@@ -181,8 +172,6 @@ class NotificationService:
 
     async def _create_notification(self, params: CreateNotificationParams) -> None:
         """Create a notification via the database."""
-        from roboco.db.tables import NotificationTable
-
         async with get_db_context() as db:
             notification = NotificationTable(
                 type=params.notification_type,
@@ -201,37 +190,3 @@ class NotificationService:
                 notification_id=str(notification.id),
                 type=params.notification_type.value,
             )
-
-
-# =============================================================================
-# Route Helpers
-# =============================================================================
-
-
-async def get_notification_or_404(
-    db: AsyncSession,
-    notification_id: UUID,
-) -> NotificationTable:
-    """Fetch notification by ID or raise 404."""
-    result = await db.execute(
-        select(NotificationTable).where(NotificationTable.id == notification_id)
-    )
-    notification = result.scalar_one_or_none()
-    if not notification:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Notification not found",
-        )
-    return notification
-
-
-def require_notification_recipient(
-    notification: NotificationTable,
-    agent_id: UUID,
-) -> None:
-    """Raise 403 if agent is not a recipient."""
-    if agent_id not in notification.to_agents:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="You are not a recipient of this notification",
-        )

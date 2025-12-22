@@ -7,9 +7,8 @@ Supports swimlanes, cross-cell views, and real-time updates.
 
 from collections.abc import Sequence
 from datetime import UTC, datetime
-from typing import Any
+from typing import Any, ClassVar
 
-import structlog
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -23,12 +22,11 @@ from roboco.models.kanban import (
     KanbanSwimlane,
     get_column_config,
 )
+from roboco.services.base import BaseService
 from roboco.utils.converters import require_uuid, to_python_uuid
 
-logger = structlog.get_logger()
 
-
-class KanbanService:
+class KanbanService(BaseService):
     """
     Service for generating kanban board views.
 
@@ -39,8 +37,7 @@ class KanbanService:
     - Board-level roadmap view
     """
 
-    def __init__(self, session: AsyncSession):
-        self.session = session
+    service_name: ClassVar[str] = "kanban"
 
     # =========================================================================
     # CARD CREATION

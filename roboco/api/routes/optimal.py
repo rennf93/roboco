@@ -10,7 +10,7 @@ from uuid import uuid4
 
 from fastapi import APIRouter, HTTPException, status
 
-from roboco.api.deps import CurrentAgentContext
+from roboco.api.deps import CurrentAgentContext, PermissionServiceDep
 from roboco.api.schemas.optimal import (
     ClearIndexResponse,
     IndexCodeRequest,
@@ -29,7 +29,7 @@ from roboco.api.schemas.optimal import (
     TokenEstimateRequest,
     TokenEstimateResponse,
 )
-from roboco.models import AgentRole
+from roboco.models.permissions import KBAction
 from roboco.services.optimal import (
     IndexType,
     QueryContext,
@@ -52,6 +52,7 @@ router = APIRouter()
 async def index_code(
     request: IndexCodeRequest,
     agent: CurrentAgentContext,
+    permissions: PermissionServiceDep,
 ) -> IndexResponse:
     """
     Index code files/directories.
@@ -61,9 +62,7 @@ async def index_code(
     - Directories
     - Glob patterns (e.g., "src/**/*.py")
     """
-    # Only developers and PMs can index code
-    allowed = {AgentRole.DEVELOPER, AgentRole.CELL_PM, AgentRole.MAIN_PM, AgentRole.CEO}
-    if agent.role not in allowed:
+    if not permissions.can_perform_kb_action(agent, KBAction.INDEX_CODE):
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Not authorized to index code",
@@ -89,6 +88,7 @@ async def index_code(
 async def index_documentation(
     request: IndexDocsRequest,
     agent: CurrentAgentContext,
+    permissions: PermissionServiceDep,
 ) -> IndexResponse:
     """
     Index documentation files.
@@ -98,15 +98,7 @@ async def index_documentation(
     - URLs (single page or crawl with /**)
     - Glob patterns
     """
-    # Documenters and above can index docs
-    allowed = {
-        AgentRole.DOCUMENTER,
-        AgentRole.DEVELOPER,
-        AgentRole.CELL_PM,
-        AgentRole.MAIN_PM,
-        AgentRole.CEO,
-    }
-    if agent.role not in allowed:
+    if not permissions.can_perform_kb_action(agent, KBAction.INDEX_DOCS):
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Not authorized to index documentation",
@@ -332,11 +324,10 @@ async def get_context(
 @router.get("/stats", response_model=IndexStatsResponse)
 async def get_stats(
     agent: CurrentAgentContext,
+    permissions: PermissionServiceDep,
 ) -> IndexStatsResponse:
     """Get statistics about all indexes."""
-    # PMs and above can view stats
-    allowed = {AgentRole.CELL_PM, AgentRole.MAIN_PM, AgentRole.CEO, AgentRole.AUDITOR}
-    if agent.role not in allowed:
+    if not permissions.can_perform_kb_action(agent, KBAction.VIEW_STATS):
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Not authorized to view index statistics",
@@ -354,15 +345,14 @@ async def get_stats(
 async def clear_index(
     index_type: str,
     agent: CurrentAgentContext,
+    permissions: PermissionServiceDep,
 ) -> ClearIndexResponse:
     """
     Clear a specific index.
 
     Warning: This permanently deletes all documents in the index.
     """
-    # Only Main PM and CEO can clear indexes (destructive operation)
-    allowed = {AgentRole.MAIN_PM, AgentRole.CEO}
-    if agent.role not in allowed:
+    if not permissions.can_perform_kb_action(agent, KBAction.CLEAR_INDEX):
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Not authorized to clear indexes",
@@ -386,15 +376,14 @@ async def clear_index(
 async def refresh_index(
     request: RefreshRequest,
     agent: CurrentAgentContext,
+    permissions: PermissionServiceDep,
 ) -> RefreshIndexResponse:
     """
     Refresh an index with updated sources.
 
     Re-indexes the specified sources to pick up changes.
     """
-    # Developers and PMs can refresh indexes
-    allowed = {AgentRole.DEVELOPER, AgentRole.CELL_PM, AgentRole.MAIN_PM, AgentRole.CEO}
-    if agent.role not in allowed:
+    if not permissions.can_perform_kb_action(agent, KBAction.REFRESH_INDEX):
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Not authorized to refresh indexes",
