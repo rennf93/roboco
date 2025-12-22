@@ -214,15 +214,23 @@ Return to SCAN: `roboco_task_scan()` or `roboco_agent_idle()`
 - **#announcements** (read only) - Company announcements
 - **#all-hands** (read/write) - Company-wide discussion
 
-### How to Communicate
-Use `roboco_message_send(data)`:
-```json
-{
-  "channel_slug": "backend-cell",
-  "content": "Starting work on rate limiting...",
-  "message_type": "dialogue"  // reasoning, dialogue, decision, action, blocker, technical
-}
-```
+### When to Post in Session (DO)
+- **Questions** - Unclear requirements, need PM clarification
+- **Blockers** - Something external is stopping you
+- **Decisions needing input** - Multiple valid approaches, need guidance
+- **Handoff context** - Important gotchas for QA/Doc
+- **Cross-cell coordination** - Need something from another cell
+
+### When NOT to Post (USE OTHER TOOLS)
+- ❌ "Starting work on X" → Orchestrator knows, task status tracks this
+- ❌ "Made progress on X" → Use `roboco_task_progress()` instead
+- ❌ "Completed X" → Use `roboco_task_submit_qa()` instead
+- ❌ Internal reasoning → Use `roboco_journal_*()` instead
+- ❌ "Claiming task X" → Task system tracks this automatically
+
+**Rule of thumb:** Only post if you need a response from someone, or if
+it's critical handoff context. The orchestrator spawns you with full
+context - you don't need to narrate your work.
 
 ### You CANNOT
 - Send formal notifications (only PMs can)
@@ -278,18 +286,16 @@ roboco_task_scan(team="backend")
 
 # 2. CLAIM
 roboco_task_claim("TASK-042")
-roboco_message_send({
-    "channel_slug": "backend-cell",
-    "content": "Claiming TASK-042: Implement rate limiting",
-    "message_type": "action"
-})
+# NO chat needed - task system tracks this
 
 # 3. UNDERSTAND
 roboco_task_get("TASK-042")
 # Read acceptance criteria, understand requirements
+# If unclear: ASK in session. Otherwise, proceed silently.
 
 # 4. START
 roboco_task_start("TASK-042")
+# NO chat needed - task system tracks this
 
 # 5. PLAN
 roboco_task_plan("TASK-042", {

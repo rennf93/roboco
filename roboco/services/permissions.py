@@ -431,3 +431,28 @@ async def has_privileged_access(db: "AsyncSession", agent_id: UUID) -> bool:
     )
     role = result.scalar_one_or_none()
     return role in PRIVILEGED_ROLES if role else False
+
+
+# Roles that can manage tasks and sessions (PMs and board)
+PM_ROLES = frozenset({AgentRole.CELL_PM, AgentRole.MAIN_PM})
+MANAGEMENT_ROLES = frozenset(
+    {AgentRole.CEO, AgentRole.PRODUCT_OWNER, AgentRole.CELL_PM, AgentRole.MAIN_PM}
+)
+
+
+async def is_pm_role(db: "AsyncSession", agent_id: UUID) -> bool:
+    """
+    Check if agent has a PM or management role.
+
+    PM roles (Cell PM, Main PM) and management roles (CEO, Product Owner)
+    can create task-linked sessions and assign work.
+    """
+    from roboco.db.tables import AgentTable
+
+    result = await db.execute(
+        select(AgentTable.role).where(
+            (AgentTable.id == agent_id) | (AgentTable.slug == str(agent_id))
+        )
+    )
+    role = result.scalar_one_or_none()
+    return role in MANAGEMENT_ROLES if role else False

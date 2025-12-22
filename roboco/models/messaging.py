@@ -8,6 +8,7 @@ from dataclasses import dataclass
 from uuid import UUID
 
 from roboco.models.base import AgentRole, ChannelType, MessageType
+from roboco.models.session import SessionScope
 
 
 @dataclass
@@ -43,6 +44,7 @@ class SessionCreateRequest:
     max_message_count: int | None = 100
     max_content_length: int | None = 50000
     timeout_seconds: int = 300
+    scope: SessionScope = SessionScope.TASK
 
 
 @dataclass

@@ -30,12 +30,14 @@ HOURS_PER_DAY = 24
 SECONDS_PER_HOUR = 3600
 
 # Active task statuses for queries
-ACTIVE_STATUSES = frozenset({
-    TaskStatus.CLAIMED,
-    TaskStatus.IN_PROGRESS,
-    TaskStatus.VERIFYING,
-    TaskStatus.AWAITING_QA,
-})
+ACTIVE_STATUSES = frozenset(
+    {
+        TaskStatus.CLAIMED,
+        TaskStatus.IN_PROGRESS,
+        TaskStatus.VERIFYING,
+        TaskStatus.AWAITING_QA,
+    }
+)
 
 # Health thresholds
 CRITICAL_BLOCKED_RATIO = 0.3

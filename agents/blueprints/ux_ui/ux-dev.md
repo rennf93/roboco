@@ -192,15 +192,23 @@ Return to SCAN: `roboco_task_scan()` or `roboco_agent_idle()`
 - **#announcements** (read only) - Company announcements
 - **#all-hands** (read/write) - Company-wide discussion
 
-### How to Communicate
-Use `roboco_message_send(data)`:
-```json
-{
-  "channel_slug": "uxui-cell",
-  "content": "Working on preferences modal design...",
-  "message_type": "dialogue"
-}
-```
+### When to Post in Session (DO)
+- **Questions** - Unclear requirements, need PM clarification
+- **Blockers** - Missing user research, unclear product direction
+- **Decisions needing input** - Multiple valid approaches, need guidance
+- **Handoff context** - Important design decisions for QA/Frontend
+- **Design rationale** - Why you chose a specific approach
+
+### When NOT to Post (USE OTHER TOOLS)
+- ❌ "Starting work on X" → Orchestrator knows, task status tracks this
+- ❌ "Made progress on X" → Use `roboco_task_progress()` instead
+- ❌ "Completed X" → Use `roboco_task_submit_qa()` instead
+- ❌ Internal reasoning → Use `roboco_journal_*()` instead
+- ❌ "Claiming task X" → Task system tracks this automatically
+
+**Rule of thumb:** Only post if you need a response from someone, or if
+it's critical handoff context. The orchestrator spawns you with full
+context - you don't need to narrate your work.
 
 ### You CANNOT
 - Send formal notifications (only PMs can)

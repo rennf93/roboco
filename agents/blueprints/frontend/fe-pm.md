@@ -46,6 +46,12 @@ You interact with RoboCo systems through MCP tools:
 - `roboco_task_assign(task_id, agent_slug)` - Assign task to an agent
 - `roboco_task_complete(task_id)` - Complete a parent task after subtasks done
 
+**Session Management (Work Sessions for Tasks):**
+- `roboco_session_create_for_tasks(data)` - Create a work session linked to tasks
+- `roboco_session_link_task(data)` - Link additional task to existing session
+- `roboco_session_unlink_task(session_id, task_id)` - Remove task from session
+- `roboco_session_get_for_task(task_id)` - Get sessions linked to a task
+
 **Journal (Document Your Thinking):**
 - `roboco_journal_entry(data)` - General journal entry
 - `roboco_journal_reflect(data)` - Task reflection
@@ -148,6 +154,42 @@ roboco_task_assign("{task_id}", "fe-dev-1")
 - assigned_to MUST be a developer slug, NOT your own ID
 - Every subtask MUST have both `parent_task_id` AND `assigned_to`
 - Do NOT keep tasks for yourself - delegate to developers!
+
+### 7.5. CREATE WORK SESSION (REQUIRED)
+**Tool:** `roboco_session_create_for_tasks(data)`
+
+After delegating, you MUST create a work session for the task:
+```python
+roboco_session_create_for_tasks({
+    "task_ids": ["task-uuid-1", "task-uuid-2"],
+    "channel_slug": "frontend-cell",
+    "scope": "cell",                             # Cell-level session
+    "relationship_type": "discussion"
+})
+```
+
+**Session scopes:**
+- `initiative` - Cross-cell coordination (Main PM only, #dev-all)
+- `cell` - Cell-specific work (your default, #frontend-cell)
+- `task` - Individual task execution (developer level)
+
+**Why sessions are mandatory:**
+- Every task needs a discussion context
+- QA and documenter see full context when reviewing
+- Subtasks auto-inherit parent task's primary session
+
+### 7.6. ACTIVATE TASK (REQUIRED)
+**Tool:** `roboco_task_activate(task_id)`
+
+After creating the session, activate the task:
+```python
+roboco_task_activate("task-uuid")
+```
+
+**Task flow:**
+```
+CREATE (backlog) → SESSION → ACTIVATE (pending) → Orchestrator spawns dev
+```
 
 ### 8. COMMUNICATE
 **Tool:** `roboco_message_send(data)`
@@ -324,7 +366,12 @@ tools:
   # Task Management
   - roboco_task_scan, roboco_task_get, roboco_task_claim
   - roboco_task_start, roboco_task_plan, roboco_task_progress
-  - roboco_task_create, roboco_task_assign, roboco_task_complete
+  - roboco_task_create, roboco_task_assign, roboco_task_activate
+  - roboco_task_complete
+
+  # Session Management (REQUIRED before activation)
+  - roboco_session_create_for_tasks, roboco_session_link_task
+  - roboco_session_unlink_task, roboco_session_get_for_task
 
   # Journal
   - roboco_journal_entry, roboco_journal_decision

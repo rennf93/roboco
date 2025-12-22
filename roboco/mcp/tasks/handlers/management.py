@@ -132,9 +132,7 @@ def _validate_create_permissions(agent_id: str) -> dict[str, Any] | None:
     return None
 
 
-def _validate_cell_pm_team(
-    agent_id: str, requested_team: str
-) -> dict[str, Any] | None:
+def _validate_cell_pm_team(agent_id: str, requested_team: str) -> dict[str, Any] | None:
     """Validate Cell PM team restrictions for task creation. Returns error or None."""
     role = get_agent_role(agent_id)
     agent_team = get_agent_team(agent_id)
@@ -326,3 +324,52 @@ async def handle_task_escalate(
         "They will be notified and can reassign or provide guidance."
     )
     return format_task_response(task, "ESCALATED", guidance)
+
+
+async def handle_task_activate(
+    client: ApiClient, task_id: str, agent_id: str
+) -> dict[str, Any]:
+    """
+    Handle task activation from BACKLOG to PENDING (PM only).
+
+    This is the final step in PM setup. After creating a session and
+    linking the task, the PM activates it to make it ready for work.
+    The orchestrator will then spawn agents to claim and work on it.
+
+    REQUIRES: Task must have at least one linked session.
+    """
+    if not can_create_tasks(agent_id):
+        return format_error_response(
+            "PERMISSION_DENIED",
+            "Only PMs and management can activate tasks",
+            {"role": get_agent_role(agent_id)},
+        )
+
+    try:
+        resp = await client.post(f"/tasks/{task_id}/activate")
+    except Exception as e:
+        return format_error_response(
+            "CONNECTION_ERROR",
+            f"Failed to connect to API: {type(e).__name__}",
+        )
+
+    if resp.is_status(status.HTTP_404_NOT_FOUND):
+        return format_error_response("NOT_FOUND", f"Task {task_id} not found")
+
+    if resp.is_status(status.HTTP_400_BAD_REQUEST):
+        detail = resp.json().get("detail", "Activation failed")
+        return format_error_response("ACTIVATION_FAILED", detail)
+
+    if not resp.ok:
+        return format_error_response(
+            "ACTIVATION_FAILED",
+            "Failed to activate task",
+            {"status_code": resp.status_code, "detail": resp.text},
+        )
+
+    task = resp.json()
+    guidance = (
+        "Task activated. Status is now PENDING. "
+        "Orchestrator will spawn agents to work on it."
+    )
+    return format_task_response(task, "ACTIVATED", guidance)

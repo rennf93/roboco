@@ -15,6 +15,10 @@ from roboco.api.deps import (
     DbSession,
     PermissionServiceDep,
 )
+from roboco.api.schemas.sessions import (
+    SessionTaskLinkResponse,
+    TaskSessionsResponse,
+)
 from roboco.api.schemas.tasks import (
     CheckpointRequest,
     ClaimRequest,
@@ -25,6 +29,7 @@ from roboco.api.schemas.tasks import (
     SoftBlockRequest,
     TaskCountResponse,
     TaskResponse,
+    TaskSessionLinkResponse,
     TaskUpdate,
     TeamTasksQuery,
     task_list_to_response,
@@ -35,12 +40,14 @@ from roboco.db.tables import AgentTable
 from roboco.models.base import TaskStatus, Team
 from roboco.models.task import TaskCreate
 from roboco.services.audit import get_audit_service
+from roboco.services.messaging import get_messaging_service
 from roboco.services.permissions import TaskAction
 from roboco.services.task import (
     TaskCreateRequest,
     extract_original_developer,
     get_task_service,
 )
+from roboco.utils.converters import require_uuid
 
 router = APIRouter()
 
@@ -283,14 +290,33 @@ async def get_task(
     task_id: UUID,
     db: DbSession,
 ) -> TaskResponse:
-    """Get a specific task."""
+    """Get a specific task with linked sessions."""
     service = get_task_service(db)
     task = await service.get(task_id)
     if not task:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND, detail="Task not found"
         )
-    return task_to_response(task)
+
+    # Get linked sessions for this task
+    messaging = get_messaging_service(db)
+    session_links = await messaging.get_sessions_for_task(task_id)
+
+    # Build response with sessions
+    response = task_to_response(task)
+    response.sessions = [
+        TaskSessionLinkResponse(
+            session_id=require_uuid(link.session_id),
+            channel_slug=link.session.group.channel.slug,
+            scope=link.session.scope,
+            is_primary=link.is_primary,
+            relationship_type=link.relationship_type,
+        )
+        for link in session_links
+        if link.session and link.session.group and link.session.group.channel
+    ]
+
+    return response
 
 
 @router.put("/{task_id}", response_model=TaskResponse)
@@ -396,9 +422,7 @@ async def get_subtasks(
 # =============================================================================
 
 
-async def _resolve_claim_agent_id(
-    db: DbSession, agent_id_str: str
-) -> UUID:
+async def _resolve_claim_agent_id(db: DbSession, agent_id_str: str) -> UUID:
     """Resolve agent ID from UUID string or slug."""
     try:
         return UUID(agent_id_str)
@@ -1068,3 +1092,92 @@ async def add_commit(
         )
     await db.commit()
     return task_to_response(task)
+
+
+# =============================================================================
+# TASK ACTIVATION (PM ONLY)
+# =============================================================================
+
+
+@router.post("/{task_id}/activate", response_model=TaskResponse)
+async def activate_task(
+    task_id: UUID,
+    db: DbSession,
+    agent: CurrentAgentContext,
+    permissions: PermissionServiceDep,
+) -> TaskResponse:
+    """
+    Activate a task from BACKLOG to PENDING status (PM only).
+
+    This is the final step in PM setup. After creating a session and
+    linking the task, the PM activates it to make it ready for work.
+
+    REQUIRES: Task must have at least one linked session.
+    """
+    # Check PM permission
+    if not permissions.can_perform_task_action(agent, "create_tasks"):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Only PMs and management can activate tasks",
+        )
+
+    service = get_task_service(db)
+
+    try:
+        task = await service.activate(task_id)
+    except ValueError as e:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(e),
+        ) from e
+
+    await db.commit()
+    return task_to_response(task)
+
+
+# =============================================================================
+# SESSION-TASK ENDPOINTS
+# =============================================================================
+
+
+@router.get("/{task_id}/sessions", response_model=TaskSessionsResponse)
+async def get_sessions_for_task(
+    task_id: UUID,
+    db: DbSession,
+    _agent: CurrentAgentContext,  # Kept for auth dependency
+) -> TaskSessionsResponse:
+    """Get all sessions linked to a task."""
+    # Verify task exists
+    service = get_task_service(db)
+    task = await service.get(task_id)
+    if not task:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Task not found",
+        )
+
+    # Get sessions
+    messaging = get_messaging_service(db)
+    links = await messaging.get_sessions_for_task(task_id)
+
+    # Find primary session
+    primary_link = next((link for link in links if link.is_primary), None)
+
+    return TaskSessionsResponse(
+        task_id=task_id,
+        sessions=[
+            SessionTaskLinkResponse(
+                id=require_uuid(link.id),
+                session_id=require_uuid(link.session_id),
+                task_id=require_uuid(link.task_id),
+                is_primary=link.is_primary,
+                relationship_type=link.relationship_type,
+                added_at=link.added_at,
+                added_by=require_uuid(link.added_by) if link.added_by else None,
+            )
+            for link in links
+        ],
+        primary_session_id=(
+            require_uuid(primary_link.session_id) if primary_link else None
+        ),
+    )

@@ -11,6 +11,7 @@ from uuid import UUID
 from pydantic import BaseModel, Field
 
 from roboco.models.base import Complexity, TaskStatus, Team
+from roboco.models.session import SessionScope
 from roboco.utils.converters import require_uuid, to_python_uuid, to_python_uuid_list
 
 if TYPE_CHECKING:
@@ -48,6 +49,16 @@ class CommitRefResponse(BaseModel):
     message: str
     timestamp: datetime
     author_agent_id: UUID | None = None
+
+
+class TaskSessionLinkResponse(BaseModel):
+    """A session linked to this task."""
+
+    session_id: UUID
+    channel_slug: str
+    scope: SessionScope
+    is_primary: bool
+    relationship_type: str
 
 
 class SubTaskResponse(BaseModel):
@@ -229,6 +240,9 @@ class TaskResponse(BaseModel):
     # Review Status
     self_verified: bool
     qa_verified: bool | None
+
+    # Linked Sessions (for agent context)
+    sessions: list[TaskSessionLinkResponse] = []
 
     class Config:
         from_attributes = True

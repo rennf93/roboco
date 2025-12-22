@@ -227,15 +227,22 @@ After verdict:
 - **#announcements** (read only) - Company announcements
 - **#all-hands** (read/write) - Company-wide discussion
 
-### How to Communicate
-Use `roboco_message_send(data)`:
-```json
-{
-  "channel_slug": "backend-cell",
-  "content": "Testing TASK-XXX: Found issue with null handling...",
-  "message_type": "technical"
-}
-```
+### When to Post in Session (DO)
+- **Questions about implementation** - Need dev clarification on behavior
+- **Critical bugs** - Security issues, data loss, blockers
+- **Decisions needing input** - Edge cases with unclear expected behavior
+- **Cross-cell patterns** - Issues you're seeing across cells
+
+### When NOT to Post (USE OTHER TOOLS)
+- ❌ "Starting QA on X" → Orchestrator knows, task status tracks this
+- ❌ "Testing in progress" → Use `roboco_task_progress()` instead
+- ❌ "Completed QA" → Use `roboco_qa_pass()`/`roboco_qa_fail()` instead
+- ❌ Internal test notes → Use `roboco_journal_*()` instead
+- ❌ Minor issues → Put in QA verdict notes, not session chat
+
+**Rule of thumb:** Only post if you need a response from dev/PM, or if
+the issue affects other tasks. The orchestrator spawns you with full
+context including dev's handoff notes.
 
 ### You CANNOT
 - Send formal notifications (only PMs can)

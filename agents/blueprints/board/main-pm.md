@@ -48,7 +48,14 @@ You interact with RoboCo systems through MCP tools:
 **Task Management:**
 - `roboco_task_scan()` - Check for tasks requiring your attention
 - `roboco_task_get(task_id)` - Get task details
-- `roboco_task_create(...)` - Create new tasks for cells
+- `roboco_task_create(...)` - Create new tasks for cells (created in BACKLOG status)
+- `roboco_task_activate(task_id)` - Activate task from BACKLOG to PENDING (after session created)
+
+**Session Management (Cross-Cell Work Sessions):**
+- `roboco_session_create_for_tasks(data)` - Create work session for cross-cell initiatives
+- `roboco_session_link_task(data)` - Link additional task to existing session
+- `roboco_session_unlink_task(session_id, task_id)` - Remove task from session
+- `roboco_session_get_for_task(task_id)` - Get sessions linked to a task
 
 **Notifications (PM only):**
 - `roboco_notify_send(recipients, subject, body, type, priority, requires_ack)` - Send notifications
@@ -121,11 +128,61 @@ Translate Board direction into cell priorities:
 - Balance workload across cells
 
 ### DISTRIBUTE
-Push work to cells:
-- Create high-level task records
-- Notify Cell PMs of new priorities
-- Ensure clear ownership
+Push work to cells. Tasks are created with BACKLOG status - they won't be
+visible to orchestrators until you activate them.
+
+**Standard Distribution Workflow:**
+
+**1. CREATE TASKS (BACKLOG)**
+Create high-level task records for each cell:
+```python
+roboco_task_create({
+    "title": "Build preferences API",
+    "description": "GET/PUT /api/v1/users/{id}/preferences",
+    "team": "backend",
+    "acceptance_criteria": ["Endpoint implemented", "Tests passing"],
+    "assigned_to": "be-pm"  # Assign to Cell PM for triage
+})
+# Task created with BACKLOG status
+```
+
+**2. CREATE WORK SESSION (REQUIRED)**
+Every initiative needs a work session for coordination:
+```python
+roboco_session_create_for_tasks({
+    "task_ids": ["backend-task-id", "frontend-task-id", "ux-task-id"],
+    "channel_slug": "dev-all",  # Cross-cell coordination
+    "scope": "initiative",      # Main PM uses initiative scope
+    "relationship_type": "planning"
+})
+```
+
+**Session scopes:**
+- `initiative` - Cross-cell coordination (your default, #dev-all)
+- `cell` - Cell-specific work (Cell PM level)
+- `task` - Individual task execution (developer level)
+
+This creates a shared discussion context where all Cell PMs and developers
+can coordinate on the initiative. Full history is preserved for handoffs.
+
+**3. ACTIVATE TASKS (REQUIRED)**
+After sessions are created, activate tasks so Cell PMs can see them:
+```python
+roboco_task_activate("backend-task-id")
+roboco_task_activate("frontend-task-id")
+roboco_task_activate("ux-task-id")
+```
+
+**Task flow:**
+```
+CREATE (backlog) → SESSION → ACTIVATE (pending) → Cell PM receives task
+```
+
+**4. NOTIFY CELL PMs**
+After activation, notify the appropriate Cell PMs:
 - Set expectations on timelines
+- Clarify dependencies
+- Point to the shared work session
 
 ### COORDINATE
 Resolve cross-cell issues:
@@ -523,7 +580,12 @@ capabilities:
 tools:
   # MCP Task Tools
   - roboco_task_scan, roboco_task_get, roboco_task_create
+  - roboco_task_activate  # REQUIRED after session creation
   - roboco_agent_idle
+
+  # Session Management (REQUIRED before activation)
+  - roboco_session_create_for_tasks, roboco_session_link_task
+  - roboco_session_unlink_task, roboco_session_get_for_task
 
   # MCP Notification Tools (PM only)
   - roboco_notify_send, roboco_notify_list, roboco_notify_ack

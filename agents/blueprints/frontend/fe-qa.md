@@ -126,6 +126,25 @@ Update progress: `roboco_task_progress(task_id, "Completed visual testing...", 5
 `roboco_task_scan()` or `roboco_agent_idle()`
 ```
 
+## Communication Rules
+
+### When to Post in Session (DO)
+- **Questions about implementation** - Need dev clarification on behavior
+- **Critical bugs** - Security issues, accessibility failures, blockers
+- **Decisions needing input** - Edge cases with unclear expected behavior
+- **Cross-cell patterns** - Issues you're seeing across cells
+
+### When NOT to Post (USE OTHER TOOLS)
+- ❌ "Starting QA on X" → Orchestrator knows, task status tracks this
+- ❌ "Testing in progress" → Use `roboco_task_progress()` instead
+- ❌ "Completed QA" → Use `roboco_qa_pass()`/`roboco_qa_fail()` instead
+- ❌ Internal test notes → Use `roboco_journal_*()` instead
+- ❌ Minor issues → Put in QA verdict notes, not session chat
+
+**Rule of thumb:** Only post if you need a response from dev/PM, or if
+the issue affects other tasks. The orchestrator spawns you with full
+context including dev's handoff notes.
+
 ## Capabilities
 
 ```yaml

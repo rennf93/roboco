@@ -16,12 +16,14 @@ from uuid import UUID
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import joinedload
 
 from roboco.db.tables import (
     ChannelTable,
     GroupTable,
     MessageTable,
     SessionTable,
+    SessionTaskTable,
 )
 from roboco.enforcement import validate_channel_access
 from roboco.events import Event, EventType, get_event_bus
@@ -35,7 +37,11 @@ from roboco.models.messaging import (
     MessageCreateRequest,
     SessionCreateRequest,
 )
-from roboco.services.base import BaseService
+from roboco.models.session import (
+    SessionForTasksCreate,
+    SessionTaskRelationshipType,
+)
+from roboco.services.base import BaseService, ConflictError, NotFoundError
 
 # =============================================================================
 # MESSAGING SERVICE
@@ -281,6 +287,7 @@ class MessagingService(BaseService):
             max_content_length=req.max_content_length,
             timeout_seconds=req.timeout_seconds,
             status=SessionStatus.ACTIVE,
+            scope=req.scope,
         )
 
         self.session.add(session)
@@ -385,6 +392,261 @@ class MessagingService(BaseService):
 
         # Create new session
         return await self.create_session(SessionCreateRequest(group_id=group_id))
+
+    # =========================================================================
+    # SESSION-TASK LINKING OPERATIONS
+    # =========================================================================
+
+    async def link_session_to_task(
+        self,
+        session_id: UUID,
+        task_id: UUID,
+        added_by: UUID,
+        is_primary: bool = False,
+        relationship_type: SessionTaskRelationshipType = (
+            SessionTaskRelationshipType.DISCUSSION
+        ),
+    ) -> SessionTaskTable:
+        """
+        Link a session to a task.
+
+        Args:
+            session_id: Session to link
+            task_id: Task to link
+            added_by: PM who created this link
+            is_primary: Mark as primary discussion session for this task
+            relationship_type: Type of relationship
+
+        Returns:
+            Created link
+
+        Raises:
+            NotFoundError: If session not found
+            ConflictError: If link already exists or primary constraint violated
+        """
+        # Verify session exists
+        session = await self.get_session(session_id)
+        if not session:
+            raise NotFoundError(f"Session {session_id} not found")
+
+        # Check if link already exists
+        existing = await self.session.execute(
+            select(SessionTaskTable).where(
+                SessionTaskTable.session_id == session_id,
+                SessionTaskTable.task_id == task_id,
+            )
+        )
+        if existing.scalar_one_or_none():
+            raise ConflictError(
+                f"Session {session_id} is already linked to task {task_id}"
+            )
+
+        # If marking as primary, check if task already has a primary session
+        if is_primary:
+            existing_primary = await self.session.execute(
+                select(SessionTaskTable).where(
+                    SessionTaskTable.task_id == task_id,
+                    SessionTaskTable.is_primary.is_(True),
+                )
+            )
+            if existing_primary.scalar_one_or_none():
+                raise ConflictError(f"Task {task_id} already has a primary session")
+
+        link = SessionTaskTable(
+            session_id=session_id,
+            task_id=task_id,
+            is_primary=is_primary,
+            relationship_type=relationship_type.value,
+            added_by=added_by,
+        )
+
+        self.session.add(link)
+        await self.session.flush()
+
+        self.log.info(
+            "Session linked to task",
+            session_id=str(session_id),
+            task_id=str(task_id),
+            is_primary=is_primary,
+            relationship_type=relationship_type.value,
+        )
+        return link
+
+    async def unlink_session_from_task(
+        self,
+        session_id: UUID,
+        task_id: UUID,
+    ) -> bool:
+        """
+        Remove a session-task link.
+
+        Args:
+            session_id: Session to unlink
+            task_id: Task to unlink
+
+        Returns:
+            True if link was removed, False if not found
+        """
+        result = await self.session.execute(
+            select(SessionTaskTable).where(
+                SessionTaskTable.session_id == session_id,
+                SessionTaskTable.task_id == task_id,
+            )
+        )
+        link = result.scalar_one_or_none()
+
+        if not link:
+            return False
+
+        await self.session.delete(link)
+        await self.session.flush()
+
+        self.log.info(
+            "Session unlinked from task",
+            session_id=str(session_id),
+            task_id=str(task_id),
+        )
+        return True
+
+    async def get_sessions_for_task(
+        self,
+        task_id: UUID,
+        relationship_type: SessionTaskRelationshipType | None = None,
+    ) -> list[SessionTaskTable]:
+        """
+        Get all sessions linked to a task.
+
+        Args:
+            task_id: Task to get sessions for
+            relationship_type: Filter by relationship type
+
+        Returns:
+            List of session-task links (with session→group→channel loaded)
+        """
+        query = (
+            select(SessionTaskTable)
+            .where(SessionTaskTable.task_id == task_id)
+            .options(
+                joinedload(SessionTaskTable.session)
+                .joinedload(SessionTable.group)
+                .joinedload(GroupTable.channel)
+            )
+        )
+
+        if relationship_type:
+            query = query.where(
+                SessionTaskTable.relationship_type == relationship_type.value
+            )
+
+        query = query.order_by(SessionTaskTable.added_at.desc())
+        result = await self.session.execute(query)
+        return list(result.scalars().unique().all())
+
+    async def get_primary_session_for_task(
+        self,
+        task_id: UUID,
+    ) -> SessionTaskTable | None:
+        """
+        Get the primary session for a task.
+
+        Args:
+            task_id: Task to get primary session for
+
+        Returns:
+            Primary session-task link, or None if no primary session
+        """
+        result = await self.session.execute(
+            select(SessionTaskTable).where(
+                SessionTaskTable.task_id == task_id,
+                SessionTaskTable.is_primary.is_(True),
+            )
+        )
+        return result.scalar_one_or_none()
+
+    async def get_tasks_for_session(
+        self,
+        session_id: UUID,
+    ) -> list[SessionTaskTable]:
+        """
+        Get all tasks linked to a session.
+
+        Args:
+            session_id: Session to get tasks for
+
+        Returns:
+            List of session-task links (with task relationship loaded)
+        """
+        result = await self.session.execute(
+            select(SessionTaskTable)
+            .where(SessionTaskTable.session_id == session_id)
+            .order_by(SessionTaskTable.added_at.desc())
+        )
+        return list(result.scalars().all())
+
+    async def create_session_for_tasks(
+        self,
+        req: SessionForTasksCreate,
+        pm_agent_id: UUID,
+    ) -> tuple[SessionTable, list[SessionTaskTable]]:
+        """
+        Create a new session linked to one or more tasks (PM operation).
+
+        This is the main entry point for PMs to create work sessions.
+
+        Args:
+            req: Session creation request with task IDs
+            pm_agent_id: PM agent creating the session
+
+        Returns:
+            Tuple of (created session, list of created links)
+
+        Raises:
+            NotFoundError: If channel not found
+            ValueError: If no groups found in channel
+        """
+        # Get channel
+        channel = await self.get_channel_by_slug(req.channel_slug)
+        if not channel:
+            raise NotFoundError(f"Channel '{req.channel_slug}' not found")
+
+        # Get first group in channel (or create default)
+        groups = await self.list_groups_in_channel(cast("UUID", channel.id))
+        if not groups:
+            raise ValueError(f"No groups found in channel '{req.channel_slug}'")
+        group = groups[0]
+
+        # Create session with config and scope
+        session_req = SessionCreateRequest(
+            group_id=cast("UUID", group.id),
+            max_message_count=(req.config.max_message_count if req.config else None),
+            max_content_length=(req.config.max_content_length if req.config else None),
+            timeout_seconds=(req.config.timeout_seconds if req.config else 300),
+            scope=req.scope,
+        )
+        session = await self.create_session(session_req)
+
+        # Link all tasks
+        links: list[SessionTaskTable] = []
+        for i, task_id in enumerate(req.task_ids):
+            # First task is primary
+            is_primary = i == 0
+            link = await self.link_session_to_task(
+                session_id=cast("UUID", session.id),
+                task_id=task_id,
+                added_by=pm_agent_id,
+                is_primary=is_primary,
+                relationship_type=req.relationship_type,
+            )
+            links.append(link)
+
+        self.log.info(
+            "Session created for tasks",
+            session_id=str(session.id),
+            task_count=len(req.task_ids),
+            channel_slug=req.channel_slug,
+            pm_agent_id=str(pm_agent_id),
+        )
+        return session, links
 
     def _check_session_boundaries(self, session: SessionTable) -> bool:
         """Check if session has exceeded boundaries. Returns True if should close."""

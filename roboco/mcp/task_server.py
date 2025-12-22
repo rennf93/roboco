@@ -23,6 +23,10 @@ Tools:
 - roboco_task_assign: Assign task to agent (PM only)
 - roboco_task_cancel: Cancel a task (PM/Board only)
 - roboco_task_escalate: Escalate task up hierarchy (all agents)
+- roboco_session_create_for_tasks: Create work session for tasks (PM only)
+- roboco_session_link_task: Link session to task (PM only)
+- roboco_session_unlink_task: Unlink session from task (PM only)
+- roboco_session_get_for_task: Get sessions for a task (all agents)
 """
 
 from typing import Any
@@ -30,6 +34,8 @@ from typing import Any
 from mcp.server.fastmcp import FastMCP
 
 from roboco.mcp.schemas import (
+    SessionCreateForTasksInput,
+    SessionLinkTaskInput,
     TaskAssignInput,
     TaskBlockInput,
     TaskCreateInput,
@@ -39,6 +45,11 @@ from roboco.mcp.schemas import (
 from roboco.mcp.tasks.handlers import (
     handle_agent_idle,
     handle_docs_complete,
+    handle_session_create_for_tasks,
+    handle_session_get_for_task,
+    handle_session_link_task,
+    handle_session_unlink_task,
+    handle_task_activate,
     handle_task_assign,
     handle_task_block,
     handle_task_cancel,
@@ -61,7 +72,7 @@ from roboco.mcp.tasks.handlers import (
 from roboco.mcp.utils import ApiClient
 
 
-def create_task_mcp_server(agent_id: str) -> FastMCP:
+def create_task_mcp_server(agent_id: str) -> FastMCP:  # noqa: PLR0915
     """
     Create a Task MCP server for a specific agent.
 
@@ -521,6 +532,132 @@ def create_task_mcp_server(agent_id: str) -> FastMCP:
             task_id=task_id, reason=reason, escalate_to=escalate_to
         )
         return await handle_task_escalate(client, input_data, agent_id)
+
+    # =========================================================================
+    # PM SESSION TOOLS
+    # =========================================================================
+
+    @mcp.tool()
+    async def roboco_session_create_for_tasks(
+        data: SessionCreateForTasksInput,
+    ) -> dict[str, Any]:
+        """
+        Create a work session linked to one or more tasks (PM only).
+
+        Use this to:
+        - Create a discussion context for a task or set of related tasks
+        - Enable assigned agents to communicate about the work
+        - Set up planning/review sessions for complex tasks
+
+        SCOPE LEVELS:
+        - "initiative": Cross-cell sessions in #dev-all (Main PM only)
+        - "cell": Cell-specific sessions in team channel (Cell PM default)
+        - "task": Individual task execution (Developer level)
+
+        ENFORCEMENT:
+        - Only PMs and management can create task-linked sessions
+        - Cell PMs can only create sessions in their team's channel
+
+        Args:
+            data: SessionCreateForTasksInput with task_ids, channel_slug,
+                  scope (initiative/cell/task), and relationship_type
+
+        Returns:
+            Created session with task links
+        """
+        return await handle_session_create_for_tasks(client, data, agent_id)
+
+    @mcp.tool()
+    async def roboco_session_link_task(
+        data: SessionLinkTaskInput,
+    ) -> dict[str, Any]:
+        """
+        Link an existing session to a task (PM only).
+
+        Use this to:
+        - Add additional tasks to an existing session
+        - Link related tasks to the same discussion context
+        - Mark a session as primary for a specific task
+
+        ENFORCEMENT:
+        - Only PMs and management can link sessions to tasks
+        - One primary session per task (use is_primary carefully)
+
+        Args:
+            data: SessionLinkTaskInput with session_id, task_id,
+                  optional is_primary and relationship_type
+
+        Returns:
+            Created link confirmation
+        """
+        return await handle_session_link_task(client, data, agent_id)
+
+    @mcp.tool()
+    async def roboco_session_unlink_task(
+        session_id: str,
+        task_id: str,
+    ) -> dict[str, Any]:
+        """
+        Remove a task from a session (PM only).
+
+        Use this to:
+        - Remove tasks that are no longer relevant to the session
+        - Clean up session-task links after task completion
+
+        ENFORCEMENT:
+        - Only PMs and management can unlink sessions from tasks
+
+        Args:
+            session_id: Session ID to unlink from
+            task_id: Task ID to unlink
+
+        Returns:
+            Unlink confirmation
+        """
+        return await handle_session_unlink_task(client, session_id, task_id, agent_id)
+
+    @mcp.tool()
+    async def roboco_session_get_for_task(task_id: str) -> dict[str, Any]:
+        """
+        Get all sessions linked to a task.
+
+        Use this to:
+        - Find the discussion context for a task you're working on
+        - Check if a task has a primary session
+        - See all related sessions (planning, review, etc.)
+
+        Args:
+            task_id: Task ID to query sessions for
+
+        Returns:
+            List of sessions with their relationship types
+        """
+        return await handle_session_get_for_task(client, task_id, agent_id)
+
+    @mcp.tool()
+    async def roboco_task_activate(task_id: str) -> dict[str, Any]:
+        """
+        Activate a task from BACKLOG to PENDING status (PM only).
+
+        This is the FINAL STEP in task setup. After creating and assigning
+        a task, you MUST:
+        1. Create a session: roboco_session_create_for_tasks()
+        2. Activate the task: roboco_task_activate()
+
+        Only after activation will the orchestrator spawn agents to work on it.
+
+        ENFORCEMENT:
+        - Only PMs and management can activate tasks
+        - Task must be in BACKLOG status
+        - Task MUST have at least one linked session
+
+        Args:
+            task_id: The task UUID to activate
+
+        Returns:
+            Activated task with PENDING status
+        """
+        return await handle_task_activate(client, task_id, agent_id)
 
     return mcp
 

@@ -16,9 +16,9 @@ from roboco.mcp.tasks.handlers._helpers import (
 )
 from roboco.mcp.utils import ApiClient, format_error_response
 
-ACTIVE_PROGRESS_STATUSES = frozenset({
-    "in_progress", "verifying", "awaiting_qa", "awaiting_documentation"
-})
+ACTIVE_PROGRESS_STATUSES = frozenset(
+    {"in_progress", "verifying", "awaiting_qa", "awaiting_documentation"}
+)
 
 
 def _format_plan_response(

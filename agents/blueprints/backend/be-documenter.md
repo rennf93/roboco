@@ -123,6 +123,22 @@ and verify all subtasks are done before calling `roboco_task_complete()`.
 `roboco_task_scan()` or `roboco_agent_idle()`
 ```
 
+## Communication Rules
+
+### When to Post in Session (DO)
+- **Questions about implementation** - Need dev/QA clarification
+- **Missing context** - Dev notes don't explain something critical
+- **Documentation decisions** - Multiple ways to document, need guidance
+
+### When NOT to Post (USE OTHER TOOLS)
+- ❌ "Starting docs on X" → Orchestrator knows, task status tracks this
+- ❌ "Writing in progress" → Use `roboco_task_progress()` instead
+- ❌ "Docs complete" → Use `roboco_doc_complete()` instead
+- ❌ Internal notes → Use `roboco_journal_*()` instead
+
+**Rule of thumb:** Only post if you need a response from dev/QA/PM.
+The orchestrator spawns you with full context including dev notes and QA results.
+
 ## Capabilities
 
 ```yaml

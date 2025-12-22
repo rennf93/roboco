@@ -12,7 +12,7 @@ from uuid import UUID
 from sqlalchemy import and_, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from roboco.db.tables import AgentTable, TaskTable
+from roboco.db.tables import AgentTable, SessionTaskTable, TaskTable
 from roboco.enforcement import (
     TaskOwnershipError,
     validate_task_ownership,
@@ -115,7 +115,15 @@ class TaskService(BaseService):
     # =========================================================================
 
     async def create(self, req: TaskCreateRequest) -> TaskTable:
-        """Create a new task."""
+        """
+        Create a new task.
+
+        Tasks are created with BACKLOG status by default. PM must:
+        1. Create a session for the task
+        2. Call activate() to transition to PENDING
+
+        This ensures every task has a session before work begins.
+        """
         task = TaskTable(
             title=req.title,
             description=req.description,
@@ -126,16 +134,129 @@ class TaskService(BaseService):
             parent_task_id=req.parent_task_id,
             target_date=req.target_date,
             estimated_complexity=req.estimated_complexity,
-            status=TaskStatus.PENDING,
+            status=TaskStatus.BACKLOG,
         )
         self.session.add(task)
         await self.session.flush()
+
+        # Inherit parent task's primary session for subtasks
+        if req.parent_task_id:
+            await self._inherit_parent_session(
+                task_id=cast("UUID", task.id),
+                parent_task_id=req.parent_task_id,
+                created_by=req.created_by,
+            )
 
         self.log.info(
             "Task created",
             task_id=str(task.id),
             title=req.title,
             team=req.team if isinstance(req.team, str) else req.team.value,
+        )
+        return task
+
+    async def _inherit_parent_session(
+        self,
+        task_id: UUID,
+        parent_task_id: UUID,
+        created_by: UUID,
+    ) -> SessionTaskTable | None:
+        """
+        Inherit the parent task's primary session for a subtask.
+
+        When a subtask is created, it automatically joins the parent task's
+        primary discussion session (if one exists). This enables context
+        continuity across the task hierarchy.
+
+        Args:
+            task_id: The new subtask ID
+            parent_task_id: The parent task ID
+            created_by: PM who created the subtask
+
+        Returns:
+            Created link if parent had a primary session, None otherwise
+        """
+        # Find parent's primary session
+        result = await self.session.execute(
+            select(SessionTaskTable).where(
+                SessionTaskTable.task_id == parent_task_id,
+                SessionTaskTable.is_primary.is_(True),
+            )
+        )
+        parent_link = result.scalar_one_or_none()
+
+        if not parent_link:
+            return None
+
+        # Create link for subtask (not primary - parent owns the primary)
+        link = SessionTaskTable(
+            session_id=parent_link.session_id,
+            task_id=task_id,
+            is_primary=False,  # Subtasks don't become primary
+            relationship_type=parent_link.relationship_type,
+            added_by=created_by,
+        )
+
+        self.session.add(link)
+        await self.session.flush()
+
+        self.log.info(
+            "Subtask inherited parent session",
+            task_id=str(task_id),
+            parent_task_id=str(parent_task_id),
+            session_id=str(parent_link.session_id),
+        )
+        return link
+
+    async def activate(self, task_id: UUID) -> TaskTable:
+        """
+        Activate a task from BACKLOG to PENDING status.
+
+        This is a PM-only operation that transitions a task from setup
+        phase to ready-for-work phase. The orchestrator will then spawn
+        agents to work on it.
+
+        REQUIRES: Task must have at least one linked session.
+
+        Args:
+            task_id: The task to activate
+
+        Returns:
+            The activated task
+
+        Raises:
+            ValueError: If task not found, not in BACKLOG, or has no session
+        """
+        task = await self.get(task_id)
+        if not task:
+            raise ValueError(f"Task {task_id} not found")
+
+        if task.status != TaskStatus.BACKLOG:
+            raise ValueError(
+                f"Task {task_id} is not in BACKLOG status (current: {task.status})"
+            )
+
+        # Check if task has at least one linked session
+        result = await self.session.execute(
+            select(SessionTaskTable).where(SessionTaskTable.task_id == task_id).limit(1)
+        )
+        session_link = result.scalar_one_or_none()
+
+        if not session_link:
+            raise ValueError(
+                f"Task {task_id} has no linked session. "
+                "Create a session with roboco_session_create_for_tasks "
+                "before activating."
+            )
+
+        # Transition to PENDING
+        task.status = TaskStatus.PENDING
+        await self.session.flush()
+
+        self.log.info(
+            "Task activated",
+            task_id=str(task_id),
+            session_id=str(session_link.session_id),
         )
         return task
 

@@ -304,27 +304,61 @@ async def _handle_channel_history(
     }
 
 
+async def _get_task_primary_session(client: ApiClient, task_id: str) -> str | None:
+    """Get the primary session ID for a task, if one exists."""
+    resp = await client.get(f"/sessions/for-task/{task_id}")
+    if not resp.ok:
+        return None
+
+    sessions = resp.json()
+    if not sessions:
+        return None
+
+    # Find primary session
+    for session in sessions:
+        if session.get("is_primary"):
+            return str(session.get("session_id"))
+
+    # Fall back to first session if no primary marked
+    return str(sessions[0].get("session_id")) if sessions else None
+
+
 async def _handle_message_send(
     client: ApiClient,
     agent_id: str,
     data: SendMessageInput,
 ) -> dict[str, Any]:
-    """Handle message sending."""
+    """Handle message sending.
+
+    If task_id is provided, routes to that task's primary session.
+    Otherwise, routes to the channel's current active session.
+    """
     if validation_error := _validate_message_send(
         agent_id, data.channel_slug, data.content, data.message_type
     ):
         return validation_error
 
-    # Get channel by slug
-    channel_result = await _get_channel_by_slug(client, data.channel_slug)
-    if isinstance(channel_result, dict):
-        return channel_result  # Error response
-    channel_id = channel_result
+    session_id: str | None = None
+    routed_to_task_session = False
 
-    session_result = await _get_or_create_session(client, channel_id)
-    if isinstance(session_result, dict):
-        return session_result
-    session_id = session_result
+    # If task_id provided, try to route to task's primary session
+    if data.task_id:
+        session_id = await _get_task_primary_session(client, data.task_id)
+        if session_id:
+            routed_to_task_session = True
+
+    # Fall back to channel's active session
+    if not session_id:
+        # Get channel by slug
+        channel_result = await _get_channel_by_slug(client, data.channel_slug)
+        if isinstance(channel_result, dict):
+            return channel_result  # Error response
+        channel_id = channel_result
+
+        session_result = await _get_or_create_session(client, channel_id)
+        if isinstance(session_result, dict):
+            return session_result
+        session_id = session_result
 
     # Resolve mentions (slugs) to UUIDs using shared cache
     resolved_mentions: list[str] = []
@@ -352,11 +386,16 @@ async def _handle_message_send(
             "SEND_FAILED", "Failed to send message", {"api_error": resp.text}
         )
 
+    guidance = "Message sent successfully."
+    if routed_to_task_session:
+        guidance = f"Message sent to task {data.task_id}'s session."
+
     return {
         "status": "sent",
         "message": resp.json(),
         "channel": data.channel_slug,
-        "guidance": "Message sent successfully.",
+        "routed_to_task_session": routed_to_task_session,
+        "guidance": guidance,
     }
 
 
@@ -528,6 +567,58 @@ def create_message_mcp_server(agent_id: str) -> FastMCP:
             task_id=task_id,
         )
         return await _handle_report_blocker(client, agent_id, data)
+
+    @mcp.tool()
+    async def roboco_session_history_for_task(
+        task_id: str,
+        limit: int = 50,
+    ) -> dict[str, Any]:
+        """
+        Get message history from your task's work session.
+
+        Use this to see the discussion context for a task you're working on.
+        Returns messages from the task's primary session.
+
+        Args:
+            task_id: The task ID to get session history for
+            limit: Maximum number of messages to return (default 50)
+        """
+        # Get task's primary session
+        session_id = await _get_task_primary_session(client, task_id)
+        if not session_id:
+            return {
+                "error": "NO_SESSION",
+                "message": f"Task {task_id} has no linked session.",
+                "guidance": (
+                    "This task doesn't have a work session yet. "
+                    "The PM should create one before work begins."
+                ),
+            }
+
+        # Get messages from the session
+        resp = await client.get(
+            "/messages",
+            params={"session_id": session_id, "limit": limit},
+        )
+
+        if not resp.ok:
+            return format_error_response(
+                "FETCH_FAILED",
+                "Failed to fetch session history",
+                {"api_error": resp.text},
+            )
+
+        messages = resp.json()
+        return {
+            "task_id": task_id,
+            "session_id": session_id,
+            "message_count": len(messages),
+            "messages": messages,
+            "guidance": (
+                "This is the discussion history for your task. "
+                "Use roboco_message_send with task_id to add to it."
+            ),
+        }
 
     return mcp
 

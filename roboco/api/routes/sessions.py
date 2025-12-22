@@ -17,12 +17,27 @@ from roboco.api.deps import CurrentAgentId, DbSession
 from roboco.api.schemas.sessions import (
     ListSessionsParams,
     SessionCreateRequest,
+    SessionForTasksCreateRequest,
     SessionListResponse,
     SessionResponse,
+    SessionTaskLinkRequest,
+    SessionTaskLinkResponse,
+    SessionTaskLinksResponse,
 )
-from roboco.db.tables import GroupTable, SessionTable
+from roboco.db.tables import (
+    ChannelTable,
+    GroupTable,
+    SessionTable,
+    SessionTaskTable,
+)
 from roboco.models import SessionStatus
-from roboco.services.permissions import has_privileged_access
+from roboco.models.session import (
+    SessionForTasksCreate,
+    SessionTaskRelationshipType,
+)
+from roboco.services import ConflictError, NotFoundError
+from roboco.services.messaging import get_messaging_service
+from roboco.services.permissions import has_privileged_access, is_pm_role
 from roboco.utils.converters import require_uuid
 
 router = APIRouter()
@@ -88,6 +103,7 @@ async def list_sessions(
             id=require_uuid(s.id),
             group_id=require_uuid(s.group_id),
             status=s.status,
+            scope=s.scope,
             message_count=s.message_count,
             total_content_length=s.total_content_length,
             started_at=s.started_at,
@@ -134,6 +150,7 @@ async def get_session(
         id=require_uuid(session.id),
         group_id=require_uuid(session.group_id),
         status=session.status,
+        scope=session.scope,
         message_count=session.message_count,
         total_content_length=session.total_content_length,
         started_at=session.started_at,
@@ -219,6 +236,7 @@ async def create_session(
         id=require_uuid(session.id),
         group_id=require_uuid(session.group_id),
         status=session.status,
+        scope=session.scope,
         message_count=session.message_count,
         total_content_length=session.total_content_length,
         started_at=session.started_at,
@@ -271,9 +289,230 @@ async def close_session(
         id=require_uuid(session.id),
         group_id=require_uuid(session.group_id),
         status=session.status,
+        scope=session.scope,
         message_count=session.message_count,
         total_content_length=session.total_content_length,
         started_at=session.started_at,
         last_activity_at=session.last_activity_at,
         closed_at=session.closed_at,
     )
+
+
+# =============================================================================
+# SESSION-TASK ROUTES
+# =============================================================================
+
+
+def _link_to_response(link: SessionTaskTable) -> SessionTaskLinkResponse:
+    """Convert SessionTaskTable to response model."""
+    return SessionTaskLinkResponse(
+        id=require_uuid(link.id),
+        session_id=require_uuid(link.session_id),
+        task_id=require_uuid(link.task_id),
+        is_primary=link.is_primary,
+        relationship_type=link.relationship_type,
+        added_at=link.added_at,
+        added_by=require_uuid(link.added_by) if link.added_by else None,
+    )
+
+
+@router.get(
+    "/for-task/{task_id}",
+    response_model=list[SessionTaskLinkResponse],
+    summary="Get sessions for task",
+    description="Get all sessions linked to a specific task.",
+)
+async def get_sessions_for_task(
+    task_id: UUID,
+    db: DbSession,
+) -> list[SessionTaskLinkResponse]:
+    """Get sessions linked to a task.
+
+    Returns session links with session_id, is_primary, and relationship_type.
+    Any agent assigned to the task can access this.
+    """
+    messaging = get_messaging_service(db)
+    links = await messaging.get_sessions_for_task(task_id)
+    return [_link_to_response(link) for link in links]
+
+
+@router.post(
+    "/for-tasks",
+    response_model=SessionTaskLinksResponse,
+    status_code=status.HTTP_201_CREATED,
+    summary="Create session for tasks",
+    description="Create a work session linked to one or more tasks (PM only).",
+)
+async def create_session_for_tasks(
+    db: DbSession,
+    agent_id: CurrentAgentId,
+    data: SessionForTasksCreateRequest,
+) -> SessionTaskLinksResponse:
+    """Create a session linked to tasks (PM only)."""
+    # Verify PM permission
+    if not await is_pm_role(db, agent_id):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Only PMs can create task-linked sessions",
+        )
+
+    # Verify channel exists
+    channel_result = await db.execute(
+        select(ChannelTable).where(ChannelTable.slug == data.channel_slug)
+    )
+    channel = channel_result.scalar_one_or_none()
+    if not channel:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Channel '{data.channel_slug}' not found",
+        )
+
+    # Create session with links using service
+    messaging = get_messaging_service(db)
+
+    try:
+        rel_type = SessionTaskRelationshipType(data.relationship_type)
+    except ValueError:
+        rel_type = SessionTaskRelationshipType.DISCUSSION
+
+    req = SessionForTasksCreate(
+        task_ids=data.task_ids,
+        channel_slug=data.channel_slug,
+        relationship_type=rel_type,
+    )
+
+    try:
+        session, links = await messaging.create_session_for_tasks(req, agent_id)
+    except NotFoundError as e:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=str(e),
+        ) from e
+    except ValueError as e:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(e),
+        ) from e
+
+    session_response = SessionResponse(
+        id=require_uuid(session.id),
+        group_id=require_uuid(session.group_id),
+        status=session.status,
+        scope=session.scope,
+        message_count=session.message_count,
+        total_content_length=session.total_content_length,
+        started_at=session.started_at,
+        last_activity_at=session.last_activity_at,
+        closed_at=session.closed_at,
+    )
+
+    return SessionTaskLinksResponse(
+        session=session_response,
+        links=[_link_to_response(link) for link in links],
+    )
+
+
+@router.post(
+    "/{session_id}/tasks",
+    response_model=SessionTaskLinkResponse,
+    status_code=status.HTTP_201_CREATED,
+    summary="Link task to session",
+    description="Link a task to an existing session (PM only).",
+)
+async def link_task_to_session(
+    db: DbSession,
+    agent_id: CurrentAgentId,
+    session_id: UUID,
+    data: SessionTaskLinkRequest,
+) -> SessionTaskLinkResponse:
+    """Link a task to a session (PM only)."""
+    if not await is_pm_role(db, agent_id):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Only PMs can link tasks to sessions",
+        )
+
+    messaging = get_messaging_service(db)
+
+    try:
+        rel_type = SessionTaskRelationshipType(data.relationship_type)
+    except ValueError:
+        rel_type = SessionTaskRelationshipType.DISCUSSION
+
+    try:
+        link = await messaging.link_session_to_task(
+            session_id=session_id,
+            task_id=data.task_id,
+            added_by=agent_id,
+            is_primary=data.is_primary,
+            relationship_type=rel_type,
+        )
+    except NotFoundError as e:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=str(e),
+        ) from e
+    except ConflictError as e:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=str(e),
+        ) from e
+
+    return _link_to_response(link)
+
+
+@router.delete(
+    "/{session_id}/tasks/{task_id}",
+    status_code=status.HTTP_204_NO_CONTENT,
+    summary="Unlink task from session",
+    description="Remove a task from a session (PM only).",
+)
+async def unlink_task_from_session(
+    db: DbSession,
+    agent_id: CurrentAgentId,
+    session_id: UUID,
+    task_id: UUID,
+) -> None:
+    """Unlink a task from a session (PM only)."""
+    if not await is_pm_role(db, agent_id):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Only PMs can unlink tasks from sessions",
+        )
+
+    messaging = get_messaging_service(db)
+    removed = await messaging.unlink_session_from_task(session_id, task_id)
+
+    if not removed:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Session-task link not found",
+        )
+
+
+@router.get(
+    "/{session_id}/tasks",
+    response_model=list[SessionTaskLinkResponse],
+    summary="Get tasks for session",
+    description="Get all tasks linked to a session.",
+)
+async def get_tasks_for_session(
+    db: DbSession,
+    _agent_id: CurrentAgentId,
+    session_id: UUID,
+) -> list[SessionTaskLinkResponse]:
+    """Get all tasks linked to a session."""
+    # Verify session exists
+    session_result = await db.execute(
+        select(SessionTable).where(SessionTable.id == session_id)
+    )
+    if not session_result.scalar_one_or_none():
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Session not found",
+        )
+
+    messaging = get_messaging_service(db)
+    links = await messaging.get_tasks_for_session(session_id)
+
+    return [_link_to_response(link) for link in links]

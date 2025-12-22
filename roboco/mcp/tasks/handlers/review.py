@@ -20,9 +20,7 @@ from roboco.services.task import extract_original_developer
 def _has_work_evidence(task: dict[str, Any]) -> bool:
     """Check if task has evidence of work done."""
     return bool(
-        task.get("commits")
-        or task.get("progress_updates")
-        or task.get("checkpoints")
+        task.get("commits") or task.get("progress_updates") or task.get("checkpoints")
     )
 
 
@@ -186,9 +184,7 @@ async def handle_task_qa_pass(
     if error := await _check_self_review(task, agent_id, client):
         return error
 
-    pass_resp = await client.post(
-        f"/tasks/{task_id}/pass-qa", json={"notes": qa_notes}
-    )
+    pass_resp = await client.post(f"/tasks/{task_id}/pass-qa", json={"notes": qa_notes})
     if not pass_resp.ok:
         return format_error_response(
             "QA_FAILED",

@@ -70,6 +70,10 @@ from roboco.models.session import (
     Session,
     SessionConfig,
     SessionCreate,
+    SessionForTasksCreate,
+    SessionTaskLink,
+    SessionTaskLinkCreate,
+    SessionTaskRelationshipType,
 )
 from roboco.models.task import (
     Checkpoint,
@@ -131,7 +135,11 @@ __all__ = [
     "Session",
     "SessionConfig",
     "SessionCreate",
+    "SessionForTasksCreate",
     "SessionStatus",
+    "SessionTaskLink",
+    "SessionTaskLinkCreate",
+    "SessionTaskRelationshipType",
     "Task",
     "TaskCreate",
     "TaskPlan",

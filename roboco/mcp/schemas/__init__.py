@@ -216,3 +216,39 @@ class TaskPauseInput(BaseModel):
     remaining_work: list[str] = Field(
         default_factory=list, description="List of remaining sub-tasks"
     )
+
+
+# =============================================================================
+# SESSION-TASK SCHEMAS (PM Tools)
+# =============================================================================
+
+
+class SessionCreateForTasksInput(BaseModel):
+    """Input for creating a session linked to tasks (PM only)."""
+
+    task_ids: list[str] = Field(
+        ..., min_length=1, description="Task IDs to link to the session"
+    )
+    channel_slug: str = Field(..., description="Channel where session is created")
+    scope: str = Field(
+        default="cell",
+        description="Scope level: initiative (Main PM), cell (Cell PM), task (dev)",
+    )
+    relationship_type: str = Field(
+        default="discussion",
+        description="Type: discussion, planning, review, retrospective",
+    )
+
+
+class SessionLinkTaskInput(BaseModel):
+    """Input for linking a session to a task (PM only)."""
+
+    session_id: str = Field(..., description="Session ID to link")
+    task_id: str = Field(..., description="Task ID to link")
+    is_primary: bool = Field(
+        default=False, description="Mark as primary session for this task"
+    )
+    relationship_type: str = Field(
+        default="discussion",
+        description="Type: discussion, planning, review, retrospective",
+    )

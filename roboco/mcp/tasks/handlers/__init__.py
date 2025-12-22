@@ -17,6 +17,7 @@ from roboco.mcp.tasks.handlers.lifecycle import (
     handle_task_complete,
 )
 from roboco.mcp.tasks.handlers.management import (
+    handle_task_activate,
     handle_task_assign,
     handle_task_create,
     handle_task_escalate,
@@ -28,6 +29,12 @@ from roboco.mcp.tasks.handlers.review import (
     handle_task_submit_verification,
 )
 from roboco.mcp.tasks.handlers.scan import handle_task_get, handle_task_scan
+from roboco.mcp.tasks.handlers.sessions import (
+    handle_session_create_for_tasks,
+    handle_session_get_for_task,
+    handle_session_link_task,
+    handle_session_unlink_task,
+)
 from roboco.mcp.tasks.handlers.work import (
     handle_task_plan,
     handle_task_progress,
@@ -37,6 +44,11 @@ from roboco.mcp.tasks.handlers.work import (
 __all__ = [
     "handle_agent_idle",
     "handle_docs_complete",
+    "handle_session_create_for_tasks",
+    "handle_session_get_for_task",
+    "handle_session_link_task",
+    "handle_session_unlink_task",
+    "handle_task_activate",
     "handle_task_assign",
     "handle_task_block",
     "handle_task_cancel",

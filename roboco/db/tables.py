@@ -41,6 +41,7 @@ from roboco.models.base import (
     TaskStatus,
     Team,
 )
+from roboco.models.session import SessionScope
 
 # =============================================================================
 # AGENT TABLE
@@ -210,6 +211,10 @@ class TaskTable(Base):
     )
     parent_task: Mapped["TaskTable | None"] = relationship(
         "TaskTable", remote_side=[id], lazy="select"
+    )
+    # Session links (many-to-many via SessionTaskTable)
+    session_links: Mapped[list["SessionTaskTable"]] = relationship(
+        "SessionTaskTable", back_populates="task", lazy="select"
     )
 
     __table_args__ = (
@@ -390,6 +395,11 @@ class SessionTable(Base):
         Enum(SessionStatus), nullable=False, default=SessionStatus.ACTIVE, index=True
     )
 
+    # Scope (for smart context loading)
+    scope: Mapped[SessionScope] = mapped_column(
+        Enum(SessionScope), nullable=False, default=SessionScope.TASK, index=True
+    )
+
     # Timestamps
     started_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=datetime.now(UTC), nullable=False
@@ -415,11 +425,94 @@ class SessionTable(Base):
     messages: Mapped[list["MessageTable"]] = relationship(
         "MessageTable", back_populates="session", lazy="select"
     )
+    # Task links (many-to-many via SessionTaskTable)
+    task_links: Mapped[list["SessionTaskTable"]] = relationship(
+        "SessionTaskTable", back_populates="session", lazy="select"
+    )
 
     __table_args__ = (
         # Composite indexes for common queries
         Index("ix_sessions_group_status", "group_id", "status"),
         Index("ix_sessions_status_started", "status", "started_at"),
+    )
+
+
+# =============================================================================
+# SESSION-TASK JUNCTION TABLE
+# =============================================================================
+
+
+class SessionTaskTable(Base):
+    """
+    Junction table for many-to-many Session ↔ Task relationship.
+
+    Enables PMs to create work sessions as discussion contexts for tasks.
+    A task can have multiple sessions (planning, review, retrospective).
+    A session can discuss multiple related tasks.
+    """
+
+    __tablename__ = "session_tasks"
+
+    # Identity
+    id: Mapped[UUID] = mapped_column(
+        UUID(as_uuid=True), primary_key=True, default=uuid4
+    )
+
+    # Foreign Keys (indexes defined in __table_args__)
+    session_id: Mapped[UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("sessions.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    task_id: Mapped[UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("tasks.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+
+    # Relationship Metadata
+    is_primary: Mapped[bool] = mapped_column(
+        Boolean, default=False, nullable=False
+    )  # Primary discussion session for this task
+    relationship_type: Mapped[str] = mapped_column(
+        String(50), default="discussion", nullable=False
+    )  # "discussion", "planning", "review", "retrospective"
+
+    # Audit
+    added_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=datetime.now(UTC), nullable=False
+    )
+    added_by: Mapped[UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("agents.id", ondelete="SET NULL"),
+        nullable=True,  # Allow NULL if PM is deleted
+    )
+
+    # Relationships
+    session: Mapped["SessionTable"] = relationship(
+        "SessionTable", back_populates="task_links", lazy="joined"
+    )
+    task: Mapped["TaskTable"] = relationship(
+        "TaskTable", back_populates="session_links", lazy="joined"
+    )
+    added_by_agent: Mapped["AgentTable | None"] = relationship(
+        "AgentTable", lazy="select"
+    )
+
+    __table_args__ = (
+        # Each session-task pair is unique
+        UniqueConstraint("session_id", "task_id", name="uq_session_task"),
+        # Partial unique index: only one primary session per task
+        Index(
+            "ix_session_tasks_primary_per_task",
+            "task_id",
+            unique=True,
+            postgresql_where=(is_primary == True),  # noqa: E712
+        ),
+        # Fast lookups
+        Index("ix_session_tasks_task_id", "task_id"),
+        Index("ix_session_tasks_session_id", "session_id"),
+        Index("ix_session_tasks_type", "relationship_type"),
     )
 
 

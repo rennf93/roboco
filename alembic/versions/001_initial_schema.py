@@ -10,6 +10,7 @@ Creates all tables for the RoboCo AI Agents Company system:
 - channels: Communication channels
 - groups: Role-based groups within channels
 - sessions: Bounded message sessions
+- session_tasks: Many-to-many session-task links (PM work sessions)
 - messages: Extracted messages
 - notifications: Formal notifications
 - journals: Agent personal logs
@@ -293,6 +294,13 @@ def upgrade() -> None:
             index=True,
         ),
         sa.Column(
+            "scope",
+            sa.Enum("initiative", "cell", "task", name="sessionscope"),
+            nullable=False,
+            server_default="task",
+            index=True,
+        ),
+        sa.Column(
             "started_at", sa.DateTime(), nullable=False, server_default=sa.func.now()
         ),
         sa.Column(
@@ -307,6 +315,54 @@ def upgrade() -> None:
         sa.Column(
             "created_at", sa.DateTime(), nullable=False, server_default=sa.func.now()
         ),
+    )
+
+    # ==========================================================================
+    # SESSION_TASKS TABLE (Many-to-Many Junction)
+    # ==========================================================================
+    op.create_table(
+        "session_tasks",
+        sa.Column("id", postgresql.UUID(as_uuid=True), primary_key=True),
+        sa.Column(
+            "session_id",
+            postgresql.UUID(as_uuid=True),
+            sa.ForeignKey("sessions.id", ondelete="CASCADE"),
+            nullable=False,
+            index=True,
+        ),
+        sa.Column(
+            "task_id",
+            postgresql.UUID(as_uuid=True),
+            sa.ForeignKey("tasks.id", ondelete="CASCADE"),
+            nullable=False,
+            index=True,
+        ),
+        sa.Column("is_primary", sa.Boolean(), nullable=False, server_default="false"),
+        sa.Column(
+            "relationship_type",
+            sa.String(50),
+            nullable=False,
+            server_default="discussion",
+        ),
+        sa.Column(
+            "added_at", sa.DateTime(), nullable=False, server_default=sa.func.now()
+        ),
+        sa.Column(
+            "added_by",
+            postgresql.UUID(as_uuid=True),
+            sa.ForeignKey("agents.id", ondelete="SET NULL"),
+            nullable=True,
+        ),
+        sa.UniqueConstraint("session_id", "task_id", name="uq_session_task"),
+    )
+
+    # Partial unique index: only one primary session per task
+    op.execute(
+        """
+        CREATE UNIQUE INDEX ix_session_tasks_primary_per_task
+        ON session_tasks (task_id)
+        WHERE is_primary = true
+        """
     )
 
     # ==========================================================================
@@ -651,6 +707,8 @@ def downgrade() -> None:
     op.drop_table("journals")
     op.drop_table("notifications")
     op.drop_table("messages")
+    op.drop_index("ix_session_tasks_primary_per_task", table_name="session_tasks")
+    op.drop_table("session_tasks")
     op.drop_table("sessions")
     op.drop_table("groups")
     op.drop_table("channels")
@@ -668,6 +726,7 @@ def downgrade() -> None:
     op.execute("DROP TYPE IF EXISTS notificationtype")
     op.execute("DROP TYPE IF EXISTS messagetype")
     op.execute("DROP TYPE IF EXISTS sessionstatus")
+    op.execute("DROP TYPE IF EXISTS sessionscope")
     op.execute("DROP TYPE IF EXISTS channeltype")
     op.execute("DROP TYPE IF EXISTS complexity")
     op.execute("DROP TYPE IF EXISTS taskstatus")

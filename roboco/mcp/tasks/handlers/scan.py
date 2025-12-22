@@ -27,7 +27,11 @@ async def handle_task_scan(
     assigned_resp = await client.get("/tasks/my")
     assigned_data = assigned_resp.json() if assigned_resp.ok else []
     active_statuses = {
-        "pending", "claimed", "in_progress", "verifying", "needs_revision"
+        "pending",
+        "claimed",
+        "in_progress",
+        "verifying",
+        "needs_revision",
     }
     assigned_tasks = [t for t in assigned_data if t.get("status") in active_statuses]
 

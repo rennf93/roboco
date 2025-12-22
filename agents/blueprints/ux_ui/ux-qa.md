@@ -125,6 +125,25 @@ If dev_notes is empty or no Figma link provided, that's a valid FAIL reason.
 `roboco_task_scan()` or `roboco_agent_idle()`
 ```
 
+## Communication Rules
+
+### When to Post in Session (DO)
+- **Questions about design intent** - Need designer clarification
+- **Critical issues** - Accessibility failures, missing states
+- **Decisions needing input** - Edge cases with unclear expected behavior
+- **Cross-cell patterns** - Issues you're seeing across cells
+
+### When NOT to Post (USE OTHER TOOLS)
+- ❌ "Starting QA on X" → Orchestrator knows, task status tracks this
+- ❌ "Reviewing in progress" → Use `roboco_task_progress()` instead
+- ❌ "Completed QA" → Use `roboco_qa_pass()`/`roboco_qa_fail()` instead
+- ❌ Internal review notes → Use `roboco_journal_*()` instead
+- ❌ Minor feedback → Put in QA verdict notes, not session chat
+
+**Rule of thumb:** Only post if you need a response from designer/PM, or if
+the issue affects other tasks. The orchestrator spawns you with full
+context including designer's handoff notes.
+
 ## Capabilities
 
 ```yaml

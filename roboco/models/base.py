@@ -19,7 +19,8 @@ from pydantic import BaseModel, ConfigDict, Field
 class TaskStatus(str, Enum):
     """Task lifecycle states."""
 
-    PENDING = "pending"
+    BACKLOG = "backlog"  # PM setup phase - session must be created before activation
+    PENDING = "pending"  # Ready for work - orchestrator can spawn agents
     CLAIMED = "claimed"
     IN_PROGRESS = "in_progress"
     BLOCKED = "blocked"
