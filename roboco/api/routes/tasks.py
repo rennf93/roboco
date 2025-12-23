@@ -943,6 +943,27 @@ async def complete_task(
             detail="Only PMs can complete tasks",
         )
 
+    # Check for incomplete subtasks before completing parent
+    subtasks = await service.get_subtasks(task_id)
+    incomplete_subtasks = [
+        st
+        for st in subtasks
+        if st.status not in (TaskStatus.completed, TaskStatus.cancelled)
+    ]
+    if incomplete_subtasks:
+        max_titles_shown = 3
+        incomplete_titles = [st.title for st in incomplete_subtasks[:max_titles_shown]]
+        detail = (
+            f"Cannot complete task - {len(incomplete_subtasks)} subtask(s) "
+            f"still pending: {', '.join(incomplete_titles)}"
+        )
+        if len(incomplete_subtasks) > max_titles_shown:
+            detail += f" (+{len(incomplete_subtasks) - max_titles_shown} more)"
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=detail,
+        )
+
     task = await service.complete(task_id)
     if not task:
         raise HTTPException(

@@ -111,11 +111,11 @@ class SendMessageInput(BaseModel):
 
     channel_slug: str = Field(..., description="Channel slug (e.g., 'backend-cell')")
     content: str = Field(..., description="Message content")
+    task_id: str = Field(..., description="Task ID (routes to task's session)")
     message_type: str = Field(
         default="dialogue",
         description="Type: reasoning, dialogue, decision, action, blocker, technical",
     )
-    task_id: str | None = Field(default=None, description="Optional related task ID")
     reply_to: str | None = Field(default=None, description="Message ID to reply to")
     mentions: list[str] = Field(default_factory=list, description="Agents to mention")
 
@@ -125,8 +125,8 @@ class AskQuestionInput(BaseModel):
 
     channel_slug: str
     question: str
+    task_id: str  # Required - routes to task's session
     context: str | None = None
-    task_id: str | None = None
 
 
 class ReportBlockerInput(BaseModel):
@@ -135,7 +135,7 @@ class ReportBlockerInput(BaseModel):
     channel_slug: str
     blocker_description: str
     what_needed: str
-    task_id: str | None = None
+    task_id: str  # Required - routes to task's session
 
 
 # =============================================================================

@@ -217,6 +217,7 @@ Tell the team what you did:
 ```json
 {
   "channel_slug": "uxui-cell",
+  "task_id": "{task_id}",
   "content": "Triaged TASK-XXX. Assigned to UX-Dev.",
   "message_type": "action"
 }
@@ -330,6 +331,7 @@ roboco_task_scan(team="ux_ui")
 roboco_task_claim("TASK-055")
 roboco_message_send({
   "channel_slug": "uxui-cell",
+  "task_id": "TASK-055",
   "content": "Triaging TASK-055: User preferences modal design",
   "message_type": "action"
 })
@@ -368,6 +370,7 @@ roboco_task_assign("TASK-055", "ux-dev")
 # 8. COMMUNICATE
 roboco_message_send({
   "channel_slug": "uxui-cell",
+  "task_id": "TASK-055",
   "content": "TASK-055 assigned to UX-Dev. Frontend needs by Friday.",
   "message_type": "action"
 })

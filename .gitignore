@@ -78,3 +78,7 @@ alembic/versions/*.pyc
 .DS_Store
 .AppleDouble
 .LSOverride
+
+/docs
+/data
+/#recycle

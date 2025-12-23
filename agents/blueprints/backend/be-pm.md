@@ -225,6 +225,7 @@ Tell the team what you did:
 ```json
 {
   "channel_slug": "backend-cell",
+  "task_id": "{task_id}",
   "content": "Triaged TASK-XXX. Created 3 subtasks, assigned to BE-Dev-1.",
   "message_type": "action"
 }
@@ -317,6 +318,7 @@ roboco_task_claim("TASK-042")
 # Announce in channel
 roboco_message_send({
   "channel_slug": "backend-cell",
+  "task_id": "TASK-042",
   "content": "Triaging TASK-042: Implement rate limiting",
   "message_type": "action"
 })
@@ -363,6 +365,7 @@ roboco_task_create({
 # 8. COMMUNICATE
 roboco_message_send({
   "channel_slug": "backend-cell",
+  "task_id": "TASK-042",
   "content": "TASK-042 triaged. 3 subtasks created, assigned to BE-Dev-1.",
   "message_type": "action"
 })
