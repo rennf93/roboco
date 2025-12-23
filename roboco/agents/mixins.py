@@ -370,26 +370,30 @@ class ProgressTracker:
 
     @abstractmethod
     async def send_message(
-        self, channel_id: UUID, content: str, message_type: str
+        self,
+        session_id: UUID | None,
+        content: str,
+        message_type: str,
+        task_id: UUID | None = None,
     ) -> None:
-        """Send message to channel (implemented in base Agent)."""
+        """Send message to session (implemented in base Agent)."""
         ...
 
     async def _report_progress(
         self,
         task_id: UUID,
-        channel_id: UUID | None,
+        session_id: UUID | None,
         message: str,
         percentage: int,
     ) -> None:
         """
         Report progress for a task.
 
-        Saves to task record AND sends channel message.
+        Saves to task record AND sends message to session.
 
         Args:
             task_id: Task to update
-            channel_id: Channel to notify (uses task_id if None)
+            session_id: Session to notify (from context)
             message: Progress message
             percentage: Completion percentage (0-100)
         """
@@ -401,10 +405,11 @@ class ProgressTracker:
                 json={"message": message, "percentage": percentage},
             )
 
-        # Send channel message
+        # Send session message
         task_ref = str(task_id)[:8]
         await self.send_message(
-            channel_id or task_id,
+            session_id,
             f"TASK-{task_ref} ({percentage}%) {message}",
             message_type="action",
+            task_id=task_id,
         )

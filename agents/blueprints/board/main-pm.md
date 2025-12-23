@@ -51,6 +51,9 @@ You interact with RoboCo systems through MCP tools:
 - `roboco_task_create(...)` - Create new tasks for cells (pass `status: "backlog"` for setup phase)
 - `roboco_task_activate(task_id)` - Activate task from BACKLOG to PENDING (after session created)
 
+**Group Management (Feature/Initiative Scopes):**
+- `roboco_group_create(data)` - Create a group for a feature/initiative in a channel
+
 **Session Management (Cross-Cell Work Sessions):**
 - `roboco_session_create_for_tasks(data)` - Create work session for cross-cell initiatives
 - `roboco_session_link_task(data)` - Link additional task to existing session
@@ -146,7 +149,21 @@ roboco_task_create({
 })
 ```
 
-**2. CREATE WORK SESSION (REQUIRED)**
+**2. CREATE GROUP (if needed)**
+Before creating sessions, ensure the channel has a group for this initiative:
+```python
+roboco_group_create({
+    "channel_slug": "dev-all",      # Or "backend-cell" for cell-specific work
+    "name": "User Preferences Feature",
+    "hierarchy_level": 4            # 0=CEO, 1=Board, 2=Main PM, 3=Cell PM, 4=Members
+})
+```
+
+Groups organize work into feature/initiative scopes. Cell PMs then create
+sessions within groups for actual work items. If a Cell PM escalates to you
+with a NO_GROUPS error, create the group and notify them.
+
+**3. CREATE WORK SESSION (REQUIRED)**
 Every initiative needs a work session for coordination:
 ```python
 roboco_session_create_for_tasks({
@@ -165,7 +182,7 @@ roboco_session_create_for_tasks({
 This creates a shared discussion context where all Cell PMs and developers
 can coordinate on the initiative. Full history is preserved for handoffs.
 
-**3. ACTIVATE TASKS (REQUIRED)**
+**4. ACTIVATE TASKS (REQUIRED)**
 After sessions are created, activate tasks so Cell PMs can see them:
 ```python
 roboco_task_activate("backend-task-id")
@@ -175,7 +192,7 @@ roboco_task_activate("ux-task-id")
 
 **Task flow:**
 ```
-CREATE (backlog) → SESSION → ACTIVATE (pending) → Cell PM receives task
+CREATE (backlog) → GROUP (if needed) → SESSION → ACTIVATE (pending) → Cell PM receives
 ```
 
 **4. NOTIFY CELL PMs**

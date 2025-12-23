@@ -47,8 +47,39 @@ AgentState = OrchestratorAgentState
 AgentConfig = OrchestratorAgentConfig
 
 # Docker configuration
-AGENT_IMAGE = "roboco-agent"
 AGENT_NETWORK = "roboco_default"
+AGENT_BASE_IMAGE = "roboco-agent-base"
+
+# Role -> Image mapping
+# Specialized images extend the base with role-specific tools
+AGENT_IMAGES: dict[str, str] = {
+    # Backend
+    "be-dev-1": "roboco-agent-dev-be",
+    "be-dev-2": "roboco-agent-dev-be",
+    "be-qa": "roboco-agent-qa-be",
+    "be-pm": "roboco-agent-pm",
+    "be-doc": "roboco-agent-doc",
+    # Frontend
+    "fe-dev-1": "roboco-agent-dev-fe",
+    "fe-dev-2": "roboco-agent-dev-fe",
+    "fe-qa": "roboco-agent-qa-fe",
+    "fe-pm": "roboco-agent-pm",
+    "fe-doc": "roboco-agent-doc",
+    # UX/UI
+    "ux-dev": "roboco-agent-ux",
+    "ux-qa": "roboco-agent-ux",  # Uses same as dev for now
+    "ux-pm": "roboco-agent-pm",
+    "ux-doc": "roboco-agent-doc",
+    # Board
+    "main-pm": "roboco-agent-pm",
+    "product-owner": "roboco-agent-pm",
+    "head-marketing": "roboco-agent-pm",
+    "auditor": "roboco-agent-pm",
+}
+
+def get_agent_image(agent_id: str) -> str:
+    """Get the Docker image for an agent."""
+    return AGENT_IMAGES.get(agent_id, AGENT_BASE_IMAGE)
 
 # When running in a container, we need host paths for volume mounts.
 # These can be overridden via environment variables.
@@ -141,37 +172,70 @@ class AgentOrchestrator:
 
         logger.info("Orchestrator stopped")
 
-    async def _ensure_agent_image(self) -> None:
-        """Ensure the agent Docker image is built."""
+    async def _ensure_agent_image(self, agent_id: str | None = None) -> None:
+        """Ensure the agent Docker images are built.
+
+        Builds base image first, then specialized image if agent_id provided.
+        """
+        # Determine build context
+        if PROJECT_HOST_PATH:
+            build_context = PROJECT_HOST_PATH
+            docker_dir = f"{PROJECT_HOST_PATH}/docker"
+        else:
+            build_context = str(self.project_root)
+            docker_dir = str(self.project_root / "docker")
+
+        # Always ensure base image exists
+        await self._build_image_if_missing(
+            AGENT_BASE_IMAGE,
+            f"{docker_dir}/agent-base.Dockerfile",
+            build_context,
+        )
+
+        # Build specialized image if agent specified
+        if agent_id:
+            image = get_agent_image(agent_id)
+            if image != AGENT_BASE_IMAGE:
+                # Map image name to dockerfile
+                dockerfile_map = {
+                    "roboco-agent-pm": "agent-pm.Dockerfile",
+                    "roboco-agent-dev-be": "agent-dev-be.Dockerfile",
+                    "roboco-agent-dev-fe": "agent-dev-fe.Dockerfile",
+                    "roboco-agent-qa-be": "agent-qa-be.Dockerfile",
+                    "roboco-agent-qa-fe": "agent-qa-fe.Dockerfile",
+                    "roboco-agent-doc": "agent-doc.Dockerfile",
+                    "roboco-agent-ux": "agent-ux.Dockerfile",
+                }
+                dockerfile = dockerfile_map.get(image)
+                if dockerfile:
+                    await self._build_image_if_missing(
+                        image,
+                        f"{docker_dir}/{dockerfile}",
+                        build_context,
+                    )
+
+    async def _build_image_if_missing(
+        self, image_name: str, dockerfile_path: str, build_context: str
+    ) -> None:
+        """Build a Docker image if it doesn't exist."""
         # Check if image exists
         proc = await asyncio.create_subprocess_exec(
             "docker",
             "image",
             "inspect",
-            AGENT_IMAGE,
+            image_name,
             stdout=asyncio.subprocess.DEVNULL,
             stderr=asyncio.subprocess.DEVNULL,
         )
         await proc.wait()
 
         if proc.returncode != 0:
-            logger.info("Building agent Docker image...")
-
-            # Determine paths - use host paths when running in container
-            if PROJECT_HOST_PATH:
-                # Running in container - use host paths for Docker build
-                dockerfile_path = f"{PROJECT_HOST_PATH}/docker/agent.Dockerfile"
-                build_context = PROJECT_HOST_PATH
-            else:
-                # Running on host
-                dockerfile_path = str(self.project_root / "docker" / "agent.Dockerfile")
-                build_context = str(self.project_root)
-
+            logger.info("Building Docker image...", image=image_name)
             proc = await asyncio.create_subprocess_exec(
                 "docker",
                 "build",
                 "-t",
-                AGENT_IMAGE,
+                image_name,
                 "-f",
                 dockerfile_path,
                 build_context,
@@ -180,8 +244,10 @@ class AgentOrchestrator:
             )
             _, stderr = await proc.communicate()
             if proc.returncode != 0:
-                raise RuntimeError(f"Failed to build agent image: {stderr.decode()}")
-            logger.info("Agent Docker image built successfully")
+                raise RuntimeError(
+                    f"Failed to build image {image_name}: {stderr.decode()}"
+                )
+            logger.info("Docker image built successfully", image=image_name)
 
     def _ensure_agent_claude_settings(self) -> None:
         """
@@ -290,6 +356,9 @@ class AgentOrchestrator:
 
             # Ensure agent Claude settings have MCP tools allowed
             self._ensure_agent_claude_settings()
+
+            # Ensure agent-specific Docker image is built
+            await self._ensure_agent_image(agent_id)
 
             # Generate MCP config
             mcp_config_path = await self._generate_mcp_config(agent_id)
@@ -402,8 +471,8 @@ class AgentOrchestrator:
             f"ROBOCO_AGENT_ID={config.agent_id}",
             "-e",
             "ROBOCO_API_URL=http://roboco-orchestrator:8000",
-            # The image
-            AGENT_IMAGE,
+            # The image (role-specific)
+            get_agent_image(config.agent_id),
             # Claude Code arguments
             "--model",
             MODEL_MAP.get(config.model, config.model),
@@ -458,16 +527,16 @@ class AgentOrchestrator:
         await proc.wait()
 
     async def _generate_mcp_config(self, agent_id: str) -> Path:
-        """Generate MCP config for an agent."""
+        """Generate role-aware MCP config for an agent.
+
+        Different roles get different MCP server access:
+        - All agents: task, message, journal
+        - PMs only: notify (for sending notifications)
+        """
         # MCP servers run inside agent containers, need to connect via Docker network
-        # When orchestrator is in a container: use container hostname
-        # When orchestrator is on host: use localhost
-        # NOTE: internal_api_url adds /api/v1, so we just need the base URL here
         if PROJECT_HOST_PATH:
-            # Running in container - agents connect via Docker network
             api_url = "http://roboco-orchestrator:8000"
         else:
-            # Running on host - agents connect to localhost
             api_url = f"http://127.0.0.1:{settings.port}"
 
         mcp_env = {
@@ -475,48 +544,52 @@ class AgentOrchestrator:
             "ROBOCO_AGENT_ID": agent_id,
         }
 
-        config = {
-            "mcpServers": {
-                "roboco-task": {
-                    "command": "uv",
-                    "args": ["run", "python", "-m", "roboco.mcp.task_server", agent_id],
-                    "env": mcp_env,
-                },
-                "roboco-message": {
-                    "command": "uv",
-                    "args": [
-                        "run",
-                        "python",
-                        "-m",
-                        "roboco.mcp.message_server",
-                        agent_id,
-                    ],
-                    "env": mcp_env,
-                },
-                "roboco-notify": {
-                    "command": "uv",
-                    "args": [
-                        "run",
-                        "python",
-                        "-m",
-                        "roboco.mcp.notify_server",
-                        agent_id,
-                    ],
-                    "env": mcp_env,
-                },
-                "roboco-journal": {
-                    "command": "uv",
-                    "args": [
-                        "run",
-                        "python",
-                        "-m",
-                        "roboco.mcp.journal_server",
-                        agent_id,
-                    ],
-                    "env": mcp_env,
-                },
-            }
+        # Base MCP servers - all agents get these
+        mcp_servers: dict[str, dict[str, Any]] = {
+            "roboco-task": {
+                "command": "uv",
+                "args": ["run", "python", "-m", "roboco.mcp.task_server", agent_id],
+                "env": mcp_env,
+            },
+            "roboco-message": {
+                "command": "uv",
+                "args": [
+                    "run",
+                    "python",
+                    "-m",
+                    "roboco.mcp.message_server",
+                    agent_id,
+                ],
+                "env": mcp_env,
+            },
+            "roboco-journal": {
+                "command": "uv",
+                "args": [
+                    "run",
+                    "python",
+                    "-m",
+                    "roboco.mcp.journal_server",
+                    agent_id,
+                ],
+                "env": mcp_env,
+            },
         }
+
+        # Notify server - everyone can READ notifications, only PMs can SEND
+        # (permission check happens at handler level)
+        mcp_servers["roboco-notify"] = {
+            "command": "uv",
+            "args": [
+                "run",
+                "python",
+                "-m",
+                "roboco.mcp.notify_server",
+                agent_id,
+            ],
+            "env": mcp_env,
+        }
+
+        config: dict[str, Any] = {"mcpServers": mcp_servers}
 
         # Write to shared config directory (mounted in both orchestrator and agents)
         # When running in container: /app/mcp-configs -> host's ./data/mcp-configs

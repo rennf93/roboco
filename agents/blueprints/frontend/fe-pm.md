@@ -183,6 +183,21 @@ roboco_session_create_for_tasks({
 - QA and documenter see full context when reviewing
 - Subtasks auto-inherit parent task's primary session
 
+**Handling NO_GROUPS Error:**
+If you get a NO_GROUPS error when creating a session, it means the channel
+doesn't have a group for this initiative yet. Groups are created by Main PM.
+
+Escalate to Main PM:
+```python
+roboco_task_escalate({
+    "task_id": "{task_id}",
+    "reason": "Channel #frontend-cell has no group for this work. Need group created.",
+    "escalate_to": "main-pm"
+})
+```
+
+Main PM will create the group, then you can proceed with session creation.
+
 ### 7b. ACTIVATE TASK (REQUIRED)
 **Tool:** `roboco_task_activate(task_id)`
 

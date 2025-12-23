@@ -34,6 +34,7 @@ from typing import Any
 from mcp.server.fastmcp import FastMCP
 
 from roboco.mcp.schemas import (
+    GroupCreateInput,
     SessionCreateForTasksInput,
     SessionLinkTaskInput,
     TaskAssignInput,
@@ -45,6 +46,7 @@ from roboco.mcp.schemas import (
 from roboco.mcp.tasks.handlers import (
     handle_agent_idle,
     handle_docs_complete,
+    handle_group_create,
     handle_session_create_for_tasks,
     handle_session_get_for_task,
     handle_session_link_task,
@@ -655,6 +657,29 @@ def _register_session_tools(mcp: FastMCP, client: ApiClient, agent_id: str) -> N
             List of sessions with their relationship types
         """
         return await handle_session_get_for_task(client, task_id, agent_id)
+
+    @mcp.tool()
+    async def roboco_group_create(data: GroupCreateInput) -> dict[str, Any]:
+        """
+        Create a group in a channel (Main PM only).
+
+        Groups organize work into feature/initiative scopes within channels.
+        The typical workflow is:
+        1. Main PM creates a Group for a feature/initiative
+        2. Cell PM creates Sessions within the Group for work items
+        3. Developers communicate within Sessions
+
+        ENFORCEMENT:
+        - Only Main PM, CEO, or Auditor can create groups
+        - Cell PMs should escalate if they need a group created
+
+        Args:
+            data: GroupCreateInput with channel_slug, name, hierarchy_level
+
+        Returns:
+            Created group with guidance
+        """
+        return await handle_group_create(client, data, agent_id)
 
 
 def create_task_mcp_server(agent_id: str) -> FastMCP:

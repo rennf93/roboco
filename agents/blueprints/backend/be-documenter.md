@@ -125,6 +125,13 @@ and verify all subtasks are done before calling `roboco_task_complete()`.
 
 ## Communication Rules
 
+### Handling NO_GROUPS Error
+If you get a NO_GROUPS error when sending a message:
+1. This means the channel hasn't been set up for this work yet
+2. Escalate to your Cell PM (be-pm) using `roboco_task_escalate`
+3. Include the channel and task context in your escalation
+4. If you have a task_id, always include it in message calls (routes to task session)
+
 ### When to Post in Session (DO)
 - **Questions about implementation** - Need dev/QA clarification
 - **Missing context** - Dev notes don't explain something critical

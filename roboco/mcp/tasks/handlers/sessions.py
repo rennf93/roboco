@@ -258,3 +258,86 @@ async def handle_session_get_for_task(
         "primary_session_id": primary.get("session_id") if primary else None,
         "guidance": guidance,
     }
+
+
+# =============================================================================
+# GROUP HANDLERS (Main PM Only)
+# =============================================================================
+
+
+def _validate_main_pm_permissions(agent_id: str) -> dict[str, Any] | None:
+    """Validate agent has Main PM permissions (for group creation).
+
+    Only Main PM, CEO, and Auditor can create groups.
+    Cell PMs should escalate to Main PM for group creation.
+    """
+    role = get_agent_role(agent_id)
+    allowed_roles = {"main_pm", "ceo", "auditor"}
+    if role not in allowed_roles:
+        return format_error_response(
+            "PERMISSION_DENIED",
+            "Only Main PM can create groups. Cell PMs should escalate.",
+            {
+                "role": role,
+                "guidance": "Use roboco_task_escalate to request group creation.",
+            },
+        )
+    return None
+
+
+async def handle_group_create(
+    client: ApiClient,
+    input_data: Any,  # GroupCreateInput from roboco.mcp.schemas
+    agent_id: str,
+) -> dict[str, Any]:
+    """Handle group creation (Main PM only).
+
+    Groups organize work into feature/initiative scopes within channels.
+    Cell PMs then create sessions within groups for work items.
+    """
+    if error := _validate_main_pm_permissions(agent_id):
+        return error
+
+    payload = {
+        "channel_slug": input_data.channel_slug,
+        "name": input_data.name,
+        "hierarchy_level": input_data.hierarchy_level,
+    }
+
+    try:
+        resp = await client.post("/groups", json=payload)
+    except Exception as e:
+        return format_error_response(
+            "CONNECTION_ERROR",
+            f"Failed to connect to API: {type(e).__name__}",
+        )
+
+    if resp.is_status(status.HTTP_403_FORBIDDEN):
+        return format_error_response(
+            "PERMISSION_DENIED",
+            "API rejected group creation",
+            {"detail": resp.text},
+        )
+
+    if resp.is_status(status.HTTP_404_NOT_FOUND):
+        return format_error_response(
+            "NOT_FOUND",
+            f"Channel not found: {input_data.channel_slug}",
+        )
+
+    if not resp.is_status(status.HTTP_201_CREATED):
+        return format_error_response(
+            "CREATE_FAILED",
+            "Failed to create group",
+            {"status_code": resp.status_code, "detail": resp.text},
+        )
+
+    group_data = resp.json()
+    return {
+        "status": "created",
+        "group": group_data,
+        "guidance": (
+            f"Group '{input_data.name}' created in #{input_data.channel_slug}. "
+            "Cell PMs can now create sessions within this group."
+        ),
+    }

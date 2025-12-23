@@ -134,9 +134,11 @@ class DocumenterAgent(Agent, PhaseEngine[DocTaskPhase, DocContext]):
         Returns True when documentation is complete.
         """
         if self._doc_context is None or self._doc_context.task_id != task_id:
+            title, session_id = await self._get_task_info(task_id)
             self._doc_context = DocContext(
                 task_id=task_id,
-                title=await self._get_task_title(task_id),
+                title=title,
+                session_id=session_id,
             )
 
         ctx = self._doc_context
@@ -177,9 +179,10 @@ class DocumenterAgent(Agent, PhaseEngine[DocTaskPhase, DocContext]):
         self.log.info("RECEIVE phase", task_id=str(ctx.task_id))
 
         await self.send_message(
-            self._cell_channel_id or ctx.task_id,
+            ctx.session_id,
             f"Starting documentation for TASK-{str(ctx.task_id)[:8]}: {ctx.title}",
             message_type="action",
+            task_id=ctx.task_id,
         )
 
         ctx.notes.append(f"[{datetime.now(UTC).isoformat()}] Documentation started")
@@ -338,9 +341,10 @@ Format appropriately for the document type.
 
         progress = f"{ctx.current_doc}/{len(ctx.documents_needed)}"
         await self.send_message(
-            self._cell_channel_id or ctx.task_id,
+            ctx.session_id,
             f"TASK-{str(ctx.task_id)[:8]} doc {progress}: {doc_spec.title}",
             message_type="action",
+            task_id=ctx.task_id,
         )
 
         return ctx.current_doc >= len(ctx.documents_needed)
@@ -415,10 +419,11 @@ good,complete,clear,helpful,None
         await self._mark_awaiting_pm_review(ctx.task_id)
 
         await self.send_message(
-            self._cell_channel_id or ctx.task_id,
+            ctx.session_id,
             f"TASK-{str(ctx.task_id)[:8]} documentation complete, awaiting PM review\n"
             f"Published: {', '.join(ctx.written_docs)}",
             message_type="action",
+            task_id=ctx.task_id,
         )
 
         ctx.notes.append(f"[{datetime.now(UTC).isoformat()}] Documentation published")

@@ -338,39 +338,73 @@ class Agent(ABC):
 
     async def send_message(
         self,
-        channel_id: UUID,
+        session_id: UUID | None,
         content: str,
         message_type: str = "dialogue",
+        task_id: UUID | None = None,
     ) -> None:
         """
-        Send a message to a channel.
+        Send a message to a session.
 
         Args:
-            channel_id: Target channel
+            session_id: Target session (from ctx.session_id)
             content: Message content
             message_type: Type of message (reasoning, dialogue, action, etc.)
+            task_id: Optional task context for the message
         """
+        if session_id is None:
+            # No session - escalate to PM
+            self.log.warning(
+                "Cannot send message: no session_id provided",
+                task_id=str(task_id) if task_id else None,
+                content_preview=content[:50],
+            )
+            if task_id:
+                await self._escalate_no_session(task_id)
+            return
+
         self.state.messages_sent += 1
         self.state.last_activity = datetime.now(UTC)
 
-        url = f"http://{settings.host}:{settings.port}/api/v1/messages"
-        async with httpx.AsyncClient() as client:
-            await client.post(
-                url,
+        try:
+            await self._api_call(
+                "POST",
+                "/messages",
                 json={
-                    "channel_id": str(channel_id),
-                    "agent_id": str(self.id),
+                    "session_id": str(session_id),
+                    "type": message_type,
                     "content": content,
-                    "message_type": message_type,
+                    "task_id": str(task_id) if task_id else None,
                 },
             )
+            self.log.debug(
+                "Message sent",
+                session_id=str(session_id),
+                message_type=message_type,
+                content_length=len(content),
+            )
+        except Exception as e:
+            self.log.warning("Failed to send message", error=str(e))
 
-        self.log.debug(
-            "Message sent",
-            channel_id=str(channel_id),
-            message_type=message_type,
-            content_length=len(content),
+    async def _escalate_no_session(self, task_id: UUID) -> None:
+        """Escalate when no session is available for a task."""
+        self.log.info(
+            "Escalating: task has no session",
+            task_id=str(task_id),
+            agent_role=self.role.value if self.role else "unknown",
         )
+        # Record escalation via API (orchestrator handles routing)
+        try:
+            await self._api_call(
+                "POST",
+                f"/tasks/{task_id}/escalate",
+                json={
+                    "reason": "Task has no linked session for communication",
+                    "agent_id": str(self.id),
+                },
+            )
+        except Exception as e:
+            self.log.warning("Failed to record escalation", error=str(e))
 
     async def stream_reasoning(self, content: str) -> None:
         """
@@ -512,13 +546,38 @@ class Agent(ABC):
 
     async def _get_task_title(self, task_id: UUID) -> str:
         """Get task title from API."""
+        title, _ = await self._get_task_info(task_id)
+        return title
+
+    async def _get_task_info(self, task_id: UUID) -> tuple[str, UUID | None]:
+        """
+        Get task info including title and primary session_id.
+
+        The task response includes linked sessions. We extract the primary
+        session_id so it can be stored in the context for message routing.
+
+        Args:
+            task_id: Task to fetch
+
+        Returns:
+            Tuple of (title, session_id). session_id is None if no primary session.
+        """
         try:
             result = await self._api_call("GET", f"/tasks/{task_id}")
             title: str = result.get("title", f"Task {str(task_id)[:8]}")
-            return title
+
+            # Extract primary session from linked sessions
+            session_id: UUID | None = None
+            sessions = result.get("sessions", [])
+            for session in sessions:
+                if session.get("is_primary"):
+                    session_id = UUID(session["session_id"])
+                    break
+
+            return title, session_id
         except Exception as e:
-            self.log.warning("Failed to get task title", error=str(e))
-            return f"Task {str(task_id)[:8]}"
+            self.log.warning("Failed to get task info", error=str(e))
+            return f"Task {str(task_id)[:8]}", None
 
     async def _read_task_requirements(self, task_id: UUID) -> str:
         """Read task requirements from task record."""
@@ -780,25 +839,25 @@ class Agent(ABC):
         task_id: UUID,
         message: str,
         percentage: int,
-        channel_id: UUID | None = None,
+        session_id: UUID | None = None,
     ) -> None:
         """
-        Report progress: save to task AND send channel message.
+        Report progress: save to task AND send session message.
 
         Args:
             task_id: Task to update
             message: Progress message
             percentage: Completion percentage (0-100)
-            channel_id: Channel to notify (uses cell_channel_id or task_id)
+            session_id: Session to notify (from context)
         """
         await self._add_progress(task_id, message, percentage)
 
-        target_channel = channel_id or self.cell_channel_id or task_id
         task_ref = str(task_id)[:8]
         await self.send_message(
-            target_channel,
+            session_id,
             f"TASK-{task_ref} ({percentage}%) {message}",
             message_type="action",
+            task_id=task_id,
         )
 
     # =========================================================================

@@ -221,10 +221,13 @@ medium,TASK-abc123,P1,backend-dev-1
             if resolved:
                 success = await self._unblock_task(task_id)
                 if success:
+                    # Get session from task
+                    _, session_id = await self._get_task_info(task_id)
                     await self.send_message(
-                        self._cell_channel_id or self.id,
+                        session_id,
                         f"TASK-{str(task_id)[:8]} unblocked - blocker resolved",
                         message_type="action",
+                        task_id=task_id,
                     )
 
         # Check for pending questions in channel
@@ -249,10 +252,11 @@ As the Cell PM, provide:
 Be helpful and unblock the team.
 """
             response = await self.think(prompt)
-            await self.send_message(
-                self._cell_channel_id or self.id,
-                response,
-                message_type="dialogue",
+            # TODO: Questions should include task_id for routing
+            # For now, log that we can't route without session context
+            self.log.info(
+                "PM response (no session context - need task_id in questions)",
+                response_preview=response[:100],
             )
 
     async def _phase_escalate(self) -> None:

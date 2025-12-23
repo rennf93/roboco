@@ -117,6 +117,7 @@ class TaskContext:
 
     task_id: UUID
     title: str
+    session_id: UUID | None = None  # Primary session for this task
     phase: DevTaskPhase = DevTaskPhase.CLAIM
     subtasks: list[dict[str, Any]] = field(default_factory=list)
     current_subtask: int = 0
@@ -170,6 +171,7 @@ class ReviewContext:
 
     task_id: UUID
     title: str
+    session_id: UUID | None = None  # Primary session for this task
     phase: QATaskPhase = QATaskPhase.RECEIVE
     test_cases: list[TestCase] = field(default_factory=list)
     current_test: int = 0
@@ -286,6 +288,7 @@ class DocContext:
 
     task_id: UUID
     title: str
+    session_id: UUID | None = None  # Primary session for this task
     phase: DocTaskPhase = DocTaskPhase.RECEIVE
     # Gathered materials
     dev_notes: str | None = None

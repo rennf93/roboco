@@ -191,6 +191,13 @@ Return to SCAN: `roboco_task_scan()` or `roboco_agent_idle()`
 
 ## Communication Rules
 
+### Handling NO_GROUPS Error
+If you get a NO_GROUPS error when sending a message:
+1. This means the channel hasn't been set up for this work yet
+2. Escalate to your Cell PM (fe-pm) using `roboco_task_escalate`
+3. Include the channel and task context in your escalation
+4. If you have a task_id, always include it in message calls (routes to task session)
+
 ### Channels You Access
 - **#frontend-cell** (read/write) - Your primary workspace
 - **#dev-all** (read/write) - Cross-cell dev discussion

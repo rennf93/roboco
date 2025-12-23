@@ -18,7 +18,7 @@ from typing import Any
 from fastapi import status
 from mcp.server.fastmcp import FastMCP
 
-from roboco.agents_config import CHANNEL_ACCESS
+from roboco.agents_config import CHANNEL_ACCESS, get_agent_role
 from roboco.llm import ToonAdapter
 from roboco.mcp.schemas import (
     AskQuestionInput,
@@ -38,6 +38,36 @@ _toon = ToonAdapter()
 # =============================================================================
 # HELPER FUNCTIONS
 # =============================================================================
+
+
+def _format_no_groups_error(agent_id: str, channel_slug: str) -> dict[str, Any]:
+    """Format NO_GROUPS error with role-aware escalation guidance."""
+    role = get_agent_role(agent_id)
+
+    if role == "main_pm":
+        guidance = (
+            f"Channel #{channel_slug} has no groups. "
+            "Use roboco_group_create to create a group for this channel."
+        )
+    elif role == "cell_pm":
+        guidance = (
+            f"Channel #{channel_slug} has no groups. "
+            "Groups are created by Main PM. "
+            "Use roboco_task_escalate to request group creation."
+        )
+    else:
+        # Developer/QA/Documenter
+        guidance = (
+            f"Channel #{channel_slug} has no groups yet. "
+            "Escalate to your Cell PM. "
+            "If you have a task_id, include it in your message call."
+        )
+
+    return format_error_response(
+        "NO_GROUPS",
+        f"Channel #{channel_slug} has no groups.",
+        {"guidance": guidance, "channel": channel_slug, "role": role},
+    )
 
 
 def _check_channel_access(agent_id: str, channel_slug: str, action: str) -> bool:
@@ -102,8 +132,14 @@ def _validate_message_send(
 async def _get_default_group(
     client: ApiClient,
     channel_id: str,
+    agent_id: str | None = None,
+    channel_slug: str | None = None,
 ) -> str | dict[str, Any]:
-    """Get the default (first) group for a channel. Returns group_id or error dict."""
+    """Get the default (first) group for a channel. Returns group_id or error dict.
+
+    If agent_id and channel_slug are provided, NO_GROUPS error includes
+    role-aware escalation guidance.
+    """
     resp = await client.get(f"/channels/{channel_id}/groups")
 
     if not resp.ok:
@@ -115,6 +151,9 @@ async def _get_default_group(
 
     groups = resp.json()
     if not groups:
+        # Return role-aware guidance if we have context
+        if agent_id and channel_slug:
+            return _format_no_groups_error(agent_id, channel_slug)
         return format_error_response("NO_GROUPS", "Channel has no groups")
 
     # Return first active group, or first group if none are active
@@ -127,6 +166,8 @@ async def _get_default_group(
 async def _get_active_session(
     client: ApiClient,
     channel_id: str,
+    agent_id: str | None = None,
+    channel_slug: str | None = None,
 ) -> str | dict[str, Any]:
     """Get active session for channel. Returns session_id or error dict.
 
@@ -135,9 +176,11 @@ async def _get_active_session(
     returns an error guiding the agent to use task_id or ask their PM.
     """
     # First get the default group for this channel
-    group_result = await _get_default_group(client, channel_id)
+    group_result = await _get_default_group(
+        client, channel_id, agent_id=agent_id, channel_slug=channel_slug
+    )
     if isinstance(group_result, dict):
-        return group_result  # Error response
+        return group_result  # Error response (NO_GROUPS with guidance)
     group_id = group_result
 
     # Check if group has an active session
@@ -281,8 +324,10 @@ async def _handle_channel_history(
         return channel_result
     channel_id = channel_result
 
-    # Get group
-    group_result = await _get_default_group(client, channel_id)
+    # Get group (with role-aware guidance if NO_GROUPS)
+    group_result = await _get_default_group(
+        client, channel_id, agent_id=agent_id, channel_slug=channel_slug
+    )
     if isinstance(group_result, dict):
         return group_result
     group_id = group_result
@@ -366,9 +411,11 @@ async def _handle_message_send(
             return channel_result  # Error response
         channel_id = channel_result
 
-        session_result = await _get_active_session(client, channel_id)
+        session_result = await _get_active_session(
+            client, channel_id, agent_id=agent_id, channel_slug=data.channel_slug
+        )
         if isinstance(session_result, dict):
-            return session_result  # Returns NO_ACTIVE_SESSION error with guidance
+            return session_result  # Returns NO_GROUPS/NO_ACTIVE_SESSION with guidance
         session_id = session_result
 
     # Resolve mentions (slugs) to UUIDs using shared cache

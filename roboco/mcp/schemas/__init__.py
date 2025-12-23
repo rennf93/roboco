@@ -258,3 +258,35 @@ class SessionLinkTaskInput(BaseModel):
         default="discussion",
         description="Type: discussion, planning, review, retrospective",
     )
+
+
+# =============================================================================
+# GROUP SCHEMAS (Main PM Only)
+# =============================================================================
+
+
+class GroupCreateInput(BaseModel):
+    """Input for creating a group in a channel (Main PM only).
+
+    Groups organize work into feature/initiative scopes within channels.
+    - Main PM creates Groups for features/initiatives
+    - Cell PMs create Sessions within Groups for work items
+    - Developers communicate within Sessions
+    """
+
+    channel_slug: str = Field(
+        ...,
+        description="Channel slug where group will be created (e.g., 'backend-cell')",
+    )
+    name: str = Field(
+        ...,
+        min_length=1,
+        max_length=100,
+        description="Group name (e.g., 'User Preferences Feature')",
+    )
+    hierarchy_level: int = Field(
+        default=4,
+        ge=0,
+        le=4,
+        description="Access level: 0=CEO, 1=Board, 2=Main PM, 3=Cell PM, 4=Members",
+    )

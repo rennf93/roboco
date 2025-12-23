@@ -133,9 +133,11 @@ class QAAgent(Agent, PhaseEngine[QATaskPhase, ReviewContext]):
         Returns True when review is complete.
         """
         if self._review_context is None or self._review_context.task_id != task_id:
+            title, session_id = await self._get_task_info(task_id)
             self._review_context = ReviewContext(
                 task_id=task_id,
-                title=await self._get_task_title(task_id),
+                title=title,
+                session_id=session_id,
             )
 
         ctx = self._review_context
@@ -181,9 +183,10 @@ class QAAgent(Agent, PhaseEngine[QATaskPhase, ReviewContext]):
         self.log.info("RECEIVE phase", task_id=str(ctx.task_id))
 
         await self.send_message(
-            self._cell_channel_id or ctx.task_id,
+            ctx.session_id,
             f"Starting review of TASK-{str(ctx.task_id)[:8]}: {ctx.title}",
             message_type="action",
+            task_id=ctx.task_id,
         )
 
         ctx.notes.append(f"[{datetime.now(UTC).isoformat()}] Review started")
@@ -321,9 +324,10 @@ PASS,All criteria verified successfully,No issues found
         task_ref = str(ctx.task_id)[:8]
         msg = f"TASK-{task_ref} test {progress}: {test_case.name} - {result_str}"
         await self.send_message(
-            self._cell_channel_id or ctx.task_id,
+            ctx.session_id,
             msg,
             message_type="action",
+            task_id=ctx.task_id,
         )
 
         return ctx.current_test >= len(ctx.test_cases)
@@ -350,11 +354,12 @@ PASS,All criteria verified successfully,No issues found
             )
 
             await self.send_message(
-                self._cell_channel_id or ctx.task_id,
+                ctx.session_id,
                 f"TASK-{str(ctx.task_id)[:8]} QA FAILED\n\n"
                 f"Issues found:\n{failure_summary}\n\n"
                 f"Task returned to developer for fixes.",
                 message_type="decision",
+                task_id=ctx.task_id,
             )
 
             # Update task status
@@ -364,11 +369,12 @@ PASS,All criteria verified successfully,No issues found
             ctx.verdict = TestResult.PASS
 
             await self.send_message(
-                self._cell_channel_id or ctx.task_id,
+                ctx.session_id,
                 f"TASK-{str(ctx.task_id)[:8]} QA APPROVED\n\n"
                 f"All {len(ctx.test_cases)} tests passed.\n"
                 f"Ready for documentation.",
                 message_type="decision",
+                task_id=ctx.task_id,
             )
 
             # Update task status

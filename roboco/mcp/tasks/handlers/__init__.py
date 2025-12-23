@@ -30,6 +30,7 @@ from roboco.mcp.tasks.handlers.review import (
 )
 from roboco.mcp.tasks.handlers.scan import handle_task_get, handle_task_scan
 from roboco.mcp.tasks.handlers.sessions import (
+    handle_group_create,
     handle_session_create_for_tasks,
     handle_session_get_for_task,
     handle_session_link_task,
@@ -44,6 +45,7 @@ from roboco.mcp.tasks.handlers.work import (
 __all__ = [
     "handle_agent_idle",
     "handle_docs_complete",
+    "handle_group_create",
     "handle_session_create_for_tasks",
     "handle_session_get_for_task",
     "handle_session_link_task",

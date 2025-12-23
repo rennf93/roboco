@@ -13,7 +13,7 @@ import structlog
 
 from roboco.agents.base import Agent, AgentConfig
 from roboco.agents.mixins import PhaseConfig, PhaseEngine
-from roboco.models import TaskStatus
+from roboco.models import AgentStatus, TaskStatus
 from roboco.models.agents import DevTaskPhase, TaskContext
 
 logger = structlog.get_logger()
@@ -146,9 +146,11 @@ class DeveloperAgent(Agent, PhaseEngine[DevTaskPhase, TaskContext]):
         """
         # Initialize or restore task context
         if self._task_context is None or self._task_context.task_id != task_id:
+            title, session_id = await self._get_task_info(task_id)
             self._task_context = TaskContext(
                 task_id=task_id,
-                title=await self._get_task_title(task_id),
+                title=title,
+                session_id=session_id,
             )
 
         ctx = self._task_context
@@ -190,11 +192,12 @@ class DeveloperAgent(Agent, PhaseEngine[DevTaskPhase, TaskContext]):
         # Update task status
         await self._update_task_status(ctx.task_id, TaskStatus.CLAIMED)
 
-        # Announce in channel
+        # Announce in session
         await self.send_message(
-            self._cell_channel_id or ctx.task_id,
+            ctx.session_id,
             f"Claiming TASK-{str(ctx.task_id)[:8]}: {ctx.title}",
             message_type="action",
+            task_id=ctx.task_id,
         )
 
         # Journal entry
@@ -245,12 +248,13 @@ If clarification needed, respond with: "QUESTION: [your question]"
             )
             return True
         else:
-            # Ask question in channel
+            # Ask question in session
             question = response.replace("QUESTION:", "").strip()
             await self.send_message(
-                self._cell_channel_id or ctx.task_id,
+                ctx.session_id,
                 f"Question about TASK-{str(ctx.task_id)[:8]}: {question}",
                 message_type="dialogue",
+                task_id=ctx.task_id,
             )
             return False
 
@@ -313,9 +317,10 @@ Add unit tests,tests/test_main.py,small
 
         # Announce plan
         await self.send_message(
-            self._cell_channel_id or ctx.task_id,
+            ctx.session_id,
             f"TASK-{str(ctx.task_id)[:8]} plan ready: {len(ctx.subtasks)} subtasks",
             message_type="action",
+            task_id=ctx.task_id,
         )
 
     async def _phase_execute(self, ctx: TaskContext) -> bool:
@@ -385,9 +390,10 @@ Respond with the implementation.
         await self._add_progress(ctx.task_id, progress_msg, percentage)
 
         await self.send_message(
-            self._cell_channel_id or ctx.task_id,
+            ctx.session_id,
             f"TASK-{str(ctx.task_id)[:8]} ({percentage}%) {progress_msg}",
             message_type="action",
+            task_id=ctx.task_id,
         )
 
         ctx.current_subtask += 1
@@ -424,10 +430,11 @@ Respond with the implementation.
         if all_passed:
             # Flag for QA
             await self.send_message(
-                self._cell_channel_id or ctx.task_id,
+                ctx.session_id,
                 f"TASK-{str(ctx.task_id)[:8]} ready for QA review. "
                 f"Commits: {', '.join(ctx.commits)}",
                 message_type="action",
+                task_id=ctx.task_id,
             )
             ctx.journal_entries.append(
                 f"[{datetime.now(UTC).isoformat()}] VERIFY PASSED. Flagged for QA."
@@ -495,9 +502,10 @@ Summarize in 2-3 sentences what documentation is needed.
         if ctx.blockers:
             blocker = ctx.blockers[-1]
             await self.send_message(
-                self._cell_channel_id or ctx.task_id,
+                ctx.session_id,
                 f"BLOCKED on TASK-{str(ctx.task_id)[:8]}: {blocker}",
                 message_type="blocker",
+                task_id=ctx.task_id,
             )
             await self._update_task_status(ctx.task_id, TaskStatus.BLOCKED)
 
@@ -541,12 +549,12 @@ Summarize in 2-3 sentences what documentation is needed.
             return None
 
     async def _signal_availability(self) -> None:
-        """Signal availability to PM."""
-        await self.send_message(
-            self._cell_channel_id or self.id,
-            f"{self.name} available for new tasks",
-            message_type="dialogue",
-        )
+        """Signal availability to orchestrator (no task context, so use API)."""
+        self.log.info("Signaling availability", agent_name=self.name)
+        # No task/session context - signal via state update instead of message
+        self.state.status = AgentStatus.IDLE
+        self.state.current_task_id = None
+        self.state.current_session_id = None
 
     async def _submit_for_qa(
         self, task_id: UUID, dev_notes: str, handoff_summary: str
