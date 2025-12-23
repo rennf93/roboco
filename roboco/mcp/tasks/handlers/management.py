@@ -154,6 +154,7 @@ def _build_task_payload(input_data: TaskCreateInput) -> dict[str, Any]:
         "team": input_data.team,
         "priority": input_data.priority,
         "estimated_complexity": input_data.complexity,
+        "status": input_data.status,  # Always included, defaults to "backlog"
     }
     if input_data.parent_task_id:
         payload["parent_task_id"] = input_data.parent_task_id
@@ -162,10 +163,17 @@ def _build_task_payload(input_data: TaskCreateInput) -> dict[str, Any]:
 
 def _format_create_guidance(task: dict[str, Any], assigned_to: str | None) -> str:
     """Format guidance message for task creation."""
-    guidance = f"Task created successfully. ID: {task['id']}. "
-    if assigned_to:
+    task_status = task.get("status", "pending")
+    guidance = f"Task created successfully. ID: {task['id']}. Status: {task_status}. "
+
+    if task_status == "backlog":
         guidance += (
-            f"Assigned to: {assigned_to} (pending). "
+            "Task is in BACKLOG. Create session with "
+            "roboco_session_create_for_tasks, then roboco_task_activate."
+        )
+    elif assigned_to:
+        guidance += (
+            f"Assigned to: {assigned_to}. "
             "Orchestrator will spawn them to claim and work on it."
         )
     else:

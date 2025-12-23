@@ -37,6 +37,9 @@ COPY pyproject.toml uv.lock alembic.ini README.md /app/
 COPY alembic /app/alembic
 
 # Install Python dependencies
+# Increase timeout for large NVIDIA packages (674MB cudnn, 858MB torch)
+ENV UV_HTTP_TIMEOUT=300
+ENV UV_CONCURRENT_DOWNLOADS=4
 RUN uv python install 3.13 && uv sync --frozen --python 3.13
 
 # Expose API port

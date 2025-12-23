@@ -91,6 +91,7 @@ def upgrade() -> None:
         sa.Column(
             "status",
             sa.Enum(
+                "backlog",
                 "pending",
                 "claimed",
                 "in_progress",

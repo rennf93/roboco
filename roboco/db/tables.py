@@ -507,7 +507,7 @@ class SessionTaskTable(Base):
             "ix_session_tasks_primary_per_task",
             "task_id",
             unique=True,
-            postgresql_where=(is_primary == True),  # noqa: E712
+            postgresql_where=(is_primary.is_(True)),
         ),
         # Fast lookups
         Index("ix_session_tasks_task_id", "task_id"),

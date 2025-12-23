@@ -76,6 +76,20 @@ class JournalService(BaseService):
 
         return await resolve_agent_uuid(self.session, agent_id_or_slug)
 
+    async def get_agent_slug(self, agent_id: UUID) -> str | None:
+        """
+        Get an agent's slug from their UUID.
+
+        Args:
+            agent_id: The agent's UUID
+
+        Returns:
+            The agent's slug (e.g., "be-dev-1"), or None if not found
+        """
+        from roboco.services.repositories import get_agent_slug
+
+        return await get_agent_slug(self.session, agent_id)
+
     # =========================================================================
     # JOURNAL CRUD
     # =========================================================================

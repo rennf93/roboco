@@ -17,7 +17,7 @@ from roboco.db.base import get_db
 from roboco.models import AgentRole, Team
 from roboco.runtime import AgentOrchestrator
 from roboco.services.permissions import AgentContext, PermissionService
-from roboco.services.repositories import resolve_agent_uuid
+from roboco.services.repositories import resolve_agent_identity, resolve_agent_uuid
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Coroutine
@@ -173,8 +173,26 @@ async def get_agent_context(
             detail="Missing X-Agent-Role header",
         )
 
-    # Resolve agent ID (UUID or slug)
-    agent_id = await resolve_agent_id(x_agent_id, db)
+    # Special case: system role (orchestrator) uses well-known UUID
+    # that doesn't exist in the database - bypass DB lookup
+    if x_agent_role.lower() == "system":
+        try:
+            agent_id = UUID(x_agent_id)
+            slug = "system"
+        except ValueError as e:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"Invalid system agent UUID: {x_agent_id}",
+            ) from e
+    else:
+        # Resolve agent ID and slug from database
+        identity = await resolve_agent_identity(db, x_agent_id)
+        if identity is None:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"Agent not found: {x_agent_id}",
+            )
+        agent_id, slug = identity
 
     try:
         role = AgentRole(x_agent_role.lower())
@@ -193,6 +211,7 @@ async def get_agent_context(
         agent_id=agent_id,
         role=role,
         team=team,
+        slug=slug,
     )
 
 

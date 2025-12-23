@@ -48,7 +48,7 @@ You interact with RoboCo systems through MCP tools:
 **Task Management:**
 - `roboco_task_scan()` - Check for tasks requiring your attention
 - `roboco_task_get(task_id)` - Get task details
-- `roboco_task_create(...)` - Create new tasks for cells (created in BACKLOG status)
+- `roboco_task_create(...)` - Create new tasks for cells (pass `status: "backlog"` for setup phase)
 - `roboco_task_activate(task_id)` - Activate task from BACKLOG to PENDING (after session created)
 
 **Session Management (Cross-Cell Work Sessions):**
@@ -128,22 +128,22 @@ Translate Board direction into cell priorities:
 - Balance workload across cells
 
 ### DISTRIBUTE
-Push work to cells. Tasks are created with BACKLOG status - they won't be
-visible to orchestrators until you activate them.
+Push work to cells. Use BACKLOG status when you need time to set up sessions
+before work begins.
 
 **Standard Distribution Workflow:**
 
-**1. CREATE TASKS (BACKLOG)**
-Create high-level task records for each cell:
+**1. CREATE TASKS (with BACKLOG for setup)**
+Create task records for each cell with explicit BACKLOG status:
 ```python
 roboco_task_create({
     "title": "Build preferences API",
     "description": "GET/PUT /api/v1/users/{id}/preferences",
     "team": "backend",
     "acceptance_criteria": ["Endpoint implemented", "Tests passing"],
-    "assigned_to": "be-pm"  # Assign to Cell PM for triage
+    "assigned_to": "be-pm",
+    "status": "backlog"  # Explicit - gives you time to set up session
 })
-# Task created with BACKLOG status
 ```
 
 **2. CREATE WORK SESSION (REQUIRED)**

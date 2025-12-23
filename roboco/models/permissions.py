@@ -72,6 +72,7 @@ class AgentContext:
     agent_id: UUID
     role: AgentRole
     team: Team | None = None
+    slug: str | None = None  # Agent slug (e.g., "be-dev-1")
 
     @property
     def level(self) -> PermissionLevel:

@@ -452,11 +452,14 @@ class MessagingService(BaseService):
             if existing_primary.scalar_one_or_none():
                 raise ConflictError(f"Task {task_id} already has a primary session")
 
+        # Handle both enum and string (RobocoBase uses use_enum_values=True)
+        rel_value = getattr(relationship_type, "value", relationship_type)
+
         link = SessionTaskTable(
             session_id=session_id,
             task_id=task_id,
             is_primary=is_primary,
-            relationship_type=relationship_type.value,
+            relationship_type=rel_value,
             added_by=added_by,
         )
 
@@ -468,7 +471,7 @@ class MessagingService(BaseService):
             session_id=str(session_id),
             task_id=str(task_id),
             is_primary=is_primary,
-            relationship_type=relationship_type.value,
+            relationship_type=rel_value,
         )
         return link
 
@@ -534,9 +537,8 @@ class MessagingService(BaseService):
         )
 
         if relationship_type:
-            query = query.where(
-                SessionTaskTable.relationship_type == relationship_type.value
-            )
+            rel_value = getattr(relationship_type, "value", relationship_type)
+            query = query.where(SessionTaskTable.relationship_type == rel_value)
 
         query = query.order_by(SessionTaskTable.added_at.desc())
         result = await self.session.execute(query)

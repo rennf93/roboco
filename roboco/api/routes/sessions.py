@@ -378,6 +378,7 @@ async def create_session_for_tasks(
     req = SessionForTasksCreate(
         task_ids=data.task_ids,
         channel_slug=data.channel_slug,
+        scope=data.scope,
         relationship_type=rel_type,
     )
 
@@ -388,10 +389,21 @@ async def create_session_for_tasks(
             status_code=status.HTTP_404_NOT_FOUND,
             detail=str(e),
         ) from e
+    except ConflictError as e:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=str(e),
+        ) from e
     except ValueError as e:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=str(e),
+        ) from e
+    except Exception as e:
+        # Catch-all for debugging - expose actual error
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Session creation failed: {type(e).__name__}: {e}",
         ) from e
 
     session_response = SessionResponse(

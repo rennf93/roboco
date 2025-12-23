@@ -18,6 +18,8 @@ from typing import Any
 
 from mcp.server.fastmcp import FastMCP
 
+from roboco.agents_config import get_agent_cell, get_agent_role
+from roboco.enforcement.journal_perms import can_read_journal, get_readable_journals
 from roboco.llm import ToonAdapter
 from roboco.mcp.schemas import (
     DecisionLogInput,
@@ -57,6 +59,7 @@ async def _handle_journal_entry(
         "title": data.title,
         "content": data.content,
         "task_id": data.task_id,
+        "session_id": data.session_id,
         "tags": data.tags,
         "is_private": data.is_private,
     }
@@ -86,6 +89,7 @@ async def _handle_reflect(
     """Handle task reflection creation."""
     payload = {
         "task_id": data.task_id,
+        "session_id": data.session_id,
         "title": data.title,
         "what_done": data.what_done,
         "what_learned": data.what_learned,
@@ -283,6 +287,50 @@ async def _handle_recent(
     return {"entries": entries, "count": len(entries) if entries else 0}
 
 
+async def _handle_team_entries(
+    target_agent: str,
+    reader_agent: str,
+    params: dict[str, Any],
+    client: ApiClient,
+) -> dict[str, Any]:
+    """Handle reading another agent's journal entries."""
+    # Check permission
+    can_read, reason = can_read_journal(reader_agent, target_agent)
+    if not can_read:
+        return format_error_response("ACCESS_DENIED", reason)
+
+    entries, error = await client.get_or_error(
+        f"/journals/{target_agent}/entries",
+        params=params,
+        error_code="READ_FAILED",
+        error_message=f"Failed to read {target_agent}'s journal",
+    )
+    if error:
+        return error
+
+    return {
+        "agent": target_agent,
+        "entries": entries,
+        "count": len(entries) if entries else 0,
+        "guidance": f"Showing entries from {target_agent}'s journal.",
+    }
+
+
+def _get_journal_scope(agent_id: str) -> dict[str, Any]:
+    """Get information about what journals an agent can read."""
+    scope_info = get_readable_journals(agent_id)
+    role = get_agent_role(agent_id)
+    cell = get_agent_cell(agent_id)
+
+    return {
+        "your_agent": agent_id,
+        "your_role": role,
+        "your_cell": cell,
+        "scope": scope_info,
+        "guidance": scope_info.get("description", ""),
+    }
+
+
 # =============================================================================
 # MCP SERVER FACTORY
 # =============================================================================
@@ -383,6 +431,47 @@ def create_journal_mcp_server(agent_id: str) -> FastMCP:
         learning, struggle) or by task_id.
         """
         return await _handle_recent(entry_type, task_id, limit, client)
+
+    # =========================================================================
+    # TEAM JOURNAL ACCESS TOOLS
+    # =========================================================================
+
+    @mcp.tool()
+    async def roboco_journal_read_team(
+        target_agent: str,
+        entry_type: str | None = None,
+        task_id: str | None = None,
+        limit: int = 10,
+    ) -> dict[str, Any]:
+        """
+        Read journal entries from a teammate.
+
+        Cell members can read each other's journals (including private entries).
+        PMs can read across cells. Main PM, Board, and Auditor have broader access.
+
+        Args:
+            target_agent: Agent slug to read from (e.g., "be-dev-1", "be-qa")
+            entry_type: Optional filter by type
+            task_id: Optional filter by task
+            limit: Max entries to return (default 10)
+        """
+        max_limit = 50
+        params: dict[str, Any] = {"limit": min(limit, max_limit)}
+        if entry_type:
+            params["entry_type"] = entry_type
+        if task_id:
+            params["task_id"] = task_id
+
+        return await _handle_team_entries(target_agent, agent_id, params, client)
+
+    @mcp.tool()
+    def roboco_journal_scope() -> dict[str, Any]:
+        """
+        Get information about which journals you can access.
+
+        Shows your role, cell, and what other agents' journals you can read.
+        """
+        return _get_journal_scope(agent_id)
 
     return mcp
 

@@ -7,6 +7,19 @@ All enforcement modules and MCP servers should import from here.
 
 from typing import Final
 
+from roboco.seeds.initial_data import AGENT_UUIDS
+
+# Reverse mapping: UUID -> slug (computed from seeds)
+_UUID_TO_SLUG: Final[dict[str, str]] = {
+    uuid: slug for slug, uuid in AGENT_UUIDS.items()
+}
+
+
+def _resolve_to_slug(agent_id: str) -> str:
+    """Resolve agent ID (UUID or slug) to slug."""
+    return _UUID_TO_SLUG.get(agent_id, agent_id)
+
+
 # =============================================================================
 # AGENT ROLE MAPPINGS
 # =============================================================================
@@ -120,17 +133,19 @@ ESCALATION_CHAIN: Final[dict[str, str]] = {
 
 
 def get_agent_role(agent_id: str) -> str:
-    """Get the role for an agent."""
-    return AGENT_ROLE_MAP.get(agent_id, "unknown")
+    """Get the role for an agent. Accepts both UUID and slug."""
+    slug = _resolve_to_slug(agent_id)
+    return AGENT_ROLE_MAP.get(slug, "unknown")
 
 
 def get_agent_team(agent_id: str) -> str | None:
-    """Get the team for an agent."""
-    return AGENT_TEAM_MAP.get(agent_id)
+    """Get the team for an agent. Accepts both UUID and slug."""
+    slug = _resolve_to_slug(agent_id)
+    return AGENT_TEAM_MAP.get(slug)
 
 
 def get_agent_cell(agent_id: str) -> str | None:
-    """Get the cell an agent belongs to (alias for get_agent_team)."""
+    """Get the cell an agent belongs to. Accepts both UUID and slug."""
     return get_agent_team(agent_id)
 
 

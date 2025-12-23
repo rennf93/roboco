@@ -62,11 +62,12 @@ def get_next_step_guidance(status: str) -> tuple[str, str]:
             "If blocked, call roboco_task_block with details.",
         ),
         "blocked": (
-            "WAIT_OR_SWITCH",
-            "You are blocked. Options: "
-            "1) Wait for resolution (if expected soon), "
-            "2) Switch to another task (call roboco_task_scan), "
-            "3) Escalate to PM if urgent.",
+            "RESOLVE_BLOCKER",
+            "Task is blocked. Options: "
+            "1) UNBLOCK - If resolved, call roboco_task_unblock() to resume. "
+            "2) WAIT - If waiting for external resolution. "
+            "3) SWITCH - Call roboco_task_scan for other work. "
+            "4) ESCALATE - If urgent, message your PM.",
         ),
         "paused": (
             "RESUME_OR_SCAN",

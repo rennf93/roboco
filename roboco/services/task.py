@@ -118,11 +118,8 @@ class TaskService(BaseService):
         """
         Create a new task.
 
-        Tasks are created with BACKLOG status by default. PM must:
-        1. Create a session for the task
-        2. Call activate() to transition to PENDING
-
-        This ensures every task has a session before work begins.
+        Default status is PENDING. PM can pass status=BACKLOG when creating
+        subtasks that need session setup before activation.
         """
         task = TaskTable(
             title=req.title,
@@ -134,7 +131,7 @@ class TaskService(BaseService):
             parent_task_id=req.parent_task_id,
             target_date=req.target_date,
             estimated_complexity=req.estimated_complexity,
-            status=TaskStatus.BACKLOG,
+            status=req.status if req.status else TaskStatus.PENDING,
         )
         self.session.add(task)
         await self.session.flush()

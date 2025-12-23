@@ -188,6 +188,66 @@ async def resolve_agent_uuid(
     return UUID(str(agent_uuid))
 
 
+async def resolve_agent_identity(
+    db: AsyncSession,
+    agent_id_or_slug: str,
+) -> tuple[UUID, str] | None:
+    """
+    Resolve an agent identity to both UUID and slug.
+
+    Args:
+        db: Database session
+        agent_id_or_slug: Either a UUID string or agent slug (e.g., "be-dev-1")
+
+    Returns:
+        Tuple of (UUID, slug), or None if not found
+    """
+    # First, try to parse as UUID
+    try:
+        agent_uuid = UUID(agent_id_or_slug)
+        # It's a UUID, look up the slug
+        result = await db.execute(
+            select(AgentTable.slug).where(AgentTable.id == agent_uuid)
+        )
+        slug = result.scalar_one_or_none()
+        if slug is None:
+            return None
+        return (agent_uuid, slug)
+    except ValueError:
+        pass
+
+    # Not a UUID, try to look up by slug
+    result = await db.execute(
+        select(AgentTable.id).where(AgentTable.slug == agent_id_or_slug)
+    )
+    agent_uuid = result.scalar_one_or_none()
+
+    if agent_uuid is None:
+        return None
+
+    return (UUID(str(agent_uuid)), agent_id_or_slug)
+
+
+async def get_agent_slug(
+    db: AsyncSession,
+    agent_id: UUID,
+) -> str | None:
+    """
+    Get an agent's slug from their UUID.
+
+    Args:
+        db: Database session
+        agent_id: The agent's UUID
+
+    Returns:
+        The agent's slug (e.g., "be-dev-1"), or None if not found
+    """
+    result = await db.execute(
+        select(AgentTable.slug).where(AgentTable.id == agent_id)
+    )
+    return result.scalar_one_or_none()
+
+
 async def get_agent_by_slug(
     db: AsyncSession,
     slug: str,

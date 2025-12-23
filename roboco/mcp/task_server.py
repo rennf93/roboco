@@ -72,20 +72,8 @@ from roboco.mcp.tasks.handlers import (
 from roboco.mcp.utils import ApiClient
 
 
-def create_task_mcp_server(agent_id: str) -> FastMCP:  # noqa: PLR0915
-    """
-    Create a Task MCP server for a specific agent.
-
-    The agent_id is embedded in the server to enforce ownership rules.
-
-    Args:
-        agent_id: The agent identifier (e.g., "be-dev-1")
-
-    Returns:
-        Configured FastMCP server
-    """
-    mcp = FastMCP(f"roboco-task-{agent_id}", json_response=True)
-    client = ApiClient(agent_id)
+def _register_core_tools(mcp: FastMCP, client: ApiClient, agent_id: str) -> None:
+    """Register core task lifecycle tools."""
 
     @mcp.tool()
     async def roboco_task_scan(team: str | None = None) -> dict[str, Any]:
@@ -216,6 +204,24 @@ def create_task_mcp_server(agent_id: str) -> FastMCP:  # noqa: PLR0915
         )
 
     @mcp.tool()
+    async def roboco_agent_idle() -> dict[str, Any]:
+        """
+        Signal that you have no work and should go idle.
+
+        Call this when roboco_task_scan returns no tasks.
+        Your container will be terminated to save resources.
+        You will be automatically respawned when new work is available.
+
+        Returns:
+            Confirmation of idle state
+        """
+        return await handle_agent_idle(client, agent_id)
+
+
+def _register_blocking_tools(mcp: FastMCP, client: ApiClient, agent_id: str) -> None:
+    """Register blocking/unblocking/pause tools."""
+
+    @mcp.tool()
     async def roboco_task_block(
         task_id: str, reason: str, blocker_type: str, what_needed: str
     ) -> dict[str, Any]:
@@ -287,6 +293,10 @@ def create_task_mcp_server(agent_id: str) -> FastMCP:  # noqa: PLR0915
             remaining_work=remaining_work,
         )
         return await handle_task_pause(client, data, agent_id)
+
+
+def _register_qa_tools(mcp: FastMCP, client: ApiClient, agent_id: str) -> None:
+    """Register QA and verification tools."""
 
     @mcp.tool()
     async def roboco_task_submit_verification(task_id: str) -> dict[str, Any]:
@@ -412,23 +422,9 @@ def create_task_mcp_server(agent_id: str) -> FastMCP:  # noqa: PLR0915
         """
         return await handle_task_complete(client, task_id, agent_id)
 
-    @mcp.tool()
-    async def roboco_agent_idle() -> dict[str, Any]:
-        """
-        Signal that you have no work and should go idle.
 
-        Call this when roboco_task_scan returns no tasks.
-        Your container will be terminated to save resources.
-        You will be automatically respawned when new work is available.
-
-        Returns:
-            Confirmation of idle state
-        """
-        return await handle_agent_idle(client, agent_id)
-
-    # =========================================================================
-    # PM DELEGATION TOOLS
-    # =========================================================================
+def _register_pm_tools(mcp: FastMCP, client: ApiClient, agent_id: str) -> None:
+    """Register PM delegation and management tools."""
 
     @mcp.tool()
     async def roboco_task_create(data: TaskCreateInput) -> dict[str, Any]:
@@ -446,7 +442,8 @@ def create_task_mcp_server(agent_id: str) -> FastMCP:  # noqa: PLR0915
 
         Args:
             data: TaskCreateInput with title, description, acceptance_criteria,
-                  team, and optional parent_task_id, assigned_to, priority
+                  team, and optional parent_task_id, assigned_to, priority, status.
+                  Use status="backlog" for subtasks needing session setup.
 
         Returns:
             Created task with next step guidance
@@ -533,9 +530,34 @@ def create_task_mcp_server(agent_id: str) -> FastMCP:  # noqa: PLR0915
         )
         return await handle_task_escalate(client, input_data, agent_id)
 
-    # =========================================================================
-    # PM SESSION TOOLS
-    # =========================================================================
+    @mcp.tool()
+    async def roboco_task_activate(task_id: str) -> dict[str, Any]:
+        """
+        Activate a task from BACKLOG to PENDING status (PM only).
+
+        This is the FINAL STEP in task setup. After creating and assigning
+        a task, you MUST:
+        1. Create a session: roboco_session_create_for_tasks()
+        2. Activate the task: roboco_task_activate()
+
+        Only after activation will the orchestrator spawn agents to work on it.
+
+        ENFORCEMENT:
+        - Only PMs and management can activate tasks
+        - Task must be in BACKLOG status
+        - Task MUST have at least one linked session
+
+        Args:
+            task_id: The task UUID to activate
+
+        Returns:
+            Activated task with PENDING status
+        """
+        return await handle_task_activate(client, task_id, agent_id)
+
+
+def _register_session_tools(mcp: FastMCP, client: ApiClient, agent_id: str) -> None:
+    """Register session management tools."""
 
     @mcp.tool()
     async def roboco_session_create_for_tasks(
@@ -634,30 +656,28 @@ def create_task_mcp_server(agent_id: str) -> FastMCP:  # noqa: PLR0915
         """
         return await handle_session_get_for_task(client, task_id, agent_id)
 
-    @mcp.tool()
-    async def roboco_task_activate(task_id: str) -> dict[str, Any]:
-        """
-        Activate a task from BACKLOG to PENDING status (PM only).
 
-        This is the FINAL STEP in task setup. After creating and assigning
-        a task, you MUST:
-        1. Create a session: roboco_session_create_for_tasks()
-        2. Activate the task: roboco_task_activate()
+def create_task_mcp_server(agent_id: str) -> FastMCP:
+    """
+    Create a Task MCP server for a specific agent.
 
-        Only after activation will the orchestrator spawn agents to work on it.
+    The agent_id is embedded in the server to enforce ownership rules.
 
-        ENFORCEMENT:
-        - Only PMs and management can activate tasks
-        - Task must be in BACKLOG status
-        - Task MUST have at least one linked session
+    Args:
+        agent_id: The agent identifier (e.g., "be-dev-1")
 
-        Args:
-            task_id: The task UUID to activate
+    Returns:
+        Configured FastMCP server
+    """
+    mcp = FastMCP(f"roboco-task-{agent_id}", json_response=True)
+    client = ApiClient(agent_id)
 
-        Returns:
-            Activated task with PENDING status
-        """
-        return await handle_task_activate(client, task_id, agent_id)
+    # Register all tools via helper functions
+    _register_core_tools(mcp, client, agent_id)
+    _register_blocking_tools(mcp, client, agent_id)
+    _register_qa_tools(mcp, client, agent_id)
+    _register_pm_tools(mcp, client, agent_id)
+    _register_session_tools(mcp, client, agent_id)
 
     return mcp
 

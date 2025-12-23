@@ -210,8 +210,22 @@ medium,TASK-abc123,P1,backend-dev-1
         - Answer questions
         - Clarify requirements
         - Remove small blockers
+        - Unblock blocked tasks when blocker is resolved
         """
         self.log.debug("FACILITATE phase")
+
+        # Check for blocked tasks that may be resolvable
+        blocked_tasks = await self._get_blocked_tasks()
+        for task_id in blocked_tasks:
+            resolved = await self._check_blocker_resolved(task_id)
+            if resolved:
+                success = await self._unblock_task(task_id)
+                if success:
+                    await self.send_message(
+                        self._cell_channel_id or self.id,
+                        f"TASK-{str(task_id)[:8]} unblocked - blocker resolved",
+                        message_type="action",
+                    )
 
         # Check for pending questions in channel
         questions = await self._get_pending_questions()
@@ -453,6 +467,47 @@ Please review and provide guidance.
         except Exception as e:
             self.log.warning("Failed to get active tasks", error=str(e))
             return []
+
+    async def _get_blocked_tasks(self) -> list[UUID]:
+        """Get all blocked tasks in cell."""
+        try:
+            team_param = self.team.value if self.team else None
+            result = await self._api_call(
+                "GET",
+                "/tasks",
+                params={"status": "blocked", "team": team_param},
+            )
+            return [UUID(t["id"]) for t in result.get("items", [])]
+        except Exception as e:
+            self.log.warning("Failed to get blocked tasks", error=str(e))
+            return []
+
+    async def _check_blocker_resolved(self, task_id: UUID) -> bool:
+        """
+        Check if a task's blocker has been resolved.
+
+        This examines the blocker_reason and checks if conditions are met.
+        For subtask blockers, checks if all subtasks are complete.
+        """
+        try:
+            result = await self._api_call("GET", f"/tasks/{task_id}")
+            blocker_reason = result.get("blocker_reason", "")
+
+            # Check if subtasks are complete (common blocker)
+            subtasks = result.get("subtasks", [])
+            if subtasks:
+                all_complete = all(
+                    s.get("status") == "completed" for s in subtasks
+                )
+                if all_complete:
+                    return True
+
+            # If no specific logic, return False (needs manual review)
+            return not blocker_reason  # Resolved if reason was cleared
+
+        except Exception as e:
+            self.log.warning("Failed to check blocker", error=str(e))
+            return False
 
     async def _check_task_progress(self, task_id: UUID) -> dict[str, Any]:
         """

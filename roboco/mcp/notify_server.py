@@ -48,25 +48,38 @@ def _can_send_notification(sender_id: str, recipient_id: str) -> tuple[bool, str
     role = get_agent_role(sender_id)
     permissions = NOTIFICATION_PERMISSIONS.get(role, {"can_send": False})
 
+    can_send = False
+    reason = ""
+
     if not permissions.get("can_send", False):
-        return False, f"Agents with role '{role}' cannot send notifications"
+        reason = f"Agents with role '{role}' cannot send notifications"
+    else:
+        scope = permissions.get("scope", [])
 
-    scope = permissions.get("scope", [])
+        if scope == "all":
+            can_send = True
+            reason = "OK"
+        elif scope == "cell":
+            has_cell, sender_cell = _check_cell_scope(sender_id)
+            recipient_cell = get_agent_cell(recipient_id)
+            recipient_role = get_agent_role(recipient_id)
 
-    if scope == "all":
-        return True, "OK"
+            # Cell PM can notify their own cell members
+            if (has_cell and sender_cell == recipient_cell) or recipient_role in {
+                "main_pm",
+                "cell_pm",
+            }:
+                can_send = True
+                reason = "OK"
+            else:
+                reason = "Cell PM can only notify cell members, Main PM, or other PMs"
+        elif isinstance(scope, list) and recipient_id in scope:
+            can_send = True
+            reason = "OK"
+        else:
+            reason = f"You cannot send notifications to {recipient_id}"
 
-    if scope == "cell":
-        has_cell, sender_cell = _check_cell_scope(sender_id)
-        recipient_cell = get_agent_cell(recipient_id)
-        if has_cell and sender_cell == recipient_cell:
-            return True, "OK"
-        return False, f"Cell PM can only notify own cell members ({sender_cell})"
-
-    if isinstance(scope, list) and recipient_id in scope:
-        return True, "OK"
-
-    return False, f"You cannot send notifications to {recipient_id}"
+    return can_send, reason
 
 
 # Valid notification types and priorities

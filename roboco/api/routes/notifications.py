@@ -108,7 +108,7 @@ async def send_notification(
 
     Enforces permission rules:
     - Only PMs, Board members, and Auditor can send notifications
-    - Cell PMs can only notify members of their own cell
+    - Cell PMs can notify their cell members, Main PM, or other Cell PMs
     - Main PM, Auditor, and CEO can notify anyone
     """
     # Look up the sending agent to get their agent_id string
@@ -121,21 +121,21 @@ async def send_notification(
             detail="Agent not found",
         )
 
-    # Look up recipient agent_ids
-    recipient_ids = []
+    # Look up recipient slugs for permission checking
+    recipient_slugs = []
     for recipient_uuid in data.to_agents:
         recipient_result = await db.execute(
             select(AgentTable).where(AgentTable.id == recipient_uuid)
         )
         recipient = recipient_result.scalar_one_or_none()
         if recipient:
-            recipient_ids.append(str(recipient.id))
+            recipient_slugs.append(recipient.slug)
 
     # Validate notification permissions using enforcement layer
     try:
         validate_notification_permission(
             sender_id=agent.slug,
-            recipients=recipient_ids,
+            recipients=recipient_slugs,
         )
     except NotificationPermissionError as e:
         raise HTTPException(

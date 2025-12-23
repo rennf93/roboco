@@ -14,6 +14,7 @@ from roboco.api.deps import (
     CurrentAgentContext,
     DbSession,
     PermissionServiceDep,
+    get_permission_service,
 )
 from roboco.api.schemas.sessions import (
     SessionTaskLinkResponse,
@@ -23,7 +24,6 @@ from roboco.api.schemas.tasks import (
     CheckpointRequest,
     ClaimRequest,
     CommitRequest,
-    ListTasksQuery,
     ProgressRequest,
     QANotes,
     SoftBlockRequest,
@@ -92,6 +92,7 @@ async def create_task(
         parent_task_id=data.parent_task_id,
         target_date=data.target_date,
         estimated_complexity=data.estimated_complexity,
+        status=data.status,
     )
     task = await service.create(req)
     await db.commit()
@@ -102,8 +103,9 @@ async def create_task(
 async def list_tasks(
     db: DbSession,
     agent: CurrentAgentContext,
-    permissions: PermissionServiceDep,
-    params: Annotated[ListTasksQuery, Query()],
+    team: Team | None = None,
+    status: TaskStatus | None = None,
+    limit: int = Query(100, ge=1, le=500),
 ) -> list[TaskResponse]:
     """
     List tasks with optional filters.
@@ -114,10 +116,11 @@ async def list_tasks(
     - Cell members: Can only see own cell's tasks
     """
     service = get_task_service(db)
+    permissions = get_permission_service()
 
     # Determine effective team filter based on permissions
     can_view_all = permissions.can_perform_task_action(agent, TaskAction.VIEW_ALL)
-    effective_team = params.team
+    effective_team = team
 
     if not can_view_all:
         # Cell members can only see their own team's tasks
@@ -127,14 +130,14 @@ async def list_tasks(
             # No team assigned - return empty list
             return []
 
-    if effective_team and params.status:
-        tasks = await service.list_by_team(effective_team, params.status, params.limit)
+    if effective_team and status:
+        tasks = await service.list_by_team(effective_team, status, limit)
     elif effective_team:
-        tasks = await service.list_by_team(effective_team, limit=params.limit)
-    elif params.status:
-        tasks = await service.list_by_status(params.status)
+        tasks = await service.list_by_team(effective_team, limit=limit)
+    elif status:
+        tasks = await service.list_by_status(status)
     else:
-        tasks = await service.list_all(params.limit, params.offset)
+        tasks = await service.list_all(limit)
 
     return task_list_to_response(tasks)
 
@@ -1114,8 +1117,8 @@ async def activate_task(
 
     REQUIRES: Task must have at least one linked session.
     """
-    # Check PM permission
-    if not permissions.can_perform_task_action(agent, "create_tasks"):
+    # Check PM permission (CREATE permission required for activation)
+    if not permissions.can_perform_task_action(agent, TaskAction.CREATE):
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Only PMs and management can activate tasks",

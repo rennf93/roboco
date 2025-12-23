@@ -234,6 +234,7 @@ class TaskCreate(RobocoBase):
     parent_task_id: UUID | None = None
     target_date: datetime | None = None
     estimated_complexity: Complexity = Complexity.MEDIUM
+    status: TaskStatus | None = None  # PM can set 'backlog' for subtasks needing setup
 
 
 class TaskUpdate(RobocoBase):
@@ -270,3 +271,4 @@ class TaskCreateRequest:
     parent_task_id: UUID | None = None
     target_date: datetime | None = None
     estimated_complexity: Complexity = field(default=Complexity.MEDIUM)
+    status: TaskStatus | None = None  # PM can set BACKLOG for subtasks

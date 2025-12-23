@@ -8,7 +8,9 @@ for database operations. Reduces boilerplate in services.
 from roboco.services.repositories.base import BaseRepository
 from roboco.services.repositories.query_helpers import (
     agent_id_filter,
+    get_agent_slug,
     pagination,
+    resolve_agent_identity,
     resolve_agent_uuid,
     status_filter,
     team_filter,
@@ -18,7 +20,9 @@ from roboco.services.repositories.query_helpers import (
 __all__ = [
     "BaseRepository",
     "agent_id_filter",
+    "get_agent_slug",
     "pagination",
+    "resolve_agent_identity",
     "resolve_agent_uuid",
     "status_filter",
     "team_filter",

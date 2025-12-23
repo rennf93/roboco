@@ -196,10 +196,7 @@ class QAAgent(Agent, PhaseEngine[QATaskPhase, ReviewContext]):
         - Read dev's handoff notes (from task's dev_notes field)
         - Review commits
         - Check conversation history
-
-        NOTE: Journals are PRIVATE. If acceptance criteria mentions journal entries,
-        trust the developer's word. If they reference a journal entry_id, accept
-        that as proof without attempting to read the private content.
+        - Read developer's journal entries for this task (if needed)
         """
         self.log.info("UNDERSTAND phase", task_id=str(ctx.task_id))
 
@@ -208,14 +205,22 @@ class QAAgent(Agent, PhaseEngine[QATaskPhase, ReviewContext]):
         dev_notes = await self._read_dev_notes(ctx.task_id)
         commits = await self._get_task_commits_formatted(ctx.task_id)
 
+        # Read developer journal entries for this task (cell members can read)
+        dev_journal = await self._read_team_journal_for_task(ctx.task_id)
+
         # Use TOON for token-efficient context encoding
         task_context = self._format_review_context(
             ctx.title, requirements, dev_notes, commits
         )
 
+        # Include journal context if available
+        journal_context = ""
+        if dev_journal:
+            journal_context = f"\n\nDeveloper Journal Entries:\n{dev_journal}"
+
         prompt = f"""You are a QA engineer reviewing a completed task.
 
-{task_context}
+{task_context}{journal_context}
 
 Based on this, create test cases to verify the implementation.
 
@@ -225,11 +230,8 @@ Focus on:
 - Integration points
 - Error handling
 
-IMPORTANT: Journals are PRIVATE and personal to each agent. You cannot read
-another agent's journal entries. If acceptance criteria mentions journaling:
-- Trust the developer's word if they say they journaled something
-- Accept journal entry_id references as proof (you don't need to verify content)
-- Only verify the deliverable outputs, not private reflection logs
+If acceptance criteria mentions journaling requirements, verify them against
+the developer journal entries provided above.
 
 Format response as TOON tabular:
 [N,]{{name,description,steps,expected}}:

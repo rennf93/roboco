@@ -36,6 +36,9 @@ COPY --chown=agent:agent pyproject.toml uv.lock README.md /app/
 USER agent
 
 # Install Python dependencies for MCP servers (as agent)
+# Increase timeout for large NVIDIA packages (674MB cudnn, 858MB torch)
+ENV UV_HTTP_TIMEOUT=300
+ENV UV_CONCURRENT_DOWNLOADS=4
 RUN uv python install 3.13 && uv sync --frozen --python 3.13
 
 # Claude Code will use mounted ~/.claude for auth

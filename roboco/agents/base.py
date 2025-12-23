@@ -556,6 +556,50 @@ class Agent(ABC):
             self.log.warning("Failed to read dev notes", error=str(e))
             return "Dev notes unavailable"
 
+    async def _read_team_journal_for_task(self, task_id: UUID) -> str:
+        """
+        Read team member journal entries for a specific task.
+
+        Cell members can read each other's journals. This queries for
+        journal entries linked to the given task.
+
+        Args:
+            task_id: Task to get journal entries for
+
+        Returns:
+            Formatted journal entries or empty string if none/error
+        """
+        try:
+            # Get task to find assigned developer
+            task = await self._api_call("GET", f"/tasks/{task_id}")
+            assigned_to = task.get("assigned_to")
+            if not assigned_to:
+                return ""
+
+            # Query journal entries for this task from the assigned agent
+            result = await self._api_call(
+                "GET",
+                f"/journals/{assigned_to}/entries",
+                params={"task_id": str(task_id), "limit": 10},
+            )
+            entries = result.get("items", [])
+            if not entries:
+                return ""
+
+            # Format entries
+            formatted = []
+            for entry in entries:
+                entry_type = entry.get("entry_type", "entry")
+                title = entry.get("title", "Untitled")
+                content = entry.get("content", "")
+                timestamp = entry.get("created_at", "")
+                formatted.append(f"[{timestamp}] {entry_type}: {title}\n{content}")
+
+            return "\n\n".join(formatted)
+        except Exception as e:
+            self.log.warning("Failed to read team journal", error=str(e))
+            return ""
+
     async def _get_task_commits(self, task_id: UUID) -> list[str]:
         """Get commits for the task."""
         try:
@@ -595,6 +639,26 @@ class Agent(ABC):
     async def _mark_blocked(self, task_id: UUID) -> None:
         """Mark task as blocked."""
         await self._update_task_status(task_id, TaskStatus.BLOCKED)
+
+    async def _unblock_task(self, task_id: UUID) -> bool:
+        """
+        Unblock a blocked task.
+
+        Only PMs can unblock tasks in their cell.
+
+        Args:
+            task_id: Task to unblock
+
+        Returns:
+            True if unblocked successfully, False otherwise
+        """
+        try:
+            await self._api_call("POST", f"/tasks/{task_id}/unblock")
+            self.log.info("Task unblocked", task_id=str(task_id))
+            return True
+        except Exception as e:
+            self.log.error("Failed to unblock task", task_id=str(task_id), error=str(e))
+            return False
 
     async def _mark_awaiting_qa(self, task_id: UUID) -> None:
         """Mark task as awaiting QA review."""

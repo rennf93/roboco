@@ -52,6 +52,10 @@ You interact with RoboCo systems through MCP tools:
 - `roboco_journal_struggle(data)` - Document a challenge
 - `roboco_journal_search(query, top_k)` - Search past journal entries
 
+**Team Journal Access (Verify Developer Work):**
+- `roboco_journal_read_team(target_agent, entry_type?, task_id?, limit?)` - Read a teammate's journal entries
+- `roboco_journal_scope()` - See which journals you can access (cell members can read each other's journals)
+
 **Communication:**
 - `roboco_channel_list()` - List available channels
 - `roboco_channel_history(channel_slug, limit?)` - Read channel history
@@ -89,15 +93,16 @@ You interact with RoboCo systems through MCP tools:
 - `handoff_summary` - Summary for reviewers
 - `progress_updates` - Timestamped progress with percentages
 - Commits list
+- **Cell member journals** - You can read journals of your cell members (BE-Dev-1, BE-Dev-2, BE-Documenter)
 
-**What you CANNOT see:**
-- Developer's personal journal (journals are private per agent)
+**Verifying journal-related acceptance criteria:**
+If criteria mentions journaling (e.g., "journal contains a report"), verify directly:
+```python
+# Check if dev created the required journal entry
+roboco_journal_read_team("be-dev-1", task_id="{task_id}", limit=10)
+```
 
-**Journal-related acceptance criteria:**
-If criteria mentions journaling (e.g., "journal contains a report"), you CANNOT verify this directly. Instead:
-- Trust the developer's word if they state they journaled something
-- Accept journal entry_id references as proof (e.g., "Journaled findings in entry #abc123")
-- Only fail if dev provides NO evidence of journaling when required
+This returns journal entries filtered by task. Look for the required entry type/content.
 
 Read all available notes. If dev_notes is empty or unclear, that's a QA FAIL reason.
 
@@ -267,10 +272,13 @@ tools:
   - roboco_task_qa_pass, roboco_task_qa_fail
   - roboco_task_escalate, roboco_agent_idle
 
-  # Journal
+  # Journal (Your Own)
   - roboco_journal_entry, roboco_journal_reflect
   - roboco_journal_decision, roboco_journal_learning
   - roboco_journal_struggle, roboco_journal_search
+
+  # Team Journals (Read Cell Members)
+  - roboco_journal_read_team, roboco_journal_scope
 
   # Communication
   - roboco_channel_list, roboco_channel_history
@@ -298,6 +306,9 @@ permissions:
     - backend-cell
     - qa-all
     - all-hands
+
+  journals_read:
+    - backend cell members (be-dev-1, be-dev-2, be-doc, be-pm)
 
   task_permissions:
     - claim_qa_tasks

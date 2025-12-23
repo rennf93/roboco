@@ -25,7 +25,8 @@ from roboco.api.schemas.journals import (
     StruggleRequest,
     TaskReflectionRequest,
 )
-from roboco.models.base import AgentRole, JournalEntryType
+from roboco.enforcement import JournalAccessDeniedError, validate_journal_access
+from roboco.models.base import JournalEntryType
 from roboco.models.journal import (
     DecisionLogParams,
     GeneralEntryParams,
@@ -513,17 +514,30 @@ async def get_entry(
             detail=f"Entry not found: {entry_id}",
         )
 
-    # Check privacy (simplified - in production would check journal ownership)
-    if entry.is_private:
-        journal = await service.get_journal(entry.journal_id)
-        # Allow CEO and Auditor to see private entries
-        is_other_agent = journal and journal.agent_id != agent.agent_id
-        is_unprivileged = agent.role not in [AgentRole.CEO, AgentRole.AUDITOR]
-        if is_other_agent and is_unprivileged:
-            raise HTTPException(
-                status_code=status.HTTP_403_FORBIDDEN,
-                detail="This entry is private",
-            )
+    # Get journal to check ownership
+    journal = await service.get_journal(entry.journal_id)
+    if not journal:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Journal not found for entry: {entry_id}",
+        )
+
+    # Get owner's slug for permission checking
+    owner_slug = await service.get_agent_slug(journal.agent_id)
+    if not owner_slug:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Journal owner not found",
+        )
+
+    # Check permission (cell members can see all entries including private)
+    try:
+        validate_journal_access(agent.slug or "", owner_slug)
+    except JournalAccessDeniedError as e:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=e.message,
+        ) from e
 
     return JournalEntryResponse(
         id=entry.id,
@@ -579,13 +593,13 @@ async def delete_entry(
 @router.get("/{agent_id}", response_model=JournalResponse)
 async def get_journal_by_agent(
     agent_id: str,
-    _agent: CurrentAgentContext,
+    agent: CurrentAgentContext,
     db: DbSession,
 ) -> JournalResponse:
     """
     Get a journal by agent ID (UUID) or slug (e.g., "be-dev-1").
 
-    Note: Access may be restricted based on privacy settings.
+    Access is restricted based on cell membership and role hierarchy.
     """
     service = get_journal_service(db)
 
@@ -596,6 +610,23 @@ async def get_journal_by_agent(
             status_code=status.HTTP_404_NOT_FOUND,
             detail=f"Agent not found: {agent_id}",
         )
+
+    # Get target agent's slug for permission checking
+    target_slug = await service.get_agent_slug(resolved_id)
+    if not target_slug:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Agent not found: {agent_id}",
+        )
+
+    # Check permission
+    try:
+        validate_journal_access(agent.slug or "", target_slug)
+    except JournalAccessDeniedError as e:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=e.message,
+        ) from e
 
     journal = await service.get_journal_by_agent(resolved_id)
     if not journal:
@@ -620,14 +651,15 @@ async def get_journal_by_agent(
 @router.get("/{agent_id}/entries", response_model=list[JournalEntryResponse])
 async def list_agent_entries(
     agent_id: str,
-    _agent: CurrentAgentContext,
+    agent: CurrentAgentContext,
     db: DbSession,
     params: Annotated[ListEntriesParams, Depends()],
 ) -> list[JournalEntryResponse]:
     """
     List journal entries for a specific agent by UUID or slug.
 
-    CEO/Auditor can use this to monitor agent journals.
+    Access is restricted based on cell membership and role hierarchy.
+    Cell members can see all entries (including private) from each other.
     """
     service = get_journal_service(db)
 
@@ -638,6 +670,23 @@ async def list_agent_entries(
             status_code=status.HTTP_404_NOT_FOUND,
             detail=f"Agent not found: {agent_id}",
         )
+
+    # Get target agent's slug for permission checking
+    target_slug = await service.get_agent_slug(resolved_id)
+    if not target_slug:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Agent not found: {agent_id}",
+        )
+
+    # Check permission
+    try:
+        validate_journal_access(agent.slug or "", target_slug)
+    except JournalAccessDeniedError as e:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=e.message,
+        ) from e
 
     journal = await service.get_journal_by_agent(resolved_id)
     if not journal:
@@ -653,6 +702,7 @@ async def list_agent_entries(
                 detail=f"Invalid entry type: {e}",
             ) from e
 
+    # Cell members with access can see all entries including private
     entries = await service.list_entries(
         journal_id=journal.id,
         filters=ListEntriesFilter(
@@ -660,7 +710,7 @@ async def list_agent_entries(
             task_id=params.task_id,
             limit=params.limit,
             offset=params.offset,
-            include_private=False,  # Can't see other agents' private entries
+            include_private=True,  # Full access for authorized readers
         ),
     )
 

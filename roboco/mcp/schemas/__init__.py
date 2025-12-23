@@ -21,6 +21,7 @@ class JournalEntryInput(BaseModel):
         description="Type: general, task_reflection, decision_log, learning, struggle",
     )
     task_id: str | None = Field(default=None, description="Optional related task")
+    session_id: str | None = Field(default=None, description="Optional related session")
     tags: list[str] = Field(default_factory=list, description="Optional list of tags")
     is_private: bool = Field(
         default=False, description="If true, only you and CEO/Auditor can see"
@@ -31,6 +32,7 @@ class TaskReflectionInput(BaseModel):
     """Input for creating a task reflection entry."""
 
     task_id: str = Field(..., description="The task UUID you're reflecting on")
+    session_id: str | None = Field(default=None, description="Optional session context")
     title: str = Field(..., description="Reflection title")
     what_done: str = Field(..., description="What was accomplished")
     what_learned: str = Field(..., description="Key learnings from this task")
@@ -176,6 +178,10 @@ class TaskCreateInput(BaseModel):
     priority: int = Field(default=2, ge=0, le=3, description="Priority 0-3 (0=lowest)")
     complexity: str = Field(
         default="medium", description="Complexity: low, medium, high, critical"
+    )
+    status: str = Field(
+        default="backlog",
+        description="Status: 'backlog' (default) or 'pending' (ready for work)",
     )
 
 

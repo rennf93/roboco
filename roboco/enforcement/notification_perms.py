@@ -44,29 +44,39 @@ def _can_send_to_recipient(sender_id: str, recipient_id: str) -> tuple[bool, str
     role = get_agent_role(sender_id)
     permissions = NOTIFICATION_PERMISSIONS.get(role, {"can_send": False})
 
+    can_send = False
+    reason = ""
+
     if not permissions.get("can_send", False):
-        return False, f"Agents with role '{role}' cannot send notifications"
+        reason = f"Agents with role '{role}' cannot send notifications"
+    else:
+        scope = permissions.get("scope", [])
 
-    scope = permissions.get("scope", [])
+        if scope == "all":
+            can_send = True
+            reason = "OK"
+        elif scope == "cell":
+            sender_cell = get_agent_cell(sender_id)
+            recipient_cell = get_agent_cell(recipient_id)
+            recipient_role = get_agent_role(recipient_id)
 
-    if scope == "all":
-        return True, "OK"
+            if (sender_cell and sender_cell == recipient_cell) or recipient_role in {
+                "main_pm",
+                "cell_pm",
+            }:
+                can_send = True
+                reason = "OK"
+            else:
+                reason = (
+                    "Cell PM can only notify cell members, Main PM, or other Cell PMs"
+                )
+        elif isinstance(scope, list) and recipient_id in scope:
+            can_send = True
+            reason = "OK"
+        else:
+            reason = f"Cannot send notifications to {recipient_id}"
 
-    if scope == "cell":
-        sender_cell = get_agent_cell(sender_id)
-        recipient_cell = get_agent_cell(recipient_id)
-
-        if sender_cell and sender_cell == recipient_cell:
-            return True, "OK"
-        return (
-            False,
-            f"Cell PM can only notify members of their own cell ({sender_cell})",
-        )
-
-    if isinstance(scope, list) and recipient_id in scope:
-        return True, "OK"
-
-    return False, f"Cannot send notifications to {recipient_id}"
+    return can_send, reason
 
 
 def validate_notification_permission(

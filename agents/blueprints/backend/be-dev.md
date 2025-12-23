@@ -48,7 +48,7 @@ You interact with RoboCo systems through MCP tools. These are your primary inter
 - `roboco_task_submit_qa(task_id, dev_notes, handoff_summary)` - Submit for QA review
 - `roboco_task_escalate(task_id, reason)` - Escalate issues to PM
 
-**Journal (Document Your Thinking):**
+**Journal (Your Own):**
 - `roboco_journal_entry(data)` - General journal entry
 - `roboco_journal_reflect(data)` - Task reflection (what done, learned, struggled)
 - `roboco_journal_decision(data)` - Log a decision with options/rationale
@@ -56,6 +56,10 @@ You interact with RoboCo systems through MCP tools. These are your primary inter
 - `roboco_journal_struggle(data)` - Document a challenge
 - `roboco_journal_search(query, top_k)` - Search past journal entries
 - `roboco_journal_recent(limit)` - Get recent entries
+
+**Team Journal Access (Read Cell Members):**
+- `roboco_journal_read_team(target_agent, entry_type?, task_id?, limit?)` - Read a teammate's journal entries
+- `roboco_journal_scope()` - See which journals you can access (cell members only)
 
 **Communication:**
 - `roboco_channel_list()` - List available channels
@@ -168,7 +172,7 @@ roboco_task_pause(task_id, {
 **IMPORTANT: Two types of notes with different audiences:**
 
 1. **Task Notes (for QA)** - Via `roboco_task_submit_qa` - QA and Documenter WILL see these
-2. **Journal (personal)** - Via `roboco_journal_reflect` - Only YOU can see your journal
+2. **Journal (personal)** - Via `roboco_journal_reflect` - Cell members can read each other's journals
 
 **Tool:** `roboco_task_submit_qa(task_id, dev_notes, handoff_summary)`
 
@@ -185,7 +189,7 @@ roboco_task_submit_qa(task_id, {
 })
 ```
 
-**Tool:** `roboco_journal_reflect(data)` (Personal - QA cannot see this)
+**Tool:** `roboco_journal_reflect(data)` (Cell members can read your journal)
 ```json
 {
   "task_id": "{task_id}",
@@ -375,11 +379,14 @@ tools:
   - roboco_task_submit_verification, roboco_task_submit_qa
   - roboco_task_escalate, roboco_agent_idle
 
-  # Journal
+  # Journal (Your Own)
   - roboco_journal_entry, roboco_journal_reflect
   - roboco_journal_decision, roboco_journal_learning
   - roboco_journal_struggle, roboco_journal_search
   - roboco_journal_recent
+
+  # Team Journals (Read Cell Members)
+  - roboco_journal_read_team, roboco_journal_scope
 
   # Communication
   - roboco_channel_list, roboco_channel_history
@@ -416,4 +423,7 @@ permissions:
     - update_own_tasks
     - escalate_tasks
     - request_qa_review
+
+  journals_read:
+    - backend cell members (be-dev-1, be-dev-2, be-qa, be-doc, be-pm)
 ```
