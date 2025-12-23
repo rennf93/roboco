@@ -217,6 +217,7 @@ Tell the team what you did:
 ```json
 {
   "channel_slug": "frontend-cell",
+  "task_id": "{task_id}",
   "content": "Triaged TASK-XXX. Created 3 subtasks, assigned to FE-Dev-1.",
   "message_type": "action"
 }
@@ -325,6 +326,7 @@ roboco_task_scan(team="frontend")
 roboco_task_claim("TASK-055")
 roboco_message_send({
   "channel_slug": "frontend-cell",
+  "task_id": "TASK-055",
   "content": "Triaging TASK-055: User preferences modal",
   "message_type": "action"
 })
@@ -363,6 +365,7 @@ roboco_task_assign("TASK-055", "fe-dev-1")
 # 8. COMMUNICATE
 roboco_message_send({
   "channel_slug": "frontend-cell",
+  "task_id": "TASK-055",
   "content": "TASK-055 assigned to FE-Dev-1. Design ready, API available.",
   "message_type": "action"
 })

@@ -163,55 +163,6 @@ async def _get_default_group(
     return str(groups[0]["id"])
 
 
-async def _get_active_session(
-    client: ApiClient,
-    channel_id: str,
-    agent_id: str | None = None,
-    channel_slug: str | None = None,
-) -> str | dict[str, Any]:
-    """Get active session for channel. Returns session_id or error dict.
-
-    NOTE: This function does NOT create sessions. Sessions must be created
-    by PMs using roboco_session_create_for_tasks. If no active session exists,
-    returns an error guiding the agent to use task_id or ask their PM.
-    """
-    # First get the default group for this channel
-    group_result = await _get_default_group(
-        client, channel_id, agent_id=agent_id, channel_slug=channel_slug
-    )
-    if isinstance(group_result, dict):
-        return group_result  # Error response (NO_GROUPS with guidance)
-    group_id = group_result
-
-    # Check if group has an active session
-    resp = await client.get("/sessions", params={"group_id": group_id, "limit": 10})
-
-    if resp.ok:
-        data = resp.json()
-        items = data.get("items", [])
-        # Find an active session
-        for session in items:
-            if session.get("status") == "active":
-                return str(session["id"])
-
-    # NO auto-creation! Return helpful error instead
-    return format_error_response(
-        "NO_ACTIVE_SESSION",
-        "No active session in this channel. Sessions are created by PMs for tasks.",
-        {
-            "guidance": (
-                "To send messages, you should:\n"
-                "1. Include task_id in your message call if working on a task "
-                "(routes to task's session)\n"
-                "2. If no task session exists, ask your PM to create one using "
-                "roboco_session_create_for_tasks\n"
-                "3. All work communication should happen within task sessions"
-            ),
-            "channel_id": channel_id,
-        },
-    )
-
-
 # =============================================================================
 # TOOL IMPLEMENTATIONS
 # =============================================================================
@@ -394,29 +345,23 @@ async def _handle_message_send(
     ):
         return validation_error
 
-    session_id: str | None = None
-    routed_to_task_session = False
-
-    # If task_id provided, try to route to task's primary session
-    if data.task_id:
-        session_id = await _get_task_primary_session(client, data.task_id)
-        if session_id:
-            routed_to_task_session = True
-
-    # Fall back to channel's active session (NO auto-creation)
+    # task_id is required - use task's linked session
+    session_id = await _get_task_primary_session(client, data.task_id)
     if not session_id:
-        # Get channel by slug
-        channel_result = await _get_channel_by_slug(client, data.channel_slug)
-        if isinstance(channel_result, dict):
-            return channel_result  # Error response
-        channel_id = channel_result
-
-        session_result = await _get_active_session(
-            client, channel_id, agent_id=agent_id, channel_slug=data.channel_slug
+        # Task has no linked session - PM setup issue
+        return format_error_response(
+            "NO_TASK_SESSION",
+            f"Task {data.task_id} has no linked session.",
+            {
+                "guidance": (
+                    "This task doesn't have a work session yet.\n"
+                    "Cell PM must create one using "
+                    "roboco_session_create_for_tasks.\n"
+                    "Escalate to your PM if you need a session for this task."
+                ),
+                "task_id": data.task_id,
+            },
         )
-        if isinstance(session_result, dict):
-            return session_result  # Returns NO_GROUPS/NO_ACTIVE_SESSION with guidance
-        session_id = session_result
 
     # Resolve mentions (slugs) to UUIDs using shared cache
     resolved_mentions: list[str] = []
@@ -444,16 +389,12 @@ async def _handle_message_send(
             "SEND_FAILED", "Failed to send message", {"api_error": resp.text}
         )
 
-    guidance = "Message sent successfully."
-    if routed_to_task_session:
-        guidance = f"Message sent to task {data.task_id}'s session."
-
     return {
         "status": "sent",
         "message": resp.json(),
         "channel": data.channel_slug,
-        "routed_to_task_session": routed_to_task_session,
-        "guidance": guidance,
+        "task_id": data.task_id,
+        "guidance": f"Message sent to task {data.task_id}'s session.",
     }
 
 
@@ -590,8 +531,8 @@ def create_message_mcp_server(agent_id: str) -> FastMCP:
     async def roboco_ask_question(
         channel_slug: str,
         question: str,
+        task_id: str,
         context: str | None = None,
-        task_id: str | None = None,
     ) -> dict[str, Any]:
         """
         Ask a question in a channel.
@@ -601,8 +542,8 @@ def create_message_mcp_server(agent_id: str) -> FastMCP:
         data = AskQuestionInput(
             channel_slug=channel_slug,
             question=question,
-            context=context,
             task_id=task_id,
+            context=context,
         )
         return await _handle_ask_question(client, agent_id, data)
 
@@ -611,7 +552,7 @@ def create_message_mcp_server(agent_id: str) -> FastMCP:
         channel_slug: str,
         blocker_description: str,
         what_needed: str,
-        task_id: str | None = None,
+        task_id: str,
     ) -> dict[str, Any]:
         """
         Report a blocker in a channel.

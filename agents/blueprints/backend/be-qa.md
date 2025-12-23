@@ -161,6 +161,7 @@ roboco_task_qa_pass(task_id, {
 ```json
 {
   "channel_slug": "backend-cell",
+  "task_id": "{task_id}",
   "content": "QA PASS for TASK-XXX. Proceeding to documenter, then PM review.",
   "message_type": "action"
 }
@@ -200,6 +201,7 @@ roboco_task_qa_fail(task_id, {
 ```json
 {
   "channel_slug": "backend-cell",
+  "task_id": "{task_id}",
   "content": "QA FAIL for TASK-XXX. Issues: [list]. Returning to dev.",
   "message_type": "blocker"
 }

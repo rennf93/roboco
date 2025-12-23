@@ -39,15 +39,15 @@ services:
       retries: 5
 
   # ==========================================================================
-  # Agent Image Builder (pre-builds the agent image at compose time)
+  # Agent Base Image Builder (specialized images built on-demand by orchestrator)
   # ==========================================================================
-  agent-image:
+  agent-base-image:
     build:
       context: .
-      dockerfile: docker/agent.Dockerfile
-    image: roboco-agent
-    container_name: roboco-agent-builder
-    entrypoint: ["/bin/sh", "-c", "echo 'Agent image built successfully'"]
+      dockerfile: docker/agent-base.Dockerfile
+    image: roboco-agent-base
+    container_name: roboco-agent-base-builder
+    entrypoint: ["/bin/sh", "-c", "echo 'Agent base image built successfully'"]
     restart: "no"
 
   # ==========================================================================
@@ -92,7 +92,7 @@ services:
         condition: service_healthy
       redis:
         condition: service_healthy
-      agent-image:
+      agent-base-image:
         condition: service_completed_successfully
     # Default agents to spawn (override in .env or command line)
     # command: ["--spawn", "main-pm", "be-dev-1", "be-qa"]
