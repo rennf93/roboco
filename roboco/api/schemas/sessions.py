@@ -21,6 +21,15 @@ class ListSessionsParams(BaseModel):
     limit: int = Field(20, ge=1, le=100)
 
 
+class SessionTaskInfo(BaseModel):
+    """Brief task info for session display."""
+
+    task_id: UUID
+    task_title: str | None = None
+    is_primary: bool
+    relationship_type: str
+
+
 class SessionResponse(BaseModel):
     """Session response."""
 
@@ -33,6 +42,8 @@ class SessionResponse(BaseModel):
     started_at: datetime
     last_activity_at: datetime
     closed_at: datetime | None
+    # Task links for display
+    task_links: list[SessionTaskInfo] = Field(default_factory=list)
 
 
 class SessionListResponse(BaseModel):

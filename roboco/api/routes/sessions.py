@@ -20,6 +20,7 @@ from roboco.api.schemas.sessions import (
     SessionForTasksCreateRequest,
     SessionListResponse,
     SessionResponse,
+    SessionTaskInfo,
     SessionTaskLinkRequest,
     SessionTaskLinkResponse,
     SessionTaskLinksResponse,
@@ -87,8 +88,12 @@ async def list_sessions(
             detail="You don't have access to this group",
         )
 
-    # Query sessions
-    query = select(SessionTable).where(SessionTable.group_id == params.group_id)
+    # Query sessions with task links loaded
+    query = (
+        select(SessionTable)
+        .where(SessionTable.group_id == params.group_id)
+        .options(selectinload(SessionTable.task_links).selectinload(SessionTaskTable.task))
+    )
 
     if params.status_filter:
         query = query.where(SessionTable.status == params.status_filter)
@@ -98,20 +103,33 @@ async def list_sessions(
     result = await db.execute(query)
     sessions = result.scalars().all()
 
-    items = [
-        SessionResponse(
-            id=require_uuid(s.id),
-            group_id=require_uuid(s.group_id),
-            status=s.status,
-            scope=s.scope,
-            message_count=s.message_count,
-            total_content_length=s.total_content_length,
-            started_at=s.started_at,
-            last_activity_at=s.last_activity_at,
-            closed_at=s.closed_at,
+    items = []
+    for s in sessions:
+        # Build task info list from task_links
+        task_info_list = [
+            SessionTaskInfo(
+                task_id=require_uuid(link.task_id),
+                task_title=link.task.title if link.task else None,
+                is_primary=link.is_primary,
+                relationship_type=link.relationship_type,
+            )
+            for link in s.task_links
+        ]
+
+        items.append(
+            SessionResponse(
+                id=require_uuid(s.id),
+                group_id=require_uuid(s.group_id),
+                status=s.status,
+                scope=s.scope,
+                message_count=s.message_count,
+                total_content_length=s.total_content_length,
+                started_at=s.started_at,
+                last_activity_at=s.last_activity_at,
+                closed_at=s.closed_at,
+                task_links=task_info_list,
+            )
         )
-        for s in sessions
-    ]
 
     return SessionListResponse(
         items=items,
