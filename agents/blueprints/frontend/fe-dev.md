@@ -361,7 +361,8 @@ tools:
 
   # Communication
   - roboco_channel_list, roboco_channel_history
-  - roboco_message_send, roboco_ask_question
+  - roboco_message_send, roboco_message_get, roboco_ask_question
+  - roboco_session_history_for_task  # Get discussion history for your task
   - roboco_report_blocker
 
   # Claude Code Built-in
@@ -397,4 +398,8 @@ permissions:
 
   journals_read:
     - frontend cell members (fe-dev-1, fe-dev-2, fe-qa, fe-doc, fe-pm)
+
+  # Enforced Constraints (code enforces these rules)
+  task_visibility: team_only  # You only see tasks assigned to your team
+  self_review: blocked  # You cannot QA or document your own work
 ```

@@ -734,16 +734,65 @@ class Agent(ABC):
         await self._update_task_status(task_id, TaskStatus.AWAITING_QA)
 
     async def _mark_needs_revision(self, task_id: UUID) -> None:
-        """Mark task as needing revision (QA failed)."""
+        """Mark task as needing revision (QA failed).
+
+        DEPRECATED: Use _qa_fail() instead which calls the proper endpoint.
+        """
         await self._update_task_status(task_id, TaskStatus.NEEDS_REVISION)
 
     async def _mark_awaiting_documentation(self, task_id: UUID) -> None:
-        """Mark task as awaiting documentation."""
+        """Mark task as awaiting documentation.
+
+        DEPRECATED: Use _qa_pass() instead which calls the proper endpoint.
+        """
         await self._update_task_status(task_id, TaskStatus.AWAITING_DOCUMENTATION)
 
+    async def _qa_pass(self, task_id: UUID, qa_notes: str) -> None:
+        """Pass QA review - calls proper /pass-qa endpoint.
+
+        This handles full workflow: saves notes, updates status, creates audit.
+        """
+        await self._api_call(
+            "POST",
+            f"/tasks/{task_id}/pass-qa",
+            json={"notes": qa_notes},
+        )
+        self.log.info("QA passed", task_id=str(task_id))
+
+    async def _qa_fail(
+        self, task_id: UUID, qa_notes: str, issues: list[str]
+    ) -> None:
+        """Fail QA review - calls proper /fail-qa endpoint.
+
+        This handles full workflow: saves notes, updates status, reassigns to dev.
+        """
+        full_notes = f"{qa_notes}\n\nIssues:\n" + "\n".join(f"- {i}" for i in issues)
+        await self._api_call(
+            "POST",
+            f"/tasks/{task_id}/fail-qa",
+            json={"notes": full_notes},
+        )
+        self.log.info("QA failed", task_id=str(task_id), issues_count=len(issues))
+
     async def _mark_awaiting_pm_review(self, task_id: UUID) -> None:
-        """Mark task as awaiting PM review."""
+        """Mark task as awaiting PM review.
+
+        DEPRECATED: Use _docs_complete() instead which calls the proper endpoint.
+        """
         await self._update_task_status(task_id, TaskStatus.AWAITING_PM_REVIEW)
+
+    async def _docs_complete(self, task_id: UUID, doc_notes: str | None = None) -> None:
+        """Mark documentation as complete - calls proper /docs-complete endpoint.
+
+        This handles full workflow: saves notes, updates status.
+        """
+        payload = {"notes": doc_notes} if doc_notes else {}
+        await self._api_call(
+            "POST",
+            f"/tasks/{task_id}/docs-complete",
+            json=payload,
+        )
+        self.log.info("Documentation complete", task_id=str(task_id))
 
     async def _mark_completed(self, task_id: UUID) -> None:
         """Mark task as completed."""

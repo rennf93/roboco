@@ -131,7 +131,6 @@ async def handle_task_pause(
     await client.post(
         f"/tasks/{data.task_id}/checkpoint",
         json={
-            "agent_id": agent_id,
             "state_summary": data.checkpoint_summary,
             "remaining_work": data.remaining_work,
             "notes": data.reason,

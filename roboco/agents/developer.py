@@ -312,12 +312,28 @@ Add unit tests,tests/test_main.py,small
                 {"description": response, "files": [], "complexity": "medium"}
             ]
 
+        # Analyze risks based on subtask complexity
+        risks = []
+        complex_subtasks = [
+            s for s in ctx.subtasks if s.get("complexity") == "high"
+        ]
+        if complex_subtasks:
+            risks.append(
+                f"{len(complex_subtasks)} high-complexity subtasks may need extra time"
+            )
+        max_subtasks_per_phase = 5
+        if len(ctx.subtasks) > max_subtasks_per_phase:
+            risks.append("Large number of subtasks - may need to split into phases")
+
+        # Estimate sessions based on subtask count and complexity
+        estimated_sessions = max(1, len(ctx.subtasks) // 3 + len(complex_subtasks))
+
         # Save plan to task via API (REQUIRED before start can be called)
         plan_data = {
             "approach": f"Implement {ctx.title}",
             "steps": [s.get("description", str(s)) for s in ctx.subtasks],
-            "risks": [],
-            "estimated_sessions": 1,
+            "risks": risks,
+            "estimated_sessions": estimated_sessions,
         }
         await self._api_call("PATCH", f"/tasks/{ctx.task_id}", json={"plan": plan_data})
 

@@ -230,7 +230,8 @@ tools:
   # Team Journals (Read Cell Members)
   - roboco_journal_read_team, roboco_journal_scope
   - roboco_channel_list, roboco_channel_history
-  - roboco_message_send, roboco_ask_question
+  - roboco_message_send, roboco_message_get, roboco_ask_question
+  - roboco_session_history_for_task  # Get discussion history for your task
 ```
 
 ## Permissions
