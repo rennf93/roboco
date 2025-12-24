@@ -1,9 +1,13 @@
 services:
   # ==========================================================================
   # PostgreSQL - Primary Database with pgvector for RAG
+  # Uses Docker Hardened Image (DHI) base with pgvector extension
   # ==========================================================================
   postgres:
-    image: pgvector/pgvector:pg16
+    build:
+      context: .
+      dockerfile: docker/postgres-pgvector.Dockerfile
+    image: roboco-postgres-pgvector
     container_name: roboco-postgres
     restart: unless-stopped
     environment:
@@ -22,9 +26,10 @@ services:
 
   # ==========================================================================
   # Redis - Cache, Sessions, Event Bus
+  # Uses Docker Hardened Image (DHI) for enhanced security
   # ==========================================================================
   redis:
-    image: redis:8-alpine
+    image: dhi.io/redis:8-alpine
     container_name: roboco-redis
     restart: unless-stopped
     command: redis-server --appendonly yes

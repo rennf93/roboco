@@ -1,20 +1,26 @@
-FROM debian:bookworm-slim
+# =============================================================================
+# Orchestrator - Docker Hardened Image (DHI)
+# =============================================================================
+# API Server + Agent Spawner using DHI Python 3.13
+# =============================================================================
+
+FROM dhi.io/python:3.13-debian13-dev
 
 # Install dependencies + Docker CLI
 RUN apt-get update && apt-get install -y --no-install-recommends \
     curl \
     ca-certificates \
     git \
-    python3 \
-    python3-pip \
-    python3-venv \
     gnupg \
     lsb-release \
     && rm -rf /var/lib/apt/lists/*
 
 # Install Docker CLI (for spawning agent containers)
+# Note: Using 'trixie' for Debian 13, fallback to bookworm if not available
 RUN curl -fsSL https://download.docker.com/linux/debian/gpg | gpg --dearmor -o /usr/share/keyrings/docker-archive-keyring.gpg \
-    && echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/docker-archive-keyring.gpg] https://download.docker.com/linux/debian $(lsb_release -cs) stable" > /etc/apt/sources.list.d/docker.list \
+    && DEBIAN_CODENAME=$(lsb_release -cs) \
+    && if [ "$DEBIAN_CODENAME" = "trixie" ]; then DEBIAN_CODENAME="bookworm"; fi \
+    && echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/docker-archive-keyring.gpg] https://download.docker.com/linux/debian ${DEBIAN_CODENAME} stable" > /etc/apt/sources.list.d/docker.list \
     && apt-get update \
     && apt-get install -y docker-ce-cli \
     && rm -rf /var/lib/apt/lists/*

@@ -1,17 +1,18 @@
-FROM debian:bookworm-slim
+# =============================================================================
+# Agent Base Image - Docker Hardened Image (DHI)
+# =============================================================================
+# Uses DHI Python 3.13 with dev tools for Claude Code agent containers
+# =============================================================================
 
-# Install dependencies
+FROM dhi.io/python:3.13-debian13-dev
+
+# Install Node.js 22 (required for Claude Code CLI)
 RUN apt-get update && apt-get install -y --no-install-recommends \
     curl \
     ca-certificates \
     git \
-    python3 \
-    python3-pip \
-    python3-venv \
-    && rm -rf /var/lib/apt/lists/*
-
-# Install Node.js 22
-RUN curl -fsSL https://deb.nodesource.com/setup_22.x | bash - \
+    gnupg \
+    && curl -fsSL https://deb.nodesource.com/setup_22.x | bash - \
     && apt-get install -y nodejs \
     && rm -rf /var/lib/apt/lists/*
 
