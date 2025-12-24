@@ -287,51 +287,64 @@ def _build_escalation_notification(
 
 
 async def handle_task_escalate(
-    client: ApiClient, input_data: TaskEscalateInput, agent_id: str
+    client: ApiClient, input_data: TaskEscalateInput, _agent_id: str
 ) -> dict[str, Any]:
-    """Handle task escalation up the hierarchy."""
-    target, error = _get_escalation_target(agent_id, input_data.escalate_to)
-    if error:
-        return error
-    assert target is not None
+    """Handle task escalation up the hierarchy.
 
-    target_uuid = await resolve_agent_uuid_cached(target, client)
-    if not target_uuid:
-        return format_error_response(
-            "INVALID_TARGET",
-            f"Could not resolve escalation target: {target}",
+    Uses the dedicated /tasks/{task_id}/escalate endpoint which bypasses
+    normal notification permission checks. All agents can escalate.
+
+    Note: _agent_id is unused since the API endpoint uses its own auth context.
+    Keeping for consistent function signature with other handlers.
+    """
+    try:
+        # Use the dedicated escalate endpoint (bypasses notification permissions)
+        escalate_data = {
+            "reason": input_data.reason,
+        }
+        if input_data.escalate_to:
+            escalate_data["escalate_to"] = input_data.escalate_to
+
+        resp = await client.post(
+            f"/tasks/{input_data.task_id}/escalate", json=escalate_data
         )
 
-    try:
-        task_resp = await client.get(f"/tasks/{input_data.task_id}")
-        if task_resp.is_status(status.HTTP_404_NOT_FOUND):
+        if resp.is_status(status.HTTP_404_NOT_FOUND):
             return format_error_response(
                 "NOT_FOUND", f"Task {input_data.task_id} not found"
             )
-        task = task_resp.json()
 
-        notification = _build_escalation_notification(
-            task, input_data.task_id, agent_id, input_data.reason, target_uuid
-        )
-        notif_resp = await client.post("/notifications", json=notification)
-
-        if not notif_resp.ok and not notif_resp.is_status(status.HTTP_201_CREATED):
+        if not resp.ok:
+            error_detail = resp.text
+            try:
+                error_json = resp.json()
+                error_detail = error_json.get("detail", resp.text)
+            except Exception:
+                pass
             return format_error_response(
                 "ESCALATION_FAILED",
-                "Failed to send escalation notification",
-                {"status_code": notif_resp.status_code, "detail": notif_resp.text},
+                f"Failed to escalate task: {error_detail}",
+                {"status_code": resp.status_code},
             )
+
+        result = resp.json()
+
+        # Get task for response formatting
+        task_resp = await client.get(f"/tasks/{input_data.task_id}")
+        task = task_resp.json() if task_resp.ok else {}
+
+        guidance = result.get(
+            "message",
+            f"Task escalated to {result.get('escalated_to', 'PM')}. "
+            "They will be notified and can reassign or provide guidance.",
+        )
+        return format_task_response(task, "ESCALATED", guidance)
+
     except Exception as e:
         return format_error_response(
             "CONNECTION_ERROR",
             f"Failed to connect to API: {type(e).__name__}",
         )
-
-    guidance = (
-        f"Task escalated to {target}. Reason: {input_data.reason}. "
-        "They will be notified and can reassign or provide guidance."
-    )
-    return format_task_response(task, "ESCALATED", guidance)
 
 
 async def handle_task_activate(

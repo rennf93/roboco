@@ -313,6 +313,30 @@ class SoftBlockRequest(BaseModel):
     what_needed: str = Field(..., description="What is needed to unblock the task")
 
 
+class EscalateRequest(BaseModel):
+    """Request to escalate a task to PM/management.
+
+    Escalation is available to ALL agents (devs, QA, documenters) when blocked.
+    This bypasses normal notification permissions because escalation is a critical
+    workflow tool for getting help when stuck.
+    """
+
+    reason: str = Field(..., description="Why the task is being escalated")
+    escalate_to: str | None = Field(
+        None, description="Target agent ID (defaults to cell PM)"
+    )
+
+
+class EscalateResponse(BaseModel):
+    """Response from an escalation request."""
+
+    status: str
+    task_id: UUID
+    escalated_to: str
+    reason: str
+    message: str
+
+
 class TaskCountResponse(BaseModel):
     """Task count by category."""
 

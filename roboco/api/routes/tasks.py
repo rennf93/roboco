@@ -10,6 +10,7 @@ from uuid import UUID
 from fastapi import APIRouter, Body, HTTPException, Query, status
 from sqlalchemy import select
 
+from roboco.agents_config import get_escalation_target
 from roboco.api.deps import (
     CurrentAgentContext,
     DbSession,
@@ -24,6 +25,8 @@ from roboco.api.schemas.tasks import (
     CheckpointRequest,
     ClaimRequest,
     CommitRequest,
+    EscalateRequest,
+    EscalateResponse,
     ProgressRequest,
     QANotes,
     SoftBlockRequest,
@@ -36,7 +39,7 @@ from roboco.api.schemas.tasks import (
     task_to_response,
     transform_update_data,
 )
-from roboco.db.tables import AgentTable
+from roboco.db.tables import AgentTable, NotificationTable
 from roboco.models.base import TaskStatus, Team
 from roboco.models.task import TaskCreate
 from roboco.services.audit import get_audit_service
@@ -1011,6 +1014,103 @@ async def cancel_task(
         )
     await db.commit()
     return task_to_response(task)
+
+
+# =============================================================================
+# ESCALATION (ALL AGENTS CAN ESCALATE)
+# =============================================================================
+
+
+@router.post("/{task_id}/escalate", response_model=EscalateResponse)
+async def escalate_task(
+    task_id: UUID,
+    data: EscalateRequest,
+    db: DbSession,
+    agent: CurrentAgentContext,
+) -> EscalateResponse:
+    """
+    Escalate a task to PM/management.
+
+    IMPORTANT: Unlike normal notifications, escalation is available to ALL agents.
+    This is a critical workflow tool for getting help when blocked.
+    Permission checks are intentionally bypassed for escalation.
+
+    Escalation chain:
+    - Developers → Cell PM
+    - QA → Cell PM
+    - Documenters → Cell PM
+    - Cell PM → Main PM
+    - Main PM → Product Owner
+    - Product Owner → CEO
+    """
+    # Verify task exists
+    service = get_task_service(db)
+    task = await service.get(task_id)
+    if not task:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="Task not found"
+        )
+
+    # Get the agent's slug for escalation chain lookup
+    agent_result = await db.execute(
+        select(AgentTable).where(AgentTable.id == agent.agent_id)
+    )
+    agent_record = agent_result.scalar_one_or_none()
+    if not agent_record:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="Agent not found"
+        )
+
+    # Determine escalation target
+    target_slug = data.escalate_to or get_escalation_target(agent_record.slug)
+    if not target_slug:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"No escalation target configured for {agent_record.slug}",
+        )
+
+    # Resolve target agent UUID
+    target_result = await db.execute(
+        select(AgentTable).where(AgentTable.slug == target_slug)
+    )
+    target_agent = target_result.scalar_one_or_none()
+    if not target_agent:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Escalation target not found: {target_slug}",
+        )
+
+    # Create escalation notification directly (bypassing permission checks)
+    body = (
+        f"Task {task_id} escalated by {agent_record.slug}.\n\n"
+        f"Reason: {data.reason}"
+    )
+    notification = NotificationTable(
+        type="blocker_escalation",
+        priority="high",
+        from_agent=agent.agent_id,
+        to_agents=[target_agent.id],
+        subject=f"Escalation: {task.title or 'Unknown task'}",
+        body=body,
+        related_task_id=task_id,
+        requires_ack=True,
+        read_by=[],
+        acked_by=[],
+    )
+    db.add(notification)
+    await db.commit()
+
+    msg = (
+        f"Task escalated to {target_slug}. "
+        "They will be notified and can reassign or provide guidance."
+    )
+    return EscalateResponse(
+        status="escalated",
+        task_id=task_id,
+        escalated_to=target_slug,
+        reason=data.reason,
+        message=msg,
+    )
 
 
 # =============================================================================

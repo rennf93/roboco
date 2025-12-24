@@ -6,19 +6,19 @@ DEFAULT_PYTHON = 3.10
 .PHONY: install
 install:
 	@uv sync
-	@find . | grep -E "(__pycache__|\\.pyc|\\.pyo|\\.pytest_cache|\\.ruff_cache|\\.mypy_cache)" | xargs rm -rf
+	@find . | grep -E "(__pycache__|\.pyc|\.pyo|\.pytest_cache|\.ruff_cache|\.mypy_cache)" | xargs rm -rf
 
 # Install dev dependencies
 .PHONY: install-dev
 install-dev:
 	@uv sync --extra dev
-	@find . | grep -E "(__pycache__|\\.pyc|\\.pyo|\\.pytest_cache|\\.ruff_cache|\\.mypy_cache)" | xargs rm -rf
+	@find . | grep -E "(__pycache__|\.pyc|\.pyo|\.pytest_cache|\.ruff_cache|\.mypy_cache)" | xargs rm -rf
 
 # Update dependencies
 .PHONY: lock
 lock:
 	@uv lock
-	@find . | grep -E "(__pycache__|\\.pyc|\\.pyo|\\.pytest_cache|\\.ruff_cache|\\.mypy_cache)" | xargs rm -rf
+	@find . | grep -E "(__pycache__|\.pyc|\.pyo|\.pytest_cache|\.ruff_cache|\.mypy_cache)" | xargs rm -rf
 
 
 # Upgrade dependencies
@@ -26,7 +26,7 @@ lock:
 upgrade:
 	@uv lock --upgrade
 	@uv sync --all-extras
-	@find . | grep -E "(__pycache__|\\.pyc|\\.pyo|\\.pytest_cache|\\.ruff_cache|\\.mypy_cache)" | xargs rm -rf
+	@find . | grep -E "(__pycache__|\.pyc|\.pyo|\.pytest_cache|\.ruff_cache|\.mypy_cache)" | xargs rm -rf
 
 # =============================================================================
 # INFRASTRUCTURE
@@ -165,7 +165,7 @@ fix:
 	@echo "Fixing formatting w/ Ruff..."
 	@echo ''
 	@uv run ruff check --fix .
-	@find . | grep -E "(__pycache__|\\.pyc|\\.pyo|\\.pytest_cache|\\.ruff_cache|\\.mypy_cache)" | xargs rm -rf
+	@find . | grep -E "(__pycache__|\.pyc|\.pyo|\.pytest_cache|\.ruff_cache|\.mypy_cache)" | xargs rm -rf
 
 # Find dead code with Vulture
 .PHONY: vulture
@@ -340,19 +340,19 @@ high-load-stress-test:
 .PHONY: serve-docs
 serve-docs:
 	@uv run mkdocs serve
-	@find . | grep -E "(__pycache__|\\.pyc|\\.pyo|\\.pytest_cache|\\.ruff_cache|\\.mypy_cache)" | xargs rm -rf
+	@find . | grep -E "(__pycache__|\.pyc|\.pyo|\.pytest_cache|\.ruff_cache|\.mypy_cache)" | xargs rm -rf
 
 # Lint documentation
 .PHONY: lint-docs
 lint-docs:
 	@uv run pymarkdownlnt scan -r -e ./.venv -e ./.git -e ./.github -e ./roboco -e ./tests -e ./.claude -e ./CLAUDE.md -e ./ZZZ .
-	@find . | grep -E "(__pycache__|\\.pyc|\\.pyo|\\.pytest_cache|\\.ruff_cache|\\.mypy_cache)" | xargs rm -rf
+	@find . | grep -E "(__pycache__|\.pyc|\.pyo|\.pytest_cache|\.ruff_cache|\.mypy_cache)" | xargs rm -rf
 
 # Fix documentation
 .PHONY: fix-docs
 fix-docs:
 	@uv run pymarkdownlnt fix -r -e ./.venv -e ./.git -e ./.github -e ./roboco -e ./tests -e ./.claude -e ./CLAUDE.md -e ./ZZZ .
-	@find . | grep -E "(__pycache__|\\.pyc|\\.pyo|\\.pytest_cache|\\.ruff_cache|\\.mypy_cache)" | xargs rm -rf
+	@find . | grep -E "(__pycache__|\.pyc|\.pyo|\.pytest_cache|\.ruff_cache|\.mypy_cache)" | xargs rm -rf
 
 # Prune
 .PHONY: prune
@@ -362,7 +362,7 @@ prune:
 # Clean Cache Files
 .PHONY: clean
 clean:
-	@find . | grep -E "(__pycache__|\\.pyc|\\.pyo|\\.pytest_cache|\\.ruff_cache|\\.mypy_cache)" | xargs rm -rf
+	@find . | grep -E "(__pycache__|\.pyc|\.pyo|\.pytest_cache|\.ruff_cache|\.mypy_cache)" | xargs rm -rf
 
 # Help
 .PHONY: help
