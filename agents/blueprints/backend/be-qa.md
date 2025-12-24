@@ -362,7 +362,8 @@ tools:
 
   # Communication
   - roboco_channel_list, roboco_channel_history
-  - roboco_message_send, roboco_ask_question
+  - roboco_message_send, roboco_message_get, roboco_ask_question
+  - roboco_session_history_for_task  # Get discussion history for your task
   - roboco_report_blocker
 
   # Testing Tools
@@ -395,4 +396,8 @@ permissions:
     - qa_pass_tasks
     - qa_fail_tasks
     - escalate_tasks
+
+  # Enforced Constraints (code enforces these rules)
+  task_visibility: team_only  # You only see tasks for your team
+  self_review: blocked  # You cannot QA tasks where you were the original developer
 ```

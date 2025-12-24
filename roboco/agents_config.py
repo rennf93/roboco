@@ -3,6 +3,26 @@ Agent Configuration
 
 Single source of truth for agent roles, teams, and cell memberships.
 All enforcement modules and MCP servers should import from here.
+
+PERMISSION ARCHITECTURE
+-----------------------
+The system uses TWO complementary permission layers:
+
+1. MCP Layer (this module - agents_config.py):
+   - Controls which MCP tools agents can access
+   - Uses role-based helper functions: can_create_tasks(), can_cancel_tasks(), etc.
+   - Works with agent slugs/UUIDs directly
+   - Determines tool visibility at MCP server registration time
+
+2. API Layer (roboco/services/permissions.py):
+   - Controls fine-grained API endpoint access
+   - Uses TaskAction enum and PermissionService class
+   - Works with AgentContext and Team enums
+   - Validates at request time with team-scoped checks
+
+Both layers derive from the same source data (role definitions here) but serve
+different purposes. MCP is coarse-grained (tool-level), API is fine-grained
+(action + team context).
 """
 
 from typing import Final
@@ -97,12 +117,6 @@ PM_ROLES: Final[set[str]] = {
     "head_marketing",
     "ceo",
 }
-
-# Developer-only tools (PMs, QA, Documenters cannot use these)
-DEVELOPER_ONLY_TOOLS: Final[frozenset[str]] = frozenset({
-    "roboco_task_submit_verification",
-    "roboco_task_submit_qa",
-})
 
 # Escalation chain - who each agent escalates to
 ESCALATION_CHAIN: Final[dict[str, str]] = {
@@ -222,12 +236,6 @@ def can_cancel_tasks(agent_id: str) -> bool:
     """Check if agent can cancel tasks (PMs and board, not CEO/Auditor)."""
     role = get_agent_role(agent_id)
     return role in _CANCEL_ROLES
-
-
-def can_submit_for_qa(agent_id: str) -> bool:
-    """Check if agent can submit work for QA (developers only)."""
-    role = get_agent_role(agent_id)
-    return role == "developer"
 
 
 def get_escalation_target(agent_id: str) -> str | None:

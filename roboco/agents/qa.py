@@ -381,8 +381,13 @@ PASS,All criteria verified successfully,No issues found
                 task_id=ctx.task_id,
             )
 
-            # Update task status
-            await self._mark_needs_revision(ctx.task_id)
+            # Use proper QA fail endpoint (handles notes, status, reassignment)
+            issue_list = [t.actual or t.name for t in failed_tests]
+            await self._qa_fail(
+                ctx.task_id,
+                "Found issues that need fixing before approval.",
+                issue_list,
+            )
 
         else:
             ctx.verdict = TestResult.PASS
@@ -396,8 +401,11 @@ PASS,All criteria verified successfully,No issues found
                 task_id=ctx.task_id,
             )
 
-            # Update task status
-            await self._mark_awaiting_documentation(ctx.task_id)
+            # Use proper QA pass endpoint (handles notes, status)
+            await self._qa_pass(
+                ctx.task_id,
+                f"All {len(ctx.test_cases)} tests passed. Ready for documentation.",
+            )
 
         ctx.notes.append(
             f"[{datetime.now(UTC).isoformat()}] Verdict: {ctx.verdict.value.upper()}"

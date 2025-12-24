@@ -142,7 +142,7 @@ async def handle_task_progress(
 
     progress_resp = await client.post(
         f"/tasks/{task_id}/progress",
-        json={"agent_id": agent_id, "message": message, "percentage": percentage},
+        json={"message": message, "percentage": percentage},
     )
 
     if not progress_resp.ok:

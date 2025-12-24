@@ -437,13 +437,14 @@ good,complete,clear,helpful,None
                         "Failed to publish", path=doc_spec.path, error=str(e)
                     )
 
-        # Mark docs complete - task goes to PM for final review
-        await self._mark_awaiting_pm_review(ctx.task_id)
+        # Use proper docs-complete endpoint (handles notes, status)
+        doc_summary = f"Published: {', '.join(ctx.written_docs)}"
+        await self._docs_complete(ctx.task_id, doc_summary)
 
         await self.send_message(
             ctx.session_id,
             f"TASK-{str(ctx.task_id)[:8]} documentation complete, awaiting PM review\n"
-            f"Published: {', '.join(ctx.written_docs)}",
+            f"{doc_summary}",
             message_type="action",
             task_id=ctx.task_id,
         )
