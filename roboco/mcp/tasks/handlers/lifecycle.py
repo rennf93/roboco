@@ -129,6 +129,49 @@ async def handle_task_complete(
     )
 
 
+async def handle_submit_pm_review(
+    client: ApiClient, task_id: str, agent_id: str, notes: str | None = None
+) -> dict[str, Any]:
+    """Handle direct submission for PM review.
+
+    For tasks that don't follow the standard dev→QA→docs workflow,
+    such as PM validation tasks, QA audit tasks, or directly-assigned work.
+    """
+    task, error = await fetch_task_or_error(client, task_id)
+    if error:
+        return error
+    assert task is not None
+
+    # Must be in_progress to submit for PM review
+    current_status = task.get("status")
+    if current_status != "in_progress":
+        return format_error_response(
+            "INVALID_STATE",
+            f"Cannot submit for PM review - task is '{current_status}', "
+            "expected 'in_progress'.",
+            {"current_status": current_status},
+        )
+
+    # Submit to API
+    payload = {}
+    if notes:
+        payload["notes"] = notes
+
+    resp = await client.post(f"/tasks/{task_id}/submit-pm-review", json=payload)
+    if not resp.ok:
+        return format_error_response(
+            "SUBMIT_FAILED",
+            "Failed to submit for PM review",
+            {"status_code": resp.status_code, "api_error": resp.text},
+        )
+
+    guidance = (
+        "Task submitted for PM review. The PM will verify and complete the task.\n"
+        "Call roboco_task_scan to find more work, or roboco_agent_idle if none."
+    )
+    return format_task_response(resp.json(), "AWAITING_PM_REVIEW", guidance)
+
+
 def _validate_task_cancellable(task: dict[str, Any]) -> dict[str, Any] | None:
     """Validate task can be cancelled. Returns error or None."""
     current_status = task.get("status")

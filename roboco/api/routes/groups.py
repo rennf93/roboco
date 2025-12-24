@@ -61,12 +61,13 @@ async def create_group(
 
     service = get_messaging_service(db)
 
-    # Get channel by slug
-    channel = await service.get_channel_by_slug(data.channel_slug)
+    # Get channel by slug (auto-creates from config if needed)
+    channel = await service.get_or_create_channel_by_slug(data.channel_slug)
     if not channel:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"Channel not found: {data.channel_slug}",
+            detail=f"Channel not found: {data.channel_slug}. "
+            "This channel is not defined in system configuration.",
         )
 
     # Create group via service

@@ -788,6 +788,58 @@ class TaskService(BaseService):
         )
         return task
 
+    async def submit_for_pm_review(
+        self,
+        task_id: UUID,
+        notes: str | None = None,
+    ) -> TaskTable | None:
+        """
+        Submit a task directly for PM review (any assigned agent).
+
+        Use this for tasks that don't follow the standard dev→QA→docs workflow,
+        such as PM validation tasks, QA audit tasks, or other directly-assigned work.
+
+        Transitions task from IN_PROGRESS to AWAITING_PM_REVIEW.
+
+        Args:
+            task_id: The task to submit
+            notes: Optional completion notes
+
+        Returns:
+            The updated task or None if not allowed
+        """
+        task = await self.get(task_id)
+        if not task:
+            return None
+
+        # Only allow submission from in_progress status
+        if task.status != TaskStatus.IN_PROGRESS:
+            self.log.warning(
+                "Cannot submit for PM review - task not in progress",
+                task_id=str(task_id),
+                current_status=task.status.value,
+            )
+            return None
+
+        # Store notes in quick_context
+        if notes:
+            existing_context = task.quick_context or ""
+            note_entry = f"completion_notes:{notes}"
+            task.quick_context = (
+                f"{existing_context}\n{note_entry}".strip()
+                if existing_context
+                else note_entry
+            )
+
+        task.status = TaskStatus.AWAITING_PM_REVIEW
+        await self.session.flush()
+
+        self.log.info(
+            "Task submitted for PM review",
+            task_id=str(task_id),
+        )
+        return task
+
     async def complete(
         self,
         task_id: UUID,

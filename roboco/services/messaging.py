@@ -130,6 +130,54 @@ class MessagingService(BaseService):
         )
         return result.scalar_one_or_none()
 
+    async def get_or_create_channel_by_slug(self, slug: str) -> ChannelTable | None:
+        """Get a channel by slug, auto-creating from config if needed.
+
+        If the channel doesn't exist in the database but is defined in
+        DEFAULT_CHANNELS, it will be automatically created.
+
+        This allows the system to work without requiring explicit database
+        seeding while still validating that only configured channels are used.
+
+        Args:
+            slug: Channel slug to look up
+
+        Returns:
+            Channel if found or created, None if not a valid channel
+        """
+        # First try database
+        channel = await self.get_channel_by_slug(slug)
+        if channel:
+            return channel
+
+        # Not in DB - check if it's a valid channel from config
+        from roboco.models.base import ChannelType
+        from roboco.seeds import DEFAULT_CHANNELS
+
+        channel_data = next(
+            (c for c in DEFAULT_CHANNELS if c["slug"] == slug),
+            None,
+        )
+        if not channel_data:
+            return None
+
+        # Auto-create from config
+        channel = ChannelTable(
+            name=channel_data["name"],
+            slug=channel_data["slug"],
+            type=ChannelType(channel_data["channel_type"]),
+            description=channel_data.get("description", ""),
+        )
+        self.session.add(channel)
+        await self.session.flush()
+
+        self.log.info(
+            "Channel auto-created from config",
+            slug=slug,
+            type=channel_data["channel_type"],
+        )
+        return channel
+
     async def list_channels_for_agent(
         self,
         agent_id: UUID,

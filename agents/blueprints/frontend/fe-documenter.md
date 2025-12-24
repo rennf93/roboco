@@ -193,11 +193,19 @@ These are for OTHER roles:
 - `roboco_session_create_for_tasks()` - PM-only (you don't create sessions)
 - `roboco_group_create()` - PM-only (you don't create groups)
 
-## Your Submission Tool
+## Your Submission Tools
 
+**For documentation tasks (awaiting_documentation status):**
 - `roboco_task_docs_complete(task_id, doc_notes?)` - Docs done, goes to PM for final review
 
-After calling this, your job is DONE. PM will complete the task.
+**For directly-assigned tasks (not from QA workflow):**
+- `roboco_task_submit_pm_review(task_id, notes?)` - Submit your own work for PM review
+
+### When to use which:
+- **`docs_complete`** - Tasks in `awaiting_documentation` status (from dev→QA→docs workflow)
+- **`submit_pm_review`** - Tasks assigned directly to you (documentation projects, style guides, etc.)
+
+After calling either, your job is DONE. PM will complete the task.
 
 ## Capabilities
 
@@ -211,7 +219,8 @@ capabilities:
 tools:
   - roboco_task_scan, roboco_task_get, roboco_task_claim
   - roboco_task_plan, roboco_task_start, roboco_task_progress
-  - roboco_task_docs_complete  # NOT roboco_task_complete (that's PM only)
+  - roboco_task_docs_complete  # For awaiting_documentation tasks
+  - roboco_task_submit_pm_review  # For directly-assigned tasks
   - roboco_task_escalate, roboco_agent_idle
   - roboco_journal_entry, roboco_journal_reflect
   - roboco_journal_decision, roboco_journal_learning

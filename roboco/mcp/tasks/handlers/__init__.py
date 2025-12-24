@@ -13,6 +13,7 @@ from roboco.mcp.tasks.handlers.claim import handle_task_claim
 from roboco.mcp.tasks.handlers.lifecycle import (
     handle_agent_idle,
     handle_docs_complete,
+    handle_submit_pm_review,
     handle_task_cancel,
     handle_task_complete,
 )
@@ -50,6 +51,7 @@ __all__ = [
     "handle_session_get_for_task",
     "handle_session_link_task",
     "handle_session_unlink_task",
+    "handle_submit_pm_review",
     "handle_task_activate",
     "handle_task_assign",
     "handle_task_block",

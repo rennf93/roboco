@@ -51,6 +51,7 @@ from roboco.mcp.tasks.handlers import (
     handle_session_get_for_task,
     handle_session_link_task,
     handle_session_unlink_task,
+    handle_submit_pm_review,
     handle_task_activate,
     handle_task_assign,
     handle_task_block,
@@ -249,6 +250,35 @@ def _register_core_tools(mcp: FastMCP, client: ApiClient, agent_id: str) -> None
             task_id=task_id, reason=reason, escalate_to=escalate_to
         )
         return await handle_task_escalate(client, input_data, agent_id)
+
+    @mcp.tool()
+    async def roboco_task_submit_pm_review(
+        task_id: str, notes: str | None = None
+    ) -> dict[str, Any]:
+        """
+        Submit task directly for PM review.
+
+        Use this for tasks that don't follow the standard dev→QA→docs workflow:
+        - PM validation tasks assigned directly to you
+        - QA audit tasks (not reviewing dev work)
+        - Any directly-assigned non-dev work
+
+        The task will transition to 'awaiting_pm_review' and the PM
+        will verify and complete it.
+
+        WHEN TO USE:
+        - You completed a task assigned directly to you (not dev work)
+        - The task doesn't need QA/docs review
+        - You want the PM to verify and close it
+
+        Args:
+            task_id: The task UUID to submit
+            notes: Optional completion notes
+
+        Returns:
+            Task awaiting PM review
+        """
+        return await handle_submit_pm_review(client, task_id, agent_id, notes)
 
 
 def _register_blocking_tools(mcp: FastMCP, client: ApiClient, agent_id: str) -> None:

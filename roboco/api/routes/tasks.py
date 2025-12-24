@@ -920,6 +920,45 @@ async def docs_complete(
     return task_to_response(task)
 
 
+@router.post("/{task_id}/submit-pm-review", response_model=TaskResponse)
+async def submit_for_pm_review(
+    task_id: UUID,
+    db: DbSession,
+    agent: CurrentAgentContext,
+    data: QANotes | None = None,
+) -> TaskResponse:
+    """Submit a task directly for PM review.
+
+    Use this for tasks that don't follow the standard dev→QA→docs workflow,
+    such as PM validation tasks, QA audit tasks, or other directly-assigned work.
+
+    Only the assigned agent can submit their task for PM review.
+    """
+    service = get_task_service(db)
+    task = await service.get(task_id)
+    if not task:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="Task not found"
+        )
+
+    # Only assigned agent can submit for PM review
+    if task.assigned_to != agent.agent_id:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Only the assigned agent can submit for PM review",
+        )
+
+    notes = data.notes if data else None
+    task = await service.submit_for_pm_review(task_id, notes)
+    if not task:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Cannot submit for PM review - task not in progress",
+        )
+    await db.commit()
+    return task_to_response(task)
+
+
 @router.post("/{task_id}/complete", response_model=TaskResponse)
 async def complete_task(
     task_id: UUID,
