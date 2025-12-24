@@ -127,6 +127,7 @@ class TaskService(BaseService):
             acceptance_criteria=req.acceptance_criteria,
             team=req.team,
             created_by=req.created_by,
+            assigned_to=req.assigned_to,
             priority=req.priority,
             parent_task_id=req.parent_task_id,
             target_date=req.target_date,
@@ -322,16 +323,37 @@ class TaskService(BaseService):
             return "invalid status for role"
         return None
 
+    # Management roles that can claim tasks from any team
+    _MANAGEMENT_ROLES = frozenset(
+        {"main_pm", "product_owner", "head_marketing", "auditor"}
+    )
+
     def _validate_claim_team(
         self, task: TaskTable, agent: AgentTable | None
     ) -> str | None:
         """
         Validate agent belongs to task's team.
 
+        Management roles (main_pm, product_owner, head_marketing, auditor)
+        can claim tasks from any team.
+
         Returns:
             Error message if invalid, None if valid
         """
-        if agent and task.team and agent.team != task.team:
+        if not agent or not task.team:
+            return None
+
+        # Get agent role as string
+        agent_role = (
+            agent.role.value if hasattr(agent.role, "value") else str(agent.role)
+        )
+
+        # Management roles can claim any task
+        if agent_role in self._MANAGEMENT_ROLES:
+            return None
+
+        # Regular agents must match team
+        if agent.team != task.team:
             return "agent not in task's team"
         return None
 

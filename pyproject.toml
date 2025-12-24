@@ -133,13 +133,9 @@ select = [
     "RUF",    # Ruff-specific
 ]
 
-# MCP servers: Tool functions require explicit parameters for schema generation.
-# PLC0415 - Lazy imports for circular import avoidance
-#
-# Services: Internal methods often need multiple related parameters for DB ops.
-# PLC0415 - Lazy imports for circular import avoidance
+# Lazy imports to avoid circular dependencies
 [tool.ruff.lint.per-file-ignores]
-"roboco/mcp/*.py" = ["PLC0415"]
+"roboco/mcp/**/*.py" = ["PLC0415"]
 "roboco/services/*.py" = ["PLC0415"]
 
 # =============================================================================

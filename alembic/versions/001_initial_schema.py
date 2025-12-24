@@ -56,7 +56,7 @@ def upgrade() -> None:
         ),
         sa.Column(
             "team",
-            sa.Enum("backend", "frontend", "ux_ui", "board", name="team"),
+            sa.Enum("backend", "frontend", "ux_ui", "main_pm", "board", "marketing", name="team"),
             nullable=True,
         ),
         sa.Column(
@@ -126,7 +126,7 @@ def upgrade() -> None:
         sa.Column(
             "team",
             sa.Enum(
-                "backend", "frontend", "ux_ui", "board", name="team", create_type=False
+                "backend", "frontend", "ux_ui", "main_pm", "board", "marketing", name="team", create_type=False
             ),
             nullable=False,
             index=True,

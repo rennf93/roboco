@@ -500,9 +500,7 @@ Please review and provide guidance.
             # Check if subtasks are complete (common blocker)
             subtasks = result.get("subtasks", [])
             if subtasks:
-                all_complete = all(
-                    s.get("status") == "completed" for s in subtasks
-                )
+                all_complete = all(s.get("status") == "completed" for s in subtasks)
                 if all_complete:
                     return True
 

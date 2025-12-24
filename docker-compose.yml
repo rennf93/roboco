@@ -51,6 +51,97 @@ services:
     restart: "no"
 
   # ==========================================================================
+  # Agent PM Image Builder (specialized image built on-demand by orchestrator)
+  # ==========================================================================
+  agent-pm-image:
+    build:
+      context: .
+      dockerfile: docker/agent-pm.Dockerfile
+    image: roboco-agent-pm
+    entrypoint: ["/bin/sh", "-c", "echo 'Agent PM image built'"]
+    restart: "no"
+    depends_on:
+      - agent-base-image
+
+  # ==========================================================================
+  # Agent Backend Dev Image Builder (specialized image built on-demand by orchestrator)
+  # ==========================================================================
+  agent-dev-be-image:
+    build:
+      context: .
+      dockerfile: docker/agent-dev-be.Dockerfile
+    image: roboco-agent-dev-be
+    entrypoint: ["/bin/sh", "-c", "echo 'Agent Backend Dev image built'"]
+    restart: "no"
+    depends_on:
+      - agent-base-image
+
+  # ==========================================================================
+  # Agent Frontend Dev Image Builder (specialized image built on-demand by orchestrator)
+  # ==========================================================================
+  agent-dev-fe-image:
+    build:
+      context: .
+      dockerfile: docker/agent-dev-fe.Dockerfile
+    image: roboco-agent-dev-fe
+    entrypoint: ["/bin/sh", "-c", "echo 'Agent Frontend Dev image built'"]
+    restart: "no"
+    depends_on:
+      - agent-base-image
+
+  # ==========================================================================
+  # Agent Backend QA Image Builder (specialized image built on-demand by orchestrator)
+  # ==========================================================================
+  agent-qa-be-image:
+    build:
+      context: .
+      dockerfile: docker/agent-qa-be.Dockerfile
+    image: roboco-agent-qa-be
+    entrypoint: ["/bin/sh", "-c", 'echo "Agent Backend QA image built"']
+    restart: "no"
+    depends_on:
+      - agent-base-image
+
+  # ==========================================================================
+  # Agent Frontend QA Image Builder (specialized image built on-demand by orchestrator)
+  # ==========================================================================
+  agent-qa-fe-image:
+    build:
+      context: .
+      dockerfile: docker/agent-qa-fe.Dockerfile
+    image: roboco-agent-qa-fe
+    entrypoint: ["/bin/sh", "-c", 'echo "Agent Frontend QA image built"']
+    restart: "no"
+    depends_on:
+      - agent-base-image
+
+  # ==========================================================================
+  # Agent UX/UI Dev Image Builder (specialized image built on-demand by orchestrator)
+  # ==========================================================================
+  agent-ux-image:
+    build:
+      context: .
+      dockerfile: docker/agent-ux.Dockerfile
+    image: roboco-agent-ux
+    entrypoint: ["/bin/sh", "-c", 'echo "Agent UX/UI image built"']
+    restart: "no"
+    depends_on:
+      - agent-base-image
+
+  # ==========================================================================
+  # Agent Documenter Image Builder (specialized image built on-demand by orchestrator)
+  # ==========================================================================
+  agent-doc-image:
+    build:
+      context: .
+      dockerfile: docker/agent-doc.Dockerfile
+    image: roboco-agent-doc
+    entrypoint: ["/bin/sh", "-c", 'echo "Agent Documenter image built"']
+    restart: "no"
+    depends_on:
+      - agent-base-image
+
+  # ==========================================================================
   # Orchestrator - API Server + Agent Spawner
   # ==========================================================================
   orchestrator:
