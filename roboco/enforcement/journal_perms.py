@@ -50,6 +50,47 @@ def _is_same_cell(agent1: str, agent2: str) -> bool:
     return cell1 is not None and cell1 == cell2
 
 
+# Roles with global read access (can read all non-protected journals)
+GLOBAL_READERS = frozenset(
+    ["ceo", "auditor", "product_owner", "head_marketing", "main_pm"]
+)
+
+# Roles that can read cross-cell PM journals
+PM_ROLES = frozenset(["cell_pm", "main_pm"])
+
+# Cell member roles (can only read same-cell journals)
+CELL_MEMBER_ROLES = frozenset(["developer", "qa", "documenter"])
+
+
+def _check_protected_access(
+    reader_role: str, owner_id: str, owner_role: str
+) -> tuple[bool, str] | None:
+    """Check access to protected journals. Returns None if not protected."""
+    if owner_id not in PROTECTED_JOURNALS and owner_role not in ("ceo", "auditor"):
+        return None  # Not a protected journal
+    if reader_role in ("ceo", "auditor"):
+        return True, "OK"
+    return False, f"Cannot read {owner_role}'s journal - protected"
+
+
+def _check_cell_pm_access(
+    reader_id: str, owner_id: str, owner_role: str
+) -> tuple[bool, str]:
+    """Check Cell PM's access to another journal."""
+    if _is_same_cell(reader_id, owner_id):
+        return True, "OK"
+    if owner_role in PM_ROLES:
+        return True, "OK"
+    return False, "Cell PM can only read journals of cell members, other PMs"
+
+
+def _check_cell_member_access(reader_id: str, owner_id: str) -> tuple[bool, str]:
+    """Check cell member's access to another journal."""
+    if _is_same_cell(reader_id, owner_id):
+        return True, "OK"
+    return False, "You can only read journals of your cell members"
+
+
 def can_read_journal(reader_id: str, owner_id: str) -> tuple[bool, str]:
     """
     Check if reader can access owner's journal.
@@ -57,59 +98,29 @@ def can_read_journal(reader_id: str, owner_id: str) -> tuple[bool, str]:
     Returns:
         Tuple of (can_read, reason)
     """
-    # Self-access always allowed
     if reader_id == owner_id:
         return True, "OK"
 
     reader_role = get_agent_role(reader_id)
     owner_role = get_agent_role(owner_id)
 
-    # CEO and Auditor journals are protected
-    if owner_id in PROTECTED_JOURNALS or owner_role in ("ceo", "auditor"):
-        # Only CEO can read Auditor's journal and vice versa
-        if reader_role == "ceo":
-            return True, "OK"
-        if reader_role == "auditor":
-            return True, "OK"
-        return False, f"Cannot read {owner_role}'s journal - protected"
+    # Check protected journals first
+    if (
+        result := _check_protected_access(reader_role, owner_id, owner_role)
+    ) is not None:
+        return result
 
-    # CEO can read all journals (except protected, handled above)
-    if reader_role == "ceo":
+    # Global readers can access all non-protected journals
+    if reader_role in GLOBAL_READERS:
         return True, "OK"
 
-    # Auditor has silent read access to all journals
-    if reader_role == "auditor":
-        return True, "OK"
-
-    # Board members can read all cell journals
-    if reader_role in ("product_owner", "head_marketing"):
-        return True, "OK"
-
-    # Main PM can read all cell journals
-    if reader_role == "main_pm":
-        return True, "OK"
-
-    # Cell PM can read:
-    # 1. Own cell members
-    # 2. Other Cell PMs
-    # 3. Main PM (for coordination)
+    # Cell PM access rules
     if reader_role == "cell_pm":
-        # Own cell members
-        if _is_same_cell(reader_id, owner_id):
-            return True, "OK"
-        # Other Cell PMs
-        if owner_role == "cell_pm":
-            return True, "OK"
-        # Main PM
-        if owner_role == "main_pm":
-            return True, "OK"
-        return False, "Cell PM can only read journals of cell members, other PMs"
+        return _check_cell_pm_access(reader_id, owner_id, owner_role)
 
-    # Cell members (developer, qa, documenter) can read same cell journals
-    if reader_role in ("developer", "qa", "documenter"):
-        if _is_same_cell(reader_id, owner_id):
-            return True, "OK"
-        return False, "You can only read journals of your cell members"
+    # Cell member access rules
+    if reader_role in CELL_MEMBER_ROLES:
+        return _check_cell_member_access(reader_id, owner_id)
 
     return False, "Unknown role - access denied"
 

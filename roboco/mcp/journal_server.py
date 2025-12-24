@@ -352,53 +352,70 @@ def create_journal_mcp_server(agent_id: str) -> FastMCP:
     client = ApiClient(agent_id)
 
     @mcp.tool()
-    async def roboco_journal_entry(data: JournalEntryInput) -> dict[str, Any]:
+    async def roboco_journal_entry(entry: JournalEntryInput) -> dict[str, Any]:
         """
         Create a general journal entry.
 
         Your journal is personal - use it to track thoughts, progress,
         and document your journey on tasks.
+
+        Args:
+            entry: Journal entry with title, content, entry_type, task_id, tags
         """
-        return await _handle_journal_entry(data, client)
+        return await _handle_journal_entry(entry, client)
 
     @mcp.tool()
-    async def roboco_journal_reflect(data: TaskReflectionInput) -> dict[str, Any]:
+    async def roboco_journal_reflect(reflection: TaskReflectionInput) -> dict[str, Any]:
         """
         Add a task reflection entry.
 
         IMPORTANT: Call this when completing a task. Reflections help build
         institutional memory and track your growth.
+
+        Args:
+            reflection: Reflection with task_id, title, what_done, what_learned,
+                       what_struggled, next_steps
         """
-        return await _handle_reflect(data, client)
+        return await _handle_reflect(reflection, client)
 
     @mcp.tool()
-    async def roboco_journal_decision(data: DecisionLogInput) -> dict[str, Any]:
+    async def roboco_journal_decision(decision: DecisionLogInput) -> dict[str, Any]:
         """
         Log a decision you made.
 
         Use when choosing between approaches. Creates a record of WHY
         you made the decision for future context.
+
+        Args:
+            decision: Decision log with title, context, options, chosen, rationale
         """
-        return await _handle_decision(data, client)
+        return await _handle_decision(decision, client)
 
     @mcp.tool()
-    async def roboco_journal_learning(data: LearningInput) -> dict[str, Any]:
+    async def roboco_journal_learning(learning: LearningInput) -> dict[str, Any]:
         """
         Log something you learned.
 
         Track learnings to build your knowledge base and help future you.
+
+        Args:
+            learning: Learning entry with title, what_learned, how_applied, source
         """
-        return await _handle_learning(data, client)
+        return await _handle_learning(learning, client)
 
     @mcp.tool()
-    async def roboco_journal_struggle(data: StruggleInput) -> dict[str, Any]:
+    async def roboco_journal_struggle(struggle: StruggleInput) -> dict[str, Any]:
         """
         Log a struggle or challenge.
 
         Recording struggles helps track problem-solving patterns and
         create documentation for others.
+
+        Args:
+            struggle: Struggle entry with title, what_struggled,
+                     attempted_solutions, resolution, help_needed
         """
-        return await _handle_struggle(data, client)
+        return await _handle_struggle(struggle, client)
 
     @mcp.tool()
     async def roboco_journal_search(query: str, top_k: int = 5) -> dict[str, Any]:

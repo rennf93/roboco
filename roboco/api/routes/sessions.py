@@ -92,7 +92,9 @@ async def list_sessions(
     query = (
         select(SessionTable)
         .where(SessionTable.group_id == params.group_id)
-        .options(selectinload(SessionTable.task_links).selectinload(SessionTaskTable.task))
+        .options(
+            selectinload(SessionTable.task_links).selectinload(SessionTaskTable.task)
+        )
     )
 
     if params.status_filter:

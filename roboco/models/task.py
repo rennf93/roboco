@@ -232,6 +232,7 @@ class TaskCreate(RobocoBase):
     team: Team
     priority: int = Field(default=2, ge=0, le=3)
     parent_task_id: UUID | None = None
+    assigned_to: UUID | None = None  # Optional: assign on creation
     target_date: datetime | None = None
     estimated_complexity: Complexity = Complexity.MEDIUM
     status: TaskStatus | None = None  # PM can set 'backlog' for subtasks needing setup
@@ -269,6 +270,7 @@ class TaskCreateRequest:
     created_by: UUID
     priority: int = 2
     parent_task_id: UUID | None = None
+    assigned_to: UUID | None = None
     target_date: datetime | None = None
     estimated_complexity: Complexity = field(default=Complexity.MEDIUM)
     status: TaskStatus | None = None  # PM can set BACKLOG for subtasks

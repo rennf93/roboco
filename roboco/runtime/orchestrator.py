@@ -77,9 +77,11 @@ AGENT_IMAGES: dict[str, str] = {
     "auditor": "roboco-agent-pm",
 }
 
+
 def get_agent_image(agent_id: str) -> str:
     """Get the Docker image for an agent."""
     return AGENT_IMAGES.get(agent_id, AGENT_BASE_IMAGE)
+
 
 # When running in a container, we need host paths for volume mounts.
 # These can be overridden via environment variables.
@@ -665,14 +667,25 @@ class AgentOrchestrator:
         }
         return role_map.get(agent_id, agent_id)
 
+    # Static team mappings for management agents
+    _AGENT_TEAM_MAP: ClassVar[dict[str, str]] = {
+        "main-pm": "main_pm",
+        "product-owner": "board",
+        "auditor": "board",
+        "head-marketing": "marketing",
+    }
+
     def _get_agent_team(self, agent_id: str) -> str | None:
         """Get team from agent_id."""
-        if agent_id.startswith("be-"):
-            return "backend"
-        if agent_id.startswith("fe-"):
-            return "frontend"
-        if agent_id.startswith("ux-"):
-            return "ux_ui"
+        # Check static mappings first
+        if agent_id in self._AGENT_TEAM_MAP:
+            return self._AGENT_TEAM_MAP[agent_id]
+
+        # Check cell prefixes
+        prefix_map = {"be-": "backend", "fe-": "frontend", "ux-": "ux_ui"}
+        for prefix, team in prefix_map.items():
+            if agent_id.startswith(prefix):
+                return team
         return None
 
     def _resolve_agent_slug(self, agent_id_or_uuid: str) -> str:
@@ -1150,17 +1163,30 @@ Start by:
         """Check if text contains PM coordination keywords."""
         return any(kw in text for kw in self._PM_KEYWORDS)
 
+    # Direct team-to-routing mappings (explicit assignments bypass keyword analysis)
+    _TEAM_ROUTING_MAP: ClassVar[dict[str, str]] = {
+        "main_pm": "main_pm",
+        "board": "board",
+        "marketing": "marketing",
+    }
+
     def _classify_task_routing(self, task: dict[str, Any]) -> str:
         """
-        Classify a task for routing based on complexity, keywords, and team.
+        Classify a task for routing based on team, complexity, and keywords.
 
-        Returns one of: "board", "main_pm", "cell_pm", "dev"
+        Returns one of: "board", "main_pm", "cell_pm", "dev", "marketing"
         """
+        team = task.get("team")
+
+        # Explicit team assignment takes precedence
+        if team in self._TEAM_ROUTING_MAP:
+            return self._TEAM_ROUTING_MAP[team]
+
+        # For cell teams, use keyword/complexity analysis
         title = (task.get("title") or "").lower()
         description = (task.get("description") or "").lower()
         text = f"{title} {description}"
-        complexity = task.get("complexity", "medium").lower()
-        team = task.get("team")
+        complexity = task.get("estimated_complexity", "medium").lower()
 
         # Board-level keywords → Board
         if self._has_board_keywords(text):
@@ -1189,7 +1215,7 @@ Start by:
         Resolve a routing decision to a specific agent slug.
 
         Args:
-            routing: One of "board", "main_pm", "cell_pm", "dev"
+            routing: One of "board", "main_pm", "cell_pm", "dev", "marketing"
             task: The task being routed
 
         Returns:
@@ -1198,7 +1224,11 @@ Start by:
         team = task.get("team")
 
         # Static routing targets
-        static_targets = {"board": "product-owner", "main_pm": "main-pm"}
+        static_targets = {
+            "board": "product-owner",
+            "main_pm": "main-pm",
+            "marketing": "head-marketing",
+        }
         if routing in static_targets:
             return static_targets[routing]
 

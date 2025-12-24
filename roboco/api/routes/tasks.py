@@ -90,6 +90,7 @@ async def create_task(
         created_by=agent.agent_id,
         priority=data.priority,
         parent_task_id=data.parent_task_id,
+        assigned_to=data.assigned_to,
         target_date=data.target_date,
         estimated_complexity=data.estimated_complexity,
         status=data.status,
@@ -948,7 +949,7 @@ async def complete_task(
     incomplete_subtasks = [
         st
         for st in subtasks
-        if st.status not in (TaskStatus.completed, TaskStatus.cancelled)
+        if st.status not in (TaskStatus.COMPLETED, TaskStatus.CANCELLED)
     ]
     if incomplete_subtasks:
         max_titles_shown = 3

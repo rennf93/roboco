@@ -72,10 +72,11 @@ async def handle_task_claim(
 
     return format_task_response(
         claimed_task,
-        "UNDERSTAND",
-        "Task claimed successfully. "
-        "Read the description and acceptance criteria carefully. "
-        "Ask questions if ANYTHING is unclear - do not guess. "
-        "When ready, create your plan with roboco_task_plan.",
+        "PLAN",
+        "Task claimed. NEXT: Call roboco_task_plan() before you can start.\n"
+        "1. Read the description and acceptance criteria\n"
+        "2. Ask questions if anything is unclear\n"
+        "3. Call roboco_task_plan(task_id, approach, steps)\n"
+        "4. Then call roboco_task_start(task_id)",
         project=project,
     )

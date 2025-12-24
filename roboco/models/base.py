@@ -48,6 +48,7 @@ class Team(str, Enum):
     BACKEND = "backend"
     FRONTEND = "frontend"
     UX_UI = "ux_ui"
+    MAIN_PM = "main_pm"  # Main PM level - cross-cell coordination
     BOARD = "board"
     MARKETING = "marketing"
 

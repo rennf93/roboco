@@ -220,12 +220,12 @@ async def resolve_agent_identity(
     result = await db.execute(
         select(AgentTable.id).where(AgentTable.slug == agent_id_or_slug)
     )
-    agent_uuid = result.scalar_one_or_none()
+    found_id = result.scalar_one_or_none()
 
-    if agent_uuid is None:
+    if found_id is None:
         return None
 
-    return (UUID(str(agent_uuid)), agent_id_or_slug)
+    return (UUID(str(found_id)), agent_id_or_slug)
 
 
 async def get_agent_slug(
@@ -242,9 +242,7 @@ async def get_agent_slug(
     Returns:
         The agent's slug (e.g., "be-dev-1"), or None if not found
     """
-    result = await db.execute(
-        select(AgentTable.slug).where(AgentTable.id == agent_id)
-    )
+    result = await db.execute(select(AgentTable.slug).where(AgentTable.id == agent_id))
     return result.scalar_one_or_none()
 
 

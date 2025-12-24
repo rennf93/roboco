@@ -222,7 +222,20 @@ async def validate_task_start(
 
     if task_status == "claimed" and not task.get("plan"):
         return format_error_response(
-            "NO_PLAN", "Cannot start without a plan. Call roboco_task_plan first."
+            "NO_PLAN",
+            "Cannot start without a plan.",
+            {
+                "required_action": "roboco_task_plan(task_id, approach, steps)",
+                "workflow": "claim → PLAN → start",
+                "example": {
+                    "task_id": task.get("id"),
+                    "approach": "Describe your implementation approach",
+                    "steps": [
+                        {"title": "Step 1", "description": "What to do first"},
+                        {"title": "Step 2", "description": "What to do next"},
+                    ],
+                },
+            },
         )
 
     if task_status == "claimed":

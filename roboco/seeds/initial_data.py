@@ -237,28 +237,28 @@ DEFAULT_AGENTS: list[dict[str, Any]] = [
         "slug": "main-pm",
         "name": "Main PM",
         "role": "main_pm",
-        "team": None,
+        "team": "main_pm",  # Cross-cell coordination
     },
     {
         "id": AGENT_UUIDS["product-owner"],
         "slug": "product-owner",
         "name": "Product Owner",
         "role": "product_owner",
-        "team": None,
+        "team": "board",
     },
     {
         "id": AGENT_UUIDS["head-marketing"],
         "slug": "head-marketing",
         "name": "Head of Marketing",
         "role": "head_marketing",
-        "team": None,
+        "team": "marketing",
     },
     {
         "id": AGENT_UUIDS["auditor"],
         "slug": "auditor",
         "name": "Auditor",
         "role": "auditor",
-        "team": None,
+        "team": "board",  # Silent observer, board-level access
     },
     # CEO (Human)
     {
