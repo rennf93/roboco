@@ -96,7 +96,8 @@ def validate_task_claimable(task: dict, agent_role: str) -> dict[str, Any] | Non
     task_status = task.get("status")
     claimable_statuses = {
         "qa": ["awaiting_qa"],
-        "documenter": ["awaiting_documentation"],
+        # Documenters: pending (direct docs tasks) or awaiting_documentation (workflow)
+        "documenter": ["pending", "awaiting_documentation"],
     }
     allowed = claimable_statuses.get(agent_role, ["pending"])
 

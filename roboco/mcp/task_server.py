@@ -219,6 +219,37 @@ def _register_core_tools(mcp: FastMCP, client: ApiClient, agent_id: str) -> None
         """
         return await handle_agent_idle(client, agent_id)
 
+    @mcp.tool()
+    async def roboco_task_escalate(
+        task_id: str, reason: str, escalate_to: str | None = None
+    ) -> dict[str, Any]:
+        """
+        Escalate a task up the management hierarchy.
+
+        Use this when:
+        - Task is blocked by something outside your control
+        - You need PM guidance or decision
+        - Task scope has grown beyond your authority
+        - Cross-team coordination is needed
+
+        Escalation chain:
+        - Developer/QA/Doc -> Cell PM
+        - Cell PM -> Main PM
+        - Main PM -> Product Owner
+
+        Args:
+            task_id: The task UUID to escalate
+            reason: Why this task needs escalation (be specific)
+            escalate_to: Optional specific target (overrides default chain)
+
+        Returns:
+            Task with escalation confirmation
+        """
+        input_data = TaskEscalateInput(
+            task_id=task_id, reason=reason, escalate_to=escalate_to
+        )
+        return await handle_task_escalate(client, input_data, agent_id)
+
 
 def _register_blocking_tools(mcp: FastMCP, client: ApiClient, agent_id: str) -> None:
     """Register blocking/unblocking/pause tools."""
@@ -297,15 +328,18 @@ def _register_blocking_tools(mcp: FastMCP, client: ApiClient, agent_id: str) -> 
         return await handle_task_pause(client, data, agent_id)
 
 
-def _register_qa_tools(mcp: FastMCP, client: ApiClient, agent_id: str) -> None:
-    """Register QA and verification tools."""
+def _register_developer_submit_tools(
+    mcp: FastMCP, client: ApiClient, agent_id: str
+) -> None:
+    """Register developer-only submission tools (submit_verification, submit_qa)."""
 
     @mcp.tool()
     async def roboco_task_submit_verification(task_id: str) -> dict[str, Any]:
         """
-        Submit task for self-verification.
+        Submit task for self-verification (developer only).
 
         ENFORCEMENT:
+        - Only developers can use this tool
         - Task must be in 'in_progress' status
         - At least one commit should exist
 
@@ -322,9 +356,10 @@ def _register_qa_tools(mcp: FastMCP, client: ApiClient, agent_id: str) -> None:
         task_id: str, dev_notes: str, handoff_summary: str
     ) -> dict[str, Any]:
         """
-        Submit task for QA review.
+        Submit task for QA review (developer only).
 
         ENFORCEMENT:
+        - Only developers can use this tool
         - Task must be in 'verifying' status
         - Dev notes and handoff summary required
 
@@ -339,6 +374,12 @@ def _register_qa_tools(mcp: FastMCP, client: ApiClient, agent_id: str) -> None:
         return await handle_task_submit_qa(
             client, task_id, dev_notes, handoff_summary, agent_id
         )
+
+
+def _register_qa_verdict_tools(
+    mcp: FastMCP, client: ApiClient, agent_id: str
+) -> None:
+    """Register QA-only verdict tools (qa_pass, qa_fail)."""
 
     @mcp.tool()
     async def roboco_task_qa_pass(task_id: str, qa_notes: str) -> dict[str, Any]:
@@ -381,6 +422,12 @@ def _register_qa_tools(mcp: FastMCP, client: ApiClient, agent_id: str) -> None:
         """
         return await handle_task_qa_fail(client, task_id, qa_notes, issues, agent_id)
 
+
+def _register_documenter_tools(
+    mcp: FastMCP, client: ApiClient, agent_id: str
+) -> None:
+    """Register documenter-only tools (docs_complete)."""
+
     @mcp.tool()
     async def roboco_task_docs_complete(
         task_id: str, doc_notes: str | None = None
@@ -403,6 +450,12 @@ def _register_qa_tools(mcp: FastMCP, client: ApiClient, agent_id: str) -> None:
             Task now awaiting PM review
         """
         return await handle_docs_complete(client, task_id, agent_id, doc_notes)
+
+
+def _register_pm_completion_tools(
+    mcp: FastMCP, client: ApiClient, agent_id: str
+) -> None:
+    """Register PM-only task completion tools."""
 
     @mcp.tool()
     async def roboco_task_complete(task_id: str) -> dict[str, Any]:
@@ -500,37 +553,6 @@ def _register_pm_tools(mcp: FastMCP, client: ApiClient, agent_id: str) -> None:
             Cancelled task confirmation
         """
         return await handle_task_cancel(client, task_id, agent_id, reason)
-
-    @mcp.tool()
-    async def roboco_task_escalate(
-        task_id: str, reason: str, escalate_to: str | None = None
-    ) -> dict[str, Any]:
-        """
-        Escalate a task up the management hierarchy.
-
-        Use this when:
-        - Task is blocked by something outside your control
-        - You need PM guidance or decision
-        - Task scope has grown beyond your authority
-        - Cross-team coordination is needed
-
-        Escalation chain:
-        - Developer/QA/Doc -> Cell PM
-        - Cell PM -> Main PM
-        - Main PM -> Product Owner
-
-        Args:
-            task_id: The task UUID to escalate
-            reason: Why this task needs escalation (be specific)
-            escalate_to: Optional specific target (overrides default chain)
-
-        Returns:
-            Task with escalation confirmation
-        """
-        input_data = TaskEscalateInput(
-            task_id=task_id, reason=reason, escalate_to=escalate_to
-        )
-        return await handle_task_escalate(client, input_data, agent_id)
 
     @mcp.tool()
     async def roboco_task_activate(task_id: str) -> dict[str, Any]:
@@ -687,22 +709,51 @@ def create_task_mcp_server(agent_id: str) -> FastMCP:
     Create a Task MCP server for a specific agent.
 
     The agent_id is embedded in the server to enforce ownership rules.
+    Tools are registered based on role - agents only see tools they can use.
 
     Args:
         agent_id: The agent identifier (e.g., "be-dev-1")
 
     Returns:
-        Configured FastMCP server
+        Configured FastMCP server with role-appropriate tools
     """
+    from roboco.agents_config import get_agent_role
+
     mcp = FastMCP(f"roboco-task-{agent_id}", json_response=True)
     client = ApiClient(agent_id)
+    role = get_agent_role(agent_id)
 
-    # Register all tools via helper functions
+    # Core tools available to ALL agents
     _register_core_tools(mcp, client, agent_id)
-    _register_blocking_tools(mcp, client, agent_id)
-    _register_qa_tools(mcp, client, agent_id)
-    _register_pm_tools(mcp, client, agent_id)
-    _register_session_tools(mcp, client, agent_id)
+
+    # Role-specific tool registration
+    if role == "developer":
+        # Developers: submit workflow + blocking
+        _register_developer_submit_tools(mcp, client, agent_id)
+        _register_blocking_tools(mcp, client, agent_id)
+
+    elif role == "qa":
+        # QA: verdict tools only
+        _register_qa_verdict_tools(mcp, client, agent_id)
+
+    elif role == "documenter":
+        # Documenters: docs completion only
+        _register_documenter_tools(mcp, client, agent_id)
+
+    elif role in ("cell_pm", "main_pm"):
+        # PMs: full management capabilities
+        _register_pm_completion_tools(mcp, client, agent_id)
+        _register_pm_tools(mcp, client, agent_id)
+        _register_session_tools(mcp, client, agent_id)
+        _register_blocking_tools(mcp, client, agent_id)
+
+    elif role in ("product_owner", "head_marketing", "auditor", "ceo"):
+        # Board/Management: PM tools + completion
+        _register_pm_completion_tools(mcp, client, agent_id)
+        _register_pm_tools(mcp, client, agent_id)
+        _register_session_tools(mcp, client, agent_id)
+
+    # Unknown role: only core tools (scan, get, claim, etc.)
 
     return mcp
 

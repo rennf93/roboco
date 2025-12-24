@@ -178,6 +178,9 @@ class DocumenterAgent(Agent, PhaseEngine[DocTaskPhase, DocContext]):
         """
         self.log.info("RECEIVE phase", task_id=str(ctx.task_id))
 
+        # CLAIM: Transition from awaiting_documentation to claimed
+        await self._mark_claimed(ctx.task_id)
+
         await self.send_message(
             ctx.session_id,
             f"Starting documentation for TASK-{str(ctx.task_id)[:8]}: {ctx.title}",
@@ -285,6 +288,15 @@ Respond with structured analysis.
                 )
             )
 
+        # PLAN: Save documentation plan to task API (required before start)
+        plan_data = {
+            "approach": f"Document {ctx.title}",
+            "steps": [doc.title for doc in ctx.documents_needed],
+            "risks": [],
+            "estimated_sessions": 1,
+        }
+        await self._api_call("PATCH", f"/tasks/{ctx.task_id}", json={"plan": plan_data})
+
         ctx.notes.append(
             f"[{datetime.now(UTC).isoformat()}] Synthesis complete: "
             f"{len(ctx.documents_needed)} documents needed"
@@ -294,6 +306,9 @@ Respond with structured analysis.
         """
         WRITE phase: Create/update documentation.
 
+        - START: Transition to in_progress on first doc
+        - Write each document
+
         Returns True when all docs written.
         """
         self.log.info(
@@ -302,6 +317,13 @@ Respond with structured analysis.
             doc=ctx.current_doc,
             total=len(ctx.documents_needed),
         )
+
+        # START: Transition to in_progress on first doc
+        if ctx.current_doc == 0:
+            await self._mark_in_progress(ctx.task_id)
+            self.log.info(
+                "Documentation started (in_progress)", task_id=str(ctx.task_id)
+            )
 
         if ctx.current_doc >= len(ctx.documents_needed):
             return True

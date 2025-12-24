@@ -410,7 +410,15 @@ class TaskService(BaseService):
         # Update assignment
         task.assigned_to = cast("Any", agent_id)
         task.claimed_at = datetime.now(UTC)
-        if task.status == TaskStatus.PENDING:
+
+        # Transition to CLAIMED from any claimable status
+        # (PENDING, AWAITING_QA, AWAITING_DOCUMENTATION all → CLAIMED)
+        claimable_statuses = {
+            TaskStatus.PENDING,
+            TaskStatus.AWAITING_QA,
+            TaskStatus.AWAITING_DOCUMENTATION,
+        }
+        if task.status in claimable_statuses:
             task.status = TaskStatus.CLAIMED
 
         await self.session.flush()
@@ -468,6 +476,14 @@ class TaskService(BaseService):
                 "Cannot start task - invalid status",
                 task_id=str(task_id),
                 current_status=task.status.value,
+            )
+            return None
+
+        # PLAN required before starting from CLAIMED (everyone must plan)
+        if task.status == TaskStatus.CLAIMED and not task.plan:
+            self.log.warning(
+                "Cannot start task - no plan",
+                task_id=str(task_id),
             )
             return None
 
@@ -775,15 +791,19 @@ class TaskService(BaseService):
     async def complete(
         self,
         task_id: UUID,
+        agent_id: UUID | None = None,
     ) -> TaskTable | None:
         """
         Mark task as completed (PM only).
 
-        Only PMs can complete tasks, and only from AWAITING_PM_REVIEW status.
-        This ensures the full workflow: Dev → QA → Documenter → PM.
+        Two completion paths:
+        1. Developer work: task must be in AWAITING_PM_REVIEW (went through QA/Docs)
+        2. PM's own task: task can be IN_PROGRESS if assigned to the completing PM
 
         Args:
             task_id: The task to complete
+            agent_id: Optional agent UUID - if provided, allows PM to complete
+                      their own in_progress tasks
 
         Returns:
             The completed task or None if completion not allowed
@@ -792,13 +812,22 @@ class TaskService(BaseService):
         if not task:
             return None
 
-        # Only allow completion from AWAITING_PM_REVIEW
-        # This enforces the workflow: documenter calls docs_complete, PM calls complete
-        if task.status != TaskStatus.AWAITING_PM_REVIEW:
+        # Check if PM is completing their own task (assigned to them)
+        is_own_task = agent_id and task.assigned_to == agent_id
+
+        # Two valid completion paths:
+        # 1. Normal workflow: task in awaiting_pm_review (dev → QA → docs → PM)
+        # 2. PM's own work: task in in_progress AND assigned to this PM
+        if task.status == TaskStatus.AWAITING_PM_REVIEW:
+            pass  # Normal completion of developer work
+        elif task.status == TaskStatus.IN_PROGRESS and is_own_task:
+            pass  # PM completing their own task
+        else:
             self.log.warning(
-                "Cannot complete task - must be in awaiting_pm_review status",
+                "Cannot complete task - invalid status for completion",
                 task_id=str(task_id),
                 current_status=task.status.value,
+                is_own_task=is_own_task,
             )
             return None
 

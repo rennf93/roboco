@@ -926,8 +926,9 @@ async def complete_task(
 ) -> TaskResponse:
     """Mark task as completed (PM only).
 
-    Only PMs can complete tasks, and only from awaiting_pm_review status.
-    This ensures the full workflow: Dev → QA → Documenter → PM.
+    Two completion paths:
+    1. Developer work: task must be in awaiting_pm_review (went through QA/Docs)
+    2. PM's own task: task can be in_progress if assigned to the completing PM
     """
     service = get_task_service(db)
     task = await service.get(task_id)
@@ -965,11 +966,13 @@ async def complete_task(
             detail=detail,
         )
 
-    task = await service.complete(task_id)
+    # Pass agent_id so service can check if PM is completing their own task
+    task = await service.complete(task_id, agent_id=agent.agent_id)
     if not task:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Cannot complete task - invalid status",
+            detail="Cannot complete task - must be in awaiting_pm_review or "
+            "in_progress (if your own task)",
         )
     await db.commit()
     return task_to_response(task)

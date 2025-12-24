@@ -74,10 +74,24 @@ async def handle_docs_complete(
     )
 
 
+def _is_pm_own_task(task: dict[str, Any], agent_id: str) -> bool:
+    """Check if this is the PM's own task (assigned to them)."""
+    assigned_to = task.get("assigned_to")
+    # Could be UUID or slug - check both patterns
+    return assigned_to == agent_id or (
+        isinstance(assigned_to, str) and agent_id in assigned_to
+    )
+
+
 async def handle_task_complete(
     client: ApiClient, task_id: str, agent_id: str
 ) -> dict[str, Any]:
-    """Handle task completion (PM only)."""
+    """Handle task completion (PM only).
+
+    Two completion paths:
+    1. Completing developer work: task must be in 'awaiting_pm_review'
+    2. Completing PM's own task: task can be in 'in_progress' if assigned to PM
+    """
     if error := _validate_pm_role(agent_id, "complete tasks"):
         return error
 
@@ -86,8 +100,19 @@ async def handle_task_complete(
         return error
     assert task is not None
 
-    if error := validate_task_status(task, "awaiting_pm_review", "complete"):
-        return error
+    current_status = task.get("status")
+
+    # PM completing their own task - allow from in_progress
+    if current_status == "in_progress" and _is_pm_own_task(task, agent_id):
+        pass  # Valid - PM completing their own work
+    # Normal path - developer work went through QA/Docs
+    elif current_status != "awaiting_pm_review":
+        return format_error_response(
+            "INVALID_STATE",
+            f"Cannot complete task in '{current_status}' status. "
+            "Expected 'awaiting_pm_review' (dev work) or 'in_progress' (own task).",
+            {"current_status": current_status},
+        )
 
     complete_resp = await client.post(f"/tasks/{task_id}/complete")
     if not complete_resp.ok:

@@ -184,13 +184,13 @@ class DeveloperAgent(Agent, PhaseEngine[DevTaskPhase, TaskContext]):
         """
         CLAIM phase: Lock the task and announce.
 
-        - Update task status to "claimed"
+        - Claim task via /claim endpoint (validates status)
         - Announce in cell channel
         """
         self.log.info("CLAIM phase", task_id=str(ctx.task_id))
 
-        # Update task status
-        await self._update_task_status(ctx.task_id, TaskStatus.CLAIMED)
+        # Claim via proper endpoint (validates task is claimable)
+        await self._mark_claimed(ctx.task_id)
 
         # Announce in session
         await self.send_message(
@@ -263,6 +263,7 @@ If clarification needed, respond with: "QUESTION: [your question]"
         PLAN phase: Break task into subtasks.
 
         - Create implementation plan
+        - Save plan to task via API (REQUIRED before start)
         - Identify dependencies and risks
         - Journal the approach
         """
@@ -311,6 +312,15 @@ Add unit tests,tests/test_main.py,small
                 {"description": response, "files": [], "complexity": "medium"}
             ]
 
+        # Save plan to task via API (REQUIRED before start can be called)
+        plan_data = {
+            "approach": f"Implement {ctx.title}",
+            "steps": [s.get("description", str(s)) for s in ctx.subtasks],
+            "risks": [],
+            "estimated_sessions": 1,
+        }
+        await self._api_call("PATCH", f"/tasks/{ctx.task_id}", json={"plan": plan_data})
+
         # Journal entry
         ts = datetime.now(UTC).isoformat()
         ctx.journal_entries.append(f"[{ts}] Plan: {len(ctx.subtasks)} subtasks created")
@@ -327,6 +337,7 @@ Add unit tests,tests/test_main.py,small
         """
         EXECUTE phase: Work through subtasks.
 
+        - START: Transition to in_progress on first execution
         - Execute current subtask
         - Commit with meaningful messages
         - Update progress
@@ -339,6 +350,11 @@ Add unit tests,tests/test_main.py,small
             subtask=ctx.current_subtask,
             total=len(ctx.subtasks),
         )
+
+        # START: Transition to in_progress on first subtask
+        if ctx.current_subtask == 0:
+            await self._mark_in_progress(ctx.task_id)
+            self.log.info("Task started (in_progress)", task_id=str(ctx.task_id))
 
         if ctx.current_subtask >= len(ctx.subtasks):
             return True

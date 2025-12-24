@@ -98,6 +98,12 @@ PM_ROLES: Final[set[str]] = {
     "ceo",
 }
 
+# Developer-only tools (PMs, QA, Documenters cannot use these)
+DEVELOPER_ONLY_TOOLS: Final[frozenset[str]] = frozenset({
+    "roboco_task_submit_verification",
+    "roboco_task_submit_qa",
+})
+
 # Escalation chain - who each agent escalates to
 ESCALATION_CHAIN: Final[dict[str, str]] = {
     # Developers → Cell PM
@@ -216,6 +222,12 @@ def can_cancel_tasks(agent_id: str) -> bool:
     """Check if agent can cancel tasks (PMs and board, not CEO/Auditor)."""
     role = get_agent_role(agent_id)
     return role in _CANCEL_ROLES
+
+
+def can_submit_for_qa(agent_id: str) -> bool:
+    """Check if agent can submit work for QA (developers only)."""
+    role = get_agent_role(agent_id)
+    return role == "developer"
 
 
 def get_escalation_target(agent_id: str) -> str | None:

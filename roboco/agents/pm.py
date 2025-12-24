@@ -110,22 +110,234 @@ class CellPMAgent(Agent, CyclicPhaseRunner[CellPMPhase]):
 
     async def find_work(self) -> UUID | None:
         """
-        PM always has work - returns a pseudo task ID for management duties.
+        Find work for the PM.
+
+        Priority:
+        1. Paused tasks with all subtasks complete (ready for closure)
+        2. Assigned tasks in progress
+        3. Fall back to cyclic management duties (self.id)
         """
+        # Check for paused tasks ready for closure
+        ready_task = await self._find_paused_task_ready_for_closure()
+        if ready_task:
+            self.log.info(
+                "Found paused task ready for closure", task_id=str(ready_task)
+            )
+            return ready_task
+
+        # Check for assigned in-progress tasks
+        assigned_task = await self._find_assigned_task()
+        if assigned_task:
+            self.log.info("Found assigned task", task_id=str(assigned_task))
+            return assigned_task
+
+        # Fall back to cyclic management duties
         return self.id
 
-    async def execute_task(self, _task_id: UUID) -> bool:
+    async def _find_paused_task_ready_for_closure(self) -> UUID | None:
         """
-        Execute PM duties in a cycle.
+        Find own paused tasks where all subtasks are complete.
 
-        Returns False to keep running continuously.
+        This is the key PM workflow: delegate subtasks, pause, get respawned
+        when subtasks complete, then review and close.
         """
-        error = await self._run_phase_cycle()
-        if error:
-            self.log.error(
-                "Error in PM phase", phase=self._current_phase.value, error=error
+        try:
+            # Get my paused tasks
+            result = await self._api_call(
+                "GET",
+                "/tasks",
+                params={"status": "paused", "assigned_to": str(self.id)},
             )
-        return False  # Never complete - continuous duty
+            paused_tasks = (
+                result.get("items", result) if isinstance(result, dict) else result
+            )
+
+            for task in paused_tasks:
+                task_id = task.get("id")
+                if not task_id:
+                    continue
+
+                # Check if this task has subtasks
+                subtasks_result = await self._api_call(
+                    "GET",
+                    "/tasks",
+                    params={"parent_task_id": task_id},
+                )
+                subtasks = (
+                    subtasks_result.get("items", subtasks_result)
+                    if isinstance(subtasks_result, dict)
+                    else subtasks_result
+                )
+
+                if not subtasks:
+                    continue  # No subtasks - not a delegation task
+
+                # Check if ALL subtasks are complete
+                all_complete = all(
+                    s.get("status") in ("completed", "cancelled") for s in subtasks
+                )
+
+                if all_complete:
+                    return UUID(task_id) if isinstance(task_id, str) else task_id
+
+            return None
+
+        except Exception as e:
+            self.log.warning(
+                "Failed to find paused tasks ready for closure", error=str(e)
+            )
+            return None
+
+    async def _find_assigned_task(self) -> UUID | None:
+        """Find tasks assigned to this PM that are in progress."""
+        try:
+            result = await self._api_call(
+                "GET",
+                "/tasks",
+                params={"status": "in_progress", "assigned_to": str(self.id)},
+            )
+            tasks = result.get("items", result) if isinstance(result, dict) else result
+            return UUID(tasks[0]["id"]) if tasks else None
+        except Exception as e:
+            self.log.warning("Failed to find assigned task", error=str(e))
+            return None
+
+    async def execute_task(self, task_id: UUID) -> bool:
+        """
+        Execute PM work.
+
+        Two modes:
+        1. task_id == self.id: Run cyclic management duties
+        2. task_id is real task: Work on specific task (CLAIM → PLAN → START → ...)
+
+        Returns True when task-specific work is complete, False for cyclic duties.
+        """
+        # Cyclic management duties (no specific task)
+        if task_id == self.id:
+            error = await self._run_phase_cycle()
+            if error:
+                self.log.error(
+                    "Error in PM phase", phase=self._current_phase.value, error=error
+                )
+            return False  # Never complete - continuous duty
+
+        # Task-specific work - delegate to task workflow
+        return await self._execute_pm_task(task_id)
+
+    async def _execute_pm_task(self, task_id: UUID) -> bool:
+        """
+        Execute PM workflow on a specific task.
+
+        PM Workflow: CLAIM → PLAN → START → EXECUTE (delegate) → PAUSE → COMPLETE
+
+        Returns True when PM work is done (delegated or completed).
+        """
+        try:
+            task = await self._api_call("GET", f"/tasks/{task_id}")
+            status = task.get("status")
+            return await self._handle_pm_task_status(task_id, task, status)
+        except Exception as e:
+            self.log.error(
+                "Error in PM task execution", task_id=str(task_id), error=str(e)
+            )
+            return False
+
+    async def _handle_pm_task_status(
+        self, task_id: UUID, task: dict[str, Any], status: str | None
+    ) -> bool:
+        """Handle PM task based on current status."""
+        if status == "pending":
+            await self._mark_claimed(task_id)
+            self.log.info("PM claimed task", task_id=str(task_id))
+            return False
+
+        if status == "claimed":
+            return await self._handle_claimed_task(task_id, task)
+
+        if status == "in_progress":
+            return await self._handle_in_progress_task(task_id, task)
+
+        if status == "paused":
+            await self._mark_completed(task_id)
+            self.log.info("PM completed task", task_id=str(task_id))
+            return True
+
+        return False
+
+    async def _handle_claimed_task(self, task_id: UUID, task: dict[str, Any]) -> bool:
+        """Handle claimed task - plan then start."""
+        if not task.get("plan"):
+            plan = await self._create_pm_plan(task)
+            await self._api_call("PATCH", f"/tasks/{task_id}", json={"plan": plan})
+            self.log.info("PM planned task", task_id=str(task_id))
+            return False
+
+        await self._mark_in_progress(task_id)
+        self.log.info("PM started task", task_id=str(task_id))
+        return False
+
+    async def _handle_in_progress_task(
+        self, task_id: UUID, task: dict[str, Any]
+    ) -> bool:
+        """Handle in_progress task - delegate and pause."""
+        delegated = await self._delegate_task(task_id, task)
+        if delegated:
+            remaining = ["Review subtask completions", "Close task"]
+            await self._api_call(
+                "POST",
+                f"/tasks/{task_id}/pause",
+                json={
+                    "reason": "Awaiting subtask completion",
+                    "checkpoint_summary": "Delegated to cell agents",
+                    "remaining_work": remaining,
+                },
+            )
+            self.log.info("PM delegated and paused", task_id=str(task_id))
+        return True
+
+    async def _create_pm_plan(self, task: dict[str, Any]) -> dict[str, Any]:
+        """Create a PM triage plan for a task."""
+        return {
+            "approach": "Triage and delegate to cell developers",
+            "steps": [
+                "Analyze requirements",
+                "Identify subtasks",
+                "Assign to available developers",
+                "Create work session",
+                "Monitor progress",
+            ],
+            "risks": task.get("acceptance_criteria", [])[:2],
+            "estimated_sessions": 1,
+        }
+
+    async def _delegate_task(self, task_id: UUID, task: dict[str, Any]) -> bool:
+        """Delegate task by creating subtasks for developers."""
+        # Simple delegation - create one subtask assigned to available dev
+        best_dev = await self._find_best_dev(task_id)
+        if not best_dev:
+            self.log.warning("No available developer for task", task_id=str(task_id))
+            return False
+
+        # Create subtask
+        await self._api_call(
+            "POST",
+            "/tasks",
+            json={
+                "title": f"Implement: {task.get('title', 'Task')}",
+                "description": task.get("description", ""),
+                "team": self.team.value if self.team else "backend",
+                "acceptance_criteria": task.get("acceptance_criteria", []),
+                "parent_task_id": str(task_id),
+                "assigned_to": str(best_dev.agent_id),
+                "status": "pending",
+            },
+        )
+        self.log.info(
+            "PM created subtask",
+            parent_task_id=str(task_id),
+            assigned_to=str(best_dev.agent_id),
+        )
+        return True
 
     # =========================================================================
     # CELL PM PHASES
@@ -622,17 +834,265 @@ class MainPMAgent(Agent, CyclicPhaseRunner[MainPMPhase]):
     # =========================================================================
 
     async def find_work(self) -> UUID | None:
-        """Main PM always has work."""
+        """
+        Find work for the Main PM.
+
+        Priority:
+        1. Paused tasks with all subtasks complete (ready for closure)
+        2. Assigned tasks in progress
+        3. Fall back to cyclic management duties (self.id)
+        """
+        # Check for paused tasks ready for closure
+        ready_task = await self._find_paused_task_ready_for_closure()
+        if ready_task:
+            self.log.info(
+                "Found paused task ready for closure", task_id=str(ready_task)
+            )
+            return ready_task
+
+        # Check for assigned in-progress tasks
+        assigned_task = await self._find_assigned_task()
+        if assigned_task:
+            self.log.info("Found assigned task", task_id=str(assigned_task))
+            return assigned_task
+
+        # Fall back to cyclic management duties
         return self.id
 
-    async def execute_task(self, _task_id: UUID) -> bool:
-        """Execute Main PM duties in a cycle."""
-        error = await self._run_phase_cycle()
-        if error:
-            self.log.error(
-                "Error in Main PM phase", phase=self._current_phase.value, error=error
+    async def _find_paused_task_ready_for_closure(self) -> UUID | None:
+        """
+        Find own paused tasks where all subtasks are complete.
+
+        This is the key PM workflow: delegate subtasks, pause, get respawned
+        when subtasks complete, then review and close.
+        """
+        try:
+            # Get my paused tasks
+            result = await self._api_call(
+                "GET",
+                "/tasks",
+                params={"status": "paused", "assigned_to": str(self.id)},
             )
-        return False  # Never complete - continuous duty
+            paused_tasks = (
+                result.get("items", result) if isinstance(result, dict) else result
+            )
+
+            for task in paused_tasks:
+                task_id = task.get("id")
+                if not task_id:
+                    continue
+
+                # Check if this task has subtasks
+                subtasks_result = await self._api_call(
+                    "GET",
+                    "/tasks",
+                    params={"parent_task_id": task_id},
+                )
+                subtasks = (
+                    subtasks_result.get("items", subtasks_result)
+                    if isinstance(subtasks_result, dict)
+                    else subtasks_result
+                )
+
+                if not subtasks:
+                    continue  # No subtasks - not a delegation task
+
+                # Check if ALL subtasks are complete
+                all_complete = all(
+                    s.get("status") in ("completed", "cancelled") for s in subtasks
+                )
+
+                if all_complete:
+                    return UUID(task_id) if isinstance(task_id, str) else task_id
+
+            return None
+
+        except Exception as e:
+            self.log.warning(
+                "Failed to find paused tasks ready for closure", error=str(e)
+            )
+            return None
+
+    async def _find_assigned_task(self) -> UUID | None:
+        """Find tasks assigned to this PM that are in progress."""
+        try:
+            result = await self._api_call(
+                "GET",
+                "/tasks",
+                params={"status": "in_progress", "assigned_to": str(self.id)},
+            )
+            tasks = result.get("items", result) if isinstance(result, dict) else result
+            return UUID(tasks[0]["id"]) if tasks else None
+        except Exception as e:
+            self.log.warning("Failed to find assigned task", error=str(e))
+            return None
+
+    async def execute_task(self, task_id: UUID) -> bool:
+        """
+        Execute Main PM work.
+
+        Two modes:
+        1. task_id == self.id: Run cyclic coordination duties
+        2. task_id is real task: Work on specific task (CLAIM → PLAN → START → ...)
+
+        Returns True when task-specific work is complete, False for cyclic duties.
+        """
+        # Cyclic coordination duties (no specific task)
+        if task_id == self.id:
+            error = await self._run_phase_cycle()
+            if error:
+                self.log.error(
+                    "Error in Main PM phase",
+                    phase=self._current_phase.value,
+                    error=error,
+                )
+            return False  # Never complete - continuous duty
+
+        # Task-specific work - delegate to task workflow
+        return await self._execute_main_pm_task(task_id)
+
+    async def _execute_main_pm_task(self, task_id: UUID) -> bool:
+        """
+        Execute Main PM workflow on a specific task.
+
+        Main PM Workflow: CLAIM → PLAN → START → DISTRIBUTE → PAUSE → COMPLETE
+
+        Returns True when Main PM work is done (distributed or completed).
+        """
+        try:
+            task = await self._api_call("GET", f"/tasks/{task_id}")
+            status = task.get("status")
+            return await self._handle_main_pm_task_status(task_id, task, status)
+        except Exception as e:
+            self.log.error(
+                "Error in Main PM task execution",
+                task_id=str(task_id),
+                error=str(e),
+            )
+            return False
+
+    async def _handle_main_pm_task_status(
+        self, task_id: UUID, task: dict[str, Any], status: str | None
+    ) -> bool:
+        """Handle Main PM task based on current status."""
+        if status == "pending":
+            await self._mark_claimed(task_id)
+            self.log.info("Main PM claimed task", task_id=str(task_id))
+            return False
+
+        if status == "claimed":
+            return await self._handle_main_pm_claimed(task_id, task)
+
+        if status == "in_progress":
+            return await self._handle_main_pm_in_progress(task_id, task)
+
+        if status == "paused":
+            await self._mark_completed(task_id)
+            self.log.info("Main PM completed task", task_id=str(task_id))
+            return True
+
+        return False
+
+    async def _handle_main_pm_claimed(
+        self, task_id: UUID, task: dict[str, Any]
+    ) -> bool:
+        """Handle claimed task - plan then start."""
+        if not task.get("plan"):
+            plan = await self._create_main_pm_plan(task)
+            await self._api_call("PATCH", f"/tasks/{task_id}", json={"plan": plan})
+            self.log.info("Main PM planned task", task_id=str(task_id))
+            return False
+
+        await self._mark_in_progress(task_id)
+        self.log.info("Main PM started task", task_id=str(task_id))
+        return False
+
+    async def _handle_main_pm_in_progress(
+        self, task_id: UUID, task: dict[str, Any]
+    ) -> bool:
+        """Handle in_progress task - distribute and pause."""
+        distributed = await self._distribute_to_cells(task_id, task)
+        if distributed:
+            remaining = ["Monitor cell progress", "Close initiative"]
+            await self._api_call(
+                "POST",
+                f"/tasks/{task_id}/pause",
+                json={
+                    "reason": "Awaiting cell completion",
+                    "checkpoint_summary": "Distributed to Cell PMs",
+                    "remaining_work": remaining,
+                },
+            )
+            self.log.info("Main PM distributed and paused", task_id=str(task_id))
+        return True
+
+    async def _create_main_pm_plan(self, task: dict[str, Any]) -> dict[str, Any]:
+        """Create a Main PM coordination plan for an initiative."""
+        return {
+            "approach": "Coordinate across cells to deliver initiative",
+            "steps": [
+                "Analyze initiative requirements",
+                "Identify cell responsibilities",
+                "Create tasks for Cell PMs",
+                "Set up cross-cell sessions",
+                "Monitor and coordinate",
+            ],
+            "risks": task.get("acceptance_criteria", [])[:2],
+            "estimated_sessions": 2,
+        }
+
+    async def _distribute_to_cells(self, task_id: UUID, task: dict[str, Any]) -> bool:
+        """Distribute initiative to appropriate Cell PMs."""
+        title = task.get("title", "").lower()
+        description = task.get("description", "").lower()
+        content = title + description
+
+        cells_needed = self._determine_cells_needed(content)
+
+        for team, pm_slug in cells_needed:
+            await self._create_cell_task(task_id, task, team, pm_slug)
+
+        return len(cells_needed) > 0
+
+    def _determine_cells_needed(self, content: str) -> list[tuple[str, str]]:
+        """Determine which cells are needed based on content keywords."""
+        cells = []
+        backend_kw = ["api", "backend", "database", "server"]
+        frontend_kw = ["ui", "frontend", "component", "page"]
+        ux_kw = ["design", "ux", "figma", "mockup"]
+
+        if any(kw in content for kw in backend_kw):
+            cells.append(("backend", "be-pm"))
+        if any(kw in content for kw in frontend_kw):
+            cells.append(("frontend", "fe-pm"))
+        if any(kw in content for kw in ux_kw):
+            cells.append(("ux_ui", "ux-pm"))
+
+        return cells if cells else [("backend", "be-pm")]
+
+    async def _create_cell_task(
+        self, parent_id: UUID, task: dict[str, Any], team: str, pm_slug: str
+    ) -> None:
+        """Create a task for a Cell PM."""
+        await self._api_call(
+            "POST",
+            "/tasks",
+            json={
+                "title": f"[{team.upper()}] {task.get('title', 'Task')}",
+                "description": task.get("description", ""),
+                "team": team,
+                "acceptance_criteria": task.get("acceptance_criteria", []),
+                "parent_task_id": str(parent_id),
+                "assigned_to": pm_slug,
+                "status": "pending",
+            },
+        )
+        self.log.info(
+            "Main PM created cell task",
+            parent_task_id=str(parent_id),
+            team=team,
+            assigned_to=pm_slug,
+        )
 
     # =========================================================================
     # MAIN PM PHASES

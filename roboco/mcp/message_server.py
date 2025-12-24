@@ -311,23 +311,55 @@ async def _handle_channel_history(
     }
 
 
-async def _get_task_primary_session(client: ApiClient, task_id: str) -> str | None:
-    """Get the primary session ID for a task, if one exists."""
-    resp = await client.get(f"/sessions/for-task/{task_id}")
-    if not resp.ok:
-        return None
+async def _get_task_primary_session(
+    client: ApiClient, task_id: str, max_depth: int = 5
+) -> str | None:
+    """Get the primary session ID for a task.
 
-    sessions = resp.json()
-    if not sessions:
-        return None
+    If the task has no session, traverses up the parent hierarchy
+    to find the parent's session. Subtasks inherit their parent's session.
 
-    # Find primary session
-    for session in sessions:
-        if session.get("is_primary"):
-            return str(session.get("session_id"))
+    Args:
+        client: API client
+        task_id: The task to find session for
+        max_depth: Maximum parent levels to traverse (prevents infinite loops)
 
-    # Fall back to first session if no primary marked
-    return str(sessions[0].get("session_id")) if sessions else None
+    Returns:
+        Session ID or None if no session found in hierarchy
+    """
+    current_task_id = task_id
+    depth = 0
+
+    while current_task_id and depth < max_depth:
+        # Check if this task has a session
+        resp = await client.get(f"/sessions/for-task/{current_task_id}")
+        if resp.ok:
+            sessions = resp.json()
+            if sessions:
+                # Find primary session
+                for session in sessions:
+                    if session.get("is_primary"):
+                        return str(session.get("session_id"))
+                # Fall back to first session if no primary marked
+                return str(sessions[0].get("session_id"))
+
+        # No session found - check if this is a subtask with a parent
+        task_resp = await client.get(f"/tasks/{current_task_id}")
+        if not task_resp.ok:
+            return None
+
+        task_data = task_resp.json()
+        parent_id = task_data.get("parent_task_id")
+
+        if not parent_id:
+            # No parent - we've reached the top without finding a session
+            return None
+
+        # Traverse up to parent
+        current_task_id = parent_id
+        depth += 1
+
+    return None
 
 
 async def _handle_message_send(
@@ -345,19 +377,19 @@ async def _handle_message_send(
     ):
         return validation_error
 
-    # task_id is required - use task's linked session
+    # task_id is required - use task's linked session (or parent's session for subtasks)
     session_id = await _get_task_primary_session(client, data.task_id)
     if not session_id:
-        # Task has no linked session - PM setup issue
+        # Task has no linked session and no parent with session - PM setup issue
         return format_error_response(
             "NO_TASK_SESSION",
-            f"Task {data.task_id} has no linked session.",
+            f"Task {data.task_id} has no linked session (checked parent hierarchy).",
             {
                 "guidance": (
-                    "This task doesn't have a work session yet.\n"
-                    "Cell PM must create one using "
-                    "roboco_session_create_for_tasks.\n"
-                    "Escalate to your PM if you need a session for this task."
+                    "Neither this task nor its parent have a work session.\n"
+                    "Cell PM must create one with roboco_session_create_for_tasks\n"
+                    "for the PARENT task before subtasks can be worked on.\n"
+                    "Escalate to your PM using roboco_task_escalate."
                 ),
                 "task_id": data.task_id,
             },

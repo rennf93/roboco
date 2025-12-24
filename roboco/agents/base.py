@@ -688,12 +688,22 @@ class Agent(ABC):
     # =========================================================================
 
     async def _mark_claimed(self, task_id: UUID) -> None:
-        """Mark task as claimed."""
-        await self._update_task_status(task_id, TaskStatus.CLAIMED)
+        """Claim task - uses /claim endpoint which validates status."""
+        try:
+            await self._api_call("POST", f"/tasks/{task_id}/claim")
+            self.log.info("Task claimed", task_id=str(task_id))
+        except Exception as e:
+            self.log.error("Failed to claim task", task_id=str(task_id), error=str(e))
+            raise
 
     async def _mark_in_progress(self, task_id: UUID) -> None:
-        """Mark task as in progress."""
-        await self._update_task_status(task_id, TaskStatus.IN_PROGRESS)
+        """Start task - uses /start endpoint which validates plan exists."""
+        try:
+            await self._api_call("POST", f"/tasks/{task_id}/start")
+            self.log.info("Task started", task_id=str(task_id))
+        except Exception as e:
+            self.log.error("Failed to start task", task_id=str(task_id), error=str(e))
+            raise
 
     async def _mark_blocked(self, task_id: UUID) -> None:
         """Mark task as blocked."""

@@ -17,6 +17,19 @@ from roboco.mcp.utils import ApiClient, format_error_response, resolve_agent_uui
 from roboco.services.task import extract_original_developer
 
 
+def _validate_developer_role(agent_id: str) -> dict[str, Any] | None:
+    """Validate agent is a developer (not PM/QA/Documenter). Returns error or None."""
+    agent_role = get_agent_role(agent_id)
+    if agent_role != "developer":
+        return format_error_response(
+            "NOT_DEVELOPER",
+            "Only developers can submit work for verification/QA. "
+            "PMs should use roboco_task_complete() directly.",
+            {"your_role": agent_role, "allowed_roles": ["developer"]},
+        )
+    return None
+
+
 def _has_work_evidence(task: dict[str, Any]) -> bool:
     """Check if task has evidence of work done."""
     return bool(
@@ -30,27 +43,43 @@ def _build_verification_checklist(task: dict[str, Any]) -> str:
     return "\n".join(f"- [ ] {c}" for c in criteria)
 
 
-async def handle_task_submit_verification(
+async def _validate_verification_submission(
     client: ApiClient, task_id: str, agent_id: str
-) -> dict[str, Any]:
-    """Handle task verification submission."""
+) -> tuple[dict[str, Any] | None, dict[str, Any] | None]:
+    """Validate task for verification. Returns (task, None) or (None, error)."""
+    # Only developers can submit for verification
+    if error := _validate_developer_role(agent_id):
+        return None, error
+
     task, error = await fetch_task_or_error(client, task_id)
     if error:
-        return error
+        return None, error
     assert task is not None
 
     if error := await validate_task_ownership(task, agent_id, client):
-        return error
+        return None, error
 
     if error := validate_task_status(task, "in_progress", "submit for verification"):
-        return error
+        return None, error
 
     if not _has_work_evidence(task):
-        return format_error_response(
+        return None, format_error_response(
             "NO_WORK_EVIDENCE",
             "No evidence of work found. Add commits with roboco_task_add_commit "
             "or update progress with roboco_task_progress before verification.",
         )
+
+    return task, None
+
+
+async def handle_task_submit_verification(
+    client: ApiClient, task_id: str, agent_id: str
+) -> dict[str, Any]:
+    """Handle task verification submission."""
+    task, error = await _validate_verification_submission(client, task_id, agent_id)
+    if error:
+        return error
+    assert task is not None
 
     verify_resp = await client.post(f"/tasks/{task_id}/verify")
     if not verify_resp.ok:
@@ -132,6 +161,10 @@ async def handle_task_submit_qa(
     agent_id: str,
 ) -> dict[str, Any]:
     """Handle task QA submission."""
+    # Only developers can submit for QA
+    if error := _validate_developer_role(agent_id):
+        return error
+
     if error := _validate_qa_notes(dev_notes, handoff_summary):
         return error
 
