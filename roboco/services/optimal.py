@@ -163,8 +163,30 @@ class OptimalService:
             # Generate embeddings
             chunks_with_embeddings = ragi.embedder.embed_chunks(chunks)
 
-            # Store directly in vector database
-            ragi.store.add_chunks(chunks_with_embeddings)
+            # Store directly in vector database with retry on transaction errors
+            max_retries = 2
+            for attempt in range(max_retries):
+                try:
+                    ragi.store.add_chunks(chunks_with_embeddings)
+                    break
+                except Exception as e:
+                    if "transaction is aborted" in str(e) and attempt < max_retries - 1:
+                        # PostgreSQL connection has stale transaction - try to recover
+                        logger.warning(
+                            "Retrying store after transaction error",
+                            attempt=attempt + 1,
+                        )
+                        # Force new connection by reinitializing store
+                        if hasattr(ragi.store, "_conn") and ragi.store._conn:
+                            try:
+                                ragi.store._conn.rollback()
+                            except Exception as rollback_err:
+                                logger.debug(
+                                    "Rollback failed during retry",
+                                    error=str(rollback_err),
+                                )
+                        continue
+                    raise
 
         await asyncio.to_thread(_process_and_store)
 
