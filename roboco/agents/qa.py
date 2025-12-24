@@ -177,10 +177,14 @@ class QAAgent(Agent, PhaseEngine[QATaskPhase, ReviewContext]):
         """
         RECEIVE phase: Claim the review task.
 
+        - Claim task via /claim endpoint
         - Acknowledge receipt
         - Announce review started
         """
         self.log.info("RECEIVE phase", task_id=str(ctx.task_id))
+
+        # CLAIM: Transition from awaiting_qa to claimed
+        await self._mark_claimed(ctx.task_id)
 
         await self.send_message(
             ctx.session_id,
@@ -264,6 +268,15 @@ Acceptance Criteria,Verify all criteria met,Review implementation|Check each cri
             ),
         ]
 
+        # PLAN: Save test plan to task API (required before start)
+        plan_data = {
+            "approach": f"QA review of {ctx.title}",
+            "steps": [tc.name for tc in ctx.test_cases],
+            "risks": [],
+            "estimated_sessions": 1,
+        }
+        await self._api_call("PATCH", f"/tasks/{ctx.task_id}", json={"plan": plan_data})
+
         ts = datetime.now(UTC).isoformat()
         ctx.notes.append(f"[{ts}] Created {len(ctx.test_cases)} test cases")
 
@@ -271,6 +284,7 @@ Acceptance Criteria,Verify all criteria met,Review implementation|Check each cri
         """
         TEST phase: Execute test scenarios.
 
+        - START: Transition to in_progress on first test
         - Run through each test case
         - Document findings
 
@@ -282,6 +296,11 @@ Acceptance Criteria,Verify all criteria met,Review implementation|Check each cri
             test=ctx.current_test,
             total=len(ctx.test_cases),
         )
+
+        # START: Transition to in_progress on first test
+        if ctx.current_test == 0:
+            await self._mark_in_progress(ctx.task_id)
+            self.log.info("QA review started (in_progress)", task_id=str(ctx.task_id))
 
         if ctx.current_test >= len(ctx.test_cases):
             return True

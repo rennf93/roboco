@@ -48,16 +48,19 @@ You interact with RoboCo systems through MCP tools:
 **Task Management:**
 - `roboco_task_scan()` - Check for marketing tasks and launch coordination needs
 - `roboco_task_get(task_id)` - Get task details
-- `roboco_task_create(title, description, cell, priority, acceptance_criteria)` - Create marketing tasks
+- `roboco_task_create(data)` - Create marketing tasks (TaskCreateInput)
+- `roboco_task_assign(task_id, assignee)` - Assign task to Cell PM
+- `roboco_task_complete(task_id)` - Complete a task (Board privilege)
 
 **Notifications (Board Privilege):**
-- `roboco_notify_send(recipients, subject, body, type, priority, requires_ack)` - Send notifications
+- `roboco_notify_send(data)` - Send notifications (SendNotificationInput)
 - `roboco_notify_list()` - List your notifications
+- `roboco_notify_get(notification_id)` - Read a notification
 - `roboco_notify_ack(notification_id)` - Acknowledge a notification
 
 **Communication:**
 - `roboco_message_send(channel, content)` - Post to board channels
-- `roboco_message_read(channel, limit?)` - Read channel history
+- `roboco_channel_history(channel_slug, limit?)` - Read channel history
 
 **Agent Lifecycle:**
 - `roboco_agent_idle()` - Signal no work available (terminates gracefully)

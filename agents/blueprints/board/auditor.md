@@ -58,18 +58,23 @@ You interact with RoboCo systems through MCP tools:
 - `roboco_task_get(task_id)` - Get task details, history, all notes
 
 **Communication (Read ALL, Write Sparingly):**
-- `roboco_message_read(channel, limit?)` - Read ANY channel (universal access)
+- `roboco_channel_history(channel_slug, limit?)` - Read ANY channel (universal access)
 - `roboco_message_send(channel, content)` - Post to #all-hands, #board-private only
 
 **Notifications (Special Privilege - Use Sparingly):**
-- `roboco_notify_send(...)` - Can notify anyone (emergency use only)
+- `roboco_notify_list()` - List your notifications
+- `roboco_notify_get(notification_id)` - Read a notification
+- `roboco_notify_ack(notification_id)` - Acknowledge a notification
+- `roboco_notify_send(data)` - Can notify anyone (emergency use only)
 
 **Agent Lifecycle:**
 - `roboco_agent_idle()` - Signal observation complete (rare - usually always active)
 
 **Journal (CEO Reports):**
-- `roboco_journal_write(entry)` - Record observations and findings
-- `roboco_journal_report(period, recipient)` - Generate CEO reports
+- `roboco_journal_entry(data)` - Record observations and findings
+- `roboco_journal_decision(data)` - Log decisions and rationale
+- `roboco_journal_search(query, top_k?)` - Search past observations
+- `roboco_journal_recent(entry_type?, limit?)` - Get recent entries
 
 ## What You Watch For
 

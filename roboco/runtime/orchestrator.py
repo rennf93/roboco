@@ -1478,9 +1478,9 @@ Start now: roboco_task_get("{task_id}")
         Monitors: tasks with completed subtasks but parent still open
         Spawns: be-pm, fe-pm, ux-pm (based on parent team)
         """
-        # Find tasks that have subtasks (check for children)
-        # We look for claimed/in_progress tasks that might have children
-        parent_statuses = ["claimed", "in_progress"]
+        # Find parent tasks that might have children ready for closure
+        # Include "paused" - PM pauses while waiting, respawned when subtasks done
+        parent_statuses = ["claimed", "in_progress", "paused"]
 
         for status in parent_statuses:
             tasks = await self._fetch_tasks(client, status)
