@@ -291,9 +291,17 @@ Respond with structured analysis.
         # PLAN: Save documentation plan to task API (required before start)
         plan_data = {
             "approach": f"Document {ctx.title}",
-            "steps": [doc.title for doc in ctx.documents_needed],
+            "sub_tasks": [
+                {
+                    "id": f"doc-{i}",
+                    "title": doc.title,
+                    "description": f"Write {doc.doc_type.value} at {doc.path}",
+                    "completed": False,
+                    "order": i,
+                }
+                for i, doc in enumerate(ctx.documents_needed)
+            ],
             "risks": [],
-            "estimated_sessions": 1,
         }
         await self._api_call("PATCH", f"/tasks/{ctx.task_id}", json={"plan": plan_data})
 

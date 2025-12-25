@@ -15,6 +15,7 @@ from roboco.api.middleware import setup_middleware
 from roboco.api.routes.agents import router as agents_router
 from roboco.api.routes.channels import router as channels_router
 from roboco.api.routes.dashboard import router as dashboard_router
+from roboco.api.routes.groups import router as groups_router
 from roboco.api.routes.health import router as health_router
 from roboco.api.routes.journals import router as journals_router
 from roboco.api.routes.kanban import router as kanban_router
@@ -157,6 +158,12 @@ def create_app() -> FastAPI:
         channels_router,
         prefix=f"{api_prefix}/channels",
         tags=["Channels"],
+    )
+
+    app.include_router(
+        groups_router,
+        prefix=f"{api_prefix}/groups",
+        tags=["Groups"],
     )
 
     app.include_router(

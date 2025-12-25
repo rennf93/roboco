@@ -240,24 +240,59 @@ def _check_recipients(agent_id: str, recipients: list[str]) -> dict[str, Any] | 
     return None
 
 
+def _validate_send_input(
+    agent_id: str, data: SendNotificationInput
+) -> dict[str, Any] | None:
+    """Validate all send notification inputs. Returns error or None."""
+    for check in [
+        lambda: _check_send_permission(agent_id),
+        lambda: _check_recipients(agent_id, data.recipients),
+        lambda: _validate_notification_type(data.notification_type),
+        lambda: _validate_priority(data.priority),
+    ]:
+        if error := check():
+            return error
+    return None
+
+
+async def _resolve_recipients(
+    recipients: list[str], client: "ApiClient"
+) -> tuple[list[str], dict[str, Any] | None]:
+    """Resolve recipient slugs to UUIDs. Returns (resolved_list, error_or_none)."""
+    from roboco.mcp.utils import resolve_agent_uuid_cached
+
+    resolved: list[str] = []
+    unresolved: list[str] = []
+    for recipient in recipients:
+        uuid = await resolve_agent_uuid_cached(recipient, client)
+        if uuid:
+            resolved.append(uuid)
+        else:
+            unresolved.append(recipient)
+
+    if unresolved:
+        return [], format_error_response(
+            "RECIPIENT_NOT_FOUND",
+            f"Could not resolve recipient(s): {', '.join(unresolved)}",
+        )
+    return resolved, None
+
+
 async def _handle_send(
     client: ApiClient, agent_id: str, data: SendNotificationInput
 ) -> dict[str, Any]:
     """Handle sending a notification."""
-    # Validate permissions and data
-    if error := _check_send_permission(agent_id):
+    if error := _validate_send_input(agent_id, data):
         return error
-    if error := _check_recipients(agent_id, data.recipients):
-        return error
-    if error := _validate_notification_type(data.notification_type):
-        return error
-    if error := _validate_priority(data.priority):
+
+    resolved_recipients, error = await _resolve_recipients(data.recipients, client)
+    if error:
         return error
 
     payload = {
         "type": data.notification_type,
         "priority": data.priority,
-        "to_agents": data.recipients,
+        "to_agents": resolved_recipients,
         "subject": data.subject,
         "body": data.body,
         "requires_ack": data.requires_ack,

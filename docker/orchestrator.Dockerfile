@@ -1,10 +1,10 @@
 # =============================================================================
-# Orchestrator - Docker Hardened Image (DHI)
+# Orchestrator
 # =============================================================================
-# API Server + Agent Spawner using DHI Python 3.13
+# API Server + Agent Spawner using Python 3.13
 # =============================================================================
 
-FROM dhi.io/python:3.13-debian13-dev
+FROM python:3.13-bookworm
 
 # Install dependencies + Docker CLI
 RUN apt-get update && apt-get install -y --no-install-recommends \

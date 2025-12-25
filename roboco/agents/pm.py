@@ -311,33 +311,120 @@ class CellPMAgent(Agent, CyclicPhaseRunner[CellPMPhase]):
         }
 
     async def _delegate_task(self, task_id: UUID, task: dict[str, Any]) -> bool:
-        """Delegate task by creating subtasks for developers."""
-        # Simple delegation - create one subtask assigned to available dev
+        """Delegate task by creating subtasks for developers.
+
+        Follows blueprint workflow:
+        CREATE (backlog) → SESSION → ACTIVATE (pending) → NOTIFY
+        """
+        # Find available developer
         best_dev = await self._find_best_dev(task_id)
         if not best_dev:
             self.log.warning("No available developer for task", task_id=str(task_id))
             return False
 
-        # Create subtask
-        await self._api_call(
+        team = self.team.value if self.team else "backend"
+
+        # Step 1: Create subtask with status "backlog" (prevents premature pickup)
+        subtask_resp = await self._api_call(
             "POST",
             "/tasks",
             json={
                 "title": f"Implement: {task.get('title', 'Task')}",
                 "description": task.get("description", ""),
-                "team": self.team.value if self.team else "backend",
+                "team": team,
                 "acceptance_criteria": task.get("acceptance_criteria", []),
                 "parent_task_id": str(task_id),
                 "assigned_to": str(best_dev.agent_id),
-                "status": "pending",
+                "status": "backlog",  # Backlog until session is ready
             },
         )
+        subtask_id = subtask_resp.get("id")
+        if not subtask_id:
+            self.log.error("Failed to create subtask", parent_task_id=str(task_id))
+            return False
+
         self.log.info(
-            "PM created subtask",
+            "PM created subtask (backlog)",
+            subtask_id=subtask_id,
             parent_task_id=str(task_id),
             assigned_to=str(best_dev.agent_id),
         )
+
+        # Step 2: Create session for the subtask
+        channel_slug = self._get_team_channel(team)
+        try:
+            await self._api_call(
+                "POST",
+                "/sessions/for-tasks",
+                json={
+                    "task_ids": [subtask_id],
+                    "channel_slug": channel_slug,
+                    "scope": f"Work session for {task.get('title', 'task')}",
+                    "relationship_type": "implements",
+                },
+            )
+            self.log.info("Session created for subtask", subtask_id=subtask_id)
+        except Exception as e:
+            self.log.warning(
+                "Session creation failed, activating anyway",
+                subtask_id=subtask_id,
+                error=str(e),
+            )
+
+        # Step 3: Activate subtask (changes status to pending)
+        try:
+            await self._api_call("POST", f"/tasks/{subtask_id}/activate")
+            self.log.info("Subtask activated", subtask_id=subtask_id)
+        except Exception as e:
+            self.log.error(
+                "Failed to activate subtask",
+                subtask_id=subtask_id,
+                error=str(e),
+            )
+            return False
+
+        # Step 4: Notify assigned developer
+        try:
+            await self._notify_developer(best_dev, subtask_id, task)
+        except Exception as e:
+            self.log.warning(
+                "Failed to notify developer (task still assigned)",
+                error=str(e),
+            )
+
         return True
+
+    def _get_team_channel(self, team: str) -> str:
+        """Get the channel slug for a team."""
+        channel_map = {
+            "backend": "backend-cell",
+            "frontend": "frontend-cell",
+            "ux_ui": "uxui-cell",
+        }
+        return channel_map.get(team, "backend-cell")
+
+    async def _notify_developer(
+        self, dev: Any, subtask_id: str, task: dict[str, Any]
+    ) -> None:
+        """Notify developer of new task assignment."""
+        await self._api_call(
+            "POST",
+            "/notifications",
+            json={
+                "type": "task_assigned",
+                "priority": "normal",
+                "to_agents": [str(dev.agent_id)],
+                "subject": f"New task: {task.get('title', 'Task')}",
+                "body": (
+                    f"You've been assigned a new task.\n\n"
+                    f"Task ID: {subtask_id}\n"
+                    f"Title: {task.get('title', 'Task')}\n\n"
+                    f"Use roboco_task_scan to find and claim it."
+                ),
+                "related_task_id": subtask_id,
+                "requires_ack": False,
+            },
+        )
 
     # =========================================================================
     # CELL PM PHASES
@@ -445,11 +532,15 @@ medium,TASK-abc123,P1,backend-dev-1
         # Check for pending questions in channel
         questions = await self._get_pending_questions()
 
-        for question in questions:
+        for question_data in questions:
+            question_content = question_data.get("content", "")
+            task_id = question_data.get("task_id")
+            session_id = question_data.get("session_id")
+
             # Use TOON for token-efficient context encoding
             question_context = self.format_context_labeled(
                 "Cell Question",
-                {"question": question, "cell": self.cell_name},
+                {"question": question_content, "cell": self.cell_name},
             )
 
             prompt = f"""A cell member needs help:
@@ -464,12 +555,26 @@ As the Cell PM, provide:
 Be helpful and unblock the team.
 """
             response = await self.think(prompt)
-            # TODO: Questions should include task_id for routing
-            # For now, log that we can't route without session context
-            self.log.info(
-                "PM response (no session context - need task_id in questions)",
-                response_preview=response[:100],
-            )
+
+            # Send response with task_id for proper routing
+            if session_id:
+                await self.send_message(
+                    UUID(session_id),
+                    response,
+                    message_type="answer",
+                    task_id=UUID(task_id) if task_id else None,
+                )
+                self.log.info(
+                    "PM responded to question",
+                    task_id=task_id,
+                    response_preview=response[:100],
+                )
+            else:
+                self.log.info(
+                    "PM response (no session - using channel)",
+                    task_id=task_id,
+                    response_preview=response[:100],
+                )
 
     async def _phase_escalate(self) -> None:
         """
@@ -626,15 +731,26 @@ Be helpful and unblock the team.
         except Exception as e:
             self.log.error("Failed to assign task", error=str(e))
 
-    async def _get_pending_questions(self) -> list[str]:
-        """Get unanswered questions from channel."""
+    async def _get_pending_questions(self) -> list[dict[str, Any]]:
+        """Get unanswered questions from channel.
+
+        Returns full message info including task_id for routing.
+        """
         try:
             result = await self._api_call(
                 "GET",
                 "/messages",
                 params={"message_type": "dialogue", "unanswered": True},
             )
-            return [m.get("content", "") for m in result.get("items", [])]
+            return [
+                {
+                    "content": m.get("content", ""),
+                    "task_id": m.get("task_id"),
+                    "session_id": m.get("session_id"),
+                    "from_agent": m.get("from_agent"),
+                }
+                for m in result.get("items", [])
+            ]
         except Exception as e:
             self.log.warning("Failed to get pending questions", error=str(e))
             return []
@@ -1073,8 +1189,13 @@ class MainPMAgent(Agent, CyclicPhaseRunner[MainPMPhase]):
     async def _create_cell_task(
         self, parent_id: UUID, task: dict[str, Any], team: str, pm_slug: str
     ) -> None:
-        """Create a task for a Cell PM."""
-        await self._api_call(
+        """Create a task for a Cell PM.
+
+        Follows blueprint workflow:
+        CREATE (backlog) → GROUP → SESSION → ACTIVATE (pending) → NOTIFY
+        """
+        # Step 1: Create task with status "backlog"
+        task_resp = await self._api_call(
             "POST",
             "/tasks",
             json={
@@ -1084,15 +1205,82 @@ class MainPMAgent(Agent, CyclicPhaseRunner[MainPMPhase]):
                 "acceptance_criteria": task.get("acceptance_criteria", []),
                 "parent_task_id": str(parent_id),
                 "assigned_to": pm_slug,
-                "status": "pending",
+                "status": "backlog",  # Backlog until session is ready
             },
         )
+        cell_task_id = task_resp.get("id")
+        if not cell_task_id:
+            self.log.error("Failed to create cell task", parent_id=str(parent_id))
+            return
+
         self.log.info(
-            "Main PM created cell task",
+            "Main PM created cell task (backlog)",
+            cell_task_id=cell_task_id,
             parent_task_id=str(parent_id),
             team=team,
             assigned_to=pm_slug,
         )
+
+        # Step 2: Create group if needed (cross-cell initiatives)
+        channel_slug = self._get_team_channel(team)
+
+        # Step 3: Create session for the cell task
+        try:
+            await self._api_call(
+                "POST",
+                "/sessions/for-tasks",
+                json={
+                    "task_ids": [cell_task_id],
+                    "channel_slug": channel_slug,
+                    "scope": f"Cell work for {task.get('title', 'initiative')}",
+                    "relationship_type": "implements",
+                },
+            )
+            self.log.info("Session created for cell task", cell_task_id=cell_task_id)
+        except Exception as e:
+            self.log.warning(
+                "Session creation failed, activating anyway",
+                cell_task_id=cell_task_id,
+                error=str(e),
+            )
+
+        # Step 4: Activate task (changes status to pending)
+        try:
+            await self._api_call("POST", f"/tasks/{cell_task_id}/activate")
+            self.log.info("Cell task activated", cell_task_id=cell_task_id)
+        except Exception as e:
+            self.log.error(
+                "Failed to activate cell task",
+                cell_task_id=cell_task_id,
+                error=str(e),
+            )
+            return
+
+        # Step 5: Notify Cell PM
+        try:
+            await self._api_call(
+                "POST",
+                "/notifications",
+                json={
+                    "type": "task_assigned",
+                    "priority": "normal",
+                    "to_agents": [pm_slug],
+                    "subject": f"New initiative: {task.get('title', 'Task')}",
+                    "body": (
+                        f"A new initiative has been assigned to your cell.\n\n"
+                        f"Task ID: {cell_task_id}\n"
+                        f"Title: {task.get('title', 'Task')}\n\n"
+                        f"Please triage and delegate to your team."
+                    ),
+                    "related_task_id": cell_task_id,
+                    "requires_ack": True,
+                },
+            )
+        except Exception as e:
+            self.log.warning(
+                "Failed to notify Cell PM (task still assigned)",
+                error=str(e),
+            )
 
     # =========================================================================
     # MAIN PM PHASES

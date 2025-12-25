@@ -1,10 +1,10 @@
 # =============================================================================
-# Agent Base Image - Docker Hardened Image (DHI)
+# Agent Base Image
 # =============================================================================
-# Uses DHI Python 3.13 with dev tools for Claude Code agent containers
+# Python 3.13 with dev tools for Claude Code agent containers
 # =============================================================================
 
-FROM dhi.io/python:3.13-debian13-dev
+FROM python:3.13-bookworm
 
 # Install Node.js 22 (required for Claude Code CLI)
 RUN apt-get update && apt-get install -y --no-install-recommends \

@@ -23,11 +23,27 @@ _DEFAULT_PROMPTS = {
     Team.UX_UI: "You are a UX/UI documenter.",
 }
 
-# Default capabilities for each team
+# Default capabilities for each team (matches blueprint capabilities)
 _CAPABILITIES = {
-    Team.BACKEND: ["documentation", "file_management"],
-    Team.FRONTEND: ["documentation", "storybook", "file_management"],
-    Team.UX_UI: ["documentation", "design_system_docs"],
+    Team.BACKEND: [
+        "technical_writing",
+        "api_documentation",
+        "code_reading",
+        "file_management",
+    ],
+    Team.FRONTEND: [
+        "technical_writing",
+        "component_documentation",
+        "code_reading",
+        "storybook",
+        "file_management",
+    ],
+    Team.UX_UI: [
+        "design_documentation",
+        "design_system_maintenance",
+        "technical_writing",
+        "file_management",
+    ],
 }
 
 

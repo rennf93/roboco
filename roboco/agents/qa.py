@@ -271,9 +271,17 @@ Acceptance Criteria,Verify all criteria met,Review implementation|Check each cri
         # PLAN: Save test plan to task API (required before start)
         plan_data = {
             "approach": f"QA review of {ctx.title}",
-            "steps": [tc.name for tc in ctx.test_cases],
+            "sub_tasks": [
+                {
+                    "id": f"test-{i}",
+                    "title": tc.name,
+                    "description": tc.description,
+                    "completed": False,
+                    "order": i,
+                }
+                for i, tc in enumerate(ctx.test_cases)
+            ],
             "risks": [],
-            "estimated_sessions": 1,
         }
         await self._api_call("PATCH", f"/tasks/{ctx.task_id}", json={"plan": plan_data})
 

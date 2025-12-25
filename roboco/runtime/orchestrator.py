@@ -1418,16 +1418,42 @@ Start now: roboco_task_get("{task_id}")
 
         This is the FIRST dispatcher called - it classifies unassigned tasks
         and routes them to Board, Main PM, Cell PM, or directly to devs.
+        Also handles already-assigned pending tasks for PM agents.
 
-        Monitors: pending tasks with no assigned_to
+        Monitors: pending tasks (both assigned and unassigned)
         Spawns: product-owner, main-pm, be-pm, fe-pm, ux-pm (or devs for simple)
         """
-        # Get pending tasks that haven't been assigned yet
+        # Get pending tasks
         tasks = await self._fetch_tasks(client, "pending")
 
+        # PM-level agents that can have direct assignments
+        pm_agents = {
+            "main-pm",
+            "be-pm",
+            "fe-pm",
+            "ux-pm",
+            "product-owner",
+            "head-marketing",
+            "auditor",
+        }
+
         for task in tasks:
-            # Skip already assigned tasks
-            if task.get("assigned_to"):
+            assigned_to = task.get("assigned_to")
+
+            # Handle already-assigned tasks for PM agents
+            if assigned_to:
+                agent_slug = self._resolve_agent_slug(assigned_to)
+                if agent_slug in pm_agents and not self._is_agent_active(agent_slug):
+                    logger.info(
+                        "Spawning assigned PM agent",
+                        task_id=task.get("id"),
+                        agent_id=agent_slug,
+                    )
+                    await self.spawn_agent(
+                        agent_id=agent_slug,
+                        task_id=task["id"],
+                        initial_prompt=self._build_pm_triage_prompt(task),
+                    )
                 continue
 
             # Classify the task

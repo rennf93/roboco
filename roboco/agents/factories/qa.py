@@ -23,11 +23,25 @@ _DEFAULT_PROMPTS = {
     Team.UX_UI: "You are a UX/UI QA engineer.",
 }
 
-# Default capabilities for each team
+# Default capabilities for each team (matches blueprint capabilities)
 _CAPABILITIES = {
-    Team.BACKEND: ["code_review", "test_execution", "security_analysis"],
-    Team.FRONTEND: ["visual_testing", "a11y_testing", "browser_testing"],
-    Team.UX_UI: ["design_review", "consistency_check", "a11y_testing"],
+    Team.BACKEND: [
+        "code_review",
+        "test_execution",
+        "security_analysis",
+        "quality_assurance",
+    ],
+    Team.FRONTEND: [
+        "visual_testing",
+        "accessibility_testing",
+        "browser_testing",
+        "quality_assurance",
+    ],
+    Team.UX_UI: [
+        "design_review",
+        "accessibility_review",
+        "quality_assurance",
+    ],
 }
 
 

@@ -23,11 +23,31 @@ _DEFAULT_PROMPTS = {
     Team.UX_UI: "You are a UX/UI developer.",
 }
 
-# Default capabilities for each team
+# Default capabilities for each team (matches blueprint capabilities)
 _CAPABILITIES = {
-    Team.BACKEND: ["code_execution", "git_operations", "file_management"],
-    Team.FRONTEND: ["code_execution", "git_operations", "file_management"],
-    Team.UX_UI: ["design_tools", "file_management"],
+    Team.BACKEND: [
+        "code_execution",
+        "git_operations",
+        "file_management",
+        "api_development",
+        "database_design",
+    ],
+    Team.FRONTEND: [
+        "code_execution",
+        "git_operations",
+        "file_management",
+        "browser_testing",
+        "accessibility_testing",
+        "responsive_design",
+    ],
+    Team.UX_UI: [
+        "design_tools",
+        "file_management",
+        "figma_expertise",
+        "prototyping",
+        "design_system_management",
+        "accessibility_design",
+    ],
 }
 
 
