@@ -79,7 +79,6 @@ alembic/versions/*.pyc
 .AppleDouble
 .LSOverride
 
-/docs
 /data
 /#recycle
 .OLD/
