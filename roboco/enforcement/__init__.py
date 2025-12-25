@@ -9,6 +9,15 @@ Provides rule enforcement for all RoboCo operations:
 - Message validation
 - Session boundaries
 - Handoff requirements
+
+Available Utilities (may not all be in use yet):
+- Transition helpers: get_valid_transitions, can_agent_transition
+- State checks: is_terminal_state, is_active_state, is_waiting_state
+- Channel utilities: get_agent_channels
+- QA utilities: can_review_task
+
+All functions are designed to be imported as needed. Some are internal
+helpers used by the primary validate_* functions.
 """
 
 from roboco.enforcement.channel_access import (

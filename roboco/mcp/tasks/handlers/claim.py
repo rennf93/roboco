@@ -10,7 +10,6 @@ from roboco.agents_config import get_agent_role
 from roboco.mcp.tasks import format_task_response
 from roboco.mcp.tasks.handlers._helpers import (
     check_blocking_tasks,
-    check_paused_tasks,
     fetch_task_or_error,
     get_project_context,
     validate_task_claimable,
@@ -19,14 +18,18 @@ from roboco.mcp.utils import ApiClient, format_error_response
 
 
 async def _check_active_tasks(client: ApiClient) -> dict[str, Any] | None:
-    """Check for blocking or paused tasks. Returns error or None."""
+    """Check for blocking tasks. Returns error or None.
+
+    Note: Paused tasks no longer block claiming. Agents can verify why
+    a task is paused (via roboco_task_scan) and decide to resume it
+    or claim new work if it's legitimately waiting on something.
+    """
     active_resp = await client.get("/tasks/my")
     if not active_resp.ok:
         return None
     active_tasks = active_resp.json()
-    if error := check_blocking_tasks(active_tasks):
-        return error
-    return check_paused_tasks(active_tasks)
+    # Only block on in_progress tasks, not paused ones
+    return check_blocking_tasks(active_tasks)
 
 
 async def _execute_claim(
@@ -58,7 +61,7 @@ async def handle_task_claim(
     assert task is not None
 
     agent_role = get_agent_role(agent_id)
-    if error := validate_task_claimable(task, agent_role):
+    if error := await validate_task_claimable(task, agent_role, agent_id, client):
         return error
 
     claimed_task, error = await _execute_claim(client, task_id, agent_id)

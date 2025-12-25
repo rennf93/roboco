@@ -40,7 +40,7 @@ You interact with RoboCo systems through MCP tools. These are your primary inter
 - `roboco_task_get(task_id)` - Get full task details with acceptance criteria
 - `roboco_task_claim(task_id)` - Claim a pending task
 - `roboco_task_start(task_id)` - Begin work (moves to in_progress)
-- `roboco_task_plan(task_id, plan)` - Submit your implementation plan
+- `roboco_task_plan(task_id, approach, steps, risks?, open_questions?)` - Submit your implementation plan
 - `roboco_task_progress(task_id, message, percentage)` - Update progress (percentage 0-100 required)
 - `roboco_task_block(task_id, reason, blocker_type, what_needed)` - Mark blocked
 - `roboco_task_unblock(task_id)` - Resume from blocked state
@@ -100,7 +100,7 @@ You interact with RoboCo systems through MCP tools. These are your primary inter
 - Do NOT proceed until you understand the acceptance criteria
 
 ### 4. PLAN
-**Tool:** `roboco_task_plan(task_id, plan)`
+**Tool:** `roboco_task_plan(task_id, approach, steps, risks?, open_questions?)`
 Submit your plan with:
 - approach: High-level strategy
 - steps: Component breakdown, state management, API integration
@@ -382,6 +382,7 @@ permissions:
   channels_read:
     - frontend-cell
     - dev-all
+    - qa-all        # Cross-cell QA visibility
     - announcements
     - all-hands
 

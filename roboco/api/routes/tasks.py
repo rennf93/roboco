@@ -40,7 +40,7 @@ from roboco.api.schemas.tasks import (
     transform_update_data,
 )
 from roboco.db.tables import AgentTable, NotificationTable
-from roboco.models.base import TaskStatus, Team
+from roboco.models.base import AgentRole, TaskStatus, Team
 from roboco.models.task import TaskCreate
 from roboco.services.audit import get_audit_service
 from roboco.services.messaging import get_messaging_service
@@ -518,7 +518,8 @@ async def start_task(
             detail="Only the assigned agent can start this task",
         )
 
-    task = await service.start(task_id)
+    # Pass agent_id for defense-in-depth validation in service layer
+    task = await service.start(task_id, agent_id=agent.agent_id)
     if not task:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
@@ -544,9 +545,9 @@ async def block_task(
         )
 
     # Only assigned agent or PM can block a task
-    if task.assigned_to != agent.agent_id and agent.role.value not in (
-        "cell_pm",
-        "main_pm",
+    if task.assigned_to != agent.agent_id and agent.role not in (
+        AgentRole.CELL_PM,
+        AgentRole.MAIN_PM,
     ):
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
@@ -587,9 +588,9 @@ async def soft_block_task(
         )
 
     # Only assigned agent or PM can block a task
-    if task.assigned_to != agent.agent_id and agent.role.value not in (
-        "cell_pm",
-        "main_pm",
+    if task.assigned_to != agent.agent_id and agent.role not in (
+        AgentRole.CELL_PM,
+        AgentRole.MAIN_PM,
     ):
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
@@ -623,9 +624,9 @@ async def unblock_task(
         )
 
     # Only assigned agent or PM can unblock a task
-    if task.assigned_to != agent.agent_id and agent.role.value not in (
-        "cell_pm",
-        "main_pm",
+    if task.assigned_to != agent.agent_id and agent.role not in (
+        AgentRole.CELL_PM,
+        AgentRole.MAIN_PM,
     ):
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
@@ -782,7 +783,7 @@ async def pass_qa(
         )
 
     # Only QA agents can pass/fail QA
-    if agent.role.value != "qa":
+    if agent.role != AgentRole.QA:
         audit = get_audit_service()
         await audit.log_task_action_denial(
             agent_id=agent.agent_id,
@@ -819,7 +820,7 @@ async def pass_qa(
     if not task:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Cannot pass QA - not awaiting QA",
+            detail="Cannot pass QA - invalid status for QA workflow",
         )
     await db.commit()
     return task_to_response(task)
@@ -841,7 +842,7 @@ async def fail_qa(
         )
 
     # Only QA agents can pass/fail QA
-    if agent.role.value != "qa":
+    if agent.role != AgentRole.QA:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Only QA agents can fail QA reviews",
@@ -861,7 +862,7 @@ async def fail_qa(
     if not task:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Cannot fail QA - not awaiting QA",
+            detail="Cannot fail QA - invalid status for QA workflow",
         )
     await db.commit()
     return task_to_response(task)
@@ -887,7 +888,7 @@ async def docs_complete(
         )
 
     # Only documenter role can mark docs complete
-    if agent.role.value != "documenter":
+    if agent.role != AgentRole.DOCUMENTER:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Only documenters can mark documentation as complete",
@@ -914,7 +915,7 @@ async def docs_complete(
     if not task:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Cannot mark docs complete - task not awaiting documentation",
+            detail="Cannot mark docs complete - invalid status for documenter workflow",
         )
     await db.commit()
     return task_to_response(task)
@@ -1119,11 +1120,10 @@ async def escalate_task(
             detail=f"Escalation target not found: {target_slug}",
         )
 
-    # Create escalation notification directly (bypassing permission checks)
-    body = (
-        f"Task {task_id} escalated by {agent_record.slug}.\n\n"
-        f"Reason: {data.reason}"
-    )
+    # Create escalation notification directly
+    # NOTE: Permission is enforced via get_escalation_target() which constrains
+    # the escalation chain (devs→PM, PM→MainPM, etc.) per agents_config
+    body = f"Task {task_id} escalated by {agent_record.slug}.\n\nReason: {data.reason}"
     notification = NotificationTable(
         type="blocker_escalation",
         priority="high",

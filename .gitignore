@@ -82,3 +82,4 @@ alembic/versions/*.pyc
 /docs
 /data
 /#recycle
+.OLD/

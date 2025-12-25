@@ -15,12 +15,14 @@ __all__ = ["VALID_TRANSITIONS", "TaskLifecycleError", "validate_task_transition"
 # =============================================================================
 
 VALID_TRANSITIONS: dict[str, list[str]] = {
-    # Initial state
+    # PM setup phase - task with dependencies or needs session setup
+    "backlog": ["pending", "cancelled"],
+    # Ready for work state
     "pending": ["claimed", "cancelled"],
     # Claimed - can start, unclaim, or cancel
     "claimed": ["in_progress", "pending", "cancelled"],
-    # In progress - can block, pause, submit for verification, or cancel
-    "in_progress": ["blocked", "paused", "verifying", "cancelled"],
+    # In progress - can block, pause, verify, complete (PM only), or cancel
+    "in_progress": ["blocked", "paused", "verifying", "completed", "cancelled"],
     # Blocked - can unblock back to in_progress or cancel
     "blocked": ["in_progress", "cancelled"],
     # Paused - can resume back to in_progress or cancel
@@ -34,10 +36,16 @@ VALID_TRANSITIONS: dict[str, list[str]] = {
     ],
     # Needs revision - back to work or cancel
     "needs_revision": ["in_progress", "cancelled"],
-    # Awaiting QA - can pass (to docs), fail (needs revision), block, or cancel
-    "awaiting_qa": ["awaiting_documentation", "needs_revision", "blocked", "cancelled"],
-    # Awaiting documentation - documenter marks docs done, goes to PM review
-    "awaiting_documentation": ["awaiting_pm_review", "cancelled"],
+    # Awaiting QA - QA claims, passes, fails, or blocks
+    "awaiting_qa": [
+        "claimed",
+        "awaiting_documentation",
+        "needs_revision",
+        "blocked",
+        "cancelled",
+    ],
+    # Awaiting documentation - documenter claims or marks done
+    "awaiting_documentation": ["claimed", "awaiting_pm_review", "cancelled"],
     # Awaiting PM review - PM reviews and completes, or cancels
     "awaiting_pm_review": ["completed", "cancelled"],
     # Terminal states - cannot transition out
@@ -56,14 +64,20 @@ _CANCEL_ROLES = ["cell_pm", "main_pm", "product_owner", "head_marketing"]
 
 # Transitions that require specific roles
 ROLE_RESTRICTED_TRANSITIONS: dict[tuple[str, str], list[str]] = {
-    # Only QA can pass or fail QA
+    # Only PM can activate tasks from backlog
+    ("backlog", "pending"): _CANCEL_ROLES,
+    # Only QA can claim and perform QA actions
+    ("awaiting_qa", "claimed"): ["qa"],
     ("awaiting_qa", "awaiting_documentation"): ["qa"],
     ("awaiting_qa", "needs_revision"): ["qa"],
-    # Only documenter can mark docs complete
+    # Only documenter can claim docs tasks and mark complete
+    ("awaiting_documentation", "claimed"): ["documenter"],
     ("awaiting_documentation", "awaiting_pm_review"): ["documenter"],
-    # Only PM can complete after PM review
-    ("awaiting_pm_review", "completed"): _CANCEL_ROLES,  # PMs complete tasks
+    # Only PM can complete tasks (either after PM review or their own work)
+    ("awaiting_pm_review", "completed"): _CANCEL_ROLES,
+    ("in_progress", "completed"): _CANCEL_ROLES,  # PM completing their own task
     # Only PM or higher can cancel tasks (all states that allow cancel)
+    ("backlog", "cancelled"): _CANCEL_ROLES,
     ("pending", "cancelled"): _CANCEL_ROLES,
     ("claimed", "cancelled"): _CANCEL_ROLES,
     ("in_progress", "cancelled"): _CANCEL_ROLES,

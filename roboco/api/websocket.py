@@ -5,6 +5,11 @@ Real-time communication via WebSocket connections for:
 - Channel streams (all messages in a channel)
 - Agent streams (individual agent output)
 - Session streams (messages in a session)
+
+Security Note:
+    WebSocket connections validate agent_id via query params and verify
+    the agent exists in the database. In production, this should be
+    enhanced with proper token-based authentication (JWT, etc.).
 """
 
 import asyncio
@@ -20,6 +25,8 @@ from roboco.api.schemas.websocket import (
     NewMessageBroadcast,
 )
 from roboco.config import settings
+from roboco.db.base import get_db
+from roboco.services.repositories import resolve_agent_uuid
 
 router = APIRouter()
 
@@ -177,6 +184,24 @@ class ConnectionManager:
 manager = ConnectionManager()
 
 
+async def validate_agent_exists(agent_id: UUID | str) -> bool:
+    """
+    Validate that an agent exists in the database.
+
+    This provides basic security by ensuring the claimed agent_id
+    is a valid agent, not just a valid UUID format.
+
+    TODO: Enhance with token-based authentication (JWT) for production.
+    """
+    try:
+        async for db in get_db():
+            result = await resolve_agent_uuid(db, str(agent_id))
+            return result is not None
+    except Exception:
+        return False
+    return False
+
+
 async def validate_channel_access(channel_id: UUID, agent_id: UUID) -> bool:
     """
     Validate that an agent has access to a channel.
@@ -286,6 +311,11 @@ async def agent_stream(
         await websocket.close(code=status.WS_1008_POLICY_VIOLATION)
         return
 
+    # Validate viewer agent exists in database
+    if not await validate_agent_exists(viewer_id):
+        await websocket.close(code=status.WS_1008_POLICY_VIOLATION)
+        return
+
     await manager.connect_agent(websocket, agent_id, viewer_id)
 
     try:
@@ -327,6 +357,11 @@ async def session_stream(
         await websocket.close(code=status.WS_1008_POLICY_VIOLATION)
         return
 
+    # Validate agent exists in database
+    if not await validate_agent_exists(agent_id):
+        await websocket.close(code=status.WS_1008_POLICY_VIOLATION)
+        return
+
     await manager.connect_session(websocket, session_id, agent_id)
 
     try:
@@ -356,6 +391,11 @@ async def notification_stream(
 
     Agents receive real-time notifications via this stream.
     """
+    # Validate agent exists in database
+    if not await validate_agent_exists(agent_id):
+        await websocket.close(code=status.WS_1008_POLICY_VIOLATION)
+        return
+
     await manager.connect_notifications(websocket, agent_id)
 
     try:
@@ -397,16 +437,19 @@ async def broadcast_new_message(msg: NewMessageBroadcast) -> None:
     )
 
 
-async def broadcast_agent_chunk(agent_id: UUID, chunk: str) -> None:
+async def broadcast_agent_chunk(
+    agent_id: str, chunk: str, metadata: dict[str, Any]
+) -> None:
     """Broadcast an agent stream chunk to watchers."""
     event = {
         "type": "agent.stream",
-        "agent_id": str(agent_id),
+        "agent_id": agent_id,
         "chunk": chunk,
         "timestamp": datetime.now(UTC).isoformat(),
+        **metadata,
     }
 
-    await manager.broadcast_to_agent_watchers(agent_id, event)
+    await manager.broadcast_to_agent_watchers(UUID(agent_id), event)
 
 
 async def broadcast_session_closed(

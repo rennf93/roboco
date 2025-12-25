@@ -16,6 +16,7 @@ from roboco.db.tables import AgentTable, SessionTaskTable, TaskTable
 from roboco.enforcement import (
     TaskOwnershipError,
     validate_task_ownership,
+    validate_task_transition,
 )
 from roboco.models.base import TaskStatus, Team
 from roboco.models.task import TaskCreateRequest
@@ -57,7 +58,13 @@ def _get_valid_claim_statuses(
     if role == "qa":
         return {TaskStatus.AWAITING_QA}
     elif role == "documenter":
-        return {TaskStatus.AWAITING_DOCUMENTATION}
+        # Documenters can claim:
+        # - PENDING: when PM assigns a docs task directly
+        # - AWAITING_DOCUMENTATION: normal workflow after QA passes
+        statuses = {TaskStatus.PENDING, TaskStatus.AWAITING_DOCUMENTATION}
+        if allow_reassign:
+            statuses.add(TaskStatus.CLAIMED)
+        return statuses
     else:
         # Developer, PM, and other roles
         statuses = {TaskStatus.PENDING}
@@ -109,6 +116,48 @@ class TaskService(BaseService):
     """
 
     service_name: ClassVar[str] = "task"
+
+    # =========================================================================
+    # STATUS TRANSITION HELPER
+    # =========================================================================
+
+    def _validate_and_set_status(
+        self,
+        task: TaskTable,
+        new_status: TaskStatus,
+        agent_role: str | None = None,
+    ) -> None:
+        """
+        Validate and set task status with lifecycle enforcement.
+
+        This is the single point of truth for status changes. All transitions
+        are validated against VALID_TRANSITIONS and ROLE_RESTRICTED_TRANSITIONS.
+
+        Args:
+            task: The task to update
+            new_status: Target status
+            agent_role: Optional role for role-restricted transitions
+
+        Raises:
+            TaskLifecycleError: If transition is invalid or role not permitted
+        """
+        current = (
+            task.status.value if isinstance(task.status, TaskStatus) else task.status
+        )
+        target = new_status.value if isinstance(new_status, TaskStatus) else new_status
+
+        # Validate the transition (raises TaskLifecycleError if invalid)
+        validate_task_transition(current, target, agent_role)
+
+        # Apply the status change
+        task.status = new_status
+        self.log.info(
+            "Task status transition",
+            task_id=str(task.id),
+            from_status=current,
+            to_status=target,
+            agent_role=agent_role,
+        )
 
     # =========================================================================
     # CRUD OPERATIONS
@@ -381,7 +430,7 @@ class TaskService(BaseService):
         Role-based claiming:
         - Developers/PMs: can claim PENDING tasks
         - QA: can claim AWAITING_QA tasks
-        - Documenters: can claim AWAITING_DOCUMENTATION tasks
+        - Documenters: can claim PENDING (direct assignment) or AWAITING_DOCUMENTATION
         """
         task = await self.get(task_id)
         if not task:
@@ -411,18 +460,17 @@ class TaskService(BaseService):
         task.assigned_to = cast("Any", agent_id)
         task.claimed_at = datetime.now(UTC)
 
-        # Transition to CLAIMED from any claimable status
-        # (PENDING, AWAITING_QA, AWAITING_DOCUMENTATION all → CLAIMED)
+        # Transition to CLAIMED - validated with role for proper enforcement
+        agent_role = agent.role.value if agent and agent.role else None
         claimable_statuses = {
             TaskStatus.PENDING,
             TaskStatus.AWAITING_QA,
             TaskStatus.AWAITING_DOCUMENTATION,
         }
         if task.status in claimable_statuses:
-            task.status = TaskStatus.CLAIMED
+            self._validate_and_set_status(task, TaskStatus.CLAIMED, agent_role)
 
         await self.session.flush()
-        self.log.info("Task claimed", task_id=str(task_id), agent_id=str(agent_id))
         return task
 
     async def start(
@@ -490,10 +538,8 @@ class TaskService(BaseService):
         # Only update started_at if this is the first time starting
         if task.started_at is None:
             task.started_at = datetime.now(UTC)
-        task.status = TaskStatus.IN_PROGRESS
+        self._validate_and_set_status(task, TaskStatus.IN_PROGRESS)
         await self.session.flush()
-
-        self.log.info("Task started", task_id=str(task_id))
         return task
 
     async def block(self, task_id: UUID, blocker_task_id: UUID) -> TaskTable | None:
@@ -505,7 +551,7 @@ class TaskService(BaseService):
         if blocker_task_id not in task.dependency_ids:
             new_deps = [*task.dependency_ids, blocker_task_id]
             task.dependency_ids = new_deps
-        task.status = TaskStatus.BLOCKED
+        self._validate_and_set_status(task, TaskStatus.BLOCKED)
         await self.session.flush()
 
         # Update the blocker task to reference this as blocked
@@ -645,13 +691,15 @@ class TaskService(BaseService):
         if task.status != TaskStatus.VERIFYING:
             return None
 
-        # Store original developer BEFORE QA claims - this is the authoritative record
-        # for self-review prevention. Storing here ensures we capture the developer
-        # even if the task is reassigned before QA claims it.
+        # Store original developer BEFORE clearing assignment - authoritative
+        # record for self-review prevention (QA can't review own work).
         original_dev = str(task.assigned_to) if task.assigned_to else None
         if original_dev:
             task.quick_context = f"original_developer:{original_dev}"
 
+        # Clear assignment so QA can claim the task
+        # The original developer is preserved in quick_context
+        task.assigned_to = None
         task.self_verified = True
         task.status = TaskStatus.AWAITING_QA
         await self.session.flush()
@@ -666,16 +714,29 @@ class TaskService(BaseService):
     async def pass_qa(
         self, task_id: UUID, notes: str | None = None
     ) -> TaskTable | None:
-        """Mark task as passed QA."""
+        """Mark task as passed QA.
+
+        QA workflow: awaiting_qa → claimed → in_progress → pass_qa
+        → awaiting_documentation. Accept claimed/in_progress status.
+        """
         task = await self.get(task_id)
         if not task:
             return None
 
-        if task.status != TaskStatus.AWAITING_QA:
+        # Accept tasks QA is actively working on (claimed or in_progress)
+        # as well as awaiting_qa (for direct pass without starting)
+        valid_statuses = {
+            TaskStatus.AWAITING_QA,
+            TaskStatus.CLAIMED,
+            TaskStatus.IN_PROGRESS,
+        }
+        if task.status not in valid_statuses:
             return None
 
         if notes:
             task.qa_notes = notes
+        # Clear assignment so documenter can claim the task
+        task.assigned_to = None
         task.qa_verified = True
         task.status = TaskStatus.AWAITING_DOCUMENTATION
         await self.session.flush()
@@ -690,12 +751,21 @@ class TaskService(BaseService):
         When QA fails a task, it goes back to the original developer for revision.
         The original developer is extracted from quick_context which stores
         "original_developer:{uuid}" when the task was submitted to QA.
+
+        QA workflow: awaiting_qa → claimed → in_progress → fail_qa → needs_revision
+        So we need to accept tasks in claimed or in_progress status.
         """
         task = await self.get(task_id)
         if not task:
             return None
 
-        if task.status != TaskStatus.AWAITING_QA:
+        # Accept tasks QA is actively working on
+        valid_statuses = {
+            TaskStatus.AWAITING_QA,
+            TaskStatus.CLAIMED,
+            TaskStatus.IN_PROGRESS,
+        }
+        if task.status not in valid_statuses:
             return None
 
         task.qa_notes = notes
@@ -732,8 +802,8 @@ class TaskService(BaseService):
         """
         Mark documentation as complete (documenter only).
 
-        Transitions task from AWAITING_DOCUMENTATION to AWAITING_PM_REVIEW.
-        The Cell PM will then review and call complete() to finish the task.
+        Documenter workflow: awaiting_documentation → claim → plan → start
+        → docs_complete. Accept claimed/in_progress (documenter working).
 
         Args:
             task_id: The task to mark docs complete
@@ -746,9 +816,16 @@ class TaskService(BaseService):
         if not task:
             return None
 
-        if task.status != TaskStatus.AWAITING_DOCUMENTATION:
+        # Accept documenter workflow statuses: awaiting_documentation, claimed,
+        # in_progress (documenter actively working on documentation)
+        valid_statuses = {
+            TaskStatus.AWAITING_DOCUMENTATION,
+            TaskStatus.CLAIMED,
+            TaskStatus.IN_PROGRESS,
+        }
+        if task.status not in valid_statuses:
             self.log.warning(
-                "Cannot mark docs complete - not awaiting documentation",
+                "Cannot mark docs complete - invalid status for documenter workflow",
                 task_id=str(task_id),
                 current_status=task.status.value,
             )
@@ -778,8 +855,9 @@ class TaskService(BaseService):
                     else doc_context
                 )
 
-        # Note: We don't auto-assign to PM here - PM will pick it up via scan
-        # The task remains assigned to documenter until PM claims it
+        # Clear assignment so PM can claim the task for review
+        # Documenter info is preserved in quick_context
+        task.assigned_to = None
         await self.session.flush()
 
         self.log.info(
@@ -884,25 +962,25 @@ class TaskService(BaseService):
             return None
 
         task.completed_at = datetime.now(UTC)
-        task.status = TaskStatus.COMPLETED
+        # Validate transition with PM role requirement
+        self._validate_and_set_status(task, TaskStatus.COMPLETED, "cell_pm")
         await self.session.flush()
 
         # Unblock any tasks waiting on this one
         await self._unblock_dependents(task_id)
-
-        self.log.info("Task completed", task_id=str(task_id))
         return task
 
-    async def cancel(self, task_id: UUID) -> TaskTable | None:
-        """Cancel a task."""
+    async def cancel(
+        self, task_id: UUID, agent_role: str = "cell_pm"
+    ) -> TaskTable | None:
+        """Cancel a task (PM only)."""
         task = await self.get(task_id)
         if not task:
             return None
 
-        task.status = TaskStatus.CANCELLED
+        # Validate transition with PM role requirement
+        self._validate_and_set_status(task, TaskStatus.CANCELLED, agent_role)
         await self.session.flush()
-
-        self.log.info("Task cancelled", task_id=str(task_id))
         return task
 
     async def _unblock_dependents(self, completed_task_id: UUID) -> None:

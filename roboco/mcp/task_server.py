@@ -89,7 +89,7 @@ def _register_core_tools(mcp: FastMCP, client: ApiClient, agent_id: str) -> None
         3. AVAILABLE tasks (team pool, can claim)
 
         Args:
-            team: Optional team filter (backend, frontend, uxui)
+            team: Optional team filter (backend, frontend, ux_ui)
 
         Returns:
             Dict with paused/assigned/available tasks and guidance
@@ -406,9 +406,7 @@ def _register_developer_submit_tools(
         )
 
 
-def _register_qa_verdict_tools(
-    mcp: FastMCP, client: ApiClient, agent_id: str
-) -> None:
+def _register_qa_verdict_tools(mcp: FastMCP, client: ApiClient, agent_id: str) -> None:
     """Register QA-only verdict tools (qa_pass, qa_fail)."""
 
     @mcp.tool()
@@ -453,9 +451,7 @@ def _register_qa_verdict_tools(
         return await handle_task_qa_fail(client, task_id, qa_notes, issues, agent_id)
 
 
-def _register_documenter_tools(
-    mcp: FastMCP, client: ApiClient, agent_id: str
-) -> None:
+def _register_documenter_tools(mcp: FastMCP, client: ApiClient, agent_id: str) -> None:
     """Register documenter-only tools (docs_complete)."""
 
     @mcp.tool()
@@ -710,6 +706,10 @@ def _register_session_tools(mcp: FastMCP, client: ApiClient, agent_id: str) -> N
         """
         return await handle_session_get_for_task(client, task_id, agent_id)
 
+
+def _register_group_tools(mcp: FastMCP, client: ApiClient, agent_id: str) -> None:
+    """Register group management tools (Main PM only)."""
+
     @mcp.tool()
     async def roboco_group_create(data: GroupCreateInput) -> dict[str, Any]:
         """
@@ -770,18 +770,27 @@ def create_task_mcp_server(agent_id: str) -> FastMCP:
         # Documenters: docs completion only
         _register_documenter_tools(mcp, client, agent_id)
 
-    elif role in ("cell_pm", "main_pm"):
-        # PMs: full management capabilities
+    elif role == "cell_pm":
+        # Cell PMs: task management + sessions (no group creation)
         _register_pm_completion_tools(mcp, client, agent_id)
         _register_pm_tools(mcp, client, agent_id)
         _register_session_tools(mcp, client, agent_id)
         _register_blocking_tools(mcp, client, agent_id)
 
-    elif role in ("product_owner", "head_marketing", "auditor", "ceo"):
-        # Board/Management: PM tools + completion
+    elif role == "main_pm":
+        # Main PM: full management including group creation
         _register_pm_completion_tools(mcp, client, agent_id)
         _register_pm_tools(mcp, client, agent_id)
         _register_session_tools(mcp, client, agent_id)
+        _register_group_tools(mcp, client, agent_id)
+        _register_blocking_tools(mcp, client, agent_id)
+
+    elif role in ("product_owner", "head_marketing", "auditor", "ceo"):
+        # Board/Management: PM tools + completion + groups
+        _register_pm_completion_tools(mcp, client, agent_id)
+        _register_pm_tools(mcp, client, agent_id)
+        _register_session_tools(mcp, client, agent_id)
+        _register_group_tools(mcp, client, agent_id)
 
     # Unknown role: only core tools (scan, get, claim, etc.)
 

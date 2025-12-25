@@ -10,8 +10,14 @@ from fastapi import status
 
 from roboco.agents_config import can_cancel_tasks, get_agent_role
 from roboco.mcp.tasks import format_task_response
-from roboco.mcp.tasks.handlers._helpers import fetch_task_or_error, validate_task_status
+from roboco.mcp.tasks.handlers._helpers import (
+    fetch_task_or_error,
+    validate_task_status_in,
+)
 from roboco.mcp.utils import ApiClient, format_error_response
+
+# Documenter workflow: awaiting_documentation → claim → plan → start → docs_complete
+DOCUMENTER_WORKFLOW_STATUSES = {"awaiting_documentation", "claimed", "in_progress"}
 
 
 def _validate_documenter_role(agent_id: str) -> dict[str, Any] | None:
@@ -50,8 +56,8 @@ async def handle_docs_complete(
         return error
     assert task is not None
 
-    if error := validate_task_status(
-        task, "awaiting_documentation", "mark as docs complete"
+    if error := validate_task_status_in(
+        task, DOCUMENTER_WORKFLOW_STATUSES, "mark as docs complete"
     ):
         return error
 
@@ -129,6 +135,30 @@ async def handle_task_complete(
     )
 
 
+def _validate_not_qa_on_dev_work(
+    task: dict[str, Any], agent_id: str
+) -> dict[str, Any] | None:
+    """Validate QA agents don't bypass the proper QA workflow for dev tasks.
+
+    If a QA agent is working on a task that was previously developer work
+    (indicated by self_verified=True), they MUST use roboco_task_qa_pass or
+    roboco_task_qa_fail, not submit_pm_review.
+    """
+    agent_role = get_agent_role(agent_id)
+    if agent_role != "qa":
+        return None  # Not QA, allow
+
+    # Check if this is dev work that went through verification
+    if task.get("self_verified"):
+        return format_error_response(
+            "USE_QA_TOOLS",
+            "This is developer work that went through QA queue. "
+            "Use roboco_task_qa_pass or roboco_task_qa_fail instead.",
+            {"hint": "qa_pass sends to documenter, qa_fail returns to dev"},
+        )
+    return None
+
+
 async def handle_submit_pm_review(
     client: ApiClient, task_id: str, agent_id: str, notes: str | None = None
 ) -> dict[str, Any]:
@@ -136,11 +166,18 @@ async def handle_submit_pm_review(
 
     For tasks that don't follow the standard dev→QA→docs workflow,
     such as PM validation tasks, QA audit tasks, or directly-assigned work.
+
+    IMPORTANT: QA agents reviewing dev work (self_verified=True) must use
+    roboco_task_qa_pass/qa_fail instead - this ensures documenter phase.
     """
     task, error = await fetch_task_or_error(client, task_id)
     if error:
         return error
     assert task is not None
+
+    # QA agents reviewing dev work must use qa_pass/qa_fail
+    if error := _validate_not_qa_on_dev_work(task, agent_id):
+        return error
 
     # Must be in_progress to submit for PM review
     current_status = task.get("status")

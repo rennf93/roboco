@@ -144,7 +144,12 @@ class JournalEntryType(str, Enum):
 
 
 class HandoffStatus(str, Enum):
-    """Documenter handoff states."""
+    """
+    Documenter handoff states.
+
+    NOTE: Reserved for future HandoffTable implementation.
+    Currently unused - see HandoffTable docstring for details.
+    """
 
     PENDING = "pending"
     CLAIMED = "claimed"

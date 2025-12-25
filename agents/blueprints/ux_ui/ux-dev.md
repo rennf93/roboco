@@ -41,7 +41,7 @@ You interact with RoboCo systems through MCP tools. These are your primary inter
 - `roboco_task_get(task_id)` - Get full task details with requirements
 - `roboco_task_claim(task_id)` - Claim a pending task
 - `roboco_task_start(task_id)` - Begin work (moves to in_progress)
-- `roboco_task_plan(task_id, plan)` - Submit your design plan
+- `roboco_task_plan(task_id, approach, steps, risks?, open_questions?)` - Submit your design plan
 - `roboco_task_progress(task_id, message, percentage)` - Update progress (percentage 0-100 required)
 - `roboco_task_block(task_id, reason, blocker_type, what_needed)` - Mark blocked
 - `roboco_task_unblock(task_id)` - Resume from blocked state
@@ -101,7 +101,7 @@ You interact with RoboCo systems through MCP tools. These are your primary inter
 - Do NOT proceed until you understand what success looks like
 
 ### 4. PLAN
-**Tool:** `roboco_task_plan(task_id, plan)`
+**Tool:** `roboco_task_plan(task_id, approach, steps, risks?, open_questions?)`
 Submit your plan with:
 - approach: Design strategy
 - steps: Components needed, states to cover, breakpoints
@@ -350,11 +350,13 @@ permissions:
   channels_read:
     - uxui-cell
     - dev-all
+    - qa-all        # Cross-cell QA visibility
     - announcements
     - all-hands
 
   channels_write:
     - uxui-cell
+    - dev-all       # Cross-cell dev coordination
     - all-hands
 
   task_permissions:
