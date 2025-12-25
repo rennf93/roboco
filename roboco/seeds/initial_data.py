@@ -273,6 +273,20 @@ DEFAULT_AGENTS: list[dict[str, Any]] = [
 
 # =============================================================================
 # CHANNEL MEMBERSHIP
+#
+# This populates the database channel.members/writers fields for initial setup.
+#
+# NOTE: This is SEPARATE from roboco/agents_config.py CHANNEL_ACCESS which is
+# the runtime permission source of truth. The relationship is:
+#
+# 1. CHANNEL_MEMBERSHIPS (here) -> populates database channel.members
+# 2. CHANNEL_ACCESS (agents_config) -> used by PermissionService for checks
+# 3. Privileged roles (CEO, Auditor, Main PM) bypass membership via
+#    has_privileged_access() in services/permissions.py
+#
+# This means main-pm isn't listed in board-private here but CAN read it
+# via the privileged role bypass. The seed data is for UI/listing purposes,
+# while CHANNEL_ACCESS is the actual permission enforcement.
 # =============================================================================
 
 CEO_AGENT_ID = AGENT_UUIDS["ceo"]
@@ -405,7 +419,7 @@ Check `roboco_task_scan(team="frontend")` for pending frontend tasks.
 - Prototyping
 - Accessibility
 
-Check `roboco_task_scan(team="uxui")` for pending UX/UI tasks.
+Check `roboco_task_scan(team="ux_ui")` for pending UX/UI tasks.
 """,
     },
 }

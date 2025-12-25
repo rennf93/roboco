@@ -3,6 +3,13 @@ Handoff Model
 
 Documenter handoffs contain all the information needed for
 a Documenter to create production documentation from developer work.
+
+STATUS: RESERVED FOR FUTURE USE
+================================
+These models define structured handoff documents but are not yet
+implemented in the service layer. See HandoffTable docstring for details.
+
+Current workflow uses simpler `dev_notes + handoff_summary` on tasks.
 """
 
 from dataclasses import dataclass, field

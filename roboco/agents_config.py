@@ -84,11 +84,11 @@ AGENT_TEAM_MAP: Final[dict[str, str]] = {
     "fe-qa": "frontend",
     "fe-pm": "frontend",
     "fe-doc": "frontend",
-    # UX/UI cell
-    "ux-dev": "uxui",
-    "ux-qa": "uxui",
-    "ux-pm": "uxui",
-    "ux-doc": "uxui",
+    # UX/UI cell (matches Team.UX_UI = "ux_ui")
+    "ux-dev": "ux_ui",
+    "ux-qa": "ux_ui",
+    "ux-pm": "ux_ui",
+    "ux-doc": "ux_ui",
     # Management has no team
 }
 
@@ -96,7 +96,7 @@ AGENT_TEAM_MAP: Final[dict[str, str]] = {
 CELL_MEMBERS: Final[dict[str, list[str]]] = {
     "backend": ["be-dev-1", "be-dev-2", "be-qa", "be-pm", "be-doc"],
     "frontend": ["fe-dev-1", "fe-dev-2", "fe-qa", "fe-pm", "fe-doc"],
-    "uxui": ["ux-dev", "ux-qa", "ux-pm", "ux-doc"],
+    "ux_ui": ["ux-dev", "ux-qa", "ux-pm", "ux-doc"],
 }
 
 
@@ -108,6 +108,12 @@ BOARD_MEMBERS: Final[list[str]] = ["product-owner", "head-marketing", "auditor"]
 
 # All PMs
 ALL_PMS: Final[list[str]] = ["be-pm", "fe-pm", "ux-pm", "main-pm"]
+
+# All by role (cross-cell)
+ALL_DEVS: Final[list[str]] = ["be-dev-1", "be-dev-2", "fe-dev-1", "fe-dev-2", "ux-dev"]
+ALL_QA: Final[list[str]] = ["be-qa", "fe-qa", "ux-qa"]
+ALL_DOCS: Final[list[str]] = ["be-doc", "fe-doc", "ux-doc"]
+CELL_PMS: Final[list[str]] = ["be-pm", "fe-pm", "ux-pm"]
 
 # PM-capable roles (can create and assign tasks)
 PM_ROLES: Final[set[str]] = {
@@ -248,41 +254,43 @@ def get_escalation_target(agent_id: str) -> str | None:
 # =============================================================================
 
 CHANNEL_ACCESS: Final[dict[str, dict[str, list[str]]]] = {
-    # Cell channels - members read/write, auditor silent
+    # Cell channels - members read/write, main-pm read (monitoring), auditor silent
     "backend-cell": {
-        "read": CELL_MEMBERS["backend"],
+        "read": [*CELL_MEMBERS["backend"], "main-pm"],
         "write": CELL_MEMBERS["backend"],
         "silent": ["auditor"],
     },
     "frontend-cell": {
-        "read": CELL_MEMBERS["frontend"],
+        "read": [*CELL_MEMBERS["frontend"], "main-pm"],
         "write": CELL_MEMBERS["frontend"],
         "silent": ["auditor"],
     },
     "uxui-cell": {
-        "read": CELL_MEMBERS["uxui"],
-        "write": CELL_MEMBERS["uxui"],
+        "read": [*CELL_MEMBERS["ux_ui"], "main-pm"],
+        "write": CELL_MEMBERS["ux_ui"],
         "silent": ["auditor"],
     },
     # Cross-cell role channels
+    # Cell members read/write their role channel
+    # Cell PMs read/write ALL cross-cell channels for coordination
     "dev-all": {
-        "read": ["be-dev-1", "be-dev-2", "fe-dev-1", "fe-dev-2", "ux-dev"],
-        "write": ["be-dev-1", "be-dev-2", "fe-dev-1", "fe-dev-2", "ux-dev"],
+        "read": [*ALL_DEVS, *ALL_QA, *ALL_DOCS, *CELL_PMS, "main-pm"],
+        "write": [*ALL_DEVS, *CELL_PMS, "main-pm"],
         "silent": ["auditor"],
     },
     "qa-all": {
-        "read": ["be-qa", "fe-qa", "ux-qa"],
-        "write": ["be-qa", "fe-qa", "ux-qa"],
+        "read": [*ALL_QA, *ALL_DEVS, *ALL_DOCS, *CELL_PMS, "main-pm"],
+        "write": [*ALL_QA, *CELL_PMS],
         "silent": ["auditor"],
     },
     "pm-all": {
-        "read": ["be-pm", "fe-pm", "ux-pm", "main-pm"],
-        "write": ["be-pm", "fe-pm", "ux-pm", "main-pm"],
+        "read": [*CELL_PMS, "main-pm"],
+        "write": [*CELL_PMS, "main-pm"],
         "silent": ["auditor"],
     },
     "doc-all": {
-        "read": ["be-doc", "fe-doc", "ux-doc"],
-        "write": ["be-doc", "fe-doc", "ux-doc"],
+        "read": [*ALL_DOCS, *CELL_PMS, "main-pm"],
+        "write": [*ALL_DOCS, *CELL_PMS],
         "silent": ["auditor"],
     },
     # Management channels
@@ -292,7 +300,7 @@ CHANNEL_ACCESS: Final[dict[str, dict[str, list[str]]]] = {
         "silent": [],
     },
     "board-private": {
-        "read": ["product-owner", "head-marketing", "auditor", "ceo"],
+        "read": ["product-owner", "head-marketing", "auditor", "ceo", "main-pm"],
         "write": ["product-owner", "head-marketing", "auditor", "ceo"],
         "silent": [],
     },

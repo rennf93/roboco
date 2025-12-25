@@ -667,7 +667,10 @@ class AgentOrchestrator:
         }
         return role_map.get(agent_id, agent_id)
 
-    # Static team mappings for management agents
+    # Static team mappings for management agents (ROUTING purposes)
+    # NOTE: This differs from agents_config.get_agent_team() intentionally.
+    # agents_config returns None for management (no team for permissions).
+    # This map returns routing categories for dispatcher task assignment.
     _AGENT_TEAM_MAP: ClassVar[dict[str, str]] = {
         "main-pm": "main_pm",
         "product-owner": "board",
@@ -1155,6 +1158,23 @@ Start by:
         }
     )
 
+    # Keywords that indicate cross-cell work (requires Main PM)
+    _CROSS_CELL_KEYWORDS = frozenset(
+        {
+            "all teams",
+            "all cells",
+            "every team",
+            "every cell",
+            "all departments",
+            "cross-cell",
+            "company-wide",
+            "organization-wide",
+            "backend and frontend",
+            "frontend and backend",
+            "all three",
+        }
+    )
+
     def _has_board_keywords(self, text: str) -> bool:
         """Check if text contains board-level keywords."""
         return any(kw in text for kw in self._BOARD_KEYWORDS)
@@ -1162,6 +1182,10 @@ Start by:
     def _has_pm_keywords(self, text: str) -> bool:
         """Check if text contains PM coordination keywords."""
         return any(kw in text for kw in self._PM_KEYWORDS)
+
+    def _has_cross_cell_keywords(self, text: str) -> bool:
+        """Check if text indicates work spanning multiple cells."""
+        return any(kw in text for kw in self._CROSS_CELL_KEYWORDS)
 
     # Direct team-to-routing mappings (explicit assignments bypass keyword analysis)
     _TEAM_ROUTING_MAP: ClassVar[dict[str, str]] = {
@@ -1191,6 +1215,10 @@ Start by:
         # Board-level keywords → Board
         if self._has_board_keywords(text):
             return "board"
+
+        # Cross-cell keywords (e.g., "all teams") → Main PM (regardless of complexity)
+        if self._has_cross_cell_keywords(text):
+            return "main_pm"
 
         # High complexity or cross-team → Main PM
         if complexity in ("high", "critical") or not team or team == "all":
@@ -1242,8 +1270,87 @@ Start by:
 
         return None
 
+    def _build_main_pm_triage_prompt(self, task: dict[str, Any]) -> str:
+        """Build prompt for MAIN PM to triage and distribute to Cell PMs."""
+        task_id = task.get("id", "unknown")
+        title = task.get("title", "Untitled")
+        complexity = task.get("complexity", "medium")
+        description = task.get("description", "")
+
+        return f"""You are the MAIN PM at RoboCo. This task is assigned to YOU.
+
+TASK: {task_id}
+TITLE: {title}
+COMPLEXITY: {complexity}
+DESCRIPTION: {description[:500]}
+
+YOUR JOB: Either work on this yourself OR distribute to Cell PMs.
+You do NOT assign to developers directly - Cell PMs manage their teams.
+
+== WHO YOU ASSIGN TO ==
+
+- Backend work → be-pm (who manages be-dev-1, be-dev-2)
+- Frontend work → fe-pm (who manages fe-dev-1, fe-dev-2)
+- UX/UI work → ux-pm (who manages ux-dev)
+
+🚨 NEVER assign to be-dev-1, fe-dev-1, ux-dev directly. ONLY to Cell PMs.
+
+== WHEN TO WORK ON IT YOURSELF ==
+
+Work on the task yourself if it's:
+- PM work (validation, coordination, planning, reviews)
+- Communication tasks (announcements, status updates)
+- Something you can do directly without code changes
+- Cross-cell coordination that doesn't need delegation
+
+If it makes sense for YOU to do it - just do it!
+
+== MAIN PM WORKFLOW ==
+
+1. GET TASK DETAILS
+   roboco_task_get("{task_id}")
+
+2. DECIDE: Keep or delegate?
+   - Validation/coordination → Keep for yourself
+   - Development work → Delegate to Cell PM(s)
+
+3A. IF KEEPING: Work on it directly
+   - roboco_task_plan("{task_id}", ...)
+   - roboco_task_start("{task_id}")
+   - Do the work
+   - roboco_task_submit_pm_review("{task_id}")
+
+3B. IF DELEGATING: Create tasks for Cell PMs
+   For each cell that needs work:
+
+   roboco_task_create(
+     title="Cell-specific task title",
+     description="What needs to be done",
+     team="backend",  # or "frontend" or "ux_ui"
+     acceptance_criteria=["criterion 1", "criterion 2"],
+     assigned_to="be-pm",  # Cell PM, NOT developer!
+     status="backlog"
+   )
+
+   Then: roboco_task_activate(task_id) for each task
+
+4. LOG YOUR DECISION
+   roboco_journal_decision(data)
+
+5. FINISH
+   roboco_agent_idle()
+
+== CRITICAL RULES ==
+- NEVER assign directly to developers (be-dev-1, fe-dev-1, etc.)
+- Cell PMs delegate to their developers - that's THEIR job, not yours
+- For cross-cell work: create a task for EACH relevant cell
+- Validation tasks stay with you
+
+Start now: roboco_task_get("{task_id}")
+"""
+
     def _build_pm_triage_prompt(self, task: dict[str, Any]) -> str:
-        """Build prompt for PM to triage and delegate a task."""
+        """Build prompt for CELL PM to triage and delegate a task."""
         task_id = task.get("id", "unknown")
         title = task.get("title", "Untitled")
         complexity = task.get("complexity", "medium")
@@ -1427,14 +1534,13 @@ Start now: roboco_task_get("{task_id}")
         tasks = await self._fetch_tasks(client, "pending")
 
         # PM-level agents that can have direct assignments
+        # NOTE: Only actual PMs, not board members (product-owner, etc.)
+        # Board members are handled by their dedicated dispatch methods
         pm_agents = {
             "main-pm",
             "be-pm",
             "fe-pm",
             "ux-pm",
-            "product-owner",
-            "head-marketing",
-            "auditor",
         }
 
         for task in tasks:
@@ -1449,10 +1555,16 @@ Start now: roboco_task_get("{task_id}")
                         task_id=task.get("id"),
                         agent_id=agent_slug,
                     )
+                    # Use Main PM prompt for main-pm, Cell PM prompt for others
+                    pm_prompt = (
+                        self._build_main_pm_triage_prompt(task)
+                        if agent_slug == "main-pm"
+                        else self._build_pm_triage_prompt(task)
+                    )
                     await self.spawn_agent(
                         agent_id=agent_slug,
                         task_id=task["id"],
-                        initial_prompt=self._build_pm_triage_prompt(task),
+                        initial_prompt=pm_prompt,
                     )
                 continue
 
@@ -1482,9 +1594,11 @@ Start now: roboco_task_get("{task_id}")
 
             # Claim and spawn with appropriate prompt
             if await self._claim_task_for_agent(client, task["id"], agent_id):
-                # Use PM triage prompt for PMs, dev prompt for devs
+                # Use appropriate prompt based on agent type
                 if routing == "dev":
                     prompt = self._build_dev_prompt(task)
+                elif routing == "main_pm" or agent_id == "main-pm":
+                    prompt = self._build_main_pm_triage_prompt(task)
                 else:
                     prompt = self._build_pm_triage_prompt(task)
 
@@ -1624,18 +1738,31 @@ ALL SUBTASKS COMPLETED:
 Begin with step 1: roboco_task_get("{task_id}")
 """
 
+    def _get_prompt_for_agent(self, agent_slug: str, task: dict[str, Any]) -> str:
+        """Get the appropriate prompt based on agent role."""
+        role = get_agent_role(agent_slug)
+        if role == "developer":
+            return self._build_dev_prompt(task)
+        elif role == "documenter":
+            return self._build_doc_prompt(task)
+        elif role == "qa":
+            return self._build_qa_prompt(task)
+        else:
+            # PM or other - use dev prompt as fallback
+            return self._build_dev_prompt(task)
+
     async def _dispatch_dev_work(self, client: httpx.AsyncClient) -> None:
         """
-        Dispatch development work to developers.
+        Dispatch assigned pending work to the assigned agent.
 
-        NOTE: This now only handles PRE-ASSIGNED tasks (assigned by PM) and
+        NOTE: This handles PRE-ASSIGNED tasks (assigned by PM) and
         needs_revision tasks. New unassigned pending tasks are handled by
         _dispatch_pm_work() which routes them through the PM hierarchy.
 
         Monitors: assigned pending tasks, needs_revision tasks
-        Spawns: be-dev-1, be-dev-2, fe-dev-1, fe-dev-2, ux-dev
+        Spawns: Any assigned agent (dev, doc, qa) with appropriate prompt
         """
-        # Get tasks needing dev attention
+        # Get tasks needing attention
         tasks = await self._fetch_tasks(client, ["pending", "needs_revision"])
 
         for task in tasks:
@@ -1658,12 +1785,12 @@ Begin with step 1: roboco_task_get("{task_id}")
                 continue
 
             # For pending tasks that ARE already assigned (by PM),
-            # spawn the assigned dev if not active
+            # spawn the assigned agent with the appropriate prompt
             if agent_slug and not self._is_agent_active(agent_slug):
                 await self.spawn_agent(
                     agent_id=agent_slug,
                     task_id=task["id"],
-                    initial_prompt=self._build_dev_prompt(task),
+                    initial_prompt=self._get_prompt_for_agent(agent_slug, task),
                 )
 
     async def _dispatch_qa_work(self, client: httpx.AsyncClient) -> None:
@@ -1680,12 +1807,38 @@ Begin with step 1: roboco_task_get("{task_id}")
             if team not in ["backend", "frontend", "ux_ui"]:
                 continue
 
+            assigned_to = task.get("assigned_to")
+
+            # If already assigned, check if that agent is running
+            if assigned_to:
+                assigned_slug = self._resolve_agent_slug(assigned_to)
+                if self._is_agent_active(assigned_slug):
+                    # Agent is running, they'll handle it
+                    continue
+                # Agent not running - spawn them to continue
+                await self.spawn_agent(
+                    agent_id=assigned_slug,
+                    task_id=task["id"],
+                    initial_prompt=self._build_qa_prompt(task),
+                )
+                continue
+
+            # Unassigned task - select QA agent for this team
             agent_id = self._select_agent_for_cell(team, "qa")
             if not agent_id:
                 continue
 
             if self._is_agent_active(agent_id):
                 # QA already running, they'll pick up on scan
+                continue
+
+            # Claim the task for QA agent BEFORE spawning
+            if not await self._claim_task_for_agent(client, task["id"], agent_id):
+                logger.warning(
+                    "Failed to claim awaiting_qa task for QA",
+                    task_id=task["id"],
+                    agent_id=agent_id,
+                )
                 continue
 
             # Spawn QA agent with task assignment
@@ -1711,11 +1864,36 @@ Begin with step 1: roboco_task_get("{task_id}")
             if team not in ["backend", "frontend", "ux_ui"]:
                 continue
 
+            assigned_to = task.get("assigned_to")
+
+            # If already assigned, check if that agent is running
+            if assigned_to:
+                assigned_slug = self._resolve_agent_slug(assigned_to)
+                if self._is_agent_active(assigned_slug):
+                    continue
+                # Agent not running - spawn them to continue
+                await self.spawn_agent(
+                    agent_id=assigned_slug,
+                    task_id=task["id"],
+                    initial_prompt=self._build_doc_prompt(task),
+                )
+                continue
+
+            # Unassigned task - select documenter for this team
             agent_id = self._select_agent_for_cell(team, "doc")
             if not agent_id:
                 continue
 
             if self._is_agent_active(agent_id):
+                continue
+
+            # Claim the task for documenter BEFORE spawning
+            if not await self._claim_task_for_agent(client, task["id"], agent_id):
+                logger.warning(
+                    "Failed to claim awaiting_documentation task for doc",
+                    task_id=task["id"],
+                    agent_id=agent_id,
+                )
                 continue
 
             await self.spawn_agent(
@@ -1739,9 +1917,34 @@ Begin with step 1: roboco_task_get("{task_id}")
             if team not in ["backend", "frontend", "ux_ui"]:
                 continue
 
+            assigned_to = task.get("assigned_to")
+
+            # If already assigned, check if that agent is running
+            if assigned_to:
+                assigned_slug = self._resolve_agent_slug(assigned_to)
+                if self._is_agent_active(assigned_slug):
+                    continue
+                # Agent not running - spawn them to continue
+                await self.spawn_agent(
+                    agent_id=assigned_slug,
+                    task_id=task["id"],
+                    initial_prompt=self._build_pm_review_prompt(task),
+                )
+                continue
+
+            # Unassigned task - select PM for this team
             pm_id = self._TEAM_PM_MAP.get(team, "be-pm")
 
             if self._is_agent_active(pm_id):
+                continue
+
+            # Claim the task for PM BEFORE spawning
+            if not await self._claim_task_for_agent(client, task["id"], pm_id):
+                logger.warning(
+                    "Failed to claim awaiting_pm_review task for PM",
+                    task_id=task["id"],
+                    agent_id=pm_id,
+                )
                 continue
 
             await self.spawn_agent(

@@ -93,10 +93,10 @@ class AgentTable(Base):
 
     # Timestamps
     created_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), default=datetime.now(UTC), nullable=False
+        DateTime(timezone=True), default=lambda: datetime.now(UTC), nullable=False
     )
     updated_at: Mapped[datetime | None] = mapped_column(
-        DateTime(timezone=True), onupdate=datetime.now(UTC), nullable=True
+        DateTime(timezone=True), onupdate=lambda: datetime.now(UTC), nullable=True
     )
 
     # Relationships - use lazy="joined" for single optional relationship
@@ -156,10 +156,10 @@ class TaskTable(Base):
 
     # Timestamps
     created_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), default=datetime.now(UTC), nullable=False
+        DateTime(timezone=True), default=lambda: datetime.now(UTC), nullable=False
     )
     updated_at: Mapped[datetime | None] = mapped_column(
-        DateTime(timezone=True), onupdate=datetime.now(UTC), nullable=True
+        DateTime(timezone=True), onupdate=lambda: datetime.now(UTC), nullable=True
     )
     claimed_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True
@@ -279,10 +279,10 @@ class ChannelTable(Base):
 
     # Timestamps
     created_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), default=datetime.now(UTC), nullable=False
+        DateTime(timezone=True), default=lambda: datetime.now(UTC), nullable=False
     )
     updated_at: Mapped[datetime | None] = mapped_column(
-        DateTime(timezone=True), onupdate=datetime.now(UTC), nullable=True
+        DateTime(timezone=True), onupdate=lambda: datetime.now(UTC), nullable=True
     )
 
     # Relationships - use lazy="select" for collections to avoid N+1
@@ -340,10 +340,10 @@ class GroupTable(Base):
 
     # Timestamps
     created_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), default=datetime.now(UTC), nullable=False
+        DateTime(timezone=True), default=lambda: datetime.now(UTC), nullable=False
     )
     updated_at: Mapped[datetime | None] = mapped_column(
-        DateTime(timezone=True), onupdate=datetime.now(UTC), nullable=True
+        DateTime(timezone=True), onupdate=lambda: datetime.now(UTC), nullable=True
     )
 
     # Relationships - use lazy="select" for collections to avoid N+1
@@ -402,10 +402,10 @@ class SessionTable(Base):
 
     # Timestamps
     started_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), default=datetime.now(UTC), nullable=False
+        DateTime(timezone=True), default=lambda: datetime.now(UTC), nullable=False
     )
     last_activity_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), default=datetime.now(UTC), nullable=False
+        DateTime(timezone=True), default=lambda: datetime.now(UTC), nullable=False
     )
     closed_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True
@@ -417,7 +417,7 @@ class SessionTable(Base):
 
     # Timestamps
     created_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), default=datetime.now(UTC), nullable=False
+        DateTime(timezone=True), default=lambda: datetime.now(UTC), nullable=False
     )
 
     # Relationships - CRITICAL: use lazy="select" for messages (sessions can have 100+)
@@ -480,7 +480,7 @@ class SessionTaskTable(Base):
 
     # Audit
     added_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), default=datetime.now(UTC), nullable=False
+        DateTime(timezone=True), default=lambda: datetime.now(UTC), nullable=False
     )
     added_by: Mapped[UUID] = mapped_column(
         UUID(as_uuid=True),
@@ -585,7 +585,10 @@ class MessageTable(Base):
 
     # Metadata
     timestamp: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), default=datetime.now(UTC), nullable=False, index=True
+        DateTime(timezone=True),
+        default=lambda: datetime.now(UTC),
+        nullable=False,
+        index=True,
     )
 
     # Extraction metadata
@@ -600,7 +603,7 @@ class MessageTable(Base):
 
     # Timestamps
     created_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), default=datetime.now(UTC), nullable=False
+        DateTime(timezone=True), default=lambda: datetime.now(UTC), nullable=False
     )
 
     # Relationships - use lazy="joined" for agent to avoid N+1 on message lists
@@ -670,7 +673,10 @@ class NotificationTable(Base):
 
     # Timing
     timestamp: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), default=datetime.now(UTC), nullable=False, index=True
+        DateTime(timezone=True),
+        default=lambda: datetime.now(UTC),
+        nullable=False,
+        index=True,
     )
     expires_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True
@@ -688,7 +694,7 @@ class NotificationTable(Base):
 
     # Timestamps
     created_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), default=datetime.now(UTC), nullable=False
+        DateTime(timezone=True), default=lambda: datetime.now(UTC), nullable=False
     )
 
     # Relationships
@@ -741,10 +747,10 @@ class JournalTable(Base):
 
     # Timestamps
     created_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), default=datetime.now(UTC), nullable=False
+        DateTime(timezone=True), default=lambda: datetime.now(UTC), nullable=False
     )
     updated_at: Mapped[datetime | None] = mapped_column(
-        DateTime(timezone=True), onupdate=datetime.now(UTC), nullable=True
+        DateTime(timezone=True), onupdate=lambda: datetime.now(UTC), nullable=True
     )
 
     # Relationships - use lazy="select" for entries collection to avoid N+1
@@ -789,7 +795,10 @@ class JournalEntryTable(Base):
 
     # Metadata
     timestamp: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), default=datetime.now(UTC), nullable=False, index=True
+        DateTime(timezone=True),
+        default=lambda: datetime.now(UTC),
+        nullable=False,
+        index=True,
     )
     tags: Mapped[list[str]] = mapped_column(ARRAY(String), default=list)
 
@@ -801,10 +810,10 @@ class JournalEntryTable(Base):
 
     # Timestamps
     created_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), default=datetime.now(UTC), nullable=False
+        DateTime(timezone=True), default=lambda: datetime.now(UTC), nullable=False
     )
     updated_at: Mapped[datetime | None] = mapped_column(
-        DateTime(timezone=True), onupdate=datetime.now(UTC), nullable=True
+        DateTime(timezone=True), onupdate=lambda: datetime.now(UTC), nullable=True
     )
 
     # Relationships
@@ -826,7 +835,26 @@ class JournalEntryTable(Base):
 
 
 class HandoffTable(Base):
-    """SQLAlchemy table for documentation handoffs."""
+    """
+    SQLAlchemy table for structured documentation handoffs.
+
+    STATUS: RESERVED FOR FUTURE USE
+    ===============================
+    This table exists in the schema but has no service layer or API yet.
+
+    Current Implementation:
+        Handoffs use the simpler `dev_notes` + `handoff_summary` parameters
+        in `roboco_task_submit_qa()`, stored directly on the task.
+
+    Future Enhancement:
+        This table enables richer, structured handoff documents with:
+        - Categorized changes (new functionality, breaking changes)
+        - Required vs optional documentation items
+        - Code samples, gotchas, key learnings
+        - Linked commits and file locations
+
+        To implement: create HandoffService + API routes + MCP tools.
+    """
 
     __tablename__ = "handoffs"
 
@@ -895,10 +923,10 @@ class HandoffTable(Base):
 
     # Timestamps
     created_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), default=datetime.now(UTC), nullable=False
+        DateTime(timezone=True), default=lambda: datetime.now(UTC), nullable=False
     )
     updated_at: Mapped[datetime | None] = mapped_column(
-        DateTime(timezone=True), onupdate=datetime.now(UTC), nullable=True
+        DateTime(timezone=True), onupdate=lambda: datetime.now(UTC), nullable=True
     )
     claimed_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True

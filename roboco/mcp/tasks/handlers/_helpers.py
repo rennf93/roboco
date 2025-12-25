@@ -39,6 +39,32 @@ async def get_available_tasks_for_role(
     return resp.json() if resp.ok else []
 
 
+def _get_role_pending_task_guidance(
+    assigned_tasks: list[dict], agent_role: str
+) -> str | None:
+    """Get special guidance for non-standard pending tasks.
+
+    When QA/Documenter is directly assigned a pending task (not their usual queue),
+    they need to know it's direct work - use submit_pm_review workflow.
+    """
+    pending_tasks = [t for t in assigned_tasks if t.get("status") == "pending"]
+    if not pending_tasks:
+        return None
+
+    role_hints = {
+        "qa": "These are NOT QA reviews",
+        "documenter": "These are NOT awaiting_documentation tasks",
+    }
+    hint = role_hints.get(agent_role, "These are direct assignments")
+
+    return (
+        f"You have {len(pending_tasks)} PENDING task(s) directly assigned to you. "
+        f"{hint} - they are tasks assigned for YOU to complete. "
+        "Workflow: claim → plan → start → work → submit_pm_review. "
+        "Use roboco_task_get to see details, then roboco_task_claim to start."
+    )
+
+
 def get_scan_guidance(
     paused_tasks: list[dict],
     assigned_tasks: list[dict],
@@ -51,6 +77,13 @@ def get_scan_guidance(
             f"You have {len(paused_tasks)} paused task(s). "
             "Resume your paused work before claiming new tasks."
         )
+
+    # Special case: QA/Documenter with pending tasks (not their usual queue)
+    if agent_role in ("qa", "documenter"):
+        pending_guidance = _get_role_pending_task_guidance(assigned_tasks, agent_role)
+        if pending_guidance:
+            return pending_guidance
+
     if assigned_tasks:
         return (
             f"You have {len(assigned_tasks)} active task(s). "
@@ -66,14 +99,15 @@ def get_scan_guidance(
 
 def check_blocking_tasks(active_tasks: list[dict]) -> dict[str, Any] | None:
     """Check for blocking active tasks. Returns error or None."""
-    blocking_statuses = ["claimed", "in_progress", "verifying"]
+    blocking_statuses = ["pending", "claimed", "in_progress", "verifying"]
     blocking = [t for t in active_tasks if t.get("status") in blocking_statuses]
     if blocking:
+        status = blocking[0].get("status", "active")
         return format_error_response(
             "ALREADY_ACTIVE",
-            f"You already have an active task: {blocking[0]['id']}. "
-            "Complete or pause it before claiming a new task.",
-            {"active_task_id": blocking[0]["id"]},
+            f"You have a {status} task: {blocking[0]['id']}. "
+            "Work on it first, or pause it if blocked.",
+            {"active_task_id": blocking[0]["id"], "status": status},
         )
     return None
 
@@ -91,8 +125,14 @@ def check_paused_tasks(active_tasks: list[dict]) -> dict[str, Any] | None:
     return None
 
 
-def validate_task_claimable(task: dict, agent_role: str) -> dict[str, Any] | None:
-    """Validate task can be claimed based on agent role."""
+async def validate_task_claimable(
+    task: dict, agent_role: str, agent_id: str, client: ApiClient
+) -> dict[str, Any] | None:
+    """Validate task can be claimed based on agent role.
+
+    Special case: If an agent is already assigned to a pending task (PM assigned
+    it directly to them), they can claim it to transition to 'claimed' status.
+    """
     task_status = task.get("status")
     claimable_statuses = {
         "qa": ["awaiting_qa"],
@@ -100,6 +140,15 @@ def validate_task_claimable(task: dict, agent_role: str) -> dict[str, Any] | Non
         "documenter": ["pending", "awaiting_documentation"],
     }
     allowed = claimable_statuses.get(agent_role, ["pending"])
+
+    # Special case: agent can claim pending tasks already assigned to them
+    # This handles PM directly assigning tasks to QA/docs agents
+    if task_status == "pending":
+        assigned_to = task.get("assigned_to")
+        if assigned_to:
+            agent_uuid = await resolve_agent_uuid_cached(agent_id, client)
+            if agent_uuid and assigned_to == agent_uuid:
+                return None  # Allow claiming - already assigned to this agent
 
     if task_status not in allowed:
         return format_error_response(
@@ -148,6 +197,24 @@ def validate_task_status(
     return None
 
 
+def validate_task_status_in(
+    task: dict[str, Any], allowed: set[str], action_desc: str
+) -> dict[str, Any] | None:
+    """Validate task is in one of the allowed statuses. Returns error or None.
+
+    Use this for workflow validations where multiple statuses are valid entry points.
+    Example: QA can pass tasks in awaiting_qa, claimed, or in_progress status.
+    """
+    task_status = task.get("status")
+    if task_status not in allowed:
+        return format_error_response(
+            "INVALID_STATE",
+            f"Can only {action_desc} tasks in {', '.join(sorted(allowed))} status. "
+            f"Current: '{task_status}'",
+        )
+    return None
+
+
 async def validate_task_ownership(
     task: dict, agent_id: str, client: ApiClient
 ) -> dict[str, Any] | None:
@@ -184,7 +251,28 @@ def validate_task_status_claimed(task: dict) -> dict[str, Any] | None:
 
 
 def build_plan_data(plan_params: dict[str, Any]) -> dict[str, Any]:
-    """Build the plan data structure from params."""
+    """Build the plan data structure from params.
+
+    Supports two formats for open_questions:
+    - List of strings: ["Question 1", "Question 2"] -> sets answered=False
+    - List of dicts: [{"question": "Q1", "answered": True}] -> preserves status
+    """
+    raw_questions = plan_params.get("open_questions") or []
+    open_questions = []
+    for q in raw_questions:
+        if isinstance(q, str):
+            # Simple string format - new unanswered question
+            open_questions.append({"question": q, "answered": False})
+        elif isinstance(q, dict):
+            # Dict format - preserve answered status if provided
+            open_questions.append(
+                {
+                    "question": q.get("question", ""),
+                    "answered": q.get("answered", False),
+                    "answer": q.get("answer"),  # Optional: store the answer text
+                }
+            )
+
     return {
         "approach": plan_params["approach"],
         "sub_tasks": [
@@ -197,10 +285,7 @@ def build_plan_data(plan_params: dict[str, Any]) -> dict[str, Any]:
             for i, st in enumerate(plan_params["sub_tasks"])
         ],
         "risks": [{"description": r} for r in (plan_params.get("risks") or [])],
-        "open_questions": [
-            {"question": q, "answered": False}
-            for q in (plan_params.get("open_questions") or [])
-        ],
+        "open_questions": open_questions,
     }
 
 

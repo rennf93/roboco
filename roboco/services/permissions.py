@@ -243,9 +243,8 @@ class PermissionService(SingletonService):
 
         # "cell" scope means can only notify own cell members
         if scope == "cell":
-            # Cell PM can only notify their own cell unless coordinating with PMs
-            if recipient.role == AgentRole.CELL_PM:
-                # PMs can notify other PMs for coordination
+            # Cell PM can notify other PMs (Cell PMs or Main PM) for coordination
+            if recipient.role in (AgentRole.CELL_PM, AgentRole.MAIN_PM):
                 return True
             # Otherwise must be same team
             return sender.team == recipient.team

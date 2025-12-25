@@ -7,14 +7,19 @@ Handlers for task verification and QA review.
 from typing import Any
 
 from roboco.agents_config import get_agent_role
+from roboco.enforcement import can_review_task
 from roboco.mcp.tasks import format_task_response
 from roboco.mcp.tasks.handlers._helpers import (
     fetch_task_or_error,
     validate_task_ownership,
     validate_task_status,
+    validate_task_status_in,
 )
 from roboco.mcp.utils import ApiClient, format_error_response, resolve_agent_uuid_cached
 from roboco.services.task import extract_original_developer
+
+# QA workflow statuses: awaiting_qa → claim → plan → start (in_progress) → verdict
+QA_WORKFLOW_STATUSES = {"awaiting_qa", "claimed", "in_progress"}
 
 
 def _validate_developer_role(agent_id: str) -> dict[str, Any] | None:
@@ -194,7 +199,7 @@ async def _check_self_review(
     quick_context = task.get("quick_context")
     original_dev = extract_original_developer(quick_context)
     agent_uuid = await resolve_agent_uuid_cached(agent_id, client)
-    if original_dev and agent_uuid and agent_uuid == original_dev:
+    if agent_uuid and not can_review_task(agent_uuid, original_dev):
         return format_error_response("SELF_REVIEW", "Cannot review your own work.")
     return None
 
@@ -211,7 +216,7 @@ async def handle_task_qa_pass(
         return error
     assert task is not None
 
-    if error := validate_task_status(task, "awaiting_qa", "pass QA on"):
+    if error := validate_task_status_in(task, QA_WORKFLOW_STATUSES, "pass QA on"):
         return error
 
     if error := await _check_self_review(task, agent_id, client):
@@ -262,7 +267,7 @@ async def handle_task_qa_fail(
         return error
     assert task is not None
 
-    if error := validate_task_status(task, "awaiting_qa", "fail QA on"):
+    if error := validate_task_status_in(task, QA_WORKFLOW_STATUSES, "fail QA on"):
         return error
 
     full_notes = f"{qa_notes}\n\nIssues:\n" + "\n".join(f"- {i}" for i in issues)
