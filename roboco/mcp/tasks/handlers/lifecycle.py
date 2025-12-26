@@ -61,8 +61,13 @@ async def handle_docs_complete(
     ):
         return error
 
-    payload = {"notes": doc_notes} if doc_notes else {}
-    docs_resp = await client.post(f"/tasks/{task_id}/docs-complete", json=payload)
+    # Only send payload if doc_notes provided (QANotes.notes is required)
+    if doc_notes:
+        docs_resp = await client.post(
+            f"/tasks/{task_id}/docs-complete", json={"notes": doc_notes}
+        )
+    else:
+        docs_resp = await client.post(f"/tasks/{task_id}/docs-complete")
 
     if not docs_resp.ok:
         return format_error_response(
@@ -98,26 +103,23 @@ async def _check_children_completed(
     Returns error if any children are not completed, None if OK.
     """
     try:
-        # Fetch children/subtasks for this task
         resp = await client.get(f"/tasks/{task_id}/subtasks")
         if not resp.ok:
-            # If endpoint doesn't exist or fails, skip check (backwards compat)
             return None
 
         subtasks = resp.json()
         if not subtasks:
-            return None  # No children, OK to complete
+            return None
 
-        incomplete: list[dict[str, str]] = []
-        for subtask in subtasks:
-            subtask_status = subtask.get("status")
-            # ONLY "completed" is acceptable - cancelled/pending/etc. block completion
-            if subtask_status != "completed":
-                incomplete.append({
-                    "id": str(subtask.get("id", "unknown")),
-                    "title": subtask.get("title", "Untitled"),
-                    "status": subtask_status or "unknown",
-                })
+        incomplete = [
+            {
+                "id": str(subtask.get("id", "unknown")),
+                "title": subtask.get("title", "Untitled"),
+                "status": subtask.get("status") or "unknown",
+            }
+            for subtask in subtasks
+            if subtask.get("status") != "completed"
+        ]
 
         if incomplete:
             return format_error_response(
@@ -134,18 +136,59 @@ async def _check_children_completed(
 
         return None
     except Exception:
-        # If check fails for any reason, allow completion (backwards compat)
         return None
 
 
+async def _validate_children_or_force(
+    client: ApiClient, task_id: str, force: bool, justification: str | None
+) -> dict[str, Any] | None:
+    """Validate children completion or force override. Returns error or None."""
+    if force:
+        if not justification:
+            return format_error_response(
+                "JUSTIFICATION_REQUIRED",
+                "force_with_cancelled requires justification explaining "
+                "why cancelled subtasks don't block completion.",
+            )
+        return None
+    return await _check_children_completed(client, task_id)
+
+
+def _validate_completion_status(
+    task: dict[str, Any], agent_id: str
+) -> dict[str, Any] | None:
+    """Validate task is in completable status. Returns error or None."""
+    current_status = task.get("status")
+    is_own_task = current_status == "in_progress" and _is_pm_own_task(task, agent_id)
+    is_review_task = current_status == "awaiting_pm_review"
+
+    if is_own_task or is_review_task:
+        return None
+
+    return format_error_response(
+        "INVALID_STATE",
+        f"Cannot complete task in '{current_status}' status. "
+        "Expected 'awaiting_pm_review' (dev work) or 'in_progress' (own task).",
+        {"current_status": current_status},
+    )
+
+
 async def handle_task_complete(
-    client: ApiClient, task_id: str, agent_id: str
+    client: ApiClient,
+    task_id: str,
+    agent_id: str,
+    force_with_cancelled: bool = False,
+    justification: str | None = None,
 ) -> dict[str, Any]:
     """Handle task completion (PM only).
 
     Two completion paths:
     1. Completing developer work: task must be in 'awaiting_pm_review'
     2. Completing PM's own task: task can be in 'in_progress' if assigned to PM
+
+    PM Override for cancelled subtasks:
+    Use force_with_cancelled=True with justification to complete despite
+    cancelled subtasks. Only works if ALL non-completed children are cancelled.
     """
     if error := _validate_pm_role(agent_id, "complete tasks"):
         return error
@@ -155,25 +198,19 @@ async def handle_task_complete(
         return error
     assert task is not None
 
-    current_status = task.get("status")
-
-    # PM completing their own task - allow from in_progress
-    if current_status == "in_progress" and _is_pm_own_task(task, agent_id):
-        pass  # Valid - PM completing their own work
-    # Normal path - developer work went through QA/Docs
-    elif current_status != "awaiting_pm_review":
-        return format_error_response(
-            "INVALID_STATE",
-            f"Cannot complete task in '{current_status}' status. "
-            "Expected 'awaiting_pm_review' (dev work) or 'in_progress' (own task).",
-            {"current_status": current_status},
-        )
-
-    # Check all children are completed before allowing parent completion
-    if error := await _check_children_completed(client, task_id):
+    if error := _validate_completion_status(task, agent_id):
         return error
 
-    complete_resp = await client.post(f"/tasks/{task_id}/complete")
+    if error := await _validate_children_or_force(
+        client, task_id, force_with_cancelled, justification
+    ):
+        return error
+
+    payload: dict[str, Any] = {}
+    if force_with_cancelled:
+        payload = {"force_with_cancelled": True, "justification": justification}
+
+    complete_resp = await client.post(f"/tasks/{task_id}/complete", json=payload)
     if not complete_resp.ok:
         return format_error_response(
             "COMPLETE_FAILED",

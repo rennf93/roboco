@@ -27,6 +27,7 @@ different purposes. MCP is coarse-grained (tool-level), API is fine-grained
 
 from typing import Final
 
+from roboco.models.base import NotificationPriority, NotificationType
 from roboco.seeds.initial_data import AGENT_UUIDS
 
 # Reverse mapping: UUID -> slug (computed from seeds)
@@ -390,3 +391,10 @@ NOTIFICATION_PERMISSIONS: Final[dict[str, dict]] = {
         "can_send": False,
     },
 }
+
+VALID_NOTIFICATION_TYPES: Final[frozenset[str]] = frozenset(
+    t.value for t in NotificationType
+)
+VALID_NOTIFICATION_PRIORITIES: Final[frozenset[str]] = frozenset(
+    p.value for p in NotificationPriority
+)

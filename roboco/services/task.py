@@ -65,9 +65,18 @@ def _get_valid_claim_statuses(
         if allow_reassign:
             statuses.add(TaskStatus.CLAIMED)
         return statuses
+    elif role in ("cell_pm", "main_pm"):
+        # PMs can claim:
+        # - PENDING: standard task claiming
+        # - AWAITING_PM_REVIEW: tasks submitted for PM approval
+        statuses = {TaskStatus.PENDING, TaskStatus.AWAITING_PM_REVIEW}
+        if allow_reassign:
+            statuses.add(TaskStatus.CLAIMED)
+        return statuses
     else:
-        # Developer, PM, and other roles
-        statuses = {TaskStatus.PENDING}
+        # Developer and other roles
+        # NEEDS_REVISION for when task is reassigned after QA rejection
+        statuses = {TaskStatus.PENDING, TaskStatus.NEEDS_REVISION}
         if allow_reassign:
             statuses.add(TaskStatus.CLAIMED)
         return statuses
@@ -406,6 +415,20 @@ class TaskService(BaseService):
             return "agent not in task's team"
         return None
 
+    def _validate_not_self_review(
+        self, task: TaskTable, agent: AgentTable | None, agent_id: UUID
+    ) -> str | None:
+        """Prevent QA/Documenter from claiming tasks they developed."""
+        if not agent or not agent.role:
+            return None
+        role = agent.role.value if hasattr(agent.role, "value") else str(agent.role)
+        if role not in ("qa", "documenter"):
+            return None
+        original_dev = extract_original_developer(task.quick_context)
+        if original_dev and original_dev == str(agent_id):
+            return "cannot review your own work (self-review)"
+        return None
+
     def _set_original_developer_context(
         self, task: TaskTable, agent: AgentTable | None
     ) -> None:
@@ -453,7 +476,12 @@ class TaskService(BaseService):
             self.log.warning(f"Cannot claim task - {error}", task_id=str(task_id))
             return None
 
-        # Set context for QA/Documenter claims
+        # Prevent self-review: QA/Documenter cannot claim tasks they developed
+        if error := self._validate_not_self_review(task, agent, agent_id):
+            self.log.warning(f"Cannot claim task - {error}", task_id=str(task_id))
+            return None
+
+        # Set context for QA/Documenter claims (only if not already set)
         self._set_original_developer_context(task, agent)
 
         # Update assignment
@@ -466,6 +494,7 @@ class TaskService(BaseService):
             TaskStatus.PENDING,
             TaskStatus.AWAITING_QA,
             TaskStatus.AWAITING_DOCUMENTATION,
+            TaskStatus.AWAITING_PM_REVIEW,
         }
         if task.status in claimable_statuses:
             self._validate_and_set_status(task, TaskStatus.CLAIMED, agent_role)
@@ -922,6 +951,8 @@ class TaskService(BaseService):
         self,
         task_id: UUID,
         agent_id: UUID | None = None,
+        force_with_cancelled: bool = False,
+        justification: str | None = None,
     ) -> TaskTable | None:
         """
         Mark task as completed (PM only).
@@ -930,10 +961,16 @@ class TaskService(BaseService):
         1. Developer work: task must be in AWAITING_PM_REVIEW (went through QA/Docs)
         2. PM's own task: task can be IN_PROGRESS if assigned to the completing PM
 
+        PM Override for cancelled subtasks:
+        Use force_with_cancelled=True with justification to complete despite
+        cancelled subtasks. Only works if ALL non-completed children are cancelled.
+
         Args:
             task_id: The task to complete
             agent_id: Optional agent UUID - if provided, allows PM to complete
                       their own in_progress tasks
+            force_with_cancelled: Override cancelled subtask check
+            justification: Required when force_with_cancelled=True
 
         Returns:
             The completed task or None if completion not allowed
@@ -960,6 +997,37 @@ class TaskService(BaseService):
                 is_own_task=is_own_task,
             )
             return None
+
+        # Check subtasks completion
+        subtasks = await self.get_subtasks(task_id)
+        incomplete_subtasks = [
+            st for st in subtasks if st.status != TaskStatus.COMPLETED
+        ]
+
+        if incomplete_subtasks:
+            cancelled_only = all(
+                st.status == TaskStatus.CANCELLED for st in incomplete_subtasks
+            )
+
+            if force_with_cancelled and cancelled_only and justification:
+                # Log the PM override
+                self.log.info(
+                    "PM override: completing task with cancelled subtasks",
+                    task_id=str(task_id),
+                    agent_id=str(agent_id) if agent_id else None,
+                    justification=justification,
+                    cancelled_subtask_ids=[str(st.id) for st in incomplete_subtasks],
+                )
+            else:
+                # Block completion
+                self.log.warning(
+                    "Cannot complete task - incomplete subtasks exist",
+                    task_id=str(task_id),
+                    incomplete_count=len(incomplete_subtasks),
+                    cancelled_only=cancelled_only,
+                    force_requested=force_with_cancelled,
+                )
+                return None
 
         task.completed_at = datetime.now(UTC)
         # Validate transition with PM role requirement

@@ -303,6 +303,22 @@ class QANotes(BaseModel):
     notes: str
 
 
+class CompleteTaskRequest(BaseModel):
+    """Request to complete a task with optional force flag."""
+
+    force_with_cancelled: bool = Field(
+        default=False,
+        description="Force complete even if some subtasks are cancelled. "
+        "PM takes responsibility for judging work is done. "
+        "Only applies to cancelled subtasks, not pending/in_progress.",
+    )
+    justification: str | None = Field(
+        default=None,
+        description="Required when force_with_cancelled=True. "
+        "PM's justification for completing despite cancelled subtasks.",
+    )
+
+
 class SoftBlockRequest(BaseModel):
     """Request to soft-block a task due to an external factor."""
 

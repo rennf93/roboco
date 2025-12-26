@@ -77,6 +77,60 @@ def validate_assignee_can_work_on_team(
     return None
 
 
+def get_role_mismatch_warning(task: dict[str, Any], assignee: str) -> str | None:
+    """Check if assignee role matches the task type and return warning if mismatch.
+
+    Returns a warning string or None if no mismatch.
+    This is a SOFT warning, not a blocking error - PM has flexibility.
+    """
+    assignee_role = get_agent_role(assignee)
+    task_status = task.get("status")
+    task_title = task.get("title", "").lower()
+
+    # Role suggestions based on task status
+    status_role_map = {
+        "awaiting_qa": "qa",
+        "awaiting_documentation": "documenter",
+        "awaiting_pm_review": ("cell_pm", "main_pm"),
+    }
+
+    # Check status-based role matching
+    if task_status in status_role_map:
+        expected = status_role_map[task_status]
+        if isinstance(expected, tuple):
+            if assignee_role not in expected:
+                return (
+                    f"Task is {task_status} - typically assigned to "
+                    f"{' or '.join(expected)}, not {assignee_role}."
+                )
+        elif assignee_role != expected:
+            return (
+                f"Task is {task_status} - typically assigned to "
+                f"{expected}, not {assignee_role}."
+            )
+
+    # Check title-based hints for pending tasks
+    if task_status == "pending":
+        # QA-related keywords in title
+        qa_keywords = ["qa", "test", "validation", "quality", "review"]
+        if any(kw in task_title for kw in qa_keywords) and assignee_role != "qa":
+            return (
+                f"Task title suggests QA work but assignee is {assignee_role}. "
+                "Consider assigning to a QA agent."
+            )
+
+        # Docs-related keywords in title
+        doc_keywords = ["doc", "documentation", "readme", "guide", "reference"]
+        is_doc_task = any(kw in task_title for kw in doc_keywords)
+        if is_doc_task and assignee_role != "documenter":
+            return (
+                f"Task title suggests documentation but assignee is {assignee_role}. "
+                "Consider assigning to a documenter."
+            )
+
+    return None
+
+
 def validate_cell_pm_assignment(
     role: str,
     agent_team: str | None,
@@ -275,6 +329,13 @@ async def handle_task_create(
             task = assigned_task
 
     guidance = _format_create_guidance(task, input_data.assigned_to)
+
+    # Check for role mismatch and add warning if found
+    if input_data.assigned_to:
+        role_warning = get_role_mismatch_warning(task, input_data.assigned_to)
+        if role_warning:
+            guidance += f"\n\n⚠️ ROLE WARNING: {role_warning}"
+
     return format_task_response(task, "CREATED", guidance)
 
 
@@ -312,6 +373,12 @@ async def handle_task_assign(
         f"Task assigned to {input_data.assignee} and set to pending. "
         "Orchestrator will spawn them to claim and work on it."
     )
+
+    # Check for role mismatch and add warning if found
+    role_warning = get_role_mismatch_warning(task, input_data.assignee)
+    if role_warning:
+        guidance += f"\n\n⚠️ ROLE WARNING: {role_warning}"
+
     return format_task_response(assigned_task, "ASSIGNED", guidance)
 
 

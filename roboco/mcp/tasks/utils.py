@@ -91,7 +91,8 @@ def get_next_step_guidance(status: str) -> tuple[str, str]:
         "needs_revision": (
             "FIX_ISSUES",
             "QA found issues. Read the QA notes carefully. "
-            "Fix all issues, then re-submit for QA.",
+            "Call roboco_task_start() to resume work, fix all issues, "
+            "then re-submit for QA with roboco_task_submit_qa().",
         ),
         "awaiting_documentation": (
             "DOCUMENT",

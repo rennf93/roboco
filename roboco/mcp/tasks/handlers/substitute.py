@@ -21,11 +21,13 @@ from roboco.models import SubstituteReason, TaskStatus
 HTTP_NOT_FOUND = 404
 
 # Map substitute reasons to target task statuses
+# NOTE: OUT_OF_SCOPE_ROLE goes to awaiting_pm_review to avoid reassignment loops
+# (e.g., documenter can't self-document → substitute → gets reassigned same doc → loop)
 REASON_TO_STATUS: dict[SubstituteReason, TaskStatus] = {
     SubstituteReason.TASK_COMPLETE: TaskStatus.AWAITING_QA,
     SubstituteReason.LOW_CONTEXT: TaskStatus.PENDING,
     SubstituteReason.OUT_OF_SCOPE_TEAM: TaskStatus.PENDING,
-    SubstituteReason.OUT_OF_SCOPE_ROLE: TaskStatus.PENDING,
+    SubstituteReason.OUT_OF_SCOPE_ROLE: TaskStatus.AWAITING_PM_REVIEW,  # PM decides
     SubstituteReason.MAX_RETRIES: TaskStatus.PENDING,
     SubstituteReason.BLOCKED_EXTERNAL: TaskStatus.BLOCKED,
 }
@@ -188,6 +190,11 @@ async def handle_task_substitute(
     elif substitute_reason == SubstituteReason.BLOCKED_EXTERNAL:
         next_action = (
             "Task marked as blocked. PM will be notified. "
+            "You are now free to claim new work with roboco_task_scan()."
+        )
+    elif substitute_reason == SubstituteReason.OUT_OF_SCOPE_ROLE:
+        next_action = (
+            "Task sent to PM for reassignment (role conflict). "
             "You are now free to claim new work with roboco_task_scan()."
         )
     else:

@@ -551,7 +551,11 @@ def _register_pm_completion_tools(
     """Register PM-only task completion tools."""
 
     @mcp.tool()
-    async def roboco_task_complete(task_id: str) -> dict[str, Any]:
+    async def roboco_task_complete(
+        task_id: str,
+        force_with_cancelled: bool = False,
+        justification: str | None = None,
+    ) -> dict[str, Any]:
         """
         Mark task as completed (PM only).
 
@@ -561,14 +565,24 @@ def _register_pm_completion_tools(
         ENFORCEMENT:
         - Only PMs can use this tool
         - Task must be in 'awaiting_pm_review' status
+        - All subtasks must be completed (or use force_with_cancelled)
+
+        PM Override for cancelled subtasks:
+        If some subtasks were cancelled but PM judges work is done anyway,
+        use force_with_cancelled=True with justification explaining why.
+        Only works if ALL non-completed subtasks are cancelled.
 
         Args:
             task_id: The task UUID
+            force_with_cancelled: Override cancelled subtask check
+            justification: Required when force_with_cancelled=True
 
         Returns:
             Completed task
         """
-        return await handle_task_complete(client, task_id, agent_id)
+        return await handle_task_complete(
+            client, task_id, agent_id, force_with_cancelled, justification
+        )
 
 
 def _register_pm_tools(mcp: FastMCP, client: ApiClient, agent_id: str) -> None:

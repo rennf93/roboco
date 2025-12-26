@@ -4,11 +4,14 @@ Organization Models
 Defines organizational structures: Cell, Board, Organization.
 """
 
-from typing import Any
+from typing import TYPE_CHECKING
 
 from pydantic import BaseModel
 
 from roboco.models import Team
+
+if TYPE_CHECKING:
+    from roboco.agents.base import Agent
 
 
 class Cell(BaseModel):
@@ -16,21 +19,20 @@ class Cell(BaseModel):
 
     name: str
     team: Team
-    pm: Any  # Agent
-    developers: list[Any] = []  # List of Agent
-    qa: Any | None = None  # Agent
-    documenter: Any | None = None  # Agent
+    pm: "Agent"
+    developers: list["Agent"] = []
+    qa: "Agent | None" = None
+    documenter: "Agent | None" = None
 
     model_config = {"arbitrary_types_allowed": True}
 
 
 class Board(BaseModel):
-    """The board of the organization."""
+    """The board of the organization (3 agents reporting to CEO)."""
 
-    product_owner: Any  # Agent
-    head_marketing: Any  # Agent
-    auditor: Any  # Agent
-    main_pm: Any  # Agent
+    product_owner: "Agent"
+    head_marketing: "Agent"
+    auditor: "Agent"
 
     model_config = {"arbitrary_types_allowed": True}
 
@@ -39,6 +41,9 @@ class Organization(BaseModel):
     """The complete organization structure."""
 
     board: Board
-    cells: dict[str, Cell] = {}
+    main_pm: "Agent"
+    backend_cell: Cell
+    frontend_cell: Cell
+    ux_cell: Cell
 
     model_config = {"arbitrary_types_allowed": True}

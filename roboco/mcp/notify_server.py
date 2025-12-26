@@ -25,12 +25,15 @@ from mcp.server.fastmcp import FastMCP
 
 from roboco.agents_config import (
     NOTIFICATION_PERMISSIONS,
+    VALID_NOTIFICATION_PRIORITIES,
+    VALID_NOTIFICATION_TYPES,
     can_send_notifications,
     get_agent_cell,
     get_agent_role,
 )
 from roboco.mcp.schemas import SendNotificationInput
 from roboco.mcp.utils import ApiClient, format_error_response
+from roboco.models.base import NotificationPriority, NotificationType
 
 # =============================================================================
 # HELPER FUNCTIONS
@@ -82,13 +85,6 @@ def _can_send_notification(sender_id: str, recipient_id: str) -> tuple[bool, str
     return can_send, reason
 
 
-# Valid notification types and priorities
-VALID_NOTIFICATION_TYPES = frozenset(
-    ["info", "alert", "task", "escalation", "approval"]
-)
-VALID_PRIORITIES = frozenset(["low", "normal", "high", "urgent"])
-
-
 def _validate_notification_type(notification_type: str) -> dict[str, Any] | None:
     """Validate notification type. Returns error dict or None if valid."""
     if notification_type not in VALID_NOTIFICATION_TYPES:
@@ -101,10 +97,11 @@ def _validate_notification_type(notification_type: str) -> dict[str, Any] | None
 
 def _validate_priority(priority: str) -> dict[str, Any] | None:
     """Validate priority. Returns error dict or None if valid."""
-    if priority not in VALID_PRIORITIES:
+    if priority not in VALID_NOTIFICATION_PRIORITIES:
+        valid = sorted(VALID_NOTIFICATION_PRIORITIES)
         return format_error_response(
             "INVALID_PRIORITY",
-            f"Invalid priority. Must be one of: {sorted(VALID_PRIORITIES)}",
+            f"Invalid priority. Must be one of: {valid}",
         )
     return None
 
@@ -392,8 +389,8 @@ def create_notify_mcp_server(agent_id: str) -> FastMCP:
                     recipients=[escalate_to],
                     subject=f"[ESCALATION] {subject}",
                     body=description,
-                    notification_type="escalation",
-                    priority="high",
+                    notification_type=NotificationType.BLOCKER_ESCALATION.value,
+                    priority=NotificationPriority.HIGH.value,
                     requires_ack=True,
                     related_task_id=task_id,
                 )
@@ -416,8 +413,8 @@ def create_notify_mcp_server(agent_id: str) -> FastMCP:
                     recipients=[approver],
                     subject=f"[APPROVAL NEEDED] {subject}",
                     body=what_needs_approval,
-                    notification_type="approval",
-                    priority="normal",
+                    notification_type=NotificationType.REVIEW_REQUEST.value,
+                    priority=NotificationPriority.NORMAL.value,
                     requires_ack=True,
                     related_task_id=task_id,
                 )

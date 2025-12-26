@@ -30,6 +30,9 @@ class AuditEventType(str, Enum):
     ACCESS_GRANTED = "access_granted"
     ACCESS_REVOKED = "access_revoked"
 
+    # PM override events
+    PM_OVERRIDE = "pm_override"
+
 
 @dataclass
 class PermissionDenialContext:

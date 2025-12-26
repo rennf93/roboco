@@ -4,7 +4,7 @@ Task API Routes
 Full CRUD operations and lifecycle management for tasks.
 """
 
-from typing import Annotated
+from typing import Annotated, Any
 from uuid import UUID
 
 from fastapi import APIRouter, Body, HTTPException, Query, status
@@ -25,6 +25,7 @@ from roboco.api.schemas.tasks import (
     CheckpointRequest,
     ClaimRequest,
     CommitRequest,
+    CompleteTaskRequest,
     EscalateRequest,
     EscalateResponse,
     ProgressRequest,
@@ -967,12 +968,17 @@ async def complete_task(
     db: DbSession,
     agent: CurrentAgentContext,
     permissions: PermissionServiceDep,
+    data: Annotated[CompleteTaskRequest | None, Body()] = None,
 ) -> TaskResponse:
     """Mark task as completed (PM only).
 
     Two completion paths:
     1. Developer work: task must be in awaiting_pm_review (went through QA/Docs)
     2. PM's own task: task can be in_progress if assigned to the completing PM
+
+    PM Override for cancelled subtasks:
+    If force_with_cancelled=True, PM can complete despite cancelled subtasks.
+    Requires justification. Does NOT apply to pending/in_progress subtasks.
     """
     service = get_task_service(db)
     task = await service.get(task_id)
@@ -981,7 +987,7 @@ async def complete_task(
             status_code=status.HTTP_404_NOT_FOUND, detail="Task not found"
         )
 
-    # Only PMs can complete tasks
+    # Permission check - only PMs can complete tasks
     can_close = permissions.can_perform_task_action(agent, TaskAction.CLOSE, task.team)
     if not can_close:
         raise HTTPException(
@@ -989,38 +995,28 @@ async def complete_task(
             detail="Only PMs can complete tasks",
         )
 
-    # Check ALL subtasks are completed before completing parent
-    # Cancelled subtasks block completion - they must be resolved first
-    subtasks = await service.get_subtasks(task_id)
-    incomplete_subtasks = [
-        st
-        for st in subtasks
-        if st.status != TaskStatus.COMPLETED
-    ]
-    if incomplete_subtasks:
-        max_titles_shown = 3
-        incomplete_info = [
-            f"{st.title} ({st.status.value})"
-            for st in incomplete_subtasks[:max_titles_shown]
-        ]
-        detail = (
-            f"Cannot complete task - {len(incomplete_subtasks)} subtask(s) "
-            f"not completed: {', '.join(incomplete_info)}"
-        )
-        if len(incomplete_subtasks) > max_titles_shown:
-            detail += f" (+{len(incomplete_subtasks) - max_titles_shown} more)"
+    # Extract request data
+    force_complete = data.force_with_cancelled if data else False
+    justification = data.justification if data else None
+
+    # Validate justification if force is requested
+    if force_complete and not justification:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail=detail,
+            detail="force_with_cancelled requires justification",
         )
 
-    # Pass agent_id so service can check if PM is completing their own task
-    task = await service.complete(task_id, agent_id=agent.agent_id)
+    task = await service.complete(
+        task_id,
+        agent_id=agent.agent_id,
+        force_with_cancelled=force_complete,
+        justification=justification,
+    )
     if not task:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Cannot complete task - must be in awaiting_pm_review or "
-            "in_progress (if your own task)",
+            detail="Cannot complete task - check status and subtasks. "
+            "Use force_with_cancelled=true if only cancelled subtasks remain.",
         )
     await db.commit()
     return task_to_response(task)
@@ -1234,12 +1230,20 @@ async def substitute_task(
     # Determine new status based on reason
     new_status = _REASON_TO_STATUS.get(reason, TaskStatus.PENDING)
 
-    # Update task
-    update_data = {
+    # QA/Documenter completing their own work goes to PM review (can't self-review)
+    if reason == SubstituteReason.TASK_COMPLETE and agent.role in ("qa", "documenter"):
+        new_status = TaskStatus.AWAITING_PM_REVIEW
+
+    # Preserve original developer for self-review prevention when going to QA
+    update_data: dict[str, Any] = {
         "status": new_status.value,
         "assigned_to": None,  # Clear assignment
         "dev_notes": f"[SUBSTITUTE] Reason: {reason.value}\n{data.details}",
     }
+    if new_status == TaskStatus.AWAITING_QA and task.assigned_to:
+        # Set original_developer BEFORE clearing assigned_to
+        update_data["quick_context"] = f"original_developer:{task.assigned_to}"
+
     task = await service.update(task_id, **update_data)
     if not task:
         raise HTTPException(

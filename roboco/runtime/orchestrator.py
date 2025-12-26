@@ -270,6 +270,8 @@ class AgentOrchestrator:
             "mcp__roboco-notify__*",
             # Journal - always needed for reflection
             "mcp__roboco-journal__*",
+            # Knowledge base/RAG - needed for research
+            "mcp__roboco-optimal__*",
             # File operations for documenters and developers
             # Note: // prefix = absolute path (container paths like /app/docs)
             "Write(//app/docs/**)",
@@ -1696,11 +1698,12 @@ Start now: roboco_task_get("{task_id}")
         to review and close the parent task.
 
         Monitors: tasks with completed subtasks but parent still open
-        Spawns: be-pm, fe-pm, ux-pm (based on parent team)
+        Spawns: be-pm, fe-pm, ux-pm, main-pm (based on parent team)
         """
         # Find parent tasks that might have children ready for closure
         # Include "paused" - PM pauses while waiting, respawned when subtasks done
-        parent_statuses = ["claimed", "in_progress", "paused"]
+        # Include "awaiting_pm_review" - parent awaiting review when children done
+        parent_statuses = ["claimed", "in_progress", "paused", "awaiting_pm_review"]
 
         for status in parent_statuses:
             tasks = await self._fetch_tasks(client, status)
@@ -1722,8 +1725,12 @@ Start now: roboco_task_get("{task_id}")
                     continue  # Not ready for closure
 
                 # Parent has all subtasks completed - spawn PM to close
-                team = task.get("team", "backend")
-                pm_id = self._TEAM_PM_MAP.get(team, "be-pm")
+                team = task.get("team")
+                if team in ["backend", "frontend", "ux_ui"]:
+                    pm_id = self._TEAM_PM_MAP.get(team, "be-pm")
+                else:
+                    # main_pm, board, or no team → Main PM handles closure
+                    pm_id = "main-pm"
 
                 if self._is_agent_active(pm_id):
                     continue  # PM already working
@@ -1985,18 +1992,15 @@ Begin with step 1: roboco_task_get("{task_id}")
 
     async def _dispatch_pm_review_work(self, client: httpx.AsyncClient) -> None:
         """
-        Dispatch PM review work to cell PMs.
+        Dispatch PM review work to cell PMs or Main PM.
 
         Monitors: awaiting_pm_review tasks
-        Spawns: be-pm, fe-pm, ux-pm
+        Spawns: be-pm, fe-pm, ux-pm, main-pm
         """
         tasks = await self._fetch_tasks(client, "awaiting_pm_review")
 
         for task in tasks:
             team = task.get("team")
-            if team not in ["backend", "frontend", "ux_ui"]:
-                continue
-
             assigned_to = task.get("assigned_to")
 
             # If already assigned, check if that agent is running
@@ -2012,8 +2016,13 @@ Begin with step 1: roboco_task_get("{task_id}")
                 )
                 continue
 
-            # Unassigned task - select PM for this team
-            pm_id = self._TEAM_PM_MAP.get(team, "be-pm")
+            # Unassigned task - select PM based on team
+            # Cell tasks go to Cell PM, cross-cell/main_pm tasks go to Main PM
+            if team in ["backend", "frontend", "ux_ui"]:
+                pm_id = self._TEAM_PM_MAP.get(team, "be-pm")
+            else:
+                # main_pm, board, or no team → Main PM handles it
+                pm_id = "main-pm"
 
             if self._is_agent_active(pm_id):
                 continue

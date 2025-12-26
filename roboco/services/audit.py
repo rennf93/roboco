@@ -157,6 +157,30 @@ class AuditService(SingletonService):
             timestamp=datetime.now(UTC).isoformat(),
         )
 
+    async def log_pm_override(
+        self,
+        agent_id: str | UUID,
+        task_id: str | UUID,
+        action: str,
+        justification: str,
+        cancelled_subtask_ids: list[str] | None = None,
+    ) -> None:
+        """Log when a PM uses an override capability.
+
+        PM overrides are legitimate but need auditing - e.g., completing
+        a task despite cancelled subtasks when PM judges work is done.
+        """
+        self.log.info(
+            "PM override used",
+            event_type=AuditEventType.PM_OVERRIDE.value,
+            agent_id=str(agent_id),
+            task_id=str(task_id),
+            action=action,
+            justification=justification,
+            cancelled_subtask_ids=cancelled_subtask_ids,
+            timestamp=datetime.now(UTC).isoformat(),
+        )
+
 
 # =============================================================================
 # SINGLETON INSTANCE
