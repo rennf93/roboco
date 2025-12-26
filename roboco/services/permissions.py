@@ -1,7 +1,7 @@
 """
 Permission Service
 
-Implements the access control model from HOMELAB_TEAM_V0.md:
+Implements the access control model:
 - Channel read/write permissions
 - Task permissions by role
 - Notification permissions (who can notify whom)
@@ -98,7 +98,7 @@ class PermissionService(SingletonService):
     """
     Service for checking and enforcing permissions.
 
-    Implements the access control model from HOMELAB_TEAM_V0.md.
+    Implements the access control model.
     Uses agents_config.py as the SINGLE SOURCE OF TRUTH.
 
     Usage:

@@ -24,6 +24,58 @@ from roboco.mcp.utils import ApiClient, format_error_response, resolve_agent_uui
 # HELPER FUNCTIONS
 # =============================================================================
 
+# Roles that cannot be assigned to cell-specific work
+BOARD_ROLES = frozenset({"product_owner", "head_marketing", "auditor", "ceo"})
+
+# Teams that represent cell work (not board/strategic)
+CELL_TEAMS = frozenset({"backend", "frontend", "ux_ui"})
+
+
+def validate_assignee_can_work_on_team(
+    assignee: str, task_team: str | None
+) -> dict[str, Any] | None:
+    """Validate assignee can work on the task's team.
+
+    Board members (product_owner, head_marketing, auditor) cannot be assigned
+    to cell-specific work (backend, frontend, ux_ui tasks).
+
+    Returns error dict or None if valid.
+    """
+    assignee_role = get_agent_role(assignee)
+    assignee_team = get_agent_team(assignee)
+
+    # Board members cannot work on cell tasks
+    if assignee_role in BOARD_ROLES and task_team in CELL_TEAMS:
+        return format_error_response(
+            "INVALID_ASSIGNEE",
+            f"Cannot assign {assignee_role} to {task_team} tasks. "
+            "Board members handle strategic work, not cell tasks.",
+            {
+                "assignee": assignee,
+                "assignee_role": assignee_role,
+                "task_team": task_team,
+                "guidance": "Assign to a cell member (e.g., be-dev-1, be-pm) instead.",
+            },
+        )
+
+    # Cell members should only work on their own team's tasks
+    if assignee_team and task_team and assignee_team != task_team:
+        # Main PM is an exception - can work across teams
+        if assignee_role == "main_pm":
+            return None
+        return format_error_response(
+            "TEAM_MISMATCH",
+            f"Cannot assign {assignee} ({assignee_team}) to {task_team} task.",
+            {
+                "assignee": assignee,
+                "assignee_team": assignee_team,
+                "task_team": task_team,
+                "guidance": f"Assign to a {task_team} team member instead.",
+            },
+        )
+
+    return None
+
 
 def validate_cell_pm_assignment(
     role: str,
@@ -32,23 +84,20 @@ def validate_cell_pm_assignment(
     assignee: str,
 ) -> dict[str, Any] | None:
     """Validate Cell PM assignment restrictions. Returns error dict or None."""
+    # First validate assignee can work on the team (applies to ALL roles)
+    task_team = task.get("team")
+    if error := validate_assignee_can_work_on_team(assignee, task_team):
+        return error
+
+    # Additional Cell PM restrictions
     if role != "cell_pm":
         return None
 
-    task_team = task.get("team")
     if task_team != agent_team:
         return format_error_response(
             "TEAM_MISMATCH",
             f"Cell PM can only assign tasks in their team ({agent_team})",
             {"task_team": task_team},
-        )
-
-    assignee_team = get_agent_team(assignee)
-    if assignee_team and assignee_team != agent_team:
-        return format_error_response(
-            "ASSIGNEE_MISMATCH",
-            "Cannot assign to agent outside your team",
-            {"assignee_team": assignee_team, "your_team": agent_team},
         )
 
     return None
@@ -190,6 +239,14 @@ async def handle_task_create(
 
     if error := _validate_cell_pm_team(agent_id, input_data.team):
         return error
+
+    # Validate assignee BEFORE creating task (avoid orphan tasks)
+    if input_data.assigned_to:
+        error = validate_assignee_can_work_on_team(
+            input_data.assigned_to, input_data.team
+        )
+        if error:
+            return error
 
     payload = _build_task_payload(input_data)
 

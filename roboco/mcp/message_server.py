@@ -6,10 +6,12 @@ enforcement of channel access rules.
 
 Tools:
 - roboco_message_send: Send a message to a channel
-- roboco_message_list: List recent messages
 - roboco_message_get: Get a specific message
 - roboco_channel_list: List available channels
 - roboco_channel_history: Get channel message history
+- roboco_ask_question: Ask a question with structured response options
+- roboco_report_blocker: Report a blocker with details
+- roboco_session_history_for_task: Get message history for a task's session
 """
 
 from datetime import UTC, datetime, timedelta
@@ -19,7 +21,6 @@ from fastapi import status
 from mcp.server.fastmcp import FastMCP
 
 from roboco.agents_config import CHANNEL_ACCESS, get_agent_role
-from roboco.llm import ToonAdapter
 from roboco.mcp.schemas import (
     AskQuestionInput,
     ReportBlockerInput,
@@ -30,10 +31,6 @@ from roboco.mcp.utils import (
     format_error_response,
     resolve_agent_uuid_cached,
 )
-
-# Global TOON adapter for encoding message data
-_toon = ToonAdapter()
-
 
 # =============================================================================
 # HELPER FUNCTIONS
@@ -397,12 +394,14 @@ async def _handle_message_send(
 
     # Resolve mentions (slugs) to UUIDs using shared cache
     resolved_mentions: list[str] = []
+    skipped_mentions: list[str] = []
     if data.mentions:
         for mention in data.mentions:
             resolved = await resolve_agent_uuid_cached(mention, client)
             if resolved:
                 resolved_mentions.append(resolved)
-            # Skip unresolved mentions rather than failing
+            else:
+                skipped_mentions.append(mention)
 
     message_data = {
         "session_id": session_id,
@@ -421,13 +420,22 @@ async def _handle_message_send(
             "SEND_FAILED", "Failed to send message", {"api_error": resp.text}
         )
 
-    return {
+    result = {
         "status": "sent",
         "message": resp.json(),
         "channel": data.channel_slug,
         "task_id": data.task_id,
         "guidance": f"Message sent to task {data.task_id}'s session.",
     }
+
+    # Warn about failed mention resolution
+    if skipped_mentions:
+        result["warnings"] = [
+            f"Could not resolve mentions: {skipped_mentions}. "
+            "Check agent slug spelling (e.g., 'be-dev-1', 'be-pm')."
+        ]
+
+    return result
 
 
 async def _handle_message_get(client: ApiClient, message_id: str) -> dict[str, Any]:
@@ -617,14 +625,17 @@ def create_message_mcp_server(agent_id: str) -> FastMCP:
         # Get task's primary session
         session_id = await _get_task_primary_session(client, task_id)
         if not session_id:
-            return {
-                "error": "NO_SESSION",
-                "message": f"Task {task_id} has no linked session.",
-                "guidance": (
-                    "This task doesn't have a work session yet. "
-                    "The PM should create one before work begins."
-                ),
-            }
+            return format_error_response(
+                "NO_SESSION_FOR_TASK",
+                f"Task {task_id} has no linked session.",
+                {
+                    "guidance": (
+                        "This task doesn't have a work session yet. "
+                        "The PM should create one before work begins."
+                    ),
+                    "task_id": task_id,
+                },
+            )
 
         # Get messages from the session
         resp = await client.get(

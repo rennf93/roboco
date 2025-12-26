@@ -66,23 +66,42 @@ def format_error_response(
     """
     Format a standardized error response for MCP tools.
 
+    Uses the common error_response format for consistency with API layer.
+
     Args:
         code: Error code (e.g., "NOT_FOUND", "API_ERROR", "PERMISSION_DENIED")
         message: Human-readable error message
         details: Optional additional error details
 
     Returns:
-        Standardized error response dict
+        Standardized error response dict with status="error"
     """
-    response: dict[str, Any] = {
-        "error": {
-            "code": code,
-            "message": message,
-        }
-    }
-    if details:
-        response["error"]["details"] = details
-    return response
+    from roboco.api.schemas.common import error_response
+
+    return error_response(code, message, details)
+
+
+def format_success_response(
+    data: Any,
+    guidance: str | None = None,
+    next_step: str | None = None,
+) -> dict[str, Any]:
+    """
+    Format a standardized success response for MCP tools.
+
+    Uses the common success_response format for consistency with API layer.
+
+    Args:
+        data: Response payload
+        guidance: Actionable next step guidance
+        next_step: Workflow hint (e.g., PLAN, EXECUTE)
+
+    Returns:
+        Standardized success response dict with status="success"
+    """
+    from roboco.api.schemas.common import success_response
+
+    return success_response(data, guidance, next_step)
 
 
 async def resolve_agent_uuid(

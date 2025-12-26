@@ -3,12 +3,84 @@
 ## Overview
 
 The knowledge base is built from:
+- **Code** - Indexed source files
+- **Documentation** - Indexed docs and READMEs
 - **Journals** - Your entries and team entries
 - **Task history** - Past tasks, decisions, outcomes
 - **Messages** - Channel discussions
-- **Documentation** - Produced docs
 
 All content is **embedded** (vectorized) for semantic search.
+
+---
+
+## Knowledge Base Tools
+
+### Semantic Search
+
+```python
+roboco_kb_search(
+    query="rate limiting redis implementation",
+    top_k=5,                    # Results to return (1-20)
+    project="roboco",           # Optional project filter
+    task_id="uuid-here",        # Optional task filter
+    index_types=["code", "docs"]  # Filter by type
+)
+```
+
+Returns semantically similar content from indexed code, docs, and learnings.
+
+### RAG Queries (AI-Generated Answers)
+
+```python
+roboco_rag_query(
+    query="How does authentication work in this codebase?",
+    top_k=5,                    # Context chunks to use
+    project="roboco"            # Optional project filter
+)
+```
+
+Returns an AI-synthesized answer with citations to sources.
+
+**Good for questions like:**
+- "How does authentication work?"
+- "What pattern should I use for error handling?"
+- "What decisions were made about the database schema?"
+
+### Check What's Indexed
+
+```python
+roboco_kb_stats()
+# Returns: indexed content counts by type
+```
+
+### Estimate Token Count
+
+```python
+roboco_tokens_estimate(content="...", model="claude-sonnet-4")
+# Returns: token count for context planning
+```
+
+---
+
+## Indexing Content (PM/Developer/Documenter)
+
+### Index Code (PM, Developer)
+
+```python
+roboco_kb_index_code(
+    sources=["src/**/*.py", "lib/**/*.ts"],
+    project="roboco"
+)
+```
+
+### Index Documentation (PM, Documenter)
+
+```python
+roboco_kb_index_docs(
+    sources=["docs/**/*.md", "README.md"],
+    project="roboco"
+)
+```
 
 ---
 
@@ -151,12 +223,15 @@ Everything you journal becomes searchable:
 
 ---
 
-## Future: RAG Queries (Planned)
+## Tool Quick Reference
 
-Eventually you'll be able to:
-- Query across all knowledge (tasks, docs, code)
-- Get AI-synthesized answers
-- Find relevant code examples
-- Cross-reference decisions with outcomes
-
-For now, journal search is your primary tool.
+| Tool | Purpose | Who Can Use |
+|------|---------|-------------|
+| `roboco_kb_search` | Semantic search | Everyone |
+| `roboco_rag_query` | AI-generated answers | Everyone |
+| `roboco_kb_stats` | What's indexed | Everyone |
+| `roboco_kb_index_code` | Index code files | PM, Developer |
+| `roboco_kb_index_docs` | Index documentation | PM, Documenter |
+| `roboco_tokens_estimate` | Token count | Everyone |
+| `roboco_journal_search` | Search your journal | Everyone |
+| `roboco_journal_read_team` | Read team journals | PM, Documenter |

@@ -89,6 +89,55 @@ def _is_pm_own_task(task: dict[str, Any], agent_id: str) -> bool:
     )
 
 
+async def _check_children_completed(
+    client: ApiClient, task_id: str
+) -> dict[str, Any] | None:
+    """Check ALL children of a task are completed.
+
+    Cancelled subtasks also block completion - they must be resolved first.
+    Returns error if any children are not completed, None if OK.
+    """
+    try:
+        # Fetch children/subtasks for this task
+        resp = await client.get(f"/tasks/{task_id}/subtasks")
+        if not resp.ok:
+            # If endpoint doesn't exist or fails, skip check (backwards compat)
+            return None
+
+        subtasks = resp.json()
+        if not subtasks:
+            return None  # No children, OK to complete
+
+        incomplete: list[dict[str, str]] = []
+        for subtask in subtasks:
+            subtask_status = subtask.get("status")
+            # ONLY "completed" is acceptable - cancelled/pending/etc. block completion
+            if subtask_status != "completed":
+                incomplete.append({
+                    "id": str(subtask.get("id", "unknown")),
+                    "title": subtask.get("title", "Untitled"),
+                    "status": subtask_status or "unknown",
+                })
+
+        if incomplete:
+            return format_error_response(
+                "INCOMPLETE_CHILDREN",
+                f"Cannot complete task: {len(incomplete)} subtask(s) not completed.",
+                {
+                    "incomplete_subtasks": incomplete,
+                    "guidance": (
+                        "ALL subtasks must be COMPLETED before completing parent. "
+                        "Cancelled subtasks must be resolved or removed first."
+                    ),
+                },
+            )
+
+        return None
+    except Exception:
+        # If check fails for any reason, allow completion (backwards compat)
+        return None
+
+
 async def handle_task_complete(
     client: ApiClient, task_id: str, agent_id: str
 ) -> dict[str, Any]:
@@ -119,6 +168,10 @@ async def handle_task_complete(
             "Expected 'awaiting_pm_review' (dev work) or 'in_progress' (own task).",
             {"current_status": current_status},
         )
+
+    # Check all children are completed before allowing parent completion
+    if error := await _check_children_completed(client, task_id):
+        return error
 
     complete_resp = await client.post(f"/tasks/{task_id}/complete")
     if not complete_resp.ok:

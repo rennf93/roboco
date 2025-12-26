@@ -98,8 +98,13 @@ def get_scan_guidance(
 
 
 def check_blocking_tasks(active_tasks: list[dict]) -> dict[str, Any] | None:
-    """Check for blocking active tasks. Returns error or None."""
-    blocking_statuses = ["pending", "claimed", "in_progress", "verifying"]
+    """Check for blocking active tasks. Returns error or None.
+
+    NOTE: "pending" is NOT blocking. If PM assigned multiple pending tasks,
+    agent should be able to claim any of them. Only tasks being actively
+    worked on (claimed, in_progress, verifying) block new claims.
+    """
+    blocking_statuses = ["claimed", "in_progress", "verifying"]
     blocking = [t for t in active_tasks if t.get("status") in blocking_statuses]
     if blocking:
         status = blocking[0].get("status", "active")

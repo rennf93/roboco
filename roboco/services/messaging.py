@@ -7,7 +7,7 @@ Comprehensive service for managing communication:
 - Sessions (message boundaries)
 - Messages (individual communications)
 
-Implements the communication model from HOMELAB_TEAM_V0.md.
+Implements the communication model.
 """
 
 from datetime import UTC, datetime

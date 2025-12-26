@@ -2,7 +2,6 @@
 RoboCo Data Models
 
 This module contains all data models for the AI Agents Company system.
-Based on the HOMELAB_TEAM_V0.md blueprint.
 """
 
 from roboco.models.agent import (
@@ -25,6 +24,7 @@ from roboco.models.base import (
     # Base types
     RobocoBase,
     SessionStatus,
+    SubstituteReason,
     # Enums
     TaskStatus,
     Team,
@@ -140,6 +140,7 @@ __all__ = [
     "SessionTaskLink",
     "SessionTaskLinkCreate",
     "SessionTaskRelationshipType",
+    "SubstituteReason",
     "Task",
     "TaskCreate",
     "TaskPlan",

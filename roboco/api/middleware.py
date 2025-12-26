@@ -10,11 +10,12 @@ from collections.abc import Callable
 from typing import cast
 
 import structlog
-from fastapi import FastAPI, Request, Response
+from fastapi import FastAPI, HTTPException, Request, Response
 from fastapi import status as http_status
 from fastapi.responses import JSONResponse
 from starlette.middleware.base import BaseHTTPMiddleware
 
+from roboco.api.schemas.common import ErrorCode
 from roboco.exceptions import (
     AuthenticationError,
     InvalidStateError,
@@ -176,13 +177,60 @@ async def generic_exception_handler(request: Request, exc: Exception) -> JSONRes
         status_code=http_status.HTTP_500_INTERNAL_SERVER_ERROR,
         content={
             "error": {
-                "code": "INTERNAL_ERROR",
+                "code": ErrorCode.INTERNAL_ERROR,
                 "message": "An internal error occurred",
                 "details": {
                     "correlation_id": correlation_id,
                 },
             }
         },
+    )
+
+
+# Map HTTP status codes to string error codes
+_HTTP_TO_ERROR_CODE: dict[int, str] = {
+    400: ErrorCode.INVALID_INPUT,
+    401: ErrorCode.NOT_AUTHORIZED,
+    403: ErrorCode.ACCESS_DENIED,
+    404: ErrorCode.NOT_FOUND,
+    409: ErrorCode.INVALID_INPUT,  # Conflict
+    422: ErrorCode.INVALID_INPUT,  # Validation error
+    500: ErrorCode.INTERNAL_ERROR,
+}
+
+
+async def http_exception_handler(request: Request, exc: Exception) -> JSONResponse:
+    """
+    Handle FastAPI HTTPException with standardized error format.
+
+    Converts HTTP status codes to string error codes for consistency with MCP.
+    """
+    http_exc = cast("HTTPException", exc)
+    correlation_id = getattr(request.state, "correlation_id", None)
+
+    # Map status code to error code
+    error_code = _HTTP_TO_ERROR_CODE.get(http_exc.status_code, ErrorCode.INTERNAL_ERROR)
+
+    logger.warning(
+        "HTTP exception",
+        status_code=http_exc.status_code,
+        error_code=error_code,
+        detail=http_exc.detail,
+    )
+
+    response_content: dict = {
+        "error": {
+            "code": error_code,
+            "message": str(http_exc.detail),
+        }
+    }
+
+    if correlation_id:
+        response_content["error"]["details"] = {"correlation_id": correlation_id}
+
+    return JSONResponse(
+        status_code=http_exc.status_code,
+        content=response_content,
     )
 
 
@@ -198,8 +246,14 @@ def setup_middleware(app: FastAPI) -> None:
     Order matters:
     1. CorrelationIdMiddleware - first to set correlation ID
     2. RequestLoggingMiddleware - logs with correlation ID
+
+    Exception handler priority:
+    1. HTTPException - most common, converts to string error codes
+    2. RobocoError - custom domain exceptions
+    3. Exception - catch-all for unexpected errors
     """
-    # Exception handlers
+    # Exception handlers (order: specific to general)
+    app.add_exception_handler(HTTPException, http_exception_handler)
     app.add_exception_handler(RobocoError, roboco_exception_handler)
     app.add_exception_handler(Exception, generic_exception_handler)
 

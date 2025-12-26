@@ -39,10 +39,25 @@ QA agents (be-qa, fe-qa, ux-qa) verify developer work meets acceptance criteria.
    │
    │  roboco_task_start(task_id)
    │
+   │  # REQUIRED: Announce to cell
+   │  roboco_message_send({
+   │    channel: "backend-cell",
+   │    content: "Starting QA review of [task title]",
+   │    task_id: task_id
+   │  })
+   │
    │  STATUS: claimed → in_progress
    │
    ▼
-4. REVIEW WORK
+4. GATHER CONTEXT (before reviewing)
+   │
+   │  # REQUIRED: Read developer's journey
+   │  roboco_journal_read_team(original_developer, task_id=task_id)
+   │  roboco_kb_search("similar implementations")
+   │  roboco_channel_history("backend-cell")  # Related discussions
+   │
+   ▼
+5. REVIEW WORK
    │
    │  ┌─────────────────────────────────────────────────────────────────┐
    │  │ Review checklist:                                               │
@@ -52,12 +67,28 @@ QA agents (be-qa, fe-qa, ux-qa) verify developer work meets acceptance criteria.
    │  │ ├── Verify functionality                                        │
    │  │ └── Check code quality                                          │
    │  │                                                                 │
-   │  │ roboco_task_progress(task_id, "Reviewing X", 50)                │
-   │  │ roboco_journal_entry({type: "qa_review", ...})                  │
+   │  │ REQUIRED - Progress updates:                                    │
+   │  │   roboco_task_progress(task_id, "Reviewing X", 50)              │
+   │  │                                                                 │
+   │  │ REQUIRED - Journal your review:                                 │
+   │  │   roboco_journal_entry({type: "qa_review", ...})                │
+   │  │   roboco_journal_decision(...)  # If making judgment calls      │
+   │  │   roboco_journal_struggle(...)  # If issues found               │
    │  └─────────────────────────────────────────────────────────────────┘
    │
    ▼
-5. DECISION
+6. REFLECT (before decision)
+   │
+   │  # REQUIRED before pass/fail
+   │  roboco_journal_reflect({
+   │    task_id: task_id,
+   │    what_done: "Reviewed X, Y, Z",
+   │    what_learned: "Discovered patterns...",
+   │    what_struggled: "Edge cases were unclear"
+   │  })
+   │
+   ▼
+7. DECISION
    │
    ├──── PASS ────────────────────────────────────────────────────────┐
    │                                                                  │
@@ -111,10 +142,25 @@ DECISIONS:
   in_progress ──qa_fail──► needs_revision
 ```
 
+## Using Knowledge Base
+
+Before reviewing, search for context:
+
+```python
+roboco_kb_search("similar past reviews")       # Find related QA work
+roboco_rag_query("what are common issues?")    # AI-generated insights
+roboco_journal_search("qa patterns")           # Your past reviews
+```
+
+See [KNOWLEDGE_BASE.md](./KNOWLEDGE_BASE.md) for full documentation.
+
 ## Key Rules
 
 1. **Only claim awaiting_qa** - Can't claim pending tasks
 2. **Cannot self-review** - Can't QA your own dev work
-3. **Thorough notes** - Document what was tested and why
-4. **Clear fail reasons** - Developer needs to know what to fix
-5. **Cannot COMPLETE** - Only PM completes after docs
+3. **MESSAGE when starting** - Announce to cell channel
+4. **READ dev's journey** - roboco_journal_read_team() REQUIRED
+5. **JOURNAL your review** - Document what was tested and why
+6. **REFLECT before decision** - roboco_journal_reflect() REQUIRED
+7. **Clear fail reasons** - Developer needs to know what to fix
+8. **Cannot COMPLETE** - Only PM completes after docs

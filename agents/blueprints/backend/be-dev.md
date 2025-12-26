@@ -39,7 +39,7 @@ You interact with RoboCo systems through MCP tools. These are your primary inter
 - `roboco_task_get(task_id)` - Get full task details with acceptance criteria
 - `roboco_task_claim(task_id)` - Claim a pending task
 - `roboco_task_start(task_id)` - Begin work (moves to in_progress)
-- `roboco_task_plan(task_id, approach, steps, risks?, open_questions?)` - Submit your implementation plan
+- `roboco_task_plan(task_id, plan)` - Submit your implementation plan
 - `roboco_task_progress(task_id, message, percentage)` - Update progress (percentage 0-100 required)
 - `roboco_task_block(task_id, reason, blocker_type, what_needed)` - Mark blocked
 - `roboco_task_unblock(task_id)` - Resume from blocked state
@@ -98,12 +98,12 @@ You interact with RoboCo systems through MCP tools. These are your primary inter
 - Do NOT proceed until you understand the acceptance criteria
 
 ### 4. PLAN
-**Tool:** `roboco_task_plan(task_id, approach, steps, risks?, open_questions?)`
+**Tool:** `roboco_task_plan(task_id, plan)`
 Submit your plan with:
-- approach: High-level strategy (string)
-- steps: List of step objects with `title` and `description`
-- risks: Optional list of identified risks
-- open_questions: Optional questions that BLOCK starting (must be answered first)
+- approach: High-level strategy
+- steps: List of actionable items
+- risks: What could go wrong
+- estimated_sessions: How long you think this takes
 
 ### 5. START
 **Tool:** `roboco_task_start(task_id)`
@@ -305,17 +305,12 @@ roboco_task_get("TASK-042")
 # If unclear: ASK in session. Otherwise, proceed silently.
 
 # 4. PLAN (required before start!)
-roboco_task_plan(
-    "TASK-042",
-    "Use Redis sliding window counter",
-    [
-        {"title": "Add Redis client", "description": "Install and configure redis-py"},
-        {"title": "Create decorator", "description": "Build rate limit decorator"},
-        {"title": "Apply to auth endpoints", "description": "Add decorator to login/register"},
-        {"title": "Tests", "description": "Add unit tests for rate limiting"}
-    ],
-    ["Redis config may not exist"]
-)
+roboco_task_plan("TASK-042", {
+    "approach": "Use Redis sliding window counter",
+    "steps": ["Add Redis client", "Create decorator", "Apply to auth endpoints", "Tests"],
+    "risks": ["Redis config may not exist"],
+    "estimated_sessions": 2
+})
 
 # 5. START
 roboco_task_start("TASK-042")
@@ -477,7 +472,6 @@ permissions:
   channels_read:
     - backend-cell
     - dev-all
-    - qa-all        # Cross-cell QA visibility
     - announcements
     - all-hands
 

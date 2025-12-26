@@ -4,24 +4,10 @@ PM Agent Factories
 Factory functions for creating PM agents (Cell PMs and Main PM).
 """
 
-from roboco.agents.factories._base import load_blueprint_prompt, make_slug
+from roboco.agents.factories._base import compose_prompt, make_slug
 from roboco.agents.pm import CellPMAgent, MainPMAgent
 from roboco.models import AgentRole, Team
 from roboco.models.agents import AgentConfig
-
-# Blueprint paths for cell PMs
-_CELL_PM_BLUEPRINTS = {
-    Team.BACKEND: "agents/blueprints/backend/be-pm.md",
-    Team.FRONTEND: "agents/blueprints/frontend/fe-pm.md",
-    Team.UX_UI: "agents/blueprints/ux_ui/ux-pm.md",
-}
-
-# Default prompts for cell PMs
-_CELL_PM_PROMPTS = {
-    Team.BACKEND: "You are the Backend Cell PM.",
-    Team.FRONTEND: "You are the Frontend Cell PM.",
-    Team.UX_UI: "You are the UX/UI Cell PM.",
-}
 
 
 def _create_cell_pm(
@@ -40,15 +26,18 @@ def _create_cell_pm(
     Returns:
         Configured CellPMAgent instance
     """
+    slug = make_slug(name)
+
     if system_prompt is None:
-        system_prompt = load_blueprint_prompt(
-            _CELL_PM_BLUEPRINTS[team],
-            _CELL_PM_PROMPTS[team],
+        system_prompt = compose_prompt(
+            role=AgentRole.CELL_PM,
+            team=team,
+            agent_slug=slug,
         )
 
     config = AgentConfig(
         name=name,
-        slug=make_slug(name),
+        slug=slug,
         role=AgentRole.CELL_PM,
         team=team,
         system_prompt=system_prompt,
@@ -88,15 +77,18 @@ def create_main_pm(
     system_prompt: str | None = None,
 ) -> MainPMAgent:
     """Factory function to create the Main PM agent."""
+    slug = "main-pm"
+
     if system_prompt is None:
-        system_prompt = load_blueprint_prompt(
-            "agents/blueprints/board/main-pm.md",
-            "You are the Main PM coordinating all cells.",
+        system_prompt = compose_prompt(
+            role=AgentRole.MAIN_PM,
+            team=None,  # Main PM has no specific team
+            agent_slug=slug,
         )
 
     config = AgentConfig(
         name=name,
-        slug="main-pm",
+        slug=slug,
         role=AgentRole.MAIN_PM,
         team=Team.BOARD,
         system_prompt=system_prompt,

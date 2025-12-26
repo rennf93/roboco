@@ -42,7 +42,7 @@ ENV UV_CONCURRENT_DOWNLOADS=4
 RUN uv python install 3.13 && uv sync --frozen --python 3.13
 
 # Claude Code will use mounted ~/.claude for auth
-# Blueprints mounted at /app/agents/blueprints
+# System prompt mounted at /app/system-prompt.md (composed at spawn time from layers)
 # MCP config generated at runtime
 
 ENTRYPOINT ["claude"]

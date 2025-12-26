@@ -30,6 +30,7 @@ from roboco.api.schemas.tasks import (
     ProgressRequest,
     QANotes,
     SoftBlockRequest,
+    SubstituteRequest,
     TaskCountResponse,
     TaskResponse,
     TaskSessionLinkResponse,
@@ -40,7 +41,7 @@ from roboco.api.schemas.tasks import (
     transform_update_data,
 )
 from roboco.db.tables import AgentTable, NotificationTable
-from roboco.models.base import AgentRole, TaskStatus, Team
+from roboco.models.base import AgentRole, SubstituteReason, TaskStatus, Team
 from roboco.models.task import TaskCreate
 from roboco.services.audit import get_audit_service
 from roboco.services.messaging import get_messaging_service
@@ -988,19 +989,23 @@ async def complete_task(
             detail="Only PMs can complete tasks",
         )
 
-    # Check for incomplete subtasks before completing parent
+    # Check ALL subtasks are completed before completing parent
+    # Cancelled subtasks block completion - they must be resolved first
     subtasks = await service.get_subtasks(task_id)
     incomplete_subtasks = [
         st
         for st in subtasks
-        if st.status not in (TaskStatus.COMPLETED, TaskStatus.CANCELLED)
+        if st.status != TaskStatus.COMPLETED
     ]
     if incomplete_subtasks:
         max_titles_shown = 3
-        incomplete_titles = [st.title for st in incomplete_subtasks[:max_titles_shown]]
+        incomplete_info = [
+            f"{st.title} ({st.status.value})"
+            for st in incomplete_subtasks[:max_titles_shown]
+        ]
         detail = (
             f"Cannot complete task - {len(incomplete_subtasks)} subtask(s) "
-            f"still pending: {', '.join(incomplete_titles)}"
+            f"not completed: {', '.join(incomplete_info)}"
         )
         if len(incomplete_subtasks) > max_titles_shown:
             detail += f" (+{len(incomplete_subtasks) - max_titles_shown} more)"
@@ -1101,13 +1106,26 @@ async def escalate_task(
             status_code=status.HTTP_404_NOT_FOUND, detail="Agent not found"
         )
 
-    # Determine escalation target
-    target_slug = data.escalate_to or get_escalation_target(agent_record.slug)
-    if not target_slug:
+    # Determine escalation target - MUST follow the escalation chain
+    default_target = get_escalation_target(agent_record.slug)
+    if not default_target:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=f"No escalation target configured for {agent_record.slug}",
         )
+
+    # If escalate_to is provided, validate it matches the chain target
+    # This prevents bypassing the escalation chain (e.g., dev → CEO)
+    if data.escalate_to and data.escalate_to != default_target:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=(
+                f"Cannot escalate to {data.escalate_to}. "
+                f"Your escalation target is {default_target}."
+            ),
+        )
+
+    target_slug = default_target
 
     # Resolve target agent UUID
     target_result = await db.execute(
@@ -1150,6 +1168,87 @@ async def escalate_task(
         reason=data.reason,
         message=msg,
     )
+
+
+# =============================================================================
+# SUBSTITUTION (ALL AGENTS CAN SUBSTITUTE OUT)
+# =============================================================================
+
+# Map substitute reasons to target task statuses
+_REASON_TO_STATUS: dict[SubstituteReason, TaskStatus] = {
+    SubstituteReason.TASK_COMPLETE: TaskStatus.AWAITING_QA,
+    SubstituteReason.LOW_CONTEXT: TaskStatus.PENDING,
+    SubstituteReason.OUT_OF_SCOPE_TEAM: TaskStatus.PENDING,
+    SubstituteReason.OUT_OF_SCOPE_ROLE: TaskStatus.PENDING,
+    SubstituteReason.MAX_RETRIES: TaskStatus.PENDING,
+    SubstituteReason.BLOCKED_EXTERNAL: TaskStatus.BLOCKED,
+}
+
+
+@router.post("/{task_id}/substitute", response_model=TaskResponse)
+async def substitute_task(
+    task_id: UUID,
+    data: SubstituteRequest,
+    db: DbSession,
+    agent: CurrentAgentContext,
+) -> TaskResponse:
+    """
+    Request to be substituted out of a task.
+
+    This allows agents to gracefully release tasks when they can't continue.
+    IMPORTANT: This BYPASSES the "can't claim while in_progress" rule.
+
+    Substitution reasons:
+    - low_context: Insufficient context to continue safely
+    - out_of_scope_team: Task belongs to different team
+    - out_of_scope_role: Task requires different role
+    - task_complete: Finished work, releasing for next stage
+    - max_retries: Exceeded retry limit, need fresh perspective
+    - blocked_external: Need skills outside your capabilities
+    """
+    # Validate reason
+    try:
+        reason = SubstituteReason(data.reason)
+    except ValueError as e:
+        valid_reasons = [r.value for r in SubstituteReason]
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Invalid reason: {data.reason}. Valid: {valid_reasons}",
+        ) from e
+
+    # Get task
+    service = get_task_service(db)
+    task = await service.get(task_id)
+    if not task:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="Task not found"
+        )
+
+    # Verify agent owns the task
+    if task.assigned_to != agent.agent_id:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="You can only substitute out of tasks you own",
+        )
+
+    # Determine new status based on reason
+    new_status = _REASON_TO_STATUS.get(reason, TaskStatus.PENDING)
+
+    # Update task
+    update_data = {
+        "status": new_status.value,
+        "assigned_to": None,  # Clear assignment
+        "dev_notes": f"[SUBSTITUTE] Reason: {reason.value}\n{data.details}",
+    }
+    task = await service.update(task_id, **update_data)
+    if not task:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to update task",
+        )
+
+    await db.commit()
+    return task_to_response(task)
 
 
 # =============================================================================

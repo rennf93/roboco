@@ -6,7 +6,7 @@ Factory functions for creating board-level agents
 """
 
 from roboco.agents.board import AuditorAgent, HeadMarketingAgent, ProductOwnerAgent
-from roboco.agents.factories._base import load_blueprint_prompt
+from roboco.agents.factories._base import compose_prompt
 from roboco.models import AgentRole, Team
 from roboco.models.agents import AgentConfig
 
@@ -16,15 +16,18 @@ def create_product_owner(
     system_prompt: str | None = None,
 ) -> ProductOwnerAgent:
     """Factory function to create the Product Owner agent."""
+    slug = "product-owner"
+
     if system_prompt is None:
-        system_prompt = load_blueprint_prompt(
-            "agents/blueprints/board/product-owner.md",
-            "You are the Product Owner.",
+        system_prompt = compose_prompt(
+            role=AgentRole.PRODUCT_OWNER,
+            team=None,
+            agent_slug=slug,
         )
 
     config = AgentConfig(
         name=name,
-        slug="product-owner",
+        slug=slug,
         role=AgentRole.PRODUCT_OWNER,
         team=Team.BOARD,
         system_prompt=system_prompt,
@@ -40,15 +43,18 @@ def create_head_marketing(
     system_prompt: str | None = None,
 ) -> HeadMarketingAgent:
     """Factory function to create the Head of Marketing agent."""
+    slug = "head-marketing"
+
     if system_prompt is None:
-        system_prompt = load_blueprint_prompt(
-            "agents/blueprints/board/head-marketing.md",
-            "You are the Head of Marketing.",
+        system_prompt = compose_prompt(
+            role=AgentRole.HEAD_MARKETING,
+            team=None,
+            agent_slug=slug,
         )
 
     config = AgentConfig(
         name=name,
-        slug="head-marketing",
+        slug=slug,
         role=AgentRole.HEAD_MARKETING,
         team=Team.BOARD,
         system_prompt=system_prompt,
@@ -64,15 +70,18 @@ def create_auditor(
     system_prompt: str | None = None,
 ) -> AuditorAgent:
     """Factory function to create the Auditor agent."""
+    slug = "auditor"
+
     if system_prompt is None:
-        system_prompt = load_blueprint_prompt(
-            "agents/blueprints/board/auditor.md",
-            "You are the Auditor - the CEO's silent ally.",
+        system_prompt = compose_prompt(
+            role=AgentRole.AUDITOR,
+            team=None,
+            agent_slug=slug,
         )
 
     config = AgentConfig(
         name=name,
-        slug="auditor",
+        slug=slug,
         role=AgentRole.AUDITOR,
         team=Team.BOARD,
         system_prompt=system_prompt,
