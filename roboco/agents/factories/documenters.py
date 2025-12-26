@@ -5,25 +5,11 @@ Factory functions for creating documenter agents for each team.
 """
 
 from roboco.agents.documenter import DocumenterAgent
-from roboco.agents.factories._base import load_blueprint_prompt, make_slug
+from roboco.agents.factories._base import compose_prompt, make_slug
 from roboco.models import AgentRole, Team
 from roboco.models.agents import AgentConfig
 
-# Blueprint paths for each team
-_BLUEPRINTS = {
-    Team.BACKEND: "agents/blueprints/backend/be-documenter.md",
-    Team.FRONTEND: "agents/blueprints/frontend/fe-documenter.md",
-    Team.UX_UI: "agents/blueprints/ux_ui/ux-documenter.md",
-}
-
-# Default prompts for each team
-_DEFAULT_PROMPTS = {
-    Team.BACKEND: "You are a backend documenter.",
-    Team.FRONTEND: "You are a frontend documenter.",
-    Team.UX_UI: "You are a UX/UI documenter.",
-}
-
-# Default capabilities for each team (matches blueprint capabilities)
+# Default capabilities for each team
 _CAPABILITIES = {
     Team.BACKEND: [
         "technical_writing",
@@ -63,15 +49,18 @@ def _create_documenter(
     Returns:
         Configured DocumenterAgent instance
     """
+    slug = make_slug(name)
+
     if system_prompt is None:
-        system_prompt = load_blueprint_prompt(
-            _BLUEPRINTS[team],
-            _DEFAULT_PROMPTS[team],
+        system_prompt = compose_prompt(
+            role=AgentRole.DOCUMENTER,
+            team=team,
+            agent_slug=slug,
         )
 
     config = AgentConfig(
         name=name,
-        slug=make_slug(name),
+        slug=slug,
         role=AgentRole.DOCUMENTER,
         team=team,
         system_prompt=system_prompt,

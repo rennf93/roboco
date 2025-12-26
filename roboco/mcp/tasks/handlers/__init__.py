@@ -37,6 +37,7 @@ from roboco.mcp.tasks.handlers.sessions import (
     handle_session_link_task,
     handle_session_unlink_task,
 )
+from roboco.mcp.tasks.handlers.substitute import handle_task_substitute
 from roboco.mcp.tasks.handlers.work import (
     handle_task_plan,
     handle_task_progress,
@@ -70,5 +71,6 @@ __all__ = [
     "handle_task_start",
     "handle_task_submit_qa",
     "handle_task_submit_verification",
+    "handle_task_substitute",
     "handle_task_unblock",
 ]

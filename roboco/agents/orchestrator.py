@@ -13,6 +13,7 @@ from typing import Any
 from uuid import UUID
 
 import structlog
+
 from roboco.agents.base import Agent
 from roboco.models import AgentRole, AgentStatus, Team
 

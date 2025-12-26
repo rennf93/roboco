@@ -26,6 +26,7 @@
 | `roboco_task_qa_pass` | ❌ | ❌ | ❌ | ✅ | ❌ |
 | `roboco_task_qa_fail` | ❌ | ❌ | ❌ | ✅ | ❌ |
 | `roboco_task_docs_complete` | ❌ | ❌ | ❌ | ❌ | ✅ |
+| `roboco_task_substitute` | ✅ | ✅ | ✅ | ✅ | ✅ |
 
 ### Session Tools
 
@@ -64,6 +65,17 @@
 | `roboco_journal_search` | ✅ | ✅ | ✅ | ✅ | ✅ |
 | `roboco_journal_recent` | ✅ | ✅ | ✅ | ✅ | ✅ |
 | `roboco_journal_read_team` | ✅ | ✅ | ❌ | ❌ | ✅ |
+
+### Knowledge Base Tools
+
+| Tool | Main PM | Cell PM | Developer | QA | Documenter |
+|------|:-------:|:-------:|:---------:|:--:|:----------:|
+| `roboco_kb_search` | ✅ | ✅ | ✅ | ✅ | ✅ |
+| `roboco_rag_query` | ✅ | ✅ | ✅ | ✅ | ✅ |
+| `roboco_kb_stats` | ✅ | ✅ | ✅ | ✅ | ✅ |
+| `roboco_kb_index_code` | ✅ | ✅ | ✅ | ❌ | ❌ |
+| `roboco_kb_index_docs` | ✅ | ✅ | ❌ | ❌ | ✅ |
+| `roboco_tokens_estimate` | ✅ | ✅ | ✅ | ✅ | ✅ |
 
 ---
 

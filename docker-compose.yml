@@ -178,6 +178,8 @@ services:
       - ${CLAUDE_AUTH_DIR:-/home/renzof/.claude}:/root/.claude
       # Shared config directory for MCP configs (writable)
       - ${ROBOCO_DATA_DIR:-./data}/mcp-configs:/app/mcp-configs
+      # Generated prompts directory - composed at runtime from layers
+      - ${ROBOCO_DATA_DIR:-./data}/prompts-generated:/app/prompts-generated
     depends_on:
       postgres:
         condition: service_healthy

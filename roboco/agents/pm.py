@@ -12,6 +12,7 @@ from typing import Any
 from uuid import UUID
 
 import structlog
+
 from roboco.agents.base import Agent, AgentConfig
 from roboco.agents.mixins import CyclicPhaseConfig, CyclicPhaseRunner
 from roboco.models import NotificationType, TaskStatus

@@ -12,6 +12,8 @@ Tools:
 - roboco_journal_struggle: Log a struggle
 - roboco_journal_search: Search past entries
 - roboco_journal_stats: Get journal statistics
+- roboco_journal_recent: Get recent journal entries
+- roboco_journal_read_team: Read team member journals (cell members can read each other)
 """
 
 from typing import Any

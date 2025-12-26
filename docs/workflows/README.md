@@ -144,7 +144,9 @@ roboco_notify_ack(notification_id)
 roboco_task_scan(team="backend")
 
 # 3. Search knowledge base
-roboco_journal_search("similar work")
+roboco_kb_search("similar work")           # Semantic search
+roboco_rag_query("how does X work?")       # AI-generated answer
+roboco_journal_search("past decisions")    # Your journal
 
 # 4. Claim and plan
 roboco_task_claim(task_id)
@@ -169,6 +171,9 @@ roboco_message_send({channel: "backend-cell", ...})
 
 # If stuck
 roboco_task_escalate(task_id, "Need help with X")
+
+# If you can't continue (graceful exit)
+roboco_task_substitute(task_id, "low_context", "Need more context about X")
 ```
 
 ### Finishing

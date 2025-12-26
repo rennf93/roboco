@@ -4,29 +4,47 @@ Task MCP Server
 Exposes task management tools to Claude Code agents with built-in
 enforcement of task lifecycle rules.
 
-Tools:
+Tools (Core - all agents):
 - roboco_task_scan: List available tasks (paused, assigned, available)
 - roboco_task_get: Get task details
 - roboco_task_claim: Claim a task
 - roboco_task_plan: Submit implementation plan
 - roboco_task_start: Start working on task
 - roboco_task_progress: Update progress
+- roboco_task_escalate: Escalate task up hierarchy
+- roboco_task_substitute: Release task gracefully
+- roboco_task_submit_pm_review: Submit non-dev task directly to PM
+- roboco_agent_idle: Signal no work available (triggers shutdown)
+
+Tools (Blocking - Developer/PM):
 - roboco_task_block: Mark task as blocked
 - roboco_task_unblock: Unblock task
 - roboco_task_pause: Pause task
+
+Tools (Developer):
+- roboco_task_submit_verification: Self-verify before QA
 - roboco_task_submit_qa: Submit for QA review
-- roboco_task_qa_pass: Pass QA (QA role only)
-- roboco_task_qa_fail: Fail QA (QA role only)
-- roboco_task_docs_complete: Mark docs complete (Documenter only)
-- roboco_task_complete: Mark task complete (PM only, after docs)
-- roboco_task_create: Create new task (PM only)
-- roboco_task_assign: Assign task to agent (PM only)
-- roboco_task_cancel: Cancel a task (PM/Board only)
-- roboco_task_escalate: Escalate task up hierarchy (all agents)
-- roboco_session_create_for_tasks: Create work session for tasks (PM only)
-- roboco_session_link_task: Link session to task (PM only)
-- roboco_session_unlink_task: Unlink session from task (PM only)
+
+Tools (QA):
+- roboco_task_qa_pass: Pass QA
+- roboco_task_qa_fail: Fail QA with issues
+
+Tools (Documenter):
+- roboco_task_docs_complete: Mark documentation complete
+
+Tools (PM/Board):
+- roboco_task_create: Create new task
+- roboco_task_assign: Assign task to agent
+- roboco_task_activate: Move task from backlog to pending
+- roboco_task_complete: Mark task complete (after full workflow)
+- roboco_task_cancel: Cancel a task
+
+Tools (Sessions - PM/Board):
+- roboco_session_create_for_tasks: Create work session for tasks
+- roboco_session_link_task: Link session to task
+- roboco_session_unlink_task: Unlink session from task
 - roboco_session_get_for_task: Get sessions for a task (all agents)
+- roboco_group_create: Create agent groups (Main PM only)
 """
 
 from typing import Any
@@ -70,6 +88,7 @@ from roboco.mcp.tasks.handlers import (
     handle_task_start,
     handle_task_submit_qa,
     handle_task_submit_verification,
+    handle_task_substitute,
     handle_task_unblock,
 )
 from roboco.mcp.utils import ApiClient
@@ -250,6 +269,54 @@ def _register_core_tools(mcp: FastMCP, client: ApiClient, agent_id: str) -> None
             task_id=task_id, reason=reason, escalate_to=escalate_to
         )
         return await handle_task_escalate(client, input_data, agent_id)
+
+    @mcp.tool()
+    async def roboco_task_substitute(
+        task_id: str,
+        reason: str,
+        details: str,
+        suggested_role: str | None = None,
+        suggested_team: str | None = None,
+    ) -> dict[str, Any]:
+        """
+        Request to be substituted out of a task.
+
+        Use this to gracefully release a task when you cannot or should not
+        continue working on it. This BYPASSES the normal "can't claim while
+        in_progress" rule - that's the whole point.
+
+        REASONS (SubstituteReason enum values):
+        - low_context: Insufficient context to continue safely
+        - out_of_scope_team: Task belongs to different team
+        - out_of_scope_role: Task requires different role (e.g., QA, not dev)
+        - task_complete: Finished work, releasing for next stage
+        - max_retries: Exceeded retry limit, need fresh perspective
+        - blocked_external: Need skills outside your capabilities
+
+        EFFECT:
+        - Task is released and reassigned (or moved to QA/docs/blocked)
+        - You are FREE to claim new work with roboco_task_scan()
+
+        Args:
+            task_id: Task UUID to release
+            reason: One of: low_context, out_of_scope_team, out_of_scope_role,
+                    task_complete, max_retries, blocked_external
+            details: Human-readable explanation
+            suggested_role: Hint for reassignment (developer, qa, pm, documenter)
+            suggested_team: Hint for reassignment (backend, frontend, ux_ui)
+
+        Returns:
+            Confirmation with next steps
+        """
+        return await handle_task_substitute(
+            client,
+            task_id,
+            agent_id,
+            reason,
+            details,
+            suggested_role=suggested_role,
+            suggested_team=suggested_team,
+        )
 
     @mcp.tool()
     async def roboco_task_submit_pm_review(

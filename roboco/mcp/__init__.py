@@ -9,16 +9,19 @@ Servers:
 - Message MCP Server: Channel messaging
 - Notify MCP Server: Formal notifications
 - Journal MCP Server: Personal journaling
+- Optimal MCP Server: Knowledge base and RAG
 """
 
 from roboco.mcp.journal_server import create_journal_mcp_server
 from roboco.mcp.message_server import create_message_mcp_server
 from roboco.mcp.notify_server import create_notify_mcp_server
+from roboco.mcp.optimal_server import create_optimal_mcp_server
 from roboco.mcp.task_server import create_task_mcp_server
 
 __all__ = [
     "create_journal_mcp_server",
     "create_message_mcp_server",
     "create_notify_mcp_server",
+    "create_optimal_mcp_server",
     "create_task_mcp_server",
 ]

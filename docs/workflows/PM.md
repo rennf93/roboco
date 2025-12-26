@@ -17,9 +17,18 @@
    │
    ▼
 3. PLAN & BREAKDOWN
-   ├── roboco_task_plan(task_id, approach, steps)
-   ├── Identify which cells need subtasks
-   └── roboco_task_progress(task_id, "Planning complete", 20)
+   │
+   │  roboco_task_plan(task_id, approach, steps)
+   │  roboco_task_progress(task_id, "Planning complete", 20)
+   │
+   │  # REQUIRED: Document your planning decisions
+   │  roboco_journal_decision({
+   │    title: "Task breakdown for [feature]",
+   │    context: "Requirements from board",
+   │    options: ["Option A", "Option B"],
+   │    chosen: "Option A",
+   │    rationale: "Because..."
+   │  })
    │
    ▼
 4. CREATE SUBTASKS (for Cell PMs)
@@ -71,11 +80,21 @@
    │  Loop:
    │  ├── roboco_task_scan() → Check subtask statuses
    │  ├── roboco_channel_history("pm-all") → Cross-cell coordination
+   │  ├── roboco_journal_read_team("be-pm") → Read cell PM progress
    │  ├── Handle escalations from Cell PMs
-   │  └── roboco_task_progress(main_task_id, "X% complete", %)
+   │  ├── roboco_task_progress(main_task_id, "X% complete", %)
+   │  └── roboco_journal_entry({type: "coordination", ...})
    │
    ▼
-9. COMPLETE (when all subtasks done)
+9. REFLECT & COMPLETE (when all subtasks done)
+   │
+   │  # REQUIRED: Reflect before completing
+   │  roboco_journal_reflect({
+   │    task_id: main_task_id,
+   │    what_done: "Coordinated X cells, Y subtasks",
+   │    what_learned: "Cross-cell coordination patterns",
+   │    what_struggled: "Dependency management"
+   │  })
    │
    │  roboco_task_complete(main_task_id)
    │
@@ -189,10 +208,30 @@ AFTER QA + DOCS:
   awaiting_pm_review ──PM completes──► completed
 ```
 
+## Using Knowledge Base
+
+PMs have full KB access including indexing:
+
+```python
+roboco_kb_search("similar past tasks")         # Find related work
+roboco_rag_query("how did we solve X?")        # AI-generated answers
+roboco_journal_read_team("be-dev-1")           # Read team journals
+
+# Indexing (PM only)
+roboco_kb_index_code(["src/**/*.py"])          # Index code for search
+roboco_kb_index_docs(["docs/**/*.md"])         # Index documentation
+```
+
+See [KNOWLEDGE_BASE.md](./KNOWLEDGE_BASE.md) for full documentation.
+
 ## Key Rules
 
 1. **Tasks start in BACKLOG** - PM setup phase
 2. **ACTIVATE before anyone can claim** - backlog → pending
 3. **Sessions group related tasks** - create before activating
 4. **Subtasks inherit parent session** - no need to create new session
-5. **Only PM can COMPLETE** - after full workflow (dev → QA → docs → PM review)
+5. **NOTIFY after activation** - roboco_notify_send() REQUIRED
+6. **JOURNAL decisions** - roboco_journal_decision() for task breakdowns
+7. **READ team journals** - roboco_journal_read_team() for monitoring
+8. **REFLECT before complete** - roboco_journal_reflect() REQUIRED
+9. **Only PM can COMPLETE** - after full workflow (dev → QA → docs → PM review)

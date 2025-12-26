@@ -41,7 +41,16 @@ Developers (be-dev-1, be-dev-2, fe-dev-1, fe-dev-2, ux-dev) execute implementati
    │  └─────────────────────────────────────────────────────────────────┘
    │
    ▼
-4. PLAN
+4. RESEARCH (before planning)
+   │
+   │  roboco_kb_search("similar implementations")
+   │  roboco_rag_query("how does X work in this codebase?")
+   │  roboco_journal_search("past decisions about X")
+   │
+   │  → Learn from past work before planning
+   │
+   ▼
+5. PLAN
    │
    │  roboco_task_plan(
    │    task_id,
@@ -57,38 +66,56 @@ Developers (be-dev-1, be-dev-2, fe-dev-1, fe-dev-2, ux-dev) execute implementati
    │  If questions → roboco_message_send() to PM
    │
    ▼
-5. START WORK
+6. START WORK
    │
    │  roboco_task_start(task_id)
+   │
+   │  # REQUIRED: Announce to cell
+   │  roboco_message_send({
+   │    channel: "backend-cell",
+   │    content: "Starting work on [task title]",
+   │    task_id: task_id
+   │  })
    │
    │  STATUS: claimed → in_progress
    │
    ▼
-6. EXECUTE (loop)
+7. EXECUTE (loop)
    │
    │  ┌─────────────────────────────────────────────────────────────────┐
-   │  │ While working:                                                  │
-   │  │                                                                 │
+   │  │ REQUIRED - Progress updates:                                    │
    │  │   roboco_task_progress(task_id, "Completed X", 25)              │
    │  │   roboco_task_progress(task_id, "Working on Y", 50)             │
-   │  │   roboco_task_progress(task_id, "Almost done", 75)              │
    │  │                                                                 │
-   │  │   roboco_journal_entry({                                        │
-   │  │     type: "work_log",                                           │
-   │  │     content: "What I did and learned"                           │
-   │  │   })                                                            │
+   │  │ REQUIRED - Journal as you go:                                   │
+   │  │   roboco_journal_entry(type="work_log", ...)  # General notes   │
+   │  │   roboco_journal_decision(...)     # When choosing approaches   │
+   │  │   roboco_journal_learning(...)     # When learning something    │
+   │  │   roboco_journal_struggle(...)     # When hitting issues        │
    │  │                                                                 │
    │  │ If BLOCKED:                                                     │
-   │  │   roboco_task_block(task_id, blocker_task_id)  ← blocked by     │
-   │  │   OR                                             another task   │
-   │  │   roboco_task_escalate(task_id, reason)       ← need PM help    │
+   │  │   roboco_task_block(task_id, blocker_task_id)                   │
+   │  │   roboco_journal_struggle(what="...", resolution="pending")     │
+   │  │   roboco_task_escalate(task_id, reason)  # Notify PM            │
    │  │                                                                 │
    │  │ If need to PAUSE:                                               │
    │  │   roboco_task_pause(task_id, reason, checkpoint, remaining)     │
    │  └─────────────────────────────────────────────────────────────────┘
    │
    ▼
-7. SELF-VERIFY
+8. REFLECT (before submitting)
+   │
+   │  # REQUIRED before QA submission
+   │  roboco_journal_reflect({
+   │    task_id: task_id,
+   │    what_done: "What I built",
+   │    what_learned: "New knowledge gained",
+   │    what_struggled: "Challenges faced",
+   │    next_steps: "For QA/documenter"
+   │  })
+   │
+   ▼
+9. SELF-VERIFY
    │
    │  roboco_task_submit_verification(task_id)
    │
@@ -103,7 +130,7 @@ Developers (be-dev-1, be-dev-2, fe-dev-1, fe-dev-2, ux-dev) execute implementati
    │  └─────────────────────────────────────────────────────────────────┘
    │
    ▼
-8. SUBMIT FOR QA
+10. SUBMIT FOR QA
    │
    │  roboco_task_submit_qa(task_id, {
    │    notes: "What I built and how to test it",
@@ -160,9 +187,40 @@ SUBMIT:
 ## Key Rules
 
 1. **CLAIM before anything** - Must claim to own the task
-2. **PLAN before START** - roboco_task_plan() required before start()
-3. **PROGRESS updates** - Keep PM informed with percentage
-4. **JOURNAL your work** - Document decisions, learnings, struggles
-5. **SELF-VERIFY first** - Check your own work before QA
-6. **Cannot COMPLETE** - Only PM completes tasks after full workflow
-7. **One task at a time** - Can't claim new task while one is in_progress
+2. **RESEARCH before PLAN** - Search KB and journals for past work
+3. **PLAN before START** - roboco_task_plan() required before start()
+4. **MESSAGE when starting** - Announce to cell channel
+5. **PROGRESS updates** - Keep PM informed with percentage
+6. **JOURNAL as you go** - Decisions, learnings, struggles (REQUIRED)
+7. **REFLECT before submit** - roboco_journal_reflect() REQUIRED
+8. **SELF-VERIFY first** - Check your own work before QA
+9. **Cannot COMPLETE** - Only PM completes tasks after full workflow
+10. **One task at a time** - Can't claim new task while one is in_progress
+
+## Substitution (Graceful Exit)
+
+If you can't continue a task, use substitution instead of getting stuck:
+
+```
+roboco_task_substitute(task_id, reason, details)
+```
+
+**Reasons:**
+- `low_context` - Not enough context to continue safely
+- `out_of_scope_team` - Task belongs to a different team
+- `out_of_scope_role` - Task requires QA or documenter, not dev
+- `task_complete` - Done with your part, releasing for next stage
+- `max_retries` - Tried multiple times, need fresh perspective
+- `blocked_external` - Need skills outside your capabilities
+
+After substitution, you are **FREE to claim new work** immediately.
+
+## Non-Dev Tasks (Alternate Path)
+
+If you receive a non-code task (validation, research, audit):
+
+```
+roboco_task_submit_pm_review(task_id, notes)
+```
+
+This skips the QA/docs workflow and goes directly to PM review.

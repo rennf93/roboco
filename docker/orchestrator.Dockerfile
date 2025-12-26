@@ -37,6 +37,8 @@ WORKDIR /app
 
 # Copy project files
 COPY roboco /app/roboco
+# agents/prompts/ contains layered prompt components (base, roles, teams, identities)
+# These are composed at runtime by compose_prompt() when spawning agents
 COPY agents /app/agents
 COPY docker /app/docker
 COPY pyproject.toml uv.lock alembic.ini README.md /app/

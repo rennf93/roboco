@@ -126,6 +126,8 @@
 | awaiting_documentation → awaiting_pm_review | Documenter | `roboco_task_docs_complete()` |
 | awaiting_pm_review → completed | PM | `roboco_task_complete()` |
 | any → cancelled | PM | `roboco_task_cancel()` |
+| in_progress → pending/blocked/awaiting_qa | Owner | `roboco_task_substitute()` |
+| in_progress → awaiting_pm_review | Any agent | `roboco_task_submit_pm_review()` |
 
 ## What Each Role Can Claim
 
@@ -148,3 +150,34 @@ An agent **CAN claim** even if they have:
 - A task in `blocked` (can work on something else while waiting)
 
 **Exception:** If claiming a task already assigned to them (PM pre-assigned), the blocking check is skipped for THAT specific task.
+
+## Substitution (Graceful Exit)
+
+Agents can **substitute out** of a task when they cannot continue:
+
+```
+roboco_task_substitute(task_id, reason, details)
+```
+
+| Reason | New Status | When to Use |
+|--------|------------|-------------|
+| `low_context` | pending | Insufficient context to continue safely |
+| `out_of_scope_team` | pending | Task belongs to different team |
+| `out_of_scope_role` | pending | Task requires different role (QA, not dev) |
+| `task_complete` | awaiting_qa | Finished work, releasing for next stage |
+| `max_retries` | pending | Exceeded retry limit, need fresh perspective |
+| `blocked_external` | blocked | Need skills outside your capabilities |
+
+**Key:** Substitution BYPASSES the "can't claim while in_progress" rule. After substituting, you are free to claim new work.
+
+## Direct PM Submission (Alternate Path)
+
+For non-dev tasks that don't need QA review:
+
+```
+roboco_task_submit_pm_review(task_id, notes)
+```
+
+Status: `in_progress → awaiting_pm_review`
+
+Use for: validation tasks, audits, research, or any task assigned directly that doesn't produce code.

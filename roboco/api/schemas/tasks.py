@@ -337,6 +337,29 @@ class EscalateResponse(BaseModel):
     message: str
 
 
+class SubstituteRequest(BaseModel):
+    """Request to substitute out of a task.
+
+    Allows agents to gracefully release tasks when they can't continue.
+    This BYPASSES the "can't claim while in_progress" rule.
+    """
+
+    reason: str = Field(
+        ...,
+        description=(
+            "Substitution reason: low_context, out_of_scope_team, "
+            "out_of_scope_role, task_complete, max_retries, blocked_external"
+        ),
+    )
+    details: str = Field(..., description="Human-readable explanation")
+    suggested_role: str | None = Field(
+        None, description="Hint for reassignment (developer, qa, pm, documenter)"
+    )
+    suggested_team: str | None = Field(
+        None, description="Hint for reassignment (backend, frontend, ux_ui)"
+    )
+
+
 class TaskCountResponse(BaseModel):
     """Task count by category."""
 

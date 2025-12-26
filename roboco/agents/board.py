@@ -9,6 +9,7 @@ from typing import Any
 from uuid import UUID, uuid4
 
 import structlog
+
 from roboco.agents.base import Agent, AgentConfig
 from roboco.agents.mixins import CyclicPhaseConfig, CyclicPhaseRunner
 from roboco.models.agents import (

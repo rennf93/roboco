@@ -25,8 +25,10 @@ import httpx
 import structlog
 from fastapi import status as http_status
 
-from roboco.agents_config import get_agent_role
+from roboco.agents.factories._base import compose_prompt
+from roboco.agents_config import get_agent_role, get_agent_team
 from roboco.config import settings
+from roboco.models import AgentRole, Team
 from roboco.models.runtime import (
     MODEL_MAP,
     ROLE_MODEL_MAP,
@@ -351,10 +353,8 @@ class AgentOrchestrator:
                     )
                     return existing
 
-            # Get blueprint path
-            blueprint_path = self._get_blueprint_path(agent_id)
-            if not blueprint_path.exists():
-                raise FileNotFoundError(f"Blueprint not found: {blueprint_path}")
+            # Generate composed prompt (replaces static blueprints)
+            blueprint_path = self._generate_composed_prompt(agent_id)
 
             # Ensure agent Claude settings have MCP tools allowed
             self._ensure_agent_claude_settings()
@@ -440,12 +440,23 @@ class AgentOrchestrator:
             mcp_config_host = (
                 f"{DATA_HOST_PATH}/mcp-configs/{config.mcp_config_path.name}"
             )
+            # Generated prompts are in /app/prompts-generated inside orchestrator
+            # but need host path for agent container mount
+            prompt_host = (
+                f"{DATA_HOST_PATH}/prompts-generated/{config.agent_id}-prompt.md"
+            )
         else:
             # Running directly on host
             blueprints_host = str(self.blueprints_dir.absolute())
             docs_host = str(self.blueprints_dir.parent / "docs")
             claude_host = CLAUDE_AUTH_HOST_PATH
             mcp_config_host = str(config.mcp_config_path)
+            # Generated prompts in temp dir
+            prompt_host = str(
+                Path(tempfile.gettempdir())
+                / "roboco-prompts"
+                / f"{config.agent_id}-prompt.md"
+            )
 
         # Build docker run command
         cmd = [
@@ -459,7 +470,10 @@ class AgentOrchestrator:
             # Mount Claude auth (needs write access for debug logs)
             "-v",
             f"{claude_host}:/home/agent/.claude",
-            # Mount blueprints
+            # Mount generated system prompt (composed from layers at runtime)
+            "-v",
+            f"{prompt_host}:/app/system-prompt.md:ro",
+            # Mount blueprints (legacy, kept for reference)
             "-v",
             f"{blueprints_host}:/app/agents/blueprints:ro",
             # Mount docs directory (documenters need write access)
@@ -479,7 +493,7 @@ class AgentOrchestrator:
             "--model",
             MODEL_MAP.get(config.model, config.model),
             "--system-prompt-file",
-            f"/app/agents/blueprints/{self._get_blueprint_rel_path(config.agent_id)}",
+            "/app/system-prompt.md",
             "--mcp-config",
             "/app/mcp-config.json",
             "--output-format",
@@ -591,6 +605,20 @@ class AgentOrchestrator:
             "env": mcp_env,
         }
 
+        # Optimal server - knowledge base, RAG, semantic search
+        # All agents can search; indexing permissions checked at API level
+        mcp_servers["roboco-optimal"] = {
+            "command": "uv",
+            "args": [
+                "run",
+                "python",
+                "-m",
+                "roboco.mcp.optimal_server",
+                agent_id,
+            ],
+            "env": mcp_env,
+        }
+
         config: dict[str, Any] = {"mcpServers": mcp_servers}
 
         # Write to shared config directory (mounted in both orchestrator and agents)
@@ -609,8 +637,60 @@ class AgentOrchestrator:
 
         return config_path
 
+    def _generate_composed_prompt(self, agent_id: str) -> Path:
+        """Generate composed system prompt for an agent.
+
+        Uses the layered prompt composition system:
+        base.md + roles/{role}.md + teams/{team}.md + identities/{agent}.md
+
+        Returns:
+            Path to the generated prompt file
+        """
+        # Get role and team from canonical config
+        role_str = get_agent_role(agent_id)
+        team_str = get_agent_team(agent_id)
+
+        # Convert to enums
+        role_enum = AgentRole(role_str) if role_str else None
+        team_enum = Team(team_str) if team_str else None
+
+        if not role_enum:
+            raise ValueError(f"Unknown role for agent: {agent_id}")
+
+        # Compose the prompt from layers
+        prompt_content = compose_prompt(role_enum, team_enum, agent_id)
+
+        # Determine output directory
+        if PROJECT_HOST_PATH:
+            # Running in container - use shared directory that maps to host
+            config_dir = Path("/app/prompts-generated")
+            config_dir.mkdir(parents=True, exist_ok=True)
+        else:
+            # Running directly on host
+            config_dir = Path(tempfile.gettempdir()) / "roboco-prompts"
+            config_dir.mkdir(parents=True, exist_ok=True)
+
+        # Write to file
+        prompt_path = config_dir / f"{agent_id}-prompt.md"
+        prompt_path.write_text(prompt_content)
+
+        logger.debug(
+            "Generated composed prompt",
+            agent_id=agent_id,
+            role=role_str,
+            team=team_str,
+            path=str(prompt_path),
+            size=len(prompt_content),
+        )
+
+        return prompt_path
+
     def _get_blueprint_path(self, agent_id: str) -> Path:
-        """Get blueprint path for an agent."""
+        """Get blueprint path for an agent.
+
+        DEPRECATED: Use _generate_composed_prompt() instead.
+        Kept for backwards compatibility.
+        """
         role = self._get_blueprint_role(agent_id)
         team = self._get_agent_team(agent_id)
 

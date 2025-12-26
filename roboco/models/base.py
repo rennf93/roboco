@@ -85,6 +85,21 @@ class AgentStatus(str, Enum):
     OFFLINE = "offline"
 
 
+class SubstituteReason(str, Enum):
+    """Reasons for agent substitution request.
+
+    Used when an agent needs to release a task and allow another agent to take over.
+    This bypasses the normal "can't claim while in_progress" rule.
+    """
+
+    LOW_CONTEXT = "low_context"  # Insufficient context to continue safely
+    OUT_OF_SCOPE_TEAM = "out_of_scope_team"  # Task belongs to different team
+    OUT_OF_SCOPE_ROLE = "out_of_scope_role"  # Task requires different role
+    TASK_COMPLETE = "task_complete"  # Finished work, releasing task
+    MAX_RETRIES = "max_retries"  # Exceeded retry limit, need fresh perspective
+    BLOCKED_EXTERNAL = "blocked_external"  # Need skills outside agent's capabilities
+
+
 class SessionStatus(str, Enum):
     """Session states."""
 

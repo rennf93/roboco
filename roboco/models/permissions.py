@@ -79,7 +79,6 @@ class AgentContext:
         return ROLE_LEVELS.get(self.role, PermissionLevel.CELL_MEMBER)
 
 
-# Per HOMELAB_TEAM_V0.md Section 3.5
 # Defines who can directly communicate with whom
 COMMUNICATION_MATRIX: dict[AgentRole, set[AgentRole]] = {
     # CEO can communicate with everyone
@@ -145,7 +144,6 @@ COMMUNICATION_MATRIX: dict[AgentRole, set[AgentRole]] = {
 }
 
 
-# Per HOMELAB_TEAM_V0.md Section 12.3
 TASK_PERMISSIONS: dict[AgentRole, set[str]] = {
     # System role (orchestrator) has full access for internal operations
     AgentRole.SYSTEM: {
