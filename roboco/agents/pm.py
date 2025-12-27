@@ -189,18 +189,44 @@ class CellPMAgent(Agent, CyclicPhaseRunner[CellPMPhase]):
             return None
 
     async def _find_assigned_task(self) -> UUID | None:
-        """Find tasks assigned to this PM that are in progress."""
-        try:
-            result = await self._api_call(
-                "GET",
-                "/tasks",
-                params={"status": "in_progress", "assigned_to": str(self.id)},
-            )
-            tasks = result.get("items", result) if isinstance(result, dict) else result
-            return UUID(tasks[0]["id"]) if tasks else None
-        except Exception as e:
-            self.log.warning("Failed to find assigned task", error=str(e))
-            return None
+        """Find tasks assigned to this PM that need work.
+
+        Checks for tasks in priority order:
+        1. pending - newly assigned, needs claiming
+        2. claimed - claimed but not started
+        3. in_progress - active work
+        4. awaiting_pm_review - tasks ready for PM approval
+        """
+        statuses_to_check = ["pending", "claimed", "in_progress", "awaiting_pm_review"]
+
+        for status in statuses_to_check:
+            try:
+                result = await self._api_call(
+                    "GET",
+                    "/tasks",
+                    params={"status": status, "assigned_to": str(self.id)},
+                )
+                tasks = (
+                    result.get("items", result)
+                    if isinstance(result, dict)
+                    else result
+                )
+                if tasks:
+                    task_id = tasks[0]["id"]
+                    self.log.info(
+                        "Found assigned task",
+                        task_id=str(task_id),
+                        status=status,
+                    )
+                    return UUID(task_id) if isinstance(task_id, str) else task_id
+            except Exception as e:
+                self.log.warning(
+                    "Failed to find assigned task",
+                    status=status,
+                    error=str(e),
+                )
+
+        return None
 
     async def execute_task(self, task_id: UUID) -> bool:
         """
@@ -258,7 +284,12 @@ class CellPMAgent(Agent, CyclicPhaseRunner[CellPMPhase]):
             return await self._handle_in_progress_task(task_id, task)
 
         if status == "paused":
-            await self._mark_completed(task_id)
+            # Paused tasks need to resume before completion
+            # Lifecycle: paused → in_progress → completed
+            await self._api_call("POST", f"/tasks/{task_id}/resume")
+            self.log.info("PM resumed paused task", task_id=str(task_id))
+            # Now complete via proper endpoint (validates PM role, checks subtasks)
+            await self._api_call("POST", f"/tasks/{task_id}/complete")
             self.log.info("PM completed task", task_id=str(task_id))
             return True
 
@@ -1038,18 +1069,44 @@ class MainPMAgent(Agent, CyclicPhaseRunner[MainPMPhase]):
             return None
 
     async def _find_assigned_task(self) -> UUID | None:
-        """Find tasks assigned to this PM that are in progress."""
-        try:
-            result = await self._api_call(
-                "GET",
-                "/tasks",
-                params={"status": "in_progress", "assigned_to": str(self.id)},
-            )
-            tasks = result.get("items", result) if isinstance(result, dict) else result
-            return UUID(tasks[0]["id"]) if tasks else None
-        except Exception as e:
-            self.log.warning("Failed to find assigned task", error=str(e))
-            return None
+        """Find tasks assigned to this Main PM that need work.
+
+        Checks for tasks in priority order:
+        1. pending - newly assigned, needs claiming
+        2. claimed - claimed but not started
+        3. in_progress - active work
+        4. awaiting_pm_review - tasks ready for PM approval
+        """
+        statuses_to_check = ["pending", "claimed", "in_progress", "awaiting_pm_review"]
+
+        for status in statuses_to_check:
+            try:
+                result = await self._api_call(
+                    "GET",
+                    "/tasks",
+                    params={"status": status, "assigned_to": str(self.id)},
+                )
+                tasks = (
+                    result.get("items", result)
+                    if isinstance(result, dict)
+                    else result
+                )
+                if tasks:
+                    task_id = tasks[0]["id"]
+                    self.log.info(
+                        "Found assigned task",
+                        task_id=str(task_id),
+                        status=status,
+                    )
+                    return UUID(task_id) if isinstance(task_id, str) else task_id
+            except Exception as e:
+                self.log.warning(
+                    "Failed to find assigned task",
+                    status=status,
+                    error=str(e),
+                )
+
+        return None
 
     async def execute_task(self, task_id: UUID) -> bool:
         """
@@ -1111,7 +1168,12 @@ class MainPMAgent(Agent, CyclicPhaseRunner[MainPMPhase]):
             return await self._handle_main_pm_in_progress(task_id, task)
 
         if status == "paused":
-            await self._mark_completed(task_id)
+            # Paused tasks need to resume before completion
+            # Lifecycle: paused → in_progress → completed
+            await self._api_call("POST", f"/tasks/{task_id}/resume")
+            self.log.info("Main PM resumed paused task", task_id=str(task_id))
+            # Now complete via proper endpoint (validates PM role, checks subtasks)
+            await self._api_call("POST", f"/tasks/{task_id}/complete")
             self.log.info("Main PM completed task", task_id=str(task_id))
             return True
 

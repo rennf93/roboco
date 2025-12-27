@@ -113,6 +113,7 @@ class DocumenterAgent(Agent, PhaseEngine[DocTaskPhase, DocContext]):
         """
         MONITOR phase: Watch for documentation requests.
 
+        - Check for pending tasks directly assigned by PM
         - Check for tasks awaiting documentation
         - Check for documentation notifications
         """
@@ -121,11 +122,35 @@ class DocumenterAgent(Agent, PhaseEngine[DocTaskPhase, DocContext]):
         if self._pending_docs:
             return self._pending_docs.pop(0)
 
+        # Priority 1: Check for pending tasks directly assigned to this documenter
+        # This handles cases where PM assigns a task directly to documenter
+        pending_task = await self._find_pending_assigned_to_me()
+        if pending_task:
+            self.log.info(
+                "Found pending task assigned to me", task_id=str(pending_task)
+            )
+            return pending_task
+
+        # Priority 2: Check for tasks awaiting documentation (normal workflow)
         task_id = await self._find_awaiting_documentation()
         if task_id:
             return task_id
 
         return None
+
+    async def _find_pending_assigned_to_me(self) -> UUID | None:
+        """Find pending tasks directly assigned to this documenter."""
+        try:
+            result = await self._api_call(
+                "GET",
+                "/tasks",
+                params={"status": "pending", "assigned_to": str(self.id)},
+            )
+            tasks = result.get("items", [])
+            return UUID(tasks[0]["id"]) if tasks else None
+        except Exception as e:
+            self.log.warning("Failed to find pending assigned task", error=str(e))
+            return None
 
     async def execute_task(self, task_id: UUID) -> bool:
         """

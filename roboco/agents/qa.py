@@ -110,6 +110,7 @@ class QAAgent(Agent, PhaseEngine[QATaskPhase, ReviewContext]):
         """
         MONITOR phase: Watch for tasks ready for review.
 
+        - Check for pending tasks directly assigned by PM
         - Check for tasks flagged as awaiting_qa
         - Check for PM notifications
         """
@@ -119,12 +120,35 @@ class QAAgent(Agent, PhaseEngine[QATaskPhase, ReviewContext]):
         if self._pending_reviews:
             return self._pending_reviews.pop(0)
 
-        # Query for tasks awaiting QA
+        # Priority 1: Check for pending tasks directly assigned to this QA agent
+        # This handles cases where PM assigns a task directly to QA
+        pending_task = await self._find_pending_assigned_to_me()
+        if pending_task:
+            self.log.info(
+                "Found pending task assigned to me", task_id=str(pending_task)
+            )
+            return pending_task
+
+        # Priority 2: Query for tasks awaiting QA (normal workflow)
         task_id = await self._find_awaiting_qa()
         if task_id:
             return task_id
 
         return None
+
+    async def _find_pending_assigned_to_me(self) -> UUID | None:
+        """Find pending tasks directly assigned to this QA agent."""
+        try:
+            result = await self._api_call(
+                "GET",
+                "/tasks",
+                params={"status": "pending", "assigned_to": str(self.id)},
+            )
+            tasks = result.get("items", [])
+            return UUID(tasks[0]["id"]) if tasks else None
+        except Exception as e:
+            self.log.warning("Failed to find pending assigned task", error=str(e))
+            return None
 
     async def execute_task(self, task_id: UUID) -> bool:
         """

@@ -140,7 +140,8 @@ async def validate_task_claimable(
     """
     task_status = task.get("status")
     claimable_statuses = {
-        "qa": ["awaiting_qa"],
+        # QA: pending (direct QA tasks from PM) or awaiting_qa (normal workflow)
+        "qa": ["pending", "awaiting_qa"],
         # Documenters: pending (direct docs tasks) or awaiting_documentation (workflow)
         "documenter": ["pending", "awaiting_documentation"],
     }

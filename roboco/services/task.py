@@ -56,7 +56,13 @@ def _get_valid_claim_statuses(
     role = agent.role.value if hasattr(agent.role, "value") else str(agent.role)
 
     if role == "qa":
-        return {TaskStatus.AWAITING_QA}
+        # QA can claim:
+        # - PENDING: when PM assigns a QA task directly
+        # - AWAITING_QA: normal workflow after dev verification
+        statuses = {TaskStatus.PENDING, TaskStatus.AWAITING_QA}
+        if allow_reassign:
+            statuses.add(TaskStatus.CLAIMED)
+        return statuses
     elif role == "documenter":
         # Documenters can claim:
         # - PENDING: when PM assigns a docs task directly
