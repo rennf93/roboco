@@ -26,7 +26,7 @@ import structlog
 from fastapi import status as http_status
 
 from roboco.agents.factories._base import compose_prompt
-from roboco.agents_config import get_agent_role, get_agent_team
+from roboco.agents_config import ALL_DOCS, get_agent_role, get_agent_team
 from roboco.config import settings
 from roboco.models import AgentRole, Team
 from roboco.models.runtime import (
@@ -478,9 +478,11 @@ class AgentOrchestrator:
             # Mount blueprints (legacy, kept for reference)
             "-v",
             f"{blueprints_host}:/app/agents/blueprints:ro",
-            # Mount docs directory (documenters need write access)
+            # Mount docs directory
+            # - Documenters get write access to create/update docs
+            # - All other roles get read-only access
             "-v",
-            f"{docs_host}:/app/docs",
+            f"{docs_host}:/app/docs{'' if config.agent_id in ALL_DOCS else ':ro'}",
             # Mount MCP config
             "-v",
             f"{mcp_config_host}:/app/mcp-config.json:ro",

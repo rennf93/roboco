@@ -137,6 +137,7 @@ select = [
 [tool.ruff.lint.per-file-ignores]
 "roboco/mcp/**/*.py" = ["PLC0415"]
 "roboco/services/*.py" = ["PLC0415"]
+"roboco/api/routes/*.py" = ["PLC0415"]
 
 # =============================================================================
 # MyPy Configuration

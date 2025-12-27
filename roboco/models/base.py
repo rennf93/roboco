@@ -129,6 +129,7 @@ class NotificationType(str, Enum):
     DOCUMENTATION_REQUEST = "documentation_request"
     ALERT = "alert"
     BROADCAST = "broadcast"
+    KNOWLEDGE_SHARE = "knowledge_share"  # Cross-agent learning notification
 
 
 class NotificationPriority(str, Enum):

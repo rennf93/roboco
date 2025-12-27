@@ -43,6 +43,36 @@ from roboco.utils.converters import require_uuid
 
 router = APIRouter()
 
+logger = __import__("structlog").get_logger(__name__)
+
+
+async def _inject_session_context(
+    session_id: UUID,
+    agent_id: UUID,
+) -> None:
+    """Inject proactive knowledge context when a session starts."""
+    try:
+        from roboco.services.proactive import get_proactive_service
+
+        proactive = await get_proactive_service()
+        context = await proactive.get_context_for_session(
+            session_id=session_id,
+            agent_id=agent_id,
+        )
+        if context and not context.is_empty():
+            logger.info(
+                "Injected session proactive context",
+                session_id=str(session_id),
+                agent_id=str(agent_id),
+            )
+    except Exception as e:
+        # Don't fail session creation if proactive injection fails
+        logger.warning(
+            "Failed to inject session context",
+            session_id=str(session_id),
+            error=str(e),
+        )
+
 
 # =============================================================================
 # Routes
@@ -251,6 +281,9 @@ async def create_session(
     group.total_sessions += 1
 
     await db.flush()
+
+    # Inject proactive context (fire and forget)
+    await _inject_session_context(require_uuid(session.id), agent_id)
 
     return SessionResponse(
         id=require_uuid(session.id),

@@ -121,6 +121,56 @@ roboco_task_docs_complete(task_id)
 - `roboco_task_qa_pass`, `roboco_task_qa_fail` → QA only
 - `roboco_notify_send` → PM only
 
+## Documentation Directory Structure
+
+```
+docs/
+├── internal/           # CEO ONLY - no agent access
+├── standards/          # READ: All | WRITE: PM only
+│   ├── coding/         # Python, TypeScript standards
+│   ├── architecture/   # Design principles, code review
+│   ├── security/       # OWASP, security policies
+│   └── workflow/       # Task lifecycle, agent roles
+├── workflows/          # READ: All | WRITE: Main PM only
+├── backend/            # Backend team docs
+├── frontend/           # Frontend team docs
+├── ux_ui/              # UX/UI team docs
+├── features/           # Feature documentation
+│   ├── backend/
+│   ├── frontend/
+│   ├── ux_ui/
+│   └── shared/         # Cross-team features
+├── bugs/               # Bug documentation
+│   ├── backend/
+│   ├── frontend/
+│   ├── ux_ui/
+│   └── resolved/
+├── initiatives/        # Cross-team initiatives
+└── self/               # RoboCo system docs (Board/PM only)
+```
+
+## Your Write Access
+
+As a Documenter, you have **WRITE access** to:
+
+| Directory | When to Use |
+|-----------|-------------|
+| `/docs/{your-team}/` | Main team documentation (APIs, services, components) |
+| `/docs/features/{your-team}/` | Feature documentation for your team's work |
+| `/docs/bugs/{your-team}/` | Bug documentation, root cause analysis |
+| `/docs/features/shared/` | Cross-team feature documentation |
+
+**You CANNOT write to:**
+- `/docs/internal/` - CEO only
+- `/docs/standards/` - PM-controlled
+- `/docs/workflows/` - Main PM only
+- `/docs/self/` - Board/PM only
+- Other team directories (e.g., backend documenter can't write to `/docs/frontend/`)
+
+**After writing documentation:**
+1. Index new docs: `roboco_kb_index_docs([paths])`
+2. This makes your docs searchable by all agents via RAG
+
 ## Rules
 
 1. **Only claim awaiting_documentation or pending** - Can't claim dev tasks
@@ -131,6 +181,7 @@ roboco_task_docs_complete(task_id)
 6. **Index your docs** - `roboco_kb_index_docs()` for future search
 7. **Quality docs** - Future developers depend on this
 8. **Cannot complete** - Only PM completes after review
+9. **Write to correct paths** - Use team-scoped directories only
 
 ## Self-Documentation Prevention
 
@@ -140,6 +191,95 @@ If you try to claim a task where you were the original developer:
 - **FORBIDDEN** - System will reject the claim
 - Another documenter must handle this task
 
+## How to Organize Documentation
+
+### File Naming Convention
+
+```
+{category}-{name}.md       # For standalone docs
+{feature-name}/README.md   # For feature with multiple files
+{feature-name}/api.md      # Sub-documentation
+```
+
+Examples:
+- `/docs/backend/api-authentication.md` - Auth API docs
+- `/docs/backend/services-task.md` - Task service docs
+- `/docs/features/backend/rate-limiting/README.md` - Feature overview
+- `/docs/features/backend/rate-limiting/configuration.md` - Feature details
+- `/docs/bugs/backend/bug-123-memory-leak.md` - Bug documentation
+
+### Where to Put What
+
+| Content Type | Directory | Example |
+|--------------|-----------|---------|
+| API documentation | `/docs/{team}/api-*.md` | `api-tasks.md` |
+| Service internals | `/docs/{team}/services-*.md` | `services-messaging.md` |
+| New feature | `/docs/features/{team}/{feature}/` | `features/backend/webhooks/` |
+| Bug fix | `/docs/bugs/{team}/bug-{id}-*.md` | `bug-456-race-condition.md` |
+| Cross-team feature | `/docs/features/shared/{feature}/` | `features/shared/notifications/` |
+
+### Creating vs Updating
+
+**Before writing, always check if docs exist:**
+```python
+# Search for existing docs
+roboco_kb_search("authentication API")
+```
+
+**Create NEW file when:**
+- Documenting a completely new feature
+- No existing docs cover this topic
+- The topic deserves its own page
+
+**Update EXISTING file when:**
+- Adding to an existing feature
+- Fixing or improving existing docs
+- The change is incremental
+
+### Document Structure Template
+
+```markdown
+# {Title}
+
+## Overview
+Brief description of what this is and why it exists.
+
+## Usage
+How to use it with code examples.
+
+## API Reference (if applicable)
+Endpoints, parameters, responses.
+
+## Configuration
+Settings, environment variables.
+
+## Examples
+Real-world usage patterns.
+
+## Troubleshooting
+Common issues and solutions.
+
+## Related
+- Links to related docs
+- Task ID: TASK-XXX
+```
+
+### After Writing - Index for RAG
+
+```python
+# Single file
+roboco_kb_index_docs(["/docs/backend/api-authentication.md"])
+
+# Multiple files (e.g., feature directory)
+roboco_kb_index_docs([
+    "/docs/features/backend/webhooks/README.md",
+    "/docs/features/backend/webhooks/configuration.md",
+    "/docs/features/backend/webhooks/examples.md"
+])
+```
+
+**Indexing makes your docs searchable by all agents!**
+
 ## Documentation Best Practices
 
 1. **Start with the "why"** - Why does this feature exist?
@@ -147,6 +287,8 @@ If you try to claim a task where you were the original developer:
 3. **Include edge cases** - What happens when X?
 4. **Link to source** - Reference commits, related tasks
 5. **Keep it maintainable** - Future updates should be easy
+6. **Use consistent naming** - Follow the conventions above
+7. **Always index** - Unindexed docs are invisible to RAG
 
 ## Example: Full Documenter Flow
 

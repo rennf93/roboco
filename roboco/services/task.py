@@ -506,7 +506,43 @@ class TaskService(BaseService):
             self._validate_and_set_status(task, TaskStatus.CLAIMED, agent_role)
 
         await self.session.flush()
+
+        # Trigger proactive knowledge injection (fire and forget)
+        await self._inject_proactive_context(task, agent_id)
+
         return task
+
+    async def _inject_proactive_context(self, task: TaskTable, agent_id: UUID) -> None:
+        """Inject proactive knowledge context when task is claimed."""
+        try:
+            from uuid import UUID as PyUUID
+
+            from roboco.services.proactive import get_proactive_service
+
+            proactive = await get_proactive_service()
+            # Convert SQLAlchemy UUID to Python UUID
+            task_uuid = PyUUID(str(task.id))
+            agent_uuid = PyUUID(str(agent_id))
+
+            context = await proactive.on_task_claimed(
+                task_id=task_uuid,
+                agent_id=agent_uuid,
+                task_title=task.title,
+                task_description=task.description or "",
+                task_type=None,  # TaskTable doesn't have task_type
+            )
+            if context and not context.is_empty():
+                self.log.info(
+                    "Injected proactive context",
+                    task_id=str(task.id),
+                )
+        except Exception as e:
+            # Don't fail the claim if proactive injection fails
+            self.log.warning(
+                "Failed to inject proactive context",
+                task_id=str(task.id),
+                error=str(e),
+            )
 
     async def start(
         self, task_id: UUID, agent_id: UUID | None = None
@@ -1004,36 +1040,53 @@ class TaskService(BaseService):
             )
             return None
 
-        # Check subtasks completion
-        subtasks = await self.get_subtasks(task_id)
-        incomplete_subtasks = [
-            st for st in subtasks if st.status != TaskStatus.COMPLETED
+        # Check ALL descendants (recursive - children, grandchildren, etc.)
+        all_descendants = await self.get_all_descendants(task_id)
+        incomplete_descendants = [
+            st
+            for st in all_descendants
+            if st.status not in (TaskStatus.COMPLETED, TaskStatus.CANCELLED)
         ]
 
-        if incomplete_subtasks:
-            cancelled_only = all(
-                st.status == TaskStatus.CANCELLED for st in incomplete_subtasks
+        if incomplete_descendants:
+            # Block completion - some descendants are still in progress
+            self.log.warning(
+                "Cannot complete task - incomplete descendants exist",
+                task_id=str(task_id),
+                incomplete_count=len(incomplete_descendants),
+                incomplete_ids=[str(st.id) for st in incomplete_descendants[:5]],
             )
+            return None
 
-            if force_with_cancelled and cancelled_only and justification:
-                # Log the PM override
-                self.log.info(
-                    "PM override: completing task with cancelled subtasks",
-                    task_id=str(task_id),
-                    agent_id=str(agent_id) if agent_id else None,
-                    justification=justification,
-                    cancelled_subtask_ids=[str(st.id) for st in incomplete_subtasks],
-                )
-            else:
-                # Block completion
+        # Check for cancelled descendants (only matters if force override requested)
+        cancelled_descendants = [
+            st for st in all_descendants if st.status == TaskStatus.CANCELLED
+        ]
+
+        if cancelled_descendants and not force_with_cancelled:
+            self.log.warning(
+                "Cannot complete - cancelled descendants exist",
+                task_id=str(task_id),
+                cancelled_count=len(cancelled_descendants),
+                hint="use force_with_cancelled (CEO only)",
+            )
+            return None
+
+        if force_with_cancelled and cancelled_descendants:
+            if not justification:
                 self.log.warning(
-                    "Cannot complete task - incomplete subtasks exist",
+                    "Cannot force complete - justification required",
                     task_id=str(task_id),
-                    incomplete_count=len(incomplete_subtasks),
-                    cancelled_only=cancelled_only,
-                    force_requested=force_with_cancelled,
                 )
                 return None
+            # Log the CEO override
+            self.log.info(
+                "CEO override: completing task with cancelled descendants",
+                task_id=str(task_id),
+                agent_id=str(agent_id) if agent_id else None,
+                justification=justification,
+                cancelled_descendant_ids=[str(st.id) for st in cancelled_descendants],
+            )
 
         task.completed_at = datetime.now(UTC)
         # Validate transition with PM role requirement
@@ -1284,6 +1337,25 @@ class TaskService(BaseService):
             .order_by(TaskTable.created_at)
         )
         return list(result.scalars().all())
+
+    async def get_all_descendants(self, task_id: UUID) -> list[TaskTable]:
+        """Recursively get ALL descendant tasks (children, grandchildren, etc.).
+
+        Uses iterative BFS to avoid recursion limits and handle arbitrary depth.
+        """
+        descendants: list[TaskTable] = []
+        to_process: list[UUID] = [task_id]
+
+        while to_process:
+            current_id = to_process.pop(0)
+            children = await self.get_subtasks(current_id)
+            for child in children:
+                descendants.append(child)
+                # child.id is SQLAlchemy Mapped[UUID]
+                # but resolves to uuid.UUID at runtime
+                to_process.append(child.id)  # type: ignore[arg-type]
+
+        return descendants
 
     # =========================================================================
     # STATISTICS

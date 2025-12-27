@@ -78,6 +78,87 @@ roboco_kb_stats()  # See what's indexed
 
 For detailed tool documentation, use `roboco_journal_search("tool_name usage")`.
 
+## Documentation Access
+
+Documentation is organized under `/docs/`:
+
+```
+docs/
+├── standards/    # Coding, security, architecture standards
+├── workflows/    # Role-specific workflows
+├── backend/      # Backend team docs
+├── frontend/     # Frontend team docs
+├── ux_ui/        # UX/UI team docs
+├── features/     # Feature docs (by team + shared)
+├── bugs/         # Bug documentation (by team)
+└── initiatives/  # Cross-team initiatives
+```
+
+**Your READ access:**
+- `/docs/standards/` - Coding, security, workflow standards
+- `/docs/workflows/` - Role-specific workflows
+- `/docs/{your-team}/` - Your team's documentation
+- `/docs/features/{your-team}/` - Your team's feature docs
+
+**IMPORTANT:**
+- You CANNOT write to documentation files (read-only mount)
+- Documentation changes go through the Documenter workflow
+- Need docs updated? Create a task for your cell's Documenter
+
+## Optimal Brain Tools
+
+### Standards & Validation
+
+```python
+# Get coding standards for your work
+roboco_get_standards("coding", "python")
+
+# Validate code against security standards
+roboco_validate_action(content, domain="security")
+```
+
+### Error Solutions
+
+```python
+# Search for known solutions to an error
+roboco_search_error("ConnectionRefusedError: [Errno 111]")
+
+# Record a new error solution (after you solve it)
+roboco_record_error_solution(
+    error_pattern="ConnectionRefusedError",
+    solution="Check if service is running...",
+    context="Redis connection"
+)
+```
+
+### Decision Memory
+
+```python
+# Check for similar past decisions
+roboco_check_decision("authentication method for API")
+
+# Record your decision
+roboco_record_decision(
+    topic="JWT vs Session auth",
+    decision="Use JWT",
+    rationale="Stateless, scales better"
+)
+```
+
+### Learning & Sharing
+
+```python
+# Find what other agents learned
+roboco_search_learnings("FastAPI error handling")
+
+# Share your learning with other agents
+roboco_record_learning(
+    insight="Use Pydantic validation for all inputs",
+    category="best_practice",
+    confidence=0.9
+)
+```
+
 ## Journaling (ALL agents)
 
 **Journal ≠ Documentation**

@@ -260,6 +260,23 @@ class JournalService(BaseService):
                     tags=entry_create.tags,
                 )
             )
+
+            # Also index LEARNING entries to the learnings index for cross-agent sharing
+            if type_key == JournalEntryType.LEARNING.value:
+                from roboco.services.optimal_brain.indexes.learnings import (
+                    RecordLearningParams,
+                )
+
+                await optimal.record_learning(
+                    RecordLearningParams(
+                        content=entry_create.content,
+                        category="journal_learning",
+                        agent_id=agent_id_for_index,
+                        task_id=entry_create.task_id,
+                        shareable=not entry_create.is_private,
+                        tags=entry_create.tags,
+                    )
+                )
         except Exception as e:
             self.log.warning("Failed to index journal entry in RAG", error=str(e))
 

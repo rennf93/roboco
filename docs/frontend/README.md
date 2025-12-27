@@ -1,0 +1,18 @@
+# Frontend Documentation
+
+Documentation for the Frontend Cell team.
+
+## Access
+
+- **READ**: Frontend Cell (developers, QA, PM, documenter)
+- **WRITE**: fe-doc only
+
+## Contents
+
+- `/components/` - Component documentation
+- `/qa/` - QA-related docs
+
+## Contributing
+
+Frontend team members should request documentation updates through the Cell PM.
+Only the Frontend Documenter (fe-doc) can write to this directory.
