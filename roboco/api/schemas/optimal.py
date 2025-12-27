@@ -147,3 +147,229 @@ class TokenEstimateResponse(BaseModel):
     token_count: int
     model: str
     content_length: int
+
+
+# =============================================================================
+# OPTIMAL BRAIN SCHEMAS
+# =============================================================================
+
+
+# Mentor Schemas
+class MentorAskRequest(BaseModel):
+    """Request to ask the mentor a question."""
+
+    question: str = Field(..., min_length=1, description="Question to ask")
+    conversation_id: str | None = Field(None, description="Continue conversation")
+    domain: str | None = Field(
+        None, description="Domain filter (coding, security, workflow)"
+    )
+
+
+class MentorAskResponse(BaseModel):
+    """Response from mentor."""
+
+    answer: str
+    sources: list[SearchResultResponse]
+    conversation_id: str
+    suggested_followups: list[str]
+
+
+# Error Schemas
+class ErrorSearchRequest(BaseModel):
+    """Request to search for error solutions."""
+
+    error_message: str = Field(..., min_length=1, description="Error message")
+    context: str = Field("", description="Additional context")
+
+
+class ErrorSearchResponse(BaseModel):
+    """Response from error search."""
+
+    results: list[SearchResultResponse]
+    total: int
+
+
+class ErrorRecordRequest(BaseModel):
+    """Request to record an error solution."""
+
+    error_message: str = Field(..., min_length=1, description="Error message")
+    context: str = Field(..., description="Context when error occurred")
+    solution: str = Field(..., min_length=1, description="How it was fixed")
+    worked: bool = Field(True, description="Whether the solution worked")
+    tags: list[str] = Field(default_factory=list, description="Tags")
+
+
+class ErrorRecordResponse(BaseModel):
+    """Response from recording an error."""
+
+    error_id: str
+    status: str
+
+
+# Decision Schemas
+class DecisionCheckRequest(BaseModel):
+    """Request to check for decision precedents."""
+
+    topic: str = Field(..., min_length=1, description="Decision topic")
+
+
+class DecisionCheckResponse(BaseModel):
+    """Response from decision check."""
+
+    has_precedent: bool
+    decisions: list[dict[str, Any]]
+    recommendation: str
+
+
+class DecisionRecordRequest(BaseModel):
+    """Request to record a decision."""
+
+    topic: str = Field(..., min_length=1, description="Decision topic")
+    decision: str = Field(..., min_length=1, description="The decision made")
+    rationale: str = Field(..., min_length=1, description="Why this decision")
+    alternatives: list[dict[str, Any]] = Field(
+        default_factory=list, description="Alternatives considered"
+    )
+    context: str = Field("", description="Additional context")
+    scope: str = Field("team", description="Scope: team or org")
+    tags: list[str] = Field(default_factory=list, description="Tags")
+
+
+class DecisionRecordResponse(BaseModel):
+    """Response from recording a decision."""
+
+    decision_id: str
+    status: str
+
+
+# Standards Schemas
+class StandardsGetRequest(BaseModel):
+    """Request to get standards."""
+
+    domain: str = Field(..., description="Domain: coding, security, workflow")
+    language: str | None = Field(None, description="Language filter")
+
+
+class StandardsGetResponse(BaseModel):
+    """Response with standards."""
+
+    standards: list[SearchResultResponse]
+    total: int
+
+
+class ValidateActionRequest(BaseModel):
+    """Request to validate an action against standards."""
+
+    action_type: str = Field(..., description="Type of action")
+    context: str = Field(..., description="Action details/code")
+
+
+class ValidateActionResponse(BaseModel):
+    """Response from action validation."""
+
+    allowed: bool
+    violations: list[dict[str, Any]]
+    warnings: list[dict[str, Any]]
+    relevant_standards: list[SearchResultResponse]
+
+
+# Code Review Schemas
+class CodeReviewRequest(BaseModel):
+    """Request to review code."""
+
+    code: str = Field(..., min_length=1, description="Code to review")
+    file_path: str = Field(..., min_length=1, description="File path being reviewed")
+    change_type: str = Field("modify", description="Change type: add, modify, delete")
+
+
+class CodeReviewResponse(BaseModel):
+    """Response from code review."""
+
+    file_path: str
+    approved: bool
+    score: float = Field(ge=0, le=100, description="Review score 0-100")
+    comments: list[dict[str, Any]]
+    standards_checked: list[str]
+    similar_reviews: list[str]
+
+
+# Learning Schemas
+class LearningRecordRequest(BaseModel):
+    """Request to record a learning."""
+
+    content: str = Field(..., min_length=1, description="Learning content")
+    category: str = Field(
+        ...,
+        min_length=1,
+        description="Category: error_handling, performance, testing, pattern, etc.",
+    )
+    team: str | None = Field(None, description="Team: backend, frontend, ux_ui")
+    shareable: bool = Field(True, description="Share with other agents?")
+    tags: list[str] = Field(default_factory=list, description="Tags")
+
+
+class LearningRecordResponse(BaseModel):
+    """Response from recording a learning."""
+
+    learning_id: str
+    status: str
+
+
+class LearningSearchRequest(BaseModel):
+    """Request to search learnings."""
+
+    query: str = Field(..., min_length=1, description="Search query")
+    category: str | None = Field(None, description="Category filter")
+    team: str | None = Field(None, description="Team filter")
+    top_k: int = Field(10, ge=1, le=50, description="Number of results")
+
+
+# =============================================================================
+# Proactive Context Schemas
+# =============================================================================
+
+
+class ProactiveContextRequest(BaseModel):
+    """Request to fetch proactive context for a task."""
+
+    task_id: UUID = Field(..., description="Task ID to get context for")
+
+
+class ProactiveContextItem(BaseModel):
+    """A single proactive context item."""
+
+    content: str = Field(..., description="Context content")
+    source: str = Field(..., description="Source of this context")
+    score: float = Field(..., description="Relevance score")
+    index_type: str = Field(..., description="Type of index this came from")
+    metadata: dict[str, Any] = Field(
+        default_factory=dict, description="Additional metadata"
+    )
+
+
+class ProactiveContextResponse(BaseModel):
+    """Response with proactive context for a task."""
+
+    task_id: UUID | None = Field(
+        None, description="Task ID (if context is task-specific)"
+    )
+    agent_id: UUID | None = Field(None, description="Agent ID")
+    similar_tasks: list[ProactiveContextItem] = Field(
+        default_factory=list, description="Similar past tasks"
+    )
+    relevant_learnings: list[ProactiveContextItem] = Field(
+        default_factory=list, description="Relevant learnings from past work"
+    )
+    code_patterns: list[ProactiveContextItem] = Field(
+        default_factory=list, description="Relevant code patterns"
+    )
+    applicable_standards: list[ProactiveContextItem] = Field(
+        default_factory=list, description="Applicable standards and rules"
+    )
+    recent_decisions: list[ProactiveContextItem] = Field(
+        default_factory=list, description="Recent relevant decisions"
+    )
+    known_issues: list[ProactiveContextItem] = Field(
+        default_factory=list, description="Known issues that may apply"
+    )
+    summary: str = Field("", description="Summary of the context package")

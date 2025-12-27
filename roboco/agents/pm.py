@@ -207,9 +207,7 @@ class CellPMAgent(Agent, CyclicPhaseRunner[CellPMPhase]):
                     params={"status": status, "assigned_to": str(self.id)},
                 )
                 tasks = (
-                    result.get("items", result)
-                    if isinstance(result, dict)
-                    else result
+                    result.get("items", result) if isinstance(result, dict) else result
                 )
                 if tasks:
                     task_id = tasks[0]["id"]
@@ -1087,9 +1085,7 @@ class MainPMAgent(Agent, CyclicPhaseRunner[MainPMPhase]):
                     params={"status": status, "assigned_to": str(self.id)},
                 )
                 tasks = (
-                    result.get("items", result)
-                    if isinstance(result, dict)
-                    else result
+                    result.get("items", result) if isinstance(result, dict) else result
                 )
                 if tasks:
                     task_id = tasks[0]["id"]

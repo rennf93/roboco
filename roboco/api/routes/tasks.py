@@ -426,6 +426,17 @@ async def get_subtasks(
     return task_list_to_response(tasks)
 
 
+@router.get("/{task_id}/descendants", response_model=list[TaskResponse])
+async def get_descendants(
+    task_id: UUID,
+    db: DbSession,
+) -> list[TaskResponse]:
+    """Get ALL descendants of a task (recursive - children, grandchildren, etc.)."""
+    service = get_task_service(db)
+    tasks = await service.get_all_descendants(task_id)
+    return task_list_to_response(tasks)
+
+
 # =============================================================================
 # LIFECYCLE ENDPOINTS
 # =============================================================================
@@ -999,12 +1010,19 @@ async def complete_task(
     force_complete = data.force_with_cancelled if data else False
     justification = data.justification if data else None
 
-    # Validate justification if force is requested
-    if force_complete and not justification:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="force_with_cancelled requires justification",
-        )
+    # force_with_cancelled requires CEO role
+    if force_complete:
+        if agent.role != AgentRole.CEO:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="force_with_cancelled requires CEO approval. "
+                "Only CEO can complete tasks when subtasks are not all completed.",
+            )
+        if not justification:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="force_with_cancelled requires justification",
+            )
 
     task = await service.complete(
         task_id,
@@ -1015,8 +1033,8 @@ async def complete_task(
     if not task:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Cannot complete task - check status and subtasks. "
-            "Use force_with_cancelled=true if only cancelled subtasks remain.",
+            detail="Cannot complete task - all subtasks must be in terminal states "
+            "(completed or cancelled). Monitor and help unblock stuck tasks.",
         )
     await db.commit()
     return task_to_response(task)

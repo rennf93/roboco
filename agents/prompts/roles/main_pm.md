@@ -175,8 +175,13 @@ roboco_task_complete(my_task_id)
 
 **BEFORE calling `roboco_task_complete()`, verify:**
 
-1. **ALL cell tasks completed** - Check each one
+1. **ALL cell tasks in terminal states** - Every cell task must be `completed` or `cancelled`
 2. **Acceptance criteria met** - Did the cells deliver what was asked?
 3. **Journal the verification** - Document that you checked
 
-**Main PM loop:** Plan → Distribute → Pause → Monitor → Update → Idle → Repeat until complete
+**The system BLOCKS completion until ALL subtasks (recursively) are in terminal states.**
+- Cell tasks and their subtasks must all be completed/cancelled
+- Monitor progress and help unblock stuck tasks
+- Only CEO can override this with `force_with_cancelled`
+
+**Main PM loop:** Plan → Distribute → Pause → Monitor → Help Unblock → Idle → Repeat until all done

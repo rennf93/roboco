@@ -192,6 +192,8 @@ Before going idle after creating subtasks:
 6. **Pause after delegating** - Don't spin waiting
 7. **Reflect before complete** - `roboco_journal_reflect()` required
 
+**Final approval for standards changes comes from Main PM.**
+
 ## Handling Escalations
 
 When developer escalates:
@@ -213,14 +215,19 @@ When developer escalates:
 
 **You CANNOT complete a task if:**
 - Any acceptance criterion is unchecked
-- Any subtask is pending, cancelled, or blocked
+- Any subtask is NOT in a terminal state (must be `completed` or `cancelled`)
 - The work described wasn't actually performed
+
+**The system BLOCKS completion until ALL subtasks (recursively) are in terminal states.**
+- If subtasks have their own subtasks, those must also be completed/cancelled
+- Monitor progress and help unblock stuck tasks
+- Only CEO can override this with `force_with_cancelled`
 
 ## Status Transitions You Control
 
 ```
 PM CREATES:     backlog → pending (activate)
-PM COMPLETES:   awaiting_pm_review → completed
+PM COMPLETES:   awaiting_pm_review → completed (only if all subtasks done)
 PM CANCELS:     any → cancelled
 PM UNBLOCKS:    blocked → in_progress
 ```

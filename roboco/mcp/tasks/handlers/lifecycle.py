@@ -80,7 +80,10 @@ async def handle_docs_complete(
         docs_resp.json(),
         "AWAITING_PM",
         "Documentation complete! Task is now awaiting PM review.\n"
-        "The Cell PM will review and complete the task.\n"
+        "The Cell PM will review and complete the task.\n\n"
+        "REMINDER: Did you index your docs for RAG search?\n"
+        "  roboco_kb_index_docs(['/docs/backend/your-doc.md'])\n"
+        "You can still index after submitting - unindexed docs won't be searchable!\n\n"
         "Call roboco_task_scan for next documentation task.",
     )
 
@@ -94,42 +97,58 @@ def _is_pm_own_task(task: dict[str, Any], agent_id: str) -> bool:
     )
 
 
-async def _check_children_completed(
+async def _check_descendants_completed(
     client: ApiClient, task_id: str
 ) -> dict[str, Any] | None:
-    """Check ALL children of a task are completed.
+    """Check ALL descendants (recursive) of a task are in terminal states.
 
-    Cancelled subtasks also block completion - they must be resolved first.
-    Returns error if any children are not completed, None if OK.
+    Returns error if any descendants are not completed/cancelled, None if OK.
     """
     try:
-        resp = await client.get(f"/tasks/{task_id}/subtasks")
+        resp = await client.get(f"/tasks/{task_id}/descendants")
         if not resp.ok:
             return None
 
-        subtasks = resp.json()
-        if not subtasks:
+        descendants = resp.json()
+        if not descendants:
             return None
 
+        # Check for incomplete (not completed, not cancelled)
         incomplete = [
             {
-                "id": str(subtask.get("id", "unknown")),
-                "title": subtask.get("title", "Untitled"),
-                "status": subtask.get("status") or "unknown",
+                "id": str(task.get("id", "unknown")),
+                "title": task.get("title", "Untitled"),
+                "status": task.get("status") or "unknown",
             }
-            for subtask in subtasks
-            if subtask.get("status") != "completed"
+            for task in descendants
+            if task.get("status") not in ("completed", "cancelled")
         ]
 
         if incomplete:
             return format_error_response(
-                "INCOMPLETE_CHILDREN",
-                f"Cannot complete task: {len(incomplete)} subtask(s) not completed.",
+                "INCOMPLETE_DESCENDANTS",
+                f"Cannot complete: {len(incomplete)} descendant(s) still in progress.",
                 {
-                    "incomplete_subtasks": incomplete,
+                    "incomplete_descendants": incomplete[:10],  # Limit to 10
                     "guidance": (
-                        "ALL subtasks must be COMPLETED before completing parent. "
-                        "Cancelled subtasks must be resolved or removed first."
+                        "ALL descendants (subtasks, sub-subtasks, etc.) must be "
+                        "COMPLETED or CANCELLED before completing parent."
+                    ),
+                },
+            )
+
+        # Check for cancelled (need force override)
+        cancelled = [task for task in descendants if task.get("status") == "cancelled"]
+
+        if cancelled:
+            return format_error_response(
+                "CANCELLED_DESCENDANTS",
+                f"Task has {len(cancelled)} cancelled descendant(s).",
+                {
+                    "cancelled_count": len(cancelled),
+                    "guidance": (
+                        "Use force_with_cancelled=True with justification (CEO only) "
+                        "to complete despite cancelled descendants."
                     ),
                 },
             )
@@ -139,19 +158,19 @@ async def _check_children_completed(
         return None
 
 
-async def _validate_children_or_force(
+async def _validate_descendants_or_force(
     client: ApiClient, task_id: str, force: bool, justification: str | None
 ) -> dict[str, Any] | None:
-    """Validate children completion or force override. Returns error or None."""
+    """Validate all descendants are in terminal states, or force override."""
     if force:
         if not justification:
             return format_error_response(
                 "JUSTIFICATION_REQUIRED",
                 "force_with_cancelled requires justification explaining "
-                "why cancelled subtasks don't block completion.",
+                "why cancelled descendants don't block completion.",
             )
         return None
-    return await _check_children_completed(client, task_id)
+    return await _check_descendants_completed(client, task_id)
 
 
 def _validate_completion_status(
@@ -201,7 +220,7 @@ async def handle_task_complete(
     if error := _validate_completion_status(task, agent_id):
         return error
 
-    if error := await _validate_children_or_force(
+    if error := await _validate_descendants_or_force(
         client, task_id, force_with_cancelled, justification
     ):
         return error

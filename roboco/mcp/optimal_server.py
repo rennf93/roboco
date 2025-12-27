@@ -1,23 +1,47 @@
 """
-Optimal MCP Server
+Optimal MCP Server (Optimal Brain)
 
 Exposes knowledge base, RAG, and semantic search tools to Claude Code agents.
 
-Tools:
+Core Tools:
 - roboco_kb_search: Semantic search across indexed content
 - roboco_rag_query: RAG query with answer generation
 - roboco_kb_index_code: Index code files (PM/Developer)
 - roboco_kb_index_docs: Index documentation (PM/Documenter)
 - roboco_kb_stats: Get index statistics
 - roboco_tokens_estimate: Estimate token count for content
+
+Optimal Brain Tools:
+- roboco_ask_mentor: Conversational RAG with follow-up context
+- roboco_search_error: Search for known error solutions
+- roboco_record_error_solution: Record how an error was solved
+- roboco_check_decision: Check for similar past decisions
+- roboco_record_decision: Record an architectural decision
+- roboco_get_standards: Get coding/security/workflow standards
+- roboco_validate_action: Validate action against standards
 """
 
 from typing import Any
 
 from fastapi import status as http_status
 from mcp.server.fastmcp import FastMCP
+from pydantic import BaseModel, Field
 
 from roboco.mcp.utils import ApiClient, format_error_response
+
+
+class RecordDecisionInput(BaseModel):
+    """Input model for recording a decision."""
+
+    topic: str = Field(..., description="What was decided")
+    decision: str = Field(..., description="The choice made")
+    rationale: str = Field(..., description="Why this choice was made")
+    alternatives: list[dict[str, Any]] | None = Field(
+        None, description="Other options considered [{name, pros, cons}]"
+    )
+    context: str = Field("", description="Additional context about the decision")
+    scope: str = Field("team", description="'team' or 'org'")
+    tags: list[str] | None = Field(None, description="Tags for categorization")
 
 
 def _register_search_tools(mcp: FastMCP, client: ApiClient) -> None:
@@ -295,15 +319,565 @@ def _register_utility_tools(mcp: FastMCP, client: ApiClient) -> None:
         }
 
 
+# =========================================================================
+# OPTIMAL BRAIN TOOLS
+# =========================================================================
+
+
+def _register_mentor_tools(mcp: FastMCP, client: ApiClient) -> None:
+    """Register mentor (conversational RAG) tools."""
+
+    @mcp.tool()
+    async def roboco_ask_mentor(
+        question: str,
+        conversation_id: str | None = None,
+        domain: str | None = None,
+    ) -> dict[str, Any]:
+        """
+        Ask the organizational knowledge base for help.
+
+        This is a conversational interface - you can ask follow-up questions
+        by providing the conversation_id from a previous response.
+
+        The mentor searches across:
+        - Standards & guidelines
+        - Past architectural decisions
+        - Team learnings and reflections
+        - Codebase patterns
+
+        Args:
+            question: Your question (natural language)
+            conversation_id: Optional ID from previous response for follow-ups
+            domain: Optional domain filter (coding, security, workflow)
+
+        Returns:
+            Answer with sources and suggested follow-up questions
+
+        Example:
+            First question:
+            >>> roboco_ask_mentor("How do I handle authentication?")
+
+            Follow-up:
+            >>> roboco_ask_mentor(
+            ...     "What about refresh tokens?",
+            ...     conversation_id="abc-123"
+            ... )
+        """
+        payload: dict[str, Any] = {"question": question}
+        if conversation_id:
+            payload["conversation_id"] = conversation_id
+        if domain:
+            payload["domain"] = domain
+
+        resp = await client.post("/optimal/mentor/ask", json=payload)
+        if not resp.ok:
+            return format_error_response(
+                "MENTOR_FAILED",
+                "Failed to get mentor response",
+                {"api_error": resp.text},
+            )
+
+        result = resp.json()
+        return {
+            "status": "success",
+            "answer": result.get("answer", ""),
+            "sources": result.get("sources", []),
+            "conversation_id": result.get("conversation_id", ""),
+            "suggested_followups": result.get("suggested_followups", []),
+        }
+
+
+def _register_error_tools(mcp: FastMCP, client: ApiClient) -> None:
+    """Register error pattern tools."""
+
+    @mcp.tool()
+    async def roboco_search_error(
+        error_message: str,
+        context: str = "",
+    ) -> dict[str, Any]:
+        """
+        Search for known solutions to an error.
+
+        Before debugging from scratch, check if someone already solved this!
+        The error database is global - all agents learn from all errors.
+
+        Args:
+            error_message: The error message you're seeing
+            context: Additional context (what you were doing, file, etc.)
+
+        Returns:
+            Known solutions ranked by relevance, with worked/not-worked status
+        """
+        payload: dict[str, Any] = {"error_message": error_message}
+        if context:
+            payload["context"] = context
+
+        resp = await client.post("/optimal/errors/search", json=payload)
+        if not resp.ok:
+            return format_error_response(
+                "SEARCH_FAILED",
+                "Failed to search errors",
+                {"api_error": resp.text},
+            )
+
+        result = resp.json()
+        return {
+            "status": "success",
+            "error_message": error_message,
+            "solutions_found": len(result.get("results", [])),
+            "results": result.get("results", []),
+        }
+
+    @mcp.tool()
+    async def roboco_record_error_solution(
+        error_message: str,
+        context: str,
+        solution: str,
+        worked: bool = True,
+        tags: list[str] | None = None,
+    ) -> dict[str, Any]:
+        """
+        Record how you solved an error for future agents.
+
+        When you solve an error, record it! Future agents (including yourself)
+        will benefit from this knowledge.
+
+        Args:
+            error_message: The error message that was encountered
+            context: What you were doing when the error occurred
+            solution: How you fixed it
+            worked: Whether the solution actually worked (default: True)
+            tags: Optional tags for categorization
+
+        Returns:
+            Confirmation of recorded error pattern
+        """
+        if not error_message or not solution:
+            return format_error_response(
+                "INVALID_INPUT",
+                "Both error_message and solution are required",
+            )
+
+        payload: dict[str, Any] = {
+            "error_message": error_message,
+            "context": context,
+            "solution": solution,
+            "worked": worked,
+        }
+        if tags:
+            payload["tags"] = tags
+
+        resp = await client.post("/optimal/errors/record", json=payload)
+        if not resp.ok:
+            return format_error_response(
+                "RECORD_FAILED",
+                "Failed to record error solution",
+                {"api_error": resp.text},
+            )
+
+        return {
+            "status": "recorded",
+            "message": "Error solution recorded for future agents",
+            "error_id": resp.json().get("error_id", ""),
+        }
+
+
+def _register_decision_tools(mcp: FastMCP, client: ApiClient) -> None:
+    """Register decision memory tools."""
+
+    @mcp.tool()
+    async def roboco_check_decision(
+        topic: str,
+    ) -> dict[str, Any]:
+        """
+        Check if a similar decision was made before.
+
+        Before making an architectural or design decision, check for precedents!
+        This maintains consistency across the organization.
+
+        Args:
+            topic: What you're deciding about (e.g., "authentication method",
+                   "database choice", "API design pattern")
+
+        Returns:
+            Similar past decisions with rationale and alternatives considered
+        """
+        resp = await client.post(
+            "/optimal/decisions/check",
+            json={"topic": topic},
+        )
+        if not resp.ok:
+            return format_error_response(
+                "CHECK_FAILED",
+                "Failed to check decisions",
+                {"api_error": resp.text},
+            )
+
+        result = resp.json()
+        has_precedent = len(result.get("decisions", [])) > 0
+        return {
+            "status": "success",
+            "topic": topic,
+            "has_precedent": has_precedent,
+            "decisions": result.get("decisions", []),
+            "recommendation": result.get("recommendation", ""),
+        }
+
+    @mcp.tool()
+    async def roboco_record_decision(params: RecordDecisionInput) -> dict[str, Any]:
+        """
+        Record an architectural or design decision.
+
+        Document important decisions for future reference. This helps
+        maintain consistency and provides context for future changes.
+
+        Args:
+            params: RecordDecisionInput containing:
+                - topic: What was decided (e.g., "authentication method")
+                - decision: The choice made (e.g., "JWT with refresh tokens")
+                - rationale: Why this choice was made
+                - alternatives: Other options considered [{name, pros, cons}]
+                - context: Additional context about the decision
+                - scope: "team" or "org" (default: team)
+                - tags: Optional tags for categorization
+
+        Returns:
+            Confirmation with decision ID
+        """
+        payload: dict[str, Any] = {
+            "topic": params.topic,
+            "decision": params.decision,
+            "rationale": params.rationale,
+            "scope": params.scope,
+        }
+        if params.alternatives:
+            payload["alternatives"] = params.alternatives
+        if params.context:
+            payload["context"] = params.context
+        if params.tags:
+            payload["tags"] = params.tags
+
+        resp = await client.post("/optimal/decisions/record", json=payload)
+        if not resp.ok:
+            return format_error_response(
+                "RECORD_FAILED",
+                "Failed to record decision",
+                {"api_error": resp.text},
+            )
+
+        return {
+            "status": "recorded",
+            "message": "Decision recorded for organizational memory",
+            "decision_id": resp.json().get("decision_id", ""),
+        }
+
+
+def _register_standards_tools(mcp: FastMCP, client: ApiClient) -> None:
+    """Register standards and validation tools."""
+
+    @mcp.tool()
+    async def roboco_get_standards(
+        domain: str,
+        language: str | None = None,
+    ) -> dict[str, Any]:
+        """
+        Get coding/security/workflow standards for a domain.
+
+        Use this BEFORE writing code to ensure you follow team standards.
+
+        Args:
+            domain: Domain to get standards for (coding, security, workflow)
+            language: Optional language filter (python, typescript)
+
+        Returns:
+            Relevant standards with severity levels
+        """
+        payload: dict[str, Any] = {"domain": domain}
+        if language:
+            payload["language"] = language
+
+        resp = await client.post("/optimal/standards/get", json=payload)
+        if not resp.ok:
+            return format_error_response(
+                "FETCH_FAILED",
+                "Failed to get standards",
+                {"api_error": resp.text},
+            )
+
+        result = resp.json()
+        return {
+            "status": "success",
+            "domain": domain,
+            "language": language,
+            "standards": result.get("standards", []),
+            "total": len(result.get("standards", [])),
+        }
+
+    @mcp.tool()
+    async def roboco_validate_action(
+        action_type: str,
+        context: str,
+    ) -> dict[str, Any]:
+        """
+        Validate an action against organizational standards.
+
+        Check if what you're about to do follows team rules.
+
+        Args:
+            action_type: Type of action (e.g., "create_endpoint", "add_dependency")
+            context: Details about what you're doing (code snippet, etc.)
+
+        Returns:
+            Validation result with any violations or warnings
+        """
+        if not action_type or not context:
+            return format_error_response(
+                "INVALID_INPUT",
+                "action_type and context are required",
+            )
+
+        payload: dict[str, Any] = {
+            "action_type": action_type,
+            "context": context,
+        }
+
+        resp = await client.post("/optimal/standards/validate", json=payload)
+        if not resp.ok:
+            return format_error_response(
+                "VALIDATE_FAILED",
+                "Failed to validate action",
+                {"api_error": resp.text},
+            )
+
+        result = resp.json()
+        return {
+            "status": "validated",
+            "allowed": result.get("allowed", True),
+            "violations": result.get("violations", []),
+            "warnings": result.get("warnings", []),
+            "relevant_standards": result.get("relevant_standards", []),
+        }
+
+    @mcp.tool()
+    async def roboco_review_code(
+        code: str,
+        file_path: str,
+        change_type: str = "modify",
+    ) -> dict[str, Any]:
+        """
+        Review code and get feedback before committing.
+
+        Get automated code review feedback based on:
+        - Team coding standards
+        - Security policies
+        - Past review comments on similar code
+        - Known error patterns
+
+        Args:
+            code: The code to review
+            file_path: Path to the file being reviewed
+            change_type: Type of change (add, modify, delete)
+
+        Returns:
+            Review result with comments, score, and approval status
+        """
+        if not code or not file_path:
+            return format_error_response(
+                "INVALID_INPUT",
+                "code and file_path are required",
+            )
+
+        payload: dict[str, Any] = {
+            "code": code,
+            "file_path": file_path,
+            "change_type": change_type,
+        }
+
+        resp = await client.post("/optimal/review/code", json=payload)
+        if not resp.ok:
+            return format_error_response(
+                "REVIEW_FAILED",
+                "Failed to review code",
+                {"api_error": resp.text},
+            )
+
+        result = resp.json()
+        return {
+            "status": "reviewed",
+            "approved": result.get("approved", True),
+            "score": result.get("score", 100),
+            "comments": result.get("comments", []),
+            "standards_checked": result.get("standards_checked", []),
+            "similar_reviews": result.get("similar_reviews", []),
+        }
+
+
+def _register_learning_tools(mcp: FastMCP, client: ApiClient) -> None:
+    """Register learning tools."""
+
+    @mcp.tool()
+    async def roboco_record_learning(
+        content: str,
+        category: str,
+        team: str | None = None,
+        shareable: bool = True,
+        tags: list[str] | None = None,
+    ) -> dict[str, Any]:
+        """
+        Record a learning for cross-agent knowledge sharing.
+
+        When you learn something useful, record it! Future agents (including
+        yourself) will benefit from this knowledge.
+
+        Args:
+            content: What you learned (be specific and actionable)
+            category: Category (error_handling, performance, testing, pattern,
+                      architecture, security, workflow)
+            team: Optional team filter (backend, frontend, ux_ui)
+            shareable: Share with other agents? (default: True)
+            tags: Optional tags for categorization
+
+        Returns:
+            Confirmation with learning ID
+        """
+        if not content or not category:
+            return format_error_response(
+                "INVALID_INPUT",
+                "Both content and category are required",
+            )
+
+        payload: dict[str, Any] = {
+            "content": content,
+            "category": category,
+            "shareable": shareable,
+        }
+        if team:
+            payload["team"] = team
+        if tags:
+            payload["tags"] = tags
+
+        resp = await client.post("/optimal/learnings/record", json=payload)
+        if not resp.ok:
+            return format_error_response(
+                "RECORD_FAILED",
+                "Failed to record learning",
+                {"api_error": resp.text},
+            )
+
+        return {
+            "status": "recorded",
+            "message": "Learning recorded for future agents",
+            "learning_id": resp.json().get("learning_id", ""),
+        }
+
+    @mcp.tool()
+    async def roboco_search_learnings(
+        query: str,
+        category: str | None = None,
+        team: str | None = None,
+        top_k: int = 10,
+    ) -> dict[str, Any]:
+        """
+        Search for relevant learnings from other agents.
+
+        Before starting a task, check what others have learned!
+
+        Args:
+            query: Search query
+            category: Optional category filter
+            team: Optional team filter
+            top_k: Number of results (default: 10)
+
+        Returns:
+            Matching learnings with relevance scores
+        """
+        payload: dict[str, Any] = {"query": query, "top_k": top_k}
+        if category:
+            payload["category"] = category
+        if team:
+            payload["team"] = team
+
+        resp = await client.post("/optimal/learnings/search", json=payload)
+        if not resp.ok:
+            return format_error_response(
+                "SEARCH_FAILED",
+                "Failed to search learnings",
+                {"api_error": resp.text},
+            )
+
+        result = resp.json()
+        return {
+            "status": "success",
+            "query": query,
+            "total": result.get("total", 0),
+            "results": result.get("results", []),
+        }
+
+
+def _register_proactive_tools(mcp: FastMCP, client: ApiClient) -> None:
+    """Register proactive context tools."""
+
+    @mcp.tool()
+    async def roboco_get_proactive_context(
+        task_id: str,
+    ) -> dict[str, Any]:
+        """
+        Get proactive context for a task.
+
+        Fetches relevant knowledge to help you work on a task:
+        - Similar past tasks and their learnings
+        - Relevant code patterns
+        - Applicable standards
+        - Recent decisions
+        - Known issues
+
+        Args:
+            task_id: UUID of the task to get context for
+
+        Returns:
+            Dictionary with context categories and a summary
+        """
+        payload = {"task_id": task_id}
+        resp = await client.post("/optimal/context/proactive", json=payload)
+
+        if not resp.ok:
+            return format_error_response(
+                "CONTEXT_FAILED",
+                "Failed to get proactive context",
+                {"api_error": resp.text},
+            )
+
+        result = resp.json()
+        return {
+            "status": "success",
+            "task_id": result.get("task_id"),
+            "similar_tasks": result.get("similar_tasks", []),
+            "relevant_learnings": result.get("relevant_learnings", []),
+            "code_patterns": result.get("code_patterns", []),
+            "applicable_standards": result.get("applicable_standards", []),
+            "recent_decisions": result.get("recent_decisions", []),
+            "known_issues": result.get("known_issues", []),
+            "summary": result.get("summary", ""),
+        }
+
+
 def create_optimal_mcp_server(agent_id: str) -> FastMCP:
     """Create an Optimal MCP server for a specific agent."""
     mcp = FastMCP(f"roboco-optimal-{agent_id}", json_response=True)
     client = ApiClient(agent_id)
 
-    # Register all tool groups
+    # Register core tool groups
     _register_search_tools(mcp, client)
     _register_indexing_tools(mcp, client)
     _register_utility_tools(mcp, client)
+
+    # Register Optimal Brain tools
+    _register_mentor_tools(mcp, client)
+    _register_error_tools(mcp, client)
+    _register_decision_tools(mcp, client)
+    _register_standards_tools(mcp, client)
+    _register_learning_tools(mcp, client)
+    _register_proactive_tools(mcp, client)
 
     return mcp
 

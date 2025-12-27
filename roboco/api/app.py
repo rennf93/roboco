@@ -78,6 +78,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None]:
     app.state.extraction = _AppServices.extraction
 
     # Initialize Phase 3 services (RAG - optional, non-blocking)
+    # OptimalService.initialize() auto-indexes /docs/standards/ and /docs/workflows/
     try:
         optimal_service = await get_optimal_service()
         app.state.optimal = optimal_service

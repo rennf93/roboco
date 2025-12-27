@@ -4,6 +4,7 @@ Optimal API Routes
 Knowledge base, RAG queries, and semantic search endpoints.
 """
 
+import hashlib
 from datetime import UTC, datetime
 from typing import Any
 from uuid import uuid4
@@ -13,10 +14,28 @@ from fastapi import APIRouter, HTTPException, status
 from roboco.api.deps import CurrentAgentContext, PermissionServiceDep
 from roboco.api.schemas.optimal import (
     ClearIndexResponse,
+    CodeReviewRequest,
+    CodeReviewResponse,
+    DecisionCheckRequest,
+    DecisionCheckResponse,
+    DecisionRecordRequest,
+    DecisionRecordResponse,
+    ErrorRecordRequest,
+    ErrorRecordResponse,
+    ErrorSearchRequest,
+    ErrorSearchResponse,
     IndexCodeRequest,
     IndexDocsRequest,
     IndexResponse,
     IndexStatsResponse,
+    LearningRecordRequest,
+    LearningRecordResponse,
+    LearningSearchRequest,
+    MentorAskRequest,
+    MentorAskResponse,
+    ProactiveContextItem,
+    ProactiveContextRequest,
+    ProactiveContextResponse,
     PromptTemplateRequest,
     PromptTemplateResponse,
     RAGQueryRequest,
@@ -26,8 +45,19 @@ from roboco.api.schemas.optimal import (
     SearchRequest,
     SearchResponse,
     SearchResultResponse,
+    StandardsGetRequest,
+    StandardsGetResponse,
     TokenEstimateRequest,
     TokenEstimateResponse,
+    ValidateActionRequest,
+    ValidateActionResponse,
+)
+from roboco.models.optimal import (
+    CodeReviewRequest as ModelCodeReviewRequest,
+)
+from roboco.models.optimal import (
+    IndexDecisionParams,
+    IndexErrorParams,
 )
 from roboco.models.permissions import KBAction
 from roboco.services.optimal import (
@@ -35,6 +65,7 @@ from roboco.services.optimal import (
     QueryContext,
     get_optimal_service,
 )
+from roboco.services.optimal_brain import get_mentor_service, get_reviewer_service
 
 router = APIRouter()
 
@@ -504,6 +535,311 @@ async def list_prompt_templates(
 
 
 # =============================================================================
+# OPTIMAL BRAIN - MENTOR ENDPOINTS
+# =============================================================================
+
+
+@router.post("/mentor/ask", response_model=MentorAskResponse)
+async def mentor_ask(
+    request: MentorAskRequest,
+    agent: CurrentAgentContext,
+) -> MentorAskResponse:
+    """
+    Ask the organizational knowledge base for help.
+
+    Conversational RAG - use conversation_id for follow-up questions.
+    """
+    mentor = await get_mentor_service()
+    service = await get_optimal_service()
+
+    # Initialize mentor with optimal service if needed
+    if mentor._optimal_service is None:
+        await mentor.initialize(service)
+
+    response = await mentor.ask(
+        question=request.question,
+        agent_id=str(agent.agent_id),
+        conversation_id=request.conversation_id,
+        domain=request.domain,
+    )
+
+    return MentorAskResponse(
+        answer=response.answer,
+        sources=[
+            SearchResultResponse(
+                content=s.content,
+                source=s.source,
+                score=s.score,
+                index_type=s.index_type.value,
+                metadata=s.metadata,
+            )
+            for s in response.sources
+        ],
+        conversation_id=response.conversation_id,
+        suggested_followups=response.suggested_followups,
+    )
+
+
+# =============================================================================
+# OPTIMAL BRAIN - ERROR ENDPOINTS
+# =============================================================================
+
+
+@router.post("/errors/search", response_model=ErrorSearchResponse)
+async def search_errors(
+    request: ErrorSearchRequest,
+    agent: CurrentAgentContext,
+) -> ErrorSearchResponse:
+    """
+    Search for known solutions to an error.
+
+    Before debugging from scratch, check if someone already solved this!
+    """
+    _ = agent  # Used for authentication
+    service = await get_optimal_service()
+    results = await service.search_errors(
+        error_message=request.error_message,
+        context=request.context,
+    )
+
+    return ErrorSearchResponse(
+        results=[
+            SearchResultResponse(
+                content=r.content,
+                source=r.source,
+                score=r.score,
+                index_type=r.index_type.value,
+                metadata=r.metadata,
+            )
+            for r in results
+        ],
+        total=len(results),
+    )
+
+
+@router.post("/errors/record", response_model=ErrorRecordResponse)
+async def record_error(
+    request: ErrorRecordRequest,
+    agent: CurrentAgentContext,
+) -> ErrorRecordResponse:
+    """
+    Record how you solved an error for future agents.
+    """
+    service = await get_optimal_service()
+    params = IndexErrorParams(
+        error_message=request.error_message,
+        context=request.context,
+        solution=request.solution,
+        worked=request.worked,
+        agent_id=agent.agent_id,
+        tags=request.tags,
+    )
+    await service.index_error(params)
+
+    # Generate error ID from hash
+    error_hash = hashlib.md5(request.error_message.encode()).hexdigest()[:12]
+
+    return ErrorRecordResponse(
+        error_id=f"err-{error_hash}",
+        status="recorded",
+    )
+
+
+# =============================================================================
+# OPTIMAL BRAIN - DECISION ENDPOINTS
+# =============================================================================
+
+
+@router.post("/decisions/check", response_model=DecisionCheckResponse)
+async def check_decision(
+    request: DecisionCheckRequest,
+    agent: CurrentAgentContext,
+) -> DecisionCheckResponse:
+    """
+    Check if a similar decision was made before.
+    """
+    _ = agent  # Used for authentication
+    service = await get_optimal_service()
+    decisions = await service.check_decision(request.topic)
+
+    # Convert Decision objects to dicts for response
+    decision_dicts = []
+    for d in decisions:
+        if hasattr(d, "__dict__"):
+            decision_dicts.append(
+                {
+                    "topic": getattr(d, "topic", ""),
+                    "decision": getattr(d, "decision", ""),
+                    "rationale": getattr(d, "rationale", ""),
+                    "context": getattr(d, "context", ""),
+                }
+            )
+        elif isinstance(d, dict):
+            decision_dicts.append(d)
+
+    has_precedent = len(decision_dicts) > 0
+    recommendation = ""
+    if has_precedent:
+        recommendation = (
+            f"Found {len(decision_dicts)} similar past decision(s). "
+            "Review them before making a new decision."
+        )
+
+    return DecisionCheckResponse(
+        has_precedent=has_precedent,
+        decisions=decision_dicts,
+        recommendation=recommendation,
+    )
+
+
+@router.post("/decisions/record", response_model=DecisionRecordResponse)
+async def record_decision(
+    request: DecisionRecordRequest,
+    agent: CurrentAgentContext,
+) -> DecisionRecordResponse:
+    """
+    Record an architectural or design decision.
+    """
+    service = await get_optimal_service()
+    params = IndexDecisionParams(
+        topic=request.topic,
+        decision=request.decision,
+        rationale=request.rationale,
+        alternatives=request.alternatives,
+        context=request.context,
+        agent_id=agent.agent_id,
+        scope=request.scope,
+        tags=request.tags,
+    )
+    await service.index_decision(params)
+
+    # Generate decision ID from hash
+    topic_hash = hashlib.md5(request.topic.encode()).hexdigest()[:12]
+
+    return DecisionRecordResponse(
+        decision_id=f"dec-{topic_hash}",
+        status="recorded",
+    )
+
+
+# =============================================================================
+# OPTIMAL BRAIN - STANDARDS ENDPOINTS
+# =============================================================================
+
+
+@router.post("/standards/get", response_model=StandardsGetResponse)
+async def get_standards(
+    request: StandardsGetRequest,
+    agent: CurrentAgentContext,
+) -> StandardsGetResponse:
+    """
+    Get coding/security/workflow standards for a domain.
+    """
+    _ = agent  # Used for authentication
+    service = await get_optimal_service()
+    results = await service.get_standards(
+        domain=request.domain,
+        language=request.language,
+    )
+
+    return StandardsGetResponse(
+        standards=[
+            SearchResultResponse(
+                content=r.content,
+                source=r.source,
+                score=r.score,
+                index_type=r.index_type.value,
+                metadata=r.metadata,
+            )
+            for r in results
+        ],
+        total=len(results),
+    )
+
+
+@router.post("/standards/validate", response_model=ValidateActionResponse)
+async def validate_action(
+    request: ValidateActionRequest,
+    agent: CurrentAgentContext,
+) -> ValidateActionResponse:
+    """
+    Validate an action against organizational standards.
+    """
+    _ = agent  # Used for authentication
+    service = await get_optimal_service()
+
+    # Get relevant standards for the action type
+    # TODO: Use LLM to check request.context against standards
+    results = await service.get_standards(
+        domain=request.action_type,  # Use action_type as domain filter
+    )
+
+    # For now, return all as allowed with no violations
+    # In production, this would use an LLM to check the context against standards
+    return ValidateActionResponse(
+        allowed=True,
+        violations=[],
+        warnings=[],
+        relevant_standards=[
+            SearchResultResponse(
+                content=r.content,
+                source=r.source,
+                score=r.score,
+                index_type=r.index_type.value,
+                metadata=r.metadata,
+            )
+            for r in results[:5]
+        ],
+    )
+
+
+# =============================================================================
+# CODE REVIEW ENDPOINTS
+# =============================================================================
+
+
+@router.post("/review/code", response_model=CodeReviewResponse)
+async def review_code(
+    request: CodeReviewRequest,
+    agent: CurrentAgentContext,
+) -> CodeReviewResponse:
+    """
+    Review code and get feedback.
+
+    Uses the ReviewerService to analyze code against:
+    - Coding standards
+    - Security policies
+    - Past review comments
+    - Known error patterns
+    """
+    _ = agent  # Used for authentication
+    reviewer = await get_reviewer_service()
+    service = await get_optimal_service()
+
+    # Initialize reviewer with optimal service if needed
+    if reviewer._optimal_service is None:
+        await reviewer.initialize(service)
+
+    # Build the model request
+    model_request = ModelCodeReviewRequest(
+        code=request.code,
+        file_path=request.file_path,
+        change_type=request.change_type,
+    )
+
+    result = await reviewer.review_code(model_request)
+
+    return CodeReviewResponse(
+        file_path=result.file_path,
+        approved=result.approved,
+        score=result.score,
+        comments=result.comments,
+        standards_checked=result.standards_checked,
+        similar_reviews=result.similar_reviews,
+    )
+
+
+# =============================================================================
 # TOKEN ESTIMATION ENDPOINTS
 # =============================================================================
 
@@ -528,4 +864,126 @@ async def estimate_tokens(
         token_count=estimated_tokens,
         model=request.model,
         content_length=content_length,
+    )
+
+
+# =============================================================================
+# LEARNING ENDPOINTS
+# =============================================================================
+
+
+@router.post("/learnings/record", response_model=LearningRecordResponse)
+async def record_learning(
+    request: LearningRecordRequest,
+    agent: CurrentAgentContext,
+) -> LearningRecordResponse:
+    """
+    Record a learning for cross-agent knowledge sharing.
+    """
+    from roboco.services.optimal_brain.indexes.learnings import (
+        RecordLearningParams as LearningParams,
+    )
+
+    service = await get_optimal_service()
+    params = LearningParams(
+        content=request.content,
+        category=request.category,
+        agent_id=agent.agent_id,
+        agent_role=agent.role,
+        team=request.team,
+        shareable=request.shareable,
+        tags=request.tags,
+    )
+    learning_id = await service.record_learning(params)
+
+    return LearningRecordResponse(
+        learning_id=learning_id,
+        status="recorded",
+    )
+
+
+@router.post("/learnings/search", response_model=SearchResponse)
+async def search_learnings(
+    request: LearningSearchRequest,
+    agent: CurrentAgentContext,
+) -> SearchResponse:
+    """
+    Search for relevant learnings.
+    """
+    _ = agent  # Used for authentication
+    service = await get_optimal_service()
+    results = await service.search_learnings(
+        query=request.query,
+        category=request.category,
+        team=request.team,
+        top_k=request.top_k,
+    )
+
+    return SearchResponse(
+        query=request.query,
+        results=[
+            SearchResultResponse(
+                content=r.content,
+                source=r.source,
+                score=r.score,
+                index_type=r.index_type.value,
+                metadata=r.metadata,
+            )
+            for r in results
+        ],
+        total=len(results),
+    )
+
+
+# =============================================================================
+# Proactive Context Endpoints
+# =============================================================================
+
+
+@router.post("/context/proactive", response_model=ProactiveContextResponse)
+async def get_proactive_context(
+    request: ProactiveContextRequest,
+    agent: CurrentAgentContext,
+) -> ProactiveContextResponse:
+    """
+    Get proactive context for a task.
+
+    Fetches relevant knowledge to help an agent working on a task:
+    - Similar past tasks and their learnings
+    - Relevant code patterns
+    - Applicable standards
+    - Recent decisions
+    - Known issues
+    """
+    from roboco.services.proactive import get_proactive_service
+
+    proactive = await get_proactive_service()
+    context = await proactive.get_context_for_task(
+        task_id=request.task_id,
+        agent_id=agent.agent_id,
+    )
+
+    # Convert to response format
+    def to_items(results: list) -> list[ProactiveContextItem]:
+        return [
+            ProactiveContextItem(
+                content=r.content,
+                source=r.source,
+                score=r.score,
+                index_type=r.index_type.value,
+                metadata=r.metadata,
+            )
+            for r in results
+        ]
+
+    return ProactiveContextResponse(
+        task_id=context.task_id,
+        agent_id=context.agent_id,
+        similar_tasks=to_items(context.similar_tasks),
+        relevant_learnings=to_items(context.relevant_learnings),
+        code_patterns=to_items(context.code_patterns),
+        applicable_standards=to_items(context.applicable_standards),
+        recent_decisions=to_items(context.recent_decisions),
+        known_issues=to_items(context.known_issues),
+        summary=context.summary,
     )

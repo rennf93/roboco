@@ -21,8 +21,15 @@ VALID_TRANSITIONS: dict[str, list[str]] = {
     "pending": ["claimed", "cancelled"],
     # Claimed - can start, unclaim, or cancel
     "claimed": ["in_progress", "pending", "cancelled"],
-    # In progress - can block, pause, verify, complete (PM only), or cancel
-    "in_progress": ["blocked", "paused", "verifying", "completed", "cancelled"],
+    # In progress - can block, pause, verify, submit for PM review, complete, or cancel
+    "in_progress": [
+        "blocked",
+        "paused",
+        "verifying",
+        "awaiting_pm_review",
+        "completed",
+        "cancelled",
+    ],
     # Blocked - can unblock back to in_progress or cancel
     "blocked": ["in_progress", "cancelled"],
     # Paused - can resume back to in_progress or cancel
@@ -78,6 +85,8 @@ ROLE_RESTRICTED_TRANSITIONS: dict[tuple[str, str], list[str]] = {
     # Only PM can complete tasks (either after PM review or their own work)
     ("awaiting_pm_review", "completed"): _CANCEL_ROLES,
     ("in_progress", "completed"): _CANCEL_ROLES,  # PM completing their own task
+    # PM, QA, Documenter can submit for PM review (not developers)
+    ("in_progress", "awaiting_pm_review"): [*_CANCEL_ROLES, "qa", "documenter"],
     # Only PM or higher can cancel tasks (all states that allow cancel)
     ("backlog", "cancelled"): _CANCEL_ROLES,
     ("pending", "cancelled"): _CANCEL_ROLES,
