@@ -6,7 +6,6 @@ Each plugin handles a specific content type (code, docs, errors, standards, etc.
 and implements specialized chunking, metadata handling, and search strategies.
 """
 
-import contextlib
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from typing import Any, cast
@@ -170,12 +169,23 @@ class BaseIndexPlugin(ABC):
             persist_dir=self.config.persist_dir,
         )
 
+        # Get shared embedder FIRST (one-time load for all plugins)
+        from roboco.services.optimal_brain.shared_embedder import get_shared_embedder
+
+        shared_embedder = await get_shared_embedder(
+            model=self.config.embedding_model,
+        )
+
         self._ragi = AsyncRagi(
             [],
             persist_dir=self.config.persist_dir,
             config=self._build_piragi_config(),
             store=self.config.store_url,
         )
+
+        # Replace AsyncRagi's embedder with shared instance
+        # This avoids loading the model 9 times (saves ~24s startup)
+        self._ragi._sync.embedder = shared_embedder
 
         self._initialized = True
         logger.info(f"{self.index_type.value} index plugin initialized")
@@ -288,9 +298,17 @@ class BaseIndexPlugin(ABC):
                             index_type=self.index_type.value,
                             attempt=attempt + 1,
                         )
+                        # Force connection reset - rollback alone isn't enough
                         if hasattr(ragi_sync.store, "_conn") and ragi_sync.store._conn:
-                            with contextlib.suppress(Exception):
-                                ragi_sync.store._conn.rollback()
+                            try:
+                                ragi_sync.store._conn.close()
+                                # Force reconnection by reinitializing schema
+                                ragi_sync.store._init_schema()
+                            except Exception as reset_err:
+                                logger.warning(
+                                    "Failed to reset connection",
+                                    error=str(reset_err),
+                                )
                         continue
                     raise
 

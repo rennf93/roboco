@@ -120,9 +120,9 @@ class OptimalService:
         """
         # Find the docs directory relative to the project root
         possible_docs_roots = [
-            Path(__file__).parent.parent.parent / "docs",  # roboco/docs
+            Path("/app/docs"),  # Docker absolute path
+            Path(__file__).parent.parent.parent / "docs",  # roboco/docs (local)
             Path.cwd() / "docs",  # Current working directory
-            Path.cwd() / "roboco" / "docs",  # From project root
         ]
 
         docs_root = None
@@ -198,6 +198,11 @@ class OptimalService:
             await plugin.close()
         self._plugins.clear()
         self._initialized = False
+
+        # Close shared embedder
+        from roboco.services.optimal_brain.shared_embedder import close_shared_embedder
+
+        await close_shared_embedder()
         logger.info("OptimalService closed")
 
     def _get_plugin(self, index_type: IndexType) -> BaseIndexPlugin:

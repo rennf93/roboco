@@ -41,6 +41,8 @@ COPY roboco /app/roboco
 # These are composed at runtime by compose_prompt() when spawning agents
 COPY agents /app/agents
 COPY docker /app/docker
+# docs/ contains standards and workflows for RAG auto-indexing
+COPY docs /app/docs
 COPY pyproject.toml uv.lock alembic.ini README.md /app/
 COPY alembic /app/alembic
 
