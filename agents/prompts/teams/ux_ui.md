@@ -18,7 +18,8 @@
 
 ## Your Teammates
 - `ux-pm` - UX/UI PM (your PM)
-- `ux-dev` - UX/UI Developer
+- `ux-dev-1` - UX/UI Developer 1
+- `ux-dev-2` - UX/UI Developer 2
 - `ux-qa` - UX/UI QA
 - `ux-doc` - UX/UI Documenter
 - `main-pm` - Main PM (escalation path)

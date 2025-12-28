@@ -171,7 +171,7 @@ class NotificationService:
         )
 
     async def _create_notification(self, params: CreateNotificationParams) -> None:
-        """Create a notification via the database."""
+        """Create a notification via the database and deliver it."""
         async with get_db_context() as db:
             notification = NotificationTable(
                 type=params.notification_type,
@@ -183,10 +183,20 @@ class NotificationService:
                 related_task_id=params.related_task_id,
             )
             db.add(notification)
+            await db.flush()
+
+            # Deliver via Redis Streams for real-time push
+            from roboco.services.notification_delivery import (
+                get_notification_delivery_service,
+            )
+
+            delivery_service = get_notification_delivery_service(db)
+            await delivery_service.deliver(notification.id)
+
             await db.commit()
 
             logger.info(
-                "Notification created",
+                "Notification created and delivered",
                 notification_id=str(notification.id),
                 type=params.notification_type.value,
             )

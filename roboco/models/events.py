@@ -20,6 +20,7 @@ class EventType(str, Enum):
 
     # Task lifecycle events
     TASK_CREATED = "task.created"
+    TASK_ASSIGNED = "task.assigned"  # A2A: task assigned to agent, triggers spawn/notify
     TASK_CLAIMED = "task.claimed"
     TASK_STARTED = "task.started"
     TASK_BLOCKED = "task.blocked"

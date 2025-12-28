@@ -554,7 +554,7 @@ FE-PM: Waiting on UX designs for 3 days now.
 
 Main-PM: Checking... @UX-PM status on dashboard designs?
 
-UX-PM: UX-Dev has been on bug fixes from last sprint.
+UX-PM: UX-Dev-1, UX-Dev-2 have been on bug fixes from last sprint.
 UX-PM: Dashboard is next but won't start until tomorrow.
 UX-PM: ETA: 2 more days after start.
 
@@ -569,7 +569,7 @@ Main-PM: @FE-PM - does FE-Dev have other work?
 FE-PM: Yes, TASK-062 is ready, can pivot to that.
 
 Main-PM: Let's do option 2. Dashboard timeline extends but no idle time.
-Main-PM: @UX-PM please prioritize dashboard designs when UX-Dev is free.
+Main-PM: @UX-PM please prioritize dashboard designs when UX-Dev-1, UX-Dev-2 are free.
 Main-PM: I'll update the Board on adjusted timeline.
 ```
 

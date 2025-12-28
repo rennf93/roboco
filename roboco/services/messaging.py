@@ -22,6 +22,7 @@ from roboco.db.tables import (
     ChannelTable,
     GroupTable,
     MessageTable,
+    NotificationTable,
     SessionTable,
     SessionTaskTable,
 )
@@ -29,6 +30,8 @@ from roboco.enforcement import validate_channel_access
 from roboco.events import Event, EventType, get_event_bus
 from roboco.models.base import (
     MessageType,
+    NotificationPriority,
+    NotificationType,
     SessionStatus,
 )
 from roboco.models.messaging import (
@@ -765,6 +768,53 @@ class MessagingService(BaseService):
         channel.message_count += 1
         channel.last_activity = now
 
+    async def _notify_mentions(
+        self,
+        message: MessageTable,
+        sender_id: UUID,
+        channel_slug: str,
+    ) -> None:
+        """
+        Create and deliver notifications for mentioned agents.
+
+        Publishes NOTIFICATION_SENT events to Redis Streams for real-time
+        delivery via the WebSocket bridge.
+        """
+        if not message.mentions:
+            return
+
+        # Lazy import to avoid circular dependency
+        from roboco.services.notification_delivery import get_notification_delivery_service
+
+        delivery_service = get_notification_delivery_service(self.session)
+
+        for mentioned_id in message.mentions:
+            # Don't notify yourself
+            if mentioned_id == sender_id:
+                continue
+
+            # Create mention notification
+            notification = NotificationTable(
+                type=NotificationType.MENTION,
+                priority=NotificationPriority.NORMAL,
+                from_agent=sender_id,
+                to_agents=[mentioned_id],
+                subject=f"You were mentioned in #{channel_slug}",
+                body=message.content[:500],  # Truncate for notification
+                related_task_id=message.task_id,
+            )
+            self.session.add(notification)
+            await self.session.flush()
+
+            # Deliver via Redis Streams -> WebSocket
+            await delivery_service.deliver(notification.id)
+
+            self.log.debug(
+                "Mention notification sent",
+                mentioned_id=str(mentioned_id),
+                message_id=str(message.id),
+            )
+
     async def send_message(
         self,
         req: MessageCreateRequest,
@@ -809,6 +859,9 @@ class MessagingService(BaseService):
         self.session.add(message)
         self._update_message_stats(session, group, channel, content_length)
         await self.session.flush()
+
+        # Notify mentioned agents via Redis Streams
+        await self._notify_mentions(message, req.agent_id, channel.slug)
 
         if self._check_session_boundaries(session):
             await self.close_session(cast("UUID", session.id), "Boundary exceeded")

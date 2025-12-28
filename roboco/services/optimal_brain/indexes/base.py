@@ -495,6 +495,35 @@ class BaseIndexPlugin(ABC):
         await self.ragi.clear()
         logger.info(f"Cleared {self.index_type.value} index")
 
+    async def list_documents(
+        self, limit: int = 50, offset: int = 0
+    ) -> list[dict[str, Any]]:
+        """
+        List documents in the index.
+
+        Returns list of documents with id, source, indexed_at, and metadata.
+        """
+        try:
+            # Use piragi's list method if available
+            if hasattr(self.ragi, "list"):
+                docs = await self.ragi.list(limit=limit, offset=offset)
+                return [
+                    {
+                        "id": str(doc.get("id", "")),
+                        "source": doc.get("source", ""),
+                        "indexed_at": doc.get("indexed_at", ""),
+                        "metadata": doc.get("metadata", {}),
+                    }
+                    for doc in docs
+                ]
+            # Fallback: return empty list
+            return []
+        except Exception as e:
+            logger.warning(
+                f"Failed to list documents in {self.index_type.value}: {e}"
+            )
+            return []
+
     async def add_sources(self, sources: list[str]) -> int:
         """
         Add file/directory sources to the index.
@@ -507,5 +536,72 @@ class BaseIndexPlugin(ABC):
         Returns:
             Number of documents indexed
         """
+        import hashlib
+        from pathlib import Path
+
+        from roboco.db import get_db_context
+        from roboco.db.tables import IndexedDocumentTable
+
         await self.ragi.add(sources)
+
+        # Track indexed documents in database
+        async with get_db_context() as db:
+            for source in sources:
+                source_path = Path(source)
+
+                # Handle glob patterns and directories
+                if "*" in source or source_path.is_dir():
+                    if source_path.is_dir():
+                        files = list(source_path.rglob("*"))
+                    else:
+                        files = list(Path(".").glob(source))
+                else:
+                    files = [source_path] if source_path.exists() else []
+
+                for file_path in files:
+                    if not file_path.is_file():
+                        continue
+
+                    # Generate hash for dedup
+                    source_str = str(file_path.absolute())
+                    source_hash = hashlib.sha256(source_str.encode()).hexdigest()
+
+                    # Extract title from filename or first line
+                    title = file_path.stem.replace("-", " ").replace("_", " ").title()
+
+                    # Get preview (first 500 chars)
+                    preview = None
+                    try:
+                        content = file_path.read_text(errors="ignore")[:500]
+                        preview = content.strip()
+                    except Exception:
+                        pass
+
+                    # Upsert document record
+                    from sqlalchemy import select
+
+                    existing = await db.execute(
+                        select(IndexedDocumentTable).where(
+                            IndexedDocumentTable.index_type == self.index_type.value,
+                            IndexedDocumentTable.source_hash == source_hash,
+                        )
+                    )
+                    doc = existing.scalar_one_or_none()
+
+                    if doc:
+                        doc.title = title
+                        doc.preview = preview
+                    else:
+                        doc = IndexedDocumentTable(
+                            index_type=self.index_type.value,
+                            source=source_str,
+                            source_hash=source_hash,
+                            title=title,
+                            preview=preview,
+                            chunk_count=0,  # Could be calculated later
+                        )
+                        db.add(doc)
+
+            await db.commit()
+
         return await self.count()

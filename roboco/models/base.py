@@ -130,6 +130,7 @@ class NotificationType(str, Enum):
     ALERT = "alert"
     BROADCAST = "broadcast"
     KNOWLEDGE_SHARE = "knowledge_share"  # Cross-agent learning notification
+    MENTION = "mention"  # @mention in chat
 
 
 class NotificationPriority(str, Enum):

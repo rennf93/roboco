@@ -948,3 +948,60 @@ class HandoffTable(Base):
         Index("ix_handoffs_assigned_status", "assigned_to", "status"),
         Index("ix_handoffs_status_created", "status", "created_at"),
     )
+
+
+# =============================================================================
+# INDEXED DOCUMENT TABLE (Knowledge Base tracking)
+# =============================================================================
+
+
+class IndexedDocumentTable(Base):
+    """
+    Track documents indexed into the knowledge base.
+
+    This provides:
+    - Actual document count (vs chunk count from vector DB)
+    - Browsing capability for the KB UI
+    - Source tracking for re-indexing
+    """
+
+    __tablename__ = "indexed_documents"
+
+    id: Mapped[UUID] = mapped_column(
+        UUID(as_uuid=True), primary_key=True, default=uuid4
+    )
+
+    # Index type (code, docs, conversations, journals, errors, standards, etc.)
+    index_type: Mapped[str] = mapped_column(String(50), nullable=False, index=True)
+
+    # Source information
+    source: Mapped[str] = mapped_column(String(1000), nullable=False)
+    source_hash: Mapped[str] = mapped_column(
+        String(64), nullable=False
+    )  # SHA256 for dedup
+
+    # Document title (extracted or filename)
+    title: Mapped[str | None] = mapped_column(String(500), nullable=True)
+
+    # Content preview (first 500 chars for UI)
+    preview: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+    # Chunk count for this document
+    chunk_count: Mapped[int] = mapped_column(Integer, default=0)
+
+    # Metadata (extracted during indexing)
+    metadata: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
+
+    # Timestamps
+    indexed_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=lambda: datetime.now(UTC), nullable=False
+    )
+    updated_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), onupdate=lambda: datetime.now(UTC), nullable=True
+    )
+
+    __table_args__ = (
+        # Prevent duplicate indexing of same source
+        UniqueConstraint("index_type", "source_hash", name="uq_indexed_doc_source"),
+        Index("ix_indexed_docs_type_time", "index_type", "indexed_at"),
+    )

@@ -2943,7 +2943,7 @@ The master index for quick lookup:
 |----|-------|------|----------|----------|-------|---------|
 | TASK-042 | Auth Rate Limiting | Backend | BE-Dev-1 | P1 | in_progress | 2025-12-08 |
 | TASK-043 | Dashboard Redesign | Frontend | FE-Dev-2 | P2 | review | 2025-12-08 |
-| TASK-044 | New Logo | UX/UI | UX-Dev | P2 | in_progress | 2025-12-07 |
+| TASK-044 | New Logo | UX/UI | UX-Dev-1 | P2 | in_progress | 2025-12-07 |
 
 ## Blocked Tasks
 

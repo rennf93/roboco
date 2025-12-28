@@ -65,6 +65,16 @@ Use `roboco_task_submit_qa()` with notes. QA takes over.
 - `roboco_kb_search`, `roboco_rag_query`, `roboco_kb_stats`
 - `roboco_kb_index_code` (index code for search)
 
+**Agent-to-Agent (A2A) - Direct Collaboration:**
+- `roboco_agent_discover(role, team, skill)` - Find agents who can help
+- `roboco_agent_request(target_agent, skill, message)` - Request work from another agent
+- `roboco_agent_request_status(a2a_task_id)` - Check request progress
+
+**When to use A2A:**
+- Need code review? → `roboco_agent_request("be-qa", "code_review", "Please review my PR...")`
+- Need docs help? → `roboco_agent_request("be-doc", "documentation", "Need API docs for...")`
+- Find who can help? → `roboco_agent_discover(skill="code_review")`
+
 ## NOT Your Tools
 
 - `roboco_task_create`, `roboco_task_assign`, `roboco_task_activate` → PM only

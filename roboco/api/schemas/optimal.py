@@ -97,6 +97,23 @@ class IndexResponse(BaseModel):
     project: str | None
 
 
+class DocumentListItem(BaseModel):
+    """A document in an index."""
+
+    id: str
+    source: str
+    indexed_at: str
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+class DocumentListResponse(BaseModel):
+    """Response from listing documents in an index."""
+
+    documents: list[DocumentListItem]
+    total: int
+    index_type: str
+
+
 class ClearIndexResponse(BaseModel):
     """Response from clearing an index."""
 

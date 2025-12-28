@@ -99,7 +99,7 @@ class AgentRole(str, Enum):
 |------|-----|------------|-----|------------|
 | Backend | be-pm | be-dev-1, be-dev-2 | be-qa | be-doc |
 | Frontend | fe-pm | fe-dev-1, fe-dev-2 | fe-qa | fe-doc |
-| UX/UI | ux-pm | ux-dev | ux-qa | ux-doc |
+| UX/UI | ux-pm | ux-dev-1, ux-dev-2 | ux-qa | ux-doc |
 
 ---
 

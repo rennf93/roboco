@@ -11,7 +11,7 @@ from uuid import uuid4
 
 from fastapi import APIRouter, HTTPException, status
 
-from roboco.api.deps import CurrentAgentContext, PermissionServiceDep
+from roboco.api.deps import CurrentAgentContext, DbSession, PermissionServiceDep
 from roboco.api.schemas.optimal import (
     ClearIndexResponse,
     CodeReviewRequest,
@@ -20,6 +20,8 @@ from roboco.api.schemas.optimal import (
     DecisionCheckResponse,
     DecisionRecordRequest,
     DecisionRecordResponse,
+    DocumentListItem,
+    DocumentListResponse,
     ErrorRecordRequest,
     ErrorRecordResponse,
     ErrorSearchRequest,
@@ -356,8 +358,13 @@ async def get_context(
 async def get_stats(
     agent: CurrentAgentContext,
     permissions: PermissionServiceDep,
+    db: DbSession,
 ) -> IndexStatsResponse:
     """Get statistics about all indexes."""
+    from sqlalchemy import func, select
+
+    from roboco.db.tables import IndexedDocumentTable
+
     if not permissions.can_perform_kb_action(agent, KBAction.VIEW_STATS):
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
@@ -366,9 +373,29 @@ async def get_stats(
 
     service = await get_optimal_service()
     stats = await service.get_stats()
+
+    # Enhance stats with actual document counts from DB
+    indexes = stats.get("indexes", {})
+    for index_type_str in indexes:
+        # Get actual document count from indexed_documents table
+        count_query = (
+            select(func.count())
+            .select_from(IndexedDocumentTable)
+            .where(IndexedDocumentTable.index_type == index_type_str)
+        )
+        count_result = await db.execute(count_query)
+        doc_count = count_result.scalar() or 0
+
+        # Add document_count (actual files) vs chunk_count (vector entries)
+        chunk_count = indexes[index_type_str].get("document_count", 0)
+        indexes[index_type_str] = {
+            "document_count": doc_count,  # Actual files/documents
+            "chunk_count": chunk_count,  # Vector DB entries
+        }
+
     return IndexStatsResponse(
         initialized=stats.get("initialized", False),
-        indexes=stats.get("indexes", {}),
+        indexes=indexes,
     )
 
 
@@ -401,6 +428,78 @@ async def clear_index(
     await service.clear_index(idx_type)
 
     return ClearIndexResponse(status="cleared", index_type=index_type)
+
+
+@router.get("/kb/{index_type}/documents", response_model=DocumentListResponse)
+async def list_documents(
+    index_type: str,
+    agent: CurrentAgentContext,
+    permissions: PermissionServiceDep,
+    db: DbSession,
+    limit: int = 50,
+    offset: int = 0,
+) -> DocumentListResponse:
+    """
+    List documents in a specific index.
+
+    Returns indexed documents with their metadata for browsing.
+    """
+    from sqlalchemy import func, select
+
+    from roboco.db.tables import IndexedDocumentTable
+
+    if not permissions.can_perform_kb_action(agent, KBAction.VIEW_STATS):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Not authorized to view index documents",
+        )
+
+    try:
+        idx_type = IndexType(index_type)
+    except ValueError as e:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Invalid index type: {e}",
+        ) from e
+
+    # Query the indexed documents table
+    query = (
+        select(IndexedDocumentTable)
+        .where(IndexedDocumentTable.index_type == idx_type.value)
+        .order_by(IndexedDocumentTable.indexed_at.desc())
+        .offset(offset)
+        .limit(limit)
+    )
+    result = await db.execute(query)
+    docs = result.scalars().all()
+
+    # Get total count
+    count_query = (
+        select(func.count())
+        .select_from(IndexedDocumentTable)
+        .where(IndexedDocumentTable.index_type == idx_type.value)
+    )
+    count_result = await db.execute(count_query)
+    total = count_result.scalar() or 0
+
+    return DocumentListResponse(
+        documents=[
+            DocumentListItem(
+                id=str(doc.id),
+                source=doc.source,
+                indexed_at=doc.indexed_at.isoformat() if doc.indexed_at else "",
+                metadata={
+                    "title": doc.title,
+                    "preview": doc.preview,
+                    "chunk_count": doc.chunk_count,
+                    **(doc.metadata or {}),
+                },
+            )
+            for doc in docs
+        ],
+        total=total,
+        index_type=index_type,
+    )
 
 
 @router.post("/kb/refresh", response_model=RefreshIndexResponse)

@@ -76,6 +76,16 @@ Complete subtasks in awaiting_pm_review. When ALL done, reflect + complete your 
 - `roboco_kb_search`, `roboco_rag_query`, `roboco_kb_stats`
 - `roboco_kb_index_code`, `roboco_kb_index_docs`
 
+**Agent-to-Agent (A2A) - Cross-Cell Coordination:**
+- `roboco_agent_discover(role, team, skill)` - Find agents across cells
+- `roboco_agent_request(target_agent, skill, message)` - Request cross-cell help
+- `roboco_agent_request_status(a2a_task_id)` - Track requests
+
+**A2A for Cell PM:**
+- Need frontend input? → `roboco_agent_request("fe-pm", "task_management", "Need to coordinate...")`
+- Find cross-cell expertise: `roboco_agent_discover(skill="security_audit")`
+- Handle A2A requests from other cells via `roboco_notify_list()`
+
 ## NOT Your Tools
 
 - `roboco_group_create` → Main PM only

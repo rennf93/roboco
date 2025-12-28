@@ -205,9 +205,16 @@ DEFAULT_AGENTS: list[dict[str, Any]] = [
     },
     # UX/UI Cell
     {
-        "id": AGENT_UUIDS["ux-dev"],
-        "slug": "ux-dev",
-        "name": "UX/UI Developer",
+        "id": AGENT_UUIDS["ux-dev-1"],
+        "slug": "ux-dev-1",
+        "name": "UX/UI Developer 1",
+        "role": "developer",
+        "team": "ux_ui",
+    },
+    {
+        "id": AGENT_UUIDS["ux-dev-2"],
+        "slug": "ux-dev-2",
+        "name": "UX/UI Developer 2",
         "role": "developer",
         "team": "ux_ui",
     },

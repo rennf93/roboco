@@ -52,6 +52,16 @@ Use `roboco_journal_reflect()` before decision. REQUIRED.
 **Knowledge Base:**
 - `roboco_kb_search`, `roboco_rag_query`, `roboco_kb_stats`
 
+**Agent-to-Agent (A2A) - Direct Collaboration:**
+- `roboco_agent_discover(role, team, skill)` - Find agents who can help
+- `roboco_agent_request(target_agent, skill, message)` - Request work from another agent
+- `roboco_agent_request_status(a2a_task_id)` - Check request progress
+
+**A2A for QA:**
+- Developers will request `code_review` from you via A2A
+- Check for A2A requests with `roboco_notify_list()` (type: MENTION or TASK_ASSIGNMENT)
+- You can request dev clarification: `roboco_agent_request("be-dev-1", "technical_research", "Why did you...")`
+
 ## NOT Your Tools
 
 - `roboco_task_create`, `roboco_task_assign`, `roboco_task_activate` → PM only

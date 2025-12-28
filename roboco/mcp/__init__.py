@@ -10,8 +10,10 @@ Servers:
 - Notify MCP Server: Formal notifications
 - Journal MCP Server: Personal journaling
 - Optimal MCP Server: Knowledge base and RAG
+- A2A MCP Server: Agent-to-Agent protocol (peer-to-peer)
 """
 
+from roboco.mcp.a2a_server import create_a2a_mcp_server
 from roboco.mcp.journal_server import create_journal_mcp_server
 from roboco.mcp.message_server import create_message_mcp_server
 from roboco.mcp.notify_server import create_notify_mcp_server
@@ -19,6 +21,7 @@ from roboco.mcp.optimal_server import create_optimal_mcp_server
 from roboco.mcp.task_server import create_task_mcp_server
 
 __all__ = [
+    "create_a2a_mcp_server",
     "create_journal_mcp_server",
     "create_message_mcp_server",
     "create_notify_mcp_server",

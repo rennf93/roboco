@@ -66,10 +66,10 @@ RoboCo is **not** a RAG system or simple multi-agent chatbot. It is a **full AI 
 │ BACKEND CELL  │   │ FRONTEND CELL │   │  UX/UI CELL   │
 ├───────────────┤   ├───────────────┤   ├───────────────┤
 │ be-pm         │   │ fe-pm         │   │ ux-pm         │
-│ be-dev-1      │   │ fe-dev-1      │   │ ux-dev        │
-│ be-dev-2      │   │ fe-dev-2      │   │ ux-qa         │
-│ be-qa         │   │ fe-qa         │   │ ux-doc        │
-│ be-doc        │   │ fe-doc        │   │               │
+│ be-dev-1      │   │ fe-dev-1      │   │ ux-dev-1      │
+│ be-dev-2      │   │ fe-dev-2      │   │ ux-dev-2      │
+│ be-qa         │   │ fe-qa         │   │ ux-qa         │
+│ be-doc        │   │ fe-doc        │   │ ux-doc        │
 └───────────────┘   └───────────────┘   └───────────────┘
 ```
 
@@ -788,7 +788,7 @@ Task
 | `cross-cell` | Main PM coordination | Main PM, Cell PMs |
 | `backend-cell` | Backend team work | BE-PM, BE-Devs, BE-QA, BE-Doc |
 | `frontend-cell` | Frontend team work | FE-PM, FE-Devs, FE-QA, FE-Doc |
-| `uxui-cell` | UX/UI team work | UX-PM, UX-Dev, UX-QA, UX-Doc |
+| `uxui-cell` | UX/UI team work | UX-PM, UX-Dev-1, UX-Dev-2, UX-QA, UX-Doc |
 
 ### 9.5 CEO Directive Template
 

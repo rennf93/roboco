@@ -1169,6 +1169,14 @@ async def escalate_task(
         acked_by=[],
     )
     db.add(notification)
+    await db.flush()
+
+    # Deliver via Redis Streams for real-time notification
+    from roboco.services.notification_delivery import get_notification_delivery_service
+
+    delivery_service = get_notification_delivery_service(db)
+    await delivery_service.deliver(notification.id)
+
     await db.commit()
 
     msg = (

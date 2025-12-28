@@ -239,6 +239,53 @@ class OptimalService:
             return await plugin.index_sources(sources, project)
         return await plugin.add_sources(sources)
 
+    async def _track_indexed_document(
+        self,
+        index_type: IndexType,
+        source: str,
+        title: str | None = None,
+        preview: str | None = None,
+        metadata: dict | None = None,
+    ) -> None:
+        """Track an indexed document in the database for browsing/stats."""
+        import hashlib
+
+        from roboco.db import get_db_context
+        from roboco.db.tables import IndexedDocumentTable
+
+        source_hash = hashlib.sha256(source.encode()).hexdigest()
+
+        async with get_db_context() as db:
+            from sqlalchemy import select
+
+            existing = await db.execute(
+                select(IndexedDocumentTable).where(
+                    IndexedDocumentTable.index_type == index_type.value,
+                    IndexedDocumentTable.source_hash == source_hash,
+                )
+            )
+            doc = existing.scalar_one_or_none()
+
+            if doc:
+                if title:
+                    doc.title = title
+                if preview:
+                    doc.preview = preview[:500] if preview else None
+                if metadata:
+                    doc.metadata = {**(doc.metadata or {}), **metadata}
+            else:
+                doc = IndexedDocumentTable(
+                    index_type=index_type.value,
+                    source=source,
+                    source_hash=source_hash,
+                    title=title,
+                    preview=preview[:500] if preview else None,
+                    metadata=metadata or {},
+                )
+                db.add(doc)
+
+            await db.commit()
+
     async def index_conversation(self, params: IndexConversationParams) -> None:
         """Index a conversation message."""
         plugin = self._get_plugin(IndexType.CONVERSATIONS)
@@ -253,6 +300,20 @@ class OptimalService:
                 task_id=params.task_id,
                 message_type=params.message_type,
             )
+
+        # Track in database
+        source = f"roboco://conversations/{params.session_id or 'unknown'}"
+        await self._track_indexed_document(
+            IndexType.CONVERSATIONS,
+            source=source,
+            title=f"Message in {params.channel_id or 'channel'}",
+            preview=params.content[:500] if params.content else None,
+            metadata={
+                "channel_id": params.channel_id,
+                "session_id": params.session_id,
+                "agent_id": str(params.agent_id) if params.agent_id else None,
+            },
+        )
 
     async def index_journal_entry(self, params: IndexJournalEntryParams) -> None:
         """Index a journal entry."""
@@ -269,6 +330,21 @@ class OptimalService:
                 tags=params.tags,
             )
 
+        # Track in database
+        source = f"roboco://journals/{params.entry_id or 'unknown'}"
+        await self._track_indexed_document(
+            IndexType.JOURNALS,
+            source=source,
+            title=f"Journal: {params.entry_type or 'entry'}",
+            preview=params.content[:500] if params.content else None,
+            metadata={
+                "entry_id": params.entry_id,
+                "agent_id": str(params.agent_id) if params.agent_id else None,
+                "entry_type": params.entry_type,
+                "tags": params.tags,
+            },
+        )
+
     # =========================================================================
     # INDEXING OPERATIONS (New - Optimal Brain)
     # =========================================================================
@@ -279,11 +355,43 @@ class OptimalService:
         if isinstance(plugin, ErrorsIndexPlugin):
             await plugin.record_error(params)
 
+        # Track in database
+        import hashlib
+
+        error_hash = hashlib.md5(params.error_message.encode()).hexdigest()[:12]
+        source = f"roboco://errors/err-{error_hash}"
+        await self._track_indexed_document(
+            IndexType.ERRORS,
+            source=source,
+            title=f"Error: {params.error_message[:100]}",
+            preview=f"{params.error_message}\n\nSolution: {params.solution}",
+            metadata={
+                "context": params.context,
+                "worked": params.worked,
+                "tags": params.tags,
+            },
+        )
+
     async def index_standard(self, params: IndexStandardParams) -> None:
         """Index a coding/security/workflow standard."""
         plugin = self._get_plugin(IndexType.STANDARDS)
         if isinstance(plugin, StandardsIndexPlugin):
             await plugin.index_standard(params)
+
+        # Track in database
+        source = f"roboco://standards/{params.domain or 'general'}"
+        await self._track_indexed_document(
+            IndexType.STANDARDS,
+            source=source,
+            title=f"Standard: {params.domain or 'General'}",
+            preview=params.content[:500] if params.content else None,
+            metadata={
+                "domain": params.domain,
+                "language": params.language,
+                "scope": params.scope,
+                "severity": params.severity,
+            },
+        )
 
     async def index_decision(self, params: IndexDecisionParams) -> None:
         """Index an architectural/design decision."""
@@ -291,9 +399,27 @@ class OptimalService:
         if isinstance(plugin, DecisionsIndexPlugin):
             await plugin.record_decision(params)
 
+        # Track in database
+        import hashlib
+
+        topic_hash = hashlib.md5(params.topic.encode()).hexdigest()[:12]
+        source = f"roboco://decisions/dec-{topic_hash}"
+        await self._track_indexed_document(
+            IndexType.DECISIONS,
+            source=source,
+            title=f"Decision: {params.topic[:100]}",
+            preview=f"{params.topic}\n\nDecision: {params.decision}\n\nRationale: {params.rationale}",
+            metadata={
+                "scope": params.scope,
+                "tags": params.tags,
+                "alternatives": params.alternatives,
+            },
+        )
+
     async def record_review(self, params: IndexReviewParams) -> str:
         """Record a code review for future reference."""
         plugin = self._get_plugin(IndexType.REVIEWS)
+        doc_id = ""
         if isinstance(plugin, ReviewsIndexPlugin):
             review_params = ReviewParams(
                 comment=params.summary,
@@ -304,24 +430,74 @@ class OptimalService:
                 severity="info",
             )
             result = await plugin.record_review(review_params)
-            return result.doc_id
-        return ""
+            doc_id = result.doc_id
+
+        # Track in database
+        source = f"roboco://reviews/{params.file_path or 'unknown'}"
+        await self._track_indexed_document(
+            IndexType.REVIEWS,
+            source=source,
+            title=f"Review: {params.file_path or 'Code'}",
+            preview=params.summary[:500] if params.summary else None,
+            metadata={
+                "file_path": params.file_path,
+                "reviewer_id": str(params.reviewer_id) if params.reviewer_id else None,
+                "task_id": str(params.task_id) if params.task_id else None,
+            },
+        )
+
+        return doc_id
 
     async def record_learning(self, params: LearningParams) -> str:
         """Record a learning for cross-agent knowledge sharing."""
         plugin = self._get_plugin(IndexType.LEARNINGS)
+        doc_id = ""
         if isinstance(plugin, LearningsIndexPlugin):
             result = await plugin.record_learning(params)
-            return result.doc_id
-        return ""
+            doc_id = result.doc_id
+
+        # Track in database
+        import hashlib
+
+        content_hash = hashlib.md5(params.content.encode()).hexdigest()[:12]
+        source = f"roboco://learnings/learn-{content_hash}"
+        await self._track_indexed_document(
+            IndexType.LEARNINGS,
+            source=source,
+            title=f"Learning: {params.category or 'General'}",
+            preview=params.content[:500] if params.content else None,
+            metadata={
+                "category": params.category,
+                "team": params.team,
+                "shareable": params.shareable,
+                "tags": params.tags,
+            },
+        )
+
+        return doc_id
 
     async def index_standards_file(self, file_path: str) -> int:
         """Index a markdown standards file."""
+        from pathlib import Path
+
         plugin = self._get_plugin(IndexType.STANDARDS)
+        count = 0
         if isinstance(plugin, StandardsIndexPlugin):
             results = await plugin.index_markdown_file(file_path)
-            return len([r for r in results if r.success])
-        return 0
+            count = len([r for r in results if r.success])
+
+        # Track in database
+        path = Path(file_path)
+        if path.exists():
+            await self._track_indexed_document(
+                IndexType.STANDARDS,
+                source=str(path.absolute()),
+                title=path.stem.replace("-", " ").replace("_", " ").title(),
+                preview=path.read_text(errors="ignore")[:500],
+                metadata={"file_path": file_path},
+            )
+
+        return count
 
     # =========================================================================
     # SEARCH OPERATIONS
@@ -503,6 +679,27 @@ class OptimalService:
         plugin = self._get_plugin(index_type)
         await plugin.clear()
         logger.info("Cleared index", index_type=index_type.value)
+
+    async def list_documents(
+        self, index_type: IndexType, limit: int = 50, offset: int = 0
+    ) -> list[dict[str, Any]]:
+        """
+        List documents in a specific index.
+
+        Returns list of documents with id, source, indexed_at, and metadata.
+        """
+        plugin = self._get_plugin(index_type)
+
+        # Check if plugin has list_documents method
+        if hasattr(plugin, "list_documents"):
+            return await plugin.list_documents(limit=limit, offset=offset)
+
+        # Fallback: return empty list if plugin doesn't support listing
+        logger.warning(
+            "Plugin does not support list_documents",
+            index_type=index_type.value,
+        )
+        return []
 
     async def refresh_index(self, index_type: IndexType, sources: list[str]) -> None:
         """Refresh an index with new sources."""
