@@ -123,7 +123,8 @@ class AgentRole(str, Enum):
 | `be-dev-2` | developer | backend | developers |
 | `fe-dev-1` | developer | frontend | developers |
 | `fe-dev-2` | developer | frontend | developers |
-| `ux-dev` | developer | uxui | developers |
+| `ux-dev-1` | developer | uxui | developers |
+| `ux-dev-2` | developer | uxui | developers |
 | `be-qa` | qa | backend | qa |
 | `fe-qa` | qa | frontend | qa |
 | `ux-qa` | qa | uxui | qa |

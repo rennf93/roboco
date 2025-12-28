@@ -28,6 +28,7 @@ def _validate_documenter_role(agent_id: str) -> dict[str, Any] | None:
             "NOT_DOCUMENTER",
             "Only documenters can mark documentation as complete.",
             {"your_role": agent_role},
+            hint="roboco_kb_search('task lifecycle role permissions')",
         )
     return None
 
@@ -40,6 +41,7 @@ def _validate_pm_role(agent_id: str, action: str) -> dict[str, Any] | None:
             "NOT_AUTHORIZED",
             f"Only PMs and board members can {action}",
             {"your_role": role},
+            hint="roboco_kb_search('pm role permissions')",
         )
     return None
 
@@ -137,22 +139,7 @@ async def _check_descendants_completed(
                 },
             )
 
-        # Check for cancelled (need force override)
-        cancelled = [task for task in descendants if task.get("status") == "cancelled"]
-
-        if cancelled:
-            return format_error_response(
-                "CANCELLED_DESCENDANTS",
-                f"Task has {len(cancelled)} cancelled descendant(s).",
-                {
-                    "cancelled_count": len(cancelled),
-                    "guidance": (
-                        "Use force_with_cancelled=True with justification (CEO only) "
-                        "to complete despite cancelled descendants."
-                    ),
-                },
-            )
-
+        # All descendants in terminal states (completed/cancelled) - allow completion
         return None
     except Exception:
         return None
@@ -189,6 +176,7 @@ def _validate_completion_status(
         f"Cannot complete task in '{current_status}' status. "
         "Expected 'awaiting_pm_review' (dev work) or 'in_progress' (own task).",
         {"current_status": current_status},
+        hint="roboco_kb_search('task status lifecycle')",
     )
 
 

@@ -59,7 +59,8 @@ AGENT_ROLE_MAP: Final[dict[str, str]] = {
     "fe-pm": "cell_pm",
     "fe-doc": "documenter",
     # UX/UI cell
-    "ux-dev": "developer",
+    "ux-dev-1": "developer",
+    "ux-dev-2": "developer",
     "ux-qa": "qa",
     "ux-pm": "cell_pm",
     "ux-doc": "documenter",
@@ -86,7 +87,8 @@ AGENT_TEAM_MAP: Final[dict[str, str]] = {
     "fe-pm": "frontend",
     "fe-doc": "frontend",
     # UX/UI cell (matches Team.UX_UI = "ux_ui")
-    "ux-dev": "ux_ui",
+    "ux-dev-1": "ux_ui",
+    "ux-dev-2": "ux_ui",
     "ux-qa": "ux_ui",
     "ux-pm": "ux_ui",
     "ux-doc": "ux_ui",
@@ -97,7 +99,7 @@ AGENT_TEAM_MAP: Final[dict[str, str]] = {
 CELL_MEMBERS: Final[dict[str, list[str]]] = {
     "backend": ["be-dev-1", "be-dev-2", "be-qa", "be-pm", "be-doc"],
     "frontend": ["fe-dev-1", "fe-dev-2", "fe-qa", "fe-pm", "fe-doc"],
-    "ux_ui": ["ux-dev", "ux-qa", "ux-pm", "ux-doc"],
+    "ux_ui": ["ux-dev-1", "ux-dev-2", "ux-qa", "ux-pm", "ux-doc"],
 }
 
 
@@ -111,7 +113,14 @@ BOARD_MEMBERS: Final[list[str]] = ["product-owner", "head-marketing", "auditor"]
 ALL_PMS: Final[list[str]] = ["be-pm", "fe-pm", "ux-pm", "main-pm"]
 
 # All by role (cross-cell)
-ALL_DEVS: Final[list[str]] = ["be-dev-1", "be-dev-2", "fe-dev-1", "fe-dev-2", "ux-dev"]
+ALL_DEVS: Final[list[str]] = [
+    "be-dev-1",
+    "be-dev-2",
+    "fe-dev-1",
+    "fe-dev-2",
+    "ux-dev-1",
+    "ux-dev-2",
+]
 ALL_QA: Final[list[str]] = ["be-qa", "fe-qa", "ux-qa"]
 ALL_DOCS: Final[list[str]] = ["be-doc", "fe-doc", "ux-doc"]
 CELL_PMS: Final[list[str]] = ["be-pm", "fe-pm", "ux-pm"]
@@ -132,7 +141,8 @@ ESCALATION_CHAIN: Final[dict[str, str]] = {
     "be-dev-2": "be-pm",
     "fe-dev-1": "fe-pm",
     "fe-dev-2": "fe-pm",
-    "ux-dev": "ux-pm",
+    "ux-dev-1": "ux-pm",
+    "ux-dev-2": "ux-pm",
     # QA → Cell PM
     "be-qa": "be-pm",
     "fe-qa": "fe-pm",

@@ -68,7 +68,8 @@ AGENT_IMAGES: dict[str, str] = {
     "fe-pm": "roboco-agent-pm",
     "fe-doc": "roboco-agent-doc",
     # UX/UI
-    "ux-dev": "roboco-agent-ux",
+    "ux-dev-1": "roboco-agent-ux",
+    "ux-dev-2": "roboco-agent-ux",
     "ux-qa": "roboco-agent-ux",  # Uses same as dev for now
     "ux-pm": "roboco-agent-pm",
     "ux-doc": "roboco-agent-doc",
@@ -734,7 +735,8 @@ class AgentOrchestrator:
             "be-dev-2": "be-dev",
             "fe-dev-1": "fe-dev",
             "fe-dev-2": "fe-dev",
-            "ux-dev": "ux-dev",
+            "ux-dev-1": "ux-dev",
+            "ux-dev-2": "ux-dev",
             "be-qa": "be-qa",
             "fe-qa": "fe-qa",
             "ux-qa": "ux-qa",
@@ -1102,10 +1104,7 @@ Start by:
 
         # Build candidate list based on role
         if role == "dev":
-            if prefix == "ux":
-                candidates = ["ux-dev"]
-            else:
-                candidates = [f"{prefix}-dev-1", f"{prefix}-dev-2"]
+            candidates = [f"{prefix}-dev-1", f"{prefix}-dev-2"]
         elif role == "qa":
             candidates = [f"{prefix}-qa"]
         elif role == "doc":
@@ -1375,9 +1374,9 @@ You do NOT assign to developers directly - Cell PMs manage their teams.
 
 - Backend work → be-pm (who manages be-dev-1, be-dev-2)
 - Frontend work → fe-pm (who manages fe-dev-1, fe-dev-2)
-- UX/UI work → ux-pm (who manages ux-dev)
+- UX/UI work → ux-pm (who manages ux-dev-1, ux-dev-2)
 
-🚨 NEVER assign to be-dev-1, fe-dev-1, ux-dev directly. ONLY to Cell PMs.
+🚨 NEVER assign to be-dev-1, fe-dev-1, ux-dev-1, ux-dev-2 directly. ONLY to Cell PMs.
 
 == WHEN TO WORK ON IT YOURSELF ==
 
@@ -1445,7 +1444,7 @@ Start now: roboco_task_get("{task_id}")
         dev_map = {
             "backend": ("be-dev-1", "be-dev-2"),
             "frontend": ("fe-dev-1", "fe-dev-2"),
-            "ux_ui": ("ux-dev",),
+            "ux_ui": ("ux-dev-1", "ux-dev-2"),
         }
         devs = dev_map.get(team, ("be-dev-1",))
         primary_dev = devs[0]

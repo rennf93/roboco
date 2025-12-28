@@ -113,6 +113,7 @@ def check_blocking_tasks(active_tasks: list[dict]) -> dict[str, Any] | None:
             f"You have a {status} task: {blocking[0]['id']}. "
             "Work on it first, or pause it if blocked.",
             {"active_task_id": blocking[0]["id"], "status": status},
+            hint="roboco_kb_search('task pause blocked')",
         )
     return None
 
@@ -162,6 +163,7 @@ async def validate_task_claimable(
             f"Cannot claim task in '{task_status}' status. "
             f"Your role ({agent_role}) can claim: {', '.join(allowed)}.",
             {"current_status": task_status, "allowed_statuses": allowed},
+            hint="roboco_kb_search('task claim role')",
         )
     return None
 
@@ -240,6 +242,7 @@ async def validate_task_ownership(
             "NOT_OWNER",
             "You are not assigned to this task",
             {"assigned_to": assigned_to},
+            hint="roboco_kb_search('task assignment ownership')",
         )
     return None
 

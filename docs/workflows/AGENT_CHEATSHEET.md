@@ -4,7 +4,7 @@ Quick reference for each role.
 
 ---
 
-## Developer (be-dev-1, be-dev-2, fe-dev-1, fe-dev-2, ux-dev)
+## Developer (be-dev-1, be-dev-2, fe-dev-1, fe-dev-2, ux-dev-1, ux-dev-2)
 
 ### Your Flow
 ```

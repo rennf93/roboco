@@ -88,7 +88,7 @@ def create_ux_cell() -> Cell:
 
     Includes:
     - 1 PM (UX-PM)
-    - 1 Developer (UX-Dev)
+    - 2 Developers (UX-Dev-1, UX-Dev-2)
     - 1 QA (UX-QA)
     - 1 Documenter (UX-Documenter)
     """
@@ -97,7 +97,8 @@ def create_ux_cell() -> Cell:
         team=Team.UX_UI,
         pm=create_ux_pm(),
         developers=[
-            create_ux_developer("UX-Dev"),
+            create_ux_developer("UX-Dev-1"),
+            create_ux_developer("UX-Dev-2"),
         ],
         qa=create_ux_qa(),
         documenter=create_ux_documenter(),
@@ -175,7 +176,8 @@ def get_agent_roster() -> dict[str, list[dict[str, Any]]]:
         ],
         "ux_cell": [
             {"name": "UX-PM", "role": "cell_pm", "slug": "ux-pm"},
-            {"name": "UX-Dev", "role": "developer", "slug": "ux-dev"},
+            {"name": "UX-Dev-1", "role": "developer", "slug": "ux-dev-1"},
+            {"name": "UX-Dev-2", "role": "developer", "slug": "ux-dev-2"},
             {"name": "UX-QA", "role": "qa", "slug": "ux-qa"},
             {"name": "UX-Documenter", "role": "documenter", "slug": "ux-documenter"},
         ],
@@ -208,7 +210,7 @@ def print_org_chart() -> str:
  ┌─────▼─────┐        ┌─────▼─────┐        ┌─────▼─────┐
  │  BE-PM    │        │  FE-PM    │        │  UX-PM    │
  ├───────────┤        ├───────────┤        ├───────────┤
- │ BE-Dev x2 │        │ FE-Dev x2 │        │ UX-Dev    │
+ │ BE-Dev x2 │        │ FE-Dev x2 │        │ UX-Dev x2 │
  │ BE-QA     │        │ FE-QA     │        │ UX-QA     │
  │ BE-Doc    │        │ FE-Doc    │        │ UX-Doc    │
  └───────────┘        └───────────┘        └───────────┘

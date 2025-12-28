@@ -16,7 +16,6 @@ dist
 build
 *.egg-info
 .tasks
-docs
 tests
 *.md
 !README.md

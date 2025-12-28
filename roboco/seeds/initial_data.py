@@ -118,10 +118,11 @@ AGENT_UUIDS = {
     "fe-pm": "00000000-0000-0000-0002-000000000004",
     "fe-doc": "00000000-0000-0000-0002-000000000005",
     # UX/UI Cell
-    "ux-dev": "00000000-0000-0000-0003-000000000001",
-    "ux-qa": "00000000-0000-0000-0003-000000000002",
-    "ux-pm": "00000000-0000-0000-0003-000000000003",
-    "ux-doc": "00000000-0000-0000-0003-000000000004",
+    "ux-dev-1": "00000000-0000-0000-0003-000000000001",
+    "ux-dev-2": "00000000-0000-0000-0003-000000000002",
+    "ux-qa": "00000000-0000-0000-0003-000000000003",
+    "ux-pm": "00000000-0000-0000-0003-000000000004",
+    "ux-doc": "00000000-0000-0000-0003-000000000005",
     # Board / Management
     "main-pm": "00000000-0000-0000-0004-000000000001",
     "product-owner": "00000000-0000-0000-0004-000000000002",
@@ -295,9 +296,17 @@ CHANNEL_MEMBERSHIPS = {
     # Cell channels - cell members + CEO
     "backend-cell": ["be-dev-1", "be-dev-2", "be-qa", "be-pm", "be-doc", "ceo"],
     "frontend-cell": ["fe-dev-1", "fe-dev-2", "fe-qa", "fe-pm", "fe-doc", "ceo"],
-    "uxui-cell": ["ux-dev", "ux-qa", "ux-pm", "ux-doc", "ceo"],
+    "uxui-cell": ["ux-dev-1", "ux-dev-2", "ux-qa", "ux-pm", "ux-doc", "ceo"],
     # Role channels + CEO
-    "dev-all": ["be-dev-1", "be-dev-2", "fe-dev-1", "fe-dev-2", "ux-dev", "ceo"],
+    "dev-all": [
+        "be-dev-1",
+        "be-dev-2",
+        "fe-dev-1",
+        "fe-dev-2",
+        "ux-dev-1",
+        "ux-dev-2",
+        "ceo",
+    ],
     "qa-all": ["be-qa", "fe-qa", "ux-qa", "ceo"],
     "pm-all": ["be-pm", "fe-pm", "ux-pm", "main-pm", "ceo"],
     "doc-all": ["be-doc", "fe-doc", "ux-doc", "ceo"],
@@ -408,7 +417,7 @@ Check `roboco_task_scan(team="frontend")` for pending frontend tasks.
         "content": """Welcome to the UX/UI Cell channel!
 
 **Team:**
-- ux-dev: UX/UI Developer
+- ux-dev-1, ux-dev-2: UX/UI Developers
 - ux-qa: UX/UI QA
 - ux-pm: UX/UI PM (me)
 - ux-doc: UX/UI Documenter
