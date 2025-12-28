@@ -7,14 +7,17 @@ Provides business logic for A2A protocol operations including:
 - Message handling and routing
 """
 
+from typing import Any
 from uuid import UUID
 
 import structlog
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from roboco.agents_config import ALL_AGENTS, get_agent_skills, get_agent_team
 from roboco.config import settings
 from roboco.db.tables import AgentTable, TaskTable
+from roboco.events import Event, EventType, get_event_bus
 from roboco.models.a2a import (
     A2AArtifact,
     A2AMessage,
@@ -25,10 +28,12 @@ from roboco.models.a2a import (
     AgentProvider,
     AgentSkill,
     SecurityScheme,
+    SendMessageRequest,
     TextPart,
     task_status_to_a2a_state,
 )
 from roboco.models.base import TaskStatus, Team
+from roboco.seeds.initial_data import AGENT_UUIDS
 
 logger = structlog.get_logger()
 
@@ -478,3 +483,209 @@ class A2AService:
             ]
 
         return cards
+
+    # =========================================================================
+    # MESSAGE ROUTING
+    # =========================================================================
+
+    @staticmethod
+    def get_team_from_agent(agent_slug: str) -> Team:
+        """Get Team enum from agent slug."""
+        team_str = get_agent_team(agent_slug)
+        team_map = {
+            "backend": Team.BACKEND,
+            "frontend": Team.FRONTEND,
+            "ux_ui": Team.UX_UI,
+        }
+        return team_map.get(team_str or "", Team.BACKEND)
+
+    @staticmethod
+    def resolve_target_agent(metadata: dict[str, Any]) -> str | None:
+        """
+        Resolve target agent from A2A request metadata.
+
+        Returns agent slug or None if not specified.
+        """
+        # Check for explicit target
+        target = metadata.get("target_agent")
+        if target and target in ALL_AGENTS:
+            return target
+
+        # Check for skill-based routing
+        skill = metadata.get("skill")
+        if skill:
+            for agent_slug in ALL_AGENTS:
+                agent_skills = get_agent_skills(agent_slug)
+                skill_ids = [s.get("id", "") for s in agent_skills]
+                if skill in skill_ids:
+                    return agent_slug
+
+        return None
+
+    async def route_to_agent(
+        self,
+        target_agent_slug: str,
+        task: TaskTable,
+        skill: str | None = None,
+        message: str | None = None,
+    ) -> None:
+        """
+        Route an A2A task to a specific agent.
+
+        This publishes an event that:
+        1. Notifies the agent if they're online (via WebSocket)
+        2. Triggers the orchestrator to spawn them if needed
+        """
+        target_uuid = AGENT_UUIDS.get(target_agent_slug)
+        if not target_uuid:
+            return
+
+        # Assign task to target agent
+        task.assigned_to = UUID(target_uuid)
+        await self.session.flush()
+
+        # Publish A2A request event for routing
+        try:
+            bus = get_event_bus()
+            if bus.is_connected():
+                await bus.publish(
+                    Event(
+                        type=EventType.TASK_ASSIGNED,
+                        data={
+                            "task_id": str(task.id),
+                            "assigned_to": target_uuid,
+                            "agent_slug": target_agent_slug,
+                            "skill": skill or "general",
+                            "message": message or "",
+                            "source": "a2a",
+                        },
+                    )
+                )
+        except Exception:
+            pass  # Don't fail if event bus unavailable
+
+    # =========================================================================
+    # MESSAGE HANDLING
+    # =========================================================================
+
+    @staticmethod
+    def extract_message_text(message: A2AMessage) -> tuple[str, str, str]:
+        """Extract title, description, and full text from message parts."""
+        text_parts = [p for p in message.parts if p.type == "text"]
+        if not text_parts:
+            return "A2A Task", "", ""
+
+        text_part = text_parts[0]
+        if not hasattr(text_part, "text"):
+            return "A2A Task", "", ""
+
+        message_text = text_part.text
+        lines = message_text.split("\n", 1)
+        title = lines[0][:200]
+        description = lines[1] if len(lines) > 1 else message_text
+        return title, description, message_text
+
+    @staticmethod
+    def update_task_with_message(task: TaskTable, message: A2AMessage) -> None:
+        """Update an existing task's dev_notes with new message content."""
+        text_parts = [p for p in message.parts if p.type == "text"]
+        if not text_parts:
+            return
+
+        text_part = text_parts[0]
+        if not hasattr(text_part, "text"):
+            return
+
+        new_text = text_part.text
+        task.dev_notes = (
+            f"{task.dev_notes}\n\n{new_text}" if task.dev_notes else new_text
+        )
+
+    async def resolve_creator_agent(
+        self, from_agent_id: str | None
+    ) -> AgentTable | None:
+        """Resolve the creator agent from ID or fall back to main PM."""
+        if from_agent_id and from_agent_id in ALL_AGENTS:
+            from_uuid = AGENT_UUIDS.get(from_agent_id)
+            if from_uuid:
+                result = await self.session.execute(
+                    select(AgentTable).where(AgentTable.id == UUID(from_uuid))
+                )
+                return result.scalar_one_or_none()
+
+        # Fall back to main PM
+        result = await self.session.execute(
+            select(AgentTable).where(AgentTable.role == "main_pm").limit(1)
+        )
+        return result.scalar_one_or_none()
+
+    async def create_task_from_a2a_message(
+        self,
+        request: SendMessageRequest,
+    ) -> TaskTable:
+        """
+        Create a new task from an A2A message request.
+
+        Handles the full flow: extract message, resolve target, create task, route.
+        """
+        message = request.message
+        title, description, message_text = self.extract_message_text(message)
+
+        metadata = request.metadata or {}
+        target_agent = self.resolve_target_agent(metadata)
+        skill = metadata.get("skill")
+        team = self.get_team_from_agent(target_agent) if target_agent else Team.BACKEND
+
+        creator_agent = await self.resolve_creator_agent(metadata.get("from_agent"))
+        if creator_agent is None:
+            raise ValueError("No agent available to create tasks")
+
+        task = TaskTable(
+            title=f"[A2A] {title}" if target_agent else title,
+            description=description,
+            acceptance_criteria=["Task completed as specified"],
+            status=TaskStatus.PENDING,
+            priority=5,
+            team=team,
+            created_by=creator_agent.id,
+            dev_notes=f"A2A Request | Skill: {skill or 'general'}" if skill else None,
+        )
+        self.session.add(task)
+        await self.session.flush()
+
+        if target_agent:
+            await self.route_to_agent(target_agent, task, skill, message_text)
+
+        return task
+
+    async def update_task_from_message(
+        self, task_id: str, message: A2AMessage
+    ) -> TaskTable:
+        """
+        Update an existing task with a new message.
+
+        Args:
+            task_id: Task UUID string
+            message: A2A message to append
+
+        Returns:
+            Updated TaskTable
+
+        Raises:
+            ValueError: If task not found or invalid ID
+        """
+        try:
+            task_uuid = UUID(task_id)
+        except ValueError as e:
+            raise ValueError(f"Invalid task ID: {task_id}") from e
+
+        result = await self.session.execute(
+            select(TaskTable).where(TaskTable.id == task_uuid)
+        )
+        task = result.scalar_one_or_none()
+
+        if task is None:
+            raise ValueError(f"Task not found: {task_id}")
+
+        self.update_task_with_message(task, message)
+        return task

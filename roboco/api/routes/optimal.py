@@ -11,7 +11,12 @@ from uuid import uuid4
 
 from fastapi import APIRouter, HTTPException, status
 
-from roboco.api.deps import CurrentAgentContext, DbSession, PermissionServiceDep
+from roboco.api.deps import (
+    CurrentAgentContext,
+    DbSession,
+    PaginationDep,
+    PermissionServiceDep,
+)
 from roboco.api.schemas.optimal import (
     ClearIndexResponse,
     CodeReviewRequest,
@@ -436,8 +441,7 @@ async def list_documents(
     agent: CurrentAgentContext,
     permissions: PermissionServiceDep,
     db: DbSession,
-    limit: int = 50,
-    offset: int = 0,
+    pagination: PaginationDep,
 ) -> DocumentListResponse:
     """
     List documents in a specific index.
@@ -467,8 +471,8 @@ async def list_documents(
         select(IndexedDocumentTable)
         .where(IndexedDocumentTable.index_type == idx_type.value)
         .order_by(IndexedDocumentTable.indexed_at.desc())
-        .offset(offset)
-        .limit(limit)
+        .offset(pagination.offset)
+        .limit(pagination.limit)
     )
     result = await db.execute(query)
     docs = result.scalars().all()
@@ -492,7 +496,7 @@ async def list_documents(
                     "title": doc.title,
                     "preview": doc.preview,
                     "chunk_count": doc.chunk_count,
-                    **(doc.metadata or {}),
+                    **(doc.extra_data or {}),
                 },
             )
             for doc in docs

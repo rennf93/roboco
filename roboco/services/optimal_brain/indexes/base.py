@@ -26,24 +26,31 @@ class IndexConfig:
 
     persist_dir: str
     store_url: str | None = None
-    chunk_strategy: str = "semantic"
+    chunk_strategy: str = "fixed"
     chunk_size: int = 512
     chunk_overlap: int = 50
     use_hyde: bool = True
     use_hybrid_search: bool = True
     use_cross_encoder: bool = False
-    embedding_model: str = "all-MiniLM-L6-v2"
+    embedding_model: str = "nomic-ai/nomic-embed-text-v1.5"
     llm_model: str = "llama3.2"
     llm_base_url: str = "http://localhost:11434/v1"
 
     @classmethod
     def from_settings(cls, index_type: IndexType) -> "IndexConfig":
         """Create config from application settings."""
+        # Use per-index-type chunk sizes where available
+        chunk_size = settings.rag_chunk_size
+        if index_type == IndexType.DOCUMENTATION:
+            chunk_size = settings.rag_chunk_size_docs
+        elif index_type == IndexType.JOURNALS:
+            chunk_size = settings.rag_chunk_size_journals
+
         return cls(
             persist_dir=f"{settings.rag_persist_dir}/{index_type.value}",
             store_url=settings.rag_store_url,
             chunk_strategy=settings.rag_chunk_strategy,
-            chunk_size=settings.rag_chunk_size,
+            chunk_size=chunk_size,
             chunk_overlap=settings.rag_chunk_overlap,
             use_hyde=settings.rag_use_hyde,
             use_hybrid_search=settings.rag_use_hybrid_search,
@@ -192,8 +199,8 @@ class BaseIndexPlugin(ABC):
         )
 
         # Create store with correct vector dimension for embedding model
-        # Piragi's factory defaults to 768 for PostgresStore, but we use
-        # all-MiniLM-L6-v2 which produces 384-dimensional embeddings
+        # Piragi's factory defaults to 768 for PostgresStore, matching
+        # nomic-embed-text-v1.5 which produces 768-dimensional embeddings
         store = self._create_store_with_dimension()
 
         # Use config with dummy embedding URL to prevent model loading
@@ -231,7 +238,7 @@ class BaseIndexPlugin(ABC):
         if store_url.startswith("postgres://") or store_url.startswith("postgresql://"):
             from piragi.stores.postgres import PostgresStore
 
-            # Get dimension from settings (384 for all-MiniLM-L6-v2)
+            # Get dimension from settings (768 for nomic-embed-text-v1.5)
             vector_dimension = settings.embedding_dimensions
 
             logger.debug(
@@ -519,9 +526,7 @@ class BaseIndexPlugin(ABC):
             # Fallback: return empty list
             return []
         except Exception as e:
-            logger.warning(
-                f"Failed to list documents in {self.index_type.value}: {e}"
-            )
+            logger.warning(f"Failed to list documents in {self.index_type.value}: {e}")
             return []
 
     async def add_sources(self, sources: list[str]) -> int:
@@ -554,7 +559,7 @@ class BaseIndexPlugin(ABC):
                     if source_path.is_dir():
                         files = list(source_path.rglob("*"))
                     else:
-                        files = list(Path(".").glob(source))
+                        files = list(Path().glob(source))
                 else:
                     files = [source_path] if source_path.exists() else []
 

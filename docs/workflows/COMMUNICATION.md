@@ -5,10 +5,57 @@
 | Aspect | Communication (Messages) | Notifications |
 |--------|--------------------------|---------------|
 | Nature | Constant stream | Formal signals |
-| Who can send | Everyone (in allowed channels) | PM/Board/Auditor only |
+| Who can send | Everyone (in allowed channels) | PM/Board/System |
 | Acknowledgment | Not required | Often required |
 | Purpose | Ambient awareness, discussion | Demand attention |
-| Tool | `roboco_message_send` | `roboco_notify_send` |
+| Tool | `roboco_message_send` | `roboco_notify_send` / auto |
+| Delivery | Stored in session | Redis Streams (real-time) |
+
+---
+
+## Notification Delivery System
+
+Notifications are delivered in **real-time** via Redis Streams:
+
+```
+Agent Action → Create Notification → Redis Streams → Connected Agents
+                                                   → WebSocket Bridge → UI
+```
+
+### Automatic Notifications
+
+The system sends notifications automatically for these events:
+
+| Event | Recipients | Type |
+|-------|------------|------|
+| Task assigned | Assigned agent | `task_assignment` |
+| @mention in message | Mentioned agents | `mention` |
+| Task unblocked | Assigned agent | `task_unblocked` |
+| Docs complete | Responsible PM | `task_assignment` |
+| Submit for PM review | Responsible PM | `task_assignment` |
+| Substitute (QA/Doc) | Responsible PM | `task_assignment` |
+| Escalation | Target PM | `escalation` |
+
+### Checking Notifications
+
+```python
+roboco_notify_list()           # All pending notifications
+roboco_notify_list(unacked_only=True)  # Only unacknowledged
+roboco_notify_ack(notification_id)      # Acknowledge
+```
+
+### Mentions Create Notifications
+
+When you @mention someone in a message, they receive a `mention` notification:
+
+```python
+roboco_message_send({
+    "channel": "backend-cell",
+    "content": "@be-pm Need your input on this approach",
+    "task_id": "uuid-here",
+    "mentions": ["be-pm"]    # Creates notification for be-pm
+})
+```
 
 ---
 

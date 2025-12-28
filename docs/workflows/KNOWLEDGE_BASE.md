@@ -2,14 +2,23 @@
 
 ## Overview
 
-The knowledge base is built from:
-- **Code** - Indexed source files
-- **Documentation** - Indexed docs and READMEs
-- **Journals** - Your entries and team entries
-- **Task history** - Past tasks, decisions, outcomes
-- **Messages** - Channel discussions
+The knowledge base is built from **9 specialized indexes**:
+
+| Index Type | Content | Use Case |
+|------------|---------|----------|
+| **code** | Source files | Find implementations, patterns |
+| **docs** | Documentation, READMEs | Find guides, specs |
+| **conversations** | Channel discussions | Find past discussions |
+| **journals** | Agent journal entries | Find decisions, learnings |
+| **errors** | Error patterns & fixes | Find solutions to past errors |
+| **standards** | Coding standards, rules | Validate against standards |
+| **decisions** | Architectural decisions | Find past design choices |
+| **reviews** | Code review patterns | Find review templates |
+| **learnings** | Captured learnings | Find team knowledge |
 
 All content is **embedded** (vectorized) for semantic search.
+
+**Document Tracking:** The system tracks actual documents indexed (not just vector chunks), including source path, title, preview, and chunk count.
 
 ---
 
@@ -79,6 +88,94 @@ roboco_kb_index_code(
 roboco_kb_index_docs(
     sources=["docs/**/*.md", "README.md"],
     project="roboco"
+)
+```
+
+---
+
+## Error Tracking
+
+Record and search error patterns:
+
+```python
+# Record an error and how you fixed it
+roboco_record_error(
+    error_type="ConnectionError",
+    message="Redis connection timed out",
+    solution="Increased timeout to 30s and added retry logic",
+    worked=True
+)
+
+# Search for similar errors
+roboco_search_error(
+    pattern="ConnectionError",
+    context="redis timeout"
+)
+```
+
+---
+
+## Decision Tracking
+
+Record architectural decisions:
+
+```python
+# Record a decision
+roboco_record_decision(
+    topic="Database for session storage",
+    decision="Use Redis instead of PostgreSQL",
+    rationale="Need sub-millisecond reads, sessions are ephemeral",
+    alternatives=["PostgreSQL", "In-memory"],
+    task_id="uuid-here"
+)
+
+# Check if similar decisions exist
+roboco_decision_check(
+    topic="session storage",
+    proposed_approach="Use in-memory cache"
+)
+# Returns: relevant past decisions to consider
+```
+
+---
+
+## Standards Validation
+
+Check code against team standards:
+
+```python
+# Get applicable standards for a file
+roboco_standards_get(
+    file_path="src/api/routes/users.py",
+    domain="api"
+)
+
+# Validate an action against standards
+roboco_validate_action(
+    action="Adding a new API endpoint",
+    context="User management feature"
+)
+```
+
+---
+
+## Learning Capture
+
+Record and share learnings:
+
+```python
+# Record a learning
+roboco_record_learning(
+    content="Redis SCAN is better than KEYS for large datasets",
+    category="performance",
+    shareable=True,
+    tags=["redis", "performance", "patterns"]
+)
+
+# Search learnings
+roboco_kb_search(
+    query="redis performance patterns",
+    index_types=["learnings"]
 )
 ```
 
@@ -223,6 +320,37 @@ Everything you journal becomes searchable:
 
 ---
 
+## Proactive Context
+
+The system can automatically provide relevant context when you claim a task:
+
+```python
+# Automatic context injection on task claim
+# System searches KB for:
+# - Similar past tasks
+# - Related decisions
+# - Relevant standards
+# - Past error solutions
+```
+
+This helps you start informed without manual searching.
+
+---
+
+## Code Review Support
+
+Request AI-assisted code review:
+
+```python
+roboco_code_review(
+    file_path="src/api/routes/users.py",
+    focus=["security", "performance"]
+)
+# Returns: review comments, standards checked, similar past reviews
+```
+
+---
+
 ## Tool Quick Reference
 
 | Tool | Purpose | Who Can Use |
@@ -235,3 +363,11 @@ Everything you journal becomes searchable:
 | `roboco_tokens_estimate` | Token count | Everyone |
 | `roboco_journal_search` | Search your journal | Everyone |
 | `roboco_journal_read_team` | Read team journals | PM, Documenter |
+| `roboco_record_error` | Record error & fix | Everyone |
+| `roboco_search_error` | Find past errors | Everyone |
+| `roboco_record_decision` | Record decision | Everyone |
+| `roboco_decision_check` | Check past decisions | Everyone |
+| `roboco_standards_get` | Get applicable standards | Everyone |
+| `roboco_validate_action` | Validate against standards | Everyone |
+| `roboco_record_learning` | Record a learning | Everyone |
+| `roboco_code_review` | AI-assisted review | Developer, QA |

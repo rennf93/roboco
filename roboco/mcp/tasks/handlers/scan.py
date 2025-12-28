@@ -41,7 +41,17 @@ async def handle_task_scan(
     assigned_ids = {t.get("id") for t in assigned_tasks}
     available_tasks = [t for t in available_tasks if t.get("id") not in assigned_ids]
 
-    return {
+    # For PMs: fetch blocked tasks in their team that need unblocking
+    blocked_tasks: list[dict[str, Any]] = []
+    if agent_role in ("cell_pm", "main_pm", "product_owner", "auditor", "ceo"):
+        params: dict[str, str] = {}
+        if team:
+            params["team"] = team
+        blocked_resp = await client.get("/tasks/blocked", params=params)
+        if blocked_resp.ok:
+            blocked_tasks = blocked_resp.json()
+
+    result: dict[str, Any] = {
         "paused_tasks": paused_tasks,
         "assigned_tasks": assigned_tasks,
         "available_tasks": available_tasks,
@@ -49,6 +59,18 @@ async def handle_task_scan(
             paused_tasks, assigned_tasks, available_tasks, agent_role
         ),
     }
+
+    # Add blocked tasks with explicit action required for PMs
+    if blocked_tasks:
+        result["blocked_tasks"] = blocked_tasks
+        result["blocked_action_required"] = (
+            f"⚠️ {len(blocked_tasks)} BLOCKED task(s) need your attention!\n"
+            "For each resolved blocker, you MUST call:\n"
+            "  roboco_task_unblock(task_id)\n\n"
+            "Verbal resolution in chat is NOT enough."
+        )
+
+    return result
 
 
 async def handle_task_get(client: ApiClient, task_id: str) -> dict[str, Any]:

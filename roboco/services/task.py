@@ -1434,6 +1434,88 @@ class TaskService(BaseService):
 
 
 # =============================================================================
+# PM RESOLUTION HELPERS
+# =============================================================================
+
+
+async def resolve_pm_for_substitute(
+    db: AsyncSession,
+    agent_slug: str | None,
+    task_team: Team | None,
+) -> tuple[str | None, UUID | None]:
+    """
+    Resolve the PM slug and UUID for a substitute request.
+
+    Args:
+        db: Database session
+        agent_slug: The agent's slug for PM lookup
+        task_team: The task's team for fallback PM lookup
+
+    Returns:
+        Tuple of (pm_slug, pm_uuid) or (None, None) if not found
+    """
+    from roboco.agents_config import get_pm_for_agent, get_pm_for_team
+
+    target_pm_slug = None
+    if agent_slug:
+        target_pm_slug = get_pm_for_agent(agent_slug)
+    if not target_pm_slug and task_team:
+        target_pm_slug = get_pm_for_team(task_team.value)
+
+    if not target_pm_slug:
+        return None, None
+
+    pm_result = await db.execute(
+        select(AgentTable).where(AgentTable.slug == target_pm_slug)
+    )
+    pm_agent = pm_result.scalar_one_or_none()
+    return target_pm_slug, pm_agent.id if pm_agent else None
+
+
+async def notify_pm_for_substitute(
+    db: AsyncSession,
+    pm_slug: str,
+    task_id: UUID,
+    from_agent_id: UUID,
+    message: tuple[str, str],
+) -> None:
+    """
+    Create and deliver a notification to PM for substitute request.
+
+    Args:
+        db: Database session
+        pm_slug: Target PM's slug
+        task_id: The task being substituted
+        from_agent_id: Agent requesting substitution
+        message: Tuple of (subject, body) for the notification
+    """
+    from roboco.db.tables import NotificationTable
+    from roboco.services.notification_delivery import get_notification_delivery_service
+
+    pm_result = await db.execute(select(AgentTable).where(AgentTable.slug == pm_slug))
+    pm_agent = pm_result.scalar_one_or_none()
+    if not pm_agent:
+        return
+
+    subject, body = message
+    notification = NotificationTable(
+        type="task_assignment",
+        priority="high",
+        from_agent=from_agent_id,
+        to_agents=[pm_agent.id],
+        subject=subject,
+        body=body,
+        related_task_id=task_id,
+        requires_ack=True,
+    )
+    db.add(notification)
+    await db.flush()
+
+    delivery_service = get_notification_delivery_service(db)
+    await delivery_service.deliver(notification.id)
+
+
+# =============================================================================
 # SERVICE FACTORY
 # =============================================================================
 

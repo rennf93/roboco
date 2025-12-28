@@ -18,339 +18,27 @@ import asyncio
 import contextlib
 from collections.abc import AsyncGenerator
 from typing import Any
-from uuid import UUID
 
 from fastapi import APIRouter, HTTPException, Query, Request, status
 from fastapi.responses import JSONResponse
-from sqlalchemy import select
 from sse_starlette import EventSourceResponse
 
-from roboco.agents_config import ALL_AGENTS, get_agent_skills, get_agent_team
 from roboco.api.deps import DbSession
-from roboco.config import settings
-from roboco.db.tables import AgentTable, TaskTable
-from roboco.events import Event, EventType, get_event_bus
 from roboco.models.a2a import (
-    A2AArtifact,
-    A2AMessage,
     A2ATask,
-    A2ATaskStatus,
-    AgentCapabilities,
     AgentCard,
-    AgentProvider,
-    AgentSkill,
     CancelTaskRequest,
     ListTasksResponse,
-    SecurityScheme,
     SendMessageRequest,
     SendMessageResponse,
-    TextPart,
-    task_status_to_a2a_state,
 )
-from roboco.models.base import TaskStatus, Team
-from roboco.seeds.initial_data import AGENT_UUIDS
+from roboco.services.a2a import A2AService
 
 # Router for A2A API endpoints (mounted at /api/v1/a2a)
 router = APIRouter()
 
 # Router for well-known endpoints (mounted at root level)
 wellknown_router = APIRouter()
-
-
-# =============================================================================
-# A2A ROUTING LOGIC
-# =============================================================================
-
-
-async def _route_to_agent(
-    db: DbSession,
-    target_agent_slug: str,
-    task: TaskTable,
-    skill: str | None = None,
-    message: str | None = None,
-) -> None:
-    """
-    Route an A2A task to a specific agent.
-
-    This publishes an event that:
-    1. Notifies the agent if they're online (via WebSocket)
-    2. Triggers the orchestrator to spawn them if needed
-
-    Args:
-        db: Database session
-        target_agent_slug: Agent slug (e.g., "be-qa")
-        task: The task to route
-        skill: The skill being requested
-        message: The request message
-    """
-    # Get target agent UUID
-    target_uuid = AGENT_UUIDS.get(target_agent_slug)
-    if not target_uuid:
-        return
-
-    # Assign task to target agent
-    task.assigned_to = UUID(target_uuid)
-    await db.flush()
-
-    # Publish A2A request event for routing
-    try:
-        bus = get_event_bus()
-        if bus.is_connected():
-            await bus.publish(
-                Event(
-                    type=EventType.TASK_ASSIGNED,
-                    data={
-                        "task_id": str(task.id),
-                        "assigned_to": target_uuid,
-                        "agent_slug": target_agent_slug,
-                        "skill": skill or "general",
-                        "message": message or "",
-                        "source": "a2a",
-                    },
-                )
-            )
-    except Exception:
-        # Don't fail if event bus unavailable
-        pass
-
-
-def _resolve_target_agent(metadata: dict[str, Any]) -> str | None:
-    """
-    Resolve target agent from A2A request metadata.
-
-    Returns agent slug or None if not specified.
-    """
-    # Check for explicit target
-    target = metadata.get("target_agent")
-    if target and target in ALL_AGENTS:
-        return target
-
-    # Check for skill-based routing
-    skill = metadata.get("skill")
-    if skill:
-        # Find first agent with this skill
-        for agent_slug in ALL_AGENTS:
-            agent_skills = get_agent_skills(agent_slug)
-            skill_ids = [s.get("id", "") for s in agent_skills]
-            if skill in skill_ids:
-                return agent_slug
-
-    return None
-
-
-def _get_team_from_agent(agent_slug: str) -> Team:
-    """Get Team enum from agent slug."""
-    team_str = get_agent_team(agent_slug)
-    team_map = {
-        "backend": Team.BACKEND,
-        "frontend": Team.FRONTEND,
-        "ux_ui": Team.UX_UI,
-    }
-    return team_map.get(team_str or "", Team.BACKEND)
-
-
-# =============================================================================
-# HELPER FUNCTIONS
-# =============================================================================
-
-
-def _get_service_endpoint() -> str:
-    """Build service endpoint URL from settings."""
-    connect_host = "127.0.0.1" if settings.host == "0.0.0.0" else settings.host
-    return f"http://{connect_host}:{settings.port}"
-
-
-def _build_system_agent_card() -> AgentCard:
-    """Build the system-level Agent Card for RoboCo."""
-    return AgentCard(
-        id="roboco-system",
-        name="RoboCo System",
-        description=(
-            "RoboCo is an AI Agentic Company - a virtual organization of AI agents "
-            "designed to operate as a complete software development workforce."
-        ),
-        provider=AgentProvider(
-            organization="RoboCo",
-            url="https://github.com/roboco",
-        ),
-        protocol_version="1.0",
-        service_endpoint=f"{_get_service_endpoint()}/api/v1/a2a",
-        version=settings.app_version,
-        capabilities=AgentCapabilities(
-            streaming=True,  # We support SSE
-            push_notifications=False,  # Not implemented yet
-            state_transition_history=True,  # We track task history
-        ),
-        default_input_modes=["text/plain", "application/json"],
-        default_output_modes=["text/plain", "application/json"],
-        skills=[
-            AgentSkill(
-                id="software-development",
-                name="Software Development",
-                description="Full-stack software development with AI agents",
-                tags=["development", "coding", "qa", "documentation"],
-            ),
-            AgentSkill(
-                id="task-management",
-                name="Task Management",
-                description="Create and manage development tasks",
-                tags=["tasks", "kanban", "planning"],
-            ),
-            AgentSkill(
-                id="code-review",
-                name="Code Review",
-                description="Review and quality assurance of code",
-                tags=["qa", "review", "testing"],
-            ),
-        ],
-        documentation_url="https://github.com/roboco/docs",
-        security_schemes={
-            "bearerAuth": SecurityScheme(type="http", scheme="bearer"),
-        },
-        security=[{"bearerAuth": []}],
-    )
-
-
-async def _build_agent_card(agent: AgentTable) -> AgentCard:
-    """Build an Agent Card for a specific agent."""
-    agent_id = str(agent.id)
-    agent_slug = agent.slug
-
-    # Map role to skills
-    role_skills: dict[str, list[AgentSkill]] = {
-        "developer": [
-            AgentSkill(
-                id="coding",
-                name="Code Development",
-                description="Write and implement code",
-                tags=["development", "coding"],
-            ),
-            AgentSkill(
-                id="debugging",
-                name="Debugging",
-                description="Debug and fix code issues",
-                tags=["debugging", "troubleshooting"],
-            ),
-        ],
-        "qa": [
-            AgentSkill(
-                id="testing",
-                name="Testing",
-                description="Test code and verify quality",
-                tags=["qa", "testing"],
-            ),
-            AgentSkill(
-                id="review",
-                name="Code Review",
-                description="Review code for quality and issues",
-                tags=["qa", "review"],
-            ),
-        ],
-        "documenter": [
-            AgentSkill(
-                id="documentation",
-                name="Documentation",
-                description="Write technical documentation",
-                tags=["documentation", "writing"],
-            ),
-        ],
-        "cell_pm": [
-            AgentSkill(
-                id="coordination",
-                name="Task Coordination",
-                description="Coordinate tasks within the cell",
-                tags=["management", "coordination"],
-            ),
-        ],
-        "main_pm": [
-            AgentSkill(
-                id="planning",
-                name="Project Planning",
-                description="Plan and coordinate across cells",
-                tags=["management", "planning"],
-            ),
-        ],
-    }
-
-    skills = role_skills.get(agent.role, [])
-
-    return AgentCard(
-        id=agent_id,
-        name=agent.name,
-        description=f"{agent.name} - {agent.role} agent in RoboCo",
-        provider=AgentProvider(
-            organization="RoboCo",
-            url="https://github.com/roboco",
-        ),
-        protocol_version="1.0",
-        service_endpoint=f"{_get_service_endpoint()}/api/v1/a2a",
-        version=settings.app_version,
-        capabilities=AgentCapabilities(
-            streaming=True,
-            push_notifications=False,
-            state_transition_history=True,
-        ),
-        default_input_modes=["text/plain", "application/json"],
-        default_output_modes=["text/plain", "application/json"],
-        skills=skills,
-        metadata={
-            "slug": agent_slug,
-            "role": agent.role,
-            "team": agent.team,
-        },
-        security_schemes={
-            "bearerAuth": SecurityScheme(type="http", scheme="bearer"),
-        },
-        security=[{"bearerAuth": []}],
-    )
-
-
-def _task_to_a2a(task: TaskTable) -> A2ATask:
-    """Convert a RoboCo TaskTable to A2A Task."""
-    task_id = str(task.id)
-
-    # Build status - get status value as string
-    if hasattr(task.status, "value"):
-        status_value = task.status.value
-    else:
-        status_value = str(task.status)
-    a2a_state = task_status_to_a2a_state(status_value)
-    status_message = None
-    if task.dev_notes:
-        status_message = A2AMessage(
-            role="agent",
-            parts=[TextPart(text=task.dev_notes)],
-            task_id=task_id,
-        )
-
-    a2a_status = A2ATaskStatus(
-        state=a2a_state,
-        message=status_message,
-        timestamp=task.updated_at or task.created_at,
-    )
-
-    # Build artifacts from task outputs (if any)
-    artifacts: list[A2AArtifact] = []
-
-    # Build metadata from task fields
-    metadata: dict[str, Any] = {
-        "roboco_status": status_value,
-        "priority": task.priority,
-        "team": task.team,
-    }
-    if task.assigned_to:
-        metadata["assigned_to"] = str(task.assigned_to)
-    if task.parent_task_id:
-        metadata["parent_task_id"] = str(task.parent_task_id)
-
-    return A2ATask(
-        id=task_id,
-        context_id=task_id,  # Use task_id as context_id
-        status=a2a_status,
-        artifacts=artifacts,
-        history=[],  # Would need to load from message history
-        metadata=metadata,
-    )
 
 
 # =============================================================================
@@ -365,7 +53,7 @@ async def get_system_agent_card() -> JSONResponse:
 
     Per A2A specification, returns the agent's public identity and capabilities.
     """
-    card = _build_system_agent_card()
+    card = A2AService.build_system_agent_card()
     return JSONResponse(
         content=card.model_dump(by_alias=True, exclude_none=True),
         media_type="application/json",
@@ -382,25 +70,15 @@ async def get_agent_card(
 
     Accepts either a UUID string or agent slug (e.g., "be-dev-1").
     """
-    # Try to parse as UUID first
-    try:
-        uuid = UUID(agent_id)
-        result = await db.execute(select(AgentTable).where(AgentTable.id == uuid))
-    except ValueError:
-        # Not a UUID, try slug lookup
-        result = await db.execute(
-            select(AgentTable).where(AgentTable.slug == agent_id)
-        )
+    service = A2AService(db)
+    card = await service.build_agent_card(agent_id)
 
-    agent = result.scalar_one_or_none()
-
-    if agent is None:
+    if card is None:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail=f"Agent not found: {agent_id}",
         )
 
-    card = await _build_agent_card(agent)
     return JSONResponse(
         content=card.model_dump(by_alias=True, exclude_none=True),
         media_type="application/json",
@@ -423,116 +101,38 @@ async def send_message(
     This is the primary A2A interaction endpoint. Messages sent here
     create new tasks or continue existing conversations.
     """
+    service = A2AService(db)
     message = request.message
-
-    # Extract task_id from message if present
     task_id_str = message.task_id
 
     if task_id_str:
         # Update existing task
         try:
-            task_uuid = UUID(task_id_str)
-        except ValueError:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail=f"Invalid task ID: {task_id_str}",
-            ) from None
-
-        result = await db.execute(
-            select(TaskTable).where(TaskTable.id == task_uuid)
-        )
-        task = result.scalar_one_or_none()
-
-        if task is None:
+            task = await service.update_task_from_message(task_id_str, message)
+        except ValueError as e:
+            error_msg = str(e)
+            if "Invalid task ID" in error_msg:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail=error_msg,
+                ) from None
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
-                detail=f"Task not found: {task_id_str}",
-            )
-
-        # Update task dev_notes with new message
-        text_parts = [p for p in message.parts if p.type == "text"]
-        if text_parts:
-            text_part = text_parts[0]
-            if hasattr(text_part, "text"):
-                new_text = text_part.text
-                if task.dev_notes:
-                    task.dev_notes = f"{task.dev_notes}\n\n{new_text}"
-                else:
-                    task.dev_notes = new_text
-
-        await db.commit()
-        await db.refresh(task)
-
+                detail=error_msg,
+            ) from None
     else:
         # Create new task from message
-        text_parts = [p for p in message.parts if p.type == "text"]
-        title = "A2A Task"
-        description = ""
-        message_text = ""
-
-        if text_parts:
-            text_part = text_parts[0]
-            if hasattr(text_part, "text"):
-                message_text = text_part.text
-                # Use first line as title, rest as description
-                lines = message_text.split("\n", 1)
-                title = lines[0][:200]  # Truncate title
-                description = lines[1] if len(lines) > 1 else message_text
-
-        # Resolve target agent from metadata
-        metadata = request.metadata or {}
-        target_agent = _resolve_target_agent(metadata)
-        skill = metadata.get("skill")
-
-        # Determine team based on target agent
-        team = _get_team_from_agent(target_agent) if target_agent else Team.BACKEND
-
-        # Get creator agent (from_agent in metadata or system default)
-        from_agent_id = metadata.get("from_agent")
-        if from_agent_id and from_agent_id in ALL_AGENTS:
-            from_uuid = AGENT_UUIDS.get(from_agent_id)
-            if from_uuid:
-                result = await db.execute(
-                    select(AgentTable).where(AgentTable.id == UUID(from_uuid))
-                )
-                creator_agent = result.scalar_one_or_none()
-            else:
-                creator_agent = None
-        else:
-            # Fall back to main PM as creator
-            result = await db.execute(
-                select(AgentTable).where(AgentTable.role == "main_pm").limit(1)
-            )
-            creator_agent = result.scalar_one_or_none()
-
-        if creator_agent is None:
+        try:
+            task = await service.create_task_from_a2a_message(request)
+        except ValueError as e:
             raise HTTPException(
                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                detail="No agent available to create tasks",
-            )
+                detail=str(e),
+            ) from None
 
-        # Create task with proper routing metadata
-        task = TaskTable(
-            title=f"[A2A] {title}" if target_agent else title,
-            description=description,
-            acceptance_criteria=["Task completed as specified"],
-            status=TaskStatus.PENDING,
-            priority=5,
-            team=team,
-            created_by=creator_agent.id,
-            dev_notes=f"A2A Request | Skill: {skill or 'general'}" if skill else None,
-        )
-        db.add(task)
-        await db.flush()
-
-        # Route to target agent if specified
-        if target_agent:
-            await _route_to_agent(db, target_agent, task, skill, message_text)
-
-        await db.commit()
-        await db.refresh(task)
-
-    return SendMessageResponse(task=_task_to_a2a(task))
+    await db.commit()
+    await db.refresh(task)
+    return SendMessageResponse(task=service.task_to_a2a(task))
 
 
 @router.post("/message/stream")
@@ -549,30 +149,18 @@ async def send_message_stream(
 
     Returns Server-Sent Events with task state updates.
     """
+    service = A2AService(db)
     message = body.message
 
     async def generate_task_events() -> AsyncGenerator[dict[str, Any]]:
         """Generate SSE events for task lifecycle."""
-        # Create or get task
         task_id_str = message.task_id
 
         if task_id_str:
             # Get existing task
-            try:
-                task_uuid = UUID(task_id_str)
-            except ValueError:
-                yield {
-                    "event": "error",
-                    "data": f"Invalid task ID: {task_id_str}",
-                }
-                return
+            a2a_task = await service.get_task(task_id_str)
 
-            result = await db.execute(
-                select(TaskTable).where(TaskTable.id == task_uuid)
-            )
-            task = result.scalar_one_or_none()
-
-            if task is None:
+            if a2a_task is None:
                 yield {
                     "event": "error",
                     "data": f"Task not found: {task_id_str}",
@@ -580,10 +168,9 @@ async def send_message_stream(
                 return
 
             # Send initial task state
-            a2a_task = _task_to_a2a(task)
             yield {
                 "event": "task.status",
-                "id": str(task.id),
+                "id": a2a_task.id,
                 "data": a2a_task.model_dump_json(by_alias=True),
             }
 
@@ -592,39 +179,31 @@ async def send_message_stream(
             max_polls = 60  # Poll for up to 60 iterations (5 minutes at 5s interval)
 
             while poll_count < max_polls:
-                # Check for client disconnect
                 if await request.is_disconnected():
                     break
 
-                await asyncio.sleep(5)  # Poll interval
+                await asyncio.sleep(5)
                 poll_count += 1
 
                 # Refresh task state
-                await db.refresh(task)
+                a2a_task = await service.get_task(task_id_str)
+                if a2a_task is None:
+                    break
 
-                # Get current status
-                if hasattr(task.status, "value"):
-                    current_status = task.status.value
-                else:
-                    current_status = str(task.status)
-
-                # Send update
-                a2a_task = _task_to_a2a(task)
                 yield {
                     "event": "task.status",
-                    "id": f"{task.id}-{poll_count}",
+                    "id": f"{a2a_task.id}-{poll_count}",
                     "data": a2a_task.model_dump_json(by_alias=True),
                 }
 
                 # Stop if task is in terminal state
-                if current_status in ["completed", "cancelled"]:
+                if a2a_task.status.state in ["completed", "canceled"]:
                     yield {
                         "event": "task.complete",
-                        "id": f"{task.id}-final",
+                        "id": f"{a2a_task.id}-final",
                         "data": a2a_task.model_dump_json(by_alias=True),
                     }
                     break
-
         else:
             # New task - send creation event
             yield {
@@ -633,7 +212,6 @@ async def send_message_stream(
             }
 
             # Note: Full task creation logic would go here
-            # For now, send a placeholder
             yield {
                 "event": "error",
                 "data": "Task creation via streaming not yet implemented",
@@ -641,7 +219,7 @@ async def send_message_stream(
 
     return EventSourceResponse(
         generate_task_events(),
-        ping=15,  # Keep connection alive every 15 seconds
+        ping=15,
     )
 
 
@@ -657,18 +235,11 @@ async def subscribe_to_task(
     Opens a persistent connection that streams task state changes
     until the task reaches a terminal state or client disconnects.
     """
-    try:
-        task_uuid = UUID(task_id)
-    except ValueError:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=f"Invalid task ID: {task_id}",
-        ) from None
+    service = A2AService(db)
 
-    result = await db.execute(select(TaskTable).where(TaskTable.id == task_uuid))
-    task = result.scalar_one_or_none()
-
-    if task is None:
+    # Validate task exists
+    a2a_task = await service.get_task(task_id)
+    if a2a_task is None:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail=f"Task not found: {task_id}",
@@ -678,37 +249,34 @@ async def subscribe_to_task(
         """Stream task updates."""
         poll_count = 0
         max_polls = 720  # 1 hour at 5s interval
-        last_status = None
+        last_state = None
 
         while poll_count < max_polls:
             if await request.is_disconnected():
                 break
 
             # Refresh task state from DB
-            await db.refresh(task)
+            task = await service.get_task(task_id)
+            if task is None:
+                break
 
-            # Get current status
-            if hasattr(task.status, "value"):
-                current_status = task.status.value
-            else:
-                current_status = str(task.status)
+            current_state = task.status.state
 
             # Only send update if status changed
-            if current_status != last_status:
-                a2a_task = _task_to_a2a(task)
+            if current_state != last_state:
                 yield {
                     "event": "task.status",
                     "id": f"{task_id}-{poll_count}",
-                    "data": a2a_task.model_dump_json(by_alias=True),
+                    "data": task.model_dump_json(by_alias=True),
                 }
-                last_status = current_status
+                last_state = current_state
 
                 # Stop if terminal
-                if current_status in ["completed", "cancelled"]:
+                if current_state in ["completed", "canceled"]:
                     yield {
                         "event": "task.complete",
                         "id": f"{task_id}-final",
-                        "data": a2a_task.model_dump_json(by_alias=True),
+                        "data": task.model_dump_json(by_alias=True),
                     }
                     break
 
@@ -734,16 +302,8 @@ async def get_task(
 
     Returns task details including status, artifacts, and optionally history.
     """
-    try:
-        task_uuid = UUID(task_id)
-    except ValueError:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=f"Invalid task ID: {task_id}",
-        ) from None
-
-    result = await db.execute(select(TaskTable).where(TaskTable.id == task_uuid))
-    task = result.scalar_one_or_none()
+    service = A2AService(db)
+    task = await service.get_task(task_id)
 
     if task is None:
         raise HTTPException(
@@ -751,7 +311,7 @@ async def get_task(
             detail=f"Task not found: {task_id}",
         )
 
-    return _task_to_a2a(task)
+    return task
 
 
 @router.get("/tasks")
@@ -767,18 +327,7 @@ async def list_tasks(
 
     Supports filtering and pagination via page tokens.
     """
-    query = select(TaskTable)
-
-    # Apply ordering
-    if order_by:
-        if order_by == "created_at desc":
-            query = query.order_by(TaskTable.created_at.desc())
-        elif order_by == "created_at asc":
-            query = query.order_by(TaskTable.created_at.asc())
-        else:
-            query = query.order_by(TaskTable.created_at.desc())
-    else:
-        query = query.order_by(TaskTable.created_at.desc())
+    service = A2AService(db)
 
     # Handle pagination
     offset = 0
@@ -786,20 +335,16 @@ async def list_tasks(
         with contextlib.suppress(ValueError):
             offset = int(page_token)
 
-    query = query.offset(offset).limit(page_size + 1)
-
-    result = await db.execute(query)
-    tasks = list(result.scalars().all())
-
-    # Check if there are more results
-    has_more = len(tasks) > page_size
-    if has_more:
-        tasks = tasks[:page_size]
+    tasks, has_more = await service.list_tasks(
+        page_size=page_size,
+        offset=offset,
+        order_by=order_by,
+    )
 
     next_page_token = str(offset + page_size) if has_more else None
 
     return ListTasksResponse(
-        tasks=[_task_to_a2a(t) for t in tasks],
+        tasks=tasks,
         next_page_token=next_page_token,
     )
 
@@ -815,48 +360,27 @@ async def cancel_task(
 
     Transitions the task to cancelled state.
     """
+    service = A2AService(db)
+
     try:
-        task_uuid = UUID(task_id)
-    except ValueError:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=f"Invalid task ID: {task_id}",
-        ) from None
-
-    result = await db.execute(select(TaskTable).where(TaskTable.id == task_uuid))
-    task = result.scalar_one_or_none()
-
-    if task is None:
+        task = await service.cancel_task(
+            task_id=task_id,
+            reason=request.reason if request else None,
+        )
+    except ValueError as e:
+        error_msg = str(e)
+        if "Invalid task ID" in error_msg or "already in terminal" in error_msg:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=error_msg,
+            ) from None
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"Task not found: {task_id}",
-        )
-
-    # Check if task can be cancelled
-    if hasattr(task.status, "value"):
-        status_value = task.status.value
-    else:
-        status_value = str(task.status)
-    terminal_states = ["completed", "cancelled"]
-    if status_value in terminal_states:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=f"Task already in terminal state: {status_value}",
-        )
-
-    # Cancel the task
-    task.status = TaskStatus.CANCELLED
-    if request and request.reason:
-        reason_text = f"Cancellation reason: {request.reason}"
-        if task.dev_notes:
-            task.dev_notes = f"{task.dev_notes}\n\n{reason_text}"
-        else:
-            task.dev_notes = reason_text
+            detail=error_msg,
+        ) from None
 
     await db.commit()
-    await db.refresh(task)
-
-    return _task_to_a2a(task)
+    return task
 
 
 # =============================================================================
@@ -877,31 +401,12 @@ async def discover_agents(
     Returns a list of AgentCards for agents that match the specified filters.
     This enables A2A clients to find agents with specific capabilities.
     """
-    query = select(AgentTable)
-
-    if role:
-        query = query.where(AgentTable.role == role)
-    if team:
-        query = query.where(AgentTable.team == team)
-
-    result = await db.execute(query)
-    agents = result.scalars().all()
-
-    # Build cards for all matching agents
-    cards = []
-    for agent in agents:
-        card = await _build_agent_card(agent)
-        cards.append(card)
-
-    # Filter by skill tag if specified
-    if skill:
-        cards = [
-            card
-            for card in cards
-            if any(skill.lower() in tag.lower() for s in card.skills for tag in s.tags)
-        ]
-
-    return cards
+    service = A2AService(db)
+    return await service.discover_agents(
+        role=role,
+        team=team,
+        skill_tag=skill,
+    )
 
 
 @router.get("/agents/{agent_id}/card")
@@ -914,22 +419,13 @@ async def get_agent_card_by_id(
 
     Alternative to the /.well-known/agent.json endpoint for programmatic access.
     """
-    # Try to parse as UUID first
-    try:
-        uuid = UUID(agent_id)
-        result = await db.execute(select(AgentTable).where(AgentTable.id == uuid))
-    except ValueError:
-        # Not a UUID, try slug lookup
-        result = await db.execute(
-            select(AgentTable).where(AgentTable.slug == agent_id)
-        )
+    service = A2AService(db)
+    card = await service.build_agent_card(agent_id)
 
-    agent = result.scalar_one_or_none()
-
-    if agent is None:
+    if card is None:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail=f"Agent not found: {agent_id}",
         )
 
-    return await _build_agent_card(agent)
+    return card

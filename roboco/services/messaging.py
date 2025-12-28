@@ -784,7 +784,9 @@ class MessagingService(BaseService):
             return
 
         # Lazy import to avoid circular dependency
-        from roboco.services.notification_delivery import get_notification_delivery_service
+        from roboco.services.notification_delivery import (
+            get_notification_delivery_service,
+        )
 
         delivery_service = get_notification_delivery_service(self.session)
 

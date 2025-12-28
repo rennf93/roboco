@@ -154,6 +154,20 @@ roboco_journal_search("qa patterns")           # Your past reviews
 
 See [KNOWLEDGE_BASE.md](./KNOWLEDGE_BASE.md) for full documentation.
 
+## Agent-to-Agent (A2A) Tools
+
+QA can collaborate directly with other agents:
+
+```python
+roboco_agent_discover(role, team, skill)     # Find agents who can help
+roboco_agent_request(target_agent, skill, message)  # Request work
+roboco_agent_request_status(a2a_task_id)     # Check request progress
+```
+
+**When to use A2A:**
+- Need dev clarification? → `roboco_agent_request("be-dev-1", "code_review", "Can you explain...")`
+- Need security review? → `roboco_agent_discover(skill="security_audit")`
+
 ## Key Rules
 
 1. **Only claim awaiting_qa** - Can't claim pending tasks

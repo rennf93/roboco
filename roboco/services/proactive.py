@@ -297,9 +297,7 @@ class ProactiveKnowledgeService:
         from roboco.db.tables import TaskTable
 
         async with get_db_context() as db:
-            result = await db.execute(
-                select(TaskTable).where(TaskTable.id == task_id)
-            )
+            result = await db.execute(select(TaskTable).where(TaskTable.id == task_id))
             task = result.scalar_one_or_none()
 
             if not task:

@@ -240,6 +240,7 @@ KB_PERMISSIONS: dict[AgentRole, set[str]] = {
         KBAction.INDEX_DOCS,
         KBAction.SEARCH,
         KBAction.QUERY,
+        KBAction.VIEW_STATS,
     },
     AgentRole.AUDITOR: {
         KBAction.SEARCH,
@@ -267,14 +268,17 @@ KB_PERMISSIONS: dict[AgentRole, set[str]] = {
         KBAction.INDEX_DOCS,
         KBAction.SEARCH,
         KBAction.QUERY,
+        KBAction.VIEW_STATS,
     },
     AgentRole.QA: {
         KBAction.SEARCH,
         KBAction.QUERY,
+        KBAction.VIEW_STATS,
     },
     AgentRole.DOCUMENTER: {
         KBAction.INDEX_DOCS,
         KBAction.SEARCH,
         KBAction.QUERY,
+        KBAction.VIEW_STATS,
     },
 }

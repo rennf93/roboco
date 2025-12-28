@@ -181,3 +181,20 @@ roboco_task_submit_pm_review(task_id, notes)
 Status: `in_progress → awaiting_pm_review`
 
 Use for: validation tasks, audits, research, or any task assigned directly that doesn't produce code.
+
+## Automatic PM Assignment
+
+The system automatically assigns tasks to the responsible PM and sends notifications in these cases:
+
+| Trigger | New Status | PM Assigned | Notification |
+|---------|------------|-------------|--------------|
+| `roboco_task_docs_complete()` | awaiting_pm_review | Cell PM (or Main PM) | ✅ task_assignment |
+| `roboco_task_submit_pm_review()` | awaiting_pm_review | Cell PM (or Main PM) | ✅ task_assignment |
+| `roboco_task_substitute()` with `task_complete` (QA/Documenter) | awaiting_pm_review | Cell PM | ✅ task_assignment |
+| `roboco_task_unblock()` | in_progress | (unchanged) | ✅ to assigned agent |
+
+**PM Resolution Chain:**
+1. Get PM for the agent's role (QA → Cell PM, Cell PM → Main PM)
+2. Fallback to team PM (backend → be-pm, frontend → fe-pm)
+3. Task is assigned to resolved PM's UUID
+4. Real-time notification delivered via Redis Streams

@@ -96,9 +96,7 @@ class AgentSkill(RobocoBase):
     name: str = Field(..., description="Human-readable skill name")
     description: str = Field(..., description="What this skill does")
     tags: list[str] = Field(default_factory=list, description="Capability categories")
-    examples: list[str] = Field(
-        default_factory=list, description="Example invocations"
-    )
+    examples: list[str] = Field(default_factory=list, description="Example invocations")
     input_modes: list[str] = Field(
         default_factory=lambda: ["text/plain"],
         alias="inputModes",
@@ -227,9 +225,7 @@ class A2AMessage(RobocoBase):
     Contains one or more parts with content.
     """
 
-    role: Literal["user", "agent"] = Field(
-        ..., description="Message sender role"
-    )
+    role: Literal["user", "agent"] = Field(..., description="Message sender role")
     parts: list[Part] = Field(..., description="Content parts")
     context_id: str | None = Field(
         default=None, alias="contextId", description="Conversation grouping"

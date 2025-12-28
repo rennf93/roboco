@@ -249,8 +249,7 @@ class LearningPropagationService:
                     from uuid import uuid4
 
                     reason = (
-                        f"New {learning.learning_type.value} "
-                        f"from {learning.agent_role}"
+                        f"New {learning.learning_type.value} from {learning.agent_role}"
                     )
                     # Convert SQLAlchemy UUID to Python UUID
                     agent_uuid = UUID(str(agent.id))

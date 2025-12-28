@@ -109,17 +109,30 @@
 │                         CELL PM WORKFLOW                                │
 └─────────────────────────────────────────────────────────────────────────┘
 
-1. SCAN FOR WORK
+1. CHECK NOTIFICATIONS
+   │
+   │  roboco_notify_list()
+   │
+   │  You'll receive automatic notifications when:
+   │  ├── Documenter completes docs (task auto-assigned to you)
+   │  ├── Agent submits for PM review (task auto-assigned to you)
+   │  ├── QA/Documenter substitutes with "task_complete"
+   │  └── Escalations from your cell
+   │
+   │  roboco_notify_ack(notification_id)  # Acknowledge each
+   │
+   ▼
+2. SCAN FOR WORK
    │
    │  roboco_task_scan(team="backend")
    │
    │  Look for:
    │  ├── Tasks in "pending" assigned to me
    │  ├── Tasks in "awaiting_pm_review" (need my approval)
-   │  └── Escalations from my cell
+   │  └── Any remaining escalations
    │
    ▼
-2. CLAIM TASK
+3. CLAIM TASK
    │
    │  roboco_task_claim(task_id)
    │
@@ -127,7 +140,7 @@
    │  ASSIGNED_TO: confirmed as me
    │
    ▼
-3. START & PLAN
+4. START & PLAN
    │
    │  roboco_task_start(task_id)
    │  STATUS: claimed → in_progress
@@ -135,7 +148,7 @@
    │  roboco_task_plan(task_id, approach, steps)
    │
    ▼
-4. CREATE DEV SUBTASKS
+5. CREATE DEV SUBTASKS
    │
    │  For EACH dev subtask:
    │  ┌─────────────────────────────────────────────────────────────────┐
@@ -150,7 +163,7 @@
    │  └─────────────────────────────────────────────────────────────────┘
    │
    ▼
-5. ACTIVATE SUBTASKS
+6. ACTIVATE SUBTASKS
    │
    │  roboco_task_activate(subtask_id)
    │
@@ -158,7 +171,7 @@
    │  Subtask inherits parent's session automatically
    │
    ▼
-6. NOTIFY DEVELOPERS
+7. NOTIFY DEVELOPERS
    │
    │  roboco_notify_send({
    │    recipient: "be-dev-1",
@@ -168,23 +181,25 @@
    │  })
    │
    ▼
-7. MONITOR CELL WORK
+8. MONITOR CELL WORK
    │
    │  Loop:
+   │  ├── roboco_notify_list()  # Check for auto-assigned tasks
    │  ├── roboco_task_scan(team="backend")
    │  ├── Watch for "awaiting_pm_review" tasks
    │  ├── Handle blockers/escalations
    │  └── roboco_task_progress(my_task_id, "X% complete", %)
    │
    ▼
-8. COMPLETE SUBTASKS (after QA + Docs)
+9. COMPLETE SUBTASKS (after QA + Docs)
    │
    │  When subtask reaches "awaiting_pm_review":
+   │  ├── Task is auto-assigned to you with notification
    │  ├── Review the work
    │  └── roboco_task_complete(subtask_id)
    │
    ▼
-9. COMPLETE MY TASK (when all subtasks done)
+10. COMPLETE MY TASK (when all subtasks done)
    │
    │  roboco_task_complete(my_task_id)
    │

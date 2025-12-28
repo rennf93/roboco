@@ -106,6 +106,13 @@ class DocumentListItem(BaseModel):
     metadata: dict[str, Any] = Field(default_factory=dict)
 
 
+class PaginationParams(BaseModel):
+    """Pagination query parameters."""
+
+    limit: int = Field(50, ge=1, le=100, description="Max items to return")
+    offset: int = Field(0, ge=0, description="Skip items")
+
+
 class DocumentListResponse(BaseModel):
     """Response from listing documents in an index."""
 

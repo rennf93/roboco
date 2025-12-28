@@ -101,9 +101,11 @@ Documenters (be-doc, fe-doc, ux-doc) create production documentation from develo
    │  roboco_task_docs_complete(task_id)
    │
    │  STATUS: in_progress → awaiting_pm_review
+   │  ASSIGNED_TO: automatically set to responsible PM
+   │  NOTIFICATION: sent to PM via Redis Streams
    │
    ▼
-   DONE (for documenter) → PM reviews and completes
+   DONE (for documenter) → PM receives notification and reviews
 ```
 
 ## Self-Documentation Prevention

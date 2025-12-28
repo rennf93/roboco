@@ -121,11 +121,17 @@ class Settings(BaseSettings):
     # ==========================================================================
     rag_persist_dir: str = ".piragi"
     rag_chunk_strategy: str = Field(
-        default="semantic",
+        default="fixed",
         pattern="^(fixed|semantic|hierarchical|contextual)$",
-        description="Chunking strategy for documents",
+        description="Chunking strategy (fixed recommended - semantic loads separate model)",
     )
     rag_chunk_size: int = Field(default=512, ge=100)
+    rag_chunk_size_docs: int = Field(
+        default=1536, ge=100, description="Chunk size for docs (larger for 8K context)"
+    )
+    rag_chunk_size_journals: int = Field(
+        default=1024, ge=100, description="Chunk size for journals/reflections"
+    )
     rag_chunk_overlap: int = Field(default=50, ge=0)
     rag_use_hyde: bool = Field(
         default=True, description="Use hypothetical document embeddings"
@@ -159,12 +165,12 @@ class Settings(BaseSettings):
     # Default models
     default_llm_model: str = "claude-3-opus-20240229"
     default_embedding_model: str = Field(
-        default="all-MiniLM-L6-v2",
+        default="nomic-ai/nomic-embed-text-v1.5",
         description="HuggingFace model for local or OpenAI name with API key",
     )
     embedding_dimensions: int = Field(
-        default=384,
-        description="Embedding dimensions (384 for MiniLM, 1536 for OpenAI)",
+        default=768,
+        description="Embedding dimensions (768 for nomic-embed, BGE-base)",
     )
 
     # ==========================================================================

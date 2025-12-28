@@ -31,7 +31,7 @@ class _SharedEmbedderHolder:
 
 
 async def get_shared_embedder(
-    model: str = "all-MiniLM-L6-v2",
+    model: str = "nomic-ai/nomic-embed-text-v1.5",
     device: str | None = None,
 ) -> "EmbeddingGenerator":
     """Get or create the shared embedder instance.
@@ -39,7 +39,7 @@ async def get_shared_embedder(
     Thread-safe singleton that loads the model only once.
 
     Args:
-        model: Embedding model name (default: all-MiniLM-L6-v2)
+        model: Embedding model name (default: nomic-ai/nomic-embed-text-v1.5)
         device: Device to use (None = auto-detect)
 
     Returns:

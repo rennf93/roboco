@@ -53,12 +53,13 @@ async def handle_task_block(
         block_resp.json(),
         "RESOLVE_BLOCKER",
         f"Task blocked: {data.reason}\n\n"
-        "Options:\n"
-        "1. UNBLOCK - When resolved, call roboco_task_unblock() to resume\n"
-        "2. WAIT - If waiting for external resolution\n"
-        "3. SWITCH - Call roboco_task_scan for other work\n"
-        "4. ESCALATE - Message your PM if urgent\n\n"
-        "Blocker recorded. You'll be notified when resolved.",
+        "✅ Your PM has been AUTOMATICALLY NOTIFIED with action required.\n"
+        "   They must call roboco_task_unblock() when resolved.\n\n"
+        "Your options:\n"
+        "1. WAIT - PM will resolve and unblock\n"
+        "2. SWITCH - Call roboco_task_scan for other work\n"
+        "3. ESCALATE - Use roboco_task_escalate() if PM is unresponsive\n\n"
+        "You'll be notified when the task is unblocked.",
     )
 
 

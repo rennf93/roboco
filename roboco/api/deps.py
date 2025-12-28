@@ -13,6 +13,7 @@ from uuid import UUID
 from fastapi import Depends, Header, HTTPException, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from roboco.api.schemas.optimal import PaginationParams
 from roboco.db.base import get_db
 from roboco.models import AgentRole, Team
 from roboco.runtime import AgentOrchestrator
@@ -314,3 +315,22 @@ def require_task_action(
             )
 
     return check_permission
+
+
+# =============================================================================
+# PAGINATION DEPENDENCIES
+# =============================================================================
+
+
+def get_pagination(
+    limit: int = 50,
+    offset: int = 0,
+) -> PaginationParams:
+    """Dependency for pagination parameters."""
+    # Enforce constraints
+    limit = max(1, min(100, limit))
+    offset = max(0, offset)
+    return PaginationParams(limit=limit, offset=offset)
+
+
+PaginationDep = Annotated[PaginationParams, Depends(get_pagination)]

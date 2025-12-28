@@ -10,7 +10,11 @@ from uuid import UUID
 from fastapi import APIRouter, Body, HTTPException, Query, status
 from sqlalchemy import select
 
-from roboco.agents_config import get_escalation_target
+from roboco.agents_config import (
+    get_escalation_target,
+    get_pm_for_agent,
+    get_pm_for_team,
+)
 from roboco.api.deps import (
     CurrentAgentContext,
     DbSession,
@@ -51,6 +55,8 @@ from roboco.services.task import (
     TaskCreateRequest,
     extract_original_developer,
     get_task_service,
+    notify_pm_for_substitute,
+    resolve_pm_for_substitute,
 )
 from roboco.utils.converters import require_uuid
 
@@ -618,6 +624,58 @@ async def soft_block_task(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Cannot block task - must be in_progress",
         )
+
+    # Notify the PM that a task is blocked - they MUST call roboco_task_unblock()
+    pm_slug = get_pm_for_team(task.team.value) if task.team else None
+    if pm_slug:
+        # Look up PM agent ID
+        pm_query = select(AgentTable).where(AgentTable.slug == pm_slug)
+        pm_result = await db.execute(pm_query)
+        pm_agent = pm_result.scalar_one_or_none()
+
+        if pm_agent:
+            # Get the blocking agent's slug for the message
+            blocking_agent_query = select(AgentTable).where(
+                AgentTable.id == agent.agent_id
+            )
+            blocking_result = await db.execute(blocking_agent_query)
+            blocking_agent = blocking_result.scalar_one_or_none()
+            blocker_name = blocking_agent.slug if blocking_agent else "Unknown agent"
+
+            task_title = task.title or "Untitled"
+            notification = NotificationTable(
+                type="blocker_escalation",
+                priority="high",
+                from_agent=agent.agent_id,
+                to_agents=[pm_agent.id],
+                subject=f"🚫 ACTION REQUIRED: Blocked - {task_title[:40]}",
+                body=(
+                    f"Task {task_id} has been BLOCKED by {blocker_name}.\n\n"
+                    f"Type: {data.blocker_type}\n"
+                    f"Reason: {data.reason}\n"
+                    f"What's needed: {data.what_needed}\n\n"
+                    "⚠️ ACTION REQUIRED:\n"
+                    "When resolved, you MUST call:\n"
+                    f"  roboco_task_unblock('{task_id}')\n\n"
+                    "Verbal resolution in chat is NOT enough - "
+                    "the task will remain blocked until you call the tool."
+                ),
+                related_task_id=task_id,
+                requires_ack=True,
+                read_by=[],
+                acked_by=[],
+            )
+            db.add(notification)
+            await db.flush()
+
+            # Deliver notification via Redis Streams
+            from roboco.services.notification_delivery import (
+                get_notification_delivery_service,
+            )
+
+            delivery_service = get_notification_delivery_service(db)
+            await delivery_service.deliver_notification(notification)
+
     await db.commit()
     return task_to_response(task)
 
@@ -628,7 +686,7 @@ async def unblock_task(
     db: DbSession,
     agent: CurrentAgentContext,
 ) -> TaskResponse:
-    """Unblock a task."""
+    """Unblock a task and notify the assigned agent."""
     service = get_task_service(db)
     task = await service.get(task_id)
     if not task:
@@ -646,12 +704,42 @@ async def unblock_task(
             detail="Not authorized to unblock this task",
         )
 
+    # Remember the assigned agent before unblocking
+    assigned_agent_id = task.assigned_to
+
     task = await service.unblock(task_id)
     if not task:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Cannot unblock task - not blocked",
         )
+
+    # Notify the assigned agent that the task is unblocked
+    if assigned_agent_id and assigned_agent_id != agent.agent_id:
+        notification = NotificationTable(
+            type="task_assignment",
+            priority="high",
+            from_agent=agent.agent_id,
+            to_agents=[assigned_agent_id],
+            subject=f"Task unblocked: {task.title or 'Unknown task'}",
+            body=(
+                f"Task {task_id} has been unblocked and is ready to resume.\n\n"
+                "Use roboco_task_get to review the task and continue work."
+            ),
+            related_task_id=task_id,
+            requires_ack=False,
+        )
+        db.add(notification)
+        await db.flush()
+
+        # Deliver notification via Redis Streams
+        from roboco.services.notification_delivery import (
+            get_notification_delivery_service,
+        )
+
+        delivery_service = get_notification_delivery_service(db)
+        await delivery_service.deliver(notification.id)
+
     await db.commit()
     return task_to_response(task)
 
@@ -930,6 +1018,52 @@ async def docs_complete(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Cannot mark docs complete - invalid status for documenter workflow",
         )
+
+    # Assign to cell PM and notify
+    agent_record = await db.execute(
+        select(AgentTable).where(AgentTable.id == agent.agent_id)
+    )
+    agent_row = agent_record.scalar_one_or_none()
+    agent_slug = agent_row.slug if agent_row else None
+
+    target_pm_slug = None
+    if agent_slug:
+        target_pm_slug = get_pm_for_agent(agent_slug)
+    if not target_pm_slug and task.team:
+        target_pm_slug = get_pm_for_team(task.team.value)
+
+    if target_pm_slug:
+        pm_result = await db.execute(
+            select(AgentTable).where(AgentTable.slug == target_pm_slug)
+        )
+        pm_agent = pm_result.scalar_one_or_none()
+        if pm_agent:
+            task.assigned_to = pm_agent.id
+
+            # Notify PM
+            notification = NotificationTable(
+                type="task_assignment",
+                priority="normal",
+                from_agent=agent.agent_id,
+                to_agents=[pm_agent.id],
+                subject=f"Documentation complete: {task.title or 'Unknown task'}",
+                body=(
+                    f"Task {task_id} documentation is complete and ready "
+                    "for final review.\n\nPlease review and complete the task."
+                ),
+                related_task_id=task_id,
+                requires_ack=False,
+            )
+            db.add(notification)
+            await db.flush()
+
+            from roboco.services.notification_delivery import (
+                get_notification_delivery_service,
+            )
+
+            delivery_service = get_notification_delivery_service(db)
+            await delivery_service.deliver(notification.id)
+
     await db.commit()
     return task_to_response(task)
 
@@ -969,6 +1103,53 @@ async def submit_for_pm_review(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Cannot submit for PM review - task not in progress",
         )
+
+    # Assign to cell PM and notify
+    agent_record = await db.execute(
+        select(AgentTable).where(AgentTable.id == agent.agent_id)
+    )
+    agent_row = agent_record.scalar_one_or_none()
+    agent_slug = agent_row.slug if agent_row else None
+
+    target_pm_slug = None
+    if agent_slug:
+        target_pm_slug = get_pm_for_agent(agent_slug)
+    if not target_pm_slug and task.team:
+        target_pm_slug = get_pm_for_team(task.team.value)
+
+    if target_pm_slug:
+        pm_result = await db.execute(
+            select(AgentTable).where(AgentTable.slug == target_pm_slug)
+        )
+        pm_agent = pm_result.scalar_one_or_none()
+        if pm_agent:
+            task.assigned_to = pm_agent.id
+
+            # Notify PM
+            notification = NotificationTable(
+                type="task_assignment",
+                priority="normal",
+                from_agent=agent.agent_id,
+                to_agents=[pm_agent.id],
+                subject=f"Task ready for review: {task.title or 'Unknown task'}",
+                body=(
+                    f"Task {task_id} has been submitted for PM review.\n\n"
+                    f"Notes: {notes or 'None'}\n\n"
+                    "Please review and complete the task."
+                ),
+                related_task_id=task_id,
+                requires_ack=False,
+            )
+            db.add(notification)
+            await db.flush()
+
+            from roboco.services.notification_delivery import (
+                get_notification_delivery_service,
+            )
+
+            delivery_service = get_notification_delivery_service(db)
+            await delivery_service.deliver(notification.id)
+
     await db.commit()
     return task_to_response(task)
 
@@ -1238,43 +1419,67 @@ async def substitute_task(
             detail=f"Invalid reason: {data.reason}. Valid: {valid_reasons}",
         ) from e
 
-    # Get task
+    # Get and validate task
     service = get_task_service(db)
     task = await service.get(task_id)
     if not task:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND, detail="Task not found"
-        )
+        raise HTTPException(status.HTTP_404_NOT_FOUND, detail="Task not found")
 
-    # Verify agent owns the task
     if task.assigned_to != agent.agent_id:
         raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
+            status.HTTP_403_FORBIDDEN,
             detail="You can only substitute out of tasks you own",
         )
 
-    # Determine new status based on reason
+    # Determine new status
     new_status = _REASON_TO_STATUS.get(reason, TaskStatus.PENDING)
-
-    # QA/Documenter completing their own work goes to PM review (can't self-review)
     if reason == SubstituteReason.TASK_COMPLETE and agent.role in ("qa", "documenter"):
         new_status = TaskStatus.AWAITING_PM_REVIEW
 
-    # Preserve original developer for self-review prevention when going to QA
+    # Get agent slug for PM lookup
+    agent_result = await db.execute(
+        select(AgentTable).where(AgentTable.id == agent.agent_id)
+    )
+    agent_record = agent_result.scalar_one_or_none()
+    agent_slug = agent_record.slug if agent_record else None
+
+    # Build update data
     update_data: dict[str, Any] = {
         "status": new_status.value,
-        "assigned_to": None,  # Clear assignment
         "dev_notes": f"[SUBSTITUTE] Reason: {reason.value}\n{data.details}",
+        "assigned_to": None,
     }
-    if new_status == TaskStatus.AWAITING_QA and task.assigned_to:
-        # Set original_developer BEFORE clearing assigned_to
+
+    # Handle PM review assignment
+    target_pm_slug = None
+    if new_status == TaskStatus.AWAITING_PM_REVIEW:
+        target_pm_slug, pm_uuid = await resolve_pm_for_substitute(
+            db, agent_slug, task.team
+        )
+        if pm_uuid:
+            update_data["assigned_to"] = pm_uuid
+    elif new_status == TaskStatus.AWAITING_QA and task.assigned_to:
         update_data["quick_context"] = f"original_developer:{task.assigned_to}"
 
+    # Update task
     task = await service.update(task_id, **update_data)
     if not task:
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="Failed to update task",
+        raise HTTPException(status.HTTP_500_INTERNAL_SERVER_ERROR, "Update failed")
+
+    # Notify PM if needed
+    if new_status == TaskStatus.AWAITING_PM_REVIEW and target_pm_slug:
+        await notify_pm_for_substitute(
+            db,
+            pm_slug=target_pm_slug,
+            task_id=task_id,
+            from_agent_id=agent.agent_id,
+            message=(
+                f"Task needs review: {task.title or 'Unknown task'}",
+                f"Task {task_id} requires PM review.\n\n"
+                f"Reason: {reason.value}\n"
+                f"Details: {data.details}\n\n"
+                "Please review and reassign as needed.",
+            ),
         )
 
     await db.commit()

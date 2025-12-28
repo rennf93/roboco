@@ -317,22 +317,143 @@ def _validate_task_cancellable(task: dict[str, Any]) -> dict[str, Any] | None:
     return None
 
 
-async def handle_task_cancel(
-    client: ApiClient, task_id: str, agent_id: str, reason: str | None = None
-) -> dict[str, Any]:
-    """Handle task cancellation (PM and board only)."""
+# Valid cancellation reasons - PMs must justify cancellations
+VALID_CANCEL_REASONS = {
+    "duplicate",  # Task duplicates existing work
+    "obsolete",  # Requirements changed, task no longer needed
+    "blocked_permanently",  # External dependency that won't be resolved
+    "reassigned",  # Work moved to different task/approach
+    "scope_change",  # Project scope changed, task out of scope
+    "stakeholder_request",  # CEO/Board requested cancellation
+}
+
+
+def _validate_cancel_reason(reason: str | None) -> dict[str, Any] | None:
+    """Validate cancellation reason is provided and legitimate."""
+    if not reason or not reason.strip():
+        return format_error_response(
+            "REASON_REQUIRED",
+            "Task cancellation requires a reason. Provide one of: "
+            + ", ".join(sorted(VALID_CANCEL_REASONS))
+            + " followed by details.",
+            {
+                "valid_reasons": sorted(VALID_CANCEL_REASONS),
+                "example": "obsolete: requirements changed in TASK-123",
+            },
+        )
+
+    # Check reason starts with a valid category
+    reason_lower = reason.lower().strip()
+    has_valid_prefix = any(reason_lower.startswith(r) for r in VALID_CANCEL_REASONS)
+    if not has_valid_prefix:
+        return format_error_response(
+            "INVALID_REASON",
+            "Cancellation reason must start with a valid category: "
+            + ", ".join(sorted(VALID_CANCEL_REASONS)),
+            {
+                "provided": reason[:50],
+                "valid_reasons": sorted(VALID_CANCEL_REASONS),
+                "example": "duplicate: same as TASK-456",
+            },
+        )
+    return None
+
+
+def _validate_not_active_work(
+    task: dict[str, Any], agent_id: str
+) -> dict[str, Any] | None:
+    """Block cancellation of tasks with active work unless escalated.
+
+    Tasks in 'in_progress' with an assignee other than the canceller
+    should not be cancelled - the assignee should pause/block first.
+    """
+    current_status = task.get("status")
+    assigned_to = task.get("assigned_to")
+
+    # Allow cancellation of pending/claimed tasks freely (with reason)
+    if current_status in ("pending", "claimed"):
+        return None
+
+    # If task is in active work states and assigned to someone else,
+    # require the work to be paused/blocked first
+    active_states = {
+        "in_progress",
+        "verifying",
+        "awaiting_qa",
+        "awaiting_documentation",
+        "awaiting_pm_review",
+    }
+
+    if current_status in active_states and assigned_to:
+        # Check if canceller is NOT the assignee
+        is_own_task = assigned_to == agent_id or (
+            isinstance(assigned_to, str) and agent_id in assigned_to
+        )
+        if not is_own_task:
+            return format_error_response(
+                "ACTIVE_WORK_PROTECTED",
+                f"Cannot cancel task in '{current_status}' - someone is working on it. "
+                "Ask the assignee to pause/block the task first, or use escalation.",
+                {
+                    "assigned_to": assigned_to,
+                    "current_status": current_status,
+                    "alternatives": [
+                        "Ask assignee to roboco_task_pause() or roboco_task_block()",
+                        "Use roboco_task_escalate() to involve higher management",
+                        "Wait for task to be paused/blocked, then cancel",
+                    ],
+                },
+            )
+    return None
+
+
+async def _validate_cancel_request(
+    client: ApiClient, task_id: str, agent_id: str, reason: str | None
+) -> tuple[dict[str, Any] | None, dict[str, Any] | None]:
+    """Validate all cancellation prerequisites. Returns (task, error)."""
+    # Check PM role
     if error := _validate_pm_role(agent_id, "cancel tasks"):
-        return error
+        return None, error
+
+    # Require a valid reason - no arbitrary cancellations
+    if error := _validate_cancel_reason(reason):
+        return None, error
 
     task, error = await fetch_task_or_error(client, task_id)
     if error:
-        return error
+        return None, error
     assert task is not None
 
     if error := _validate_task_cancellable(task):
+        return None, error
+
+    # Protect active work from arbitrary cancellation
+    if error := _validate_not_active_work(task, agent_id):
+        return None, error
+
+    return task, None
+
+
+async def handle_task_cancel(
+    client: ApiClient, task_id: str, agent_id: str, reason: str | None = None
+) -> dict[str, Any]:
+    """Handle task cancellation (PM and board only).
+
+    Cancellation requires:
+    1. A valid reason category (duplicate, obsolete, blocked_permanently, etc.)
+    2. Task not actively being worked on by someone else
+
+    If task is in_progress with another assignee, they must pause/block first.
+    """
+    _, error = await _validate_cancel_request(client, task_id, agent_id, reason)
+    if error:
         return error
 
-    cancel_resp = await client.post(f"/tasks/{task_id}/cancel")
+    # Include reason in the API call
+    cancel_resp = await client.post(
+        f"/tasks/{task_id}/cancel",
+        json={"reason": reason},
+    )
     if not cancel_resp.ok:
         return format_error_response(
             "CANCEL_FAILED",
@@ -343,7 +464,7 @@ async def handle_task_cancel(
     return format_task_response(
         cancel_resp.json(),
         "CANCELLED",
-        f"Task cancelled.{' Reason: ' + reason if reason else ''}",
+        f"Task cancelled. Reason: {reason}",
     )
 
 

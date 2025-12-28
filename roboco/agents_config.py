@@ -260,6 +260,38 @@ def get_escalation_target(agent_id: str) -> str | None:
     return ESCALATION_CHAIN.get(agent_id)
 
 
+def get_pm_for_team(team: str) -> str | None:
+    """Get the cell PM for a team."""
+    team_to_pm = {
+        "backend": "be-pm",
+        "frontend": "fe-pm",
+        "ux_ui": "ux-pm",
+    }
+    return team_to_pm.get(team)
+
+
+def get_pm_for_agent(agent_id: str) -> str | None:
+    """
+    Get the PM responsible for an agent.
+
+    - For cell members: their cell PM
+    - For cell PMs: main-pm
+    - For main PM: product-owner
+    """
+    role = get_agent_role(agent_id)
+
+    # Cell PM escalates to main-pm
+    if role == "cell_pm":
+        return "main-pm"
+
+    # Main PM escalates to product-owner
+    if role == "main_pm":
+        return "product-owner"
+
+    # Everyone else escalates to their cell PM
+    return get_escalation_target(agent_id)
+
+
 # =============================================================================
 # CHANNEL ACCESS RULES
 # =============================================================================

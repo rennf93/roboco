@@ -272,7 +272,7 @@ class OptimalService:
                 if preview:
                     doc.preview = preview[:500] if preview else None
                 if metadata:
-                    doc.metadata = {**(doc.metadata or {}), **metadata}
+                    doc.extra_data = {**(doc.extra_data or {}), **metadata}
             else:
                 doc = IndexedDocumentTable(
                     index_type=index_type.value,
@@ -280,7 +280,7 @@ class OptimalService:
                     source_hash=source_hash,
                     title=title,
                     preview=preview[:500] if preview else None,
-                    metadata=metadata or {},
+                    extra_data=metadata or {},
                 )
                 db.add(doc)
 
@@ -408,7 +408,10 @@ class OptimalService:
             IndexType.DECISIONS,
             source=source,
             title=f"Decision: {params.topic[:100]}",
-            preview=f"{params.topic}\n\nDecision: {params.decision}\n\nRationale: {params.rationale}",
+            preview=(
+                f"{params.topic}\n\nDecision: {params.decision}\n\n"
+                f"Rationale: {params.rationale}"
+            ),
             metadata={
                 "scope": params.scope,
                 "tags": params.tags,

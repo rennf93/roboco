@@ -286,7 +286,7 @@ DOCUMENTER MUST GATHER FROM 3 SOURCES:
 │ SOURCE 2: TEAM JOURNALS (roboco_journal_read_team)                          │
 │ ─────────────────────────────────────────────────                           │
 │ Read developer's journey:                                                   │
-│   roboco_journal_read_team("be-dev-1", task_id=task_id, limit=20)          │
+│   roboco_journal_read_team("be-dev-1", task_id=task_id, limit=20)           │
 │                                                                             │
 │ What to look for:                                                           │
 │ • Decisions made and WHY                                                    │

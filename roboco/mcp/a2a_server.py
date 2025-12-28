@@ -24,14 +24,12 @@ from roboco.agents_config import (
 from roboco.mcp.utils import ApiClient, format_error_response
 from roboco.seeds.initial_data import AGENT_UUIDS
 
-
 # =============================================================================
 # TOOL IMPLEMENTATIONS
 # =============================================================================
 
 
 async def _handle_discover(
-    client: ApiClient,
     role: str | None = None,
     team: str | None = None,
     skill: str | None = None,
@@ -76,89 +74,6 @@ async def _handle_discover(
         "guidance": (
             f"Found {len(agents)} agent(s). Use roboco_agent_request to request "
             "work from a specific agent."
-        ),
-    }
-
-
-async def _handle_request(
-    client: ApiClient,
-    agent_id: str,
-    target_agent: str,
-    skill: str,
-    message: str,
-    task_id: str | None = None,
-    blocking: bool = False,
-) -> dict[str, Any]:
-    """Request another agent to perform work via A2A."""
-    # Validate target agent exists
-    if target_agent not in ALL_AGENTS:
-        return format_error_response(
-            "AGENT_NOT_FOUND",
-            f"Agent '{target_agent}' not found. Use roboco_agent_discover to find agents.",
-        )
-
-    # Validate skill exists for target
-    target_skills = get_agent_skills(target_agent)
-    skill_ids = [s.get("id", "") for s in target_skills]
-    if skill not in skill_ids:
-        return format_error_response(
-            "SKILL_NOT_FOUND",
-            f"Agent '{target_agent}' does not have skill '{skill}'. "
-            f"Available skills: {', '.join(skill_ids)}",
-        )
-
-    # Resolve target agent UUID
-    target_uuid = AGENT_UUIDS.get(target_agent)
-    if not target_uuid:
-        return format_error_response(
-            "AGENT_UUID_NOT_FOUND",
-            f"Could not resolve UUID for agent '{target_agent}'",
-        )
-
-    # Build A2A message payload
-    payload = {
-        "message": {
-            "role": "user",
-            "parts": [{"type": "text", "text": message}],
-            "contextId": task_id or f"request-{agent_id}-to-{target_agent}",
-        },
-        "configuration": {
-            "blocking": blocking,
-            "acceptedOutputModes": ["text/plain", "application/json"],
-        },
-        "metadata": {
-            "from_agent": agent_id,
-            "target_agent": target_agent,
-            "skill": skill,
-            "task_id": task_id,
-        },
-    }
-
-    # Send A2A request
-    resp = await client.post("/a2a/message/send", json=payload)
-
-    if not resp.ok:
-        return format_error_response(
-            "A2A_REQUEST_FAILED",
-            f"Failed to send A2A request: {resp.text}",
-        )
-
-    result = resp.json()
-    a2a_task = result.get("task", {})
-    a2a_task_id = a2a_task.get("id", "unknown")
-    status = a2a_task.get("status", {}).get("state", "submitted")
-
-    return {
-        "status": "submitted",
-        "a2a_task_id": a2a_task_id,
-        "target_agent": target_agent,
-        "skill": skill,
-        "state": status,
-        "guidance": (
-            f"Request sent to {target_agent}. "
-            f"Task ID: {a2a_task_id}. "
-            "Use roboco_agent_request_status to check progress, or wait for "
-            "a notification when complete."
         ),
     }
 
@@ -251,7 +166,7 @@ def create_a2a_mcp_server(agent_id: str) -> FastMCP:
         Returns:
             List of matching agents with their capabilities
         """
-        return await _handle_discover(client, role, team, skill)
+        return await _handle_discover(role, team, skill)
 
     @mcp.tool()
     async def roboco_agent_request(
@@ -276,9 +191,79 @@ def create_a2a_mcp_server(agent_id: str) -> FastMCP:
         Returns:
             A2A task ID for tracking the request
         """
-        return await _handle_request(
-            client, agent_id, target_agent, skill, message, task_id, blocking
-        )
+        # Validate target agent exists
+        if target_agent not in ALL_AGENTS:
+            return format_error_response(
+                "AGENT_NOT_FOUND",
+                f"Agent '{target_agent}' not found. "
+                "Use roboco_agent_discover to find agents.",
+            )
+
+        # Validate skill exists for target
+        target_skills = get_agent_skills(target_agent)
+        skill_ids = [s.get("id", "") for s in target_skills]
+        if skill not in skill_ids:
+            return format_error_response(
+                "SKILL_NOT_FOUND",
+                f"Agent '{target_agent}' does not have skill '{skill}'. "
+                f"Available skills: {', '.join(skill_ids)}",
+            )
+
+        # Resolve target agent UUID
+        target_uuid = AGENT_UUIDS.get(target_agent)
+        if not target_uuid:
+            return format_error_response(
+                "AGENT_UUID_NOT_FOUND",
+                f"Could not resolve UUID for agent '{target_agent}'",
+            )
+
+        # Build A2A message payload
+        context_id = task_id or f"request-{agent_id}-to-{target_agent}"
+        payload = {
+            "message": {
+                "role": "user",
+                "parts": [{"type": "text", "text": message}],
+                "contextId": context_id,
+            },
+            "configuration": {
+                "blocking": blocking,
+                "acceptedOutputModes": ["text/plain", "application/json"],
+            },
+            "metadata": {
+                "from_agent": agent_id,
+                "target_agent": target_agent,
+                "skill": skill,
+                "task_id": task_id,
+            },
+        }
+
+        # Send A2A request
+        resp = await client.post("/a2a/message/send", json=payload)
+
+        if not resp.ok:
+            return format_error_response(
+                "A2A_REQUEST_FAILED",
+                f"Failed to send A2A request: {resp.text}",
+            )
+
+        result = resp.json()
+        a2a_task = result.get("task", {})
+        a2a_task_id = a2a_task.get("id", "unknown")
+        a2a_state = a2a_task.get("status", {}).get("state", "submitted")
+
+        return {
+            "status": "submitted",
+            "a2a_task_id": a2a_task_id,
+            "target_agent": target_agent,
+            "skill": skill,
+            "state": a2a_state,
+            "guidance": (
+                f"Request sent to {target_agent}. "
+                f"Task ID: {a2a_task_id}. "
+                "Use roboco_agent_request_status to check progress, or wait for "
+                "a notification when complete."
+            ),
+        }
 
     @mcp.tool()
     async def roboco_agent_request_status(

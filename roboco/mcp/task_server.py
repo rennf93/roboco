@@ -637,24 +637,28 @@ def _register_pm_tools(mcp: FastMCP, client: ApiClient, agent_id: str) -> None:
         return await handle_task_assign(client, input_data, agent_id)
 
     @mcp.tool()
-    async def roboco_task_cancel(
-        task_id: str, reason: str | None = None
-    ) -> dict[str, Any]:
+    async def roboco_task_cancel(task_id: str, reason: str) -> dict[str, Any]:
         """
         Cancel a task (PM and board only).
 
-        Use this to:
-        - Cancel obsolete or duplicate tasks
-        - Cancel tasks that are no longer needed
-        - Cancel blocked tasks that cannot be resolved
+        IMPORTANT: Reason is REQUIRED. Must start with a valid category:
+        - duplicate: Task duplicates existing work
+        - obsolete: Requirements changed, task no longer needed
+        - blocked_permanently: External dependency won't be resolved
+        - reassigned: Work moved to different task/approach
+        - scope_change: Project scope changed, task out of scope
+        - stakeholder_request: CEO/Board requested cancellation
+
+        Example: "obsolete: requirements changed per TASK-123 discussion"
 
         ENFORCEMENT:
         - Only PMs and board members can cancel tasks
         - Cannot cancel completed or already-cancelled tasks
+        - Cannot cancel in_progress tasks assigned to others (ask to pause first)
 
         Args:
             task_id: The task UUID to cancel
-            reason: Optional reason for cancellation
+            reason: REQUIRED - Category + details (e.g., "duplicate: same as TASK-456")
 
         Returns:
             Cancelled task confirmation

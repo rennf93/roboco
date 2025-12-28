@@ -989,8 +989,8 @@ class IndexedDocumentTable(Base):
     # Chunk count for this document
     chunk_count: Mapped[int] = mapped_column(Integer, default=0)
 
-    # Metadata (extracted during indexing)
-    metadata: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
+    # Extra data (extracted during indexing)
+    extra_data: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
 
     # Timestamps
     indexed_at: Mapped[datetime] = mapped_column(

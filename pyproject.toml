@@ -13,13 +13,11 @@ dependencies = [
     # Core
     "pydantic",
     "pydantic-settings",
-
     # API
     "aiofiles",
     "fastapi",
     "uvicorn[standard]",
     "websockets",
-
     # Database
     "sqlalchemy[asyncio]",
     "asyncpg",  # PostgreSQL async driver
@@ -31,7 +29,6 @@ dependencies = [
 
     # RAG (piragi with PostgreSQL/pgvector backend)
     "piragi[postgres]",
-
     # AI/LLM
     "anthropic",
     "openai",  # For embeddings
@@ -40,7 +37,6 @@ dependencies = [
 
     # MCP (Model Context Protocol)
     "mcp",
-
     # Utilities
     "httpx",
     "python-multipart",
@@ -51,6 +47,7 @@ dependencies = [
 
     # Streaming
     "sse-starlette",  # Server-Sent Events for A2A streaming
+    "einops",
 ]
 
 [project.optional-dependencies]
