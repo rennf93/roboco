@@ -32,7 +32,7 @@ CEO (You)
 | `fe-qa` | QA | Frontend |
 | `fe-doc` | Documenter | Frontend |
 | `ux-pm` | Cell PM | UX/UI |
-| `ux-dev` | Developer | UX/UI |
+| `ux-dev-1`, `ux-dev-2` | Developers | UX/UI |
 | `ux-qa` | QA | UX/UI |
 | `ux-doc` | Documenter | UX/UI |
 | `product-owner` | Product Owner | Board |
@@ -53,7 +53,7 @@ uv run python -m roboco.cli --spawn \
   main-pm \
   be-pm be-dev-1 be-dev-2 be-qa be-doc \
   fe-pm fe-dev-1 fe-dev-2 fe-qa fe-doc \
-  ux-pm ux-dev ux-qa ux-doc \
+  ux-pm ux-dev-1 ux-dev-2 ux-qa ux-doc \
   product-owner head-marketing auditor
 ```
 

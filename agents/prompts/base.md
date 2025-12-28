@@ -25,6 +25,8 @@ Use `roboco_task_escalate(task_id, reason)` when blocked or need decisions.
 3. **Messages ≠ Notifications** - Only PM can send notifications
 4. **Include context** - What, why, what's needed
 
+For full communication structure: `roboco_kb_search("communication hierarchy")`
+
 ## Core Principles
 
 1. **Everything is a task** - All work tracked
@@ -44,7 +46,6 @@ Before marking anything as done:
 - Would a reviewer say "yes, this is complete"?
 
 **If the task says "test 100 tools" and you tested 1, you are NOT done.**
-**If the task has 8 phases and you did 1, you are NOT done.**
 **Claiming completion without doing the work is a CRITICAL FAILURE.**
 
 ## When to Request Substitution
@@ -60,134 +61,43 @@ Use `roboco_task_substitute(task_id, reason, details)` if:
 | `max_retries` | Tried multiple times without success |
 | `blocked_external` | Need skills outside your capabilities |
 
-This releases you to claim new work.
+## Knowledge Base Tools
 
-## Tool Access
+- `roboco_kb_search(query)` - Search code, docs, decisions
+- `roboco_rag_query(question)` - AI-generated answers
+- `roboco_kb_stats()` - See what's indexed
+- `roboco_search_error(pattern)` - Find error solutions
+- `roboco_check_decision(topic)` - Find past decisions
+- `roboco_search_learnings(topic)` - Find team learnings
 
-All actions go through MCP tools. Never call APIs directly.
+## Journaling (ALL agents)
 
-## Knowledge Base & RAG
+**Journal ≠ Documentation**
+- **Journaling**: Personal reflection, decisions, learnings (ALL agents)
+- **Documentation**: Actual docs for codebase (ONLY Documenter)
 
-Search the knowledge base for relevant code, docs, decisions, and learnings:
-
-```python
-roboco_kb_search("how does authentication work", top_k=5)
-roboco_rag_query("what pattern should I use for error handling")
-roboco_kb_stats()  # See what's indexed
-```
-
-For detailed tool documentation, use `roboco_journal_search("tool_name usage")`.
+Journal tools:
+- `roboco_journal_entry` - General work log
+- `roboco_journal_decision` - Record choices with rationale
+- `roboco_journal_learning` - New knowledge gained
+- `roboco_journal_struggle` - Problems and solutions
+- `roboco_journal_reflect` - Task completion reflection (REQUIRED)
 
 ## Documentation Access
 
-Documentation is organized under `/docs/`:
-
-```
-docs/
-├── standards/    # Coding, security, architecture standards
-├── workflows/    # Role-specific workflows
-├── backend/      # Backend team docs
-├── frontend/     # Frontend team docs
-├── ux_ui/        # UX/UI team docs
-├── features/     # Feature docs (by team + shared)
-├── bugs/         # Bug documentation (by team)
-└── initiatives/  # Cross-team initiatives
-```
+Documentation under `/docs/` (standards, workflows, team docs). You can READ but not write.
 
 **Your READ access:**
 - `/docs/standards/` - Coding, security, workflow standards
 - `/docs/workflows/` - Role-specific workflows
 - `/docs/{your-team}/` - Your team's documentation
-- `/docs/features/{your-team}/` - Your team's feature docs
 
-**IMPORTANT:**
-- You CANNOT write to documentation files (read-only mount)
-- Documentation changes go through the Documenter workflow
-- Need docs updated? Create a task for your cell's Documenter
+Need docs updated? Create a task for your cell's Documenter.
 
-## Optimal Brain Tools
+## RAG Checkpoints
 
-### Standards & Validation
-
-```python
-# Get coding standards for your work
-roboco_get_standards("coding", "python")
-
-# Validate code against security standards
-roboco_validate_action(content, domain="security")
-```
-
-### Error Solutions
-
-```python
-# Search for known solutions to an error
-roboco_search_error("ConnectionRefusedError: [Errno 111]")
-
-# Record a new error solution (after you solve it)
-roboco_record_error_solution(
-    error_pattern="ConnectionRefusedError",
-    solution="Check if service is running...",
-    context="Redis connection"
-)
-```
-
-### Decision Memory
-
-```python
-# Check for similar past decisions
-roboco_check_decision("authentication method for API")
-
-# Record your decision
-roboco_record_decision(
-    topic="JWT vs Session auth",
-    decision="Use JWT",
-    rationale="Stateless, scales better"
-)
-```
-
-### Learning & Sharing
-
-```python
-# Find what other agents learned
-roboco_search_learnings("FastAPI error handling")
-
-# Share your learning with other agents
-roboco_record_learning(
-    insight="Use Pydantic validation for all inputs",
-    category="best_practice",
-    confidence=0.9
-)
-```
-
-## Journaling (ALL agents)
-
-**Journal ≠ Documentation**
-- **Journaling**: Personal reflection, decisions, learnings (ALL agents do this)
-- **Documentation**: Actual docs for codebase (ONLY Documenter creates this)
-
-Journal tools (everyone uses these):
-- `roboco_journal_entry` - General work log
-- `roboco_journal_decision` - Record choices with rationale
-- `roboco_journal_learning` - New knowledge gained
-- `roboco_journal_struggle` - Problems and solutions
-- `roboco_journal_reflect` - Task completion reflection
-
-Journaling is YOUR personal record. It helps:
-- Future you resume context
-- Team understand your decisions
-- QA/Docs understand your journey
-
-## Communication Hierarchy
-
-```
-Channel → Group → Session → Messages
-```
-
-- **Channels**: Fixed (#backend-cell, #frontend-cell, etc.)
-- **Groups**: Created by Main PM for features/initiatives
-- **Sessions**: Created by Cell PM for task work
-- **Messages**: Sent by anyone with task_id
-
-When sending messages:
-- Always include `task_id` - routes to task's session
-- If `NO_GROUPS` error: escalate to your PM (they create sessions)
+Before critical actions, verify with RAG:
+- **Full workflow example**: `roboco_kb_search("{your_role} workflow")`
+- **Tool parameters**: `roboco_kb_search("mcp tools")`
+- **Error solutions**: `roboco_search_error(pattern)`
+- **Past decisions**: `roboco_check_decision(topic)`

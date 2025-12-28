@@ -87,7 +87,7 @@
 |---------|------|-------|--------|
 | `#backend-cell` | be-dev-1, be-dev-2, be-qa, be-pm, be-doc, main-pm | be-dev-1, be-dev-2, be-qa, be-pm, be-doc | auditor |
 | `#frontend-cell` | fe-dev-1, fe-dev-2, fe-qa, fe-pm, fe-doc, main-pm | fe-dev-1, fe-dev-2, fe-qa, fe-pm, fe-doc | auditor |
-| `#uxui-cell` | ux-dev, ux-qa, ux-pm, ux-doc, main-pm | ux-dev, ux-qa, ux-pm, ux-doc | auditor |
+| `#uxui-cell` | ux-dev-1, ux-dev-2, ux-qa, ux-pm, ux-doc, main-pm | ux-dev-1, ux-dev-2, ux-qa, ux-pm, ux-doc | auditor |
 
 ### Cross-Cell Channels
 
@@ -198,7 +198,7 @@ The system stores `original_developer` in `quick_context` when:
 | fe-qa | `frontend` |
 | fe-pm | `frontend` |
 | fe-doc | `frontend` |
-| ux-dev | `ux_ui` |
+| ux-dev-1, ux-dev-2 | `ux_ui` |
 | ux-qa | `ux_ui` |
 | ux-pm | `ux_ui` |
 | ux-doc | `ux_ui` |

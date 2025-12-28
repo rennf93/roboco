@@ -72,16 +72,25 @@ def error_response(
     code: str,
     message: str,
     details: dict[str, Any] | None = None,
+    hint: str | None = None,
 ) -> dict[str, Any]:
     """
     Create a standard error response dict.
 
     Format matches existing middleware/exception handlers:
-    {"error": {"code": "...", "message": "...", "details": {...}}}
+    {"error": {"code": "...", "message": "...", "details": {...}, "hint": "..."}}
+
+    Args:
+        code: Error code (e.g., NOT_FOUND)
+        message: Human-readable error message
+        details: Optional additional error context
+        hint: Optional RAG search suggestion for finding solutions
     """
     error: dict[str, Any] = {"code": code, "message": message}
     if details:
         error["details"] = details
+    if hint:
+        error["hint"] = hint
     return {"error": error}
 
 

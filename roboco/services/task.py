@@ -353,10 +353,25 @@ class TaskService(BaseService):
         return task
 
     async def delete(self, task_id: UUID) -> bool:
-        """Delete a task."""
+        """Delete a task and all its descendants."""
         task = await self.get(task_id)
         if not task:
             return False
+
+        # Delete all descendants first (children, grandchildren, etc.)
+        # Process in reverse order to delete leaves before parents
+        descendants = await self.get_all_descendants(task_id)
+        descendants.reverse()  # Delete deepest children first
+
+        for descendant in descendants:
+            await self.session.delete(descendant)
+
+        if descendants:
+            self.log.info(
+                "Cascaded delete to descendants",
+                task_id=str(task_id),
+                deleted_count=len(descendants),
+            )
 
         await self.session.delete(task)
         await self.session.flush()
@@ -1100,10 +1115,25 @@ class TaskService(BaseService):
     async def cancel(
         self, task_id: UUID, agent_role: str = "cell_pm"
     ) -> TaskTable | None:
-        """Cancel a task (PM only)."""
+        """Cancel a task and all its descendants (PM only)."""
         task = await self.get(task_id)
         if not task:
             return None
+
+        # Cancel all descendants first (children, grandchildren, etc.)
+        descendants = await self.get_all_descendants(task_id)
+        cancelled_count = 0
+        for descendant in descendants:
+            if descendant.status != TaskStatus.CANCELLED:
+                descendant.status = TaskStatus.CANCELLED
+                cancelled_count += 1
+
+        if cancelled_count > 0:
+            self.log.info(
+                "Cascaded cancel to descendants",
+                task_id=str(task_id),
+                cancelled_count=cancelled_count,
+            )
 
         # Validate transition with PM role requirement
         self._validate_and_set_status(task, TaskStatus.CANCELLED, agent_role)

@@ -159,6 +159,21 @@ class BaseIndexPlugin(ABC):
             },
         }
 
+    def _build_piragi_config_no_embed(self) -> dict[str, Any]:
+        """
+        Build piragi config with dummy embedding URL.
+
+        This prevents piragi from loading its own SentenceTransformer model
+        during initialization. We'll replace the embedder with our shared
+        instance immediately after creation.
+        """
+        config = self._build_piragi_config()
+        # Set a dummy base_url to prevent local model loading
+        # EmbeddingGenerator checks: if base_url is not None, skip SentenceTransformer
+        config["embedding"]["base_url"] = "http://dummy-prevents-model-load"
+        config["embedding"]["api_key"] = "not-needed"
+        return config
+
     async def initialize(self) -> None:
         """Initialize the index backend."""
         if self._initialized:
@@ -176,19 +191,63 @@ class BaseIndexPlugin(ABC):
             model=self.config.embedding_model,
         )
 
+        # Create store with correct vector dimension for embedding model
+        # Piragi's factory defaults to 768 for PostgresStore, but we use
+        # all-MiniLM-L6-v2 which produces 384-dimensional embeddings
+        store = self._create_store_with_dimension()
+
+        # Use config with dummy embedding URL to prevent model loading
+        # Piragi's EmbeddingGenerator skips SentenceTransformer if base_url is set
         self._ragi = AsyncRagi(
             [],
             persist_dir=self.config.persist_dir,
-            config=self._build_piragi_config(),
-            store=self.config.store_url,
+            config=self._build_piragi_config_no_embed(),
+            store=store,
         )
 
-        # Replace AsyncRagi's embedder with shared instance
-        # This avoids loading the model 9 times (saves ~24s startup)
+        # Replace AsyncRagi's dummy embedder with shared instance
+        # This is the key optimization: one model load for all 9 plugins
         self._ragi._sync.embedder = shared_embedder
 
         self._initialized = True
         logger.info(f"{self.index_type.value} index plugin initialized")
+
+    def _create_store_with_dimension(self) -> Any:
+        """
+        Create vector store with correct dimension for embedding model.
+
+        Piragi's factory defaults to 768 for PostgresStore, but doesn't
+        infer dimension from the embedding model. This method fixes that
+        by creating PostgresStore with the correct dimension.
+        """
+        from roboco.config import settings
+
+        store_url = self.config.store_url
+        if not store_url:
+            # Use default LanceStore (handles dimension correctly)
+            return None
+
+        # For PostgreSQL, create store with correct dimension
+        if store_url.startswith("postgres://") or store_url.startswith("postgresql://"):
+            from piragi.stores.postgres import PostgresStore
+
+            # Get dimension from settings (384 for all-MiniLM-L6-v2)
+            vector_dimension = settings.embedding_dimensions
+
+            logger.debug(
+                "Creating PostgresStore with correct dimension",
+                vector_dimension=vector_dimension,
+                embedding_model=self.config.embedding_model,
+            )
+
+            return PostgresStore(
+                connection_string=store_url,
+                table_name=f"chunks_{self.index_type.value}",
+                vector_dimension=vector_dimension,
+            )
+
+        # For other stores, let piragi handle it
+        return store_url
 
     async def close(self) -> None:
         """Cleanup resources."""

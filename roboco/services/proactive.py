@@ -19,7 +19,7 @@ from uuid import UUID
 
 import structlog
 
-from roboco.models.optimal import IndexType, SearchResult
+from roboco.models.optimal import IndexType, QueryContext, SearchResult
 
 logger = structlog.get_logger()
 
@@ -364,7 +364,7 @@ class ProactiveKnowledgeService:
             "list[SearchResult]",
             await self._optimal_service.search(
                 query=query,
-                index_types=[IndexType.JOURNALS],
+                context=QueryContext(index_types=[IndexType.JOURNALS]),
                 top_k=top_k,
             ),
         )
@@ -389,7 +389,7 @@ class ProactiveKnowledgeService:
             "list[SearchResult]",
             await self._optimal_service.search(
                 query=query,
-                index_types=[IndexType.CODE],
+                context=QueryContext(index_types=[IndexType.CODE]),
                 top_k=top_k,
             ),
         )
@@ -414,7 +414,7 @@ class ProactiveKnowledgeService:
             "list[SearchResult]",
             await self._optimal_service.search(
                 query=query,
-                index_types=[IndexType.DECISIONS],
+                context=QueryContext(index_types=[IndexType.DECISIONS]),
                 top_k=top_k,
             ),
         )
@@ -426,7 +426,7 @@ class ProactiveKnowledgeService:
         return cast(
             "list[SearchResult]",
             await self._optimal_service.search_errors(
-                query=query,
+                error_message=query,
                 top_k=top_k,
             ),
         )
@@ -455,7 +455,7 @@ class ProactiveKnowledgeService:
             "list[SearchResult]",
             await self._optimal_service.search(
                 query=query,
-                index_types=[IndexType.DECISIONS],
+                context=QueryContext(index_types=[IndexType.DECISIONS]),
                 top_k=top_k,
             ),
         )

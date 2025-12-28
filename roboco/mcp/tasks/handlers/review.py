@@ -31,6 +31,7 @@ def _validate_developer_role(agent_id: str) -> dict[str, Any] | None:
             "Only developers can submit work for verification/QA. "
             "PMs should use roboco_task_complete() directly.",
             {"your_role": agent_role, "allowed_roles": ["developer"]},
+            hint="roboco_kb_search('developer workflow submit qa')",
         )
     return None
 
@@ -72,6 +73,7 @@ async def _validate_verification_submission(
             "NO_WORK_EVIDENCE",
             "No evidence of work found. Add commits with roboco_task_add_commit "
             "or update progress with roboco_task_progress before verification.",
+            hint="roboco_kb_search('task progress commits')",
         )
 
     return task, None
@@ -152,9 +154,12 @@ async def _save_notes_and_submit(
     return format_task_response(
         qa_resp.json(),
         "WAIT_FOR_QA",
-        "Task submitted for QA review.\n"
-        "You will be notified of the result.\n"
-        "In the meantime, call roboco_task_scan for other work.",
+        "Task submitted for QA review.\n\n"
+        "WHAT HAPPENS NEXT:\n"
+        "- QA will review your work and either PASS or FAIL\n"
+        "- If PASS: goes to documentation, then PM review\n"
+        "- If FAIL: returns to you with feedback for revision\n\n"
+        "Call roboco_task_scan for other work while waiting.",
     )
 
 
@@ -188,6 +193,7 @@ def _validate_qa_role(agent_id: str, action: str) -> dict[str, Any] | None:
             "NOT_QA",
             f"Only QA agents can {action} tasks in QA review.",
             {"your_role": agent_role},
+            hint="roboco_kb_search('qa workflow pass fail')",
         )
     return None
 
@@ -200,7 +206,11 @@ async def _check_self_review(
     original_dev = extract_original_developer(quick_context)
     agent_uuid = await resolve_agent_uuid_cached(agent_id, client)
     if agent_uuid and not can_review_task(agent_uuid, original_dev):
-        return format_error_response("SELF_REVIEW", "Cannot review your own work.")
+        return format_error_response(
+            "SELF_REVIEW",
+            "Cannot review your own work.",
+            hint="roboco_kb_search('self review prevention')",
+        )
     return None
 
 

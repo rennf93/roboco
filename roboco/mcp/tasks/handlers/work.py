@@ -148,6 +148,11 @@ async def handle_task_progress(
     if not progress_resp.ok:
         return format_error_response("UPDATE_FAILED", "Failed to update progress")
 
-    return format_task_response(
-        progress_resp.json(), "CONTINUE", "Progress recorded. Keep working."
+    guidance = (
+        "Progress recorded. Keep working.\n\n"
+        "TIPS:\n"
+        "- Use roboco_journal_entry() to log decisions as you go\n"
+        "- Hit an error? Try roboco_search_error(pattern) for solutions\n"
+        "- Need context? Use roboco_kb_search(query) to find related code/docs"
     )
+    return format_task_response(progress_resp.json(), "CONTINUE", guidance)

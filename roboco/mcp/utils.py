@@ -62,6 +62,7 @@ def format_error_response(
     code: str,
     message: str,
     details: dict[str, Any] | None = None,
+    hint: str | None = None,
 ) -> dict[str, Any]:
     """
     Format a standardized error response for MCP tools.
@@ -72,13 +73,14 @@ def format_error_response(
         code: Error code (e.g., "NOT_FOUND", "API_ERROR", "PERMISSION_DENIED")
         message: Human-readable error message
         details: Optional additional error details
+        hint: Optional RAG search suggestion for finding solutions
 
     Returns:
         Standardized error response dict with status="error"
     """
     from roboco.api.schemas.common import error_response
 
-    return error_response(code, message, details)
+    return error_response(code, message, details, hint)
 
 
 def format_success_response(
