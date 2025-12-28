@@ -195,39 +195,6 @@ class Settings(BaseSettings):
     session_max_content_length: int = Field(default=50000, ge=1)
     message_max_length: int = Field(default=10000, ge=1)
 
-    # ==========================================================================
-    # Kubernetes
-    # ==========================================================================
-    k8s_enabled: bool = Field(
-        default=False, description="Enable K8s mode (use Jobs API instead of Docker)"
-    )
-    k8s_namespace: str = Field(default="roboco", description="K8s namespace for agents")
-    k8s_agent_image: str = Field(
-        default="ghcr.io/renzof/roboco-agent",
-        description="Base image for agent containers",
-    )
-    k8s_agent_image_tag: str = Field(
-        default="latest", description="Image tag for agent containers"
-    )
-    k8s_agent_memory_request: str = Field(
-        default="256Mi", description="Memory request for agent pods"
-    )
-    k8s_agent_memory_limit: str = Field(
-        default="1Gi", description="Memory limit for agent pods"
-    )
-    k8s_agent_cpu_request: str = Field(
-        default="100m", description="CPU request for agent pods"
-    )
-    k8s_agent_cpu_limit: str = Field(
-        default="500m", description="CPU limit for agent pods"
-    )
-    k8s_job_ttl: int = Field(
-        default=3600, ge=60, description="TTL in seconds for completed agent jobs"
-    )
-    k8s_job_backoff_limit: int = Field(
-        default=0, ge=0, description="Number of retries for failed jobs"
-    )
-
 
 @lru_cache
 def get_settings() -> Settings:

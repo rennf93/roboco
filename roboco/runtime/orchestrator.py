@@ -10,10 +10,6 @@ The orchestrator is the BRAIN of the system:
 - Agents receive their assignment at spawn time
 - Agents scan for more work after completing a task
 - Agents only call roboco_agent_idle() when truly no work remains
-
-Supports two backends:
-- Docker: Uses Docker CLI to spawn containers (default)
-- Kubernetes: Uses K8s Jobs API to spawn agent pods (when k8s_enabled=True)
 """
 
 import asyncio
@@ -23,7 +19,7 @@ import os
 import tempfile
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, ClassVar
+from typing import Any, ClassVar
 
 import httpx
 import structlog
@@ -42,10 +38,6 @@ from roboco.models.runtime import (
     WaitingRecord,
 )
 from roboco.seeds.initial_data import AGENT_UUIDS
-
-# K8s imports (only when K8s mode is enabled)
-if TYPE_CHECKING:
-    from kubernetes import client as k8s_client
 
 logger = structlog.get_logger()
 
@@ -114,15 +106,11 @@ class AgentOrchestrator:
     Manages Claude Code containers for all agents.
 
     Responsibilities:
-    - Spawn agents as Docker containers or K8s Jobs
-    - Monitor health via docker inspect or K8s API
+    - Spawn agents as Docker containers
+    - Monitor health via docker inspect
     - Handle waiting states and respawning
     - Provide status API
     - Cost-efficient on-demand spawning
-
-    Backends:
-    - Docker (default): Uses Docker CLI to spawn containers
-    - Kubernetes: Uses K8s Jobs API when settings.k8s_enabled=True
     """
 
     def __init__(
@@ -144,52 +132,16 @@ class AgentOrchestrator:
         self._running = False
         self._lock = asyncio.Lock()
 
-        # K8s clients (initialized lazily when k8s_enabled)
-        self._k8s_batch_v1: k8s_client.BatchV1Api | None = None
-        self._k8s_core_v1: k8s_client.CoreV1Api | None = None
-        self._k8s_initialized = False
-
     # =========================================================================
     # LIFECYCLE
     # =========================================================================
-
-    def _init_k8s(self) -> None:
-        """Initialize Kubernetes clients."""
-        if self._k8s_initialized:
-            return
-
-        from kubernetes import client, config
-
-        # Load in-cluster config (when running in K8s)
-        # or kubeconfig for local dev
-        try:
-            config.load_incluster_config()
-            logger.info("K8s: loaded in-cluster config")
-        except config.ConfigException:
-            try:
-                config.load_kube_config()
-                logger.info("K8s: loaded kubeconfig")
-            except config.ConfigException:
-                logger.warning("K8s: no config found, K8s mode disabled")
-                return
-
-        self._k8s_batch_v1 = client.BatchV1Api()
-        self._k8s_core_v1 = client.CoreV1Api()
-        self._k8s_initialized = True
-        logger.info("K8s clients initialized", namespace=settings.k8s_namespace)
 
     async def start(self) -> None:
         """Start the orchestrator."""
         self._running = True
 
-        # Initialize K8s if enabled
-        if settings.k8s_enabled:
-            self._init_k8s()
-            if not self._k8s_initialized:
-                logger.warning("K8s mode requested but initialization failed")
-        else:
-            # Docker mode: Ensure agent image is built
-            await self._ensure_agent_image()
+        # Ensure agent image is built
+        await self._ensure_agent_image()
 
         # Ensure agent Claude settings have MCP tools allowed
         self._ensure_agent_claude_settings()
@@ -202,7 +154,6 @@ class AgentOrchestrator:
             "Orchestrator started",
             dispatcher_interval=self.dispatcher_interval,
             internal_api_url=self._api_url,
-            k8s_enabled=settings.k8s_enabled,
         )
 
     async def stop(self) -> None:
@@ -384,8 +335,6 @@ class AgentOrchestrator:
         """
         Spawn a Claude Code container for an agent.
 
-        Uses Docker containers by default, or K8s Jobs when k8s_enabled=True.
-
         Args:
             agent_id: Agent identifier (e.g., "be-dev-1")
             initial_prompt: Optional initial prompt
@@ -413,9 +362,8 @@ class AgentOrchestrator:
             # Ensure agent Claude settings have MCP tools allowed
             self._ensure_agent_claude_settings()
 
-            # Docker mode: Ensure agent-specific Docker image is built
-            if not settings.k8s_enabled:
-                await self._ensure_agent_image(agent_id)
+            # Ensure agent-specific Docker image is built
+            await self._ensure_agent_image(agent_id)
 
             # Generate MCP config
             mcp_config_path = await self._generate_mcp_config(agent_id)
@@ -443,34 +391,20 @@ class AgentOrchestrator:
 
             self._instances[agent_id] = instance
 
-        # Spawn the container/job
+        # Spawn the container
         try:
-            if settings.k8s_enabled and self._k8s_initialized:
-                # K8s mode: Create ConfigMaps and spawn Job
-                system_prompt = blueprint_path.read_text()
-                mcp_config_data = json.loads(mcp_config_path.read_text())
-                await self._create_k8s_agent_configmaps(
-                    agent_id, system_prompt, mcp_config_data
-                )
-                job_name = await self._spawn_k8s_job(config, initial_prompt, task_id)
-                instance.container_id = job_name  # Store job name as container_id
-            else:
-                # Docker mode: Spawn container
-                container_id = await self._spawn_container(config, initial_prompt)
-                instance.container_id = container_id
-
+            container_id = await self._spawn_container(config, initial_prompt)
+            instance.container_id = container_id
             instance.state = AgentState.ACTIVE
             instance.started_at = datetime.now(UTC)
             instance.last_activity = datetime.now(UTC)
 
-            cid = instance.container_id[:12] if instance.container_id else None
             logger.info(
                 "Agent spawned",
                 agent_id=agent_id,
-                container_id=cid,
+                container_id=container_id[:12],
                 model=model,
                 task_id=task_id,
-                k8s_enabled=settings.k8s_enabled,
             )
 
             return instance
@@ -612,315 +546,6 @@ class AgentOrchestrator:
             stderr=asyncio.subprocess.DEVNULL,
         )
         await proc.wait()
-
-    # =========================================================================
-    # K8S JOB MANAGEMENT
-    # =========================================================================
-
-    async def _spawn_k8s_job(
-        self,
-        config: AgentConfig,
-        initial_prompt: str | None = None,
-        task_id: str | None = None,
-    ) -> str:
-        """Spawn an agent as a K8s Job."""
-        from kubernetes import client
-
-        if not self._k8s_batch_v1:
-            raise RuntimeError("K8s client not initialized")
-
-        job_name = f"agent-{config.agent_id}"
-        if task_id:
-            job_name = f"{job_name}-{task_id[:8]}"
-
-        # Delete existing job if any
-        await self._delete_k8s_job(job_name)
-
-        # Build environment variables
-        env_vars = [
-            client.V1EnvVar(name="ROBOCO_AGENT_ID", value=config.agent_id),
-            client.V1EnvVar(name="ROBOCO_API_URL", value="http://roboco-api:8000"),
-            client.V1EnvVar(
-                name="ROBOCO_ANTHROPIC_API_KEY",
-                value_from=client.V1EnvVarSource(
-                    secret_key_ref=client.V1SecretKeySelector(
-                        name="roboco-secrets",
-                        key="anthropic-api-key",
-                    ),
-                ),
-            ),
-        ]
-        if task_id:
-            env_vars.append(client.V1EnvVar(name="ROBOCO_TASK_ID", value=task_id))
-
-        # Build command with initial prompt
-        cmd_prompt = initial_prompt or (
-            "You may have been spawned without a specific task assignment. "
-            "Follow your standard workflow:\n\n"
-            "1. Call `roboco_task_scan()` to find available work for your role\n"
-            "2. If tasks are found, claim one with `roboco_task_claim(task_id)` "
-            "and begin the full task lifecycle "
-            "(UNDERSTAND -> PLAN -> EXECUTE -> VERIFY -> HANDOFF)\n"
-            "3. If no tasks are available, call `roboco_agent_idle()` "
-            "to shutdown gracefully\n\n"
-            "Start now by scanning for work."
-        )
-
-        # Agent image based on role
-        agent_image = f"{settings.k8s_agent_image}:{settings.k8s_agent_image_tag}"
-
-        # Build Job spec
-        job = client.V1Job(
-            api_version="batch/v1",
-            kind="Job",
-            metadata=client.V1ObjectMeta(
-                name=job_name,
-                namespace=settings.k8s_namespace,
-                labels={
-                    "app": "roboco-agent",
-                    "agent-id": config.agent_id,
-                    "task-id": task_id[:8] if task_id else "none",
-                },
-            ),
-            spec=client.V1JobSpec(
-                ttl_seconds_after_finished=settings.k8s_job_ttl,
-                backoff_limit=settings.k8s_job_backoff_limit,
-                template=client.V1PodTemplateSpec(
-                    metadata=client.V1ObjectMeta(
-                        labels={
-                            "app": "roboco-agent",
-                            "agent-id": config.agent_id,
-                        },
-                    ),
-                    spec=client.V1PodSpec(
-                        restart_policy="Never",
-                        service_account_name="roboco-agent",
-                        containers=[
-                            client.V1Container(
-                                name="agent",
-                                image=agent_image,
-                                args=[
-                                    "--model",
-                                    MODEL_MAP.get(config.model, config.model),
-                                    "--system-prompt-file",
-                                    "/app/system-prompt.md",
-                                    "--mcp-config",
-                                    "/app/mcp-config.json",
-                                    "--output-format",
-                                    "stream-json",
-                                    "--verbose",
-                                    "-p",
-                                    cmd_prompt,
-                                ],
-                                env=env_vars,
-                                resources=client.V1ResourceRequirements(
-                                    requests={
-                                        "memory": settings.k8s_agent_memory_request,
-                                        "cpu": settings.k8s_agent_cpu_request,
-                                    },
-                                    limits={
-                                        "memory": settings.k8s_agent_memory_limit,
-                                        "cpu": settings.k8s_agent_cpu_limit,
-                                    },
-                                ),
-                                volume_mounts=[
-                                    client.V1VolumeMount(
-                                        name="system-prompt",
-                                        mount_path="/app/system-prompt.md",
-                                        sub_path="system-prompt.md",
-                                        read_only=True,
-                                    ),
-                                    client.V1VolumeMount(
-                                        name="mcp-config",
-                                        mount_path="/app/mcp-config.json",
-                                        sub_path="mcp-config.json",
-                                        read_only=True,
-                                    ),
-                                    client.V1VolumeMount(
-                                        name="claude-auth",
-                                        mount_path="/home/agent/.claude",
-                                    ),
-                                ],
-                            ),
-                        ],
-                        volumes=[
-                            client.V1Volume(
-                                name="system-prompt",
-                                config_map=client.V1ConfigMapVolumeSource(
-                                    name=f"agent-prompt-{config.agent_id}",
-                                ),
-                            ),
-                            client.V1Volume(
-                                name="mcp-config",
-                                config_map=client.V1ConfigMapVolumeSource(
-                                    name=f"agent-mcp-{config.agent_id}",
-                                ),
-                            ),
-                            client.V1Volume(
-                                name="claude-auth",
-                                secret=client.V1SecretVolumeSource(
-                                    secret_name="claude-auth",
-                                    optional=True,
-                                ),
-                            ),
-                        ],
-                    ),
-                ),
-            ),
-        )
-
-        # Create the Job
-        self._k8s_batch_v1.create_namespaced_job(
-            namespace=settings.k8s_namespace,
-            body=job,
-        )
-
-        logger.info(
-            "K8s: spawned agent job",
-            job_name=job_name,
-            agent_id=config.agent_id,
-            task_id=task_id,
-        )
-
-        return job_name
-
-    async def _delete_k8s_job(self, job_name: str) -> None:
-        """Delete a K8s Job if it exists."""
-        from kubernetes.client.rest import ApiException
-
-        if not self._k8s_batch_v1:
-            return
-
-        try:
-            self._k8s_batch_v1.delete_namespaced_job(
-                name=job_name,
-                namespace=settings.k8s_namespace,
-                propagation_policy="Background",
-            )
-            logger.debug("K8s: deleted job", job_name=job_name)
-        except ApiException as e:
-            # 404 = not found, which is expected when job doesn't exist
-            if e.status != 404:  # noqa: PLR2004
-                logger.warning("K8s: failed to delete job", job_name=job_name, error=e)
-
-    async def _stop_k8s_agent(self, agent_id: str) -> None:
-        """Stop an agent by deleting its K8s Job."""
-        from kubernetes.client.rest import ApiException
-
-        if not self._k8s_batch_v1:
-            return
-
-        # Find jobs for this agent
-        try:
-            jobs = self._k8s_batch_v1.list_namespaced_job(
-                namespace=settings.k8s_namespace,
-                label_selector=f"agent-id={agent_id}",
-            )
-
-            for job in jobs.items:
-                await self._delete_k8s_job(job.metadata.name)
-        except ApiException as e:
-            logger.warning(
-                "K8s: failed to list jobs for agent", agent_id=agent_id, error=e
-            )
-
-    async def _get_k8s_agent_status(  # noqa: PLR0911
-        self, agent_id: str
-    ) -> AgentState:
-        """Get agent status from K8s Job status."""
-        from kubernetes.client.rest import ApiException
-
-        if not self._k8s_batch_v1:
-            return AgentState.OFFLINE
-
-        try:
-            jobs = self._k8s_batch_v1.list_namespaced_job(
-                namespace=settings.k8s_namespace,
-                label_selector=f"agent-id={agent_id}",
-            )
-
-            if not jobs.items:
-                return AgentState.OFFLINE
-
-            # Get most recent job
-            job = sorted(
-                jobs.items,
-                key=lambda j: j.metadata.creation_timestamp or datetime.min,
-                reverse=True,
-            )[0]
-
-            if job.status.succeeded and job.status.succeeded > 0:
-                return AgentState.OFFLINE  # Completed successfully
-            if job.status.failed and job.status.failed > 0:
-                return AgentState.OFFLINE  # Failed
-            if job.status.active and job.status.active > 0:
-                return AgentState.ACTIVE
-            return AgentState.STARTING
-
-        except ApiException as e:
-            logger.warning(
-                "K8s: failed to get job status", agent_id=agent_id, error=e
-            )
-            return AgentState.OFFLINE
-
-    async def _create_k8s_agent_configmaps(
-        self,
-        agent_id: str,
-        system_prompt: str,
-        mcp_config: dict[str, Any],
-    ) -> None:
-        """Create ConfigMaps for agent prompt and MCP config."""
-        from kubernetes import client
-        from kubernetes.client.rest import ApiException
-
-        if not self._k8s_core_v1:
-            return
-
-        # System prompt ConfigMap
-        prompt_cm = client.V1ConfigMap(
-            metadata=client.V1ObjectMeta(
-                name=f"agent-prompt-{agent_id}",
-                namespace=settings.k8s_namespace,
-                labels={"app": "roboco-agent", "agent-id": agent_id},
-            ),
-            data={"system-prompt.md": system_prompt},
-        )
-
-        # MCP config ConfigMap
-        mcp_cm = client.V1ConfigMap(
-            metadata=client.V1ObjectMeta(
-                name=f"agent-mcp-{agent_id}",
-                namespace=settings.k8s_namespace,
-                labels={"app": "roboco-agent", "agent-id": agent_id},
-            ),
-            data={"mcp-config.json": json.dumps(mcp_config, indent=2)},
-        )
-
-        for cm in [prompt_cm, mcp_cm]:
-            try:
-                # Try to create, update if exists
-                try:
-                    self._k8s_core_v1.create_namespaced_config_map(
-                        namespace=settings.k8s_namespace,
-                        body=cm,
-                    )
-                except ApiException as e:
-                    # 409 = conflict (already exists), so update instead
-                    if e.status == 409:  # noqa: PLR2004
-                        self._k8s_core_v1.replace_namespaced_config_map(
-                            name=cm.metadata.name,
-                            namespace=settings.k8s_namespace,
-                            body=cm,
-                        )
-                    else:
-                        raise
-            except ApiException as e:
-                logger.error(
-                    "K8s: failed to create configmap",
-                    name=cm.metadata.name,
-                    error=e,
-                )
-                raise
 
     async def _generate_mcp_config(self, agent_id: str) -> Path:
         """Generate role-aware MCP config for an agent.
@@ -1165,7 +790,7 @@ class AgentOrchestrator:
     # =========================================================================
 
     async def stop_agent(self, agent_id: str, graceful: bool = True) -> None:
-        """Stop an agent container or K8s Job."""
+        """Stop an agent container."""
         async with self._lock:
             if agent_id not in self._instances:
                 return
@@ -1174,46 +799,38 @@ class AgentOrchestrator:
 
             if instance.container_id:
                 instance.state = AgentState.STOPPING
+                container_name = f"roboco-agent-{agent_id}"
 
-                if settings.k8s_enabled and self._k8s_initialized:
-                    # K8s mode: Delete the Job
-                    await self._stop_k8s_agent(agent_id)
+                if graceful:
+                    # Graceful stop with timeout
+                    proc = await asyncio.create_subprocess_exec(
+                        "docker",
+                        "stop",
+                        "-t",
+                        "10",
+                        container_name,
+                        stdout=asyncio.subprocess.DEVNULL,
+                        stderr=asyncio.subprocess.DEVNULL,
+                    )
+                    await proc.wait()
                 else:
-                    # Docker mode: Stop and remove container
-                    container_name = f"roboco-agent-{agent_id}"
+                    # Force kill
+                    proc = await asyncio.create_subprocess_exec(
+                        "docker",
+                        "kill",
+                        container_name,
+                        stdout=asyncio.subprocess.DEVNULL,
+                        stderr=asyncio.subprocess.DEVNULL,
+                    )
+                    await proc.wait()
 
-                    if graceful:
-                        # Graceful stop with timeout
-                        proc = await asyncio.create_subprocess_exec(
-                            "docker",
-                            "stop",
-                            "-t",
-                            "10",
-                            container_name,
-                            stdout=asyncio.subprocess.DEVNULL,
-                            stderr=asyncio.subprocess.DEVNULL,
-                        )
-                        await proc.wait()
-                    else:
-                        # Force kill
-                        proc = await asyncio.create_subprocess_exec(
-                            "docker",
-                            "kill",
-                            container_name,
-                            stdout=asyncio.subprocess.DEVNULL,
-                            stderr=asyncio.subprocess.DEVNULL,
-                        )
-                        await proc.wait()
-
-                    # Remove container
-                    await self._remove_container(container_name)
+                # Remove container
+                await self._remove_container(container_name)
 
             instance.state = AgentState.OFFLINE
             instance.container_id = None
 
-            logger.info(
-                "Agent stopped", agent_id=agent_id, k8s_enabled=settings.k8s_enabled
-            )
+            logger.info("Agent stopped", agent_id=agent_id)
 
     # =========================================================================
     # WAITING STATE MANAGEMENT
@@ -1369,33 +986,27 @@ Start by:
             if instance.container_id is None:
                 continue
 
-            # Check if agent is still running
-            if settings.k8s_enabled and self._k8s_initialized:
-                # K8s mode: Check Job status
-                k8s_state = await self._get_k8s_agent_status(agent_id)
-                is_running = k8s_state in (AgentState.ACTIVE, AgentState.STARTING)
-            else:
-                # Docker mode: Check container status
-                container_name = f"roboco-agent-{agent_id}"
-                proc = await asyncio.create_subprocess_exec(
-                    "docker",
-                    "inspect",
-                    "-f",
-                    "{{.State.Running}}",
-                    container_name,
-                    stdout=asyncio.subprocess.PIPE,
-                    stderr=asyncio.subprocess.DEVNULL,
-                )
-                stdout, _ = await proc.communicate()
-                is_running = stdout.decode().strip() == "true"
+            # Check if container is still running
+            container_name = f"roboco-agent-{agent_id}"
+            proc = await asyncio.create_subprocess_exec(
+                "docker",
+                "inspect",
+                "-f",
+                "{{.State.Running}}",
+                container_name,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.DEVNULL,
+            )
+            stdout, _ = await proc.communicate()
+
+            is_running = stdout.decode().strip() == "true"
 
             if not is_running:
                 cid = instance.container_id[:12] if instance.container_id else None
                 logger.warning(
-                    "Agent container/job stopped",
+                    "Agent container stopped",
                     agent_id=agent_id,
                     container_id=cid,
-                    k8s_enabled=settings.k8s_enabled,
                 )
                 instance.state = AgentState.OFFLINE
                 instance.error_count += 1

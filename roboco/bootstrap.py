@@ -13,10 +13,9 @@ import uvicorn
 
 from roboco.api.deps import set_orchestrator
 from roboco.api.websocket import broadcast_agent_chunk
-from roboco.api.websocket_bridge import start_websocket_bridge
 from roboco.config import settings
 from roboco.db import bootstrap_database
-from roboco.events import init_event_bus, register_default_handlers, set_event_context
+from roboco.events import EventBus, register_default_handlers, set_event_context
 from roboco.runtime import AgentOrchestrator, set_reasoning_stream_callback
 from roboco.services.notification import NotificationService
 
@@ -64,18 +63,12 @@ async def main(
         logger.info("Orchestrator skipped, exiting")
         return
 
-    # Initialize event bus (Redis Streams with consumer groups)
-    event_bus = await init_event_bus(
-        consumer_name=f"orchestrator-{settings.host}:{settings.port}",
-        recover_pending=True,  # Recover unacknowledged messages from previous run
-    )
+    # Initialize event bus
+    event_bus = EventBus()
+    await event_bus.connect()
     register_default_handlers(event_bus)
-
-    # Register WebSocket bridge handlers (forward stream events to WebSocket clients)
-    await start_websocket_bridge()
-
     await event_bus.start_listening()
-    logger.info("Event bus initialized (Redis Streams)")
+    logger.info("Event bus initialized")
 
     # Initialize orchestrator
     orchestrator = AgentOrchestrator(
