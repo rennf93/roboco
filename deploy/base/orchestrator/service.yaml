@@ -1,0 +1,17 @@
+# Orchestrator Service (internal only)
+apiVersion: v1
+kind: Service
+metadata:
+  name: roboco-orchestrator
+  namespace: roboco
+  labels:
+    app.kubernetes.io/name: roboco-orchestrator
+    app.kubernetes.io/component: orchestrator
+spec:
+  type: ClusterIP
+  ports:
+    - port: 8000
+      targetPort: 8000
+      name: http
+  selector:
+    app: roboco-orchestrator

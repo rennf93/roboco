@@ -1,0 +1,110 @@
+# RoboCo Orchestrator Deployment
+# Manages agent lifecycle and task dispatching
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: roboco-orchestrator
+  namespace: roboco
+  labels:
+    app.kubernetes.io/name: roboco-orchestrator
+    app.kubernetes.io/component: orchestrator
+spec:
+  replicas: 1  # Single instance for now (state coordination needed for HA)
+  selector:
+    matchLabels:
+      app: roboco-orchestrator
+  template:
+    metadata:
+      labels:
+        app: roboco-orchestrator
+        app.kubernetes.io/name: roboco-orchestrator
+    spec:
+      serviceAccountName: roboco-orchestrator
+      containers:
+        - name: orchestrator
+          image: ghcr.io/renzof/roboco-orchestrator:latest
+          ports:
+            - containerPort: 8000
+              name: http
+          env:
+            # Database
+            - name: ROBOCO_DATABASE_HOST
+              value: postgres
+            - name: ROBOCO_DATABASE_PORT
+              value: "5432"
+            - name: ROBOCO_DATABASE_USER
+              valueFrom:
+                secretKeyRef:
+                  name: roboco-secrets
+                  key: postgres-user
+            - name: ROBOCO_DATABASE_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: roboco-secrets
+                  key: postgres-password
+            - name: ROBOCO_DATABASE_NAME
+              value: roboco
+            # Redis
+            - name: ROBOCO_REDIS_HOST
+              value: redis
+            - name: ROBOCO_REDIS_PORT
+              value: "6379"
+            # API
+            - name: ROBOCO_HOST
+              value: "0.0.0.0"
+            - name: ROBOCO_PORT
+              value: "8000"
+            - name: ROBOCO_API_URL
+              value: "http://roboco-api:8000"
+            - name: ROBOCO_ENVIRONMENT
+              value: production
+            # K8s settings
+            - name: ROBOCO_K8S_ENABLED
+              value: "true"
+            - name: ROBOCO_K8S_NAMESPACE
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.namespace
+            - name: ROBOCO_K8S_AGENT_IMAGE
+              value: "ghcr.io/renzof/roboco-agent"
+            # LLM
+            - name: ROBOCO_ANTHROPIC_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: roboco-secrets
+                  key: anthropic-api-key
+          volumeMounts:
+            - name: blueprints
+              mountPath: /app/agents/blueprints
+              readOnly: true
+            - name: claude-auth
+              mountPath: /root/.claude
+          resources:
+            requests:
+              memory: "256Mi"
+              cpu: "100m"
+            limits:
+              memory: "1Gi"
+              cpu: "500m"
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 8000
+            initialDelaySeconds: 15
+            periodSeconds: 10
+            timeoutSeconds: 5
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: 8000
+            initialDelaySeconds: 5
+            periodSeconds: 5
+            timeoutSeconds: 3
+      volumes:
+        - name: blueprints
+          configMap:
+            name: roboco-blueprints
+        - name: claude-auth
+          secret:
+            secretName: claude-auth
+            optional: true

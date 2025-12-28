@@ -1,0 +1,56 @@
+# Development Overlay for RoboCo
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+namespace: roboco
+
+resources:
+  - ../../base
+
+# Development-specific patches
+patches:
+  # Single replica for development
+  - patch: |-
+      - op: replace
+        path: /spec/replicas
+        value: 1
+    target:
+      kind: Deployment
+      name: roboco-api
+  # Lower resource limits for development
+  - patch: |-
+      - op: replace
+        path: /spec/template/spec/containers/0/resources/limits/memory
+        value: "512Mi"
+      - op: replace
+        path: /spec/template/spec/containers/0/resources/limits/cpu
+        value: "250m"
+    target:
+      kind: Deployment
+      name: roboco-api
+  # Development PostgreSQL resources
+  - patch: |-
+      - op: replace
+        path: /spec/template/spec/containers/0/resources/limits/memory
+        value: "1Gi"
+      - op: replace
+        path: /spec/template/spec/containers/0/resources/limits/cpu
+        value: "500m"
+    target:
+      kind: StatefulSet
+      name: postgres
+
+# Image tags for development (use latest)
+images:
+  - name: ghcr.io/renzof/roboco-api
+    newTag: latest
+  - name: ghcr.io/renzof/roboco-orchestrator
+    newTag: latest
+
+# Config overrides
+configMapGenerator:
+  - name: roboco-config
+    literals:
+      - ENVIRONMENT=development
+      - LOG_LEVEL=DEBUG
+      - DEBUG=true

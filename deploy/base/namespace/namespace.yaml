@@ -1,0 +1,9 @@
+# RoboCo Namespace
+# All RoboCo resources are deployed to this namespace
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: roboco
+  labels:
+    app.kubernetes.io/name: roboco
+    app.kubernetes.io/component: namespace

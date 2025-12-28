@@ -1,0 +1,36 @@
+# RoboCo API Service
+apiVersion: v1
+kind: Service
+metadata:
+  name: roboco-api
+  namespace: roboco
+  labels:
+    app.kubernetes.io/name: roboco-api
+    app.kubernetes.io/component: api
+spec:
+  type: ClusterIP
+  ports:
+    - port: 8000
+      targetPort: 8000
+      name: http
+  selector:
+    app: roboco-api
+---
+# NodePort for external access (can be replaced with Ingress)
+apiVersion: v1
+kind: Service
+metadata:
+  name: roboco-api-external
+  namespace: roboco
+  labels:
+    app.kubernetes.io/name: roboco-api
+    app.kubernetes.io/component: api
+spec:
+  type: NodePort
+  ports:
+    - port: 8000
+      targetPort: 8000
+      nodePort: 30080
+      name: http
+  selector:
+    app: roboco-api

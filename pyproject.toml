@@ -48,6 +48,10 @@ dependencies = [
     "passlib[bcrypt]",  # Password hashing
     "tenacity",  # Retry logic
     "structlog",  # Structured logging
+
+    # Container Orchestration
+    "kubernetes",  # K8s API client for agent Jobs
+    "sse-starlette",  # Server-Sent Events for A2A streaming
 ]
 
 [project.optional-dependencies]
@@ -138,6 +142,7 @@ select = [
 "roboco/mcp/**/*.py" = ["PLC0415"]
 "roboco/services/*.py" = ["PLC0415"]
 "roboco/api/routes/*.py" = ["PLC0415"]
+"roboco/runtime/*.py" = ["PLC0415"]
 
 # =============================================================================
 # MyPy Configuration
@@ -167,6 +172,8 @@ module = [
     "tiktoken.*",
     "piragi.*",
     "toon.*",
+    "kubernetes.*",
+    "sse_starlette.*",
 ]
 ignore_missing_imports = true
 

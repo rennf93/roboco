@@ -12,6 +12,8 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from roboco.api.middleware import setup_middleware
+from roboco.api.routes.a2a import router as a2a_router
+from roboco.api.routes.a2a import wellknown_router as a2a_wellknown_router
 from roboco.api.routes.agents import router as agents_router
 from roboco.api.routes.channels import router as channels_router
 from roboco.api.routes.dashboard import router as dashboard_router
@@ -146,6 +148,10 @@ def create_app() -> FastAPI:
     # Health check
     app.include_router(health_router, tags=["Health"])
 
+    # A2A Protocol: Well-known endpoints at root level
+    # (/.well-known/agent.json, /agents/{id}/.well-known/agent.json)
+    app.include_router(a2a_wellknown_router, tags=["A2A Protocol"])
+
     # API v1
     api_prefix = "/api/v1"
 
@@ -229,6 +235,13 @@ def create_app() -> FastAPI:
         orchestrator_router,
         prefix=f"{api_prefix}/orchestrator",
         tags=["Orchestrator"],
+    )
+
+    # A2A Protocol: API endpoints
+    app.include_router(
+        a2a_router,
+        prefix=f"{api_prefix}/a2a",
+        tags=["A2A Protocol"],
     )
 
     # ==========================================================================

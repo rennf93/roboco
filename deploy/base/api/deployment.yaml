@@ -1,0 +1,83 @@
+# RoboCo API Deployment
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: roboco-api
+  namespace: roboco
+  labels:
+    app.kubernetes.io/name: roboco-api
+    app.kubernetes.io/component: api
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: roboco-api
+  template:
+    metadata:
+      labels:
+        app: roboco-api
+        app.kubernetes.io/name: roboco-api
+    spec:
+      containers:
+        - name: api
+          image: ghcr.io/renzof/roboco-api:latest
+          ports:
+            - containerPort: 8000
+              name: http
+          env:
+            # Database
+            - name: ROBOCO_DATABASE_HOST
+              value: postgres
+            - name: ROBOCO_DATABASE_PORT
+              value: "5432"
+            - name: ROBOCO_DATABASE_USER
+              valueFrom:
+                secretKeyRef:
+                  name: roboco-secrets
+                  key: postgres-user
+            - name: ROBOCO_DATABASE_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: roboco-secrets
+                  key: postgres-password
+            - name: ROBOCO_DATABASE_NAME
+              value: roboco
+            # Redis
+            - name: ROBOCO_REDIS_HOST
+              value: redis
+            - name: ROBOCO_REDIS_PORT
+              value: "6379"
+            # API
+            - name: ROBOCO_HOST
+              value: "0.0.0.0"
+            - name: ROBOCO_PORT
+              value: "8000"
+            - name: ROBOCO_ENVIRONMENT
+              value: production
+            # LLM
+            - name: ROBOCO_ANTHROPIC_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: roboco-secrets
+                  key: anthropic-api-key
+          resources:
+            requests:
+              memory: "256Mi"
+              cpu: "100m"
+            limits:
+              memory: "1Gi"
+              cpu: "500m"
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 8000
+            initialDelaySeconds: 15
+            periodSeconds: 10
+            timeoutSeconds: 5
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: 8000
+            initialDelaySeconds: 5
+            periodSeconds: 5
+            timeoutSeconds: 3
