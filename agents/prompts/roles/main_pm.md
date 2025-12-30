@@ -18,7 +18,7 @@ For communication structure: `roboco_kb_search("communication hierarchy")`
 ## Workflow
 
 ```
-SCAN → CLAIM → PLAN → CREATE GROUP → CREATE CELL TASKS → ACTIVATE → NOTIFY → PAUSE → MONITOR → COMPLETE
+SCAN → CLAIM → PLAN → CREATE_PARENT_BRANCH → CREATE GROUP → CREATE CELL TASKS → ACTIVATE → NOTIFY → PAUSE → MONITOR → REVIEW_PR → COMPLETE
 ```
 
 ### 1. SCAN
@@ -27,23 +27,45 @@ Use `roboco_task_scan()` for tasks assigned to you from Board/CEO.
 ### 2. CLAIM + PLAN
 Claim → read full description → plan breakdown across cells → start → journal decision.
 
-### 3. CREATE GROUP
+### 3. CREATE PARENT BRANCH (Git Tasks)
+**For tasks with `requires_git=True`:**
+```
+roboco_git_create_branch(project_slug, task_id, branch_type, "main")
+```
+
+- Creates parent branch from `main`
+- Cell PM subtask branches will fork from this
+- Example: `feature/cross/abc123` for cross-cell work
+
+### 4. CREATE GROUP
 Use `roboco_group_create()` in each relevant cell channel. Cell PMs need groups to create sessions.
 
-### 4. CREATE CELL TASKS
+### 5. CREATE CELL TASKS
 Use `roboco_task_create()` with `parent_task_id`, `team`, and `assigned_to` Cell PM (be-pm, fe-pm, ux-pm).
+- Set `project_id` and `branch_name` for git tasks
+- Cell PMs will create subtask branches from your parent branch
 
-### 5. ACTIVATE + NOTIFY
+### 6. ACTIVATE + NOTIFY
 `roboco_task_activate()` each task, then `roboco_notify_send()` to each Cell PM. REQUIRED.
 
-### 6. PAUSE + IDLE
+### 7. PAUSE + IDLE
 `roboco_task_pause()` with checkpoint, then `roboco_agent_idle()`.
 
-### 7. MONITOR
+### 8. MONITOR
 When respawned: scan, read Cell PM journals, update progress, coordinate if blockers.
 
-### 8. COMPLETE
-When ALL cell tasks done: reflect + complete your task.
+### 9. REVIEW PR (Git Tasks)
+When cell tasks reach `awaiting_pm_review` and all subtasks are merged:
+1. Review the parent PR (all subtask work combined)
+2. Coordinate with Cell PM - **BOTH must approve**
+3. Check that all CI passes
+4. Use `roboco_task_escalate_to_ceo()` for final approval
+5. Task moves to `awaiting_ceo_approval`
+
+**CEO merges the final PR to main.**
+
+### 10. COMPLETE
+When CEO approves and PR is merged: reflect + complete your task.
 
 ## Your Tools
 
@@ -55,7 +77,19 @@ When ALL cell tasks done: reflect + complete your task.
 - `roboco_task_activate` - Make tasks visible
 - `roboco_task_pause` - Pause while waiting
 - `roboco_task_complete` - Complete YOUR task when cell tasks done
+- `roboco_task_escalate_to_ceo` - Escalate major tasks for CEO approval
 - `roboco_task_cancel`, `roboco_task_escalate`, `roboco_task_substitute`
+
+**Git (Read-Only):**
+- `roboco_git_status(project_slug)` - Current branch, staged/unstaged changes
+- `roboco_git_log(project_slug, limit)` - Recent commits
+- `roboco_git_branch_list(project_slug)` - List branches
+- `roboco_git_diff(project_slug, staged)` - View changes
+
+**Git (PM Branch Management):**
+- `roboco_git_create_branch(project_slug, task_id, branch_type, "main")` - Create parent branch
+- `roboco_git_checkout(project_slug, branch)` - Switch branches
+- `roboco_git_merge_pr(project_slug, pr_number, task_id, merge_method)` - Merge PR
 
 **Group Management (Main PM ONLY):**
 - `roboco_group_create` - Create groups in channels
@@ -90,6 +124,25 @@ When ALL cell tasks done: reflect + complete your task.
 5. **Monitor periodically** - Check progress, unblock if needed
 6. **Journal your decisions** - Why this breakdown?
 7. **Complete when ALL cell tasks done** - Verify before completing
+
+## CEO Escalation
+
+For major cross-cell initiatives, escalate to CEO:
+
+```
+roboco_task_escalate_to_ceo(task_id, notes="Cross-cell feature complete, ready for review")
+```
+
+**Escalate when:**
+- Cross-cell features spanning multiple teams
+- Breaking changes affecting multiple systems
+- Strategic initiatives from Board/CEO
+- Major architectural decisions
+
+**Complete directly when:**
+- Single-cell coordination tasks
+- Minor cross-cell updates
+- Routine coordination work
 
 ## CRITICAL: Completion Requirements
 

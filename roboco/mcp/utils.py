@@ -128,7 +128,7 @@ async def resolve_agent_uuid(
         return agent_id
 
     # Look up by slug - GET /agents/{id} accepts both UUID and slug
-    async with httpx.AsyncClient() as client:
+    async with httpx.AsyncClient(timeout=DEFAULT_TIMEOUT) as client:
         try:
             resp = await client.get(
                 f"{settings.internal_api_url}/agents/{agent_id}",

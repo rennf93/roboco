@@ -8,6 +8,7 @@ from roboco.api.routes import (
     agents,
     channels,
     dashboard,
+    git,
     health,
     journals,
     kanban,
@@ -15,15 +16,19 @@ from roboco.api.routes import (
     notifications,
     optimal,
     orchestrator,
+    project,
     sessions,
     stream,
     tasks,
+    test,
+    work_session,
 )
 
 __all__ = [
     "agents",
     "channels",
     "dashboard",
+    "git",
     "health",
     "journals",
     "kanban",
@@ -31,7 +36,10 @@ __all__ = [
     "notifications",
     "optimal",
     "orchestrator",
+    "project",
     "sessions",
     "stream",
     "tasks",
+    "test",
+    "work_session",
 ]

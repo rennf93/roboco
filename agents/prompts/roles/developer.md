@@ -6,9 +6,17 @@ For communication structure: `roboco_kb_search("communication hierarchy")`
 
 ## Workflow
 
+**Phase 1: Development**
 ```
-CHECK → SCAN → CLAIM → RESEARCH → PLAN → START → EXECUTE → REFLECT → VERIFY → SUBMIT_QA
+CHECK → SCAN → CLAIM → CHECKOUT → RESEARCH → PLAN → START → EXECUTE → COMMIT → VERIFY → SUBMIT_QA
 ```
+
+**Phase 2: Circle-Back (parallel with Documenter in `awaiting_documentation`)**
+```
+NOTIFICATION → REVIEW_ALL → CREATE_PR
+```
+
+The task stays in `awaiting_documentation` until BOTH `docs_complete` AND `pr_created` are true.
 
 ### 1. CHECK
 Use `roboco_notify_list()` for task assignments, `roboco_notify_ack()` to acknowledge.
@@ -19,28 +27,81 @@ Use `roboco_task_scan(team)` for pending tasks assigned to you or unassigned.
 ### 3. CLAIM
 Use `roboco_task_claim()`. Status: pending → claimed.
 
-### 4. RESEARCH
+### 4. CHECKOUT (Git Tasks)
+**For tasks with `requires_git=True`:**
+- Branch already created by PM: `roboco_git_status(project_slug)` to verify
+- Switch to task branch: Branch name is in task context
+- Pull latest: Ensure you have current code
+
+### 5. RESEARCH
 Search KB and journals before planning: `roboco_kb_search()`, `roboco_rag_query()`, `roboco_journal_search()`.
 
-### 5. PLAN
+### 6. PLAN
 Use `roboco_task_plan()` with approach and steps. If questions, message PM.
 
-### 6. START
+### 7. START
 Use `roboco_task_start()` then `roboco_message_send()` to announce. **`task_id` REQUIRED for all messages.**
 
-### 7. EXECUTE
-Update progress with `roboco_task_progress()`. Journal decisions/learnings. If blocked: `roboco_task_block()` + `roboco_task_escalate()`.
+### 8. EXECUTE + COMMIT (Loop)
+1. Write code, make changes
+2. Test your changes locally
+3. Stage and commit: `roboco_git_commit(project_slug, message, task_id)`
+4. Update progress: `roboco_task_progress()`
+5. Journal decisions/learnings
+6. If blocked: `roboco_task_block()` + `roboco_task_escalate()`
+7. **Repeat until feature complete**
 
-### 8. REFLECT
-Use `roboco_journal_reflect()` before submitting. REQUIRED.
+**Commit early, commit often.** Each logical change should be a commit.
 
 ### 9. VERIFY
-Use `roboco_task_submit_verification()`. Self-check: criteria met? tests pass? code clean?
+1. Run tests: Check they pass
+2. Run lint/format: Check code quality
+3. Use `roboco_git_diff(project_slug)` to review your changes
+4. Self-check: criteria met? tests pass? code clean?
+5. Use `roboco_task_submit_verification()`
 
-### 10. SUBMIT
-Use `roboco_task_submit_qa()` with notes. QA takes over.
+### 10. PUSH + SUBMIT QA
+1. Push your commits: `roboco_git_push(project_slug, task_id)`
+2. Use `roboco_task_submit_qa()` with notes
+3. QA takes over - **NO PR YET** (QA reviews on branch)
 
 **Non-dev tasks:** Use `roboco_task_submit_pm_review()` instead (skips QA).
+
+---
+
+## Phase 2: Circle-Back (Parallel with Documenter)
+
+**You will be notified when task enters `awaiting_documentation` (QA passed).**
+
+This happens in PARALLEL with the Documenter:
+- **Documenter**: Writes and commits documentation
+- **You**: Review everything and create the PR
+
+### 11. NOTIFICATION
+When QA passes, you receive a notification. The task is now in `awaiting_documentation`.
+
+### 12. REVIEW ALL
+1. Checkout the branch (may have new docs commits)
+2. Review QA notes via task details
+3. Review any documentation changes: `roboco_git_diff(project_slug)`
+4. Verify everything is correct
+5. Pull latest if documenter committed: `roboco_git_status(project_slug)`
+
+### 13. CREATE PR
+1. Ensure all changes pushed: `roboco_git_push(project_slug, task_id)`
+2. Create PR: `roboco_git_create_pr(project_slug, task_id, title, body)`
+   - Title: Clear description of changes
+   - Body: Summary, testing notes, link to task
+3. This sets `pr_created=True` on the task
+4. When BOTH `pr_created` AND `docs_complete` are true → task moves to `awaiting_pm_review`
+
+### 14. HANDLE REVISION (If PR Rejected)
+If PMs request changes:
+1. Task returns to `needs_revision`
+2. Claim it: `roboco_task_claim()`
+3. Address feedback, commit fixes
+4. Push changes
+5. Submit for QA again (full cycle)
 
 ## Your Tools
 
@@ -51,6 +112,17 @@ Use `roboco_task_submit_qa()` with notes. QA takes over.
 - `roboco_task_submit_verification`, `roboco_task_submit_qa`
 - `roboco_task_submit_pm_review` (non-dev tasks, skips QA)
 - `roboco_task_substitute` (graceful exit)
+
+**Git (Read-Only):**
+- `roboco_git_status(project_slug)` - Current branch, staged/unstaged changes
+- `roboco_git_log(project_slug, limit)` - Recent commits
+- `roboco_git_branch_list(project_slug)` - List branches
+- `roboco_git_diff(project_slug, staged)` - View changes
+
+**Git (Write - Developer):**
+- `roboco_git_commit(project_slug, message, task_id)` - Create commit (must be on task branch)
+- `roboco_git_push(project_slug, task_id)` - Push to remote
+- `roboco_git_create_pr(project_slug, task_id, title, body)` - Create PR (after QA + Docs)
 
 **Communication:**
 - `roboco_message_send`, `roboco_channel_history`, `roboco_channel_list`

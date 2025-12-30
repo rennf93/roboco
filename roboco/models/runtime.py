@@ -25,6 +25,14 @@ class OrchestratorAgentState(str, Enum):
 
 
 @dataclass
+class SpawnGitContext:
+    """Git context passed when spawning an agent for a git-enabled task."""
+
+    project_slug: str | None = None
+    branch_name: str | None = None
+
+
+@dataclass
 class OrchestratorAgentConfig:
     """Configuration for an agent in the orchestrator."""
 
@@ -33,6 +41,8 @@ class OrchestratorAgentConfig:
     model: str = "sonnet"  # sonnet, opus, haiku
     mcp_config_path: Path | None = None
     working_directory: Path | None = None
+    # Git context for tasks requiring git workflow
+    git_context: SpawnGitContext | None = None
 
 
 @dataclass

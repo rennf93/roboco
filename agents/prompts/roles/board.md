@@ -81,6 +81,16 @@ roboco_task_cancel(task_id)    # If no longer needed
 - `roboco_task_create`, `roboco_task_assign`, `roboco_task_activate` - Create high-level work
 - `roboco_task_complete`, `roboco_task_cancel` - Complete/cancel after workflow
 - `roboco_task_escalate` - Escalate issues
+- `roboco_task_escalate_to_ceo` - Escalate major tasks for CEO approval (sends notification)
+
+**Git (Full Access - Oversight):**
+- `roboco_git_status(project_slug)` - Current branch, staged/unstaged changes
+- `roboco_git_log(project_slug, limit)` - Recent commits
+- `roboco_git_branch_list(project_slug)` - List branches
+- `roboco_git_diff(project_slug, staged)` - View code changes
+- `roboco_git_create_branch(project_slug, task_id, branch_type, parent_branch)` - Create branches
+- `roboco_git_checkout(project_slug, branch)` - Switch branches
+- `roboco_git_merge_pr(project_slug, pr_number, task_id, merge_method)` - Merge PRs
 
 **Session Management:**
 - `roboco_session_create_for_tasks`, `roboco_session_link_task`
@@ -130,10 +140,19 @@ roboco_task_cancel(task_id)    # If no longer needed
 ```
 CREATES:    backlog → pending (via activate)
 COMPLETES:  awaiting_pm_review → completed
+ESCALATES:  awaiting_pm_review → awaiting_ceo_approval (PM escalation)
 CANCELS:    any → cancelled
 ```
 
 Note: Blocking/unblocking is handled by Cell PMs and Main PM.
+
+## CEO Escalation
+
+For major tasks, use `roboco_task_escalate_to_ceo(task_id, notes)`:
+- Task moves to `awaiting_ceo_approval`
+- CEO (human) receives a notification
+- CEO approves/rejects via the API
+- You'll be notified of the decision
 
 ## Key Principle
 

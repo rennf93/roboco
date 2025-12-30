@@ -35,6 +35,7 @@ from roboco.models.runtime import (
     AgentInstance,
     OrchestratorAgentConfig,
     OrchestratorAgentState,
+    SpawnGitContext,
     WaitingRecord,
 )
 from roboco.seeds.initial_data import AGENT_UUIDS
@@ -273,6 +274,9 @@ class AgentOrchestrator:
             "mcp__roboco-journal__*",
             # Knowledge base/RAG - needed for research
             "mcp__roboco-optimal__*",
+            # Git - branch management, commits, PRs
+            # Role-based permissions enforced at handler level
+            "mcp__roboco-git__*",
             # File operations for documenters and developers
             # Note: // prefix = absolute path (container paths like /app/docs)
             "Write(//app/docs/**)",
@@ -331,6 +335,7 @@ class AgentOrchestrator:
         initial_prompt: str | None = None,
         task_id: str | None = None,
         model: str | None = None,
+        git_context: SpawnGitContext | None = None,
     ) -> AgentInstance:
         """
         Spawn a Claude Code container for an agent.
@@ -340,6 +345,7 @@ class AgentOrchestrator:
             initial_prompt: Optional initial prompt
             task_id: Optional task ID being worked on
             model: Override model selection
+            git_context: Optional git context (project_slug, branch_name)
 
         Returns:
             AgentInstance handle
@@ -365,8 +371,8 @@ class AgentOrchestrator:
             # Ensure agent-specific Docker image is built
             await self._ensure_agent_image(agent_id)
 
-            # Generate MCP config
-            mcp_config_path = await self._generate_mcp_config(agent_id)
+            # Generate MCP config with git context if available
+            mcp_config_path = await self._generate_mcp_config(agent_id, git_context)
 
             # Determine model using canonical role name from agents_config
             if not model:
@@ -379,6 +385,7 @@ class AgentOrchestrator:
                 blueprint_path=blueprint_path,
                 model=model,
                 mcp_config_path=mcp_config_path,
+                git_context=git_context,
             )
 
             # Create instance
@@ -492,35 +499,49 @@ class AgentOrchestrator:
             f"ROBOCO_AGENT_ID={config.agent_id}",
             "-e",
             "ROBOCO_API_URL=http://roboco-orchestrator:8000",
-            # The image (role-specific)
-            get_agent_image(config.agent_id),
-            # Claude Code arguments
-            "--model",
-            MODEL_MAP.get(config.model, config.model),
-            "--system-prompt-file",
-            "/app/system-prompt.md",
-            "--mcp-config",
-            "/app/mcp-config.json",
-            "--output-format",
-            "stream-json",
-            "--verbose",
-            # Always provide a prompt (required for non-interactive mode)
-            # If no task assignment provided, agent should follow standard workflow:
-            # SCAN for work -> CLAIM if available -> or IDLE if no work
-            "-p",
-            initial_prompt
-            or (
-                "You may have been spawned without a specific task assignment. "
-                "Follow your standard workflow:\n\n"
-                "1. Call `roboco_task_scan()` to find available work for your role\n"
-                "2. If tasks are found, claim one with `roboco_task_claim(task_id)` "
-                "and begin the full task lifecycle "
-                "(UNDERSTAND -> PLAN -> EXECUTE -> VERIFY -> HANDOFF)\n"
-                "3. If no tasks are available, call `roboco_agent_idle()` "
-                "to shutdown gracefully\n\n"
-                "Start now by scanning for work."
-            ),
         ]
+
+        # Add git context environment variables if available
+        if config.git_context:
+            if config.git_context.project_slug:
+                cmd.extend(
+                    ["-e", f"ROBOCO_PROJECT_SLUG={config.git_context.project_slug}"]
+                )
+            if config.git_context.branch_name:
+                cmd.extend(["-e", f"ROBOCO_BRANCH={config.git_context.branch_name}"])
+
+        # Continue building command
+        cmd.extend(
+            [
+                # The image (role-specific)
+                get_agent_image(config.agent_id),
+                # Claude Code arguments
+                "--model",
+                MODEL_MAP.get(config.model, config.model),
+                "--system-prompt-file",
+                "/app/system-prompt.md",
+                "--mcp-config",
+                "/app/mcp-config.json",
+                "--output-format",
+                "stream-json",
+                "--verbose",
+                # Always provide a prompt (required for non-interactive mode)
+                # If no task assignment provided, agent should follow standard workflow:
+                # SCAN for work -> CLAIM if available -> or IDLE if no work
+                "-p",
+                initial_prompt
+                or (
+                    "You may have been spawned without a specific task assignment. "
+                    "Follow your standard workflow:\n\n"
+                    "1. Call `roboco_task_scan()` to find work for your role\n"
+                    "2. If tasks found, claim with `roboco_task_claim(task_id)` "
+                    "and begin: UNDERSTAND -> PLAN -> EXECUTE -> VERIFY -> HANDOFF\n"
+                    "3. If no tasks available, call `roboco_agent_idle()` "
+                    "to shutdown gracefully\n\n"
+                    "Start now by scanning for work."
+                ),
+            ]
+        )
 
         proc = await asyncio.create_subprocess_exec(
             *cmd,
@@ -547,12 +568,18 @@ class AgentOrchestrator:
         )
         await proc.wait()
 
-    async def _generate_mcp_config(self, agent_id: str) -> Path:
+    async def _generate_mcp_config(
+        self,
+        agent_id: str,
+        git_context: SpawnGitContext | None = None,
+    ) -> Path:
         """Generate role-aware MCP config for an agent.
 
         Different roles get different MCP server access:
         - All agents: task, message, journal
         - PMs only: notify (for sending notifications)
+
+        Git context is passed to MCP servers so git tools can use defaults.
         """
         # MCP servers run inside agent containers, need to connect via Docker network
         if PROJECT_HOST_PATH:
@@ -560,10 +587,17 @@ class AgentOrchestrator:
         else:
             api_url = f"http://127.0.0.1:{settings.port}"
 
-        mcp_env = {
+        mcp_env: dict[str, str] = {
             "ROBOCO_API_URL": api_url,
             "ROBOCO_AGENT_ID": agent_id,
         }
+
+        # Add git context if available
+        if git_context:
+            if git_context.project_slug:
+                mcp_env["ROBOCO_PROJECT_SLUG"] = git_context.project_slug
+            if git_context.branch_name:
+                mcp_env["ROBOCO_BRANCH"] = git_context.branch_name
 
         # Base MCP servers - all agents get these
         mcp_servers: dict[str, dict[str, Any]] = {
@@ -619,6 +653,23 @@ class AgentOrchestrator:
                 "python",
                 "-m",
                 "roboco.mcp.optimal_server",
+                agent_id,
+            ],
+            "env": mcp_env,
+        }
+
+        # Git server - branch management, commits, PRs
+        # Role-based permissions enforced at handler level:
+        # - All agents: read-only (status, log, diff, branch list)
+        # - Developers: commit, push, create PR
+        # - PMs: create branch, checkout, merge PR
+        mcp_servers["roboco-git"] = {
+            "command": "uv",
+            "args": [
+                "run",
+                "python",
+                "-m",
+                "roboco.mcp.git.git_server",
                 agent_id,
             ],
             "env": mcp_env,
@@ -1714,15 +1765,17 @@ Start now: roboco_task_get("{task_id}")
                 if not task_id:
                     continue
 
-                # Check if this task has subtasks
-                subtasks = await self._fetch_subtasks(client, task_id)
-                if not subtasks:
+                # Check if this task has any descendants (children, grandchildren, etc.)
+                descendants = await self._fetch_all_descendants(client, task_id)
+                if not descendants:
                     continue  # Not a parent task
 
-                # Check if all subtasks are completed
-                all_completed = all(st.get("status") == "completed" for st in subtasks)
+                # Check if all descendants are in terminal states
+                all_complete = all(
+                    st.get("status") in ("completed", "cancelled") for st in descendants
+                )
 
-                if not all_completed:
+                if not all_complete:
                     continue  # Not ready for closure
 
                 # Parent has all subtasks completed - spawn PM to close
@@ -1739,11 +1792,11 @@ Start now: roboco_task_get("{task_id}")
                 logger.info(
                     "Parent task ready for closure",
                     task_id=task_id,
-                    subtasks_count=len(subtasks),
+                    descendants_count=len(descendants),
                     pm_id=pm_id,
                 )
 
-                prompt = self._build_pm_closure_prompt(task, subtasks)
+                prompt = self._build_pm_closure_prompt(task, descendants)
                 await self.spawn_agent(
                     agent_id=pm_id,
                     task_id=task_id,
@@ -1753,7 +1806,7 @@ Start now: roboco_task_get("{task_id}")
     async def _fetch_subtasks(
         self, client: httpx.AsyncClient, parent_id: str
     ) -> list[dict[str, Any]]:
-        """Fetch subtasks for a parent task."""
+        """Fetch direct subtasks for a parent task."""
         try:
             resp = await client.get(
                 f"{self._api_url}/tasks",
@@ -1767,6 +1820,23 @@ Start now: roboco_task_get("{task_id}")
             logger.warning(
                 "Failed to fetch subtasks", parent_id=parent_id, error=str(e)
             )
+        return []
+
+    async def _fetch_all_descendants(
+        self, client: httpx.AsyncClient, task_id: str
+    ) -> list[dict[str, Any]]:
+        """Fetch ALL descendants (children, grandchildren, etc.) recursively.
+
+        Uses the /tasks/{id}/descendants endpoint which does BFS traversal.
+        """
+        try:
+            resp = await client.get(f"{self._api_url}/tasks/{task_id}/descendants")
+            if resp.status_code == http_status.HTTP_200_OK:
+                data = resp.json()
+                # Endpoint returns list directly
+                return list(data) if data else []
+        except Exception as e:
+            logger.warning("Failed to fetch descendants", task_id=task_id, error=str(e))
         return []
 
     def _build_pm_closure_prompt(

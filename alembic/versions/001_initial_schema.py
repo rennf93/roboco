@@ -7,6 +7,8 @@ Create Date: 2025-12-09
 Creates all tables for the RoboCo AI Agents Company system:
 - agents: AI agent definitions and state
 - tasks: Work items with lifecycle management
+- projects: Git repositories that agents work on
+- work_sessions: Git working sessions linking agents to tasks
 - channels: Communication channels
 - groups: Role-based groups within channels
 - sessions: Bounded message sessions
@@ -56,7 +58,15 @@ def upgrade() -> None:
         ),
         sa.Column(
             "team",
-            sa.Enum("backend", "frontend", "ux_ui", "main_pm", "board", "marketing", name="team"),
+            sa.Enum(
+                "backend",
+                "frontend",
+                "ux_ui",
+                "main_pm",
+                "board",
+                "marketing",
+                name="team",
+            ),
             nullable=True,
         ),
         sa.Column(
@@ -73,6 +83,126 @@ def upgrade() -> None:
         sa.Column("metrics", postgresql.JSON(), server_default="{}"),
         sa.Column("journal_id", postgresql.UUID(as_uuid=True), nullable=True),
         sa.Column("description", sa.Text(), nullable=True),
+        sa.Column(
+            "created_at", sa.DateTime(), nullable=False, server_default=sa.func.now()
+        ),
+        sa.Column("updated_at", sa.DateTime(), nullable=True),
+    )
+
+    # ==========================================================================
+    # PROJECTS TABLE
+    # ==========================================================================
+    op.create_table(
+        "projects",
+        sa.Column("id", postgresql.UUID(as_uuid=True), primary_key=True),
+        sa.Column("name", sa.String(100), nullable=False),
+        sa.Column("slug", sa.String(50), nullable=False, unique=True, index=True),
+        # Git Configuration
+        sa.Column("git_url", sa.String(500), nullable=False),
+        sa.Column(
+            "default_branch", sa.String(100), nullable=False, server_default="main"
+        ),
+        sa.Column(
+            "protected_branches", postgresql.ARRAY(sa.String()), server_default="{}"
+        ),
+        # CI/CD Commands (optional)
+        sa.Column("test_command", sa.String(500), nullable=True),
+        sa.Column("lint_command", sa.String(500), nullable=True),
+        sa.Column("format_command", sa.String(500), nullable=True),
+        sa.Column("typecheck_command", sa.String(500), nullable=True),
+        sa.Column("build_command", sa.String(500), nullable=True),
+        # Access Control
+        sa.Column(
+            "assigned_cell",
+            sa.Enum(
+                "backend",
+                "frontend",
+                "ux_ui",
+                "main_pm",
+                "board",
+                "marketing",
+                name="team",
+                create_type=False,
+            ),
+            nullable=False,
+        ),
+        sa.Column(
+            "allowed_agents",
+            postgresql.ARRAY(postgresql.UUID(as_uuid=True)),
+            nullable=True,
+        ),
+        # Runtime State
+        sa.Column("workspace_path", sa.String(500), nullable=True),
+        sa.Column("last_synced_at", sa.DateTime(), nullable=True),
+        sa.Column("head_commit", sa.String(40), nullable=True),
+        # Metadata
+        sa.Column(
+            "created_by",
+            postgresql.UUID(as_uuid=True),
+            sa.ForeignKey("agents.id"),
+            nullable=False,
+        ),
+        sa.Column("is_active", sa.Boolean(), nullable=False, server_default="true"),
+        sa.Column(
+            "created_at", sa.DateTime(), nullable=False, server_default=sa.func.now()
+        ),
+        sa.Column("updated_at", sa.DateTime(), nullable=True),
+    )
+
+    # ==========================================================================
+    # WORK_SESSIONS TABLE (created before tasks due to FK dependency)
+    # ==========================================================================
+    op.create_table(
+        "work_sessions",
+        sa.Column("id", postgresql.UUID(as_uuid=True), primary_key=True),
+        sa.Column(
+            "project_id",
+            postgresql.UUID(as_uuid=True),
+            sa.ForeignKey("projects.id", ondelete="CASCADE"),
+            nullable=False,
+            index=True,
+        ),
+        # task_id FK added after tasks table is created
+        sa.Column("task_id", postgresql.UUID(as_uuid=True), nullable=False, index=True),
+        sa.Column(
+            "agent_id",
+            postgresql.UUID(as_uuid=True),
+            sa.ForeignKey("agents.id", ondelete="SET NULL"),
+            nullable=True,
+            index=True,
+        ),
+        # Branch Management
+        sa.Column("branch_name", sa.String(500), nullable=False),
+        sa.Column("base_branch", sa.String(500), nullable=False),
+        sa.Column("target_branch", sa.String(500), nullable=False),
+        # Lifecycle
+        sa.Column(
+            "started_at", sa.DateTime(), nullable=False, server_default=sa.func.now()
+        ),
+        sa.Column("ended_at", sa.DateTime(), nullable=True),
+        sa.Column(
+            "status",
+            sa.Enum("active", "completed", "abandoned", name="worksessionstatus"),
+            nullable=False,
+            server_default="active",
+            index=True,
+        ),
+        # Audit Trail
+        sa.Column("commits", postgresql.ARRAY(sa.String()), server_default="{}"),
+        sa.Column("files_modified", postgresql.ARRAY(sa.String()), server_default="{}"),
+        # PR Tracking
+        sa.Column("pr_number", sa.Integer(), nullable=True),
+        sa.Column("pr_url", sa.String(500), nullable=True),
+        sa.Column("pr_status", sa.String(50), nullable=True),
+        sa.Column("pr_created_at", sa.DateTime(), nullable=True),
+        sa.Column("pr_merged_at", sa.DateTime(), nullable=True),
+        # Merge tracking
+        sa.Column(
+            "merged_by",
+            postgresql.UUID(as_uuid=True),
+            sa.ForeignKey("agents.id", ondelete="SET NULL"),
+            nullable=True,
+        ),
         sa.Column(
             "created_at", sa.DateTime(), nullable=False, server_default=sa.func.now()
         ),
@@ -101,6 +231,8 @@ def upgrade() -> None:
                 "needs_revision",
                 "awaiting_qa",
                 "awaiting_documentation",
+                "awaiting_pm_review",
+                "awaiting_ceo_approval",
                 "completed",
                 "cancelled",
                 name="taskstatus",
@@ -110,6 +242,43 @@ def upgrade() -> None:
             index=True,
         ),
         sa.Column("priority", sa.Integer(), nullable=False, server_default="2"),
+        # Task Type & Git Configuration
+        sa.Column(
+            "task_type",
+            sa.Enum(
+                "code",
+                "documentation",
+                "research",
+                "planning",
+                "design",
+                "administrative",
+                name="tasktype",
+            ),
+            nullable=False,
+            server_default="code",
+        ),
+        sa.Column("requires_git", sa.Boolean(), nullable=False, server_default="true"),
+        sa.Column(
+            "project_id",
+            postgresql.UUID(as_uuid=True),
+            sa.ForeignKey("projects.id", ondelete="SET NULL"),
+            nullable=True,
+            index=True,
+        ),
+        sa.Column("branch_name", sa.String(500), nullable=True),
+        sa.Column(
+            "work_session_id",
+            postgresql.UUID(as_uuid=True),
+            sa.ForeignKey("work_sessions.id", ondelete="SET NULL"),
+            nullable=True,
+        ),
+        sa.Column("pr_number", sa.Integer(), nullable=True),
+        sa.Column("pr_url", sa.String(500), nullable=True),
+        sa.Column(
+            "docs_complete", sa.Boolean(), nullable=False, server_default="false"
+        ),
+        sa.Column("pr_created", sa.Boolean(), nullable=False, server_default="false"),
+        sa.Column("pm_approvals", postgresql.JSON(), server_default="{}"),
         sa.Column(
             "created_by",
             postgresql.UUID(as_uuid=True),
@@ -126,7 +295,14 @@ def upgrade() -> None:
         sa.Column(
             "team",
             sa.Enum(
-                "backend", "frontend", "ux_ui", "main_pm", "board", "marketing", name="team", create_type=False
+                "backend",
+                "frontend",
+                "ux_ui",
+                "main_pm",
+                "board",
+                "marketing",
+                name="team",
+                create_type=False,
             ),
             nullable=False,
             index=True,
@@ -185,6 +361,16 @@ def upgrade() -> None:
         ["current_task_id"],
         ["id"],
         ondelete="SET NULL",
+    )
+
+    # Add foreign key for work_sessions.task_id after tasks table exists
+    op.create_foreign_key(
+        "fk_work_sessions_task",
+        "work_sessions",
+        "tasks",
+        ["task_id"],
+        ["id"],
+        ondelete="CASCADE",
     )
 
     # ==========================================================================
@@ -695,9 +881,35 @@ def upgrade() -> None:
         [sa.text("timestamp DESC")],
     )
 
+    # Project indexes
+    op.create_index("ix_projects_cell", "projects", ["assigned_cell"])
+    op.create_index("ix_projects_active", "projects", ["is_active"])
+
+    # Work session indexes
+    op.create_index(
+        "ix_work_sessions_project_status",
+        "work_sessions",
+        ["project_id", "status"],
+    )
+    op.create_index(
+        "ix_work_sessions_agent_status",
+        "work_sessions",
+        ["agent_id", "status"],
+    )
+
+    # Task project index
+    op.create_index("ix_tasks_project_status", "tasks", ["project_id", "status"])
+
 
 def downgrade() -> None:
-    # Drop indexes
+    # Drop new indexes
+    op.drop_index("ix_tasks_project_status", table_name="tasks")
+    op.drop_index("ix_work_sessions_agent_status", table_name="work_sessions")
+    op.drop_index("ix_work_sessions_project_status", table_name="work_sessions")
+    op.drop_index("ix_projects_active", table_name="projects")
+    op.drop_index("ix_projects_cell", table_name="projects")
+
+    # Drop original indexes
     op.drop_index("ix_notifications_to_timestamp", table_name="notifications")
     op.drop_index("ix_messages_channel_timestamp", table_name="messages")
     op.drop_index("ix_tasks_assigned_status", table_name="tasks")
@@ -715,13 +927,18 @@ def downgrade() -> None:
     op.drop_table("groups")
     op.drop_table("channels")
 
-    # Drop FK before dropping tasks
+    # Drop FKs before dropping tasks
     op.drop_constraint("fk_agents_current_task", "agents", type_="foreignkey")
+    op.drop_constraint("fk_work_sessions_task", "work_sessions", type_="foreignkey")
 
     op.drop_table("tasks")
+    op.drop_table("work_sessions")
+    op.drop_table("projects")
     op.drop_table("agents")
 
     # Drop enums
+    op.execute("DROP TYPE IF EXISTS worksessionstatus")
+    op.execute("DROP TYPE IF EXISTS tasktype")
     op.execute("DROP TYPE IF EXISTS handoffstatus")
     op.execute("DROP TYPE IF EXISTS journalentrytype")
     op.execute("DROP TYPE IF EXISTS notificationpriority")

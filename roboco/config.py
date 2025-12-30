@@ -79,8 +79,10 @@ class Settings(BaseSettings):
     database_password: str = "roboco"
     database_name: str = "roboco"
     database_echo: bool = Field(default=False, description="Log SQL queries")
-    database_pool_size: int = Field(default=5, ge=1)
-    database_max_overflow: int = Field(default=10, ge=0)
+    database_pool_size: int = Field(default=10, ge=1)
+    database_max_overflow: int = Field(default=20, ge=0)
+    database_pool_timeout: int = Field(default=10, ge=1)
+    database_pool_recycle: int = Field(default=1800, ge=60)
 
     @computed_field  # type: ignore[prop-decorator]
     @property

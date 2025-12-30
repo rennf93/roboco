@@ -232,6 +232,169 @@ async def handle_task_complete(
     )
 
 
+# =============================================================================
+# CEO APPROVAL WORKFLOW
+# =============================================================================
+
+
+def _validate_ceo_role(agent_id: str) -> dict[str, Any] | None:
+    """Validate agent is CEO. Returns error or None."""
+    agent_role = get_agent_role(agent_id)
+    if agent_role != "ceo":
+        return format_error_response(
+            "NOT_CEO",
+            "Only CEO can perform this action.",
+            {"your_role": agent_role},
+        )
+    return None
+
+
+async def handle_escalate_to_ceo(
+    client: ApiClient,
+    task_id: str,
+    agent_id: str,
+    notes: str | None = None,
+) -> dict[str, Any]:
+    """Handle PM escalation to CEO for final approval.
+
+    Used for major tasks requiring CEO sign-off:
+    - Parent tasks with subtasks
+    - High-priority features
+    - Breaking changes
+    """
+    if error := _validate_pm_role(agent_id, "escalate to CEO"):
+        return error
+
+    task, error = await fetch_task_or_error(client, task_id)
+    if error:
+        return error
+    assert task is not None
+
+    current_status = task.get("status")
+    if current_status != "awaiting_pm_review":
+        return format_error_response(
+            "INVALID_STATE",
+            f"Cannot escalate to CEO - task is '{current_status}', "
+            "expected 'awaiting_pm_review'.",
+            {"current_status": current_status},
+        )
+
+    payload = {}
+    if notes:
+        payload["notes"] = notes
+
+    resp = await client.post(f"/tasks/{task_id}/escalate-to-ceo", json=payload)
+    if not resp.ok:
+        return format_error_response(
+            "ESCALATE_FAILED",
+            "Failed to escalate to CEO",
+            {"status_code": resp.status_code, "api_error": resp.text},
+        )
+
+    guidance = (
+        "Task escalated to CEO for final approval.\n"
+        "The CEO will review and either approve (complete) or reject (revision).\n"
+        "You can continue with other tasks via roboco_task_scan."
+    )
+    return format_task_response(resp.json(), "AWAITING_CEO_APPROVAL", guidance)
+
+
+async def handle_ceo_approve(
+    client: ApiClient,
+    task_id: str,
+    agent_id: str,
+    notes: str | None = None,
+) -> dict[str, Any]:
+    """Handle CEO approval of a task.
+
+    Final approval step - completes the task.
+    """
+    if error := _validate_ceo_role(agent_id):
+        return error
+
+    task, error = await fetch_task_or_error(client, task_id)
+    if error:
+        return error
+    assert task is not None
+
+    current_status = task.get("status")
+    if current_status != "awaiting_ceo_approval":
+        return format_error_response(
+            "INVALID_STATE",
+            f"Cannot approve - task is '{current_status}', "
+            "expected 'awaiting_ceo_approval'.",
+            {"current_status": current_status},
+        )
+
+    payload = {}
+    if notes:
+        payload["notes"] = notes
+
+    resp = await client.post(f"/tasks/{task_id}/ceo-approve", json=payload)
+    if not resp.ok:
+        return format_error_response(
+            "APPROVE_FAILED",
+            "Failed to approve task",
+            {"status_code": resp.status_code, "api_error": resp.text},
+        )
+
+    return format_task_response(
+        resp.json(),
+        "DONE",
+        "Task approved and completed by CEO.\n"
+        "Use roboco_task_scan to review other pending approvals.",
+    )
+
+
+async def handle_ceo_reject(
+    client: ApiClient,
+    task_id: str,
+    agent_id: str,
+    reason: str,
+) -> dict[str, Any]:
+    """Handle CEO rejection of a task.
+
+    Sends task back for revision with feedback.
+    """
+    if error := _validate_ceo_role(agent_id):
+        return error
+
+    if not reason or not reason.strip():
+        return format_error_response(
+            "REASON_REQUIRED",
+            "CEO rejection requires a reason explaining what needs fixing.",
+        )
+
+    task, error = await fetch_task_or_error(client, task_id)
+    if error:
+        return error
+    assert task is not None
+
+    current_status = task.get("status")
+    if current_status != "awaiting_ceo_approval":
+        return format_error_response(
+            "INVALID_STATE",
+            f"Cannot reject - task is '{current_status}', "
+            "expected 'awaiting_ceo_approval'.",
+            {"current_status": current_status},
+        )
+
+    resp = await client.post(f"/tasks/{task_id}/ceo-reject", json={"notes": reason})
+    if not resp.ok:
+        return format_error_response(
+            "REJECT_FAILED",
+            "Failed to reject task",
+            {"status_code": resp.status_code, "api_error": resp.text},
+        )
+
+    return format_task_response(
+        resp.json(),
+        "NEEDS_REVISION",
+        f"Task rejected and returned for revision.\nReason: {reason}\n"
+        "The developer will address feedback and resubmit.",
+    )
+
+
 def _validate_not_qa_on_dev_work(
     task: dict[str, Any], agent_id: str
 ) -> dict[str, Any] | None:

@@ -28,10 +28,22 @@ class TaskStatus(str, Enum):
     VERIFYING = "verifying"
     NEEDS_REVISION = "needs_revision"
     AWAITING_QA = "awaiting_qa"
-    AWAITING_DOCUMENTATION = "awaiting_documentation"
-    AWAITING_PM_REVIEW = "awaiting_pm_review"  # After docs, before PM completes
+    AWAITING_DOCUMENTATION = "awaiting_documentation"  # Docs + Dev PR in parallel
+    AWAITING_PM_REVIEW = "awaiting_pm_review"  # After docs + PR ready
+    AWAITING_CEO_APPROVAL = "awaiting_ceo_approval"  # PMs approved, CEO decides
     COMPLETED = "completed"
     CANCELLED = "cancelled"
+
+
+class TaskType(str, Enum):
+    """Task type classification - determines if git workflow applies."""
+
+    CODE = "code"  # Technical - full git workflow
+    DOCUMENTATION = "documentation"  # May or may not need git
+    RESEARCH = "research"  # No git
+    PLANNING = "planning"  # No git
+    DESIGN = "design"  # No git
+    ADMINISTRATIVE = "administrative"  # No git
 
 
 class Complexity(str, Enum):

@@ -13,14 +13,22 @@ from uuid import UUID
 from sqlalchemy import and_, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from roboco.db.tables import AgentTable, SessionTaskTable, TaskTable
+from roboco.db.tables import (
+    AgentTable,
+    ProjectTable,
+    SessionTaskTable,
+    TaskTable,
+    WorkSessionTable,
+)
 from roboco.enforcement import (
     TaskOwnershipError,
     validate_task_ownership,
     validate_task_transition,
 )
+from roboco.events import Event, EventType, get_event_bus
 from roboco.models.base import TaskStatus, Team
 from roboco.models.task import TaskCreateRequest
+from roboco.models.work_session import WorkSessionStatus
 from roboco.services.base import BaseService
 
 # UUID format constants for validation
@@ -455,7 +463,12 @@ class TaskService(BaseService):
     def _set_original_developer_context(
         self, task: TaskTable, agent: AgentTable | None
     ) -> None:
-        """Set original developer context for QA/Documenter claims."""
+        """Set original developer context for QA/Documenter claims.
+
+        Important: We only store original_developer if it's a DIFFERENT agent.
+        If PM assigned directly to QA/Documenter (no prior developer), we don't
+        set original_developer to avoid blocking them with self-review check.
+        """
         if not agent or not agent.role:
             return
         role = agent.role.value if hasattr(agent.role, "value") else str(agent.role)
@@ -464,7 +477,10 @@ class TaskService(BaseService):
         existing_context = task.quick_context or ""
         if "original_developer:" in existing_context:
             return
-        if task.assigned_to:
+
+        # Only set original_developer if it's a DIFFERENT agent than the one claiming
+        # This prevents blocking QA/Documenter when PM assigns directly to them
+        if task.assigned_to and str(task.assigned_to) != str(agent.id):
             task.quick_context = f"original_developer:{task.assigned_to}"
 
     async def claim(
@@ -523,6 +539,9 @@ class TaskService(BaseService):
             self._validate_and_set_status(task, TaskStatus.CLAIMED, agent_role)
 
         await self.session.flush()
+
+        # Create work session for git-enabled tasks claimed by developers
+        await self._create_work_session_if_needed(task, agent_id, agent_role)
 
         # Trigger proactive knowledge injection (fire-and-forget)
         bg_task = asyncio.create_task(self._inject_proactive_context(task, agent_id))
@@ -584,6 +603,126 @@ class TaskService(BaseService):
                 task_id=str(task_id),
                 error=str(e),
             )
+
+    # =========================================================================
+    # GIT WORK SESSION INTEGRATION
+    # =========================================================================
+
+    async def _create_work_session_if_needed(
+        self,
+        task: TaskTable,
+        agent_id: UUID,
+        agent_role: str | None,
+    ) -> WorkSessionTable | None:
+        """
+        Create a WorkSession when a developer claims a git-enabled task.
+
+        Only creates a session if:
+        - Task requires git (requires_git=True)
+        - Task has a project_id set
+        - Task has a branch_name set (PM created the branch)
+        - Agent is a developer (not QA/Documenter claiming for review)
+
+        Args:
+            task: The task being claimed
+            agent_id: Agent claiming the task
+            agent_role: Agent's role
+
+        Returns:
+            Created WorkSession or None if not applicable
+        """
+        # Only developers need work sessions (not QA/Documenter claiming)
+        if agent_role not in ("developer", None):
+            return None
+
+        # Check if task requires git workflow
+        if not getattr(task, "requires_git", True):
+            return None
+
+        # Need project and branch to create a session
+        project_id = getattr(task, "project_id", None)
+        branch_name = getattr(task, "branch_name", None)
+
+        if not project_id or not branch_name:
+            self.log.debug(
+                "Skipping work session - no project or branch",
+                task_id=str(task.id),
+                has_project=bool(project_id),
+                has_branch=bool(branch_name),
+            )
+            return None
+
+        # Get project to determine base/target branches
+        result = await self.session.execute(
+            select(ProjectTable).where(ProjectTable.id == project_id)
+        )
+        project = result.scalar_one_or_none()
+        if not project:
+            self.log.warning(
+                "Project not found for work session",
+                task_id=str(task.id),
+                project_id=str(project_id),
+            )
+            return None
+
+        # Check if session already exists for this task+agent
+        existing = await self.session.execute(
+            select(WorkSessionTable).where(
+                and_(
+                    WorkSessionTable.task_id == task.id,
+                    WorkSessionTable.agent_id == agent_id,
+                    WorkSessionTable.status == WorkSessionStatus.ACTIVE,
+                )
+            )
+        )
+        if existing.scalar_one_or_none():
+            self.log.debug(
+                "Work session already exists",
+                task_id=str(task.id),
+                agent_id=str(agent_id),
+            )
+            return None
+
+        # Determine target branch:
+        # - For subtasks: merge into parent task's branch
+        # - For parent tasks: merge into default branch (main)
+        default_branch = project.default_branch
+        target_branch: str = str(default_branch) if default_branch else "main"
+        if task.parent_task_id:
+            # Get parent task's branch
+            parent_id = cast("UUID", task.parent_task_id)
+            parent = await self.get(parent_id)
+            parent_branch = getattr(parent, "branch_name", None) if parent else None
+            if parent_branch:
+                target_branch = str(parent_branch)
+
+        # Create the work session
+        work_session = WorkSessionTable(
+            project_id=project_id,
+            task_id=task.id,
+            agent_id=agent_id,
+            branch_name=branch_name,
+            base_branch=target_branch,  # Created from target
+            target_branch=target_branch,  # Will merge back to target
+            status=WorkSessionStatus.ACTIVE,
+        )
+
+        self.session.add(work_session)
+        await self.session.flush()
+
+        # Link session to task
+        task.work_session_id = cast("Any", work_session.id)
+        await self.session.flush()
+
+        self.log.info(
+            "Work session created for task",
+            task_id=str(task.id),
+            session_id=str(work_session.id),
+            branch=branch_name,
+            target=target_branch,
+        )
+
+        return work_session
 
     # =========================================================================
     # RAG AUTO-INDEXING HOOKS (Fire-and-forget background tasks)
@@ -1523,6 +1662,22 @@ class TaskService(BaseService):
             )
             return None
 
+        # Check all descendants are in terminal states before escalating
+        all_descendants = await self.get_all_descendants(task_id)
+        incomplete = [
+            d
+            for d in all_descendants
+            if d.status not in (TaskStatus.COMPLETED, TaskStatus.CANCELLED)
+        ]
+        if incomplete:
+            self.log.warning(
+                "Cannot mark docs complete - incomplete descendants",
+                task_id=str(task_id),
+                incomplete_count=len(incomplete),
+                incomplete_ids=[str(d.id) for d in incomplete[:5]],
+            )
+            return None
+
         # Store doc notes in quick_context (no dedicated field for doc_notes)
         if doc_notes:
             existing_context = task.quick_context or ""
@@ -1533,9 +1688,9 @@ class TaskService(BaseService):
                 else doc_note_entry
             )
 
-        task.status = TaskStatus.AWAITING_PM_REVIEW
+        # Mark docs as complete
+        task.docs_complete = True
 
-        # Reassign to the cell PM for final review
         # Store documenter in quick_context for reference
         if task.assigned_to:
             existing_context = task.quick_context or ""
@@ -1547,9 +1702,37 @@ class TaskService(BaseService):
                     else doc_context
                 )
 
-        # Clear assignment so PM can claim the task for review
-        # Documenter info is preserved in quick_context
-        task.assigned_to = None
+        # For git tasks: check if BOTH docs_complete AND pr_created are true
+        # (Developer works in parallel, creating PR)
+        from roboco.enforcement.task_lifecycle import check_parallel_completion
+
+        ready_for_pm = check_parallel_completion(
+            docs_complete=True,  # We just set this
+            pr_created=task.pr_created,
+            requires_git=task.requires_git,
+        )
+
+        if ready_for_pm:
+            # Both conditions met - transition to PM review
+            task.status = TaskStatus.AWAITING_PM_REVIEW
+            # Clear assignment so PM can claim the task for review
+            task.assigned_to = None
+            self.log.info(
+                "Documentation complete, awaiting PM review",
+                task_id=str(task_id),
+                requires_git=task.requires_git,
+                pr_created=task.pr_created,
+            )
+        else:
+            # Git task: docs done but PR not yet created
+            # Stay in awaiting_documentation, waiting for developer to create PR
+            self.log.info(
+                "Documentation complete, waiting for developer to create PR",
+                task_id=str(task_id),
+                docs_complete=True,
+                pr_created=task.pr_created,
+            )
+
         await self.session.flush()
 
         # Index documentation artifacts (fire-and-forget)
@@ -1560,10 +1743,92 @@ class TaskService(BaseService):
             self._background_tasks.add(bg_task)
             bg_task.add_done_callback(self._background_tasks.discard)
 
-        self.log.info(
-            "Documentation complete, awaiting PM review",
-            task_id=str(task_id),
+        return task
+
+    async def mark_pr_created(
+        self,
+        task_id: UUID,
+        pr_number: int,
+        pr_url: str,
+    ) -> TaskTable | None:
+        """
+        Mark that developer has created a PR for the task.
+
+        Called when developer uses roboco_git_create_pr(). This method:
+        1. Sets pr_created=True, pr_number, pr_url on the task
+        2. Checks if docs_complete is also True
+        3. If both complete, transitions to awaiting_pm_review
+
+        This works in parallel with documenter's docs_complete().
+
+        Args:
+            task_id: The task ID
+            pr_number: GitHub/GitLab PR number
+            pr_url: Full URL to the PR
+
+        Returns:
+            The updated task or None if not allowed
+        """
+        task = await self.get(task_id)
+        if not task:
+            return None
+
+        # Only allow in awaiting_documentation (parallel execution phase)
+        if task.status != TaskStatus.AWAITING_DOCUMENTATION:
+            self.log.warning(
+                "Cannot mark PR created - task not in awaiting_documentation",
+                task_id=str(task_id),
+                current_status=task.status.value,
+            )
+            return None
+
+        # Set PR info
+        task.pr_created = True
+        task.pr_number = pr_number
+        task.pr_url = pr_url
+
+        # Store developer who created PR in quick_context
+        if task.assigned_to:
+            existing_context = task.quick_context or ""
+            if "pr_author:" not in existing_context:
+                pr_context = f"pr_author:{task.assigned_to}"
+                task.quick_context = (
+                    f"{existing_context}\n{pr_context}".strip()
+                    if existing_context
+                    else pr_context
+                )
+
+        # Check if BOTH docs_complete AND pr_created are now true
+        from roboco.enforcement.task_lifecycle import check_parallel_completion
+
+        ready_for_pm = check_parallel_completion(
+            docs_complete=task.docs_complete,
+            pr_created=True,  # We just set this
+            requires_git=task.requires_git,
         )
+
+        if ready_for_pm:
+            # Both conditions met - transition to PM review
+            task.status = TaskStatus.AWAITING_PM_REVIEW
+            # Clear assignment so PM can claim the task for review
+            task.assigned_to = None
+            self.log.info(
+                "PR created, awaiting PM review",
+                task_id=str(task_id),
+                pr_number=pr_number,
+                docs_complete=task.docs_complete,
+            )
+        else:
+            # PR created but docs not yet complete
+            # Stay in awaiting_documentation, waiting for documenter
+            self.log.info(
+                "PR created, waiting for documenter to complete",
+                task_id=str(task_id),
+                pr_number=pr_number,
+                docs_complete=task.docs_complete,
+            )
+
+        await self.session.flush()
         return task
 
     async def submit_for_pm_review(
@@ -1596,6 +1861,22 @@ class TaskService(BaseService):
                 "Cannot submit for PM review - task not in progress",
                 task_id=str(task_id),
                 current_status=task.status.value,
+            )
+            return None
+
+        # Check all descendants are in terminal states before escalating
+        all_descendants = await self.get_all_descendants(task_id)
+        incomplete = [
+            d
+            for d in all_descendants
+            if d.status not in (TaskStatus.COMPLETED, TaskStatus.CANCELLED)
+        ]
+        if incomplete:
+            self.log.warning(
+                "Cannot submit for PM review - incomplete descendants",
+                task_id=str(task_id),
+                incomplete_count=len(incomplete),
+                incomplete_ids=[str(d.id) for d in incomplete[:5]],
             )
             return None
 
@@ -1756,6 +2037,213 @@ class TaskService(BaseService):
         await self._unblock_dependents(task_id)
         return task
 
+    # =========================================================================
+    # CEO APPROVAL WORKFLOW
+    # =========================================================================
+
+    async def escalate_to_ceo(
+        self,
+        task_id: UUID,
+        agent_role: str = "cell_pm",
+        notes: str | None = None,
+    ) -> TaskTable | None:
+        """
+        Escalate a task to CEO for final approval (PM only).
+
+        Used for major tasks that require CEO sign-off before merge:
+        - Parent tasks with subtasks
+        - High-priority features
+        - Breaking changes
+
+        Args:
+            task_id: The task to escalate
+            agent_role: Role of the agent escalating (must be PM)
+            notes: Optional notes for the CEO
+
+        Returns:
+            The escalated task or None if escalation not allowed
+        """
+        task = await self.get(task_id)
+        if not task:
+            return None
+
+        # Only allow escalation from awaiting_pm_review
+        if task.status != TaskStatus.AWAITING_PM_REVIEW:
+            self.log.warning(
+                "Cannot escalate to CEO - task not in PM review",
+                task_id=str(task_id),
+                current_status=task.status.value,
+            )
+            return None
+
+        # Store escalation notes
+        if notes:
+            existing_context = task.quick_context or ""
+            note_entry = f"escalation_notes:{notes}"
+            task.quick_context = (
+                f"{existing_context}\n{note_entry}".strip()
+                if existing_context
+                else note_entry
+            )
+
+        # Validate transition with PM role requirement
+        self._validate_and_set_status(
+            task, TaskStatus.AWAITING_CEO_APPROVAL, agent_role
+        )
+        await self.session.flush()
+
+        # Emit event for CEO approval queue
+        await self._emit_task_event(
+            EventType.TASK_AWAITING_CEO_APPROVAL,
+            task_id,
+            {"escalated_by_role": agent_role, "notes": notes},
+        )
+
+        self.log.info(
+            "Task escalated to CEO for approval",
+            task_id=str(task_id),
+            escalated_by_role=agent_role,
+        )
+        return task
+
+    async def ceo_approve(
+        self,
+        task_id: UUID,
+        notes: str | None = None,
+    ) -> TaskTable | None:
+        """
+        CEO approves and completes a task.
+
+        Final approval step for major tasks. Only CEO can perform this action.
+
+        Args:
+            task_id: The task to approve
+            notes: Optional CEO notes
+
+        Returns:
+            The completed task or None if approval not allowed
+        """
+        task = await self.get(task_id)
+        if not task:
+            return None
+
+        # Only allow approval from awaiting_ceo_approval
+        if task.status != TaskStatus.AWAITING_CEO_APPROVAL:
+            self.log.warning(
+                "Cannot CEO approve - task not awaiting CEO approval",
+                task_id=str(task_id),
+                current_status=task.status.value,
+            )
+            return None
+
+        # Store CEO notes
+        if notes:
+            existing_context = task.quick_context or ""
+            note_entry = f"ceo_approval_notes:{notes}"
+            task.quick_context = (
+                f"{existing_context}\n{note_entry}".strip()
+                if existing_context
+                else note_entry
+            )
+
+        task.completed_at = datetime.now(UTC)
+        # Validate transition with CEO role requirement
+        self._validate_and_set_status(task, TaskStatus.COMPLETED, "ceo")
+        await self.session.flush()
+
+        # Extract learnings (fire-and-forget)
+        bg_task = asyncio.create_task(self._extract_completion_learnings(task, None))
+        self._background_tasks.add(bg_task)
+        bg_task.add_done_callback(self._background_tasks.discard)
+
+        # Unblock any tasks waiting on this one
+        await self._unblock_dependents(task_id)
+
+        # Emit event for CEO approval
+        await self._emit_task_event(
+            EventType.TASK_CEO_APPROVED,
+            task_id,
+            {"notes": notes},
+        )
+
+        self.log.info(
+            "Task approved by CEO",
+            task_id=str(task_id),
+        )
+        return task
+
+    async def ceo_reject(
+        self,
+        task_id: UUID,
+        reason: str,
+    ) -> TaskTable | None:
+        """
+        CEO rejects a task and sends back for revision.
+
+        Task goes back to NEEDS_REVISION and is reassigned to the
+        original developer (if tracked in quick_context).
+
+        Args:
+            task_id: The task to reject
+            reason: Required reason for rejection
+
+        Returns:
+            The rejected task or None if rejection not allowed
+        """
+        task = await self.get(task_id)
+        if not task:
+            return None
+
+        # Only allow rejection from awaiting_ceo_approval
+        if task.status != TaskStatus.AWAITING_CEO_APPROVAL:
+            self.log.warning(
+                "Cannot CEO reject - task not awaiting CEO approval",
+                task_id=str(task_id),
+                current_status=task.status.value,
+            )
+            return None
+
+        # Store CEO rejection reason
+        existing_context = task.quick_context or ""
+        rejection_entry = f"ceo_rejection:{reason}"
+        task.quick_context = (
+            f"{existing_context}\n{rejection_entry}".strip()
+            if existing_context
+            else rejection_entry
+        )
+
+        # Validate transition with CEO role requirement
+        self._validate_and_set_status(task, TaskStatus.NEEDS_REVISION, "ceo")
+
+        # Try to reassign to original developer
+        original_dev = extract_original_developer(task.quick_context)
+        if original_dev:
+            task.assigned_to = cast("Any", UUID(original_dev))
+            self.log.info(
+                "Task reassigned to original developer after CEO rejection",
+                task_id=str(task_id),
+                original_developer=original_dev,
+            )
+        else:
+            # Clear assignment so it can be claimed
+            task.assigned_to = None
+
+        await self.session.flush()
+
+        # Emit event for CEO rejection
+        await self._emit_task_event(
+            EventType.TASK_CEO_REJECTED,
+            task_id,
+            {"reason": reason, "reassigned_to": original_dev},
+        )
+
+        self.log.info(
+            "Task rejected by CEO",
+            task_id=str(task_id),
+            reason=reason,
+        )
+        return task
+
     async def cancel(
         self, task_id: UUID, agent_role: str = "cell_pm"
     ) -> TaskTable | None:
@@ -1801,6 +2289,37 @@ class TaskService(BaseService):
         bg_task.add_done_callback(self._background_tasks.discard)
 
         return task
+
+    async def _emit_task_event(
+        self,
+        event_type: EventType,
+        task_id: UUID,
+        data: dict[str, Any] | None = None,
+    ) -> None:
+        """Emit a task lifecycle event to the event bus.
+
+        Events are published asynchronously. Failures are logged but
+        do not interrupt the calling operation.
+
+        Args:
+            event_type: The type of event to emit
+            task_id: The task this event relates to
+            data: Optional additional event data
+        """
+        try:
+            bus = get_event_bus()
+            if bus.is_connected():
+                event_data = {"task_id": str(task_id)}
+                if data:
+                    event_data.update(data)
+                await bus.publish(Event(type=event_type, data=event_data))
+        except Exception as e:
+            self.log.warning(
+                "Failed to emit task event",
+                event_type=event_type.value,
+                task_id=str(task_id),
+                error=str(e),
+            )
 
     async def _unblock_dependents(self, completed_task_id: UUID) -> None:
         """Unblock tasks that were waiting on the completed task."""
@@ -2020,6 +2539,16 @@ class TaskService(BaseService):
     async def list_awaiting_docs(self, team: Team | None = None) -> list[TaskTable]:
         """List tasks awaiting documentation."""
         return await self.list_by_status(TaskStatus.AWAITING_DOCUMENTATION, team)
+
+    async def list_awaiting_pm_review(
+        self, team: Team | None = None
+    ) -> list[TaskTable]:
+        """List tasks awaiting PM review."""
+        return await self.list_by_status(TaskStatus.AWAITING_PM_REVIEW, team)
+
+    async def list_awaiting_ceo_approval(self) -> list[TaskTable]:
+        """List tasks awaiting CEO approval (org-wide, no team filter)."""
+        return await self.list_by_status(TaskStatus.AWAITING_CEO_APPROVAL)
 
     async def get_subtasks(self, parent_task_id: UUID) -> list[TaskTable]:
         """Get all subtasks of a parent task."""

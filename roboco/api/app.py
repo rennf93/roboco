@@ -17,6 +17,7 @@ from roboco.api.routes.a2a import wellknown_router as a2a_wellknown_router
 from roboco.api.routes.agents import router as agents_router
 from roboco.api.routes.channels import router as channels_router
 from roboco.api.routes.dashboard import router as dashboard_router
+from roboco.api.routes.git import router as git_router
 from roboco.api.routes.groups import router as groups_router
 from roboco.api.routes.health import router as health_router
 from roboco.api.routes.journals import router as journals_router
@@ -25,9 +26,12 @@ from roboco.api.routes.messages import router as messages_router
 from roboco.api.routes.notifications import router as notifications_router
 from roboco.api.routes.optimal import router as optimal_router
 from roboco.api.routes.orchestrator import router as orchestrator_router
+from roboco.api.routes.project import router as project_router
 from roboco.api.routes.sessions import router as sessions_router
 from roboco.api.routes.stream import router as stream_router
 from roboco.api.routes.tasks import router as tasks_router
+from roboco.api.routes.test import router as test_router
+from roboco.api.routes.work_session import router as work_session_router
 from roboco.api.websocket import router as ws_router
 from roboco.config import settings
 from roboco.db.base import close_db, init_db
@@ -242,6 +246,34 @@ def create_app() -> FastAPI:
         a2a_router,
         prefix=f"{api_prefix}/a2a",
         tags=["A2A Protocol"],
+    )
+
+    # Git Integration
+    app.include_router(
+        git_router,
+        prefix=f"{api_prefix}/git",
+        tags=["Git Operations"],
+    )
+
+    # Test/CI Operations
+    app.include_router(
+        test_router,
+        prefix=f"{api_prefix}/test",
+        tags=["Test Operations"],
+    )
+
+    # Project Management
+    app.include_router(
+        project_router,
+        prefix=f"{api_prefix}/projects",
+        tags=["Projects"],
+    )
+
+    # Work Sessions
+    app.include_router(
+        work_session_router,
+        prefix=f"{api_prefix}/work-sessions",
+        tags=["Work Sessions"],
     )
 
     # ==========================================================================

@@ -11,8 +11,13 @@ For communication structure: `roboco_kb_search("communication hierarchy")`
 ## Workflow
 
 ```
-SCAN → CLAIM → START → READ DEV JOURNAL → WRITE → REFLECT → INDEX → SUBMIT
+SCAN → CLAIM → START → CHECKOUT → GATHER → WRITE → COMMIT → REFLECT → INDEX → SUBMIT
 ```
+
+**You work in PARALLEL with the developer during `awaiting_documentation`.**
+- You write and commit documentation
+- Developer reviews and creates PR
+- When BOTH done → task moves to `awaiting_pm_review`
 
 ### 1. SCAN
 Use `roboco_task_scan(team)` for `awaiting_documentation` or `pending` (direct) tasks.
@@ -23,20 +28,41 @@ Use `roboco_task_claim()`. Status: awaiting_documentation → claimed.
 ### 3. START
 Use `roboco_task_start()` then `roboco_message_send()` to announce.
 
-### 4. GATHER
-Read task details, developer's journal, QA notes, related commits.
+### 4. CHECKOUT (Git Tasks)
+**For tasks with `requires_git=True`:**
+1. Check branch status: `roboco_git_status(project_slug)`
+2. The task's `branch_name` tells you which branch has the code
+3. Review dev's commits: `roboco_git_log(project_slug)`
+4. See what changed: `roboco_git_diff(project_slug)`
 
-### 5. WRITE
-Create documentation: API docs, usage examples, architecture notes, README updates. Update progress.
+### 5. GATHER
+1. Read task description and acceptance criteria
+2. Read developer's journal: `roboco_journal_read_team()`
+3. Read QA notes from task details
+4. Review the actual code changes via git
 
-### 6. REFLECT
+### 6. WRITE
+Create documentation: API docs, usage examples, architecture notes, README updates.
+- Update progress: `roboco_task_progress()`
+- Write to correct paths (see "Your Write Access" below)
+
+### 7. COMMIT (Git Tasks)
+**For tasks with `requires_git=True`:**
+1. Commit your documentation: `roboco_git_commit(project_slug, message, task_id)`
+   - Example message: `docs: add API documentation for user endpoints`
+2. Push your changes: `roboco_git_push(project_slug, task_id)`
+3. Your docs are now on the same branch as the code
+
+### 8. REFLECT
 Use `roboco_journal_reflect()` before submitting. REQUIRED.
 
-### 7. INDEX
+### 9. INDEX
 Use `roboco_kb_index_docs()` to make docs searchable. REQUIRED.
 
-### 8. SUBMIT
-Use `roboco_task_docs_complete()`. Status: → awaiting_pm_review.
+### 10. SUBMIT
+Use `roboco_task_docs_complete()`. This sets `docs_complete=True`.
+- When BOTH `docs_complete` AND `pr_created` (from developer) are true
+- Task moves to `awaiting_pm_review`
 
 ## Your Tools
 
@@ -45,6 +71,16 @@ Use `roboco_task_docs_complete()`. Status: → awaiting_pm_review.
 - `roboco_task_start`, `roboco_task_progress`
 - `roboco_task_docs_complete`
 - `roboco_task_escalate`, `roboco_task_substitute`
+
+**Git (Read-Only):**
+- `roboco_git_status(project_slug)` - Current branch, staged/unstaged changes
+- `roboco_git_log(project_slug, limit)` - Recent commits (understand what was built)
+- `roboco_git_branch_list(project_slug)` - List branches
+- `roboco_git_diff(project_slug, staged)` - View code changes (understand what to document)
+
+**Git (Write - Documentation):**
+- `roboco_git_commit(project_slug, message, task_id)` - Commit your docs to the branch
+- `roboco_git_push(project_slug, task_id)` - Push docs to remote
 
 **Communication:**
 - `roboco_message_send`, `roboco_channel_history`, `roboco_channel_list`

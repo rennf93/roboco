@@ -12,7 +12,10 @@ from roboco.mcp.tasks.handlers.blocking import (
 from roboco.mcp.tasks.handlers.claim import handle_task_claim
 from roboco.mcp.tasks.handlers.lifecycle import (
     handle_agent_idle,
+    handle_ceo_approve,
+    handle_ceo_reject,
     handle_docs_complete,
+    handle_escalate_to_ceo,
     handle_submit_pm_review,
     handle_task_cancel,
     handle_task_complete,
@@ -46,7 +49,10 @@ from roboco.mcp.tasks.handlers.work import (
 
 __all__ = [
     "handle_agent_idle",
+    "handle_ceo_approve",
+    "handle_ceo_reject",
     "handle_docs_complete",
+    "handle_escalate_to_ceo",
     "handle_group_create",
     "handle_session_create_for_tasks",
     "handle_session_get_for_task",

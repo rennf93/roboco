@@ -418,6 +418,7 @@ def task_status_to_a2a_state(roboco_status: str) -> A2ATaskState:
         "awaiting_qa": A2ATaskState.WORKING,
         "awaiting_documentation": A2ATaskState.WORKING,
         "awaiting_pm_review": A2ATaskState.WORKING,
+        "awaiting_ceo_approval": A2ATaskState.INPUT_REQUIRED,  # Awaiting CEO decision
         "completed": A2ATaskState.COMPLETED,
         "cancelled": A2ATaskState.CANCELLED,
     }
