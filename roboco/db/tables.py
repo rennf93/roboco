@@ -202,6 +202,11 @@ class TaskTable(Base):
     # Quick Context
     quick_context: Mapped[str | None] = mapped_column(Text, nullable=True)
 
+    # Proactive Knowledge Context (injected when task is claimed)
+    proactive_context: Mapped[dict[str, Any] | None] = mapped_column(
+        JSON, nullable=True
+    )
+
     # Relationships
     creator: Mapped["AgentTable"] = relationship(
         "AgentTable", foreign_keys=[created_by], lazy="joined"

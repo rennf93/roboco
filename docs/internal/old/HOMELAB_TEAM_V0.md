@@ -1612,7 +1612,7 @@ class Agent:
     current_task: Optional[TaskID]
 
     # Configuration
-    model: str  # e.g., "claude-3-opus", "local-llama"
+    model: str  # e.g., "claude-4-opus", "local-llama"
     system_prompt: str
     capabilities: List[str]
 

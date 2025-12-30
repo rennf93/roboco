@@ -123,7 +123,7 @@ class Settings(BaseSettings):
     rag_chunk_strategy: str = Field(
         default="fixed",
         pattern="^(fixed|semantic|hierarchical|contextual)$",
-        description="Chunking strategy (fixed recommended - semantic loads separate model)",
+        description="Chunking strategy (fixed recommended, semantic loads extra model)",
     )
     rag_chunk_size: int = Field(default=512, ge=100)
     rag_chunk_size_docs: int = Field(
@@ -163,14 +163,24 @@ class Settings(BaseSettings):
     openai_api_key: str | None = None  # For embeddings
 
     # Default models
-    default_llm_model: str = "claude-3-opus-20240229"
+    default_llm_model: str = "claude-opus-4-5-20251101"
     default_embedding_model: str = Field(
-        default="nomic-ai/nomic-embed-text-v1.5",
-        description="HuggingFace model for local or OpenAI name with API key",
+        default="BAAI/bge-base-en-v1.5",
+        description="Embedding model",
     )
     embedding_dimensions: int = Field(
         default=768,
-        description="Embedding dimensions (768 for nomic-embed, BGE-base)",
+        description="Embedding dimensions (768 for BGE-base)",
+    )
+
+    # Local LLM for RAG (HyDE, reranking, etc.)
+    local_llm_model: str = Field(
+        default="qwen3:8b",
+        description="Local LLM model for HyDE and RAG operations",
+    )
+    local_llm_base_url: str = Field(
+        default="http://192.168.50.111:11434/v1",
+        description="Base URL for local LLM (Ollama)",
     )
 
     # ==========================================================================
