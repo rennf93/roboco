@@ -25,19 +25,31 @@ CEO (Renzo - Human)
 
 ```
 roboco/
-├── roboco/              # Main Python package
-│   ├── models/              # Pydantic data models
-│   ├── db/                  # SQLAlchemy ORM & database
-│   ├── api/                 # FastAPI routes (coming soon)
-│   └── config.py            # Application configuration
-├── agents/blueprints/       # Agent system prompts (16 agents)
-├── .tasks/                  # Task management system
-│   ├── templates/           # Task templates by type
-│   ├── active/              # In-progress tasks
-│   ├── completed/           # Archived tasks
-│   └── initiatives/         # Multi-task initiatives
-├── CLAUDE.md                # Claude Code guidance
-└── HOMELAB_TEAM_V0.md       # System blueprint
+├── roboco/                      # Main Python package
+│   ├── api/                     # FastAPI routes & schemas
+│   │   ├── routes/              # API endpoints (tasks, git, agents, etc.)
+│   │   └── schemas/             # Pydantic request/response models
+│   ├── services/                # Business logic services
+│   │   ├── task.py              # Task lifecycle management
+│   │   ├── workspace.py         # Multi-agent workspace management
+│   │   ├── messaging.py         # Agent communication
+│   │   └── optimal_brain/       # RAG/Knowledge base (piragi)
+│   ├── models/                  # Pydantic domain models
+│   ├── db/                      # SQLAlchemy ORM & migrations
+│   ├── enforcement/             # Task lifecycle state machine
+│   ├── runtime/                 # Orchestrator for agent spawning
+│   ├── agents/                  # Agent base classes
+│   ├── mcp/                     # MCP server implementations
+│   └── config.py                # Application configuration
+├── agents/
+│   ├── blueprints/              # Agent system prompts (18 agents)
+│   └── prompts/identities/      # Agent identity files
+├── docs/
+│   ├── architecture/            # Architecture documentation
+│   └── workflows/               # Workflow documentation
+├── alembic/                     # Database migrations
+├── CLAUDE.md                    # Claude Code guidance
+└── docker-compose.yml           # Local development stack
 ```
 
 ## Quick Start
@@ -53,8 +65,79 @@ docker compose up -d
 uv run alembic upgrade head
 
 # Start the API server
-uv run uvicorn roboco.api:app --reload
+uv run python -m roboco.cli
+
+# Or just the API without orchestrator
+uv run uvicorn roboco.api:app --reload --host 0.0.0.0 --port 8000
 ```
+
+## Configuration
+
+Key environment variables (see `roboco/config.py` for all options):
+
+```bash
+# API Server
+ROBOCO_HOST=0.0.0.0
+ROBOCO_PORT=8000
+
+# Database
+ROBOCO_DATABASE_HOST=localhost
+ROBOCO_DATABASE_PORT=5432
+ROBOCO_DATABASE_NAME=roboco
+
+# Workspaces (Multi-Agent Git)
+ROBOCO_WORKSPACES_ROOT=/data/workspaces
+ROBOCO_WORKSPACE_AUTO_CLONE=true
+
+# RAG/LLM
+ROBOCO_LOCAL_LLM_BASE_URL=http://localhost:11434/v1
+ROBOCO_LOCAL_LLM_MODEL=qwen3:8b
+```
+
+## Multi-Agent Workspace Structure
+
+Each agent gets their own git clone for parallel development:
+
+```
+{ROBOCO_WORKSPACES_ROOT}/
+└── {project-slug}/
+    └── {team}/
+        └── {agent-slug}/
+            └── [git repository]
+
+Example:
+/data/workspaces/roboco/backend/be-dev-1/
+/data/workspaces/roboco/backend/be-dev-2/
+```
+
+## Task Lifecycle
+
+```
+backlog → pending → claimed → in_progress → verifying → awaiting_qa
+    ↓                              ↓              ↓           ↓
+cancelled                      blocked      needs_revision   awaiting_documentation
+                               paused                              ↓
+                                                           awaiting_pm_review
+                                                                   ↓
+                                                           awaiting_ceo_approval
+                                                                   ↓
+                                                              completed
+```
+
+## API Endpoints
+
+| Route Group | Description |
+|-------------|-------------|
+| `/api/v1/tasks` | Task CRUD, lifecycle, claiming |
+| `/api/v1/agents` | Agent management |
+| `/api/v1/git` | Git operations (status, commit, push, PR) |
+| `/api/v1/test` | Test/lint/format/build commands |
+| `/api/v1/sessions` | Communication sessions |
+| `/api/v1/messages` | Agent messages |
+| `/api/v1/projects` | Project (repo) management |
+| `/api/v1/work-sessions` | Git work session tracking |
+| `/api/v1/optimal` | RAG/Knowledge base queries |
+| `/api/v1/journals` | Agent journals/reflections |
 
 ## Development
 
@@ -68,7 +151,10 @@ uv run pytest
 # Format and lint
 uv run ruff format .
 uv run ruff check .
-uv run mypy src/
+uv run mypy roboco/
+
+# Type checking
+uv run mypy roboco/
 ```
 
 ## Core Principles
@@ -79,29 +165,41 @@ uv run mypy src/
 4. **No closure without documentation** - Future agents need context
 5. **Communication is constant** - Stream reasoning, log everything
 6. **The Auditor sees all** - Quality monitored silently
+7. **CEO approves major changes** - Human-in-the-loop for critical decisions
 
 ## Technology Stack
 
 | Layer | Technology |
 |-------|------------|
 | API Framework | FastAPI |
-| Database | PostgreSQL + SQLAlchemy |
+| Database | PostgreSQL + SQLAlchemy (async) |
+| Vector Store | pgvector (via piragi) |
 | Cache/Queue | Redis |
-| Vector DB | Qdrant |
-| LLM | Claude API |
+| RAG Library | piragi |
+| Embeddings | BAAI/bge-base-en-v1.5 (sentence-transformers) |
+| Local LLM | Ollama (qwen3:8b) |
+| Cloud LLM | Claude API (Anthropic) |
 | Package Manager | uv |
 
 ## Status
 
-**Phase 1: Core Services** (In Progress)
+**Core Infrastructure** (Complete)
 - [x] Data models (Pydantic)
-- [x] Database ORM (SQLAlchemy)
-- [x] Configuration management
-- [x] Agent blueprints (16 agents)
-- [x] Task templates
-- [ ] Messaging API
-- [ ] Task API
-- [ ] Agent orchestration
+- [x] Database ORM (SQLAlchemy async)
+- [x] Task lifecycle state machine
+- [x] Multi-agent workspace management
+- [x] Agent blueprints (18 agents)
+- [x] Messaging API
+- [x] Task API with full lifecycle
+- [x] Git operations API
+- [x] Test/CI operations API
+- [x] RAG/Knowledge base (piragi + pgvector)
+- [x] Agent orchestrator
+- [x] CEO approval workflow
+
+**In Progress**
+- [ ] Frontend panel (roboco-panel)
+- [ ] Full agent autonomy testing
 
 ## License
 

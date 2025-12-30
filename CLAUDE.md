@@ -10,33 +10,24 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ```
 CEO (Renzo - Human)
-    │
-    └── Board (3 agents)
-         ├── Product Owner
-         ├── Head of Marketing
-         └── Auditor (silent observer, reports to CEO)
-              │
-              └── Main PM (coordinates all cells)
-                   │
-                   ├── Backend Cell (5 agents: 2 Devs, 1 QA, 1 PM, 1 Documenter)
-                   ├── Frontend Cell (5 agents: 2 Devs, 1 QA, 1 PM, 1 Documenter)
-                   └── UX/UI Cell (4 agents: 1 Dev, 1 QA, 1 PM, 1 Documenter)
+    |
+    +-- Board (3 agents)
+         +-- Product Owner
+         +-- Head of Marketing
+         +-- Auditor (silent observer, reports to CEO)
+              |
+              +-- Main PM (coordinates all cells)
+                   |
+                   +-- Backend Cell (5 agents: 2 Devs, 1 QA, 1 PM, 1 Documenter)
+                   +-- Frontend Cell (5 agents: 2 Devs, 1 QA, 1 PM, 1 Documenter)
+                   +-- UX/UI Cell (4 agents: 1 Dev, 1 QA, 1 PM, 1 Documenter)
 ```
 
 ### Hardware Infrastructure
 
 - **Olares One (Powerhouse)**: Intel Ultra 9 + RTX 5090, runs Claude Code instances and AI inference
-- **UGREEN NAS (Warehouse)**: 36TB RAID6, hosts PostgreSQL, Redis, Qdrant (vector DB)
+- **UGREEN NAS (Warehouse)**: 36TB RAID6, hosts PostgreSQL, Redis
 - **Pi Cluster (Operations)**: Monitoring, notifications, smart home
-
-## Internal Services (To Be Built)
-
-| Service | Purpose |
-|---------|---------|
-| **Messaging API** | Agent-to-agent communication, channels, sessions, WebSocket streaming |
-| **Optimal API** | RAG queries, knowledge base, prompt optimization, token management |
-| **Journal API** | Agent personal logs, reflections, growth tracking |
-| **Task API** | Task CRUD, status management, kanban views |
 
 ## Development Standards
 
@@ -48,7 +39,7 @@ uv
 # Before any commit
 uv run ruff format .
 uv run ruff check .
-uv run mypy src/
+uv run mypy roboco/
 uv run pytest
 
 # Coverage target: 80%
@@ -68,57 +59,188 @@ pnpm test
 # Coverage target: 80%
 ```
 
-### Git Workflow
+## Technology Stack
 
-**Branch naming:**
-- `feature/{task-id}-{description}`
-- `fix/{task-id}-{description}`
-- `refactor/{task-id}-{description}`
-- `docs/{task-id}-{description}`
+| Layer | Technology |
+|-------|------------|
+| API Framework | FastAPI |
+| Database | PostgreSQL + asyncpg |
+| Vector Store | PostgreSQL + pgvector (via piragi) |
+| RAG Engine | piragi (HyDE, hybrid search, BM25) |
+| Cache/Queue | Redis |
+| Container Runtime | Docker + Docker Compose |
+| Cloud LLM | Claude API (claude-opus-4-5-20251101) |
+| Local LLM | Ollama (qwen3:8b for HyDE/RAG) |
+| Embeddings | BAAI/bge-base-en-v1.5 (768 dim) |
+| Frontend | React / Next.js (future) |
 
-**Commit format:**
+## Multi-Agent Workspace Structure
+
+Each agent gets their own git clone of a project, enabling parallel development without conflicts:
+
 ```
-{type}({scope}): {description}
-
-{body}
-
-Task: {task-id}
-Co-authored-by: {agent-name}
+{ROBOCO_WORKSPACES_ROOT}/          # Default: /data/workspaces
++-- {project-slug}/
+    +-- {team}/
+        +-- {agent-slug}/
+            +-- [git repository]
 ```
 
-Types: `feat`, `fix`, `docs`, `style`, `refactor`, `test`, `chore`, `perf`
+**Example:**
+```
+/data/workspaces/
++-- roboco/
+|   +-- backend/
+|   |   +-- be-dev-1/     # be-dev-1's workspace
+|   |   +-- be-dev-2/     # be-dev-2's workspace
+|   +-- frontend/
+|       +-- fe-dev-1/
+|       +-- fe-dev-2/
++-- roboco-panel/
+    +-- frontend/
+        +-- fe-dev-1/
+```
+
+**Key Configuration (roboco/config.py):**
+- `ROBOCO_WORKSPACES_ROOT`: Root directory for workspaces (default: `/data/workspaces`)
+- `ROBOCO_WORKSPACE_AUTO_CLONE`: Auto-clone repos on first access (default: `true`)
+- `ROBOCO_WORKSPACE_CLONE_TIMEOUT`: Clone timeout in seconds (default: `300`)
+
+## Git Workflow
+
+### Branch Naming Convention
+
+Branch names follow the pattern: `{type}/{team}/{task-id[:8]}`
+
+**Types:** `feature`, `bug`, `chore`, `docs`, `hotfix`
+
+**Examples:**
+- `feature/backend/ABC12345`
+- `bug/frontend/DEF67890`
+- `hotfix/backend/GHI11111`
+
+### Commit Format
+
+Commits are automatically prefixed with the task ID:
+
+```
+[{task-id[:8]}] {message}
+```
+
+**Example:**
+```
+[ABC12345] Add user authentication endpoint
+```
+
+### Work Sessions
+
+When a developer claims a git-enabled task, a **WorkSession** is created that tracks:
+- Branch name and base/target branches
+- All commits made during the session
+- Files modified
+- PR number/URL when created
+- Merge status and who merged
 
 ## Task Lifecycle
 
-Every piece of work follows this wrapper:
+### Task States
 
-1. **SCAN** - Check for pending/ongoing tasks
-2. **CLAIM** - Lock and take ownership
-3. **UNDERSTAND** - Read requirements, ask questions (DO NOT PROCEED until clear)
-4. **PLAN** - Break down, identify dependencies
-5. **EXECUTE** - Do the work, commit frequently
-6. **VERIFY** - Self-check against acceptance criteria
-7. **NOTES** - Document journey, create handoff
-8. **CLOSE** - Cleanup, return to SCAN
-
-**Task states:** `pending` → `claimed` → `in_progress` → `blocked/paused` → `verifying` → `awaiting_qa` → `awaiting_documentation` → `completed`
-
-## Task Directory Structure
+The complete task lifecycle is defined in `roboco/enforcement/task_lifecycle.py`:
 
 ```
-.tasks/
-├── index.md              # Master task index
-├── templates/            # Task templates by type
-├── active/               # In-progress tasks
-│   └── TASK-XXX-name/
-│       ├── README.md     # Status, criteria, quick context
-│       ├── plan.md       # Implementation plan
-│       ├── journal.md    # Agent journey notes
-│       ├── decisions.md  # Decision rationale
-│       ├── blockers.md   # Current impediments
-│       └── handoff.md    # For Documenter
-├── completed/            # Archived by month
-└── blocked/              # Waiting on blockers
+backlog -> pending -> claimed -> in_progress -> [blocked|paused] -> verifying
+                                     |                                  |
+                                     v                                  v
+                                 awaiting_qa <------------------+   awaiting_documentation
+                                     |         (needs_revision) |           |
+                                     v                          |           v
+                                 awaiting_documentation --------+   awaiting_pm_review
+                                     |                                      |
+                                     v                                      v
+                                 awaiting_pm_review             awaiting_ceo_approval
+                                     |                                      |
+                                     v                                      v
+                                 completed                              completed
+```
+
+**States:**
+| State | Description |
+|-------|-------------|
+| `backlog` | PM setup phase - dependencies or session setup needed |
+| `pending` | Ready for work - orchestrator can spawn agents |
+| `claimed` | Agent has locked the task |
+| `in_progress` | Active development |
+| `blocked` | External dependency blocking progress |
+| `paused` | Temporarily stopped (can resume) |
+| `verifying` | Self-verification by developer |
+| `needs_revision` | QA or CEO requested changes |
+| `awaiting_qa` | Submitted for QA review |
+| `awaiting_documentation` | Parallel phase: Documenter + Developer PR creation |
+| `awaiting_pm_review` | Docs complete + PR created, PM reviews |
+| `awaiting_ceo_approval` | Major tasks escalated for CEO final approval |
+| `completed` | Terminal state - work done and merged |
+| `cancelled` | Terminal state - work cancelled |
+| `quarantined` | Special state for problematic tasks (can return to pending) |
+
+### Role-Based Transitions
+
+Certain transitions require specific roles:
+- **Cancel any task**: PM roles only (`cell_pm`, `main_pm`, `product_owner`, `head_marketing`)
+- **QA actions**: Only `qa` role can pass/fail QA
+- **Documentation actions**: Only `documenter` role
+- **CEO approval**: Only `ceo` role can approve/reject from `awaiting_ceo_approval`
+- **PM review completion**: PM roles only
+
+### Git Integration Requirements
+
+For tasks with `requires_git=True`:
+1. **claimed -> in_progress**: Must have `branch_name` set (PM creates branch first)
+2. **awaiting_documentation -> awaiting_pm_review**: Requires BOTH `docs_complete=True` AND `pr_created=True`
+3. **awaiting_pm_review -> awaiting_ceo_approval**: Must have `pr_number` set
+
+### CEO Approval Workflow
+
+Major tasks are escalated to CEO for final approval:
+1. PM reviews and approves, escalates to `awaiting_ceo_approval`
+2. CEO can:
+   - **Approve**: Merges PR, task -> `completed`
+   - **Request changes**: Task -> `needs_revision`
+   - **Cancel**: Task -> `cancelled`
+
+## Data Models
+
+### Core Models (roboco/models/)
+
+| Model | Purpose |
+|-------|---------|
+| `Task` | Atomic unit of work with acceptance criteria |
+| `Project` | Git repository configuration and CI/CD commands |
+| `WorkSession` | Links agent work to task, tracks branch/commits/PR |
+| `Agent` | AI agent with role, team, capabilities |
+| `Session` | Communication session with messages |
+| `Channel` | Team communication channel |
+| `Message` | Extracted message from agent streams |
+| `Notification` | Formal notification requiring acknowledgment |
+| `Journal` | Agent personal log for reflections/learnings |
+
+### Task Model Key Fields
+
+```python
+# Git configuration
+task_type: TaskType      # code, documentation, research, planning, design, administrative
+requires_git: bool       # Whether git workflow applies
+project_id: UUID         # Project this task works on
+branch_name: str         # Branch created for this task (set by PM)
+work_session_id: UUID    # Active work session
+
+# PR tracking (parallel execution in awaiting_documentation)
+pr_number: int           # GitHub/GitLab PR number
+pr_url: str              # Full URL to PR
+docs_complete: bool      # Documenter has finished
+pr_created: bool         # Developer has created PR
+
+# Commits linked to task
+commits: list[CommitRef] # All commits made for this task
 ```
 
 ## Communication Model
@@ -143,49 +265,78 @@ The Auditor has silent read access to ALL channels.
 5. **Communication is constant** - Stream reasoning, log everything
 6. **State is sacred** - If interrupted, state must be recoverable
 7. **The Auditor sees all** - Quality monitored silently
+8. **Commits linked to tasks** - Every commit references its task ID
+9. **CEO approves major changes** - Escalation path for important work
 
-## Context Restoration Protocol
+## MCP Servers
 
-When resuming a task:
+RoboCo provides MCP (Model Context Protocol) servers for agents:
 
-1. Read task record: `README.md` → `plan.md` → `journal.md` → `decisions.md` → `blockers.md`
-2. Review artifacts and related commits
-3. Query knowledge base for similar past tasks
-4. Add to journal: "Resuming task. Context restored from records."
+| Server | Purpose |
+|--------|---------|
+| `task_server` | Task CRUD, lifecycle transitions, claiming |
+| `git_server` | Git operations (commit, push, branch, PR) |
+| `message_server` | Channel messaging, sessions |
+| `journal_server` | Agent personal logs |
+| `notify_server` | Formal notifications |
+| `optimal_server` | RAG queries, knowledge base |
+| `a2a_server` | Agent-to-agent protocol |
 
-## Technology Stack
+## Services
 
-| Layer | Technology |
-|-------|------------|
-| API Framework | FastAPI |
-| Database | PostgreSQL |
-| Cache/Queue | Redis |
-| Vector DB | Qdrant |
-| Container Runtime | Docker + Docker Compose |
-| Cloud LLM | Claude API |
-| Local LLM | Ollama / vLLM |
-| Embeddings | text-embedding-3-small / local |
-| Frontend | React / Next.js (future) |
+Core services in `roboco/services/`:
 
-## Implementation Phases
+| Service | Purpose |
+|---------|---------|
+| `TaskService` | Task CRUD and state transitions |
+| `WorkSessionService` | Git session management, PR lifecycle |
+| `WorkspaceService` | Multi-agent workspace resolution and cloning |
+| `ProjectService` | Project/repository management |
+| `MessagingService` | Channels, sessions, messages |
+| `NotificationService` | Formal notifications |
+| `JournalService` | Agent journals and entries |
+| `OptimalService` | RAG queries using piragi |
+| `PermissionsService` | Role-based access control |
 
-The project follows a phased approach:
+## Configuration
 
-- **Phase 0**: Foundation (hardware, Docker, networking)
-- **Phase 1**: Core Services (Messaging API, Task API, agent framework)
-- **Phase 2**: Communication (WebSocket, transcription, notifications)
-- **Phase 3**: Intelligence (RAG, Journal API, knowledge indexing)
-- **Phase 4**: Agents (all 17 agent types, cell deployment)
-- **Phase 5**: Management (Kanban UIs, dashboards)
-- **Phase 6**: Polish (performance, documentation)
+Key settings in `roboco/config.py` (env prefix: `ROBOCO_`):
+
+```bash
+# Database
+ROBOCO_DATABASE_HOST=localhost
+ROBOCO_DATABASE_PORT=5432
+ROBOCO_DATABASE_USER=roboco
+ROBOCO_DATABASE_PASSWORD=roboco
+ROBOCO_DATABASE_NAME=roboco
+
+# Redis
+ROBOCO_REDIS_HOST=localhost
+ROBOCO_REDIS_PORT=6379
+
+# Workspaces
+ROBOCO_WORKSPACES_ROOT=/data/workspaces
+ROBOCO_WORKSPACE_AUTO_CLONE=true
+ROBOCO_WORKSPACE_CLONE_TIMEOUT=300
+
+# RAG (piragi + pgvector)
+ROBOCO_RAG_CHUNK_STRATEGY=fixed
+ROBOCO_RAG_CHUNK_SIZE=512
+ROBOCO_RAG_USE_HYDE=true
+ROBOCO_RAG_USE_HYBRID_SEARCH=true
+
+# AI/LLM
+ROBOCO_DEFAULT_LLM_MODEL=claude-opus-4-5-20251101
+ROBOCO_DEFAULT_EMBEDDING_MODEL=BAAI/bge-base-en-v1.5
+ROBOCO_LOCAL_LLM_MODEL=qwen3:8b
+ROBOCO_LOCAL_LLM_BASE_URL=http://192.168.50.111:11434/v1
+```
 
 ## Blueprint Reference
 
 The complete system design is documented in `HOMELAB_TEAM_V0.md`, which contains:
 - Organizational structure and role descriptions
 - Communication matrix and notification permissions
-- Data models (Task, Agent, Session, Message, Channel, Notification, Journal)
 - API endpoint specifications
-- Kanban board designs
 - Security and access control model
 - Configuration templates
