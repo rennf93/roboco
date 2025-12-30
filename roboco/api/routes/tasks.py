@@ -41,6 +41,7 @@ from roboco.api.schemas.tasks import (
     TaskSessionLinkResponse,
     TaskUpdate,
     TeamTasksQuery,
+    enrich_task_with_context,
     task_list_to_response,
     task_to_response,
     transform_update_data,
@@ -305,7 +306,7 @@ async def get_task(
     task_id: UUID,
     db: DbSession,
 ) -> TaskResponse:
-    """Get a specific task with linked sessions."""
+    """Get a specific task with full context (sessions, work session, project)."""
     service = get_task_service(db)
     task = await service.get(task_id)
     if not task:
@@ -330,6 +331,9 @@ async def get_task(
         for link in session_links
         if link.session and link.session.group and link.session.group.channel
     ]
+
+    # Enrich with work session and project context
+    response = await enrich_task_with_context(response, db)
 
     return response
 

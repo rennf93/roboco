@@ -3,10 +3,14 @@ Test API Routes
 
 Test and CI/CD operations for agents working on code tasks.
 These endpoints are called by the Test MCP Server.
+
+Uses multi-agent workspace structure - each agent gets their own
+workspace at: {workspaces_root}/{project_slug}/{team}/{agent_slug}/
 """
 
 import subprocess
 from pathlib import Path
+from uuid import UUID
 
 from fastapi import APIRouter, HTTPException, Query, status
 
@@ -26,7 +30,9 @@ from roboco.api.schemas.test import (
     TypecheckRequest,
     TypecheckResponse,
 )
+from roboco.config import settings
 from roboco.services.project import get_project_service
+from roboco.services.workspace import WorkspaceError, get_workspace_service
 
 router = APIRouter()
 
@@ -43,8 +49,13 @@ _TYPE_ERROR_PARTS_MIN = 3
 async def _get_project_and_workspace(
     db: DbSession,
     project_slug: str,
+    agent_id: UUID | None = None,
 ) -> tuple[object, Path]:
-    """Get the project and workspace path."""
+    """
+    Get the project and workspace path for an agent.
+
+    Uses multi-agent workspace structure if agent_id is provided.
+    """
     service = get_project_service(db)
     project = await service.get_by_slug(project_slug)
     if not project:
@@ -52,17 +63,51 @@ async def _get_project_and_workspace(
             status_code=status.HTTP_404_NOT_FOUND,
             detail=f"Project '{project_slug}' not found",
         )
-    if not project.workspace_path:
+
+    # If no agent_id, fall back to legacy workspace_path
+    if agent_id is None:
+        if not project.workspace_path:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"Project '{project_slug}' has no workspace configured "
+                "and no agent_id provided for dynamic workspace resolution",
+            )
+        workspace = Path(project.workspace_path)
+        if not workspace.exists():
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"Workspace path does not exist: {workspace}",
+            )
+        return project, workspace
+
+    # Use workspace service for multi-agent workspace resolution
+    workspace_service = get_workspace_service(db)
+
+    try:
+        if settings.workspace_auto_clone:
+            workspace = await workspace_service.ensure_workspace(
+                project_slug=project_slug,
+                agent_id=agent_id,
+                git_url=project.git_url,
+                default_branch=project.default_branch or "main",
+            )
+        else:
+            workspace = await workspace_service.resolve_workspace(
+                project_slug=project_slug,
+                agent_id=agent_id,
+            )
+            if not workspace.exists():
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail=f"Workspace does not exist: {workspace}. "
+                    "Clone the repository first or enable auto_clone.",
+                )
+    except WorkspaceError as e:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail=f"Project '{project_slug}' has no workspace configured",
-        )
-    workspace = Path(project.workspace_path)
-    if not workspace.exists():
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=f"Workspace path does not exist: {workspace}",
-        )
+            detail=str(e),
+        ) from e
+
     return project, workspace
 
 
@@ -102,12 +147,14 @@ async def _run_command(
 @router.get("/status", response_model=TestStatusResponse)
 async def get_test_status(
     db: DbSession,
-    _agent: CurrentAgentContext,
+    agent: CurrentAgentContext,
     project_slug: str = Query(...),
     _task_id: str | None = Query(default=None),
 ) -> TestStatusResponse:
     """Get test status for a project."""
-    _project, _workspace = await _get_project_and_workspace(db, project_slug)
+    _project, _workspace = await _get_project_and_workspace(
+        db, project_slug, agent.agent_id
+    )
 
     # Return status - in a full implementation this would query stored results
     return TestStatusResponse(
@@ -127,10 +174,12 @@ async def get_test_status(
 async def run_tests(
     data: TestRunRequest,
     db: DbSession,
-    _agent: CurrentAgentContext,
+    agent: CurrentAgentContext,
 ) -> TestRunResponse:
     """Run tests for a project."""
-    project, workspace = await _get_project_and_workspace(db, data.project_slug)
+    project, workspace = await _get_project_and_workspace(
+        db, data.project_slug, agent.agent_id
+    )
 
     test_cmd = getattr(project, "test_command", None)
     if not test_cmd:
@@ -190,10 +239,12 @@ async def run_tests(
 async def run_lint(
     data: LintRequest,
     db: DbSession,
-    _agent: CurrentAgentContext,
+    agent: CurrentAgentContext,
 ) -> LintResponse:
     """Run linter for a project."""
-    project, workspace = await _get_project_and_workspace(db, data.project_slug)
+    project, workspace = await _get_project_and_workspace(
+        db, data.project_slug, agent.agent_id
+    )
 
     lint_cmd = getattr(project, "lint_command", None)
     if not lint_cmd:
@@ -253,10 +304,12 @@ async def run_lint(
 async def run_format(
     data: FormatRequest,
     db: DbSession,
-    _agent: CurrentAgentContext,
+    agent: CurrentAgentContext,
 ) -> FormatResponse:
     """Run formatter for a project."""
-    project, workspace = await _get_project_and_workspace(db, data.project_slug)
+    project, workspace = await _get_project_and_workspace(
+        db, data.project_slug, agent.agent_id
+    )
 
     format_cmd = getattr(project, "format_command", None)
     if not format_cmd:
@@ -295,10 +348,12 @@ async def run_format(
 async def run_typecheck(
     data: TypecheckRequest,
     db: DbSession,
-    _agent: CurrentAgentContext,
+    agent: CurrentAgentContext,
 ) -> TypecheckResponse:
     """Run type checker for a project."""
-    project, workspace = await _get_project_and_workspace(db, data.project_slug)
+    project, workspace = await _get_project_and_workspace(
+        db, data.project_slug, agent.agent_id
+    )
 
     typecheck_cmd = getattr(project, "typecheck_command", None)
     if not typecheck_cmd:
@@ -350,10 +405,12 @@ async def run_typecheck(
 async def run_build(
     data: BuildRequest,
     db: DbSession,
-    _agent: CurrentAgentContext,
+    agent: CurrentAgentContext,
 ) -> BuildResponse:
     """Run build command for a project."""
-    project, workspace = await _get_project_and_workspace(db, data.project_slug)
+    project, workspace = await _get_project_and_workspace(
+        db, data.project_slug, agent.agent_id
+    )
 
     build_cmd = getattr(project, "build_command", None)
     if not build_cmd:

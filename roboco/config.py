@@ -213,6 +213,23 @@ class Settings(BaseSettings):
     session_max_content_length: int = Field(default=50000, ge=1)
     message_max_length: int = Field(default=10000, ge=1)
 
+    # ==========================================================================
+    # Workspaces (Multi-Agent Git)
+    # ==========================================================================
+    workspaces_root: str = Field(
+        default="/data/workspaces",
+        description="Root directory for all agent workspaces",
+    )
+    workspace_auto_clone: bool = Field(
+        default=True,
+        description="Automatically clone repos when workspace is first accessed",
+    )
+    workspace_clone_timeout: int = Field(
+        default=300,
+        ge=30,
+        description="Timeout in seconds for git clone operations",
+    )
+
 
 @lru_cache
 def get_settings() -> Settings:

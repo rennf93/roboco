@@ -61,6 +61,29 @@ class TaskSessionLinkResponse(BaseModel):
     relationship_type: str
 
 
+class WorkSessionSummaryInTask(BaseModel):
+    """Work session info embedded in task response."""
+
+    id: UUID
+    branch_name: str
+    status: str
+    commits: list[str] = []
+    files_modified: list[str] = []
+    pr_number: int | None = None
+    pr_url: str | None = None
+    pr_status: str | None = None
+
+
+class ProjectSummaryInTask(BaseModel):
+    """Project info embedded in task response."""
+
+    id: UUID
+    name: str
+    slug: str
+    git_url: str
+    default_branch: str
+
+
 class SubTaskResponse(BaseModel):
     """A sub-task within a task plan."""
 
@@ -243,6 +266,13 @@ class TaskResponse(BaseModel):
 
     # Linked Sessions (for agent context)
     sessions: list[TaskSessionLinkResponse] = []
+
+    # Git/Development Context (for full traceability)
+    project: ProjectSummaryInTask | None = None
+    work_session: WorkSessionSummaryInTask | None = None
+    branch_name: str | None = None
+    pr_number: int | None = None
+    pr_url: str | None = None
 
     class Config:
         from_attributes = True
@@ -526,7 +556,74 @@ def task_to_response(task: "TaskTable") -> TaskResponse:
         # Review Status
         self_verified=task.self_verified,
         qa_verified=task.qa_verified,
+        # Git context from task record
+        branch_name=getattr(task, "branch_name", None),
+        pr_number=getattr(task, "pr_number", None),
+        pr_url=getattr(task, "pr_url", None),
     )
+
+
+async def enrich_task_with_context(
+    task_response: TaskResponse,
+    db: Any,
+    include_project: bool = True,
+    include_work_session: bool = True,
+) -> TaskResponse:
+    """
+    Enrich a TaskResponse with related context (project, work session).
+
+    Call this when full traceability context is needed.
+    """
+    from sqlalchemy import select  # noqa: PLC0415
+
+    from roboco.db.tables import ProjectTable, WorkSessionTable  # noqa: PLC0415
+
+    task_dict = task_response.model_dump()
+
+    # Get project info if task has project_id
+    if include_project:
+        # Task doesn't have project_id in response yet, need to fetch from related data
+        # This requires knowing the project_id from the task record
+        pass  # TODO: Add project_id to TaskResponse or fetch via work session
+
+    # Get work session info
+    if include_work_session and hasattr(task_response, "id"):
+        query = select(WorkSessionTable).where(
+            WorkSessionTable.task_id == task_response.id
+        )
+        result = await db.execute(query)
+        work_session = result.scalar_one_or_none()
+
+        if work_session:
+            task_dict["work_session"] = WorkSessionSummaryInTask(
+                id=work_session.id,
+                branch_name=work_session.branch_name,
+                status=work_session.status.value if work_session.status else "unknown",
+                commits=list(work_session.commits or []),
+                files_modified=list(work_session.files_modified or []),
+                pr_number=work_session.pr_number,
+                pr_url=work_session.pr_url,
+                pr_status=work_session.pr_status,
+            )
+
+            # Also get project info from work session
+            if include_project and work_session.project_id:
+                proj_query = select(ProjectTable).where(
+                    ProjectTable.id == work_session.project_id
+                )
+                proj_result = await db.execute(proj_query)
+                project = proj_result.scalar_one_or_none()
+
+                if project:
+                    task_dict["project"] = ProjectSummaryInTask(
+                        id=project.id,
+                        name=project.name,
+                        slug=project.slug,
+                        git_url=project.git_url,
+                        default_branch=project.default_branch,
+                    )
+
+    return TaskResponse(**task_dict)
 
 
 def task_list_to_response(tasks: list["TaskTable"]) -> list[TaskResponse]:
