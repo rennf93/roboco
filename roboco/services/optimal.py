@@ -86,6 +86,7 @@ class OptimalService:
     def __init__(self) -> None:
         self._initialized = False
         self._plugins: dict[IndexType, BaseIndexPlugin] = {}
+        self._prompt_templates: dict[str, dict[str, Any]] = {}
 
     async def initialize(self) -> None:
         """Initialize all knowledge base indexes."""
@@ -104,8 +105,75 @@ class OptimalService:
         self._initialized = True
         logger.info("OptimalService initialization complete")
 
-        # Auto-index documentation on startup
+        # Auto-index code and documentation on startup
+        await self._auto_index_on_startup()
+
+    async def _auto_index_on_startup(self) -> None:
+        """
+        Auto-index code and documentation on startup.
+
+        Indexes:
+        - /roboco/ - Source code files
+        - /docs/standards/ - Coding, security, workflow standards
+        - /docs/workflows/ - Agent workflow documentation
+
+        This ensures agents can search for code, standards, and workflows
+        immediately after startup.
+        """
+        await self._auto_index_code()
         await self._auto_index_docs()
+
+    async def _auto_index_code(self) -> None:
+        """Auto-index source code files on startup."""
+        # Find the roboco source directory (the Python package, not the repo root)
+        # We want to index roboco/ package, NOT the entire repo (which has .venv)
+        possible_code_roots = [
+            Path("/app/roboco"),  # Docker: /app is repo root, roboco/ is package
+            Path(__file__).parent.parent,  # Local: optimal.py -> services -> roboco
+            Path.cwd() / "roboco",  # Local: cwd/roboco
+        ]
+
+        code_root = None
+        for path in possible_code_roots:
+            # Check for __init__.py to confirm it's a Python package (not repo root)
+            init_file = path / "__init__.py"
+            if path.exists() and path.is_dir() and init_file.exists():
+                code_root = path
+                logger.debug(
+                    "Found code package directory",
+                    path=str(path),
+                )
+                break
+
+        if code_root is None:
+            logger.warning(
+                "Code directory not found",
+                searched_paths=[str(p) for p in possible_code_roots],
+            )
+            return
+
+        # Check if code index is empty
+        code_plugin = self._get_plugin(IndexType.CODE)
+        code_count = await code_plugin.count()
+
+        if code_count > 0:
+            logger.info(
+                "Code index already populated",
+                chunk_count=code_count,
+                skipping=True,
+            )
+            return
+
+        logger.info(
+            "Auto-indexing source code",
+            directory=str(code_root),
+        )
+
+        try:
+            count = await self.index_code([str(code_root)], project="roboco")
+            logger.info("Code auto-indexing complete", files_indexed=count)
+        except Exception as e:
+            logger.warning("Code auto-indexing failed", error=str(e))
 
     async def _auto_index_docs(self) -> None:
         """
@@ -114,9 +182,6 @@ class OptimalService:
         Indexes:
         - /docs/standards/ - Coding, security, workflow standards
         - /docs/workflows/ - Agent workflow documentation
-
-        This ensures agents can search for standards and workflows
-        immediately after startup.
         """
         # Find the docs directory relative to the project root
         possible_docs_roots = [
@@ -222,10 +287,27 @@ class OptimalService:
         sources: list[str],
         project: str | None = None,
     ) -> int:
-        """Index code files/directories."""
+        """Index code files/directories and track in database."""
         plugin = self._get_plugin(IndexType.CODE)
         if isinstance(plugin, CodeIndexPlugin):
-            return await plugin.index_sources(sources, project)
+            count, indexed_files = await plugin.index_sources(sources, project)
+
+            # Batch track all indexed files using repository
+            docs_to_track = [
+                {
+                    "source": f["source"],
+                    "title": f["title"],
+                    "preview": f.get("preview"),
+                    "metadata": {
+                        "language": f.get("language"),
+                        "file_path": f.get("file_path"),
+                        "project": project,
+                    },
+                }
+                for f in indexed_files
+            ]
+            await self._track_indexed_documents_batch(IndexType.CODE, docs_to_track)
+            return count
         return await plugin.add_sources(sources)
 
     async def index_documentation(
@@ -233,10 +315,29 @@ class OptimalService:
         sources: list[str],
         project: str | None = None,
     ) -> int:
-        """Index documentation files."""
+        """Index documentation files and track in database."""
         plugin = self._get_plugin(IndexType.DOCUMENTATION)
         if isinstance(plugin, DocsIndexPlugin):
-            return await plugin.index_sources(sources, project)
+            count, indexed_files = await plugin.index_sources(sources, project)
+
+            # Batch track all indexed files using repository
+            docs_to_track = [
+                {
+                    "source": f["source"],
+                    "title": f["title"],
+                    "preview": f.get("preview"),
+                    "metadata": {
+                        "doc_type": f.get("doc_type"),
+                        "file_path": f.get("file_path"),
+                        "project": project,
+                    },
+                }
+                for f in indexed_files
+            ]
+            await self._track_indexed_documents_batch(
+                IndexType.DOCUMENTATION, docs_to_track
+            )
+            return count
         return await plugin.add_sources(sources)
 
     async def _track_indexed_document(
@@ -248,43 +349,29 @@ class OptimalService:
         metadata: dict | None = None,
     ) -> None:
         """Track an indexed document in the database for browsing/stats."""
-        import hashlib
+        doc = {
+            "source": source,
+            "title": title,
+            "preview": preview,
+            "metadata": metadata,
+        }
+        await self._track_indexed_documents_batch(index_type, [doc])
 
+    async def _track_indexed_documents_batch(
+        self,
+        index_type: IndexType,
+        documents: list[dict],
+    ) -> None:
+        """Track multiple indexed documents in a single transaction."""
         from roboco.db import get_db_context
-        from roboco.db.tables import IndexedDocumentTable
+        from roboco.services.repositories import IndexedDocumentRepository
 
-        source_hash = hashlib.sha256(source.encode()).hexdigest()
+        if not documents:
+            return
 
         async with get_db_context() as db:
-            from sqlalchemy import select
-
-            existing = await db.execute(
-                select(IndexedDocumentTable).where(
-                    IndexedDocumentTable.index_type == index_type.value,
-                    IndexedDocumentTable.source_hash == source_hash,
-                )
-            )
-            doc = existing.scalar_one_or_none()
-
-            if doc:
-                if title:
-                    doc.title = title
-                if preview:
-                    doc.preview = preview[:500] if preview else None
-                if metadata:
-                    doc.extra_data = {**(doc.extra_data or {}), **metadata}
-            else:
-                doc = IndexedDocumentTable(
-                    index_type=index_type.value,
-                    source=source,
-                    source_hash=source_hash,
-                    title=title,
-                    preview=preview[:500] if preview else None,
-                    extra_data=metadata or {},
-                )
-                db.add(doc)
-
-            await db.commit()
+            repo = IndexedDocumentRepository(db)
+            await repo.upsert_batch(index_type.value, documents)
 
     async def index_conversation(self, params: IndexConversationParams) -> None:
         """Index a conversation message."""
@@ -676,6 +763,228 @@ class OptimalService:
                 stats["indexes"][index_type.value] = {"error": str(e)}
 
         return stats
+
+    async def get_index_stats(self, index_type: IndexType) -> dict[str, Any]:
+        """
+        Get detailed stats for a specific index.
+
+        Returns:
+            Dict with document_count, chunk_count, last_updated
+        """
+        if not self._initialized:
+            return {"error": "Not initialized"}
+
+        from sqlalchemy import func, select
+
+        from roboco.db import get_db_context
+        from roboco.db.tables import IndexedDocumentTable
+
+        plugin = self._get_plugin(index_type)
+        chunk_count = await plugin.count()
+
+        # Query DB for document count and last_updated
+        async with get_db_context() as session:
+            # Document count
+            count_query = (
+                select(func.count())
+                .select_from(IndexedDocumentTable)
+                .where(IndexedDocumentTable.index_type == index_type.value)
+            )
+            count_result = await session.execute(count_query)
+            doc_count = count_result.scalar() or 0
+
+            # Last updated
+            last_updated_query = (
+                select(func.max(IndexedDocumentTable.indexed_at))
+                .select_from(IndexedDocumentTable)
+                .where(IndexedDocumentTable.index_type == index_type.value)
+            )
+            last_updated_result = await session.execute(last_updated_query)
+            last_updated = last_updated_result.scalar()
+
+        return {
+            "index_type": index_type.value,
+            "document_count": doc_count,
+            "chunk_count": chunk_count,
+            "last_updated": last_updated.isoformat() if last_updated else None,
+        }
+
+    async def get_all_index_stats(self) -> dict[str, Any]:
+        """
+        Get detailed stats for all indexes including document counts and last_updated.
+
+        Returns:
+            Dict with initialized flag and indexes with full stats
+        """
+        if not self._initialized:
+            return {"initialized": False, "indexes": {}}
+
+        from sqlalchemy import func, select
+
+        from roboco.db import get_db_context
+        from roboco.db.tables import IndexedDocumentTable
+
+        async with get_db_context() as session:
+            stats: dict[str, Any] = {"initialized": True, "indexes": {}}
+
+            for index_type, plugin in self._plugins.items():
+                try:
+                    chunk_count = await plugin.count()
+
+                    # Document count
+                    count_query = (
+                        select(func.count())
+                        .select_from(IndexedDocumentTable)
+                        .where(IndexedDocumentTable.index_type == index_type.value)
+                    )
+                    count_result = await session.execute(count_query)
+                    doc_count = count_result.scalar() or 0
+
+                    # Last updated
+                    last_updated_query = (
+                        select(func.max(IndexedDocumentTable.indexed_at))
+                        .select_from(IndexedDocumentTable)
+                        .where(IndexedDocumentTable.index_type == index_type.value)
+                    )
+                    last_updated_result = await session.execute(last_updated_query)
+                    last_updated = last_updated_result.scalar()
+
+                    stats["indexes"][index_type.value] = {
+                        "document_count": doc_count,
+                        "chunk_count": chunk_count,
+                        "last_updated": (
+                            last_updated.isoformat() if last_updated else None
+                        ),
+                    }
+                except Exception as e:
+                    stats["indexes"][index_type.value] = {"error": str(e)}
+
+            return stats
+
+    async def auto_index_on_startup(
+        self,
+        code_sources: list[str] | None = None,
+        docs_sources: list[str] | None = None,
+        force: bool = False,
+    ) -> dict[str, int]:
+        """
+        Auto-index code and docs if indexes are empty.
+
+        Called during bootstrap to ensure RAG has content to search.
+
+        Args:
+            code_sources: Paths to index for code (default: auto-detect)
+            docs_sources: Paths to index for docs (default: auto-detect)
+            force: Force re-index even if not empty
+
+        Returns:
+            Dict with counts: {"code": N, "docs": M}
+        """
+        if not self._initialized:
+            await self.initialize()
+
+        # Auto-detect paths if not provided
+        if code_sources is None:
+            # Try Docker paths first, then local
+            # ONLY use package directories (with __init__.py), NOT repo roots
+            for path in ["/app/roboco", "roboco/"]:
+                p = Path(path)
+                if p.exists() and (p / "__init__.py").exists():
+                    code_sources = [path]
+                    break
+            code_sources = code_sources or ["roboco/"]
+
+        if docs_sources is None:
+            # Try Docker paths first, then local
+            for path in ["/app/docs", "docs/"]:
+                if Path(path).exists():
+                    docs_sources = [path]
+                    break
+            docs_sources = docs_sources or ["docs/"]
+
+        result = {"code": 0, "docs": 0}
+
+        # Check code index
+        code_plugin = self._get_plugin(IndexType.CODE)
+        code_count = await code_plugin.count()
+
+        if code_count == 0 or force:
+            logger.info(
+                "Auto-indexing code",
+                sources=code_sources,
+                reason="empty" if code_count == 0 else "forced",
+            )
+            result["code"] = await self.index_code(code_sources, project="roboco")
+
+        # Check docs index
+        docs_plugin = self._get_plugin(IndexType.DOCUMENTATION)
+        docs_count = await docs_plugin.count()
+
+        if docs_count == 0 or force:
+            logger.info(
+                "Auto-indexing documentation",
+                sources=docs_sources,
+                reason="empty" if docs_count == 0 else "forced",
+            )
+            result["docs"] = await self.index_documentation(
+                docs_sources, project="roboco"
+            )
+
+        if result["code"] > 0 or result["docs"] > 0:
+            logger.info(
+                "Auto-indexing complete",
+                code_files=result["code"],
+                doc_files=result["docs"],
+            )
+        else:
+            logger.info("Indexes already populated, skipping auto-index")
+
+        return result
+
+    # =========================================================================
+    # PROMPT TEMPLATE MANAGEMENT
+    # =========================================================================
+
+    def create_prompt_template(self, template_data: dict[str, Any]) -> dict[str, Any]:
+        """
+        Create a reusable prompt template.
+
+        Args:
+            template_data: Dict with id, name, template, description,
+                          variables, category, created_at, created_by
+
+        Raises:
+            ValueError: If template_data is missing required 'id' field
+        """
+        if "id" not in template_data:
+            raise ValueError("Template data must include 'id' field")
+        template_id = template_data["id"]
+        self._prompt_templates[template_id] = template_data
+        return self._prompt_templates[template_id]
+
+    def list_prompt_templates(
+        self, category: str | None = None
+    ) -> list[dict[str, Any]]:
+        """List all prompt templates, optionally filtered by category."""
+        templates = list(self._prompt_templates.values())
+        if category:
+            templates = [t for t in templates if t.get("category") == category]
+        return templates
+
+    def get_prompt_template(self, template_id: str) -> dict[str, Any] | None:
+        """Get a prompt template by ID."""
+        return self._prompt_templates.get(template_id)
+
+    def delete_prompt_template(self, template_id: str) -> bool:
+        """Delete a prompt template. Returns True if deleted."""
+        if template_id in self._prompt_templates:
+            del self._prompt_templates[template_id]
+            return True
+        return False
+
+    def reset_prompt_templates(self) -> None:
+        """Reset all prompt templates (for testing)."""
+        self._prompt_templates.clear()
 
     async def clear_index(self, index_type: IndexType) -> None:
         """Clear a specific index."""

@@ -210,6 +210,12 @@ class Task(TimestampMixin):
         description="2-3 sentences for quick context restoration",
     )
 
+    # Proactive Knowledge Context (injected when task is claimed)
+    proactive_context: dict | None = Field(
+        default=None,
+        description="RAG context: similar tasks, learnings, patterns, standards",
+    )
+
     # NOTE: Task state mutations should be performed through TaskService,
     # not directly on the model. See roboco/services/task.py for:
     # - claim(), start(), block(), pause(), resume()

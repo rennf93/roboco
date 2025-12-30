@@ -45,6 +45,7 @@ from roboco.api.schemas.optimal import (
     ProactiveContextResponse,
     PromptTemplateRequest,
     PromptTemplateResponse,
+    RAGHealthResponse,
     RAGQueryRequest,
     RAGQueryResponse,
     RefreshIndexResponse,
@@ -52,6 +53,7 @@ from roboco.api.schemas.optimal import (
     SearchRequest,
     SearchResponse,
     SearchResultResponse,
+    SingleIndexStatsResponse,
     StandardsGetRequest,
     StandardsGetResponse,
     TokenEstimateRequest,
@@ -363,13 +365,8 @@ async def get_context(
 async def get_stats(
     agent: CurrentAgentContext,
     permissions: PermissionServiceDep,
-    db: DbSession,
 ) -> IndexStatsResponse:
     """Get statistics about all indexes."""
-    from sqlalchemy import func, select
-
-    from roboco.db.tables import IndexedDocumentTable
-
     if not permissions.can_perform_kb_action(agent, KBAction.VIEW_STATS):
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
@@ -377,30 +374,127 @@ async def get_stats(
         )
 
     service = await get_optimal_service()
-    stats = await service.get_stats()
-
-    # Enhance stats with actual document counts from DB
-    indexes = stats.get("indexes", {})
-    for index_type_str in indexes:
-        # Get actual document count from indexed_documents table
-        count_query = (
-            select(func.count())
-            .select_from(IndexedDocumentTable)
-            .where(IndexedDocumentTable.index_type == index_type_str)
-        )
-        count_result = await db.execute(count_query)
-        doc_count = count_result.scalar() or 0
-
-        # Add document_count (actual files) vs chunk_count (vector entries)
-        chunk_count = indexes[index_type_str].get("document_count", 0)
-        indexes[index_type_str] = {
-            "document_count": doc_count,  # Actual files/documents
-            "chunk_count": chunk_count,  # Vector DB entries
-        }
+    stats = await service.get_all_index_stats()
 
     return IndexStatsResponse(
         initialized=stats.get("initialized", False),
-        indexes=indexes,
+        indexes=stats.get("indexes", {}),
+    )
+
+
+@router.get("/stats/{index_type}", response_model=SingleIndexStatsResponse)
+async def get_single_index_stats(
+    index_type: str,
+    agent: CurrentAgentContext,
+    permissions: PermissionServiceDep,
+) -> SingleIndexStatsResponse:
+    """Get statistics for a specific index type."""
+    if not permissions.can_perform_kb_action(agent, KBAction.VIEW_STATS):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Not authorized to view index statistics",
+        )
+
+    # Validate index type
+    try:
+        idx_type = IndexType(index_type)
+    except ValueError as e:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Invalid index type: {index_type}",
+        ) from e
+
+    service = await get_optimal_service()
+    stats = await service.get_index_stats(idx_type)
+
+    return SingleIndexStatsResponse(
+        index_type=stats["index_type"],
+        document_count=stats["document_count"],
+        chunk_count=stats["chunk_count"],
+        last_updated=stats.get("last_updated"),
+    )
+
+
+@router.get("/health", response_model=RAGHealthResponse)
+async def rag_health_check() -> RAGHealthResponse:
+    """
+    Check RAG system health.
+
+    Tests connectivity to:
+    - Embedding model (sentence-transformers)
+    - LLM (Ollama for HyDE)
+    - Vector store (PostgreSQL/pgvector)
+
+    Each test has a 10-second timeout to prevent hanging.
+    """
+    import asyncio
+
+    import httpx
+
+    from roboco.config import settings
+
+    details: dict[str, Any] = {}
+    embedding_ok = False
+    llm_ok = False
+    vector_ok = False
+
+    health_timeout = 10.0  # seconds
+
+    # Test embedding model with timeout
+    from roboco.services.optimal_brain.shared_embedder import (
+        get_shared_embedder,
+    )
+
+    try:
+        async with asyncio.timeout(health_timeout):
+            embedder = await get_shared_embedder(model=settings.default_embedding_model)
+            test_embedding = embedder.embed("health check")
+            if test_embedding and len(test_embedding) == settings.embedding_dimensions:
+                embedding_ok = True
+                details["embedding_model"] = settings.default_embedding_model
+                details["embedding_dimensions"] = len(test_embedding)
+    except TimeoutError:
+        details["embedding_error"] = f"Timeout after {health_timeout}s"
+    except Exception as e:
+        details["embedding_error"] = str(e)
+
+    # Test LLM (Ollama) - already has timeout via httpx
+    try:
+        async with httpx.AsyncClient(timeout=health_timeout) as client:
+            resp = await client.post(
+                f"{settings.local_llm_base_url}/chat/completions",
+                json={
+                    "model": settings.local_llm_model,
+                    "messages": [{"role": "user", "content": "ping"}],
+                    "max_tokens": 5,
+                },
+            )
+            if resp.is_success:
+                llm_ok = True
+                details["llm_model"] = settings.local_llm_model
+                details["llm_base_url"] = settings.local_llm_base_url
+    except Exception as e:
+        details["llm_error"] = str(e)
+
+    # Test vector store with timeout
+    try:
+        async with asyncio.timeout(health_timeout):
+            service = await get_optimal_service()
+            stats = await service.get_stats()
+            if stats.get("initialized"):
+                vector_ok = True
+                details["vector_store"] = "connected"
+    except TimeoutError:
+        details["vector_store_error"] = f"Timeout after {health_timeout}s"
+    except Exception as e:
+        details["vector_store_error"] = str(e)
+
+    return RAGHealthResponse(
+        healthy=embedding_ok and llm_ok and vector_ok,
+        embedding_status="ok" if embedding_ok else "error",
+        llm_status="ok" if llm_ok else "error",
+        vector_store_status="ok" if vector_ok else "error",
+        details=details,
     )
 
 
@@ -541,27 +635,34 @@ async def refresh_index(
     )
 
 
-# =============================================================================
-# PROMPT TEMPLATE STORAGE
-# =============================================================================
+@router.post("/kb/reindex")
+async def reindex_all(
+    agent: CurrentAgentContext,
+    permissions: PermissionServiceDep,
+    force: bool = False,
+) -> dict[str, Any]:
+    """
+    Trigger re-indexing of code and documentation.
 
+    Re-scans the codebase and docs directories to update indexes.
+    This is useful when files have been added/changed outside of normal
+    workflow or to recover from indexing issues.
 
-class _PromptTemplateStorageHolder:
-    """Holder for prompt template storage (would be database in production)."""
+    Args:
+        force: If True, reindex even if indexes aren't empty
 
-    templates: dict[str, dict[str, Any]] | None = None
+    Returns:
+        Count of indexed code files and documentation files
+    """
+    if not permissions.can_perform_kb_action(agent, KBAction.INDEX_CODE):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Not authorized to trigger reindexing",
+        )
 
-
-def _get_prompt_templates() -> dict[str, dict[str, Any]]:
-    """Get the prompt templates storage."""
-    if _PromptTemplateStorageHolder.templates is None:
-        _PromptTemplateStorageHolder.templates = {}
-    return _PromptTemplateStorageHolder.templates
-
-
-def reset_prompt_templates() -> None:
-    """Reset prompt templates (for testing)."""
-    _PromptTemplateStorageHolder.templates = {}
+    service = await get_optimal_service()
+    result = await service.auto_index_on_startup(force=force)
+    return {"status": "reindexed", **result}
 
 
 # =============================================================================
@@ -583,30 +684,31 @@ async def create_prompt_template(
 
     Templates can include {variables} that get substituted when rendering.
     """
-    # Any authenticated agent can create prompt templates
     template_id = str(uuid4())
     created_at = datetime.now(UTC).isoformat()
 
-    templates = _get_prompt_templates()
-    templates[template_id] = {
-        "id": template_id,
-        "name": request.name,
-        "template": request.template,
-        "description": request.description,
-        "variables": request.variables,
-        "category": request.category,
-        "created_at": created_at,
-        "created_by": str(agent.agent_id),
-    }
+    service = await get_optimal_service()
+    template = service.create_prompt_template(
+        {
+            "id": template_id,
+            "name": request.name,
+            "template": request.template,
+            "description": request.description,
+            "variables": request.variables,
+            "category": request.category,
+            "created_at": created_at,
+            "created_by": str(agent.agent_id),
+        }
+    )
 
     return PromptTemplateResponse(
-        id=template_id,
-        name=request.name,
-        template=request.template,
-        description=request.description,
-        variables=request.variables,
-        category=request.category,
-        created_at=created_at,
+        id=template["id"],
+        name=template["name"],
+        template=template["template"],
+        description=template["description"],
+        variables=template["variables"],
+        category=template["category"],
+        created_at=template["created_at"],
     )
 
 
@@ -616,12 +718,10 @@ async def list_prompt_templates(
     category: str | None = None,
 ) -> list[PromptTemplateResponse]:
     """List all prompt templates, optionally filtered by category."""
-    # Any authenticated agent can list templates
     _ = agent  # Used for authentication
-    templates = list(_get_prompt_templates().values())
 
-    if category:
-        templates = [t for t in templates if t.get("category") == category]
+    service = await get_optimal_service()
+    templates = service.list_prompt_templates(category=category)
 
     return [
         PromptTemplateResponse(
@@ -652,12 +752,19 @@ async def mentor_ask(
 
     Conversational RAG - use conversation_id for follow-up questions.
     """
-    mentor = await get_mentor_service()
-    service = await get_optimal_service()
+    # Initialize services with proper error handling
+    try:
+        mentor = await get_mentor_service()
+        service = await get_optimal_service()
 
-    # Initialize mentor with optimal service if needed
-    if mentor._optimal_service is None:
-        await mentor.initialize(service)
+        # Initialize mentor with optimal service if needed
+        if mentor._optimal_service is None:
+            await mentor.initialize(service)
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=f"Mentor service initialization failed: {e}",
+        ) from e
 
     response = await mentor.ask(
         question=request.question,

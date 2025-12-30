@@ -6,6 +6,7 @@ for database operations. Reduces boilerplate in services.
 """
 
 from roboco.services.repositories.base import BaseRepository
+from roboco.services.repositories.indexed_document import IndexedDocumentRepository
 from roboco.services.repositories.query_helpers import (
     agent_id_filter,
     get_agent_slug,
@@ -19,6 +20,7 @@ from roboco.services.repositories.query_helpers import (
 
 __all__ = [
     "BaseRepository",
+    "IndexedDocumentRepository",
     "agent_id_filter",
     "get_agent_slug",
     "pagination",

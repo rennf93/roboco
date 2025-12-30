@@ -814,29 +814,171 @@ def _register_learning_tools(mcp: FastMCP, client: ApiClient) -> None:
         }
 
 
+def _register_index_management_tools(mcp: FastMCP, client: ApiClient) -> None:
+    """Register index management tools for administrative operations."""
+
+    @mcp.tool()
+    async def roboco_clear_index(index_type: str) -> dict[str, Any]:
+        """
+        Clear all documents from a specific index.
+
+        Use with caution - this permanently deletes indexed content.
+        Useful for recovering from corrupted indexes or starting fresh.
+
+        PERMISSION: Requires CLEAR_INDEX permission.
+
+        Args:
+            index_type: One of: code, documentation, conversations, journals,
+                        errors, standards, decisions, reviews, learnings
+
+        Returns:
+            Confirmation of cleared index
+        """
+        valid_types = {
+            "code",
+            "documentation",
+            "conversations",
+            "journals",
+            "errors",
+            "standards",
+            "decisions",
+            "reviews",
+            "learnings",
+        }
+        if index_type not in valid_types:
+            return format_error_response(
+                "INVALID_INDEX_TYPE",
+                f"Invalid index type. Must be one of: {', '.join(sorted(valid_types))}",
+            )
+
+        resp = await client.delete(f"/optimal/kb/{index_type}")
+        if not resp.ok:
+            if resp.status_code == http_status.HTTP_403_FORBIDDEN:
+                return format_error_response(
+                    "NOT_AUTHORIZED",
+                    "You don't have permission to clear indexes",
+                )
+            return format_error_response(
+                "CLEAR_FAILED",
+                "Failed to clear index",
+                {"api_error": resp.text},
+            )
+
+        return {"status": "success", "cleared": index_type}
+
+    @mcp.tool()
+    async def roboco_reindex_all(force: bool = False) -> dict[str, Any]:
+        """
+        Trigger re-indexing of code and documentation.
+
+        Re-scans the codebase and docs directories to update indexes.
+        Useful when files have been added/changed outside of normal workflow.
+
+        PERMISSION: Requires INDEX_CODE permission.
+
+        Args:
+            force: If True, reindex even if indexes aren't empty
+
+        Returns:
+            Count of indexed code files and documentation files
+        """
+        resp = await client.post(
+            "/optimal/kb/reindex",
+            params={"force": str(force).lower()},
+        )
+        if not resp.ok:
+            if resp.status_code == http_status.HTTP_403_FORBIDDEN:
+                return format_error_response(
+                    "NOT_AUTHORIZED",
+                    "You don't have permission to trigger reindexing",
+                )
+            return format_error_response(
+                "REINDEX_FAILED",
+                "Failed to trigger reindexing",
+                {"api_error": resp.text},
+            )
+
+        result = resp.json()
+        return {
+            "status": "success",
+            "code_files_indexed": result.get("code", 0),
+            "docs_files_indexed": result.get("docs", 0),
+        }
+
+    @mcp.tool()
+    async def roboco_index_status() -> dict[str, Any]:
+        """
+        Get detailed status of all indexes.
+
+        Shows document counts and last update times for each index type.
+        Useful for monitoring and debugging indexing issues.
+
+        Returns:
+            Status information for each index including document counts
+        """
+        resp = await client.get("/optimal/stats")
+        if not resp.ok:
+            return format_error_response(
+                "STATS_FAILED",
+                "Failed to get index status",
+                {"api_error": resp.text},
+            )
+
+        result = resp.json()
+        return {
+            "status": "success",
+            "initialized": result.get("initialized", False),
+            "indexes": result.get("indexes", {}),
+        }
+
+
 def _register_proactive_tools(mcp: FastMCP, client: ApiClient) -> None:
     """Register proactive context tools."""
 
     @mcp.tool()
     async def roboco_get_proactive_context(
         task_id: str,
+        force_refresh: bool = False,
     ) -> dict[str, Any]:
         """
         Get proactive context for a task.
 
-        Fetches relevant knowledge to help you work on a task:
-        - Similar past tasks and their learnings
-        - Relevant code patterns
-        - Applicable standards
-        - Recent decisions
-        - Known issues
+        First checks for stored context (injected when task was claimed).
+        Falls back to generating fresh context if not available.
 
         Args:
             task_id: UUID of the task to get context for
+            force_refresh: If True, skip stored context and generate fresh
 
         Returns:
             Dictionary with context categories and a summary
         """
+        # Try to get stored context from task first (unless force_refresh)
+        if not force_refresh:
+            task_resp = await client.get(f"/tasks/{task_id}")
+            if task_resp.ok:
+                task_data = task_resp.json()
+                stored_context = task_data.get("proactive_context")
+                if stored_context and isinstance(stored_context, dict):
+                    # Return stored context with source indicator
+                    return {
+                        "status": "success",
+                        "source": "stored",
+                        "task_id": task_id,
+                        "similar_tasks": stored_context.get("similar_tasks", []),
+                        "relevant_learnings": stored_context.get(
+                            "relevant_learnings", []
+                        ),
+                        "code_patterns": stored_context.get("code_patterns", []),
+                        "applicable_standards": stored_context.get(
+                            "applicable_standards", []
+                        ),
+                        "recent_decisions": stored_context.get("recent_decisions", []),
+                        "known_issues": stored_context.get("known_issues", []),
+                        "summary": stored_context.get("summary", ""),
+                    }
+
+        # Fall back to generating fresh context
         payload = {"task_id": task_id}
         resp = await client.post("/optimal/context/proactive", json=payload)
 
@@ -850,6 +992,7 @@ def _register_proactive_tools(mcp: FastMCP, client: ApiClient) -> None:
         result = resp.json()
         return {
             "status": "success",
+            "source": "fresh",
             "task_id": result.get("task_id"),
             "similar_tasks": result.get("similar_tasks", []),
             "relevant_learnings": result.get("relevant_learnings", []),
@@ -878,6 +1021,9 @@ def create_optimal_mcp_server(agent_id: str) -> FastMCP:
     _register_standards_tools(mcp, client)
     _register_learning_tools(mcp, client)
     _register_proactive_tools(mcp, client)
+
+    # Register index management tools
+    _register_index_management_tools(mcp, client)
 
     return mcp
 

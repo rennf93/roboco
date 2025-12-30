@@ -5,6 +5,7 @@ Provides CRUD operations and lifecycle management for tasks.
 Handles status transitions, assignments, and queries.
 """
 
+import asyncio
 from datetime import UTC, datetime
 from typing import Any, ClassVar, cast
 from uuid import UUID
@@ -131,6 +132,7 @@ class TaskService(BaseService):
     """
 
     service_name: ClassVar[str] = "task"
+    _background_tasks: ClassVar[set[asyncio.Task[None]]] = set()
 
     # =========================================================================
     # STATUS TRANSITION HELPER
@@ -522,40 +524,534 @@ class TaskService(BaseService):
 
         await self.session.flush()
 
-        # Trigger proactive knowledge injection (fire and forget)
-        await self._inject_proactive_context(task, agent_id)
+        # Trigger proactive knowledge injection (fire-and-forget)
+        bg_task = asyncio.create_task(self._inject_proactive_context(task, agent_id))
+        self._background_tasks.add(bg_task)
+        bg_task.add_done_callback(self._background_tasks.discard)
 
         return task
 
     async def _inject_proactive_context(self, task: TaskTable, agent_id: UUID) -> None:
-        """Inject proactive knowledge context when task is claimed."""
+        """Inject proactive knowledge context when task is claimed.
+
+        Runs as a background task, so uses its own database session.
+        """
+        from uuid import UUID as PyUUID
+
+        from roboco.db.base import get_session_factory
+        from roboco.services.proactive import get_proactive_service
+
+        task_id = PyUUID(str(task.id))
+        task_title = task.title
+        task_description = task.description or ""
+
         try:
-            from uuid import UUID as PyUUID
-
-            from roboco.services.proactive import get_proactive_service
-
             proactive = await get_proactive_service()
-            # Convert SQLAlchemy UUID to Python UUID
-            task_uuid = PyUUID(str(task.id))
             agent_uuid = PyUUID(str(agent_id))
 
             context = await proactive.on_task_claimed(
-                task_id=task_uuid,
+                task_id=task_id,
                 agent_id=agent_uuid,
-                task_title=task.title,
-                task_description=task.description or "",
-                task_type=None,  # TaskTable doesn't have task_type
+                task_title=task_title,
+                task_description=task_description,
+                task_type=None,
             )
+
             if context and not context.is_empty():
+                # Store context in the task using a fresh session
+                session_factory = get_session_factory()
+                async with session_factory() as session:
+                    from sqlalchemy import update
+
+                    await session.execute(
+                        update(TaskTable)
+                        .where(TaskTable.id == task_id)
+                        .values(proactive_context=context.to_dict())
+                    )
+                    await session.commit()
+
                 self.log.info(
-                    "Injected proactive context",
-                    task_id=str(task.id),
+                    "Stored proactive context",
+                    task_id=str(task_id),
+                    items=len(context.similar_tasks)
+                    + len(context.relevant_learnings)
+                    + len(context.code_patterns),
                 )
         except Exception as e:
-            # Don't fail the claim if proactive injection fails
+            # Don't fail - this is fire-and-forget
             self.log.warning(
                 "Failed to inject proactive context",
-                task_id=str(task.id),
+                task_id=str(task_id),
+                error=str(e),
+            )
+
+    # =========================================================================
+    # RAG AUTO-INDEXING HOOKS (Fire-and-forget background tasks)
+    # =========================================================================
+
+    # Learning extraction thresholds
+    _DURATION_OVER_RATIO = 1.5  # Flag if task took 1.5x expected time
+    _DURATION_UNDER_RATIO = 0.3  # Flag if task took less than 30% expected
+    _MIN_COMMITS_GOOD = 5  # Minimum commits for "good granularity" pattern
+    _MIN_NOTES_LENGTH = 50  # Minimum notes length to extract learnings
+
+    async def _extract_completion_learnings(
+        self, task: TaskTable, agent_id: UUID | None
+    ) -> None:
+        """Extract and record learnings from a completed task (fire-and-forget)."""
+        from roboco.services.learning import (
+            LearningType,
+            RecordLearningParams,
+            get_learning_service,
+        )
+
+        # Extract data before session detaches
+        task_id = task.id
+        task_title = task.title
+        task_team = task.team.value if task.team else None
+        started_at = task.started_at
+        completed_at = task.completed_at
+        estimated_complexity = task.estimated_complexity
+        commits = list(task.commits) if task.commits else []
+        dev_notes = task.dev_notes
+        qa_notes = task.qa_notes
+        assigned_to = task.assigned_to
+
+        try:
+            learning_svc = await get_learning_service()
+            learnings: list[tuple[str, LearningType]] = []
+
+            # Determine scope based on team
+            scope = self._determine_learning_scope(task_team)
+
+            # 1. Duration vs estimate insight
+            if started_at and completed_at:
+                duration_hours = (completed_at - started_at).total_seconds() / 3600
+                complexity_hours = {"low": 2.0, "medium": 8.0, "high": 24.0}
+                complexity_val = (
+                    estimated_complexity.value
+                    if hasattr(estimated_complexity, "value")
+                    else str(estimated_complexity)
+                )
+                expected = complexity_hours.get(complexity_val, 8.0)
+                ratio = duration_hours / expected if expected > 0 else 1.0
+
+                if ratio > self._DURATION_OVER_RATIO:
+                    msg = (
+                        f"Task '{task_title}' ({complexity_val}) took "
+                        f"{duration_hours:.1f}h vs expected {expected:.0f}h."
+                    )
+                    learnings.append((msg, LearningType.INSIGHT))
+                elif ratio < self._DURATION_UNDER_RATIO:
+                    msg = (
+                        f"Task '{task_title}' ({complexity_val}) completed "
+                        f"quickly in {duration_hours:.1f}h."
+                    )
+                    learnings.append((msg, LearningType.INSIGHT))
+
+            # 2. Commit pattern analysis
+            if len(commits) >= self._MIN_COMMITS_GOOD:
+                msg = f"Good commit granularity on '{task_title}': {len(commits)}."
+                learnings.append((msg, LearningType.PATTERN))
+            elif len(commits) == 1:
+                learnings.append(
+                    (
+                        f"Single commit on '{task_title}'. Try smaller increments.",
+                        LearningType.GOTCHA,
+                    )
+                )
+
+            # 3. Extract from dev_notes
+            if dev_notes and len(dev_notes) > self._MIN_NOTES_LENGTH:
+                learnings.append(
+                    (
+                        f"[DEV NOTES] {task_title}: {dev_notes[:500]}",
+                        LearningType.SOLUTION,
+                    )
+                )
+
+            # 4. Extract from qa_notes
+            if qa_notes and len(qa_notes) > self._MIN_NOTES_LENGTH:
+                learnings.append(
+                    (
+                        f"[QA FEEDBACK] {task_title}: {qa_notes[:500]}",
+                        LearningType.REVIEW_FEEDBACK,
+                    )
+                )
+
+            # Record all learnings
+            for content, ltype in learnings:
+                await learning_svc.record_learning(
+                    RecordLearningParams(
+                        agent_id=assigned_to or agent_id or UUID(int=0),
+                        agent_role="developer",
+                        content=content,
+                        learning_type=ltype,
+                        scope=scope,
+                        task_id=task_id,
+                        tags=["auto-extracted", task_team or "general"],
+                    )
+                )
+
+            if learnings:
+                self.log.info(
+                    "Extracted completion learnings",
+                    task_id=str(task_id),
+                    count=len(learnings),
+                )
+        except Exception as e:
+            self.log.warning(
+                "Failed to extract learnings",
+                task_id=str(task_id),
+                error=str(e),
+            )
+
+    def _determine_learning_scope(self, team: str | None) -> Any:
+        """Map team to learning scope."""
+        from roboco.services.learning import LearningScope
+
+        if team in ("backend", "frontend", "ux_ui"):
+            return LearningScope.CELL
+        if team in ("board", "main_pm"):
+            return LearningScope.ORG
+        return LearningScope.TEAM
+
+    async def _index_code_changes_background(
+        self, task_id: UUID, commits: list[dict[str, Any]], project: str
+    ) -> None:
+        """Index code files from task commits (fire-and-forget)."""
+        from roboco.services.optimal import get_optimal_service
+
+        try:
+            optimal = await get_optimal_service()
+
+            # Extract unique file paths from commits
+            files: set[str] = set()
+            for commit in commits:
+                commit_files = commit.get("files", [])
+                if isinstance(commit_files, list):
+                    files.update(str(f) for f in commit_files)
+
+            if files:
+                count = await optimal.index_code(list(files), project=project)
+                self.log.debug(
+                    "Indexed code files",
+                    task_id=str(task_id),
+                    files_count=count,
+                )
+        except Exception as e:
+            self.log.warning(
+                "Failed to index code",
+                task_id=str(task_id),
+                error=str(e),
+            )
+
+    def _extract_decisions_from_notes(
+        self, notes: str, task_title: str
+    ) -> list[dict[str, str]]:
+        """Parse notes for decision patterns."""
+        decisions = []
+        decision_patterns = [
+            "decided to",
+            "chose",
+            "decision:",
+            "went with",
+            "selected",
+            "opted for",
+            "rationale:",
+            "instead of",
+        ]
+
+        notes_lower = notes.lower()
+        for pattern in decision_patterns:
+            if pattern in notes_lower:
+                lines = notes.split(".")
+                for line in lines:
+                    if pattern in line.lower():
+                        decisions.append(
+                            {
+                                "topic": task_title,
+                                "decision": line.strip()[:300],
+                                "rationale": "Auto-extracted from task notes",
+                            }
+                        )
+                        break
+        return decisions
+
+    async def _index_decisions_background(
+        self,
+        task_id: UUID,
+        task_title: str,
+        task_team: Team | None,
+        dev_notes: str | None,
+        agent_id: UUID | None,
+    ) -> None:
+        """Index decisions detected in notes (fire-and-forget)."""
+        from roboco.models.optimal import IndexDecisionParams
+        from roboco.services.optimal import get_optimal_service
+
+        if not dev_notes:
+            return
+
+        try:
+            optimal = await get_optimal_service()
+            decisions = self._extract_decisions_from_notes(dev_notes, task_title)
+
+            for decision in decisions:
+                await optimal.index_decision(
+                    IndexDecisionParams(
+                        topic=decision["topic"],
+                        decision=decision["decision"],
+                        rationale=decision["rationale"],
+                        agent_id=agent_id,
+                        task_id=task_id,
+                        scope="team",
+                        tags=[task_team.value if task_team else "general", "auto"],
+                    )
+                )
+
+            if decisions:
+                self.log.debug(
+                    "Indexed decisions",
+                    task_id=str(task_id),
+                    count=len(decisions),
+                )
+        except Exception as e:
+            self.log.warning(
+                "Failed to index decisions",
+                task_id=str(task_id),
+                error=str(e),
+            )
+
+    async def _index_docs_background(
+        self, task_id: UUID, documents: list[dict[str, Any]]
+    ) -> None:
+        """Index documentation from completed doc task (fire-and-forget)."""
+        from roboco.services.optimal import get_optimal_service
+
+        try:
+            optimal = await get_optimal_service()
+
+            # Extract doc paths from documents array
+            doc_paths: list[str] = [
+                str(d.get("path")) for d in documents if d.get("path")
+            ]
+
+            if doc_paths:
+                count = await optimal.index_documentation(doc_paths, project="roboco")
+                self.log.debug(
+                    "Indexed docs",
+                    task_id=str(task_id),
+                    docs_count=count,
+                )
+        except Exception as e:
+            self.log.warning(
+                "Failed to index docs",
+                task_id=str(task_id),
+                error=str(e),
+            )
+
+    # =========================================================================
+    # QA AND ERROR INDEXING HOOKS
+    # =========================================================================
+
+    def _parse_qa_notes(self, qa_notes: str) -> list[dict[str, str]]:
+        """Parse QA notes into structured issues."""
+        issues = []
+        for raw_line in qa_notes.split("\n"):
+            stripped = raw_line.strip()
+            if stripped.startswith(("-", "*", "•")):
+                issues.append(
+                    {
+                        "severity": "error",
+                        "description": stripped.lstrip("-*• "),
+                    }
+                )
+            elif stripped and stripped[0].isdigit() and "." in stripped[:3]:
+                parts = stripped.split(".", 1)
+                desc = parts[1].strip() if len(parts) > 1 else stripped
+                issues.append({"severity": "error", "description": desc})
+        if not issues and qa_notes.strip():
+            issues.append({"severity": "error", "description": qa_notes[:500]})
+        return issues
+
+    async def _index_qa_review_background(
+        self,
+        task_id: UUID,
+        quick_context: str | None,
+        passed: bool,
+        qa_notes: str,
+        qa_agent_id: UUID | None,
+    ) -> None:
+        """Index QA review (fire-and-forget)."""
+        from roboco.models.optimal import IndexReviewParams
+        from roboco.services.optimal import get_optimal_service
+
+        try:
+            optimal = await get_optimal_service()
+            original_dev = extract_original_developer(quick_context)
+
+            await optimal.record_review(
+                IndexReviewParams(
+                    file_path=f"task/{task_id}",
+                    comments=[
+                        {
+                            "body": qa_notes,
+                            "type": "qa",
+                            "severity": "info" if passed else "error",
+                        }
+                    ],
+                    approved=passed,
+                    summary=qa_notes[:500] if qa_notes else "QA Review",
+                    reviewer_id=qa_agent_id,
+                    author_id=UUID(original_dev) if original_dev else None,
+                    task_id=task_id,
+                )
+            )
+            self.log.debug("Indexed QA review", task_id=str(task_id), passed=passed)
+        except Exception as e:
+            self.log.warning(
+                "Failed to index QA review",
+                task_id=str(task_id),
+                error=str(e),
+            )
+
+    async def _index_qa_errors_background(
+        self,
+        task_id: UUID,
+        task_title: str,
+        task_team: Team | None,
+        qa_notes: str,
+    ) -> None:
+        """Index QA failure issues as error patterns (fire-and-forget)."""
+        from roboco.models.optimal import IndexErrorParams
+        from roboco.services.optimal import get_optimal_service
+
+        try:
+            optimal = await get_optimal_service()
+            issues = self._parse_qa_notes(qa_notes)
+
+            for issue in issues:
+                await optimal.index_error(
+                    IndexErrorParams(
+                        error_message=f"QA Failure: {issue['description'][:200]}",
+                        context=f"Task: {task_title}",
+                        solution="",
+                        worked=False,
+                        task_id=task_id,
+                        team=task_team.value if task_team else None,
+                        tags=["qa_failure", issue["severity"]],
+                    )
+                )
+
+            self.log.debug(
+                "Indexed QA errors",
+                task_id=str(task_id),
+                count=len(issues),
+            )
+        except Exception as e:
+            self.log.warning(
+                "Failed to index QA errors",
+                task_id=str(task_id),
+                error=str(e),
+            )
+
+    async def _index_blocker_background(
+        self,
+        task_id: UUID,
+        task_team: Team | None,
+        blocker_info: dict[str, str],
+    ) -> None:
+        """Index blocker as error pattern (fire-and-forget).
+
+        Args:
+            task_id: Task UUID
+            task_team: Team for categorization
+            blocker_info: Dict with keys: type, title, reason, what_needed
+        """
+        from roboco.models.optimal import IndexErrorParams
+        from roboco.services.optimal import get_optimal_service
+
+        try:
+            optimal = await get_optimal_service()
+            blocker_type = blocker_info.get("type", "unknown")
+            reason = blocker_info.get("reason", "")
+            title = blocker_info.get("title", "")
+            what_needed = blocker_info.get("what_needed", "")
+
+            await optimal.index_error(
+                IndexErrorParams(
+                    error_message=f"Blocker ({blocker_type}): {reason[:200]}",
+                    context=f"Task: {title}\nNeeded: {what_needed}",
+                    solution="",
+                    worked=False,
+                    task_id=task_id,
+                    team=task_team.value if task_team else None,
+                    tags=["blocker", blocker_type.lower()],
+                )
+            )
+            self.log.debug("Indexed blocker", task_id=str(task_id))
+        except Exception as e:
+            self.log.warning(
+                "Failed to index blocker",
+                task_id=str(task_id),
+                error=str(e),
+            )
+
+    async def _index_lifecycle_event_background(
+        self,
+        task_id: UUID,
+        event_type: str,
+        task_title: str,
+        task_team: Team | None,
+        details: dict[str, Any] | None = None,
+    ) -> None:
+        """Index lifecycle event for pattern analysis (fire-and-forget).
+
+        Tracks task state transitions for organizational learning:
+        - Cancellation patterns (what gets cancelled and why)
+        - Pause/resume patterns (context switching costs)
+        - Block/unblock patterns (dependency bottlenecks)
+
+        Args:
+            task_id: Task UUID
+            event_type: One of: cancel, pause, resume, block, unblock
+            task_title: Task title for context
+            task_team: Team for categorization
+            details: Additional event details
+        """
+        from roboco.services.optimal import IndexType, get_optimal_service
+
+        try:
+            optimal = await get_optimal_service()
+            details = details or {}
+
+            # Build content for indexing
+            content = f"[{event_type.upper()}] {task_title}"
+            if details:
+                content += f"\n{details}"
+
+            # Index to journals for lifecycle tracking
+            await optimal.ingest(
+                index_type=IndexType.JOURNALS,
+                content=content,
+                doc_id=f"lifecycle-{task_id}-{event_type}",
+                task_id=task_id,
+                project=task_team.value if task_team else "default",
+                entry_type="lifecycle",
+                event_type=event_type,
+                **details,
+            )
+            self.log.debug(
+                "Indexed lifecycle event",
+                task_id=str(task_id),
+                event_type=event_type,
+            )
+        except Exception as e:
+            self.log.warning(
+                "Failed to index lifecycle event",
+                task_id=str(task_id),
+                event_type=event_type,
                 error=str(e),
             )
 
@@ -651,6 +1147,24 @@ class TaskService(BaseService):
             task_id=str(task_id),
             blocker_id=str(blocker_task_id),
         )
+
+        # Index lifecycle event (fire-and-forget)
+        blocker_title = blocker.title if blocker else "unknown"
+        bg_task = asyncio.create_task(
+            self._index_lifecycle_event_background(
+                task_id=task_id,
+                event_type="block",
+                task_title=task.title,
+                task_team=task.team,
+                details={
+                    "blocker_task_id": str(blocker_task_id),
+                    "blocker_title": blocker_title,
+                },
+            )
+        )
+        self._background_tasks.add(bg_task)
+        bg_task.add_done_callback(self._background_tasks.discard)
+
         return task
 
     async def soft_block(
@@ -700,6 +1214,19 @@ class TaskService(BaseService):
         task.status = TaskStatus.BLOCKED
         await self.session.flush()
 
+        # Index blocker as error pattern (fire-and-forget)
+        blocker_info = {
+            "type": blocker_type,
+            "title": task.title,
+            "reason": reason,
+            "what_needed": what_needed,
+        }
+        bg_task = asyncio.create_task(
+            self._index_blocker_background(task.id, task.team, blocker_info)
+        )
+        self._background_tasks.add(bg_task)
+        bg_task.add_done_callback(self._background_tasks.discard)
+
         self.log.info(
             "Task soft-blocked",
             task_id=str(task_id),
@@ -721,6 +1248,19 @@ class TaskService(BaseService):
         await self.session.flush()
 
         self.log.info("Task unblocked", task_id=str(task_id))
+
+        # Index lifecycle event (fire-and-forget)
+        bg_task = asyncio.create_task(
+            self._index_lifecycle_event_background(
+                task_id=task_id,
+                event_type="unblock",
+                task_title=task.title,
+                task_team=task.team,
+            )
+        )
+        self._background_tasks.add(bg_task)
+        bg_task.add_done_callback(self._background_tasks.discard)
+
         return task
 
     async def pause(self, task_id: UUID) -> TaskTable | None:
@@ -736,6 +1276,19 @@ class TaskService(BaseService):
         await self.session.flush()
 
         self.log.info("Task paused", task_id=str(task_id))
+
+        # Index lifecycle event (fire-and-forget)
+        bg_task = asyncio.create_task(
+            self._index_lifecycle_event_background(
+                task_id=task_id,
+                event_type="pause",
+                task_title=task.title,
+                task_team=task.team,
+            )
+        )
+        self._background_tasks.add(bg_task)
+        bg_task.add_done_callback(self._background_tasks.discard)
+
         return task
 
     async def resume(self, task_id: UUID) -> TaskTable | None:
@@ -751,6 +1304,19 @@ class TaskService(BaseService):
         await self.session.flush()
 
         self.log.info("Task resumed", task_id=str(task_id))
+
+        # Index lifecycle event (fire-and-forget)
+        bg_task = asyncio.create_task(
+            self._index_lifecycle_event_background(
+                task_id=task_id,
+                event_type="resume",
+                task_title=task.title,
+                task_team=task.team,
+            )
+        )
+        self._background_tasks.add(bg_task)
+        bg_task.add_done_callback(self._background_tasks.discard)
+
         return task
 
     async def submit_for_verification(self, task_id: UUID) -> TaskTable | None:
@@ -821,11 +1387,28 @@ class TaskService(BaseService):
 
         if notes:
             task.qa_notes = notes
+
+        # Store QA agent before clearing assignment
+        qa_agent_id = task.assigned_to
+
         # Clear assignment so documenter can claim the task
         task.assigned_to = None
         task.qa_verified = True
         task.status = TaskStatus.AWAITING_DOCUMENTATION
         await self.session.flush()
+
+        # Index positive QA review (fire-and-forget)
+        bg_task = asyncio.create_task(
+            self._index_qa_review_background(
+                task.id,
+                task.quick_context,
+                True,
+                notes or "Passed QA review",
+                qa_agent_id,
+            )
+        )
+        self._background_tasks.add(bg_task)
+        bg_task.add_done_callback(self._background_tasks.discard)
 
         self.log.info("Task passed QA", task_id=str(task_id))
         return task
@@ -858,6 +1441,9 @@ class TaskService(BaseService):
         task.qa_verified = False
         task.status = TaskStatus.NEEDS_REVISION
 
+        # Store QA agent before reassigning
+        qa_agent_id = task.assigned_to
+
         # Reassign to original developer so they can work on revisions
         original_dev = extract_original_developer(task.quick_context)
         if original_dev:
@@ -876,6 +1462,26 @@ class TaskService(BaseService):
             )
 
         await self.session.flush()
+
+        # Index negative QA review (fire-and-forget)
+        review_task = asyncio.create_task(
+            self._index_qa_review_background(
+                task.id,
+                task.quick_context,
+                False,
+                notes,
+                qa_agent_id,
+            )
+        )
+        self._background_tasks.add(review_task)
+        review_task.add_done_callback(self._background_tasks.discard)
+
+        # Index issues as error patterns (fire-and-forget)
+        error_task = asyncio.create_task(
+            self._index_qa_errors_background(task.id, task.title, task.team, notes)
+        )
+        self._background_tasks.add(error_task)
+        error_task.add_done_callback(self._background_tasks.discard)
 
         self.log.info("Task failed QA", task_id=str(task_id))
         return task
@@ -945,6 +1551,14 @@ class TaskService(BaseService):
         # Documenter info is preserved in quick_context
         task.assigned_to = None
         await self.session.flush()
+
+        # Index documentation artifacts (fire-and-forget)
+        if task.documents:
+            bg_task = asyncio.create_task(
+                self._index_docs_background(task.id, task.documents)
+            )
+            self._background_tasks.add(bg_task)
+            bg_task.add_done_callback(self._background_tasks.discard)
 
         self.log.info(
             "Documentation complete, awaiting PM review",
@@ -1108,6 +1722,36 @@ class TaskService(BaseService):
         self._validate_and_set_status(task, TaskStatus.COMPLETED, "cell_pm")
         await self.session.flush()
 
+        # RAG auto-indexing hooks (fire-and-forget)
+        # 1. Extract completion learnings
+        bg_task = asyncio.create_task(
+            self._extract_completion_learnings(task, agent_id)
+        )
+        self._background_tasks.add(bg_task)
+        bg_task.add_done_callback(self._background_tasks.discard)
+
+        # 2. Index code changes from commits
+        if task.commits:
+            code_task = asyncio.create_task(
+                self._index_code_changes_background(
+                    task.id,
+                    task.commits,
+                    task.team.value if task.team else "default",
+                )
+            )
+            self._background_tasks.add(code_task)
+            code_task.add_done_callback(self._background_tasks.discard)
+
+        # 3. Detect and index decisions from notes
+        if task.dev_notes:
+            decision_task = asyncio.create_task(
+                self._index_decisions_background(
+                    task.id, task.title, task.team, task.dev_notes, task.assigned_to
+                )
+            )
+            self._background_tasks.add(decision_task)
+            decision_task.add_done_callback(self._background_tasks.discard)
+
         # Unblock any tasks waiting on this one
         await self._unblock_dependents(task_id)
         return task
@@ -1121,10 +1765,11 @@ class TaskService(BaseService):
             return None
 
         # Cancel all descendants first (children, grandchildren, etc.)
+        # Skip tasks already in terminal states (completed or cancelled)
         descendants = await self.get_all_descendants(task_id)
         cancelled_count = 0
         for descendant in descendants:
-            if descendant.status != TaskStatus.CANCELLED:
+            if descendant.status not in (TaskStatus.COMPLETED, TaskStatus.CANCELLED):
                 descendant.status = TaskStatus.CANCELLED
                 cancelled_count += 1
 
@@ -1138,6 +1783,23 @@ class TaskService(BaseService):
         # Validate transition with PM role requirement
         self._validate_and_set_status(task, TaskStatus.CANCELLED, agent_role)
         await self.session.flush()
+
+        # Index lifecycle event (fire-and-forget)
+        bg_task = asyncio.create_task(
+            self._index_lifecycle_event_background(
+                task_id=task_id,
+                event_type="cancel",
+                task_title=task.title,
+                task_team=task.team,
+                details={
+                    "cancelled_by_role": agent_role,
+                    "descendants_cancelled": cancelled_count,
+                },
+            )
+        )
+        self._background_tasks.add(bg_task)
+        bg_task.add_done_callback(self._background_tasks.discard)
+
         return task
 
     async def _unblock_dependents(self, completed_task_id: UUID) -> None:

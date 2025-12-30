@@ -395,7 +395,7 @@ class A2AService:
 
     async def cancel_task(self, task_id: str, reason: str | None = None) -> A2ATask:
         """
-        Cancel a task.
+        Cancel a task and all non-terminal descendants.
 
         Args:
             task_id: Task UUID string
@@ -407,11 +407,15 @@ class A2AService:
         Raises:
             ValueError: If task not found or already in terminal state
         """
+        # Import here to avoid circular imports
+        from roboco.services.task import TaskService
+
         try:
             task_uuid = UUID(task_id)
         except ValueError as e:
             raise ValueError(f"Invalid task ID: {task_id}") from e
 
+        # Check task exists and is cancellable before using service
         result = await self.session.execute(
             select(TaskTable).where(TaskTable.id == task_uuid)
         )
@@ -429,17 +433,21 @@ class A2AService:
         if status_value in ["completed", "cancelled"]:
             raise ValueError(f"Task already in terminal state: {status_value}")
 
-        # Cancel the task
-        task.status = TaskStatus.CANCELLED
+        # Add reason to notes before cancel
         if reason:
             reason_text = f"Cancellation reason: {reason}"
             if task.dev_notes:
                 task.dev_notes = f"{task.dev_notes}\n\n{reason_text}"
             else:
                 task.dev_notes = reason_text
+            await self.session.flush()
 
-        await self.session.flush()
-        await self.session.refresh(task)
+        # Use TaskService for consistent cancel behavior (cascades to descendants)
+        task_service = TaskService(self.session)
+        task = await task_service.cancel(task_uuid)
+
+        if task is None:
+            raise ValueError(f"Failed to cancel task: {task_id}")
 
         logger.info("Cancelled task via A2A", task_id=task_id, reason=reason)
 

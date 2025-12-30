@@ -98,18 +98,19 @@ roboco_kb_index_docs(
 Record and search error patterns:
 
 ```python
-# Record an error and how you fixed it
-roboco_record_error(
-    error_type="ConnectionError",
-    message="Redis connection timed out",
-    solution="Increased timeout to 30s and added retry logic",
-    worked=True
+# Search for similar errors FIRST
+roboco_search_error(
+    error_message="Redis connection timed out",
+    context="trying to connect during startup"
 )
 
-# Search for similar errors
-roboco_search_error(
-    pattern="ConnectionError",
-    context="redis timeout"
+# Record an error and how you fixed it
+roboco_record_error_solution(
+    error_message="Redis connection timed out",
+    context="Service startup - Redis wasn't ready yet",
+    solution="Added retry logic with exponential backoff",
+    worked=True,
+    tags=["redis", "startup", "timeout"]
 )
 ```
 
@@ -120,21 +121,22 @@ roboco_search_error(
 Record architectural decisions:
 
 ```python
-# Record a decision
-roboco_record_decision(
-    topic="Database for session storage",
-    decision="Use Redis instead of PostgreSQL",
-    rationale="Need sub-millisecond reads, sessions are ephemeral",
-    alternatives=["PostgreSQL", "In-memory"],
-    task_id="uuid-here"
-)
+# Check if similar decisions exist FIRST
+roboco_check_decision(topic="session storage")
+# Returns: has_precedent, decisions, recommendation
 
-# Check if similar decisions exist
-roboco_decision_check(
-    topic="session storage",
-    proposed_approach="Use in-memory cache"
-)
-# Returns: relevant past decisions to consider
+# Record a decision
+roboco_record_decision(params={
+    "topic": "Database for session storage",
+    "decision": "Use Redis instead of PostgreSQL",
+    "rationale": "Need sub-millisecond reads, sessions are ephemeral",
+    "alternatives": [
+        {"name": "PostgreSQL", "pros": "ACID", "cons": "Too slow"},
+        {"name": "In-memory", "pros": "Fast", "cons": "No persistence"}
+    ],
+    "scope": "team",  # or "org"
+    "tags": ["database", "session", "architecture"]
+})
 ```
 
 ---
@@ -144,17 +146,26 @@ roboco_decision_check(
 Check code against team standards:
 
 ```python
-# Get applicable standards for a file
-roboco_standards_get(
-    file_path="src/api/routes/users.py",
-    domain="api"
+# Get applicable standards for a domain
+roboco_get_standards(
+    domain="coding",    # or "security", "workflow"
+    language="python"   # optional filter
 )
 
 # Validate an action against standards
 roboco_validate_action(
-    action="Adding a new API endpoint",
-    context="User management feature"
+    action_type="create_endpoint",
+    context="Adding user management API endpoint"
 )
+# Returns: allowed, violations, warnings, relevant_standards
+
+# Get code reviewed before committing
+roboco_review_code(
+    code="def handle_auth(token): ...",
+    file_path="src/api/auth.py",
+    change_type="modify"  # or "add", "delete"
+)
+# Returns: approved, score (0-100), comments, standards_checked
 ```
 
 ---
@@ -322,52 +333,164 @@ Everything you journal becomes searchable:
 
 ## Proactive Context
 
-The system can automatically provide relevant context when you claim a task:
+The system automatically provides relevant context when you claim a task:
 
 ```python
-# Automatic context injection on task claim
-# System searches KB for:
-# - Similar past tasks
-# - Related decisions
-# - Relevant standards
-# - Past error solutions
+# Get context that was injected when task was claimed
+roboco_get_proactive_context(
+    task_id="uuid-here",
+    force_refresh=False  # True to regenerate fresh context
+)
+
+# Returns:
+# - similar_tasks: Past tasks like this one
+# - relevant_learnings: What others learned doing similar work
+# - code_patterns: Relevant code examples
+# - applicable_standards: Standards that apply
+# - recent_decisions: Related architectural decisions
+# - known_issues: Issues you should be aware of
+# - summary: Human-readable overview
 ```
 
 This helps you start informed without manual searching.
 
 ---
 
-## Code Review Support
+## Mentor (Conversational RAG)
 
-Request AI-assisted code review:
+Ask the organizational knowledge base for help with follow-up context:
 
 ```python
-roboco_code_review(
-    file_path="src/api/routes/users.py",
-    focus=["security", "performance"]
+# First question
+response = roboco_ask_mentor(
+    question="How do I handle authentication in this codebase?",
+    domain="coding"  # optional: coding, security, workflow
 )
-# Returns: review comments, standards checked, similar past reviews
+
+# Follow-up question (maintains conversation context)
+roboco_ask_mentor(
+    question="What about refresh tokens?",
+    conversation_id=response["conversation_id"]
+)
+
+# Returns: answer, sources, suggested_followups
 ```
+
+The mentor searches across standards, decisions, learnings, and code patterns.
+
+---
+
+## Index Management
+
+### Check Index Health
+
+```python
+roboco_index_status()
+# Returns: initialized, indexes with document_count, chunk_count, last_updated
+```
+
+### Trigger Reindexing (PM/Developer)
+
+```python
+roboco_reindex_all(force=False)
+# force=True reindexes even if indexes aren't empty
+# Returns: code_files_indexed, docs_files_indexed
+```
+
+### Clear an Index (PM only)
+
+```python
+roboco_clear_index(index_type="code")
+# Valid types: code, documentation, conversations, journals,
+#              errors, standards, decisions, reviews, learnings
+```
+
+---
+
+## Lifecycle Tracking
+
+Task lifecycle events are automatically indexed for pattern analysis:
+
+| Event | What's Tracked |
+|-------|----------------|
+| `block` | Which task blocked, blocker title |
+| `unblock` | When unblocked |
+| `pause` | When paused |
+| `resume` | When resumed |
+| `cancel` | Who cancelled, how many descendants cancelled |
+
+This enables queries like:
+- "Which tasks get cancelled most often?"
+- "What causes the most blocks?"
+- "Which teams have the longest pause durations?"
 
 ---
 
 ## Tool Quick Reference
 
+### Core Search & Query
+
 | Tool | Purpose | Who Can Use |
 |------|---------|-------------|
-| `roboco_kb_search` | Semantic search | Everyone |
-| `roboco_rag_query` | AI-generated answers | Everyone |
-| `roboco_kb_stats` | What's indexed | Everyone |
+| `roboco_kb_search` | Semantic search across all indexes | Everyone |
+| `roboco_rag_query` | AI-generated answers with citations | Everyone |
+| `roboco_kb_stats` | What's indexed (counts by type) | Everyone |
+| `roboco_tokens_estimate` | Estimate token count for content | Everyone |
+
+### Indexing & Management
+
+| Tool | Purpose | Who Can Use |
+|------|---------|-------------|
 | `roboco_kb_index_code` | Index code files | PM, Developer |
 | `roboco_kb_index_docs` | Index documentation | PM, Documenter |
-| `roboco_tokens_estimate` | Token count | Everyone |
+| `roboco_clear_index` | Clear a specific index | PM |
+| `roboco_reindex_all` | Trigger full code+docs reindex | PM, Developer |
+| `roboco_index_status` | Detailed index health & counts | Everyone |
+
+### Mentor (Conversational RAG)
+
+| Tool | Purpose | Who Can Use |
+|------|---------|-------------|
+| `roboco_ask_mentor` | Conversational help with follow-ups | Everyone |
+
+### Error Tracking
+
+| Tool | Purpose | Who Can Use |
+|------|---------|-------------|
+| `roboco_search_error` | Find past error solutions | Everyone |
+| `roboco_record_error_solution` | Record how you fixed an error | Everyone |
+
+### Decision Tracking
+
+| Tool | Purpose | Who Can Use |
+|------|---------|-------------|
+| `roboco_check_decision` | Check for similar past decisions | Everyone |
+| `roboco_record_decision` | Record an architectural decision | Everyone |
+
+### Standards & Validation
+
+| Tool | Purpose | Who Can Use |
+|------|---------|-------------|
+| `roboco_get_standards` | Get applicable standards | Everyone |
+| `roboco_validate_action` | Validate action against standards | Everyone |
+| `roboco_review_code` | AI-assisted code review | Developer, QA |
+
+### Learning & Knowledge Sharing
+
+| Tool | Purpose | Who Can Use |
+|------|---------|-------------|
+| `roboco_record_learning` | Record a learning for future agents | Everyone |
+| `roboco_search_learnings` | Search learnings from teammates | Everyone |
+
+### Proactive Context
+
+| Tool | Purpose | Who Can Use |
+|------|---------|-------------|
+| `roboco_get_proactive_context` | Get context injected at task claim | Everyone |
+
+### Journal Tools
+
+| Tool | Purpose | Who Can Use |
+|------|---------|-------------|
 | `roboco_journal_search` | Search your journal | Everyone |
 | `roboco_journal_read_team` | Read team journals | PM, Documenter |
-| `roboco_record_error` | Record error & fix | Everyone |
-| `roboco_search_error` | Find past errors | Everyone |
-| `roboco_record_decision` | Record decision | Everyone |
-| `roboco_decision_check` | Check past decisions | Everyone |
-| `roboco_standards_get` | Get applicable standards | Everyone |
-| `roboco_validate_action` | Validate against standards | Everyone |
-| `roboco_record_learning` | Record a learning | Everyone |
-| `roboco_code_review` | AI-assisted review | Developer, QA |

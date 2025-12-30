@@ -82,6 +82,25 @@ class IndexStatsResponse(BaseModel):
     indexes: dict[str, dict[str, Any]]
 
 
+class SingleIndexStatsResponse(BaseModel):
+    """Statistics for a single index."""
+
+    index_type: str
+    document_count: int
+    chunk_count: int
+    last_updated: str | None = None
+
+
+class RAGHealthResponse(BaseModel):
+    """Response from RAG health check."""
+
+    healthy: bool
+    embedding_status: str = Field(..., description="Embedding model status")
+    llm_status: str = Field(..., description="LLM (HyDE) status")
+    vector_store_status: str = Field(..., description="Vector store status")
+    details: dict[str, Any] = Field(default_factory=dict)
+
+
 class RefreshRequest(BaseModel):
     """Request to refresh an index."""
 

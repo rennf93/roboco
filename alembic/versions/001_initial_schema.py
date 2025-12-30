@@ -174,6 +174,7 @@ def upgrade() -> None:
         sa.Column("self_verified", sa.Boolean(), server_default="false"),
         sa.Column("qa_verified", sa.Boolean(), nullable=True),
         sa.Column("quick_context", sa.Text(), nullable=True),
+        sa.Column("proactive_context", postgresql.JSON(), nullable=True),
     )
 
     # Add foreign key for agents.current_task_id after tasks table exists
