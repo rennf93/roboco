@@ -3,10 +3,27 @@ Git API Routes
 
 Git operations for agents working on code tasks.
 These endpoints are called by the Git MCP Server.
+
+Workspace Structure:
+    Each agent gets their own workspace (git clone) for a project:
+
+    {workspaces_root}/
+    └── {project-slug}/
+        └── {team}/
+            └── {agent-slug}/
+                └── [git repo files]
+
+    Example:
+        /data/workspaces/roboco/backend/be-dev-1/
+        /data/workspaces/roboco/backend/be-dev-2/
+
+    This allows multiple agents to work on the same project in parallel,
+    each on their own branch, without file conflicts.
 """
 
 import subprocess
 from pathlib import Path
+from uuid import UUID
 
 from fastapi import APIRouter, HTTPException, Query, status
 
@@ -31,7 +48,9 @@ from roboco.api.schemas.git import (
     GitPushResponse,
     GitStatusResponse,
 )
+from roboco.config import settings
 from roboco.services.project import get_project_service
+from roboco.services.workspace import WorkspaceError, get_workspace_service
 
 router = APIRouter()
 
@@ -80,26 +99,82 @@ async def _run_git(
 async def _get_workspace(
     db: DbSession,
     project_slug: str,
+    agent_id: UUID | None = None,
 ) -> Path:
-    """Get the workspace path for a project."""
-    service = get_project_service(db)
-    project = await service.get_by_slug(project_slug)
+    """
+    Get the workspace path for an agent on a project.
+
+    Uses multi-agent workspace structure:
+        {workspaces_root}/{project_slug}/{team}/{agent_slug}/
+
+    If workspace doesn't exist and auto_clone is enabled, clones the repo.
+
+    Args:
+        db: Database session
+        project_slug: Project identifier
+        agent_id: Agent UUID (uses workspace service to resolve path)
+
+    Returns:
+        Path to the workspace directory
+
+    Raises:
+        HTTPException: If project not found or workspace setup fails
+    """
+    # Get project info
+    project_service = get_project_service(db)
+    project = await project_service.get_by_slug(project_slug)
     if not project:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail=f"Project '{project_slug}' not found",
         )
-    if not project.workspace_path:
+
+    # If no agent_id, fall back to legacy workspace_path (for backwards compat)
+    if agent_id is None:
+        if not project.workspace_path:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"Project '{project_slug}' has no workspace configured "
+                "and no agent_id provided for dynamic workspace resolution",
+            )
+        workspace = Path(project.workspace_path)
+        if not workspace.exists():
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"Workspace path does not exist: {workspace}",
+            )
+        return workspace
+
+    # Use workspace service for multi-agent workspace resolution
+    workspace_service = get_workspace_service(db)
+
+    try:
+        if settings.workspace_auto_clone:
+            # Ensure workspace exists (clone if needed)
+            workspace = await workspace_service.ensure_workspace(
+                project_slug=project_slug,
+                agent_id=agent_id,
+                git_url=project.git_url,
+                default_branch=project.default_branch or "main",
+            )
+        else:
+            # Just resolve path, don't auto-clone
+            workspace = await workspace_service.resolve_workspace(
+                project_slug=project_slug,
+                agent_id=agent_id,
+            )
+            if not workspace.exists():
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail=f"Workspace does not exist: {workspace}. "
+                    "Clone the repository first or enable auto_clone.",
+                )
+    except WorkspaceError as e:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail=f"Project '{project_slug}' has no workspace configured",
-        )
-    workspace = Path(project.workspace_path)
-    if not workspace.exists():
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=f"Workspace path does not exist: {workspace}",
-        )
+            detail=str(e),
+        ) from e
+
     return workspace
 
 
@@ -111,12 +186,12 @@ async def _get_workspace(
 @router.get("/status", response_model=GitStatusResponse)
 async def get_git_status(
     db: DbSession,
-    _agent: CurrentAgentContext,
+    agent: CurrentAgentContext,
     project_slug: str = Query(...),
     _task_id: str | None = Query(default=None),
 ) -> GitStatusResponse:
     """Get git status for a project."""
-    workspace = await _get_workspace(db, project_slug)
+    workspace = await _get_workspace(db, project_slug, agent.agent_id)
 
     # Get current branch
     branch_result = await _run_git(workspace, ["branch", "--show-current"])
@@ -174,13 +249,13 @@ async def get_git_status(
 @router.get("/log", response_model=GitLogResponse)
 async def get_git_log(
     db: DbSession,
-    _agent: CurrentAgentContext,
+    agent: CurrentAgentContext,
     project_slug: str = Query(...),
     limit: int = Query(default=10, le=50),
     branch: str | None = Query(default=None),
 ) -> GitLogResponse:
     """Get git log for a project."""
-    workspace = await _get_workspace(db, project_slug)
+    workspace = await _get_workspace(db, project_slug, agent.agent_id)
 
     # Get current branch if not specified
     if not branch:
@@ -222,12 +297,12 @@ async def get_git_log(
 @router.get("/branches", response_model=GitBranchListResponse)
 async def list_branches(
     db: DbSession,
-    _agent: CurrentAgentContext,
+    agent: CurrentAgentContext,
     project_slug: str = Query(...),
     include_remote: bool = Query(default=False),
 ) -> GitBranchListResponse:
     """List git branches for a project."""
-    workspace = await _get_workspace(db, project_slug)
+    workspace = await _get_workspace(db, project_slug, agent.agent_id)
 
     # Get current branch
     current_result = await _run_git(workspace, ["branch", "--show-current"])
@@ -271,13 +346,13 @@ async def list_branches(
 @router.get("/diff", response_model=GitDiffResponse)
 async def get_git_diff(
     db: DbSession,
-    _agent: CurrentAgentContext,
+    agent: CurrentAgentContext,
     project_slug: str = Query(...),
     staged: bool = Query(default=False),
     file_path: str | None = Query(default=None),
 ) -> GitDiffResponse:
     """Get git diff for a project."""
-    workspace = await _get_workspace(db, project_slug)
+    workspace = await _get_workspace(db, project_slug, agent.agent_id)
 
     args = ["diff"]
     if staged:
@@ -312,10 +387,10 @@ async def get_git_diff(
 async def create_commit(
     data: GitCommitRequest,
     db: DbSession,
-    _agent: CurrentAgentContext,
+    agent: CurrentAgentContext,
 ) -> GitCommitResponse:
-    """Create a git commit."""
-    workspace = await _get_workspace(db, data.project_slug)
+    """Create a git commit and link it to the task."""
+    workspace = await _get_workspace(db, data.project_slug, agent.agent_id)
 
     # Stage files
     if data.files:
@@ -347,6 +422,34 @@ async def create_commit(
                 if "file" in part:
                     files_changed = int(part.strip().split()[0])
 
+    # Link commit to task (ensures traceability)
+    from roboco.services.task import get_task_service
+    from roboco.services.work_session import get_work_session_service
+
+    try:
+        task_uuid = UUID(data.task_id)
+
+        # Add commit to task record
+        task_service = get_task_service(db)
+        await task_service.add_commit(
+            task_id=task_uuid,
+            commit_hash=commit_hash,
+            message=data.message,  # Store original message without prefix
+            author_id=agent.agent_id,
+        )
+
+        # If task has a work session, add commit there too
+        task = await task_service.get(task_uuid)
+        if task and task.work_session_id:
+            work_session_service = get_work_session_service(db)
+            await work_session_service.add_commit(task.work_session_id, commit_hash)
+
+        await db.commit()
+    except Exception:
+        # Don't fail the commit response if linking fails
+        # The commit was still made successfully
+        pass
+
     return GitCommitResponse(
         commit_hash=commit_hash,
         message=message,
@@ -360,10 +463,10 @@ async def create_commit(
 async def push_commits(
     data: GitPushRequest,
     db: DbSession,
-    _agent: CurrentAgentContext,
+    agent: CurrentAgentContext,
 ) -> GitPushResponse:
     """Push commits to remote."""
-    workspace = await _get_workspace(db, data.project_slug)
+    workspace = await _get_workspace(db, data.project_slug, agent.agent_id)
 
     # Get current branch
     branch_result = await _run_git(workspace, ["branch", "--show-current"])
@@ -401,7 +504,7 @@ async def create_branch(
     agent: CurrentAgentContext,
 ) -> GitCreateBranchResponse:
     """Create a task branch (PM only)."""
-    workspace = await _get_workspace(db, data.project_slug)
+    workspace = await _get_workspace(db, data.project_slug, agent.agent_id)
 
     # Get team from agent context
     team = agent.team or "unknown"
@@ -433,10 +536,10 @@ async def create_branch(
 async def checkout_branch(
     data: GitCheckoutRequest,
     db: DbSession,
-    _agent: CurrentAgentContext,
+    agent: CurrentAgentContext,
 ) -> GitCheckoutResponse:
     """Checkout a branch."""
-    workspace = await _get_workspace(db, data.project_slug)
+    workspace = await _get_workspace(db, data.project_slug, agent.agent_id)
 
     await _run_git(workspace, ["checkout", data.branch])
 
@@ -450,7 +553,7 @@ async def checkout_branch(
 async def create_pull_request(
     data: GitCreatePRRequest,
     db: DbSession,
-    _agent: CurrentAgentContext,
+    agent: CurrentAgentContext,
 ) -> GitCreatePRResponse:
     """Create a pull request using GitHub CLI.
 
@@ -460,7 +563,7 @@ async def create_pull_request(
     - Developer sets pr_created=True (this endpoint)
     - When BOTH are true, task transitions to awaiting_pm_review
     """
-    workspace = await _get_workspace(db, data.project_slug)
+    workspace = await _get_workspace(db, data.project_slug, agent.agent_id)
 
     # Get current branch
     branch_result = await _run_git(workspace, ["branch", "--show-current"])
@@ -538,10 +641,10 @@ async def create_pull_request(
 async def merge_pull_request(
     data: GitMergePRRequest,
     db: DbSession,
-    _agent: CurrentAgentContext,
+    agent: CurrentAgentContext,
 ) -> GitMergePRResponse:
     """Merge a pull request using GitHub CLI (PM only)."""
-    workspace = await _get_workspace(db, data.project_slug)
+    workspace = await _get_workspace(db, data.project_slug, agent.agent_id)
 
     # Merge PR using gh CLI (wrapped in thread to avoid blocking)
     import asyncio
