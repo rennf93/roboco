@@ -33,6 +33,7 @@ class _SharedEmbedderHolder:
 async def get_shared_embedder(
     model: str = "BAAI/bge-base-en-v1.5",
     device: str | None = None,
+    timeout: float = 60.0,
 ) -> "EmbeddingGenerator":
     """Get or create the shared embedder instance.
 
@@ -41,9 +42,14 @@ async def get_shared_embedder(
     Args:
         model: Embedding model name (default: BAAI/bge-base-en-v1.5)
         device: Device to use (None = auto-detect)
+        timeout: Max seconds to wait for model loading (default: 60)
 
     Returns:
         Shared EmbeddingGenerator instance
+
+    Raises:
+        TimeoutError: If model loading takes too long
+        RuntimeError: If model loading fails
     """
     if _SharedEmbedderHolder.instance is not None:
         return _SharedEmbedderHolder.instance
@@ -70,7 +76,25 @@ async def get_shared_embedder(
                 batch_size=32,
             )
 
-        _SharedEmbedderHolder.instance = await asyncio.to_thread(_create_embedder)
+        try:
+            async with asyncio.timeout(timeout):
+                _SharedEmbedderHolder.instance = await asyncio.to_thread(
+                    _create_embedder
+                )
+        except TimeoutError:
+            logger.error(
+                "Embedder initialization timed out",
+                model=model,
+                timeout=timeout,
+            )
+            raise TimeoutError(
+                f"Embedding model loading timed out after {timeout}s. "
+                "This may indicate network issues or corrupted model cache."
+            ) from None
+        except Exception as e:
+            logger.error("Embedder initialization failed", model=model, error=str(e))
+            raise RuntimeError(f"Failed to load embedding model: {e}") from e
+
         logger.info("Shared embedder created successfully")
         return _SharedEmbedderHolder.instance
 

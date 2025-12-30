@@ -16,6 +16,7 @@ from roboco.models.base import (
     Complexity,
     RobocoBase,
     TaskStatus,
+    TaskType,
     Team,
     TimestampMixin,
 )
@@ -153,6 +154,41 @@ class Task(TimestampMixin):
         default=2, ge=0, le=3, description="0=P0(highest), 3=P3(lowest)"
     )
 
+    # Task Type & Git Configuration
+    task_type: TaskType = Field(
+        default=TaskType.CODE, description="Type of task (code, research, etc.)"
+    )
+    requires_git: bool = Field(
+        default=True, description="Whether this task requires git workflow"
+    )
+
+    # Project & Branch (set by PM during setup)
+    project_id: UUID | None = Field(
+        default=None, description="Project this task works on"
+    )
+    branch_name: str | None = Field(
+        default=None, description="Branch created for this task"
+    )
+    work_session_id: UUID | None = Field(
+        default=None, description="Active work session"
+    )
+
+    # PR Tracking (set during AWAITING_DOCUMENTATION parallel phase)
+    pr_number: int | None = Field(default=None, description="GitHub/GitLab PR number")
+    pr_url: str | None = Field(default=None, description="Full URL to PR")
+
+    # Parallel Execution Tracking (for AWAITING_DOCUMENTATION phase)
+    docs_complete: bool = Field(default=False, description="Documenter has finished")
+    pr_created: bool = Field(
+        default=False, description="Developer has created PR (if requires_git)"
+    )
+
+    # PM Approval Tracking (for AWAITING_PM_REVIEW phase)
+    pm_approvals: dict[str, bool] = Field(
+        default_factory=dict,
+        description="PM approvals: {'main_pm': True, 'cell_pm': True}",
+    )
+
     # Ownership
     created_by: UUID = Field(..., description="Agent who created the task")
     assigned_to: UUID | None = Field(
@@ -243,6 +279,11 @@ class TaskCreate(RobocoBase):
     estimated_complexity: Complexity = Complexity.MEDIUM
     status: TaskStatus | None = None  # PM can set 'backlog' for subtasks needing setup
 
+    # Git configuration
+    task_type: TaskType = TaskType.CODE
+    requires_git: bool = True
+    project_id: UUID | None = None
+
 
 class TaskUpdate(RobocoBase):
     """Schema for updating a task."""
@@ -258,6 +299,17 @@ class TaskUpdate(RobocoBase):
     dev_notes: str | None = None
     qa_notes: str | None = None
     quick_context: str | None = None
+
+    # Git fields
+    task_type: TaskType | None = None
+    requires_git: bool | None = None
+    project_id: UUID | None = None
+    branch_name: str | None = None
+    pr_number: int | None = None
+    pr_url: str | None = None
+    docs_complete: bool | None = None
+    pr_created: bool | None = None
+    pm_approvals: dict[str, bool] | None = None
 
 
 # =============================================================================
@@ -280,3 +332,8 @@ class TaskCreateRequest:
     target_date: datetime | None = None
     estimated_complexity: Complexity = field(default=Complexity.MEDIUM)
     status: TaskStatus | None = None  # PM can set BACKLOG for subtasks
+
+    # Git configuration
+    task_type: TaskType = field(default=TaskType.CODE)
+    requires_git: bool = True
+    project_id: UUID | None = None

@@ -39,9 +39,11 @@ from roboco.models.base import (
     NotificationType,
     SessionStatus,
     TaskStatus,
+    TaskType,
     Team,
 )
 from roboco.models.session import SessionScope
+from roboco.models.work_session import WorkSessionStatus
 
 # =============================================================================
 # AGENT TABLE
@@ -130,6 +132,37 @@ class TaskTable(Base):
         Enum(TaskStatus), nullable=False, default=TaskStatus.PENDING, index=True
     )
     priority: Mapped[int] = mapped_column(Integer, nullable=False, default=2)
+
+    # Task Type & Git Configuration
+    task_type: Mapped[TaskType] = mapped_column(
+        Enum(TaskType), nullable=False, default=TaskType.CODE
+    )
+    requires_git: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+
+    # Project & Branch (set by PM during setup)
+    project_id: Mapped[UUID | None] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("projects.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
+    branch_name: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    work_session_id: Mapped[UUID | None] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("work_sessions.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+
+    # PR Tracking
+    pr_number: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    pr_url: Mapped[str | None] = mapped_column(String(500), nullable=True)
+
+    # Parallel Execution Tracking (for AWAITING_DOCUMENTATION phase)
+    docs_complete: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    pr_created: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+
+    # PM Approval Tracking (for AWAITING_PM_REVIEW phase)
+    pm_approvals: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
 
     # Ownership
     created_by: Mapped[UUID] = mapped_column(
@@ -227,6 +260,176 @@ class TaskTable(Base):
         Index("ix_tasks_team_status", "team", "status"),
         Index("ix_tasks_assigned_status", "assigned_to", "status"),
         Index("ix_tasks_created_by_status", "created_by", "status"),
+        Index("ix_tasks_project_status", "project_id", "status"),
+    )
+
+
+# =============================================================================
+# PROJECT TABLE
+# =============================================================================
+
+
+class ProjectTable(Base):
+    """SQLAlchemy table for projects (git repositories)."""
+
+    __tablename__ = "projects"
+
+    # Identity
+    id: Mapped[UUID] = mapped_column(
+        UUID(as_uuid=True), primary_key=True, default=uuid4
+    )
+    name: Mapped[str] = mapped_column(String(100), nullable=False)
+    slug: Mapped[str] = mapped_column(
+        String(50), unique=True, nullable=False, index=True
+    )
+
+    # Git Configuration
+    git_url: Mapped[str] = mapped_column(String(500), nullable=False)
+    default_branch: Mapped[str] = mapped_column(
+        String(100), nullable=False, default="main"
+    )
+    protected_branches: Mapped[list[str]] = mapped_column(
+        ARRAY(String), default=lambda: ["main", "master"]
+    )
+
+    # CI/CD Commands (optional)
+    test_command: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    lint_command: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    format_command: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    typecheck_command: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    build_command: Mapped[str | None] = mapped_column(String(500), nullable=True)
+
+    # Access Control
+    assigned_cell: Mapped[Team] = mapped_column(Enum(Team), nullable=False)
+    allowed_agents: Mapped[list[PyUUID] | None] = mapped_column(
+        ARRAY(UUID(as_uuid=True)), nullable=True
+    )
+
+    # Runtime State
+    workspace_path: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    last_synced_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    head_commit: Mapped[str | None] = mapped_column(String(40), nullable=True)
+
+    # Metadata
+    created_by: Mapped[UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("agents.id"), nullable=False
+    )
+    is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+
+    # Timestamps
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=lambda: datetime.now(UTC), nullable=False
+    )
+    updated_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), onupdate=lambda: datetime.now(UTC), nullable=True
+    )
+
+    # Relationships
+    creator: Mapped["AgentTable"] = relationship("AgentTable", lazy="joined")
+
+    __table_args__ = (
+        Index("ix_projects_cell", "assigned_cell"),
+        Index("ix_projects_active", "is_active"),
+    )
+
+
+# =============================================================================
+# WORK SESSION TABLE
+# =============================================================================
+
+
+class WorkSessionTable(Base):
+    """SQLAlchemy table for work sessions (git working sessions)."""
+
+    __tablename__ = "work_sessions"
+
+    # Identity
+    id: Mapped[UUID] = mapped_column(
+        UUID(as_uuid=True), primary_key=True, default=uuid4
+    )
+    project_id: Mapped[UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("projects.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    task_id: Mapped[UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("tasks.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    agent_id: Mapped[UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("agents.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
+
+    # Branch Management
+    branch_name: Mapped[str] = mapped_column(String(500), nullable=False)
+    base_branch: Mapped[str] = mapped_column(String(500), nullable=False)
+    target_branch: Mapped[str] = mapped_column(String(500), nullable=False)
+
+    # Lifecycle
+    started_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=lambda: datetime.now(UTC), nullable=False
+    )
+    ended_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    status: Mapped[WorkSessionStatus] = mapped_column(
+        Enum(WorkSessionStatus),
+        nullable=False,
+        default=WorkSessionStatus.ACTIVE,
+        index=True,
+    )
+
+    # Audit Trail
+    commits: Mapped[list[str]] = mapped_column(ARRAY(String), default=list)
+    files_modified: Mapped[list[str]] = mapped_column(ARRAY(String), default=list)
+
+    # PR Tracking
+    pr_number: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    pr_url: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    pr_status: Mapped[str | None] = mapped_column(String(50), nullable=True)
+    pr_created_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    pr_merged_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+
+    # Merge tracking
+    merged_by: Mapped[UUID | None] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("agents.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+
+    # Timestamps
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=lambda: datetime.now(UTC), nullable=False
+    )
+    updated_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), onupdate=lambda: datetime.now(UTC), nullable=True
+    )
+
+    # Relationships
+    project: Mapped["ProjectTable"] = relationship("ProjectTable", lazy="joined")
+    agent: Mapped["AgentTable | None"] = relationship(
+        "AgentTable", foreign_keys=[agent_id], lazy="joined"
+    )
+    merger: Mapped["AgentTable | None"] = relationship(
+        "AgentTable", foreign_keys=[merged_by], lazy="select"
+    )
+
+    __table_args__ = (
+        Index("ix_work_sessions_project_status", "project_id", "status"),
+        Index("ix_work_sessions_task", "task_id"),
+        Index("ix_work_sessions_agent_status", "agent_id", "status"),
     )
 
 

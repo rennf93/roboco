@@ -1257,6 +1257,228 @@ async def cancel_task(
 
 
 # =============================================================================
+# CEO APPROVAL WORKFLOW
+# =============================================================================
+
+
+@router.get("/awaiting-pm-review", response_model=list[TaskResponse])
+async def get_awaiting_pm_review_tasks(
+    db: DbSession,
+    agent: CurrentAgentContext,
+    permissions: PermissionServiceDep,
+    team: Team | None = None,
+) -> list[TaskResponse]:
+    """Get tasks awaiting PM review."""
+    service = get_task_service(db)
+
+    # Apply team filter based on permissions
+    can_view_all = permissions.can_perform_task_action(agent, TaskAction.VIEW_ALL)
+    effective_team = team if can_view_all else agent.team
+
+    tasks = await service.list_awaiting_pm_review(effective_team)
+    return task_list_to_response(tasks)
+
+
+@router.get("/awaiting-ceo-approval", response_model=list[TaskResponse])
+async def get_awaiting_ceo_approval_tasks(
+    db: DbSession,
+    agent: CurrentAgentContext,
+    permissions: PermissionServiceDep,
+) -> list[TaskResponse]:
+    """Get tasks awaiting CEO approval.
+
+    CEO approval queue is org-wide (no team filter).
+    Only visible to PMs and above.
+    """
+    # Only PMs and above can view the CEO approval queue
+    can_view_all = permissions.can_perform_task_action(agent, TaskAction.VIEW_ALL)
+    is_pm = agent.role in (AgentRole.CELL_PM, AgentRole.MAIN_PM)
+    is_ceo = agent.role == AgentRole.CEO
+
+    if not (can_view_all or is_pm or is_ceo):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Only PMs and management can view CEO approval queue",
+        )
+
+    service = get_task_service(db)
+    tasks = await service.list_awaiting_ceo_approval()
+    return task_list_to_response(tasks)
+
+
+@router.post("/{task_id}/escalate-to-ceo", response_model=TaskResponse)
+async def escalate_to_ceo(
+    task_id: UUID,
+    db: DbSession,
+    agent: CurrentAgentContext,
+    permissions: PermissionServiceDep,
+    data: QANotes | None = None,
+) -> TaskResponse:
+    """Escalate a task to CEO for final approval (PM only).
+
+    Used for major tasks that require CEO sign-off before merge:
+    - Parent tasks with subtasks
+    - High-priority features
+    - Breaking changes
+    """
+    service = get_task_service(db)
+    task = await service.get(task_id)
+    if not task:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="Task not found"
+        )
+
+    # Only PM or higher can escalate to CEO
+    can_close = permissions.can_perform_task_action(agent, TaskAction.CLOSE, task.team)
+    if not can_close:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Only PMs can escalate tasks to CEO",
+        )
+
+    notes = data.notes if data else None
+    task = await service.escalate_to_ceo(task_id, agent.role.value, notes)
+    if not task:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Cannot escalate to CEO - task must be in awaiting_pm_review status",
+        )
+
+    # Notify CEO
+    ceo_result = await db.execute(
+        select(AgentTable).where(AgentTable.role == AgentRole.CEO)
+    )
+    ceo_agent = ceo_result.scalar_one_or_none()
+    if ceo_agent:
+        notification = NotificationTable(
+            type="task_assignment",
+            priority="high",
+            from_agent=agent.agent_id,
+            to_agents=[ceo_agent.id],
+            subject=f"CEO Approval Required: {task.title or 'Unknown task'}",
+            body=(
+                f"Task {task_id} requires CEO approval for completion.\n\n"
+                f"Escalated by: {agent.role.value}\n"
+                f"Notes: {notes or 'None'}\n\n"
+                "Use /ceo-approve or /ceo-reject to respond."
+            ),
+            related_task_id=task_id,
+            requires_ack=True,
+        )
+        db.add(notification)
+        await db.flush()
+
+        from roboco.services.notification_delivery import (
+            get_notification_delivery_service,
+        )
+
+        delivery_service = get_notification_delivery_service(db)
+        await delivery_service.deliver(notification.id)
+
+    await db.commit()
+    return task_to_response(task)
+
+
+@router.post("/{task_id}/ceo-approve", response_model=TaskResponse)
+async def ceo_approve_task(
+    task_id: UUID,
+    db: DbSession,
+    agent: CurrentAgentContext,
+    data: QANotes | None = None,
+) -> TaskResponse:
+    """CEO approves and completes a task.
+
+    Final approval step for major tasks. Only CEO can perform this action.
+    """
+    # Only CEO can approve
+    if agent.role != AgentRole.CEO:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Only CEO can approve tasks in CEO approval queue",
+        )
+
+    service = get_task_service(db)
+    task = await service.get(task_id)
+    if not task:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="Task not found"
+        )
+
+    notes = data.notes if data else None
+    task = await service.ceo_approve(task_id, notes)
+    if not task:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Cannot approve - task not awaiting CEO approval",
+        )
+
+    await db.commit()
+    return task_to_response(task)
+
+
+@router.post("/{task_id}/ceo-reject", response_model=TaskResponse)
+async def ceo_reject_task(
+    task_id: UUID,
+    data: QANotes,
+    db: DbSession,
+    agent: CurrentAgentContext,
+) -> TaskResponse:
+    """CEO rejects a task and sends back for revision.
+
+    Task goes back to NEEDS_REVISION status. Notes are required.
+    """
+    # Only CEO can reject
+    if agent.role != AgentRole.CEO:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Only CEO can reject tasks in CEO approval queue",
+        )
+
+    service = get_task_service(db)
+    task = await service.get(task_id)
+    if not task:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="Task not found"
+        )
+
+    task = await service.ceo_reject(task_id, data.notes)
+    if not task:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Cannot reject - task not awaiting CEO approval",
+        )
+
+    # Notify original developer if reassigned
+    if task.assigned_to:
+        notification = NotificationTable(
+            type="task_assignment",
+            priority="high",
+            from_agent=agent.agent_id,
+            to_agents=[task.assigned_to],
+            subject=f"CEO Revision Required: {task.title or 'Unknown task'}",
+            body=(
+                f"Task {task_id} was rejected by CEO and requires revision.\n\n"
+                f"Reason: {data.notes}\n\n"
+                "Please address the feedback and resubmit."
+            ),
+            related_task_id=task_id,
+            requires_ack=True,
+        )
+        db.add(notification)
+        await db.flush()
+
+        from roboco.services.notification_delivery import (
+            get_notification_delivery_service,
+        )
+
+        delivery_service = get_notification_delivery_service(db)
+        await delivery_service.deliver(notification.id)
+
+    await db.commit()
+    return task_to_response(task)
+
+
+# =============================================================================
 # ESCALATION (ALL AGENTS CAN ESCALATE)
 # =============================================================================
 

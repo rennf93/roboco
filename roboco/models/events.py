@@ -34,6 +34,9 @@ class EventType(str, Enum):
     TASK_QA_PASSED = "task.qa_passed"
     TASK_QA_FAILED = "task.qa_failed"
     TASK_AWAITING_DOCS = "task.awaiting_docs"
+    TASK_AWAITING_CEO_APPROVAL = "task.awaiting_ceo_approval"  # Escalated to CEO
+    TASK_CEO_APPROVED = "task.ceo_approved"  # CEO approved
+    TASK_CEO_REJECTED = "task.ceo_rejected"  # CEO rejected, needs revision
     TASK_COMPLETED = "task.completed"
     TASK_CANCELLED = "task.cancelled"
 

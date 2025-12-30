@@ -171,6 +171,8 @@ async def search(
 
     Returns relevant documents matching the query.
     """
+    import asyncio
+
     # Build query context
     index_types = None
     if request.index_types:
@@ -189,12 +191,21 @@ async def search(
         index_types=index_types,
     )
 
-    service = await get_optimal_service()
-    results = await service.search(
-        query=request.query,
-        context=context,
-        top_k=request.top_k,
-    )
+    # Timeout after 30 seconds to prevent hanging
+    search_timeout = 30.0
+    try:
+        async with asyncio.timeout(search_timeout):
+            service = await get_optimal_service()
+            results = await service.search(
+                query=request.query,
+                context=context,
+                top_k=request.top_k,
+            )
+    except TimeoutError as e:
+        raise HTTPException(
+            status_code=status.HTTP_504_GATEWAY_TIMEOUT,
+            detail=f"Search timed out after {search_timeout}s",
+        ) from e
 
     return SearchResponse(
         results=[
@@ -263,6 +274,8 @@ async def rag_query(
 
     Retrieves relevant context and generates an answer.
     """
+    import asyncio
+
     # Build query context
     index_types = None
     if request.index_types:
@@ -281,12 +294,21 @@ async def rag_query(
         index_types=index_types,
     )
 
-    service = await get_optimal_service()
-    response = await service.query(
-        query=request.query,
-        context=context,
-        top_k=request.top_k,
-    )
+    # RAG queries take longer due to LLM call - 60 second timeout
+    rag_timeout = 60.0
+    try:
+        async with asyncio.timeout(rag_timeout):
+            service = await get_optimal_service()
+            response = await service.query(
+                query=request.query,
+                context=context,
+                top_k=request.top_k,
+            )
+    except TimeoutError as e:
+        raise HTTPException(
+            status_code=status.HTTP_504_GATEWAY_TIMEOUT,
+            detail=f"RAG query timed out after {rag_timeout}s",
+        ) from e
 
     return RAGQueryResponse(
         answer=response.answer,
@@ -315,6 +337,8 @@ async def get_context(
 
     Useful when you want to use your own LLM with retrieved context.
     """
+    import asyncio
+
     # Build query context
     index_types = None
     if request.index_types:
@@ -333,12 +357,21 @@ async def get_context(
         index_types=index_types,
     )
 
-    service = await get_optimal_service()
-    results = await service.search(
-        query=request.query,
-        context=context,
-        top_k=request.top_k,
-    )
+    # Timeout after 30 seconds
+    search_timeout = 30.0
+    try:
+        async with asyncio.timeout(search_timeout):
+            service = await get_optimal_service()
+            results = await service.search(
+                query=request.query,
+                context=context,
+                top_k=request.top_k,
+            )
+    except TimeoutError as e:
+        raise HTTPException(
+            status_code=status.HTTP_504_GATEWAY_TIMEOUT,
+            detail=f"Context retrieval timed out after {search_timeout}s",
+        ) from e
 
     return SearchResponse(
         results=[
@@ -448,7 +481,7 @@ async def rag_health_check() -> RAGHealthResponse:
     try:
         async with asyncio.timeout(health_timeout):
             embedder = await get_shared_embedder(model=settings.default_embedding_model)
-            test_embedding = embedder.embed("health check")
+            test_embedding = embedder.embed_query("health check")
             if test_embedding and len(test_embedding) == settings.embedding_dimensions:
                 embedding_ok = True
                 details["embedding_model"] = settings.default_embedding_model

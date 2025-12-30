@@ -38,6 +38,7 @@ Tools (PM/Board):
 - roboco_task_activate: Move task from backlog to pending
 - roboco_task_complete: Mark task complete (after full workflow)
 - roboco_task_cancel: Cancel a task
+- roboco_task_escalate_to_ceo: Escalate task to CEO for approval (sends notification)
 
 Tools (Sessions - PM/Board):
 - roboco_session_create_for_tasks: Create work session for tasks
@@ -64,6 +65,7 @@ from roboco.mcp.schemas import (
 from roboco.mcp.tasks.handlers import (
     handle_agent_idle,
     handle_docs_complete,
+    handle_escalate_to_ceo,
     handle_group_create,
     handle_session_create_for_tasks,
     handle_session_get_for_task,
@@ -584,6 +586,36 @@ def _register_pm_completion_tools(
             client, task_id, agent_id, force_with_cancelled, justification
         )
 
+    @mcp.tool()
+    async def roboco_task_escalate_to_ceo(
+        task_id: str, notes: str | None = None
+    ) -> dict[str, Any]:
+        """
+        Escalate a task to CEO for final approval (PM only).
+
+        Use this for major tasks that require CEO sign-off before completion:
+        - Parent tasks with multiple subtasks
+        - High-priority or high-risk features
+        - Breaking changes or architectural decisions
+        - Tasks that need final executive approval
+
+        ENFORCEMENT:
+        - Only PMs and management can escalate to CEO
+        - Task must be in 'awaiting_pm_review' status
+
+        After escalation, the CEO will:
+        - roboco_task_ceo_approve: Complete the task
+        - roboco_task_ceo_reject: Send back for revision
+
+        Args:
+            task_id: The task UUID to escalate
+            notes: Optional notes for the CEO explaining the escalation
+
+        Returns:
+            Task in awaiting_ceo_approval status
+        """
+        return await handle_escalate_to_ceo(client, task_id, agent_id, notes)
+
 
 def _register_pm_tools(mcp: FastMCP, client: ApiClient, agent_id: str) -> None:
     """Register PM delegation and management tools."""
@@ -871,7 +903,8 @@ def create_task_mcp_server(agent_id: str) -> FastMCP:
         _register_blocking_tools(mcp, client, agent_id)
 
     elif role in ("product_owner", "head_marketing", "auditor", "ceo"):
-        # Board/Management: PM tools + completion + groups
+        # Board/CEO: PM tools + completion + groups
+        # Note: CEO is human (HiTL), uses API directly for approvals
         _register_pm_completion_tools(mcp, client, agent_id)
         _register_pm_tools(mcp, client, agent_id)
         _register_session_tools(mcp, client, agent_id)

@@ -7,8 +7,10 @@ For communication structure: `roboco_kb_search("communication hierarchy")`
 ## Workflow
 
 ```
-SCAN → CLAIM → START → READ DEV JOURNAL → REVIEW → REFLECT → PASS or FAIL
+SCAN → CLAIM → START → CHECKOUT → READ DEV JOURNAL → REVIEW → TEST → REFLECT → PASS or FAIL
 ```
+
+**QA reviews code ON THE BRANCH - NO PR exists yet.**
 
 ### 1. SCAN
 Use `roboco_task_scan(team)` for `awaiting_qa` tasks.
@@ -19,18 +21,32 @@ Use `roboco_task_claim()`. QA can ONLY claim from `awaiting_qa` status.
 ### 3. START
 Use `roboco_task_start()` then `roboco_message_send()` to announce.
 
-### 4. READ
+### 4. CHECKOUT (Git Tasks)
+**For tasks with `requires_git=True`:**
+1. Check branch status: `roboco_git_status(project_slug)`
+2. The task's `branch_name` tells you which branch to review
+3. Review the branch diff vs main: `roboco_git_diff(project_slug)`
+4. View dev's commits: `roboco_git_log(project_slug)`
+
+### 5. READ DEV JOURNAL
 Use `roboco_journal_read_team()` to read developer's journey. REQUIRED.
 
-### 5. REVIEW
-Update progress. Check: acceptance criteria, tests, functionality, code quality.
+### 6. REVIEW + TEST
+1. Update progress with `roboco_task_progress()`
+2. Check acceptance criteria - each one
+3. Review code quality via `roboco_git_diff()`
+4. Run tests if applicable
+5. Verify functionality works as expected
 
-### 6. REFLECT
+### 7. REFLECT
 Use `roboco_journal_reflect()` before decision. REQUIRED.
 
-### 7. DECISION
-- **PASS:** `roboco_task_qa_pass()` → Status: awaiting_documentation
-- **FAIL:** `roboco_task_qa_fail()` with issues list → Status: needs_revision
+### 8. DECISION
+- **PASS:** `roboco_task_qa_pass()` → Status: `awaiting_documentation`
+  - Developer AND Documenter are notified
+  - They work in parallel (dev creates PR, doc writes docs)
+- **FAIL:** `roboco_task_qa_fail()` with issues list → Status: `needs_revision`
+  - Developer is notified to fix issues
 
 ## Your Tools
 
@@ -39,6 +55,12 @@ Use `roboco_journal_reflect()` before decision. REQUIRED.
 - `roboco_task_start`, `roboco_task_progress`
 - `roboco_task_qa_pass`, `roboco_task_qa_fail`
 - `roboco_task_escalate`, `roboco_task_substitute`
+
+**Git (Read-Only):**
+- `roboco_git_status(project_slug)` - Current branch, staged/unstaged changes
+- `roboco_git_log(project_slug, limit)` - Recent commits (review dev's work)
+- `roboco_git_branch_list(project_slug)` - List branches
+- `roboco_git_diff(project_slug, staged)` - View code changes (essential for review)
 
 **Communication:**
 - `roboco_message_send`, `roboco_channel_history`, `roboco_channel_list`

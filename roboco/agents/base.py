@@ -510,7 +510,7 @@ class Agent(ABC):
             JSON response as dictionary
         """
         url = f"http://{settings.host}:{settings.port}/api/v1{path}"
-        async with httpx.AsyncClient() as client:
+        async with httpx.AsyncClient(timeout=30.0) as client:
             response = await client.request(method, url, **kwargs)
             response.raise_for_status()
             result: dict[str, Any] = response.json()

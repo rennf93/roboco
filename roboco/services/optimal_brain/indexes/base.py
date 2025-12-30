@@ -538,8 +538,20 @@ class BaseIndexPlugin(ABC):
         Returns:
             List of search results sorted by relevance
         """
+        import asyncio
+
         try:
-            chunks = await self.ragi.retrieve(query, top_k=top_k)
+            # Run retrieve in thread pool to avoid blocking event loop
+            # piragi's retrieve() calls embedder.embed_chunks() synchronously
+            ragi_sync = self.ragi._sync
+
+            def _do_retrieve() -> list:
+                # Embed the query
+                query_embedding = ragi_sync.embedder.embed_query(query)
+                # Search the store
+                return ragi_sync.store.search(query_embedding, top_k=top_k)
+
+            chunks = await asyncio.to_thread(_do_retrieve)
             results = []
             for chunk in chunks:
                 # Apply filters if provided
@@ -582,20 +594,48 @@ class BaseIndexPlugin(ABC):
         Returns:
             Tuple of (answer, citations)
         """
+        import httpx
+
         try:
-            answer = await self.ragi.ask(query, top_k=top_k)
-            citations = []
-            for cite in answer.citations:
-                citations.append(
-                    SearchResult(
-                        content=cite.chunk if hasattr(cite, "chunk") else str(cite),
-                        source=cite.source if hasattr(cite, "source") else "unknown",
-                        score=cite.score if hasattr(cite, "score") else 0.0,
-                        index_type=self.index_type,
-                        metadata={},
-                    )
+            # First get context using our properly async search
+            search_results = await self.search(query, top_k=top_k)
+
+            if not search_results:
+                return "No relevant context found.", []
+
+            # Build context for LLM
+            context_texts = [r.content for r in search_results]
+            context = "\n\n---\n\n".join(context_texts)
+
+            # Build prompt
+            prompt = (
+                f"Based on the following context, answer the question.\n\n"
+                f"Context:\n{context}\n\n"
+                f"Question: {query}\n\n"
+                f"Answer:"
+            )
+
+            # Call LLM via Ollama API (async HTTP)
+            async with httpx.AsyncClient(timeout=60.0) as client:
+                resp = await client.post(
+                    f"{self.config.llm_base_url}/chat/completions",
+                    json={
+                        "model": self.config.llm_model,
+                        "messages": [{"role": "user", "content": prompt}],
+                        "max_tokens": 1024,
+                    },
                 )
-            return answer.text, citations
+                if resp.is_success:
+                    data = resp.json()
+                    answer_text = data["choices"][0]["message"]["content"]
+                    return answer_text, search_results
+                else:
+                    logger.warning(
+                        "LLM call failed",
+                        status=resp.status_code,
+                        error=resp.text,
+                    )
+                    return "", search_results
         except Exception as e:
             logger.warning(
                 "RAG query failed",

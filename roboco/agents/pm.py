@@ -136,10 +136,13 @@ class CellPMAgent(Agent, CyclicPhaseRunner[CellPMPhase]):
 
     async def _find_paused_task_ready_for_closure(self) -> UUID | None:
         """
-        Find own paused tasks where all subtasks are complete.
+        Find own paused tasks where ALL descendants are complete.
 
         This is the key PM workflow: delegate subtasks, pause, get respawned
         when subtasks complete, then review and close.
+
+        Important: Checks ALL descendants (children, grandchildren, etc.) not just
+        direct children, to ensure the entire task tree is complete before closure.
         """
         try:
             # Get my paused tasks
@@ -157,24 +160,22 @@ class CellPMAgent(Agent, CyclicPhaseRunner[CellPMPhase]):
                 if not task_id:
                     continue
 
-                # Check if this task has subtasks
-                subtasks_result = await self._api_call(
+                # Check ALL descendants (children, grandchildren, etc.)
+                # Uses /tasks/{id}/descendants endpoint which does recursive BFS
+                descendants = await self._api_call(
                     "GET",
-                    "/tasks",
-                    params={"parent_task_id": task_id},
+                    f"/tasks/{task_id}/descendants",
                 )
-                subtasks = (
-                    subtasks_result.get("items", subtasks_result)
-                    if isinstance(subtasks_result, dict)
-                    else subtasks_result
-                )
+                # Descendants endpoint returns list directly
+                if isinstance(descendants, dict):
+                    descendants = descendants.get("items", [])
 
-                if not subtasks:
-                    continue  # No subtasks - not a delegation task
+                if not descendants:
+                    continue  # No descendants - not a delegation task
 
-                # Check if ALL subtasks are complete
+                # Check if ALL descendants are in terminal states
                 all_complete = all(
-                    s.get("status") in ("completed", "cancelled") for s in subtasks
+                    d.get("status") in ("completed", "cancelled") for d in descendants
                 )
 
                 if all_complete:
@@ -1014,10 +1015,13 @@ class MainPMAgent(Agent, CyclicPhaseRunner[MainPMPhase]):
 
     async def _find_paused_task_ready_for_closure(self) -> UUID | None:
         """
-        Find own paused tasks where all subtasks are complete.
+        Find own paused tasks where ALL descendants are complete.
 
         This is the key PM workflow: delegate subtasks, pause, get respawned
         when subtasks complete, then review and close.
+
+        Important: Checks ALL descendants (children, grandchildren, etc.) not just
+        direct children, to ensure the entire task tree is complete before closure.
         """
         try:
             # Get my paused tasks
@@ -1035,24 +1039,22 @@ class MainPMAgent(Agent, CyclicPhaseRunner[MainPMPhase]):
                 if not task_id:
                     continue
 
-                # Check if this task has subtasks
-                subtasks_result = await self._api_call(
+                # Check ALL descendants (children, grandchildren, etc.)
+                # Uses /tasks/{id}/descendants endpoint which does recursive BFS
+                descendants = await self._api_call(
                     "GET",
-                    "/tasks",
-                    params={"parent_task_id": task_id},
+                    f"/tasks/{task_id}/descendants",
                 )
-                subtasks = (
-                    subtasks_result.get("items", subtasks_result)
-                    if isinstance(subtasks_result, dict)
-                    else subtasks_result
-                )
+                # Descendants endpoint returns list directly
+                if isinstance(descendants, dict):
+                    descendants = descendants.get("items", [])
 
-                if not subtasks:
-                    continue  # No subtasks - not a delegation task
+                if not descendants:
+                    continue  # No descendants - not a delegation task
 
-                # Check if ALL subtasks are complete
+                # Check if ALL descendants are in terminal states
                 all_complete = all(
-                    s.get("status") in ("completed", "cancelled") for s in subtasks
+                    d.get("status") in ("completed", "cancelled") for d in descendants
                 )
 
                 if all_complete:
