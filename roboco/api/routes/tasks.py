@@ -106,6 +106,8 @@ async def create_task(
         target_date=data.target_date,
         estimated_complexity=data.estimated_complexity,
         status=data.status,
+        sequence=data.sequence,  # Task ordering within siblings
+        dependency_ids=data.dependency_ids,  # Dependencies for claim filtering
     )
     task = await service.create(req)
     await db.commit()
@@ -678,7 +680,7 @@ async def soft_block_task(
             )
 
             delivery_service = get_notification_delivery_service(db)
-            await delivery_service.deliver_notification(notification)
+            await delivery_service.deliver(require_uuid(notification.id))
 
     await db.commit()
     return task_to_response(task)
@@ -742,7 +744,7 @@ async def unblock_task(
         )
 
         delivery_service = get_notification_delivery_service(db)
-        await delivery_service.deliver(notification.id)
+        await delivery_service.deliver(require_uuid(notification.id))
 
     await db.commit()
     return task_to_response(task)
@@ -1066,7 +1068,7 @@ async def docs_complete(
             )
 
             delivery_service = get_notification_delivery_service(db)
-            await delivery_service.deliver(notification.id)
+            await delivery_service.deliver(require_uuid(notification.id))
 
     await db.commit()
     return task_to_response(task)
@@ -1152,7 +1154,7 @@ async def submit_for_pm_review(
             )
 
             delivery_service = get_notification_delivery_service(db)
-            await delivery_service.deliver(notification.id)
+            await delivery_service.deliver(require_uuid(notification.id))
 
     await db.commit()
     return task_to_response(task)
@@ -1377,7 +1379,7 @@ async def escalate_to_ceo(
         )
 
         delivery_service = get_notification_delivery_service(db)
-        await delivery_service.deliver(notification.id)
+        await delivery_service.deliver(require_uuid(notification.id))
 
     await db.commit()
     return task_to_response(task)
@@ -1476,7 +1478,7 @@ async def ceo_reject_task(
         )
 
         delivery_service = get_notification_delivery_service(db)
-        await delivery_service.deliver(notification.id)
+        await delivery_service.deliver(require_uuid(notification.id))
 
     await db.commit()
     return task_to_response(task)
@@ -1582,7 +1584,7 @@ async def escalate_task(
     from roboco.services.notification_delivery import get_notification_delivery_service
 
     delivery_service = get_notification_delivery_service(db)
-    await delivery_service.deliver(notification.id)
+    await delivery_service.deliver(require_uuid(notification.id))
 
     await db.commit()
 

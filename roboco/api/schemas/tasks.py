@@ -224,6 +224,7 @@ class TaskResponse(BaseModel):
     # Status
     status: TaskStatus
     priority: int
+    sequence: int  # Order number within siblings
 
     # Ownership
     team: Team
@@ -528,6 +529,7 @@ def task_to_response(task: "TaskTable") -> TaskResponse:
         acceptance_criteria=task.acceptance_criteria or [],
         status=task.status,
         priority=task.priority,
+        sequence=task.sequence,
         team=task.team,
         created_by=require_uuid(task.created_by),
         assigned_to=to_python_uuid(task.assigned_to),

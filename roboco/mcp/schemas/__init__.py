@@ -163,7 +163,12 @@ class SendNotificationInput(BaseModel):
 
 
 class TaskCreateInput(BaseModel):
-    """Input for creating a task (PM only)."""
+    """Input for creating a task (PM only).
+
+    ORDERING: Use sequence and dependency_ids to control task execution order.
+    - sequence: Lower numbers execute first (1, 2, 3...)
+    - dependency_ids: Tasks that must complete before this one can be claimed
+    """
 
     title: str = Field(..., description="Task title")
     description: str = Field(..., description="Task description")
@@ -182,6 +187,15 @@ class TaskCreateInput(BaseModel):
     status: str = Field(
         default="backlog",
         description="Status: 'backlog' (default) or 'pending' (ready for work)",
+    )
+    # Task ordering - IMPORTANT for subtask sequencing
+    sequence: int = Field(
+        default=0,
+        description="Execution order within siblings (lower = first). E.g., 1, 2, 3",
+    )
+    dependency_ids: list[str] = Field(
+        default_factory=list,
+        description="Task IDs that must complete before this task can be claimed",
     )
 
 

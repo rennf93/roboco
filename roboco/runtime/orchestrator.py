@@ -178,6 +178,10 @@ class AgentOrchestrator:
 
         logger.info("Orchestrator stopped")
 
+    def get_running_agents(self) -> set[str]:
+        """Get set of currently running agent IDs."""
+        return set(self._instances.keys())
+
     async def _ensure_agent_image(self, agent_id: str | None = None) -> None:
         """Ensure the agent Docker images are built.
 

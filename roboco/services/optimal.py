@@ -396,8 +396,8 @@ class OptimalService:
             title=f"Message in {params.channel_id or 'channel'}",
             preview=params.content[:500] if params.content else None,
             metadata={
-                "channel_id": params.channel_id,
-                "session_id": params.session_id,
+                "channel_id": str(params.channel_id) if params.channel_id else None,
+                "session_id": str(params.session_id) if params.session_id else None,
                 "agent_id": str(params.agent_id) if params.agent_id else None,
             },
         )
@@ -425,7 +425,7 @@ class OptimalService:
             title=f"Journal: {params.entry_type or 'entry'}",
             preview=params.content[:500] if params.content else None,
             metadata={
-                "entry_id": params.entry_id,
+                "entry_id": str(params.entry_id) if params.entry_id else None,
                 "agent_id": str(params.agent_id) if params.agent_id else None,
                 "entry_type": params.entry_type,
                 "tags": params.tags,

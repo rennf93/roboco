@@ -46,6 +46,7 @@ from roboco.models.session import (
     SessionTaskRelationshipType,
 )
 from roboco.services.base import BaseService, ConflictError, NotFoundError
+from roboco.utils.converters import require_uuid, to_python_uuid
 
 # =============================================================================
 # MESSAGING SERVICE
@@ -811,7 +812,7 @@ class MessagingService(BaseService):
             await self.session.flush()
 
             # Deliver via Redis Streams -> WebSocket
-            await delivery_service.deliver(notification.id)
+            await delivery_service.deliver(require_uuid(notification.id))
 
             self.log.debug(
                 "Mention notification sent",
@@ -829,10 +830,10 @@ class MessagingService(BaseService):
             await optimal.index_conversation(
                 IndexConversationParams(
                     content=message.content,
-                    channel_id=message.channel_id,
-                    session_id=message.session_id,
-                    agent_id=message.agent_id,
-                    task_id=message.task_id,
+                    channel_id=require_uuid(message.channel_id),
+                    session_id=require_uuid(message.session_id),
+                    agent_id=require_uuid(message.agent_id),
+                    task_id=to_python_uuid(message.task_id),
                     message_type=message.type.value if message.type else None,
                 )
             )

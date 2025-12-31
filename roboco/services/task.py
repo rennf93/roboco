@@ -26,10 +26,11 @@ from roboco.enforcement import (
     validate_task_transition,
 )
 from roboco.events import Event, EventType, get_event_bus
-from roboco.models.base import TaskStatus, Team
+from roboco.models.base import AgentRole, TaskStatus, Team
 from roboco.models.task import TaskCreateRequest
 from roboco.models.work_session import WorkSessionStatus
 from roboco.services.base import BaseService
+from roboco.utils.converters import require_uuid, to_python_uuid
 
 # UUID format constants for validation
 _UUID_LENGTH = 36  # Standard UUID string length
@@ -207,6 +208,8 @@ class TaskService(BaseService):
             target_date=req.target_date,
             estimated_complexity=req.estimated_complexity,
             status=req.status if req.status else TaskStatus.PENDING,
+            sequence=req.sequence,  # Task ordering within siblings
+            dependency_ids=req.dependency_ids,  # Task IDs that must complete first
         )
         self.session.add(task)
         await self.session.flush()
@@ -822,12 +825,12 @@ class TaskService(BaseService):
             for content, ltype in learnings:
                 await learning_svc.record_learning(
                     RecordLearningParams(
-                        agent_id=assigned_to or agent_id or UUID(int=0),
+                        agent_id=to_python_uuid(assigned_to) or agent_id or UUID(int=0),
                         agent_role="developer",
                         content=content,
                         learning_type=ltype,
                         scope=scope,
-                        task_id=task_id,
+                        task_id=to_python_uuid(task_id),
                         tags=["auto-extracted", task_team or "general"],
                     )
                 )
@@ -1159,7 +1162,8 @@ class TaskService(BaseService):
             task_team: Team for categorization
             details: Additional event details
         """
-        from roboco.services.optimal import IndexType, get_optimal_service
+        from roboco.models.optimal import IndexJournalEntryParams
+        from roboco.services.optimal import get_optimal_service
 
         try:
             optimal = await get_optimal_service()
@@ -1168,18 +1172,18 @@ class TaskService(BaseService):
             # Build content for indexing
             content = f"[{event_type.upper()}] {task_title}"
             if details:
-                content += f"\n{details}"
+                content += f"\nDetails: {details}"
 
             # Index to journals for lifecycle tracking
-            await optimal.ingest(
-                index_type=IndexType.JOURNALS,
-                content=content,
-                doc_id=f"lifecycle-{task_id}-{event_type}",
-                task_id=task_id,
-                project=task_team.value if task_team else "default",
-                entry_type="lifecycle",
-                event_type=event_type,
-                **details,
+            await optimal.index_journal_entry(
+                IndexJournalEntryParams(
+                    content=content,
+                    entry_id=None,  # Will be auto-generated
+                    agent_id=None,  # System event, no specific agent
+                    entry_type=f"lifecycle_{event_type}",
+                    task_id=task_id,
+                    tags=[event_type, task_team.value if task_team else "default"],
+                )
             )
             self.log.debug(
                 "Indexed lifecycle event",
@@ -1361,7 +1365,9 @@ class TaskService(BaseService):
             "what_needed": what_needed,
         }
         bg_task = asyncio.create_task(
-            self._index_blocker_background(task.id, task.team, blocker_info)
+            self._index_blocker_background(
+                require_uuid(task.id), task.team, blocker_info
+            )
         )
         self._background_tasks.add(bg_task)
         bg_task.add_done_callback(self._background_tasks.discard)
@@ -1539,11 +1545,11 @@ class TaskService(BaseService):
         # Index positive QA review (fire-and-forget)
         bg_task = asyncio.create_task(
             self._index_qa_review_background(
-                task.id,
+                require_uuid(task.id),
                 task.quick_context,
                 True,
                 notes or "Passed QA review",
-                qa_agent_id,
+                to_python_uuid(qa_agent_id),
             )
         )
         self._background_tasks.add(bg_task)
@@ -1605,11 +1611,11 @@ class TaskService(BaseService):
         # Index negative QA review (fire-and-forget)
         review_task = asyncio.create_task(
             self._index_qa_review_background(
-                task.id,
+                require_uuid(task.id),
                 task.quick_context,
                 False,
                 notes,
-                qa_agent_id,
+                to_python_uuid(qa_agent_id),
             )
         )
         self._background_tasks.add(review_task)
@@ -1617,7 +1623,9 @@ class TaskService(BaseService):
 
         # Index issues as error patterns (fire-and-forget)
         error_task = asyncio.create_task(
-            self._index_qa_errors_background(task.id, task.title, task.team, notes)
+            self._index_qa_errors_background(
+                require_uuid(task.id), task.title, task.team, notes
+            )
         )
         self._background_tasks.add(error_task)
         error_task.add_done_callback(self._background_tasks.discard)
@@ -1738,7 +1746,7 @@ class TaskService(BaseService):
         # Index documentation artifacts (fire-and-forget)
         if task.documents:
             bg_task = asyncio.create_task(
-                self._index_docs_background(task.id, task.documents)
+                self._index_docs_background(require_uuid(task.id), task.documents)
             )
             self._background_tasks.add(bg_task)
             bg_task.add_done_callback(self._background_tasks.discard)
@@ -1899,7 +1907,7 @@ class TaskService(BaseService):
         )
         return task
 
-    async def complete(
+    async def complete(  # noqa: PLR0911, PLR0912, PLR0915
         self,
         task_id: UUID,
         agent_id: UUID | None = None,
@@ -1909,9 +1917,10 @@ class TaskService(BaseService):
         """
         Mark task as completed (PM only).
 
-        Two completion paths:
-        1. Developer work: task must be in AWAITING_PM_REVIEW (went through QA/Docs)
-        2. PM's own task: task can be IN_PROGRESS if assigned to the completing PM
+        Approval hierarchy:
+        1. Cell PM reviews → reassigns to Main PM (same awaiting_pm_review state)
+        2. Main PM reviews leaf task → completes
+        3. Main PM reviews parent task (all descendants terminal) → escalates to CEO
 
         PM Override for cancelled subtasks:
         Use force_with_cancelled=True with justification to complete despite
@@ -1930,6 +1939,20 @@ class TaskService(BaseService):
         task = await self.get(task_id)
         if not task:
             return None
+
+        # Get the completing agent's role
+        completing_agent_role = None
+        if agent_id:
+            agent_result = await self.session.execute(
+                select(AgentTable).where(AgentTable.id == agent_id)
+            )
+            completing_agent = agent_result.scalar_one_or_none()
+            if completing_agent and completing_agent.role:
+                completing_agent_role = (
+                    completing_agent.role.value
+                    if hasattr(completing_agent.role, "value")
+                    else str(completing_agent.role)
+                )
 
         # Check if PM is completing their own task (assigned to them)
         is_own_task = agent_id and task.assigned_to == agent_id
@@ -1967,6 +1990,50 @@ class TaskService(BaseService):
                 incomplete_ids=[str(st.id) for st in incomplete_descendants[:5]],
             )
             return None
+
+        # APPROVAL HIERARCHY: Cell PM → Main PM → CEO
+        if task.status == TaskStatus.AWAITING_PM_REVIEW:
+            # Cell PM reviewed - escalate to Main PM
+            if completing_agent_role == "cell_pm":
+                main_pm_result = await self.session.execute(
+                    select(AgentTable).where(AgentTable.role == AgentRole.MAIN_PM)
+                )
+                main_pm = main_pm_result.scalar_one_or_none()
+                if main_pm:
+                    task.assigned_to = cast("Any", main_pm.id)
+                    await self.session.flush()
+
+                    # Emit event for Main PM notification
+                    await self._emit_task_event(
+                        EventType.TASK_ESCALATED_TO_MAIN_PM,
+                        task_id,
+                        {
+                            "main_pm_id": str(main_pm.id),
+                            "cell_pm_id": str(agent_id) if agent_id else None,
+                        },
+                    )
+
+                    self.log.info(
+                        "Cell PM approved - escalating to Main PM",
+                        task_id=str(task_id),
+                        main_pm_id=str(main_pm.id),
+                    )
+                    return task  # Return without completing - Main PM needs to review
+                else:
+                    self.log.warning(
+                        "No Main PM found - proceeding with completion",
+                        task_id=str(task_id),
+                    )
+
+            # Main PM reviewed - check if parent task needs CEO approval
+            if completing_agent_role == "main_pm" and all_descendants:
+                # Parent task with descendants - needs CEO approval
+                self.log.info(
+                    "Main PM approved parent task - escalating to CEO",
+                    task_id=str(task_id),
+                    descendant_count=len(all_descendants),
+                )
+                return await self.escalate_to_ceo(task_id, "main_pm")
 
         # Check for cancelled descendants (only matters if force override requested)
         cancelled_descendants = [
@@ -2015,7 +2082,7 @@ class TaskService(BaseService):
         if task.commits:
             code_task = asyncio.create_task(
                 self._index_code_changes_background(
-                    task.id,
+                    require_uuid(task.id),
                     task.commits,
                     task.team.value if task.team else "default",
                 )
@@ -2027,7 +2094,11 @@ class TaskService(BaseService):
         if task.dev_notes:
             decision_task = asyncio.create_task(
                 self._index_decisions_background(
-                    task.id, task.title, task.team, task.dev_notes, task.assigned_to
+                    require_uuid(task.id),
+                    task.title,
+                    task.team,
+                    task.dev_notes,
+                    to_python_uuid(task.assigned_to),
                 )
             )
             self._background_tasks.add(decision_task)
@@ -2446,13 +2517,17 @@ class TaskService(BaseService):
         status: TaskStatus | None = None,
         limit: int = 100,
     ) -> list[TaskTable]:
-        """List tasks for a specific team."""
+        """List tasks for a team, ordered by priority, sequence, created_at."""
         query = select(TaskTable).where(TaskTable.team == team)
 
         if status:
             query = query.where(TaskTable.status == status)
 
-        query = query.order_by(TaskTable.priority, TaskTable.created_at.desc())
+        query = query.order_by(
+            TaskTable.priority,
+            TaskTable.sequence,
+            TaskTable.created_at,
+        )
         query = query.limit(limit)
 
         result = await self.session.execute(query)
@@ -2513,20 +2588,61 @@ class TaskService(BaseService):
         status: TaskStatus,
         team: Team | None = None,
     ) -> list[TaskTable]:
-        """List tasks with a specific status."""
+        """List tasks by status, ordered by priority, sequence, created_at."""
         query = select(TaskTable).where(TaskTable.status == status)
 
         if team:
             query = query.where(TaskTable.team == team)
 
-        query = query.order_by(TaskTable.priority, TaskTable.created_at.desc())
+        # Order by priority first, then sequence (for sibling order), then created_at
+        query = query.order_by(
+            TaskTable.priority,
+            TaskTable.sequence,
+            TaskTable.created_at,
+        )
 
         result = await self.session.execute(query)
         return list(result.scalars().all())
 
-    async def list_pending(self, team: Team | None = None) -> list[TaskTable]:
-        """List pending tasks (available to claim)."""
-        return await self.list_by_status(TaskStatus.PENDING, team)
+    async def list_pending(
+        self,
+        team: Team | None = None,
+        filter_by_dependencies: bool = True,
+    ) -> list[TaskTable]:
+        """
+        List pending tasks (available to claim).
+
+        Args:
+            team: Filter by team
+            filter_by_dependencies: If True, exclude tasks with incomplete dependencies
+
+        Returns:
+            List of pending tasks, ordered by priority, sequence, then created_at
+        """
+        tasks = await self.list_by_status(TaskStatus.PENDING, team)
+
+        if not filter_by_dependencies:
+            return tasks
+
+        # Filter out tasks whose dependencies aren't complete
+        available_tasks = []
+        for task in tasks:
+            if not task.dependency_ids:
+                available_tasks.append(task)
+                continue
+
+            # Check if all dependencies are complete
+            deps_result = await self.session.execute(
+                select(TaskTable.status).where(TaskTable.id.in_(task.dependency_ids))
+            )
+            dep_statuses = deps_result.scalars().all()
+
+            # All dependencies must be COMPLETED or CANCELLED
+            terminal_statuses = {TaskStatus.COMPLETED, TaskStatus.CANCELLED}
+            if all(s in terminal_statuses for s in dep_statuses):
+                available_tasks.append(task)
+
+        return available_tasks
 
     async def list_blocked(self, team: Team | None = None) -> list[TaskTable]:
         """List blocked tasks."""
@@ -2660,7 +2776,7 @@ async def resolve_pm_for_substitute(
         select(AgentTable).where(AgentTable.slug == target_pm_slug)
     )
     pm_agent = pm_result.scalar_one_or_none()
-    return target_pm_slug, pm_agent.id if pm_agent else None
+    return target_pm_slug, to_python_uuid(pm_agent.id) if pm_agent else None
 
 
 async def notify_pm_for_substitute(
@@ -2703,7 +2819,7 @@ async def notify_pm_for_substitute(
     await db.flush()
 
     delivery_service = get_notification_delivery_service(db)
-    await delivery_service.deliver(notification.id)
+    await delivery_service.deliver(require_uuid(notification.id))
 
 
 # =============================================================================

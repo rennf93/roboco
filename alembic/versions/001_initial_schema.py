@@ -323,6 +323,8 @@ def upgrade() -> None:
             postgresql.ARRAY(postgresql.UUID(as_uuid=True)),
             server_default="{}",
         ),
+        # Ordering for sibling tasks (lower = first)
+        sa.Column("sequence", sa.Integer(), nullable=False, server_default="0"),
         sa.Column(
             "created_at", sa.DateTime(), nullable=False, server_default=sa.func.now()
         ),

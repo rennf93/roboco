@@ -634,10 +634,22 @@ def _register_pm_tools(mcp: FastMCP, client: ApiClient, agent_id: str) -> None:
         - Only PMs and management can create tasks
         - Cell PMs can only create tasks for their own team
 
+        ORDERING SUBTASKS:
+        When creating multiple subtasks, use sequence and dependency_ids:
+        - sequence: Lower numbers execute first (1, 2, 3...)
+        - dependency_ids: Task IDs that must complete first
+
+        Example for 3 ordered subtasks:
+        1. "Fix bug" (sequence=1, no deps)
+        2. "Add feature" (sequence=2, depends on #1)
+        3. "Write tests" (sequence=3, depends on #1 and #2)
+
         Args:
-            data: TaskCreateInput with title, description, acceptance_criteria,
-                  team, and optional parent_task_id, assigned_to, priority, status.
-                  Use status="backlog" for subtasks needing session setup.
+            data: TaskCreateInput with:
+                - title, description, acceptance_criteria, team (required)
+                - parent_task_id, assigned_to, priority, status (optional)
+                - sequence: Order within siblings (0 = default)
+                - dependency_ids: Task IDs that must complete first
 
         Returns:
             Created task with next step guidance

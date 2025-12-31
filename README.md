@@ -90,8 +90,8 @@ ROBOCO_WORKSPACES_ROOT=/data/workspaces
 ROBOCO_WORKSPACE_AUTO_CLONE=true
 
 # RAG/LLM
-ROBOCO_LOCAL_LLM_BASE_URL=http://localhost:11434/v1
-ROBOCO_LOCAL_LLM_MODEL=qwen3:8b
+ROBOCO_LOCAL_LLM_BASE_URL=http://roboco-ollama:11434/v1
+ROBOCO_LOCAL_LLM_MODEL=gemma3:4b
 ```
 
 ## Multi-Agent Workspace Structure
@@ -176,8 +176,8 @@ uv run mypy roboco/
 | Vector Store | pgvector (via piragi) |
 | Cache/Queue | Redis |
 | RAG Library | piragi |
-| Embeddings | BAAI/bge-base-en-v1.5 (sentence-transformers) |
-| Local LLM | Ollama (qwen3:8b) |
+| Embeddings | embeddinggemma:300m (sentence-transformers) |
+| Local LLM | Ollama (gemma3:4b) |
 | Cloud LLM | Claude API (Anthropic) |
 | Package Manager | uv |
 

@@ -34,6 +34,7 @@ class EventType(str, Enum):
     TASK_QA_PASSED = "task.qa_passed"
     TASK_QA_FAILED = "task.qa_failed"
     TASK_AWAITING_DOCS = "task.awaiting_docs"
+    TASK_ESCALATED_TO_MAIN_PM = "task.escalated_to_main_pm"  # Cell PM → Main PM
     TASK_AWAITING_CEO_APPROVAL = "task.awaiting_ceo_approval"  # Escalated to CEO
     TASK_CEO_APPROVED = "task.ceo_approved"  # CEO approved
     TASK_CEO_REJECTED = "task.ceo_rejected"  # CEO rejected, needs revision
@@ -158,7 +159,15 @@ class OrchestratorAccessProtocol(Protocol):
 
     def get_waiting_agents(self) -> dict[str, "WaitingRecord"]: ...
 
+    def get_running_agents(self) -> set[str]: ...
+
     async def resolve_wait(self, agent_id: str, resolution: dict[str, Any]) -> Any: ...
+
+    async def spawn_agent(
+        self,
+        agent_id: str,
+        initial_prompt: str | None = None,
+    ) -> Any: ...
 
 
 # =============================================================================

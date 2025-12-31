@@ -145,12 +145,18 @@ async def validate_task_claimable(
         "qa": ["pending", "awaiting_qa"],
         # Documenters: pending (direct docs tasks) or awaiting_documentation (workflow)
         "documenter": ["pending", "awaiting_documentation"],
+        # Developers: pending or needs_revision (after QA/CEO rejection)
+        "developer": ["pending", "needs_revision"],
+        # PMs: pending or awaiting_pm_review
+        "cell_pm": ["pending", "awaiting_pm_review"],
+        "main_pm": ["pending", "awaiting_pm_review"],
     }
-    allowed = claimable_statuses.get(agent_role, ["pending"])
+    # Default for unlisted roles is pending + needs_revision (developer-like behavior)
+    allowed = claimable_statuses.get(agent_role, ["pending", "needs_revision"])
 
-    # Special case: agent can claim pending tasks already assigned to them
-    # This handles PM directly assigning tasks to QA/docs agents
-    if task_status == "pending":
+    # Special case: agent can claim tasks already assigned to them
+    # This handles PM directly assigning tasks or needs_revision tasks
+    if task_status in ("pending", "needs_revision"):
         assigned_to = task.get("assigned_to")
         if assigned_to:
             agent_uuid = await resolve_agent_uuid_cached(agent_id, client)

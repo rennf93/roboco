@@ -28,6 +28,7 @@ from roboco.enforcement import (
     validate_notification_permission,
 )
 from roboco.services.notification_delivery import get_notification_delivery_service
+from roboco.utils.converters import require_uuid
 
 router = APIRouter()
 
@@ -161,7 +162,7 @@ async def send_notification(
 
     # Deliver notification via Redis Streams for real-time push
     delivery_service = get_notification_delivery_service(db)
-    await delivery_service.deliver(notification.id)
+    await delivery_service.deliver(require_uuid(notification.id))
 
     return notification_to_response(notification, agent_id)
 

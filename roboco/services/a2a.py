@@ -7,7 +7,7 @@ Provides business logic for A2A protocol operations including:
 - Message handling and routing
 """
 
-from typing import Any
+from typing import Any, cast
 from uuid import UUID
 
 import structlog
@@ -517,7 +517,7 @@ class A2AService:
         # Check for explicit target
         target = metadata.get("target_agent")
         if target and target in ALL_AGENTS:
-            return target
+            return cast("str", target)
 
         # Check for skill-based routing
         skill = metadata.get("skill")
@@ -549,7 +549,7 @@ class A2AService:
             return
 
         # Assign task to target agent
-        task.assigned_to = UUID(target_uuid)
+        task.assigned_to = cast("Any", UUID(target_uuid))
         await self.session.flush()
 
         # Publish A2A request event for routing

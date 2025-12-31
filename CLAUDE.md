@@ -70,8 +70,8 @@ pnpm test
 | Cache/Queue | Redis |
 | Container Runtime | Docker + Docker Compose |
 | Cloud LLM | Claude API (claude-opus-4-5-20251101) |
-| Local LLM | Ollama (qwen3:8b for HyDE/RAG) |
-| Embeddings | BAAI/bge-base-en-v1.5 (768 dim) |
+| Local LLM | Ollama (gemma3:4b for HyDE/RAG) |
+| Embeddings | embeddinggemma:300m (768 dim) |
 | Frontend | React / Next.js (future) |
 
 ## Multi-Agent Workspace Structure
@@ -327,10 +327,66 @@ ROBOCO_RAG_USE_HYBRID_SEARCH=true
 
 # AI/LLM
 ROBOCO_DEFAULT_LLM_MODEL=claude-opus-4-5-20251101
-ROBOCO_DEFAULT_EMBEDDING_MODEL=BAAI/bge-base-en-v1.5
-ROBOCO_LOCAL_LLM_MODEL=qwen3:8b
-ROBOCO_LOCAL_LLM_BASE_URL=http://192.168.50.111:11434/v1
+ROBOCO_DEFAULT_EMBEDDING_MODEL=embeddinggemma:300m
+ROBOCO_LOCAL_LLM_MODEL=gemma3:4b
+ROBOCO_LOCAL_LLM_BASE_URL=http://roboco-ollama:11434/v1
+ROBOCO_OLLAMA_BASE_URL=http://roboco-ollama:11434
 ```
+
+## Docker Deployment
+
+### Container Architecture
+
+The system runs as Docker Compose services:
+
+| Service | Purpose | Healthcheck |
+|---------|---------|-------------|
+| `postgres` | PostgreSQL + pgvector | `pg_isready` |
+| `redis` | Cache, sessions, event bus | `redis-cli ping` |
+| `ollama` | Local LLM + embeddings | `ollama list` |
+| `ollama-init` | Pulls models on startup | One-shot |
+| `orchestrator` | API + agent spawner | Depends on all above |
+
+### Startup Sequence
+
+The startup order is critical due to dependencies:
+
+```
+postgres ──┐
+redis ─────┼──> ollama ──> ollama-init ──> orchestrator
+           │        │            │
+           │        │            └── Pulls embeddinggemma:300m, gemma3:4b
+           │        └── Healthcheck: ollama list
+           └── Healthcheck: pg_isready, redis-cli ping
+```
+
+**Important timing notes:**
+1. `ollama-init` pulls models (~30s for embedding model, ~2min for LLM)
+2. Orchestrator waits for models before starting
+3. FastAPI lifespan indexes documents using Ollama (~30-60s)
+4. Orchestrator polls `/health` until API is ready before starting dispatcher
+
+### Ollama Configuration
+
+Ollama provides two APIs:
+- `/v1/*` - OpenAI-compatible API (for LLM chat/completion)
+- `/api/*` - Native Ollama API (for embeddings, model management)
+
+The embedder uses `/api/embed` endpoint with the `embeddinggemma:300m` model.
+
+**Environment variables for Docker:**
+```bash
+ROBOCO_LOCAL_LLM_BASE_URL=http://roboco-ollama:11434/v1    # OpenAI-compat
+ROBOCO_OLLAMA_BASE_URL=http://roboco-ollama:11434          # Native API
+```
+
+### Common Issues
+
+| Symptom | Cause | Fix |
+|---------|-------|-----|
+| `404 /api/embed` | Model not pulled | Check `docker logs roboco-ollama-init` |
+| `All connection attempts failed` | API not ready | Orchestrator starts before FastAPI lifespan completes |
+| Healthcheck failing | Wrong endpoint | Use `ollama list` not `curl` |
 
 ## Blueprint Reference
 

@@ -49,7 +49,7 @@ class ProjectResponse(BaseModel):
     created_by: UUID
     is_active: bool
     created_at: datetime
-    updated_at: datetime
+    updated_at: datetime | None = None
 
     class Config:
         """Pydantic config."""

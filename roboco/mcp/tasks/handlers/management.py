@@ -258,9 +258,12 @@ def _build_task_payload(input_data: TaskCreateInput) -> dict[str, Any]:
         "priority": input_data.priority,
         "estimated_complexity": input_data.complexity,
         "status": input_data.status,  # Always included, defaults to "backlog"
+        "sequence": input_data.sequence,  # Task ordering (lower = first)
     }
     if input_data.parent_task_id:
         payload["parent_task_id"] = input_data.parent_task_id
+    if input_data.dependency_ids:
+        payload["dependency_ids"] = input_data.dependency_ids
     return payload
 
 

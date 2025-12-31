@@ -12,6 +12,7 @@ from roboco.db.base import get_db_context
 from roboco.db.tables import NotificationTable
 from roboco.models import NotificationPriority, NotificationType
 from roboco.models.notification import CreateNotificationParams
+from roboco.utils.converters import require_uuid
 
 logger = structlog.get_logger()
 
@@ -191,7 +192,7 @@ class NotificationService:
             )
 
             delivery_service = get_notification_delivery_service(db)
-            await delivery_service.deliver(notification.id)
+            await delivery_service.deliver(require_uuid(notification.id))
 
             await db.commit()
 

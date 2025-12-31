@@ -279,6 +279,15 @@ class TaskCreate(RobocoBase):
     estimated_complexity: Complexity = Complexity.MEDIUM
     status: TaskStatus | None = None  # PM can set 'backlog' for subtasks needing setup
 
+    # Ordering and dependencies
+    sequence: int = Field(
+        default=0, description="Order within siblings (lower = first)"
+    )
+    dependency_ids: list[UUID] = Field(
+        default_factory=list,
+        description="Task IDs that must complete before this task can be claimed",
+    )
+
     # Git configuration
     task_type: TaskType = TaskType.CODE
     requires_git: bool = True
@@ -332,6 +341,10 @@ class TaskCreateRequest:
     target_date: datetime | None = None
     estimated_complexity: Complexity = field(default=Complexity.MEDIUM)
     status: TaskStatus | None = None  # PM can set BACKLOG for subtasks
+
+    # Ordering and dependencies
+    sequence: int = 0  # Order within siblings (lower = first)
+    dependency_ids: list[UUID] = field(default_factory=list)
 
     # Git configuration
     task_type: TaskType = field(default=TaskType.CODE)

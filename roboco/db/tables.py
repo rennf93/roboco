@@ -187,6 +187,11 @@ class TaskTable(Base):
         ARRAY(UUID(as_uuid=True)), default=list
     )
 
+    # Ordering (for sibling tasks under the same parent)
+    sequence: Mapped[int] = mapped_column(
+        Integer, default=0, nullable=False, index=True
+    )
+
     # Timestamps
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=lambda: datetime.now(UTC), nullable=False

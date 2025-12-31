@@ -73,12 +73,15 @@ class IndexConversationParams:
 
 @dataclass
 class IndexJournalEntryParams:
-    """Parameters for indexing a journal entry."""
+    """Parameters for indexing a journal entry.
 
-    entry_id: UUID
-    agent_id: UUID
+    Note: entry_id and agent_id can be None for system events (e.g., lifecycle events).
+    """
+
     content: str
     entry_type: str
+    entry_id: UUID | None = None
+    agent_id: UUID | None = None
     task_id: UUID | None = None
     tags: list[str] | None = None
 
@@ -171,6 +174,7 @@ class IndexStandardParams:
     title: str
     content: str
     language: str | None = None
+    scope: str | None = None
     severity: str = "recommended"
     tags: list[str] | None = None
     source_file: str | None = None

@@ -51,6 +51,7 @@ from roboco.api.schemas.git import (
 from roboco.config import settings
 from roboco.services.project import get_project_service
 from roboco.services.workspace import WorkspaceError, get_workspace_service
+from roboco.utils.converters import require_uuid
 
 router = APIRouter()
 
@@ -433,16 +434,18 @@ async def create_commit(
         task_service = get_task_service(db)
         await task_service.add_commit(
             task_id=task_uuid,
-            commit_hash=commit_hash,
+            hash=commit_hash,
             message=data.message,  # Store original message without prefix
-            author_id=agent.agent_id,
+            agent_id=agent.agent_id,
         )
 
         # If task has a work session, add commit there too
         task = await task_service.get(task_uuid)
         if task and task.work_session_id:
             work_session_service = get_work_session_service(db)
-            await work_session_service.add_commit(task.work_session_id, commit_hash)
+            await work_session_service.add_commit(
+                require_uuid(task.work_session_id), commit_hash
+            )
 
         await db.commit()
     except Exception:

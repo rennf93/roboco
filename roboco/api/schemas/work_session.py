@@ -54,7 +54,7 @@ class WorkSessionResponse(BaseModel):
 
     # Timestamps
     created_at: datetime
-    updated_at: datetime
+    updated_at: datetime | None = None
 
     class Config:
         """Pydantic config."""
