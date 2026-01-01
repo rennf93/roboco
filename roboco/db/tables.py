@@ -38,6 +38,7 @@ from roboco.models.base import (
     NotificationPriority,
     NotificationType,
     SessionStatus,
+    TaskNature,
     TaskStatus,
     TaskType,
     Team,
@@ -136,6 +137,9 @@ class TaskTable(Base):
     # Task Type & Git Configuration
     task_type: Mapped[TaskType] = mapped_column(
         Enum(TaskType), nullable=False, default=TaskType.CODE
+    )
+    nature: Mapped[TaskNature] = mapped_column(
+        Enum(TaskNature), nullable=False, default=TaskNature.TECHNICAL
     )
     requires_git: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
 

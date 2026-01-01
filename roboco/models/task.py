@@ -15,6 +15,7 @@ from pydantic import Field
 from roboco.models.base import (
     Complexity,
     RobocoBase,
+    TaskNature,
     TaskStatus,
     TaskType,
     Team,
@@ -158,6 +159,9 @@ class Task(TimestampMixin):
     task_type: TaskType = Field(
         default=TaskType.CODE, description="Type of task (code, research, etc.)"
     )
+    nature: TaskNature = Field(
+        default=TaskNature.TECHNICAL, description="Technical or non-technical work"
+    )
     requires_git: bool = Field(
         default=True, description="Whether this task requires git workflow"
     )
@@ -290,6 +294,7 @@ class TaskCreate(RobocoBase):
 
     # Git configuration
     task_type: TaskType = TaskType.CODE
+    nature: TaskNature = TaskNature.TECHNICAL
     requires_git: bool = True
     project_id: UUID | None = None
 
@@ -311,6 +316,7 @@ class TaskUpdate(RobocoBase):
 
     # Git fields
     task_type: TaskType | None = None
+    nature: TaskNature | None = None
     requires_git: bool | None = None
     project_id: UUID | None = None
     branch_name: str | None = None
@@ -348,5 +354,6 @@ class TaskCreateRequest:
 
     # Git configuration
     task_type: TaskType = field(default=TaskType.CODE)
+    nature: TaskNature = field(default=TaskNature.TECHNICAL)
     requires_git: bool = True
     project_id: UUID | None = None

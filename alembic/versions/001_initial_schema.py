@@ -259,6 +259,12 @@ def upgrade() -> None:
         ),
         sa.Column("requires_git", sa.Boolean(), nullable=False, server_default="true"),
         sa.Column(
+            "nature",
+            sa.Enum("technical", "non_technical", name="tasknature"),
+            nullable=False,
+            server_default="technical",
+        ),
+        sa.Column(
             "project_id",
             postgresql.UUID(as_uuid=True),
             sa.ForeignKey("projects.id", ondelete="SET NULL"),
@@ -941,6 +947,7 @@ def downgrade() -> None:
     # Drop enums
     op.execute("DROP TYPE IF EXISTS worksessionstatus")
     op.execute("DROP TYPE IF EXISTS tasktype")
+    op.execute("DROP TYPE IF EXISTS tasknature")
     op.execute("DROP TYPE IF EXISTS handoffstatus")
     op.execute("DROP TYPE IF EXISTS journalentrytype")
     op.execute("DROP TYPE IF EXISTS notificationpriority")

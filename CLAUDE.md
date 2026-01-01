@@ -25,8 +25,8 @@ CEO (Renzo - Human)
 
 ### Hardware Infrastructure
 
-- **Olares One (Powerhouse)**: Intel Ultra 9 + RTX 5090, runs Claude Code instances and AI inference
-- **UGREEN NAS (Warehouse)**: 36TB RAID6, hosts PostgreSQL, Redis
+- **Olares One (Powerhouse)**: Intel Ultra 9 + RTX 5090, runs Claude Code instances and AI inference - NOT YET ARRIVED
+- **UGREEN NAS (Warehouse)**: 36TB RAID6, 128GB RAM, hosts PostgreSQL, Redis
 - **Pi Cluster (Operations)**: Monitoring, notifications, smart home
 
 ## Development Standards
@@ -326,7 +326,6 @@ ROBOCO_RAG_USE_HYDE=true
 ROBOCO_RAG_USE_HYBRID_SEARCH=true
 
 # AI/LLM
-ROBOCO_DEFAULT_LLM_MODEL=claude-opus-4-5-20251101
 ROBOCO_DEFAULT_EMBEDDING_MODEL=embeddinggemma:300m
 ROBOCO_LOCAL_LLM_MODEL=gemma3:4b
 ROBOCO_LOCAL_LLM_BASE_URL=http://roboco-ollama:11434/v1

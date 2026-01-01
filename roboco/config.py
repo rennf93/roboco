@@ -165,24 +165,27 @@ class Settings(BaseSettings):
     openai_api_key: str | None = None  # For embeddings
 
     # Default models
-    default_llm_model: str = "claude-opus-4-5-20251101"
     default_embedding_model: str = Field(
-        default="BAAI/bge-base-en-v1.5",
-        description="Embedding model",
+        default="embeddinggemma:300m",
+        description="Embedding model (Ollama model name)",
     )
     embedding_dimensions: int = Field(
         default=768,
-        description="Embedding dimensions (768 for BGE-base)",
+        description="Embedding dimensions (768 for embeddinggemma/BGE-base)",
     )
 
     # Local LLM for RAG (HyDE, reranking, etc.)
     local_llm_model: str = Field(
-        default="qwen3:8b",
-        description="Local LLM model for HyDE and RAG operations",
+        default="gemma3:4b",
+        description="Local LLM for HyDE/RAG (non-thinking models are faster)",
     )
     local_llm_base_url: str = Field(
-        default="http://192.168.50.111:11434/v1",
-        description="Base URL for local LLM (Ollama)",
+        default="http://roboco-ollama:11434/v1",
+        description="Base URL for local LLM (Ollama OpenAI-compat API)",
+    )
+    ollama_base_url: str = Field(
+        default="http://roboco-ollama:11434",
+        description="Base URL for Ollama native API (embeddings, model mgmt)",
     )
 
     # ==========================================================================

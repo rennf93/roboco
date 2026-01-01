@@ -11,8 +11,10 @@ import uuid
 from datetime import UTC, datetime
 from typing import Any, cast
 
+import httpx
 import structlog
 
+from roboco.config import settings
 from roboco.models.optimal import (
     IndexType,
     MentorConversation,
@@ -295,15 +297,23 @@ class MentorService:
 
     async def _synthesize_answer(
         self,
-        _question: str,
+        question: str,
         sources: list[SearchResult],
-        _conversation_context: str,
+        conversation_context: str,
     ) -> str:
         """
-        Synthesize an answer from search results.
+        Synthesize an answer from search results using an LLM.
 
-        For now, this uses a simple template. In production, this would
-        use an LLM to generate a coherent answer.
+        Uses the local Ollama LLM to generate a coherent answer based on
+        the retrieved context from the knowledge base.
+
+        Args:
+            question: The user's question
+            sources: Retrieved search results from the knowledge base
+            conversation_context: Previous conversation turns for context
+
+        Returns:
+            LLM-generated answer synthesized from the sources
         """
         if not sources:
             return (
@@ -311,48 +321,108 @@ class MentorService:
                 "Try rephrasing your question or asking about a different topic."
             )
 
-        # Build answer from top sources
-        answer_parts = []
-
-        # Group sources by type
+        # Build context from sources, grouped by type for clarity
+        context_parts = []
         by_type: dict[IndexType, list[SearchResult]] = {}
-        for source in sources[:5]:
+        for source in sources[:10]:  # Use top 10 sources
             if source.index_type not in by_type:
                 by_type[source.index_type] = []
             by_type[source.index_type].append(source)
 
-        # Standards first
-        if IndexType.STANDARDS in by_type:
-            answer_parts.append("**Standards & Guidelines:**")
-            for s in by_type[IndexType.STANDARDS][:2]:
-                answer_parts.append(f"- {s.content[:200]}...")
+        # Format each source type
+        type_labels = {
+            IndexType.STANDARDS: "Standards & Guidelines",
+            IndexType.DECISIONS: "Past Decisions",
+            IndexType.LEARNINGS: "Team Learnings",
+            IndexType.JOURNALS: "Agent Journals",
+            IndexType.CODE: "Code References",
+            IndexType.REVIEWS: "Code Reviews",
+            IndexType.DOCUMENTATION: "Documentation",
+            IndexType.ERRORS: "Error Patterns",
+            IndexType.CONVERSATIONS: "Conversations",
+        }
 
-        # Decisions
-        if IndexType.DECISIONS in by_type:
-            answer_parts.append("\n**Past Decisions:**")
-            for s in by_type[IndexType.DECISIONS][:2]:
-                answer_parts.append(f"- {s.content[:200]}...")
+        for index_type, results in by_type.items():
+            label = type_labels.get(index_type, index_type.value)
+            context_parts.append(f"## {label}")
+            for r in results[:3]:  # Max 3 per type
+                # Include source reference and content
+                context_parts.append(f"[Source: {r.source}]")
+                context_parts.append(r.content)
+                context_parts.append("")  # Blank line separator
 
-        # Learnings
-        if IndexType.LEARNINGS in by_type or IndexType.JOURNALS in by_type:
-            answer_parts.append("\n**Team Learnings:**")
-            learnings = by_type.get(IndexType.LEARNINGS, []) + by_type.get(
-                IndexType.JOURNALS, []
+        context = "\n".join(context_parts)
+
+        # Build the prompt
+        system_prompt = (
+            "You are a knowledgeable mentor for a software development team. "
+            "Answer questions based on the provided context from the knowledge base. "
+            "Be concise but thorough. If the context doesn't fully answer the "
+            "question, say so and provide what information you can. "
+            "Reference specific sources when relevant."
+        )
+
+        user_prompt_parts = []
+
+        if conversation_context:
+            user_prompt_parts.append(
+                f"Previous conversation:\n{conversation_context}\n"
             )
-            for s in learnings[:2]:
-                answer_parts.append(f"- {s.content[:200]}...")
 
-        # Code patterns
-        if IndexType.CODE in by_type:
-            answer_parts.append("\n**Code References:**")
-            for s in by_type[IndexType.CODE][:2]:
-                answer_parts.append(f"- See: {s.source}")
+        user_prompt_parts.append(f"Knowledge base context:\n{context}\n")
+        user_prompt_parts.append(f"Question: {question}")
 
-        if not answer_parts:
-            first_content = sources[0].content[:500]
-            return f"Based on my search, here's what I found:\n\n{first_content}"
+        user_prompt = "\n".join(user_prompt_parts)
 
-        return "\n".join(answer_parts)
+        # Call LLM via Ollama OpenAI-compatible API
+        try:
+            async with httpx.AsyncClient(timeout=60.0) as client:
+                response = await client.post(
+                    f"{settings.local_llm_base_url}/chat/completions",
+                    json={
+                        "model": settings.local_llm_model,
+                        "messages": [
+                            {"role": "system", "content": system_prompt},
+                            {"role": "user", "content": user_prompt},
+                        ],
+                        "max_tokens": 1024,
+                        "temperature": 0.7,
+                    },
+                )
+
+                if response.is_success:
+                    data = response.json()
+                    answer: str = data["choices"][0]["message"]["content"]
+                    return answer
+                else:
+                    logger.warning(
+                        "LLM call failed in mentor",
+                        status=response.status_code,
+                        error=response.text[:200],
+                    )
+                    # Fall back to simple extraction
+                    return self._fallback_answer(sources)
+
+        except httpx.TimeoutException:
+            logger.warning("LLM call timed out in mentor")
+            return self._fallback_answer(sources)
+        except Exception as e:
+            logger.warning("LLM call failed in mentor", error=str(e))
+            return self._fallback_answer(sources)
+
+    def _fallback_answer(self, sources: list[SearchResult]) -> str:
+        """Generate a fallback answer when LLM is unavailable."""
+        if not sources:
+            return "Unable to generate an answer at this time."
+
+        # Simple extraction of top content
+        parts = ["Based on the knowledge base, here's what I found:\n"]
+        for source in sources[:3]:
+            parts.append(f"**From {source.index_type.value}:**")
+            parts.append(source.content[:300])
+            parts.append("")
+
+        return "\n".join(parts)
 
     async def get_conversation_history(
         self, conversation_id: str

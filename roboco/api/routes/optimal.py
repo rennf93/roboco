@@ -309,6 +309,18 @@ async def rag_query(
             status_code=status.HTTP_504_GATEWAY_TIMEOUT,
             detail=f"RAG query timed out after {rag_timeout}s",
         ) from e
+    except RuntimeError as e:
+        # Service not initialized or other runtime errors
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=f"RAG service error: {e}",
+        ) from e
+    except Exception as e:
+        # Catch-all for unexpected errors
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"RAG query failed: {e}",
+        ) from e
 
     return RAGQueryResponse(
         answer=response.answer,
@@ -448,6 +460,26 @@ async def get_single_index_stats(
     )
 
 
+@router.get("/stats/staleness")
+async def check_staleness(
+    agent: CurrentAgentContext,
+    permissions: PermissionServiceDep,
+) -> dict[str, Any]:
+    """
+    Check if indexes are stale (source files modified after last indexing).
+
+    Returns staleness info for file-based indexes (CODE, DOCUMENTATION).
+    """
+    if not permissions.can_perform_kb_action(agent, KBAction.VIEW_STATS):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Not authorized to view index staleness",
+        )
+
+    service = await get_optimal_service()
+    return await service.check_index_staleness()
+
+
 @router.get("/health", response_model=RAGHealthResponse)
 async def rag_health_check() -> RAGHealthResponse:
     """
@@ -481,7 +513,13 @@ async def rag_health_check() -> RAGHealthResponse:
     try:
         async with asyncio.timeout(health_timeout):
             embedder = await get_shared_embedder(model=settings.default_embedding_model)
-            test_embedding = embedder.embed_query("health check")
+            # Use async method if available (OllamaEmbedder), else run sync in thread
+            if hasattr(embedder, "aembed_query"):
+                test_embedding = await embedder.aembed_query("health check")
+            else:
+                test_embedding = await asyncio.to_thread(
+                    embedder.embed_query, "health check"
+                )
             if test_embedding and len(test_embedding) == settings.embedding_dimensions:
                 embedding_ok = True
                 details["embedding_model"] = settings.default_embedding_model
@@ -673,6 +711,7 @@ async def reindex_all(
     agent: CurrentAgentContext,
     permissions: PermissionServiceDep,
     force: bool = False,
+    timeout_seconds: int = 300,  # 5 minute default
 ) -> dict[str, Any]:
     """
     Trigger re-indexing of code and documentation.
@@ -683,19 +722,31 @@ async def reindex_all(
 
     Args:
         force: If True, reindex even if indexes aren't empty
+        timeout_seconds: Maximum time to wait for reindexing (default: 300s)
 
     Returns:
-        Count of indexed code files and documentation files
+        Detailed indexing report with success/failure counts
     """
+    import asyncio
+
     if not permissions.can_perform_kb_action(agent, KBAction.INDEX_CODE):
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Not authorized to trigger reindexing",
         )
 
-    service = await get_optimal_service()
-    result = await service.auto_index_on_startup(force=force)
-    return {"status": "reindexed", **result}
+    try:
+        async with asyncio.timeout(timeout_seconds):
+            service = await get_optimal_service()
+            # Call the private method that returns the report
+            report = await service._auto_index_on_startup(force=force)
+            return {"status": "reindexed", **report.to_dict()}
+    except TimeoutError as e:
+        raise HTTPException(
+            status_code=status.HTTP_504_GATEWAY_TIMEOUT,
+            detail=f"Reindexing timed out after {timeout_seconds} seconds. "
+            "Try indexing smaller directories or increasing timeout.",
+        ) from e
 
 
 # =============================================================================

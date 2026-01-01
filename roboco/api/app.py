@@ -83,9 +83,11 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None]:
     app.state.transcription = _AppServices.transcription
     app.state.extraction = _AppServices.extraction
 
-    # Initialize Phase 3 services (RAG - optional, non-blocking)
-    # OptimalService.initialize() auto-indexes /docs/standards/ and /docs/workflows/
+    # Initialize OptimalService (RAG) - BLOCKS until fully ready
+    # This ensures /health only returns 200 when RAG is operational
+    # Typical initialization time: 30-90 seconds (embedding + indexing)
     try:
+        logger.info("Initializing OptimalService (RAG)...")
         optimal_service = await get_optimal_service()
         app.state.optimal = optimal_service
         logger.info("OptimalService (RAG) initialized successfully")
@@ -96,7 +98,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None]:
         )
         app.state.optimal = None
 
-    logger.info("All services initialized")
+    logger.info("All services initialized, API ready")
 
     yield
 

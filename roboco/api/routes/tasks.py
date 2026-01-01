@@ -105,6 +105,7 @@ async def create_task(
         assigned_to=data.assigned_to,
         target_date=data.target_date,
         estimated_complexity=data.estimated_complexity,
+        nature=data.nature,
         status=data.status,
         sequence=data.sequence,  # Task ordering within siblings
         dependency_ids=data.dependency_ids,  # Dependencies for claim filtering

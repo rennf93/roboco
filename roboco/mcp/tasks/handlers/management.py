@@ -257,6 +257,7 @@ def _build_task_payload(input_data: TaskCreateInput) -> dict[str, Any]:
         "team": input_data.team,
         "priority": input_data.priority,
         "estimated_complexity": input_data.complexity,
+        "nature": input_data.nature,
         "status": input_data.status,  # Always included, defaults to "backlog"
         "sequence": input_data.sequence,  # Task ordering (lower = first)
     }

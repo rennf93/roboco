@@ -47,6 +47,13 @@ class TaskType(str, Enum):
     ADMINISTRATIVE = "administrative"  # No git
 
 
+class TaskNature(str, Enum):
+    """Task nature classification - technical vs non-technical work."""
+
+    TECHNICAL = "technical"
+    NON_TECHNICAL = "non_technical"
+
+
 class Complexity(str, Enum):
     """Task complexity levels."""
 

@@ -26,6 +26,7 @@ from roboco.models.base import (
     SessionStatus,
     SubstituteReason,
     # Enums
+    TaskNature,
     TaskStatus,
     Team,
 )
@@ -143,6 +144,7 @@ __all__ = [
     "SubstituteReason",
     "Task",
     "TaskCreate",
+    "TaskNature",
     "TaskPlan",
     "TaskStatus",
     "TaskUpdate",

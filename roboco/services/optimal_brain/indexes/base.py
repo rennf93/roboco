@@ -12,7 +12,7 @@ from typing import Any, cast
 
 import structlog
 from piragi import AsyncRagi
-from piragi.types import Document
+from piragi.types import Citation, Document
 
 from roboco.config import settings
 from roboco.models.optimal import IndexType, SearchResult
@@ -32,9 +32,9 @@ class IndexConfig:
     use_hyde: bool = True
     use_hybrid_search: bool = True
     use_cross_encoder: bool = False
-    embedding_model: str = "BAAI/bge-base-en-v1.5"
-    llm_model: str = "llama3.2"
-    llm_base_url: str = "http://192.168.50.111:11434/v1"
+    embedding_model: str = "embeddinggemma:300m"
+    llm_model: str = "gemma3:4b"
+    llm_base_url: str = "http://roboco-ollama:11434/v1"
 
     @classmethod
     def from_settings(cls, index_type: IndexType) -> "IndexConfig":
@@ -183,6 +183,52 @@ class BaseIndexPlugin(ABC):
         config["embedding"]["api_key"] = "not-needed"
         return config
 
+    async def _validate_embedding_dimensions(self, embedder: Any) -> None:
+        """
+        Validate that embedder produces expected dimensions.
+
+        Catches dimension mismatches early (e.g., wrong model configured)
+        instead of failing silently during vector search.
+        """
+        import asyncio
+
+        from roboco.config import settings
+
+        expected_dim = settings.embedding_dimensions
+
+        try:
+            # Use async method if available
+            if hasattr(embedder, "aembed_query"):
+                test_embedding = await embedder.aembed_query("dimension test")
+            else:
+                test_embedding = await asyncio.to_thread(
+                    embedder.embed_query, "dimension test"
+                )
+
+            actual_dim = len(test_embedding)
+
+            if actual_dim != expected_dim:
+                raise RuntimeError(
+                    f"Embedding dimension mismatch for {self.index_type.value}: "
+                    f"model produces {actual_dim} dimensions, "
+                    f"but settings.embedding_dimensions={expected_dim}. "
+                    f"Update ROBOCO_EMBEDDING_DIMENSIONS or use correct model."
+                )
+
+            logger.debug(
+                "Embedding dimension validated",
+                index_type=self.index_type.value,
+                dimensions=actual_dim,
+            )
+        except RuntimeError:
+            raise
+        except Exception as e:
+            logger.warning(
+                "Could not validate embedding dimensions",
+                index_type=self.index_type.value,
+                error=str(e),
+            )
+
     async def initialize(self) -> None:
         """Initialize the index backend."""
         if self._initialized:
@@ -200,9 +246,11 @@ class BaseIndexPlugin(ABC):
             model=self.config.embedding_model,
         )
 
+        # Validate embedding dimensions match configuration
+        # This catches mismatches early instead of failing silently during search
+        await self._validate_embedding_dimensions(shared_embedder)
+
         # Create store with correct vector dimension for embedding model
-        # Piragi's factory defaults to 768 for PostgresStore, matching
-        # the embedding model which produces 768-dimensional embeddings
         store = self._create_store_with_dimension()
 
         # Use config with dummy embedding URL to prevent model loading
@@ -541,17 +589,27 @@ class BaseIndexPlugin(ABC):
         import asyncio
 
         try:
-            # Run retrieve in thread pool to avoid blocking event loop
-            # piragi's retrieve() calls embedder.embed_chunks() synchronously
             ragi_sync = self.ragi._sync
+            embedder = ragi_sync.embedder
 
-            def _do_retrieve() -> list:
-                # Embed the query
-                query_embedding = ragi_sync.embedder.embed_query(query)
-                # Search the store
-                return ragi_sync.store.search(query_embedding, top_k=top_k)
+            # Use async embedding if available (OllamaEmbedder has aembed_query)
+            if hasattr(embedder, "aembed_query"):
+                query_embedding = await embedder.aembed_query(query)
+            else:
+                # Fallback to sync in thread for SentenceTransformers
+                query_embedding = await asyncio.to_thread(embedder.embed_query, query)
 
-            chunks = await asyncio.to_thread(_do_retrieve)
+            # Store search is sync - run in thread
+            def _do_search() -> list[Citation]:
+                results: list[Citation] = ragi_sync.store.search(
+                    query_embedding,
+                    top_k=top_k,
+                    min_chunk_length=0,
+                )
+                return results
+
+            chunks = await asyncio.to_thread(_do_search)
+
             results = []
             for chunk in chunks:
                 # Apply filters if provided
@@ -579,6 +637,16 @@ class BaseIndexPlugin(ABC):
             )
             return []
 
+    def _fallback_answer(self, _search_results: list[SearchResult]) -> str:
+        """
+        Return empty to let OptimalService continue searching other indexes.
+
+        Previously this returned a formatted string of search results, but that
+        caused query() to early-return and skip remaining indexes. Now we return
+        empty and let the service-level aggregation handle fallback synthesis.
+        """
+        return ""
+
     async def ask(
         self,
         query: str,
@@ -592,57 +660,103 @@ class BaseIndexPlugin(ABC):
             top_k: Number of context chunks to use
 
         Returns:
-            Tuple of (answer, citations)
+            Tuple of (answer, citations). Returns ("", []) on failure
+            to allow OptimalService to continue to next index.
         """
+        import asyncio
+
         import httpx
 
+        # Per-index timeout to prevent one slow index from blocking everything
+        INDEX_TIMEOUT = 15.0
+
+        search_results: list[SearchResult] = []
+
         try:
-            # First get context using our properly async search
-            search_results = await self.search(query, top_k=top_k)
-
-            if not search_results:
-                return "No relevant context found.", []
-
-            # Build context for LLM
-            context_texts = [r.content for r in search_results]
-            context = "\n\n---\n\n".join(context_texts)
-
-            # Build prompt
-            prompt = (
-                f"Based on the following context, answer the question.\n\n"
-                f"Context:\n{context}\n\n"
-                f"Question: {query}\n\n"
-                f"Answer:"
-            )
-
-            # Call LLM via Ollama API (async HTTP)
-            async with httpx.AsyncClient(timeout=60.0) as client:
-                resp = await client.post(
-                    f"{self.config.llm_base_url}/chat/completions",
-                    json={
-                        "model": self.config.llm_model,
-                        "messages": [{"role": "user", "content": prompt}],
-                        "max_tokens": 1024,
-                    },
+            async with asyncio.timeout(INDEX_TIMEOUT):
+                # First get context using our properly async search
+                logger.info(
+                    "ask() starting search",
+                    index_type=self.index_type.value,
+                    query=query[:50],
                 )
-                if resp.is_success:
-                    data = resp.json()
-                    answer_text = data["choices"][0]["message"]["content"]
-                    return answer_text, search_results
-                else:
-                    logger.warning(
-                        "LLM call failed",
-                        status=resp.status_code,
-                        error=resp.text,
+                search_results = await self.search(query, top_k=top_k)
+
+                logger.info(
+                    "ask() search completed",
+                    index_type=self.index_type.value,
+                    num_results=len(search_results),
+                )
+
+                if not search_results:
+                    # Return empty to continue to next index
+                    return "", []
+
+                # Build context for LLM
+                context_texts = [r.content for r in search_results]
+                context = "\n\n---\n\n".join(context_texts)
+
+                # Build prompt
+                prompt = (
+                    f"Based on the following context, answer the question.\n\n"
+                    f"Context:\n{context}\n\n"
+                    f"Question: {query}\n\n"
+                    f"Answer:"
+                )
+
+                # Call LLM via Ollama API (async HTTP)
+                llm_url = f"{self.config.llm_base_url}/chat/completions"
+                logger.info(
+                    "ask() calling LLM",
+                    index_type=self.index_type.value,
+                    llm_url=llm_url,
+                    model=self.config.llm_model,
+                )
+                async with httpx.AsyncClient(timeout=60.0) as client:
+                    resp = await client.post(
+                        llm_url,
+                        json={
+                            "model": self.config.llm_model,
+                            "messages": [{"role": "user", "content": prompt}],
+                            "max_tokens": 1024,
+                        },
                     )
-                    return "", search_results
+                    if resp.is_success:
+                        data = resp.json()
+                        answer_text = data["choices"][0]["message"]["content"]
+                        return answer_text, search_results
+                    else:
+                        logger.warning(
+                            "LLM call failed in ask",
+                            index_type=self.index_type.value,
+                            status=resp.status_code,
+                            error=resp.text[:200] if resp.text else "no error text",
+                        )
+                        # Return empty to let service aggregate and synthesize
+                        return "", search_results
+
+        except TimeoutError:
+            logger.warning(
+                "Index ask() timed out",
+                index_type=self.index_type.value,
+                timeout=INDEX_TIMEOUT,
+            )
+            # Return search results even on timeout - service can aggregate them
+            return "", search_results
+        except httpx.TimeoutException:
+            logger.warning(
+                "LLM HTTP call timed out in ask",
+                index_type=self.index_type.value,
+            )
+            return "", search_results
         except Exception as e:
             logger.warning(
                 "RAG query failed",
                 index_type=self.index_type.value,
                 error=str(e),
             )
-            return "", []
+            # Return whatever search results we have for aggregation
+            return "", search_results
 
     async def count(self) -> int:
         """Get the number of documents in the index."""
