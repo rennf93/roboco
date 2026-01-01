@@ -10,7 +10,7 @@ from uuid import UUID
 
 from pydantic import BaseModel, Field
 
-from roboco.models.base import Complexity, TaskStatus, Team
+from roboco.models.base import Complexity, TaskNature, TaskStatus, TaskType, Team
 from roboco.models.session import SessionScope
 from roboco.utils.converters import require_uuid, to_python_uuid, to_python_uuid_list
 
@@ -225,6 +225,19 @@ class TaskResponse(BaseModel):
     status: TaskStatus
     priority: int
     sequence: int  # Order number within siblings
+    nature: TaskNature  # Technical or non-technical work
+
+    # Task Type & Git Configuration
+    task_type: TaskType  # code, documentation, research, etc.
+    requires_git: bool  # Whether this task requires git workflow
+    project_id: UUID | None = None  # Project this task works on
+
+    # Parallel Execution Tracking (for AWAITING_DOCUMENTATION phase)
+    docs_complete: bool = False  # Documenter has finished
+    pr_created: bool = False  # Developer has created PR
+
+    # PM Approval Tracking (for AWAITING_PM_REVIEW phase)
+    pm_approvals: dict[str, bool] = {}  # e.g. {'main_pm': True, 'cell_pm': True}
 
     # Ownership
     team: Team
@@ -291,6 +304,7 @@ class TaskSummaryResponse(BaseModel):
     created_at: datetime
     updated_at: datetime | None
     estimated_complexity: Complexity
+    nature: TaskNature
 
     class Config:
         from_attributes = True
@@ -530,6 +544,17 @@ def task_to_response(task: "TaskTable") -> TaskResponse:
         status=task.status,
         priority=task.priority,
         sequence=task.sequence,
+        nature=task.nature,
+        # Task Type & Git Configuration
+        task_type=task.task_type,
+        requires_git=task.requires_git,
+        project_id=to_python_uuid(task.project_id),
+        # Parallel Execution Tracking
+        docs_complete=task.docs_complete,
+        pr_created=task.pr_created,
+        # PM Approval Tracking
+        pm_approvals=task.pm_approvals or {},
+        # Ownership
         team=task.team,
         created_by=require_uuid(task.created_by),
         assigned_to=to_python_uuid(task.assigned_to),

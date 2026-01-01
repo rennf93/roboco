@@ -648,6 +648,7 @@ def _register_pm_tools(mcp: FastMCP, client: ApiClient, agent_id: str) -> None:
             data: TaskCreateInput with:
                 - title, description, acceptance_criteria, team (required)
                 - parent_task_id, assigned_to, priority, status (optional)
+                - nature: Task nature (technical, non_technical)
                 - sequence: Order within siblings (0 = default)
                 - dependency_ids: Task IDs that must complete first
 

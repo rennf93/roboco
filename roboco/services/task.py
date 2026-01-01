@@ -207,6 +207,7 @@ class TaskService(BaseService):
             parent_task_id=req.parent_task_id,
             target_date=req.target_date,
             estimated_complexity=req.estimated_complexity,
+            nature=req.nature,
             status=req.status if req.status else TaskStatus.PENDING,
             sequence=req.sequence,  # Task ordering within siblings
             dependency_ids=req.dependency_ids,  # Task IDs that must complete first

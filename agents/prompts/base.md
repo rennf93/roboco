@@ -114,12 +114,11 @@ These tools let you inspect git state:
 
 ## Knowledge Base Tools
 
-- `roboco_kb_search(query)` - Search code, docs, decisions
-- `roboco_rag_query(question)` - AI-generated answers
-- `roboco_kb_stats()` - See what's indexed
-- `roboco_search_error(pattern)` - Find error solutions
+- `roboco_ask_mentor(question)` - **Primary tool** - AI answers with follow-up support
+- `roboco_kb_search(query)` - Raw semantic search
+- `roboco_search_error(error_message)` - Find known error solutions
 - `roboco_check_decision(topic)` - Find past decisions
-- `roboco_search_learnings(topic)` - Find team learnings
+- `roboco_search_learnings(query)` - Find team learnings
 
 ## Journaling (ALL agents)
 
@@ -147,8 +146,7 @@ Need docs updated? Create a task for your cell's Documenter.
 
 ## RAG Checkpoints
 
-Before critical actions, verify with RAG:
-- **Full workflow example**: `roboco_kb_search("{your_role} workflow")`
-- **Tool parameters**: `roboco_kb_search("mcp tools")`
-- **Error solutions**: `roboco_search_error(pattern)`
-- **Past decisions**: `roboco_check_decision(topic)`
+Before critical actions, check the knowledge base:
+- `roboco_ask_mentor("How do I implement X?")` - Best practices, patterns
+- `roboco_search_error(pattern)` - Known error solutions
+- `roboco_check_decision(topic)` - Past architectural decisions

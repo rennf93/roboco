@@ -39,6 +39,55 @@ services:
       retries: 5
 
   # ==========================================================================
+  # Ollama - Local LLM and Embedding Server
+  # ==========================================================================
+  ollama:
+    image: ollama/ollama:latest
+    container_name: roboco-ollama
+    restart: unless-stopped
+    ports:
+      - "11435:11434"
+    volumes:
+      - ${ROBOCO_DATA_DIR:-./data}/ollama:/root/.ollama
+    healthcheck:
+      # Use ollama CLI (guaranteed available) to check if server is responding
+      test: ["CMD", "ollama", "list"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+
+  # Ollama model puller - pulls required models on startup
+  # Uses streaming curl to wait for full model download
+  ollama-init:
+    image: curlimages/curl:latest
+    container_name: roboco-ollama-init
+    depends_on:
+      ollama:
+        condition: service_healthy
+    restart: "no"
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        set -e
+        echo "=== Pulling embedding model (embeddinggemma:300m) ==="
+        # Ollama /api/pull streams JSON lines until complete - consume full stream
+        # Note: $$ escapes $ for docker-compose variable substitution
+        curl -sN http://ollama:11434/api/pull -d '{"name":"embeddinggemma:300m"}' | while read -r line; do
+          status=$$(echo "$$line" | grep -o '"status":"[^"]*"' | cut -d'"' -f4)
+          [ -n "$$status" ] && echo "  $$status"
+        done
+        echo "=== Pulling LLM model (gemma3:4b) ==="
+        curl -sN http://ollama:11434/api/pull -d '{"name":"gemma3:4b"}' | while read -r line; do
+          status=$$(echo "$$line" | grep -o '"status":"[^"]*"' | cut -d'"' -f4)
+          [ -n "$$status" ] && echo "  $$status"
+        done
+        echo "=== Verifying models are available ==="
+        curl -sf http://ollama:11434/api/tags | grep -q "embeddinggemma" && echo "  embeddinggemma: OK"
+        curl -sf http://ollama:11434/api/tags | grep -q "gemma3" && echo "  gemma3: OK"
+        echo "=== All models ready! ==="
+
+  # ==========================================================================
   # Agent Base Image Builder (specialized images built on-demand by orchestrator)
   # ==========================================================================
   agent-base-image:
@@ -166,6 +215,11 @@ services:
       # API
       ROBOCO_HOST: 0.0.0.0
       ROBOCO_PORT: 8000
+      # Ollama (use container name)
+      ROBOCO_LOCAL_LLM_BASE_URL: http://roboco-ollama:11434/v1
+      ROBOCO_LOCAL_LLM_MODEL: gemma3:4b
+      ROBOCO_DEFAULT_EMBEDDING_MODEL: embeddinggemma:300m
+      ROBOCO_OLLAMA_BASE_URL: http://roboco-ollama:11434
       # Host paths for spawning agent containers (required for Docker-in-Docker)
       # IMPORTANT: These must be ABSOLUTE paths on the host filesystem
       ROBOCO_HOST_PROJECT_DIR: ${ROBOCO_HOST_PROJECT_DIR:-/volume1/roboco}
@@ -185,6 +239,10 @@ services:
         condition: service_healthy
       redis:
         condition: service_healthy
+      ollama:
+        condition: service_healthy
+      ollama-init:
+        condition: service_completed_successfully
       agent-base-image:
         condition: service_completed_successfully
     # Default agents to spawn (override in .env or command line)

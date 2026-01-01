@@ -6,8 +6,10 @@ Data constants are in roboco/seeds/, database operations in roboco/db/seed.py.
 """
 
 import asyncio
+from http import HTTPStatus
 from pathlib import Path
 
+import httpx
 import structlog
 import uvicorn
 
@@ -40,6 +42,29 @@ async def _run_api_server() -> None:
     )
     server = uvicorn.Server(config)
     await server.serve()
+
+
+async def _wait_for_api_ready(max_wait: int = 120) -> None:
+    """
+    Wait for the API server to be ready to accept connections.
+
+    The lifespan does document indexing which can take 30+ seconds,
+    so we poll the health endpoint instead of using a fixed sleep.
+    """
+    api_url = f"http://127.0.0.1:{settings.port}/health"
+    waited = 0
+    while waited < max_wait:
+        try:
+            async with httpx.AsyncClient(timeout=2.0) as client:
+                resp = await client.get(api_url)
+                if resp.status_code == HTTPStatus.OK:
+                    logger.info("API server ready", waited_seconds=waited)
+                    return
+        except Exception:
+            pass
+        await asyncio.sleep(2)
+        waited += 2
+    logger.warning("API server not ready after timeout, starting orchestrator anyway")
 
 
 async def main(
@@ -100,8 +125,9 @@ async def main(
     api_task = asyncio.create_task(_run_api_server())
     logger.info("API server starting", host=settings.host, port=settings.port)
 
-    # Wait a moment for API to start before orchestrator begins polling
-    await asyncio.sleep(2)
+    # Wait for API to actually be ready (not just a fixed sleep)
+    # The lifespan does document indexing which can take 30+ seconds
+    await _wait_for_api_ready()
 
     await orchestrator.start()
 

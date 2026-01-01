@@ -88,15 +88,22 @@ def _register_search_tools(mcp: FastMCP, client: ApiClient) -> None:
                 "SEARCH_FAILED",
                 "Failed to search knowledge base",
                 {"api_error": resp.text},
+                hint="Try roboco_ask_mentor(question) for AI-synthesized answers.",
             )
 
         result = resp.json()
-        return {
+        total = result.get("total", 0)
+        response: dict[str, Any] = {
             "status": "success",
             "query": query,
-            "total": result.get("total", 0),
+            "total": total,
             "results": result.get("results", []),
         }
+        if total == 0:
+            response["hint"] = (
+                "No results. Try roboco_ask_mentor(question) for better answers."
+            )
+        return response
 
     @mcp.tool()
     async def roboco_rag_query(
@@ -108,11 +115,12 @@ def _register_search_tools(mcp: FastMCP, client: ApiClient) -> None:
         """
         RAG query - get an AI-generated answer using knowledge base context.
 
-        Use this when you need an answer synthesized from the knowledge base,
-        not just search results. Good for questions like:
-        - "How does authentication work in this codebase?"
-        - "What's the pattern for error handling?"
-        - "What decisions were made about the database schema?"
+        NOTE: For most questions, prefer `roboco_ask_mentor` instead!
+        The mentor searches multiple indexes and supports follow-up questions.
+
+        Use this simpler tool only when you need:
+        - A quick answer from a specific index type
+        - To filter by project or task_id
 
         Args:
             query: Natural language question
@@ -132,22 +140,33 @@ def _register_search_tools(mcp: FastMCP, client: ApiClient) -> None:
         if task_id:
             payload["task_id"] = task_id
 
-        resp = await client.post("/optimal/rag/query", json=payload)
+        # RAG queries can take longer due to LLM call - use 65s timeout
+        resp = await client.post("/optimal/rag/query", json=payload, timeout=65.0)
         if not resp.ok:
             return format_error_response(
                 "RAG_FAILED",
                 "Failed to query RAG",
                 {"api_error": resp.text},
+                hint="Try roboco_ask_mentor(question) instead - it's more robust.",
             )
 
         result = resp.json()
-        return {
+        answer = result.get("answer", "")
+        context_used = result.get("context_used", 0)
+        response: dict[str, Any] = {
             "status": "success",
             "query": query,
-            "answer": result.get("answer", ""),
+            "answer": answer,
             "citations": result.get("citations", []),
-            "context_used": result.get("context_used", 0),
+            "context_used": context_used,
         }
+        # Guide to mentor for better results
+        if context_used == 0 or "couldn't find" in answer.lower():
+            response["hint"] = (
+                "Limited results. roboco_ask_mentor(question) searches more sources "
+                "and supports follow-up questions."
+            )
+        return response
 
     @mcp.tool()
     async def roboco_kb_stats() -> dict[str, Any]:
@@ -336,6 +355,9 @@ def _register_mentor_tools(mcp: FastMCP, client: ApiClient) -> None:
         """
         Ask the organizational knowledge base for help.
 
+        THIS IS THE PRIMARY TOOL for knowledge base questions.
+        Use this instead of roboco_rag_query for most questions.
+
         This is a conversational interface - you can ask follow-up questions
         by providing the conversation_id from a previous response.
 
@@ -344,6 +366,7 @@ def _register_mentor_tools(mcp: FastMCP, client: ApiClient) -> None:
         - Past architectural decisions
         - Team learnings and reflections
         - Codebase patterns
+        - Known error solutions
 
         Args:
             question: Your question (natural language)
@@ -369,7 +392,8 @@ def _register_mentor_tools(mcp: FastMCP, client: ApiClient) -> None:
         if domain:
             payload["domain"] = domain
 
-        resp = await client.post("/optimal/mentor/ask", json=payload)
+        # Mentor uses LLM - allow 65s timeout
+        resp = await client.post("/optimal/mentor/ask", json=payload, timeout=65.0)
         if not resp.ok:
             return format_error_response(
                 "MENTOR_FAILED",
@@ -421,12 +445,20 @@ def _register_error_tools(mcp: FastMCP, client: ApiClient) -> None:
             )
 
         result = resp.json()
-        return {
+        solutions_found = len(result.get("results", []))
+        response: dict[str, Any] = {
             "status": "success",
             "error_message": error_message,
-            "solutions_found": len(result.get("results", [])),
+            "solutions_found": solutions_found,
             "results": result.get("results", []),
         }
+        if solutions_found == 0:
+            response["hint"] = (
+                "No known solutions. Try roboco_ask_mentor(f'How do I fix: {error}') "
+                "for guidance. If you solve it, use roboco_record_error_solution() "
+                "to help future agents."
+            )
+        return response
 
     @mcp.tool()
     async def roboco_record_error_solution(
@@ -806,12 +838,20 @@ def _register_learning_tools(mcp: FastMCP, client: ApiClient) -> None:
             )
 
         result = resp.json()
-        return {
+        total = result.get("total", 0)
+        response: dict[str, Any] = {
             "status": "success",
             "query": query,
-            "total": result.get("total", 0),
+            "total": total,
             "results": result.get("results", []),
         }
+        if total == 0:
+            response["hint"] = (
+                "No learnings found. Try roboco_ask_mentor(question) for broader "
+                "knowledge. If you learn something useful, use "
+                "roboco_record_learning() to share it."
+            )
+        return response
 
 
 def _register_index_management_tools(mcp: FastMCP, client: ApiClient) -> None:

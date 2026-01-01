@@ -184,6 +184,9 @@ class TaskCreateInput(BaseModel):
     complexity: str = Field(
         default="medium", description="Complexity: low, medium, high, critical"
     )
+    nature: str = Field(
+        default="technical", description="Task nature: technical, non_technical"
+    )
     status: str = Field(
         default="backlog",
         description="Status: 'backlog' (default) or 'pending' (ready for work)",

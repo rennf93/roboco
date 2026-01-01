@@ -9,6 +9,7 @@ The service uses a plugin-based architecture where each index type is handled
 by a specialized plugin that implements the BaseIndexPlugin interface.
 """
 
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
@@ -46,6 +47,70 @@ from roboco.services.optimal_brain.indexes.reviews import (
 )
 
 logger = structlog.get_logger()
+
+
+@dataclass
+class IndexingReport:
+    """
+    Detailed report of indexing operation results.
+
+    Provides visibility into what was indexed successfully vs what failed,
+    enabling proper error handling and recovery.
+    """
+
+    index_type: str
+    total_attempted: int = 0
+    successful: int = 0
+    failed: int = 0
+    skipped: int = 0  # Already indexed or filtered out
+    failed_sources: list[tuple[str, str]] = field(default_factory=list)
+    duration_seconds: float = 0.0
+
+    @property
+    def success_rate(self) -> float:
+        """Percentage of attempted items that succeeded."""
+        if self.total_attempted == 0:
+            return 100.0
+        return (self.successful / self.total_attempted) * 100
+
+    @property
+    def has_failures(self) -> bool:
+        """True if any items failed."""
+        return self.failed > 0
+
+    def to_dict(self) -> dict[str, Any]:
+        """Convert to dictionary for API responses."""
+        return {
+            "index_type": self.index_type,
+            "total_attempted": self.total_attempted,
+            "successful": self.successful,
+            "failed": self.failed,
+            "skipped": self.skipped,
+            "success_rate": round(self.success_rate, 1),
+            "has_failures": self.has_failures,
+            "failed_sources": self.failed_sources[:10],  # Limit for API
+            "duration_seconds": round(self.duration_seconds, 2),
+        }
+
+
+@dataclass
+class AutoIndexReport:
+    """Combined report for auto-indexing on startup."""
+
+    code: IndexingReport | None = None
+    documentation: IndexingReport | None = None
+    overall_success: bool = True
+    warnings: list[str] = field(default_factory=list)
+
+    def to_dict(self) -> dict[str, Any]:
+        """Convert to dictionary for API responses."""
+        docs = self.documentation.to_dict() if self.documentation else None
+        return {
+            "code": self.code.to_dict() if self.code else None,
+            "documentation": docs,
+            "overall_success": self.overall_success,
+            "warnings": self.warnings,
+        }
 
 
 # Plugin registry mapping IndexType to plugin class
@@ -87,28 +152,112 @@ class OptimalService:
         self._initialized = False
         self._plugins: dict[IndexType, BaseIndexPlugin] = {}
         self._prompt_templates: dict[str, dict[str, Any]] = {}
+        self._indexing_task: Any = None  # Background indexing task
 
     async def initialize(self) -> None:
-        """Initialize all knowledge base indexes."""
+        """
+        Initialize all knowledge base indexes.
+
+        Uses graceful degradation - if a plugin fails to initialize, log the error
+        and continue with remaining plugins. The service will function with
+        reduced capabilities rather than completely failing.
+        """
         if self._initialized:
             return
 
         logger.info("Initializing OptimalService with plugin architecture")
 
+        # Track initialization results for reporting
+        initialized_count = 0
+        failed_plugins: list[tuple[IndexType, str]] = []
+
+        import asyncio
+
+        # Per-plugin initialization timeout (embedding validation can be slow)
+        plugin_init_timeout = 30.0
+
         # Create and initialize plugins for each index type
         for index_type, plugin_class in PLUGIN_REGISTRY.items():
-            plugin = plugin_class()
-            await plugin.initialize()
-            self._plugins[index_type] = plugin
-            logger.info(f"Initialized {index_type.value} plugin")
+            try:
+                plugin = plugin_class()
+                async with asyncio.timeout(plugin_init_timeout):
+                    await plugin.initialize()
+                self._plugins[index_type] = plugin
+                initialized_count += 1
+                logger.info(f"Initialized {index_type.value} plugin")
+            except TimeoutError:
+                error_msg = f"Plugin init timed out ({plugin_init_timeout}s)"
+                failed_plugins.append((index_type, error_msg))
+                logger.error(
+                    "Plugin initialization timeout - continuing with degraded mode",
+                    index_type=index_type.value,
+                    timeout=plugin_init_timeout,
+                )
+            except Exception as e:
+                # Log error but continue with other plugins
+                error_msg = str(e)
+                failed_plugins.append((index_type, error_msg))
+                logger.error(
+                    "Failed to initialize plugin - continuing with degraded mode",
+                    index_type=index_type.value,
+                    error=error_msg,
+                )
 
-        self._initialized = True
-        logger.info("OptimalService initialization complete")
+        # Service is initialized if at least one plugin succeeded
+        if initialized_count > 0:
+            self._initialized = True
+            logger.info(
+                "OptimalService initialization complete",
+                initialized=initialized_count,
+                failed=len(failed_plugins),
+            )
+        else:
+            # All plugins failed - this is a critical error
+            raise RuntimeError(
+                f"OptimalService failed to initialize any plugins. "
+                f"Errors: {failed_plugins}"
+            )
 
-        # Auto-index code and documentation on startup
-        await self._auto_index_on_startup()
+        # Report failed plugins for debugging
+        if failed_plugins:
+            logger.warning(
+                "Some index plugins failed to initialize",
+                failed=[f"{idx.value}: {err}" for idx, err in failed_plugins],
+            )
 
-    async def _auto_index_on_startup(self) -> None:
+        # Auto-index code and documentation on startup (truly non-blocking)
+        # Run in background so API can start accepting requests immediately
+        self._indexing_task = asyncio.create_task(self._auto_index_on_startup_safe())
+
+    async def _auto_index_on_startup_safe(self) -> None:
+        """
+        Safe wrapper for auto-indexing that catches all errors.
+
+        Runs auto-indexing in background without blocking API startup.
+        Logs errors but doesn't crash the service if Ollama is unavailable.
+        """
+        try:
+            report = await self._auto_index_on_startup()
+            if report.warnings:
+                logger.warning(
+                    "Auto-indexing completed with warnings",
+                    warnings=report.warnings,
+                )
+            else:
+                logger.info(
+                    "Auto-indexing completed successfully",
+                    code_indexed=report.code.successful if report.code else 0,
+                    docs_indexed=report.documentation.successful
+                    if report.documentation
+                    else 0,
+                )
+        except Exception as e:
+            logger.error(
+                "Auto-indexing failed - service operational but indexes may be empty",
+                error=str(e),
+            )
+
+    async def _auto_index_on_startup(self, force: bool = False) -> AutoIndexReport:
         """
         Auto-index code and documentation on startup.
 
@@ -117,32 +266,55 @@ class OptimalService:
         - /docs/standards/ - Coding, security, workflow standards
         - /docs/workflows/ - Agent workflow documentation
 
-        This ensures agents can search for code, standards, and workflows
-        immediately after startup.
-        """
-        await self._auto_index_code()
-        await self._auto_index_docs()
+        Args:
+            force: If True, reindex even if indexes already have content
 
-    async def _auto_index_code(self) -> None:
+        Returns:
+            AutoIndexReport with detailed results for each index type
+        """
+        report = AutoIndexReport()
+
+        # Index code
+        code_report = await self._auto_index_code(force=force)
+        report.code = code_report
+        if code_report and code_report.has_failures:
+            report.warnings.append(f"Code indexing had {code_report.failed} failures")
+
+        # Index documentation
+        docs_report = await self._auto_index_docs(force=force)
+        report.documentation = docs_report
+        if docs_report and docs_report.has_failures:
+            report.warnings.append(
+                f"Documentation indexing had {docs_report.failed} failures"
+            )
+
+        # Overall success if at least something was indexed
+        total_successful = (code_report.successful if code_report else 0) + (
+            docs_report.successful if docs_report else 0
+        )
+        report.overall_success = total_successful > 0 or not report.warnings
+
+        return report
+
+    async def _auto_index_code(self, force: bool = False) -> IndexingReport | None:
         """Auto-index source code files on startup."""
-        # Find the roboco source directory (the Python package, not the repo root)
-        # We want to index roboco/ package, NOT the entire repo (which has .venv)
+        import time
+
+        report = IndexingReport(index_type="code")
+        start_time = time.time()
+
+        # Find the roboco source directory
         possible_code_roots = [
-            Path("/app/roboco"),  # Docker: /app is repo root, roboco/ is package
-            Path(__file__).parent.parent,  # Local: optimal.py -> services -> roboco
-            Path.cwd() / "roboco",  # Local: cwd/roboco
+            Path("/app/roboco"),  # Docker
+            Path(__file__).parent.parent,  # Local
+            Path.cwd() / "roboco",
         ]
 
         code_root = None
         for path in possible_code_roots:
-            # Check for __init__.py to confirm it's a Python package (not repo root)
             init_file = path / "__init__.py"
             if path.exists() and path.is_dir() and init_file.exists():
                 code_root = path
-                logger.debug(
-                    "Found code package directory",
-                    path=str(path),
-                )
                 break
 
         if code_root is None:
@@ -150,44 +322,57 @@ class OptimalService:
                 "Code directory not found",
                 searched_paths=[str(p) for p in possible_code_roots],
             )
-            return
+            return None
 
-        # Check if code index is empty
-        code_plugin = self._get_plugin(IndexType.CODE)
-        code_count = await code_plugin.count()
+        # Check if code index is empty (unless force=True)
+        if not force:
+            code_plugin = self._get_plugin(IndexType.CODE)
+            code_count = await code_plugin.count()
+            if code_count > 0:
+                logger.info(
+                    "Code index already populated",
+                    chunk_count=code_count,
+                    skipping=True,
+                )
+                report.skipped = code_count
+                report.duration_seconds = time.time() - start_time
+                return report
 
-        if code_count > 0:
-            logger.info(
-                "Code index already populated",
-                chunk_count=code_count,
-                skipping=True,
-            )
-            return
-
-        logger.info(
-            "Auto-indexing source code",
-            directory=str(code_root),
-        )
+        logger.info("Auto-indexing source code", directory=str(code_root))
 
         try:
-            count = await self.index_code([str(code_root)], project="roboco")
+            from roboco.services.optimal_brain.indexes.code import MAX_AUTO_INDEX_FILES
+
+            count = await self.index_code(
+                [str(code_root)],
+                project="roboco",
+                max_files=MAX_AUTO_INDEX_FILES,
+            )
+            report.successful = count
+            report.total_attempted = count
             logger.info("Code auto-indexing complete", files_indexed=count)
         except Exception as e:
-            logger.warning("Code auto-indexing failed", error=str(e))
+            error_msg = str(e)
+            report.failed = 1
+            report.total_attempted = 1
+            report.failed_sources.append((str(code_root), error_msg))
+            logger.error("Code auto-indexing failed", error=error_msg)
 
-    async def _auto_index_docs(self) -> None:
-        """
-        Auto-index documentation directories on startup.
+        report.duration_seconds = time.time() - start_time
+        return report
 
-        Indexes:
-        - /docs/standards/ - Coding, security, workflow standards
-        - /docs/workflows/ - Agent workflow documentation
-        """
-        # Find the docs directory relative to the project root
+    async def _auto_index_docs(self, force: bool = False) -> IndexingReport | None:
+        """Auto-index documentation directories on startup."""
+        import time
+
+        report = IndexingReport(index_type="documentation")
+        start_time = time.time()
+
+        # Find the docs directory
         possible_docs_roots = [
-            Path("/app/docs"),  # Docker absolute path
-            Path(__file__).parent.parent.parent / "docs",  # roboco/docs (local)
-            Path.cwd() / "docs",  # Current working directory
+            Path("/app/docs"),
+            Path(__file__).parent.parent.parent / "docs",
+            Path.cwd() / "docs",
         ]
 
         docs_root = None
@@ -201,61 +386,75 @@ class OptimalService:
                 "Docs directory not found",
                 searched_paths=[str(p) for p in possible_docs_roots],
             )
-            return
+            return None
 
-        # Directories to auto-index (relative to docs root)
+        # Directories to auto-index
         auto_index_dirs = ["standards", "workflows"]
 
         for subdir in auto_index_dirs:
             target_dir = docs_root / subdir
             if not target_dir.exists():
-                logger.debug(f"Auto-index directory not found: {target_dir}")
                 continue
 
-            await self._index_docs_directory(target_dir, subdir)
+            subdir_report = await self._index_docs_directory(
+                target_dir, subdir, _force=force
+            )
+            # Aggregate results
+            report.total_attempted += subdir_report.total_attempted
+            report.successful += subdir_report.successful
+            report.failed += subdir_report.failed
+            report.skipped += subdir_report.skipped
+            report.failed_sources.extend(subdir_report.failed_sources)
 
-    async def _index_docs_directory(self, directory: Path, name: str) -> None:
+        report.duration_seconds = time.time() - start_time
+        return report
+
+    async def _index_docs_directory(
+        self, directory: Path, name: str, _force: bool = False
+    ) -> IndexingReport:
         """Index all markdown files in a documentation directory."""
+        report = IndexingReport(index_type=f"docs/{name}")
+
         md_files = list(directory.rglob("*.md"))
         if not md_files:
             logger.info(f"No files found to index in {name}/", path=str(directory))
-            return
+            return report
 
+        report.total_attempted = len(md_files)
         logger.info(
             f"Auto-indexing {name} files",
             directory=str(directory),
             file_count=len(md_files),
         )
 
-        # Index each file
-        total_indexed = 0
+        # Index each file with individual error tracking
         for md_file in md_files:
             try:
                 if name == "standards":
-                    count = await self.index_standards_file(str(md_file))
-                    total_indexed += count
+                    await self.index_standards_file(str(md_file))
+                    report.successful += 1
                 else:
-                    # For workflows, index as documentation
                     await self.index_documentation([str(md_file)])
-                    total_indexed += 1
+                    report.successful += 1
 
-                logger.debug(
-                    f"Indexed {name} file",
-                    file=str(md_file),
-                    items_indexed=count if name == "standards" else 1,
-                )
+                logger.debug(f"Indexed {name} file", file=str(md_file))
             except Exception as e:
+                error_msg = str(e)
+                report.failed += 1
+                report.failed_sources.append((str(md_file), error_msg))
                 logger.warning(
                     f"Failed to index {name} file",
                     file=str(md_file),
-                    error=str(e),
+                    error=error_msg,
                 )
 
         logger.info(
             f"{name.capitalize()} auto-indexing complete",
-            files_processed=len(md_files),
-            total_indexed=total_indexed,
+            successful=report.successful,
+            failed=report.failed,
+            total=report.total_attempted,
         )
+        return report
 
     async def close(self) -> None:
         """Cleanup resources."""
@@ -286,11 +485,20 @@ class OptimalService:
         self,
         sources: list[str],
         project: str | None = None,
+        max_files: int | None = None,
     ) -> int:
-        """Index code files/directories and track in database."""
+        """Index code files/directories and track in database.
+
+        Args:
+            sources: List of file paths, directories, or glob patterns
+            project: Optional project identifier for filtering
+            max_files: Optional limit on files to index (for auto-indexing)
+        """
         plugin = self._get_plugin(IndexType.CODE)
         if isinstance(plugin, CodeIndexPlugin):
-            count, indexed_files = await plugin.index_sources(sources, project)
+            count, indexed_files = await plugin.index_sources(
+                sources, project, max_files=max_files
+            )
 
             # Batch track all indexed files using repository
             docs_to_track = [
@@ -644,7 +852,8 @@ class OptimalService:
         """
         Query the knowledge base with RAG.
 
-        Retrieves relevant context and generates an answer.
+        Aggregates results from all indexes and generates a synthesized answer.
+        Skips empty indexes to avoid unnecessary LLM calls.
         """
         if not self._initialized:
             raise RuntimeError("OptimalService not initialized")
@@ -653,31 +862,177 @@ class OptimalService:
             context.index_types if context and context.index_types else list(IndexType)
         )
 
+        logger.info(
+            "RAG query starting", query=query[:50], num_indexes=len(index_types)
+        )
+
+        # Aggregate citations and answers from all non-empty indexes
+        all_citations: list[SearchResult] = []
+        best_answer: str = ""
+
         for index_type in index_types:
             plugin = self._plugins.get(index_type)
-            if plugin:
-                try:
-                    answer, citations = await plugin.ask(query=query, top_k=top_k)
-                    if answer:
-                        return RAGResponse(
-                            answer=answer,
-                            citations=citations,
-                            query=query,
-                            context_used=len(citations),
-                        )
-                except Exception as e:
-                    logger.warning(
-                        "RAG query failed for index",
-                        index_type=index_type.value,
-                        error=str(e),
-                    )
+            if not plugin:
+                continue
 
+            try:
+                # Skip empty indexes to save LLM calls
+                count = await plugin.count()
+                if count == 0:
+                    logger.debug(
+                        "Skipping empty index",
+                        index_type=index_type.value,
+                    )
+                    continue
+
+                answer, citations = await plugin.ask(query=query, top_k=top_k)
+                all_citations.extend(citations)
+
+                logger.info(
+                    "RAG query index result",
+                    index_type=index_type.value,
+                    has_answer=bool(answer),
+                    num_citations=len(citations),
+                )
+
+                # Keep the first real LLM answer we get
+                if answer and not best_answer:
+                    best_answer = answer
+
+            except Exception as e:
+                logger.warning(
+                    "RAG query failed for index",
+                    index_type=index_type.value,
+                    error=str(e),
+                )
+
+        # Sort all citations by score
+        all_citations.sort(key=lambda r: r.score, reverse=True)
+        top_citations = all_citations[: top_k * 2]
+
+        # If we have citations but no LLM answer, synthesize one
+        if top_citations and not best_answer:
+            logger.info(
+                "Synthesizing answer from aggregated citations",
+                num_citations=len(top_citations),
+            )
+            best_answer = await self._synthesize_from_citations(query, top_citations)
+
+        if best_answer:
+            return RAGResponse(
+                answer=best_answer,
+                citations=top_citations,
+                query=query,
+                context_used=len(top_citations),
+            )
+
+        logger.warning("RAG query found no answers in any index")
         return RAGResponse(
             answer="I couldn't find relevant information to answer your question.",
             citations=[],
             query=query,
             context_used=0,
         )
+
+    async def _synthesize_from_citations(
+        self,
+        query: str,
+        citations: list[SearchResult],
+    ) -> str:
+        """
+        Synthesize an answer from aggregated citations using the local LLM.
+
+        Called when individual indexes returned citations but no LLM answer
+        (e.g., due to timeouts or errors). Includes retry logic for transient
+        failures.
+        """
+        import asyncio
+
+        import httpx
+
+        from roboco.config import settings
+
+        if not citations:
+            return ""
+
+        # Group citations by index type for context
+        context_parts: list[str] = []
+        for citation in citations[:10]:  # Limit context size
+            idx_type = citation.index_type
+            source_type = idx_type.value if idx_type else "unknown"
+            context_parts.append(f"[{source_type}] {citation.content}")
+
+        context = "\n\n---\n\n".join(context_parts)
+
+        prompt = (
+            f"Based on the following context from the knowledge base, "
+            f"answer the question concisely.\n\n"
+            f"Context:\n{context}\n\n"
+            f"Question: {query}\n\n"
+            f"Answer:"
+        )
+
+        # Retry configuration
+        max_retries = 3
+        retry_delay_base = 0.5
+
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            for attempt in range(max_retries):
+                try:
+                    resp = await client.post(
+                        f"{settings.local_llm_base_url}/chat/completions",
+                        json={
+                            "model": settings.local_llm_model,
+                            "messages": [{"role": "user", "content": prompt}],
+                            "max_tokens": 1024,
+                        },
+                    )
+                    if resp.is_success:
+                        data = resp.json()
+                        answer: str = data["choices"][0]["message"]["content"]
+                        return answer
+                    elif resp.status_code >= httpx.codes.INTERNAL_SERVER_ERROR:
+                        # Server error - retry
+                        logger.warning(
+                            "Synthesis LLM server error, retrying",
+                            status=resp.status_code,
+                            attempt=attempt + 1,
+                        )
+                    else:
+                        # Client error - don't retry
+                        logger.warning(
+                            "Synthesis LLM call failed",
+                            status=resp.status_code,
+                        )
+                        break
+
+                except httpx.TimeoutException:
+                    logger.warning(
+                        "Synthesis LLM timeout, retrying",
+                        attempt=attempt + 1,
+                    )
+                except httpx.ConnectError as e:
+                    logger.warning(
+                        "Synthesis LLM connection error, retrying",
+                        attempt=attempt + 1,
+                        error=str(e),
+                    )
+                except Exception as e:
+                    logger.warning("Synthesis failed", error=str(e))
+                    break
+
+                # Exponential backoff before retry
+                if attempt < max_retries - 1:
+                    delay = retry_delay_base * (2**attempt)
+                    await asyncio.sleep(delay)
+
+        # Fallback: return a simple summary of top citations
+        if citations:
+            summary = "Based on the knowledge base:\n\n"
+            for i, c in enumerate(citations[:3], 1):
+                summary += f"{i}. {c.content[:300]}...\n\n"
+            return summary
+        return ""
 
     # =========================================================================
     # SPECIALIZED SEARCH (Optimal Brain)
@@ -860,6 +1215,101 @@ class OptimalService:
                     stats["indexes"][index_type.value] = {"error": str(e)}
 
             return stats
+
+    async def check_index_staleness(
+        self,
+        index_type: IndexType | None = None,
+    ) -> dict[str, Any]:
+        """
+        Check if indexes are stale (source files modified after last indexing).
+
+        This helps detect when a reindex is needed because files have changed.
+
+        Args:
+            index_type: Specific index to check, or None for CODE and DOCUMENTATION
+
+        Returns:
+            Dict with staleness info per index type
+        """
+        from datetime import UTC, datetime
+
+        from sqlalchemy import func, select
+
+        from roboco.db import get_db_context
+        from roboco.db.tables import IndexedDocumentTable
+
+        result: dict[str, Any] = {"stale_indexes": [], "details": {}}
+
+        # Only check CODE and DOCUMENTATION (file-based indexes)
+        indexes_to_check = (
+            [index_type] if index_type else [IndexType.CODE, IndexType.DOCUMENTATION]
+        )
+
+        async with get_db_context() as session:
+            for idx_type in indexes_to_check:
+                if idx_type not in self._plugins:
+                    continue
+
+                # Get last indexed time
+                last_indexed_query = (
+                    select(func.max(IndexedDocumentTable.indexed_at))
+                    .select_from(IndexedDocumentTable)
+                    .where(IndexedDocumentTable.index_type == idx_type.value)
+                )
+                last_indexed_result = await session.execute(last_indexed_query)
+                last_indexed = last_indexed_result.scalar()
+
+                if last_indexed is None:
+                    # Never indexed
+                    result["stale_indexes"].append(idx_type.value)
+                    result["details"][idx_type.value] = {
+                        "status": "never_indexed",
+                        "last_indexed": None,
+                        "recommendation": "Run /kb/reindex to index this content",
+                    }
+                    continue
+
+                # Get indexed source paths
+                sources_query = (
+                    select(IndexedDocumentTable.source)
+                    .where(IndexedDocumentTable.index_type == idx_type.value)
+                    .distinct()
+                )
+                sources_result = await session.execute(sources_query)
+                indexed_sources = [row[0] for row in sources_result.fetchall()]
+
+                # Check if any source files are newer than last_indexed
+                stale_files: list[str] = []
+                for source in indexed_sources[:100]:  # Limit check to 100 files
+                    source_path = Path(source)
+                    if source_path.exists():
+                        try:
+                            mtime = datetime.fromtimestamp(
+                                source_path.stat().st_mtime, tz=UTC
+                            )
+                            if mtime > last_indexed:
+                                stale_files.append(source)
+                        except OSError:
+                            pass  # Skip files we can't stat
+
+                if stale_files:
+                    result["stale_indexes"].append(idx_type.value)
+                    result["details"][idx_type.value] = {
+                        "status": "stale",
+                        "last_indexed": last_indexed.isoformat(),
+                        "stale_file_count": len(stale_files),
+                        "stale_files_sample": stale_files[:5],
+                        "recommendation": "Run /kb/reindex?force=true to update",
+                    }
+                else:
+                    result["details"][idx_type.value] = {
+                        "status": "current",
+                        "last_indexed": last_indexed.isoformat(),
+                        "indexed_sources_count": len(indexed_sources),
+                    }
+
+        result["needs_reindex"] = len(result["stale_indexes"]) > 0
+        return result
 
     async def auto_index_on_startup(
         self,
