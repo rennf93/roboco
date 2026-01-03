@@ -73,6 +73,12 @@ class RAGQueryResponse(BaseModel):
     citations: list[SearchResultResponse]
     query: str
     context_used: int
+    search_stats: dict[str, int] | None = Field(
+        default=None, description="Results count per index (-1 = error)"
+    )
+    search_errors: dict[str, str] | None = Field(
+        default=None, description="Error messages for failed indexes"
+    )
 
 
 class IndexStatsResponse(BaseModel):
@@ -215,6 +221,12 @@ class MentorAskResponse(BaseModel):
     sources: list[SearchResultResponse]
     conversation_id: str
     suggested_followups: list[str]
+    search_stats: dict[str, int] | None = Field(
+        default=None, description="Results count per index (-1 = error)"
+    )
+    search_errors: dict[str, str] | None = Field(
+        default=None, description="Error messages for failed indexes"
+    )
 
 
 # Error Schemas

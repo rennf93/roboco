@@ -91,7 +91,7 @@ ROBOCO_WORKSPACE_AUTO_CLONE=true
 
 # RAG/LLM
 ROBOCO_LOCAL_LLM_BASE_URL=http://roboco-ollama:11434/v1
-ROBOCO_LOCAL_LLM_MODEL=gemma3:4b
+ROBOCO_LOCAL_LLM_MODEL=glm-4.6:cloud
 ```
 
 ## Multi-Agent Workspace Structure
@@ -177,7 +177,7 @@ uv run mypy roboco/
 | Cache/Queue | Redis |
 | RAG Library | piragi |
 | Embeddings | embeddinggemma:300m (sentence-transformers) |
-| Local LLM | Ollama (gemma3:4b) |
+| Local LLM | Ollama (glm-4.6:cloud) |
 | Cloud LLM | Claude API (Anthropic) |
 | Package Manager | uv |
 

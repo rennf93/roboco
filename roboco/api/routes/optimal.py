@@ -336,6 +336,8 @@ async def rag_query(
         ],
         query=response.query,
         context_used=response.context_used,
+        search_stats=response.search_stats if response.search_stats else None,
+        search_errors=response.search_errors if response.search_errors else None,
     )
 
 
@@ -555,6 +557,21 @@ async def rag_health_check() -> RAGHealthResponse:
             if stats.get("initialized"):
                 vector_ok = True
                 details["vector_store"] = "connected"
+
+            # Test actual search capability per index
+            index_health: dict[str, str] = {}
+            for index_type, plugin in service._plugins.items():
+                try:
+                    outcome = await plugin.search("test", top_k=1)
+                    if outcome.success:
+                        index_health[index_type.value] = "ok"
+                    else:
+                        err_msg = outcome.error_message or "unknown"
+                        index_health[index_type.value] = f"error: {err_msg}"
+                except Exception as idx_e:
+                    index_health[index_type.value] = f"error: {idx_e}"
+            details["index_health"] = index_health
+
     except TimeoutError:
         details["vector_store_error"] = f"Timeout after {health_timeout}s"
     except Exception as e:
@@ -871,6 +888,8 @@ async def mentor_ask(
         ],
         conversation_id=response.conversation_id,
         suggested_followups=response.suggested_followups,
+        search_stats=response.search_stats if response.search_stats else None,
+        search_errors=response.search_errors if response.search_errors else None,
     )
 
 

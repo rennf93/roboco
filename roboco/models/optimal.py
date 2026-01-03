@@ -39,6 +39,21 @@ class SearchResult:
 
 
 @dataclass
+class SearchOutcome:
+    """Result of a search operation with error status.
+
+    Used to distinguish between "no results found" (success=True, results=[])
+    and "search failed" (success=False, error_message set).
+    """
+
+    results: list[SearchResult]
+    success: bool
+    error_message: str | None = None
+    index_type: IndexType | None = None
+    search_time_ms: float = 0.0
+
+
+@dataclass
 class RAGResponse:
     """Response from a RAG query."""
 
@@ -46,6 +61,8 @@ class RAGResponse:
     citations: list[SearchResult]
     query: str
     context_used: int  # Number of context chunks used
+    search_stats: dict[str, int] = field(default_factory=dict)  # Results per index
+    search_errors: dict[str, str] = field(default_factory=dict)  # Errors per index
 
 
 @dataclass
@@ -225,6 +242,12 @@ class MentorResponse:
     sources: list[SearchResult] = field(default_factory=list)
     conversation_id: str = ""
     suggested_followups: list[str] = field(default_factory=list)
+    search_stats: dict[str, int] = field(default_factory=dict)  # Results per index
+    search_errors: dict[str, str] = field(default_factory=dict)  # Errors per index
+    # Personalization context (what makes mentor different from ask)
+    agent_role: str | None = None  # Detected role (developer, qa, etc.)
+    agent_team: str | None = None  # Detected team (backend, frontend, etc.)
+    journal_entries_used: int = 0  # Number of personal journal entries used
 
 
 @dataclass

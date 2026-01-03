@@ -6,6 +6,7 @@ Each plugin handles a specific content type (code, docs, errors, standards, etc.
 and implements specialized chunking, metadata handling, and search strategies.
 """
 
+import re
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from typing import Any, cast
@@ -15,7 +16,7 @@ from piragi import AsyncRagi
 from piragi.types import Citation, Document
 
 from roboco.config import settings
-from roboco.models.optimal import IndexType, SearchResult
+from roboco.models.optimal import IndexType, SearchOutcome, SearchResult
 
 logger = structlog.get_logger()
 
@@ -33,7 +34,7 @@ class IndexConfig:
     use_hybrid_search: bool = True
     use_cross_encoder: bool = False
     embedding_model: str = "embeddinggemma:300m"
-    llm_model: str = "gemma3:4b"
+    llm_model: str = "glm-4.6:cloud"
     llm_base_url: str = "http://roboco-ollama:11434/v1"
 
     @classmethod
@@ -145,6 +146,21 @@ class BaseIndexPlugin(ABC):
         if self._config is None:
             self._config = IndexConfig.from_settings(self.index_type)
         return self._config
+
+    def _extract_from_think_tags(self, text: str) -> str:
+        """Extract answer from LLM response, handling think tags."""
+        # First try: get content outside think tags
+        outside = re.sub(r"<think>.*?</think>", "", text, flags=re.DOTALL)
+        outside = re.sub(r"</think>", "", outside).strip()
+        if outside:
+            return outside
+
+        # If empty, extract content FROM inside think tags
+        inside_match = re.search(r"<think>(.*?)</think>", text, flags=re.DOTALL)
+        if inside_match:
+            return inside_match.group(1).strip()
+
+        return text.strip()
 
     def _build_piragi_config(self) -> dict[str, Any]:
         """Build piragi configuration dict."""
@@ -390,13 +406,44 @@ class BaseIndexPlugin(ABC):
             nonlocal chunk_count
 
             # Chunk the document
-            chunks = ragi_sync.chunker.chunk_document(doc)
+            raw_chunks = ragi_sync.chunker.chunk_document(doc)
+
+            # Filter garbage chunks at index time (not search time!)
+            # This prevents tiny/garbage chunks from polluting vector space
+            MIN_CHUNK_LENGTH = 200  # Minimum meaningful content
+            chunks = []
+            for chunk in raw_chunks:
+                text = chunk.text.strip()
+                # Skip tiny chunks, markdown artifacts, code fences only
+                if len(text) < MIN_CHUNK_LENGTH:
+                    continue
+                # Skip chunks that are mostly markdown formatting
+                non_formatting = (
+                    text.replace("```", "").replace("---", "").replace("#", "").strip()
+                )
+                if len(non_formatting) < MIN_CHUNK_LENGTH // 2:
+                    continue
+                chunks.append(chunk)
+
+            if not chunks:
+                logger.warning(
+                    "All chunks filtered as garbage",
+                    doc_source=doc.source,
+                    raw_count=len(raw_chunks),
+                )
+                return 0
 
             # Add metadata to each chunk
             for chunk in chunks:
                 chunk.metadata = {**chunk.metadata, **metadata}
 
             chunk_count = len(chunks)
+            logger.debug(
+                "Chunks after quality filter",
+                raw=len(raw_chunks),
+                kept=chunk_count,
+                filtered=len(raw_chunks) - chunk_count,
+            )
 
             # Generate embeddings
             chunks_with_embeddings = ragi_sync.embedder.embed_chunks(chunks)
@@ -512,17 +559,40 @@ class BaseIndexPlugin(ABC):
         chunk_counts: dict[int, int] = {}
 
         def _batch_process() -> None:
-            # Chunk ALL documents
+            # Chunk ALL documents with quality filtering
+            MIN_CHUNK_LENGTH = 200  # Minimum meaningful content
             all_chunks = []
+            total_raw = 0
+            total_filtered = 0
+
             for idx, (doc, _, _) in enumerate(docs_to_process):
-                chunks = ragi_sync.chunker.chunk_document(doc)
-                for chunk in chunks:
+                raw_chunks = ragi_sync.chunker.chunk_document(doc)
+                total_raw += len(raw_chunks)
+
+                # Filter garbage chunks at index time
+                good_chunks = []
+                for chunk in raw_chunks:
+                    text = chunk.text.strip()
+                    if len(text) < MIN_CHUNK_LENGTH:
+                        continue
+                    non_formatting = (
+                        text.replace("```", "")
+                        .replace("---", "")
+                        .replace("#", "")
+                        .strip()
+                    )
+                    if len(non_formatting) < MIN_CHUNK_LENGTH // 2:
+                        continue
                     chunk.metadata = {**chunk.metadata, **doc.metadata}
-                all_chunks.extend(chunks)
-                chunk_counts[idx] = len(chunks)
+                    good_chunks.append(chunk)
+
+                all_chunks.extend(good_chunks)
+                chunk_counts[idx] = len(good_chunks)
+                total_filtered += len(raw_chunks) - len(good_chunks)
 
             logger.info(
-                f"Batch: {len(all_chunks)} chunks from {len(docs_to_process)} docs"
+                f"Batch: {len(all_chunks)} chunks from {len(docs_to_process)} docs "
+                f"(filtered {total_filtered} garbage chunks)"
             )
 
             if all_chunks:
@@ -569,12 +639,83 @@ class BaseIndexPlugin(ABC):
 
         return results
 
+    def _preprocess_query(self, query: str) -> str:
+        """
+        Preprocess query for better semantic matching.
+
+        Natural language questions like "What are the different agent roles?"
+        don't embed well for direct vector similarity search. This extracts
+        key terms to improve matching.
+
+        Returns:
+            Preprocessed query with filler words removed
+        """
+        import re
+
+        # Minimal stop words - only truly meaningless filler
+        # Keep words that add semantic meaning (different, explain, help, etc.)
+        STOP_WORDS = {
+            # Articles only
+            "a",
+            "an",
+            "the",
+            # Basic pronouns
+            "i",
+            "me",
+            "my",
+            "we",
+            "us",
+            "you",
+            "your",
+            # Question starters (but keep "how" - often meaningful)
+            "what",
+            "which",
+            # Filler verbs
+            "is",
+            "are",
+            "was",
+            "were",
+            "do",
+            "does",
+            "did",
+            # Politeness
+            "please",
+        }
+
+        # Lowercase and tokenize
+        query_lower = query.lower()
+
+        # Remove punctuation except hyphens (keep compound words)
+        query_clean = re.sub(r"[^\w\s-]", " ", query_lower)
+
+        # Split into words
+        words = query_clean.split()
+
+        # Remove stop words but keep at least some content
+        key_terms = [w for w in words if w not in STOP_WORDS and len(w) > 1]
+
+        # If we removed everything, use original query
+        if not key_terms:
+            return query
+
+        preprocessed = " ".join(key_terms)
+
+        # Log if we significantly changed the query
+        if preprocessed != query_lower.strip():
+            logger.debug(
+                "Query preprocessed",
+                original=query[:50],
+                preprocessed=preprocessed[:50],
+            )
+
+        return preprocessed
+
     async def search(
         self,
         query: str,
         top_k: int = 5,
         filters: dict[str, Any] | None = None,
-    ) -> list[SearchResult]:
+    ) -> SearchOutcome:
         """
         Search the index.
 
@@ -584,33 +725,53 @@ class BaseIndexPlugin(ABC):
             filters: Optional metadata filters
 
         Returns:
-            List of search results sorted by relevance
+            SearchOutcome with results and success status
         """
         import asyncio
+        import time
+
+        start_time = time.time()
 
         try:
             ragi_sync = self.ragi._sync
             embedder = ragi_sync.embedder
 
+            # Preprocess query for better semantic matching
+            processed_query = self._preprocess_query(query)
+            if processed_query != query:
+                logger.debug(
+                    "Query preprocessed",
+                    original=query[:50],
+                    processed=processed_query[:50],
+                    index_type=self.index_type.value,
+                )
+
             # Use async embedding if available (OllamaEmbedder has aembed_query)
             if hasattr(embedder, "aembed_query"):
-                query_embedding = await embedder.aembed_query(query)
+                query_embedding = await embedder.aembed_query(processed_query)
             else:
                 # Fallback to sync in thread for SentenceTransformers
-                query_embedding = await asyncio.to_thread(embedder.embed_query, query)
+                query_embedding = await asyncio.to_thread(
+                    embedder.embed_query, processed_query
+                )
+
+            # Over-fetch when filters are provided to account for post-filtering
+            # This ensures we have enough results after filtering
+            fetch_k = top_k * 3 if filters else top_k
 
             # Store search is sync - run in thread
+            # min_chunk_length=100 filters out tiny header-only chunks
             def _do_search() -> list[Citation]:
                 results: list[Citation] = ragi_sync.store.search(
                     query_embedding,
-                    top_k=top_k,
-                    min_chunk_length=0,
+                    top_k=fetch_k,
+                    min_chunk_length=100,
                 )
                 return results
 
             chunks = await asyncio.to_thread(_do_search)
 
-            results = []
+            results: list[SearchResult] = []
             for chunk in chunks:
                 # Apply filters if provided
                 if filters:
@@ -628,14 +789,33 @@ class BaseIndexPlugin(ABC):
                     )
                 )
 
-            return results
+                # Truncate to original top_k after filtering
+                if len(results) >= top_k:
+                    break
+
+            elapsed_ms = (time.time() - start_time) * 1000
+            return SearchOutcome(
+                results=results,
+                success=True,
+                index_type=self.index_type,
+                search_time_ms=elapsed_ms,
+            )
+
         except Exception as e:
+            elapsed_ms = (time.time() - start_time) * 1000
             logger.warning(
                 "Search failed",
                 index_type=self.index_type.value,
                 error=str(e),
+                search_time_ms=elapsed_ms,
             )
-            return []
+            return SearchOutcome(
+                results=[],
+                success=False,
+                error_message=str(e),
+                index_type=self.index_type,
+                search_time_ms=elapsed_ms,
+            )
 
     def _fallback_answer(self, _search_results: list[SearchResult]) -> str:
         """
@@ -680,12 +860,14 @@ class BaseIndexPlugin(ABC):
                     index_type=self.index_type.value,
                     query=query[:50],
                 )
-                search_results = await self.search(query, top_k=top_k)
+                outcome = await self.search(query, top_k=top_k)
+                search_results = outcome.results
 
                 logger.info(
                     "ask() search completed",
                     index_type=self.index_type.value,
                     num_results=len(search_results),
+                    search_success=outcome.success,
                 )
 
                 if not search_results:
@@ -698,10 +880,17 @@ class BaseIndexPlugin(ABC):
 
                 # Build prompt
                 prompt = (
-                    f"Based on the following context, answer the question.\n\n"
+                    "You are a technical knowledge base assistant. "
+                    "Based on the context, provide a thorough, actionable answer.\n\n"
+                    "Your response should:\n"
+                    "- Be specific and detailed, not vague\n"
+                    "- Include code examples or steps when relevant\n"
+                    "- Reference the source material when citing facts\n"
+                    "- Warn about pitfalls if mentioned in context\n\n"
+                    "Do NOT use <think> tags.\n\n"
                     f"Context:\n{context}\n\n"
                     f"Question: {query}\n\n"
-                    f"Answer:"
+                    "Detailed Answer:"
                 )
 
                 # Call LLM via Ollama API (async HTTP)
@@ -718,12 +907,15 @@ class BaseIndexPlugin(ABC):
                         json={
                             "model": self.config.llm_model,
                             "messages": [{"role": "user", "content": prompt}],
-                            "max_tokens": 1024,
+                            "max_tokens": 4096,
+                            "options": {"num_ctx": 8192},
                         },
                     )
                     if resp.is_success:
                         data = resp.json()
                         answer_text = data["choices"][0]["message"]["content"]
+                        # Extract answer from think tags if needed
+                        answer_text = self._extract_from_think_tags(answer_text)
                         return answer_text, search_results
                     else:
                         logger.warning(

@@ -31,7 +31,7 @@ RETRY_DELAY_BASE = 0.5  # seconds, exponential backoff
 
 # Parallel processing configuration
 MAX_CONCURRENT_BATCHES = 4  # Number of batches to process in parallel
-DEFAULT_BATCH_SIZE = 16  # Smaller batches for CPU-friendly embedding
+DEFAULT_BATCH_SIZE = 32  # piragi's default batch size
 
 
 class OllamaEmbedderError(Exception):
@@ -166,9 +166,8 @@ class OllamaEmbedder:
         self.max_concurrent = max_concurrent
         self._dimensions: int | None = None
         self._cache = EmbeddingCache(max_size=cache_size)
-        # Reusable clients for connection pooling
+        # Reusable sync client (async clients created per-operation)
         self._sync_client: httpx.Client | None = None
-        self._async_client: httpx.AsyncClient | None = None
         # Semaphore for limiting concurrent requests
         self._semaphore: asyncio.Semaphore | None = None
 
@@ -190,23 +189,25 @@ class OllamaEmbedder:
             )
         return self._sync_client
 
-    async def _get_async_client(self) -> httpx.AsyncClient:
-        """Get or create async HTTP client with connection pooling."""
-        if self._async_client is None or self._async_client.is_closed:
-            timeout = httpx.Timeout(
-                connect=10.0,
-                read=self.timeout,
-                write=30.0,
-                pool=10.0,
-            )
-            self._async_client = httpx.AsyncClient(
-                timeout=timeout,
-                limits=httpx.Limits(
-                    max_connections=self.max_concurrent * 2,
-                    max_keepalive_connections=self.max_concurrent,
-                ),
-            )
-        return self._async_client
+    def _create_async_client(self) -> httpx.AsyncClient:
+        """Create a fresh async HTTP client.
+
+        Always creates a new client to avoid 'Event loop is closed' errors
+        that occur when a cached client is bound to a different/closed loop.
+        """
+        timeout = httpx.Timeout(
+            connect=10.0,
+            read=self.timeout,
+            write=30.0,
+            pool=10.0,
+        )
+        return httpx.AsyncClient(
+            timeout=timeout,
+            limits=httpx.Limits(
+                max_connections=self.max_concurrent * 2,
+                max_keepalive_connections=self.max_concurrent,
+            ),
+        )
 
     def _get_semaphore(self) -> asyncio.Semaphore:
         """Get or create semaphore for limiting concurrent requests."""
@@ -222,9 +223,7 @@ class OllamaEmbedder:
 
     async def aclose(self) -> None:
         """Async close HTTP clients and release resources."""
-        if self._async_client and not self._async_client.is_closed:
-            await self._async_client.aclose()
-        self._async_client = None
+        # Async clients are now created per-request, nothing to close
         self.close()
 
     @property
@@ -433,12 +432,12 @@ class OllamaEmbedder:
 
     async def _embed_batch_async(
         self,
+        client: httpx.AsyncClient,
         batch: list[str],
         batch_index: int,
     ) -> list[list[float]]:
         """Embed a single batch with semaphore-limited concurrency."""
         semaphore = self._get_semaphore()
-        client = await self._get_async_client()
 
         async with semaphore:
             last_error: Exception | None = None
@@ -455,14 +454,18 @@ class OllamaEmbedder:
                         f"{self.base_url}/api/embed",
                         json={"model": self.model, "input": batch},
                     )
-                    return self._handle_embed_response(response, input_count=len(batch))
+                    return self._handle_embed_response(
+                        response, input_count=len(batch)
+                    )
 
                 except httpx.ConnectError as e:
                     last_error = OllamaConnectionError(
                         f"Cannot connect to Ollama at {self.base_url}: {e}"
                     )
                 except httpx.TimeoutException as e:
-                    last_error = OllamaConnectionError(f"Ollama request timed out: {e}")
+                    last_error = OllamaConnectionError(
+                        f"Ollama request timed out: {e}"
+                    )
                 except (OllamaModelError, OllamaEmbedderError):
                     raise
                 except Exception as e:
@@ -536,9 +539,14 @@ class OllamaEmbedder:
 
         start_time = time.time()
 
-        # Process all batches in parallel (semaphore limits concurrency)
-        tasks = [self._embed_batch_async(batch, i) for i, batch in enumerate(batches)]
-        batch_results = await asyncio.gather(*tasks)
+        # Create one client for all batches (connection pooling)
+        async with self._create_async_client() as client:
+            # Process all batches in parallel (semaphore limits concurrency)
+            tasks = [
+                self._embed_batch_async(client, batch, i)
+                for i, batch in enumerate(batches)
+            ]
+            batch_results = await asyncio.gather(*tasks)
 
         # Flatten results and cache
         new_embeddings: list[list[float]] = []
@@ -625,30 +633,33 @@ class OllamaEmbedder:
         if cached is not None:
             return cached
 
-        client = await self._get_async_client()
         last_error: Exception | None = None
 
         for attempt in range(MAX_RETRIES):
-            try:
-                response = await client.post(
-                    f"{self.base_url}/api/embed",
-                    json={"model": self.model, "input": query},
-                )
-                embeddings = self._handle_embed_response(response, input_count=1)
-                result = embeddings[0]
-                self._cache.put(query, result)
-                return result
+            # Create fresh client each attempt to avoid event loop issues
+            async with self._create_async_client() as client:
+                try:
+                    response = await client.post(
+                        f"{self.base_url}/api/embed",
+                        json={"model": self.model, "input": query},
+                    )
+                    embeddings = self._handle_embed_response(response, input_count=1)
+                    result = embeddings[0]
+                    self._cache.put(query, result)
+                    return result
 
-            except httpx.ConnectError as e:
-                last_error = OllamaConnectionError(
-                    f"Cannot connect to Ollama at {self.base_url}: {e}"
-                )
-            except httpx.TimeoutException as e:
-                last_error = OllamaConnectionError(f"Ollama request timed out: {e}")
-            except (OllamaModelError, OllamaEmbedderError):
-                raise
-            except Exception as e:
-                last_error = OllamaEmbedderError(f"Unexpected error: {e}")
+                except httpx.ConnectError as e:
+                    last_error = OllamaConnectionError(
+                        f"Cannot connect to Ollama at {self.base_url}: {e}"
+                    )
+                except httpx.TimeoutException as e:
+                    last_error = OllamaConnectionError(
+                        f"Ollama request timed out: {e}"
+                    )
+                except (OllamaModelError, OllamaEmbedderError):
+                    raise
+                except Exception as e:
+                    last_error = OllamaEmbedderError(f"Unexpected error: {e}")
 
             if attempt < MAX_RETRIES - 1:
                 delay = RETRY_DELAY_BASE * (2**attempt)

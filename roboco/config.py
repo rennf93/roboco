@@ -134,15 +134,17 @@ class Settings(BaseSettings):
     rag_chunk_size_journals: int = Field(
         default=1024, ge=100, description="Chunk size for journals/reflections"
     )
-    rag_chunk_overlap: int = Field(default=50, ge=0)
+    rag_chunk_overlap: int = Field(default=128, ge=0)
     rag_use_hyde: bool = Field(
-        default=True, description="Use hypothetical document embeddings"
+        default=True,
+        description="Use HyDE (hypothetical document embeddings). "
+        "Makes one LLM call per query for better semantic matching.",
     )
     rag_use_hybrid_search: bool = Field(
         default=True, description="Use BM25 + vector hybrid search"
     )
     rag_use_cross_encoder: bool = Field(
-        default=False, description="Use neural reranking (slower but more accurate)"
+        default=True, description="Use neural reranking (slower but more accurate)"
     )
     rag_auto_update_enabled: bool = Field(default=True)
     rag_auto_update_interval: int = Field(
@@ -167,16 +169,16 @@ class Settings(BaseSettings):
     # Default models
     default_embedding_model: str = Field(
         default="embeddinggemma:300m",
-        description="Embedding model (Ollama model name)",
+        description="Embedding model (Ollama). embeddinggemma:300m for quality.",
     )
     embedding_dimensions: int = Field(
         default=768,
-        description="Embedding dimensions (768 for embeddinggemma/BGE-base)",
+        description="Embedding dimensions (768 for embeddinggemma/nomic-embed-text)",
     )
 
     # Local LLM for RAG (HyDE, reranking, etc.)
     local_llm_model: str = Field(
-        default="gemma3:4b",
+        default="glm-4.6:cloud",
         description="Local LLM for HyDE/RAG (non-thinking models are faster)",
     )
     local_llm_base_url: str = Field(

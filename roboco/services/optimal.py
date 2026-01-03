@@ -2,13 +2,16 @@
 Optimal API Service (Refactored with Plugin Architecture)
 
 Knowledge base, RAG queries, and prompt optimization using piragi.
-This service provides semantic search across code, documentation,
+This service provides semantic search across documentation,
 conversations, journal entries, errors, standards, decisions, reviews, and learnings.
+
+NOTE: Code indexing has been deprecated due to slow CPU embedding and poor quality.
 
 The service uses a plugin-based architecture where each index type is handled
 by a specialized plugin that implements the BaseIndexPlugin interface.
 """
 
+import re
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -29,7 +32,6 @@ from roboco.models.optimal import (
 )
 from roboco.services.optimal_brain.indexes import (
     BaseIndexPlugin,
-    CodeIndexPlugin,
     ConversationsIndexPlugin,
     DecisionsIndexPlugin,
     DocsIndexPlugin,
@@ -47,6 +49,10 @@ from roboco.services.optimal_brain.indexes.reviews import (
 )
 
 logger = structlog.get_logger()
+
+# Max chars per citation content - increased for better synthesis quality
+# embeddinggemma:300m retrieves higher quality chunks, so more context helps
+MAX_CONTENT_CHARS = 800
 
 
 @dataclass
@@ -115,7 +121,7 @@ class AutoIndexReport:
 
 # Plugin registry mapping IndexType to plugin class
 PLUGIN_REGISTRY: dict[IndexType, type[BaseIndexPlugin]] = {
-    IndexType.CODE: CodeIndexPlugin,
+    # IndexType.CODE removed - deprecated due to slow CPU embedding and poor retrieval
     IndexType.DOCUMENTATION: DocsIndexPlugin,
     IndexType.CONVERSATIONS: ConversationsIndexPlugin,
     IndexType.JOURNALS: JournalsIndexPlugin,
@@ -225,9 +231,26 @@ class OptimalService:
                 failed=[f"{idx.value}: {err}" for idx, err in failed_plugins],
             )
 
+        # Warm up embedding model to avoid cold start latency on first query
+        await self._warmup_embedder()
+
         # Auto-index code and documentation on startup (truly non-blocking)
         # Run in background so API can start accepting requests immediately
         self._indexing_task = asyncio.create_task(self._auto_index_on_startup_safe())
+
+    async def _warmup_embedder(self) -> None:
+        """Warm up the embedding model to avoid cold start latency."""
+        from roboco.services.optimal_brain.shared_embedder import (
+            get_shared_embedder,
+        )
+
+        try:
+            embedder = await get_shared_embedder()
+            if hasattr(embedder, "aembed_query"):
+                await embedder.aembed_query("warmup")
+            logger.info("Embedding model warmed up successfully")
+        except Exception as e:
+            logger.warning("Embedding warm-up failed (non-fatal)", error=str(e))
 
     async def _auto_index_on_startup_safe(self) -> None:
         """
@@ -259,12 +282,13 @@ class OptimalService:
 
     async def _auto_index_on_startup(self, force: bool = False) -> AutoIndexReport:
         """
-        Auto-index code and documentation on startup.
+        Auto-index documentation on startup.
 
         Indexes:
-        - /roboco/ - Source code files
         - /docs/standards/ - Coding, security, workflow standards
         - /docs/workflows/ - Agent workflow documentation
+
+        NOTE: Code indexing has been deprecated.
 
         Args:
             force: If True, reindex even if indexes already have content
@@ -273,12 +297,7 @@ class OptimalService:
             AutoIndexReport with detailed results for each index type
         """
         report = AutoIndexReport()
-
-        # Index code
-        code_report = await self._auto_index_code(force=force)
-        report.code = code_report
-        if code_report and code_report.has_failures:
-            report.warnings.append(f"Code indexing had {code_report.failed} failures")
+        report.code = None  # Code indexing deprecated
 
         # Index documentation
         docs_report = await self._auto_index_docs(force=force)
@@ -289,76 +308,9 @@ class OptimalService:
             )
 
         # Overall success if at least something was indexed
-        total_successful = (code_report.successful if code_report else 0) + (
-            docs_report.successful if docs_report else 0
-        )
+        total_successful = docs_report.successful if docs_report else 0
         report.overall_success = total_successful > 0 or not report.warnings
 
-        return report
-
-    async def _auto_index_code(self, force: bool = False) -> IndexingReport | None:
-        """Auto-index source code files on startup."""
-        import time
-
-        report = IndexingReport(index_type="code")
-        start_time = time.time()
-
-        # Find the roboco source directory
-        possible_code_roots = [
-            Path("/app/roboco"),  # Docker
-            Path(__file__).parent.parent,  # Local
-            Path.cwd() / "roboco",
-        ]
-
-        code_root = None
-        for path in possible_code_roots:
-            init_file = path / "__init__.py"
-            if path.exists() and path.is_dir() and init_file.exists():
-                code_root = path
-                break
-
-        if code_root is None:
-            logger.warning(
-                "Code directory not found",
-                searched_paths=[str(p) for p in possible_code_roots],
-            )
-            return None
-
-        # Check if code index is empty (unless force=True)
-        if not force:
-            code_plugin = self._get_plugin(IndexType.CODE)
-            code_count = await code_plugin.count()
-            if code_count > 0:
-                logger.info(
-                    "Code index already populated",
-                    chunk_count=code_count,
-                    skipping=True,
-                )
-                report.skipped = code_count
-                report.duration_seconds = time.time() - start_time
-                return report
-
-        logger.info("Auto-indexing source code", directory=str(code_root))
-
-        try:
-            from roboco.services.optimal_brain.indexes.code import MAX_AUTO_INDEX_FILES
-
-            count = await self.index_code(
-                [str(code_root)],
-                project="roboco",
-                max_files=MAX_AUTO_INDEX_FILES,
-            )
-            report.successful = count
-            report.total_attempted = count
-            logger.info("Code auto-indexing complete", files_indexed=count)
-        except Exception as e:
-            error_msg = str(e)
-            report.failed = 1
-            report.total_attempted = 1
-            report.failed_sources.append((str(code_root), error_msg))
-            logger.error("Code auto-indexing failed", error=error_msg)
-
-        report.duration_seconds = time.time() - start_time
         return report
 
     async def _auto_index_docs(self, force: bool = False) -> IndexingReport | None:
@@ -388,8 +340,8 @@ class OptimalService:
             )
             return None
 
-        # Directories to auto-index
-        auto_index_dirs = ["standards", "workflows"]
+        # Directories to auto-index (RAG-optimized docs only)
+        auto_index_dirs = ["rag"]
 
         for subdir in auto_index_dirs:
             target_dir = docs_root / subdir
@@ -430,7 +382,9 @@ class OptimalService:
         # Index each file with individual error tracking
         for md_file in md_files:
             try:
-                if name == "standards":
+                # Use standards indexer for files in standards subdirectory
+                is_standards = name == "standards" or "standards" in md_file.parts
+                if is_standards:
                     await self.index_standards_file(str(md_file))
                     report.successful += 1
                 else:
@@ -487,36 +441,16 @@ class OptimalService:
         project: str | None = None,
         max_files: int | None = None,
     ) -> int:
-        """Index code files/directories and track in database.
+        """DEPRECATED: Code indexing has been removed.
 
-        Args:
-            sources: List of file paths, directories, or glob patterns
-            project: Optional project identifier for filtering
-            max_files: Optional limit on files to index (for auto-indexing)
+        Code indexing was deprecated due to:
+        - Slow CPU-based embedding (no GPU available)
+        - Poor retrieval quality with current embedding model
+        - Better results achieved by focusing on documentation/standards
         """
-        plugin = self._get_plugin(IndexType.CODE)
-        if isinstance(plugin, CodeIndexPlugin):
-            count, indexed_files = await plugin.index_sources(
-                sources, project, max_files=max_files
-            )
-
-            # Batch track all indexed files using repository
-            docs_to_track = [
-                {
-                    "source": f["source"],
-                    "title": f["title"],
-                    "preview": f.get("preview"),
-                    "metadata": {
-                        "language": f.get("language"),
-                        "file_path": f.get("file_path"),
-                        "project": project,
-                    },
-                }
-                for f in indexed_files
-            ]
-            await self._track_indexed_documents_batch(IndexType.CODE, docs_to_track)
-            return count
-        return await plugin.add_sources(sources)
+        _ = sources, project, max_files  # Unused
+        logger.warning("index_code() is deprecated and does nothing")
+        return 0
 
     async def index_documentation(
         self,
@@ -829,14 +763,14 @@ class OptimalService:
         for index_type in index_types:
             plugin = self._plugins.get(index_type)
             if plugin:
-                try:
-                    plugin_results = await plugin.search(query=query, top_k=top_k)
-                    results.extend(plugin_results)
-                except Exception as e:
+                outcome = await plugin.search(query=query, top_k=top_k)
+                if outcome.success:
+                    results.extend(outcome.results)
+                else:
                     logger.warning(
                         "Search failed for index",
                         index_type=index_type.value,
-                        error=str(e),
+                        error=outcome.error_message,
                     )
 
         # Sort by score descending
@@ -852,8 +786,9 @@ class OptimalService:
         """
         Query the knowledge base with RAG.
 
-        Aggregates results from all indexes and generates a synthesized answer.
-        Skips empty indexes to avoid unnecessary LLM calls.
+        Aggregates citations from all indexes first, then synthesizes a single
+        answer from the best sources. This ensures quality by using the most
+        relevant content regardless of which index it comes from.
         """
         if not self._initialized:
             raise RuntimeError("OptimalService not initialized")
@@ -866,73 +801,109 @@ class OptimalService:
             "RAG query starting", query=query[:50], num_indexes=len(index_types)
         )
 
-        # Aggregate citations and answers from all non-empty indexes
+        # Aggregate citations from all non-empty indexes (search only, no LLM)
         all_citations: list[SearchResult] = []
-        best_answer: str = ""
+        search_stats: dict[str, int] = {}
+        search_errors: dict[str, str] = {}
 
         for index_type in index_types:
             plugin = self._plugins.get(index_type)
             if not plugin:
                 continue
 
-            try:
-                # Skip empty indexes to save LLM calls
-                count = await plugin.count()
-                if count == 0:
-                    logger.debug(
-                        "Skipping empty index",
-                        index_type=index_type.value,
-                    )
-                    continue
-
-                answer, citations = await plugin.ask(query=query, top_k=top_k)
-                all_citations.extend(citations)
-
-                logger.info(
-                    "RAG query index result",
+            # Skip empty indexes
+            count = await plugin.count()
+            if count == 0:
+                logger.debug(
+                    "Skipping empty index",
                     index_type=index_type.value,
-                    has_answer=bool(answer),
-                    num_citations=len(citations),
                 )
+                continue
 
-                # Keep the first real LLM answer we get
-                if answer and not best_answer:
-                    best_answer = answer
-
-            except Exception as e:
+            # Use search() directly instead of ask() to avoid multiple LLM calls
+            outcome = await plugin.search(query=query, top_k=top_k)
+            if outcome.success:
+                search_stats[index_type.value] = len(outcome.results)
+                all_citations.extend(outcome.results)
+            else:
+                search_stats[index_type.value] = -1  # -1 indicates error
+                search_errors[index_type.value] = outcome.error_message or "Unknown"
                 logger.warning(
-                    "RAG query failed for index",
+                    "RAG search failed for index",
                     index_type=index_type.value,
-                    error=str(e),
+                    error=outcome.error_message,
                 )
 
-        # Sort all citations by score
+        logger.info(
+            "RAG search complete",
+            total_citations=len(all_citations),
+            by_index=search_stats,
+            errors=search_errors if search_errors else None,
+        )
+
+        # Sort all citations by score and take top results
         all_citations.sort(key=lambda r: r.score, reverse=True)
         top_citations = all_citations[: top_k * 2]
 
-        # If we have citations but no LLM answer, synthesize one
-        if top_citations and not best_answer:
+        # Synthesize a single answer from the best aggregated citations
+        if top_citations:
             logger.info(
                 "Synthesizing answer from aggregated citations",
                 num_citations=len(top_citations),
             )
-            best_answer = await self._synthesize_from_citations(query, top_citations)
+            answer = await self._synthesize_from_citations(query, top_citations)
+            if answer:
+                return RAGResponse(
+                    answer=answer,
+                    citations=top_citations,
+                    query=query,
+                    context_used=len(top_citations),
+                    search_stats=search_stats,
+                    search_errors=search_errors,
+                )
 
-        if best_answer:
-            return RAGResponse(
-                answer=best_answer,
-                citations=top_citations,
-                query=query,
-                context_used=len(top_citations),
-            )
-
-        logger.warning("RAG query found no answers in any index")
+        logger.warning("RAG query found no citations in any index")
         return RAGResponse(
             answer="I couldn't find relevant information to answer your question.",
             citations=[],
             query=query,
             context_used=0,
+            search_stats=search_stats,
+            search_errors=search_errors,
         )
+
+    def _strip_think_tags(self, text: str) -> str:
+        """Strip <think> tags from LLM response, extracting content if needed."""
+        # First try: get content outside think tags
+        outside = re.sub(r"<think>.*?</think>", "", text, flags=re.DOTALL)
+        outside = re.sub(r"</think>", "", outside).strip()
+        if outside:
+            return outside
+
+        # If empty, extract content FROM inside think tags
+        inside_match = re.search(r"<think>(.*?)</think>", text, flags=re.DOTALL)
+        if inside_match:
+            return inside_match.group(1).strip()
+
+        return text.strip()
+
+    def _build_fallback_summary(self, citations: list[SearchResult]) -> str:
+        """Build fallback summary from citations when LLM unavailable."""
+        if not citations:
+            return "No relevant information found in the knowledge base."
+
+        parts = ["Here's what I found in the knowledge base:\n"]
+        for c in citations[:5]:
+            source_type = c.index_type.value if c.index_type else "unknown"
+            parts.append(f"**[{source_type}] {c.source}**")
+            parts.append(c.content[:600])
+            parts.append("")
+
+        parts.append(
+            "\n*Note: This is a direct extract from the knowledge base. "
+            "Review the sources above for detailed guidance.*"
+        )
+        return "\n".join(parts)
 
     async def _synthesize_from_citations(
         self,
@@ -955,24 +926,35 @@ class OptimalService:
         if not citations:
             return ""
 
-        # Group citations by index type for context
+        # Build context from citations
         context_parts: list[str] = []
-        for citation in citations[:10]:  # Limit context size
+        for citation in citations[:8]:
             idx_type = citation.index_type
             source_type = idx_type.value if idx_type else "unknown"
-            context_parts.append(f"[{source_type}] {citation.content}")
+            content = (
+                citation.content[:MAX_CONTENT_CHARS] + "..."
+                if len(citation.content) > MAX_CONTENT_CHARS
+                else citation.content
+            )
+            context_parts.append(f"[{source_type}] {content}")
 
         context = "\n\n---\n\n".join(context_parts)
 
         prompt = (
-            f"Based on the following context from the knowledge base, "
-            f"answer the question concisely.\n\n"
+            "You are a senior technical advisor helping AI agents. "
+            "Based on the knowledge base context below, provide a thorough answer.\n\n"
+            "Your response MUST include:\n"
+            "- Clear explanation of the concept or solution\n"
+            "- Specific steps or code examples when relevant\n"
+            "- References to standards, decisions, or learnings from context\n"
+            "- Warnings about common pitfalls if applicable\n\n"
+            "Do NOT give vague or generic advice. Be specific and actionable.\n"
+            "Do NOT use <think> tags.\n\n"
             f"Context:\n{context}\n\n"
             f"Question: {query}\n\n"
-            f"Answer:"
+            "Provide a detailed, helpful response:"
         )
 
-        # Retry configuration
         max_retries = 3
         retry_delay_base = 0.5
 
@@ -984,55 +966,40 @@ class OptimalService:
                         json={
                             "model": settings.local_llm_model,
                             "messages": [{"role": "user", "content": prompt}],
-                            "max_tokens": 1024,
+                            "max_tokens": 4096,
+                            "options": {"num_ctx": 8192},
                         },
                     )
                     if resp.is_success:
                         data = resp.json()
-                        answer: str = data["choices"][0]["message"]["content"]
-                        return answer
-                    elif resp.status_code >= httpx.codes.INTERNAL_SERVER_ERROR:
-                        # Server error - retry
+                        answer = self._strip_think_tags(
+                            data["choices"][0]["message"]["content"]
+                        )
+                        if answer:
+                            return answer
+                        logger.warning("LLM response was all thinking tags")
+                        break
+
+                    if resp.status_code >= httpx.codes.INTERNAL_SERVER_ERROR:
                         logger.warning(
-                            "Synthesis LLM server error, retrying",
+                            "Synthesis LLM server error",
                             status=resp.status_code,
                             attempt=attempt + 1,
                         )
                     else:
-                        # Client error - don't retry
-                        logger.warning(
-                            "Synthesis LLM call failed",
-                            status=resp.status_code,
-                        )
+                        logger.warning("Synthesis LLM failed", status=resp.status_code)
                         break
 
-                except httpx.TimeoutException:
-                    logger.warning(
-                        "Synthesis LLM timeout, retrying",
-                        attempt=attempt + 1,
-                    )
-                except httpx.ConnectError as e:
-                    logger.warning(
-                        "Synthesis LLM connection error, retrying",
-                        attempt=attempt + 1,
-                        error=str(e),
-                    )
+                except (httpx.TimeoutException, httpx.ConnectError) as e:
+                    logger.warning("Synthesis LLM error", attempt=attempt + 1, error=e)
                 except Exception as e:
                     logger.warning("Synthesis failed", error=str(e))
                     break
 
-                # Exponential backoff before retry
                 if attempt < max_retries - 1:
-                    delay = retry_delay_base * (2**attempt)
-                    await asyncio.sleep(delay)
+                    await asyncio.sleep(retry_delay_base * (2**attempt))
 
-        # Fallback: return a simple summary of top citations
-        if citations:
-            summary = "Based on the knowledge base:\n\n"
-            for i, c in enumerate(citations[:3], 1):
-                summary += f"{i}. {c.content[:300]}...\n\n"
-            return summary
-        return ""
+        return self._build_fallback_summary(citations)
 
     # =========================================================================
     # SPECIALIZED SEARCH (Optimal Brain)
@@ -1048,7 +1015,8 @@ class OptimalService:
         plugin = self._get_plugin(IndexType.ERRORS)
         if isinstance(plugin, ErrorsIndexPlugin):
             return await plugin.search_error(error_message, context, top_k)
-        return await plugin.search(query=error_message, top_k=top_k)
+        outcome = await plugin.search(query=error_message, top_k=top_k)
+        return outcome.results
 
     async def get_standards(
         self,
@@ -1061,7 +1029,8 @@ class OptimalService:
         plugin = self._get_plugin(IndexType.STANDARDS)
         if isinstance(plugin, StandardsIndexPlugin):
             return await plugin.get_standards(domain, language, severity, top_k)
-        return await plugin.search(query=f"{domain} standards", top_k=top_k)
+        outcome = await plugin.search(query=f"{domain} standards", top_k=top_k)
+        return outcome.results
 
     async def check_decision(
         self,
@@ -1073,8 +1042,8 @@ class OptimalService:
         plugin = self._get_plugin(IndexType.DECISIONS)
         if isinstance(plugin, DecisionsIndexPlugin):
             return await plugin.check_decision(topic, threshold, top_k)
-        results = await plugin.search(query=topic, top_k=top_k)
-        return results
+        outcome = await plugin.search(query=topic, top_k=top_k)
+        return outcome.results
 
     async def search_learnings(
         self,
@@ -1087,7 +1056,8 @@ class OptimalService:
         plugin = self._get_plugin(IndexType.LEARNINGS)
         if isinstance(plugin, LearningsIndexPlugin):
             return await plugin.search_learnings(query, category, team, True, top_k)
-        return await plugin.search(query=query, top_k=top_k)
+        outcome = await plugin.search(query=query, top_k=top_k)
+        return outcome.results
 
     async def get_reviews_for_file(
         self,
@@ -1098,7 +1068,8 @@ class OptimalService:
         plugin = self._get_plugin(IndexType.REVIEWS)
         if isinstance(plugin, ReviewsIndexPlugin):
             return await plugin.get_reviews_for_file(file_path, top_k)
-        return await plugin.search(query=f"review {file_path}", top_k=top_k)
+        outcome = await plugin.search(query=f"review {file_path}", top_k=top_k)
+        return outcome.results
 
     # =========================================================================
     # UTILITY OPERATIONS
@@ -1240,10 +1211,8 @@ class OptimalService:
 
         result: dict[str, Any] = {"stale_indexes": [], "details": {}}
 
-        # Only check CODE and DOCUMENTATION (file-based indexes)
-        indexes_to_check = (
-            [index_type] if index_type else [IndexType.CODE, IndexType.DOCUMENTATION]
-        )
+        # Only check DOCUMENTATION (file-based index) - CODE deprecated
+        indexes_to_check = [index_type] if index_type else [IndexType.DOCUMENTATION]
 
         async with get_db_context() as session:
             for idx_type in indexes_to_check:
@@ -1318,31 +1287,23 @@ class OptimalService:
         force: bool = False,
     ) -> dict[str, int]:
         """
-        Auto-index code and docs if indexes are empty.
+        Auto-index docs if indexes are empty.
 
         Called during bootstrap to ensure RAG has content to search.
 
+        NOTE: Code indexing has been deprecated.
+
         Args:
-            code_sources: Paths to index for code (default: auto-detect)
+            code_sources: DEPRECATED - ignored
             docs_sources: Paths to index for docs (default: auto-detect)
             force: Force re-index even if not empty
 
         Returns:
-            Dict with counts: {"code": N, "docs": M}
+            Dict with counts: {"code": 0, "docs": M}
         """
+        _ = code_sources  # Deprecated
         if not self._initialized:
             await self.initialize()
-
-        # Auto-detect paths if not provided
-        if code_sources is None:
-            # Try Docker paths first, then local
-            # ONLY use package directories (with __init__.py), NOT repo roots
-            for path in ["/app/roboco", "roboco/"]:
-                p = Path(path)
-                if p.exists() and (p / "__init__.py").exists():
-                    code_sources = [path]
-                    break
-            code_sources = code_sources or ["roboco/"]
 
         if docs_sources is None:
             # Try Docker paths first, then local
@@ -1352,19 +1313,7 @@ class OptimalService:
                     break
             docs_sources = docs_sources or ["docs/"]
 
-        result = {"code": 0, "docs": 0}
-
-        # Check code index
-        code_plugin = self._get_plugin(IndexType.CODE)
-        code_count = await code_plugin.count()
-
-        if code_count == 0 or force:
-            logger.info(
-                "Auto-indexing code",
-                sources=code_sources,
-                reason="empty" if code_count == 0 else "forced",
-            )
-            result["code"] = await self.index_code(code_sources, project="roboco")
+        result = {"code": 0, "docs": 0}  # code always 0 - deprecated
 
         # Check docs index
         docs_plugin = self._get_plugin(IndexType.DOCUMENTATION)
@@ -1380,12 +1329,8 @@ class OptimalService:
                 docs_sources, project="roboco"
             )
 
-        if result["code"] > 0 or result["docs"] > 0:
-            logger.info(
-                "Auto-indexing complete",
-                code_files=result["code"],
-                doc_files=result["docs"],
-            )
+        if result["docs"] > 0:
+            logger.info("Auto-indexing complete", doc_files=result["docs"])
         else:
             logger.info("Indexes already populated, skipping auto-index")
 

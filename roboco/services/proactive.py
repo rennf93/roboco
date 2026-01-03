@@ -382,15 +382,9 @@ class ProactiveKnowledgeService:
     async def _find_code_patterns(
         self, query: str, top_k: int = 3
     ) -> list[SearchResult]:
-        """Find relevant code patterns."""
-        return cast(
-            "list[SearchResult]",
-            await self._optimal_service.search(
-                query=query,
-                context=QueryContext(index_types=[IndexType.CODE]),
-                top_k=top_k,
-            ),
-        )
+        """DEPRECATED: Code indexing has been removed."""
+        _ = query, top_k  # Unused
+        return []  # Code index deprecated
 
     async def _get_applicable_standards(
         self, domain: str, top_k: int = 5

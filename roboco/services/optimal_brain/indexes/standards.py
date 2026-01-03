@@ -74,12 +74,8 @@ class StandardsIndexPlugin(BaseIndexPlugin):
         title_hash = hashlib.md5(params.title.encode()).hexdigest()[:8]
         rule_id = f"{params.domain[:3]}-{title_hash}"
 
-        # Build searchable content
+        # Build searchable content (language/tags in metadata, not text)
         content = f"# {params.title}\n\n{params.content}"
-        if params.language:
-            content = f"Language: {params.language}\n\n{content}"
-        if params.tags:
-            content += f"\n\nTags: {', '.join(params.tags)}"
 
         return await self.ingest(
             content=content,
