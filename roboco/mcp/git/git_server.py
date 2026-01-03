@@ -149,9 +149,10 @@ def _register_developer_tools(mcp: FastMCP, client: ApiClient, agent_id: str) ->
         Returns:
             Commit details with hash and files changed
         """
-        return await handle_git_commit(
-            client, project_slug, message, task_id, files, agent_id
-        )
+        from roboco.mcp.git.handlers import GitContext
+
+        ctx = GitContext(client=client, project_slug=project_slug, agent_id=agent_id)
+        return await handle_git_commit(ctx, message, task_id, files)
 
     @mcp.tool()
     async def roboco_git_push(
@@ -200,9 +201,10 @@ def _register_developer_tools(mcp: FastMCP, client: ApiClient, agent_id: str) ->
         Returns:
             PR details with URL and number
         """
-        return await handle_git_create_pr(
-            client, project_slug, task_id, title, body, agent_id
-        )
+        from roboco.mcp.git.handlers import GitContext
+
+        ctx = GitContext(client=client, project_slug=project_slug, agent_id=agent_id)
+        return await handle_git_create_pr(ctx, task_id, title, body)
 
 
 def _register_pm_branch_tools(mcp: FastMCP, client: ApiClient, agent_id: str) -> None:
@@ -234,9 +236,10 @@ def _register_pm_branch_tools(mcp: FastMCP, client: ApiClient, agent_id: str) ->
         Returns:
             Created branch info with checkout instructions
         """
-        return await handle_git_create_branch(
-            client, project_slug, task_id, branch_type, parent_branch, agent_id
-        )
+        from roboco.mcp.git.handlers import GitContext
+
+        ctx = GitContext(client=client, project_slug=project_slug, agent_id=agent_id)
+        return await handle_git_create_branch(ctx, task_id, branch_type, parent_branch)
 
     @mcp.tool()
     async def roboco_git_checkout(
@@ -279,9 +282,10 @@ def _register_pm_branch_tools(mcp: FastMCP, client: ApiClient, agent_id: str) ->
         Returns:
             Merge result with final commit hash
         """
-        return await handle_git_merge_pr(
-            client, project_slug, pr_number, task_id, merge_method, agent_id
-        )
+        from roboco.mcp.git.handlers import GitContext
+
+        ctx = GitContext(client=client, project_slug=project_slug, agent_id=agent_id)
+        return await handle_git_merge_pr(ctx, pr_number, task_id, merge_method)
 
 
 def create_git_mcp_server(agent_id: str) -> FastMCP:

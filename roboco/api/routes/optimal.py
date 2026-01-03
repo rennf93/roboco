@@ -482,40 +482,16 @@ async def check_staleness(
     return await service.check_index_staleness()
 
 
-@router.get("/health", response_model=RAGHealthResponse)
-async def rag_health_check() -> RAGHealthResponse:
-    """
-    Check RAG system health.
-
-    Tests connectivity to:
-    - Embedding model (sentence-transformers)
-    - LLM (Ollama for HyDE)
-    - Vector store (PostgreSQL/pgvector)
-
-    Each test has a 10-second timeout to prevent hanging.
-    """
+async def _check_embedding_health(details: dict[str, Any], timeout: float) -> bool:
+    """Test embedding model connectivity."""
     import asyncio
 
-    import httpx
-
     from roboco.config import settings
-
-    details: dict[str, Any] = {}
-    embedding_ok = False
-    llm_ok = False
-    vector_ok = False
-
-    health_timeout = 10.0  # seconds
-
-    # Test embedding model with timeout
-    from roboco.services.optimal_brain.shared_embedder import (
-        get_shared_embedder,
-    )
+    from roboco.services.optimal_brain.shared_embedder import get_shared_embedder
 
     try:
-        async with asyncio.timeout(health_timeout):
+        async with asyncio.timeout(timeout):
             embedder = await get_shared_embedder(model=settings.default_embedding_model)
-            # Use async method if available (OllamaEmbedder), else run sync in thread
             if hasattr(embedder, "aembed_query"):
                 test_embedding = await embedder.aembed_query("health check")
             else:
@@ -523,17 +499,24 @@ async def rag_health_check() -> RAGHealthResponse:
                     embedder.embed_query, "health check"
                 )
             if test_embedding and len(test_embedding) == settings.embedding_dimensions:
-                embedding_ok = True
                 details["embedding_model"] = settings.default_embedding_model
                 details["embedding_dimensions"] = len(test_embedding)
+                return True
     except TimeoutError:
-        details["embedding_error"] = f"Timeout after {health_timeout}s"
+        details["embedding_error"] = f"Timeout after {timeout}s"
     except Exception as e:
         details["embedding_error"] = str(e)
+    return False
 
-    # Test LLM (Ollama) - already has timeout via httpx
+
+async def _check_llm_health(details: dict[str, Any], timeout: float) -> bool:
+    """Test LLM (Ollama) connectivity."""
+    import httpx
+
+    from roboco.config import settings
+
     try:
-        async with httpx.AsyncClient(timeout=health_timeout) as client:
+        async with httpx.AsyncClient(timeout=timeout) as client:
             resp = await client.post(
                 f"{settings.local_llm_base_url}/chat/completions",
                 json={
@@ -543,39 +526,60 @@ async def rag_health_check() -> RAGHealthResponse:
                 },
             )
             if resp.is_success:
-                llm_ok = True
                 details["llm_model"] = settings.local_llm_model
                 details["llm_base_url"] = settings.local_llm_base_url
+                return True
     except Exception as e:
         details["llm_error"] = str(e)
+    return False
 
-    # Test vector store with timeout
+
+async def _check_vector_store_health(details: dict[str, Any], timeout: float) -> bool:
+    """Test vector store connectivity and index health."""
+    import asyncio
+
     try:
-        async with asyncio.timeout(health_timeout):
+        async with asyncio.timeout(timeout):
             service = await get_optimal_service()
             stats = await service.get_stats()
-            if stats.get("initialized"):
-                vector_ok = True
-                details["vector_store"] = "connected"
+            if not stats.get("initialized"):
+                return False
+            details["vector_store"] = "connected"
 
-            # Test actual search capability per index
             index_health: dict[str, str] = {}
             for index_type, plugin in service._plugins.items():
                 try:
                     outcome = await plugin.search("test", top_k=1)
-                    if outcome.success:
-                        index_health[index_type.value] = "ok"
-                    else:
-                        err_msg = outcome.error_message or "unknown"
-                        index_health[index_type.value] = f"error: {err_msg}"
+                    index_health[index_type.value] = (
+                        "ok"
+                        if outcome.success
+                        else f"error: {outcome.error_message or 'unknown'}"
+                    )
                 except Exception as idx_e:
                     index_health[index_type.value] = f"error: {idx_e}"
             details["index_health"] = index_health
-
+            return True
     except TimeoutError:
-        details["vector_store_error"] = f"Timeout after {health_timeout}s"
+        details["vector_store_error"] = f"Timeout after {timeout}s"
     except Exception as e:
         details["vector_store_error"] = str(e)
+    return False
+
+
+@router.get("/health", response_model=RAGHealthResponse)
+async def rag_health_check() -> RAGHealthResponse:
+    """
+    Check RAG system health.
+
+    Tests connectivity to embedding model, LLM, and vector store.
+    Each test has a 10-second timeout.
+    """
+    details: dict[str, Any] = {}
+    timeout = 10.0
+
+    embedding_ok = await _check_embedding_health(details, timeout)
+    llm_ok = await _check_llm_health(details, timeout)
+    vector_ok = await _check_vector_store_health(details, timeout)
 
     return RAGHealthResponse(
         healthy=embedding_ok and llm_ok and vector_ok,

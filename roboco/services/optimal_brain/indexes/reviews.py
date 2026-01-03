@@ -159,7 +159,8 @@ class ReviewsIndexPlugin(BaseIndexPlugin):
         query = f"Review for file: {file_path}"
 
         # Search without filters first
-        results = await self.search(query=query, top_k=top_k * 2)
+        outcome = await self.search(query=query, top_k=top_k * 2)
+        results = outcome.results
 
         # Filter by pattern similarity
         filtered = []
@@ -181,11 +182,12 @@ class ReviewsIndexPlugin(BaseIndexPlugin):
         top_k: int = 5,
     ) -> list[SearchResult]:
         """Search reviews by type (code, security, performance)."""
-        return await self.search(
+        outcome = await self.search(
             query=query,
             top_k=top_k,
             filters={"review_type": review_type},
         )
+        return outcome.results
 
     async def search_by_severity(
         self,
@@ -194,8 +196,9 @@ class ReviewsIndexPlugin(BaseIndexPlugin):
         top_k: int = 5,
     ) -> list[SearchResult]:
         """Search reviews by severity."""
-        return await self.search(
+        outcome = await self.search(
             query=query,
             top_k=top_k,
             filters={"severity": severity},
         )
+        return outcome.results

@@ -159,6 +159,9 @@ class OptimalService:
         self._plugins: dict[IndexType, BaseIndexPlugin] = {}
         self._prompt_templates: dict[str, dict[str, Any]] = {}
         self._indexing_task: Any = None  # Background indexing task
+        self._periodic_update_task: Any = None  # Periodic update task
+        self._file_mtimes: dict[str, float] = {}  # Track file modification times
+        self._docs_root: Path | None = None  # Cached docs root path
 
     async def initialize(self) -> None:
         """
@@ -258,6 +261,7 @@ class OptimalService:
 
         Runs auto-indexing in background without blocking API startup.
         Logs errors but doesn't crash the service if Ollama is unavailable.
+        After startup indexing, starts periodic update task if enabled.
         """
         try:
             report = await self._auto_index_on_startup()
@@ -279,6 +283,9 @@ class OptimalService:
                 "Auto-indexing failed - service operational but indexes may be empty",
                 error=str(e),
             )
+
+        # Start periodic update task if enabled
+        await self._start_periodic_update()
 
     async def _auto_index_on_startup(self, force: bool = False) -> AutoIndexReport:
         """
@@ -331,6 +338,7 @@ class OptimalService:
         for path in possible_docs_roots:
             if path.exists() and path.is_dir():
                 docs_root = path
+                self._docs_root = path  # Cache for periodic updates
                 break
 
         if docs_root is None:
@@ -391,6 +399,12 @@ class OptimalService:
                     await self.index_documentation([str(md_file)])
                     report.successful += 1
 
+                # Track mtime for periodic update detection
+                import contextlib
+
+                with contextlib.suppress(OSError):
+                    self._file_mtimes[str(md_file)] = md_file.stat().st_mtime
+
                 logger.debug(f"Indexed {name} file", file=str(md_file))
             except Exception as e:
                 error_msg = str(e)
@@ -410,8 +424,129 @@ class OptimalService:
         )
         return report
 
+    # =========================================================================
+    # PERIODIC UPDATE (File Change Detection)
+    # =========================================================================
+
+    async def _start_periodic_update(self) -> None:
+        """Start periodic update task if enabled in config."""
+        import asyncio
+
+        from roboco.config import get_settings
+
+        settings = get_settings()
+        if not settings.rag_auto_update_enabled:
+            logger.info("RAG auto-update disabled in config")
+            return
+
+        interval = settings.rag_auto_update_interval
+        logger.info(
+            "Starting RAG periodic update task",
+            interval_seconds=interval,
+        )
+        self._periodic_update_task = asyncio.create_task(
+            self._periodic_update_loop(interval)
+        )
+
+    async def _periodic_update_loop(self, interval: int) -> None:
+        """Background loop that checks for file changes periodically."""
+        import asyncio
+
+        while True:
+            try:
+                await asyncio.sleep(interval)
+                await self._check_for_updates()
+            except asyncio.CancelledError:
+                logger.info("Periodic update task cancelled")
+                break
+            except Exception as e:
+                logger.error("Periodic update check failed", error=str(e))
+                # Continue running despite errors
+
+    def _resolve_docs_root(self) -> Path | None:
+        """Resolve and cache the docs root directory."""
+        if self._docs_root is not None:
+            return self._docs_root
+
+        possible_docs_roots = [
+            Path("/app/docs"),
+            Path(__file__).parent.parent.parent / "docs",
+            Path.cwd() / "docs",
+        ]
+        for path in possible_docs_roots:
+            if path.exists() and path.is_dir():
+                self._docs_root = path
+                return path
+        return None
+
+    async def _check_for_updates(self) -> None:
+        """Scan for new or modified files and index them."""
+        docs_root = self._resolve_docs_root()
+        if docs_root is None:
+            return
+
+        rag_dir = docs_root / "rag"
+        if not rag_dir.exists():
+            return
+
+        new_files: list[Path] = []
+        modified_files: list[Path] = []
+
+        for md_file in rag_dir.rglob("*.md"):
+            file_path = str(md_file)
+            try:
+                current_mtime = md_file.stat().st_mtime
+            except OSError:
+                continue
+
+            if file_path not in self._file_mtimes:
+                new_files.append(md_file)
+                self._file_mtimes[file_path] = current_mtime
+            elif current_mtime > self._file_mtimes[file_path]:
+                modified_files.append(md_file)
+                self._file_mtimes[file_path] = current_mtime
+
+        files_to_index = new_files + modified_files
+        if not files_to_index:
+            return
+
+        logger.info(
+            "Detected file changes, re-indexing",
+            new_count=len(new_files),
+            modified_count=len(modified_files),
+        )
+
+        indexed = 0
+        for md_file in files_to_index:
+            try:
+                await self.index_documentation([str(md_file)])
+                indexed += 1
+                logger.debug("Re-indexed file", file=str(md_file))
+            except Exception as e:
+                logger.warning(
+                    "Failed to re-index file",
+                    file=str(md_file),
+                    error=str(e),
+                )
+
+        if indexed > 0:
+            logger.info(
+                "Periodic update complete",
+                indexed=indexed,
+                total_files=len(files_to_index),
+            )
+
     async def close(self) -> None:
         """Cleanup resources."""
+        import asyncio
+        import contextlib
+
+        # Cancel periodic update task
+        if self._periodic_update_task and not self._periodic_update_task.done():
+            self._periodic_update_task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await self._periodic_update_task
+
         for plugin in self._plugins.values():
             await plugin.close()
         self._plugins.clear()

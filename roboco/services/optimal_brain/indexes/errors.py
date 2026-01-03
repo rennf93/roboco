@@ -113,7 +113,8 @@ class ErrorsIndexPlugin(BaseIndexPlugin):
         if context:
             query += f" Context: {context}"
 
-        results = await self.search(query=query, top_k=top_k)
+        outcome = await self.search(query=query, top_k=top_k)
+        results = outcome.results
 
         # Boost results where worked=True
         for result in results:
@@ -129,8 +130,9 @@ class ErrorsIndexPlugin(BaseIndexPlugin):
         top_k: int = 5,
     ) -> list[SearchResult]:
         """Search errors from a specific team."""
-        return await self.search(
+        outcome = await self.search(
             query=query,
             top_k=top_k,
             filters={"team": team},
         )
+        return outcome.results

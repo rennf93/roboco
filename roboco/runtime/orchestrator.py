@@ -281,6 +281,10 @@ class AgentOrchestrator:
             # Git - branch management, commits, PRs
             # Role-based permissions enforced at handler level
             "mcp__roboco-git__*",
+            # Agent-to-Agent protocol - cross-cell coordination
+            "mcp__roboco-a2a__*",
+            # Test tools - run tests, lint, format
+            "mcp__roboco-test__*",
             # File operations for documenters and developers
             # Note: // prefix = absolute path (container paths like /app/docs)
             "Write(//app/docs/**)",
@@ -577,11 +581,17 @@ class AgentOrchestrator:
         agent_id: str,
         git_context: SpawnGitContext | None = None,
     ) -> Path:
-        """Generate role-aware MCP config for an agent.
+        """Generate MCP config for an agent.
 
-        Different roles get different MCP server access:
-        - All agents: task, message, journal
-        - PMs only: notify (for sending notifications)
+        All agents get access to these MCP servers:
+        - roboco-task: Task management
+        - roboco-message: Channel messaging
+        - roboco-journal: Personal journaling
+        - roboco-notify: Notifications (read for all, send for PMs)
+        - roboco-optimal: Knowledge base, RAG, semantic search
+        - roboco-git: Git operations (role-based at handler level)
+        - roboco-a2a: Agent-to-Agent protocol
+        - roboco-test: Test/lint/format tools
 
         Git context is passed to MCP servers so git tools can use defaults.
         """
@@ -674,6 +684,34 @@ class AgentOrchestrator:
                 "python",
                 "-m",
                 "roboco.mcp.git.git_server",
+                agent_id,
+            ],
+            "env": mcp_env,
+        }
+
+        # A2A server - Agent-to-Agent protocol for cross-cell coordination
+        # All agents can discover and request help from other agents
+        mcp_servers["roboco-a2a"] = {
+            "command": "uv",
+            "args": [
+                "run",
+                "python",
+                "-m",
+                "roboco.mcp.a2a_server",
+                agent_id,
+            ],
+            "env": mcp_env,
+        }
+
+        # Test server - run tests, lint, format, typecheck, build
+        # Role-based permissions enforced at handler level
+        mcp_servers["roboco-test"] = {
+            "command": "uv",
+            "args": [
+                "run",
+                "python",
+                "-m",
+                "roboco.mcp.test.test_server",
                 agent_id,
             ],
             "env": mcp_env,

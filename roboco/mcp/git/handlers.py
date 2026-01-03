@@ -7,6 +7,7 @@ Handler functions for git operations. Each handler:
 3. Returns formatted response with guidance
 """
 
+from dataclasses import dataclass
 from typing import Any
 
 from roboco.mcp.utils import (
@@ -14,6 +15,16 @@ from roboco.mcp.utils import (
     format_error_response,
     format_success_response,
 )
+
+
+@dataclass
+class GitContext:
+    """Common context for git operations."""
+
+    client: ApiClient
+    project_slug: str
+    agent_id: str
+
 
 # =============================================================================
 # READ-ONLY HANDLERS
@@ -172,25 +183,23 @@ async def handle_git_diff(
 # =============================================================================
 
 
-async def handle_git_commit(  # noqa: PLR0913
-    client: ApiClient,
-    project_slug: str,
+async def handle_git_commit(
+    ctx: GitContext,
     message: str,
     task_id: str,
     files: list[str] | None,
-    agent_id: str,
 ) -> dict[str, Any]:
     """Handle git commit request."""
     payload: dict[str, Any] = {
-        "project_slug": project_slug,
+        "project_slug": ctx.project_slug,
         "message": message,
         "task_id": task_id,
-        "agent_id": agent_id,
+        "agent_id": ctx.agent_id,
     }
     if files:
         payload["files"] = files
 
-    resp = await client.post("/git/commit", json=payload)
+    resp = await ctx.client.post("/git/commit", json=payload)
     if not resp.ok:
         return format_error_response(
             "GIT_COMMIT_FAILED",
@@ -247,24 +256,22 @@ async def handle_git_push(
     )
 
 
-async def handle_git_create_pr(  # noqa: PLR0913
-    client: ApiClient,
-    project_slug: str,
+async def handle_git_create_pr(
+    ctx: GitContext,
     task_id: str,
     title: str,
     body: str,
-    agent_id: str,
 ) -> dict[str, Any]:
     """Handle PR creation request."""
     payload: dict[str, Any] = {
-        "project_slug": project_slug,
+        "project_slug": ctx.project_slug,
         "task_id": task_id,
         "title": title,
         "body": body,
-        "agent_id": agent_id,
+        "agent_id": ctx.agent_id,
     }
 
-    resp = await client.post("/git/pr/create", json=payload)
+    resp = await ctx.client.post("/git/pr/create", json=payload)
     if not resp.ok:
         return format_error_response(
             "PR_CREATE_FAILED",
@@ -290,13 +297,11 @@ async def handle_git_create_pr(  # noqa: PLR0913
 # =============================================================================
 
 
-async def handle_git_create_branch(  # noqa: PLR0913
-    client: ApiClient,
-    project_slug: str,
+async def handle_git_create_branch(
+    ctx: GitContext,
     task_id: str,
     branch_type: str,
     parent_branch: str | None,
-    agent_id: str,
 ) -> dict[str, Any]:
     """Handle branch creation request (PM only)."""
     valid_types = {"feature", "bug", "chore", "docs", "hotfix"}
@@ -308,15 +313,15 @@ async def handle_git_create_branch(  # noqa: PLR0913
         )
 
     payload: dict[str, Any] = {
-        "project_slug": project_slug,
+        "project_slug": ctx.project_slug,
         "task_id": task_id,
         "branch_type": branch_type,
-        "agent_id": agent_id,
+        "agent_id": ctx.agent_id,
     }
     if parent_branch:
         payload["parent_branch"] = parent_branch
 
-    resp = await client.post("/git/branch/create", json=payload)
+    resp = await ctx.client.post("/git/branch/create", json=payload)
     if not resp.ok:
         return format_error_response(
             "BRANCH_CREATE_FAILED",
@@ -363,13 +368,11 @@ async def handle_git_checkout(
     )
 
 
-async def handle_git_merge_pr(  # noqa: PLR0913
-    client: ApiClient,
-    project_slug: str,
+async def handle_git_merge_pr(
+    ctx: GitContext,
     pr_number: int,
     task_id: str,
     merge_method: str,
-    agent_id: str,
 ) -> dict[str, Any]:
     """Handle PR merge request (PM only)."""
     valid_methods = {"merge", "squash", "rebase"}
@@ -381,14 +384,14 @@ async def handle_git_merge_pr(  # noqa: PLR0913
         )
 
     payload: dict[str, Any] = {
-        "project_slug": project_slug,
+        "project_slug": ctx.project_slug,
         "pr_number": pr_number,
         "task_id": task_id,
         "merge_method": merge_method,
-        "agent_id": agent_id,
+        "agent_id": ctx.agent_id,
     }
 
-    resp = await client.post("/git/pr/merge", json=payload)
+    resp = await ctx.client.post("/git/pr/merge", json=payload)
     if not resp.ok:
         return format_error_response(
             "PR_MERGE_FAILED",

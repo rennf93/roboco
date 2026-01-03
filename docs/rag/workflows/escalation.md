@@ -73,6 +73,9 @@ Requirements:
 - Task must be in `awaiting_pm_review`
 - PR must exist (for git tasks)
 - Only PMs can do this
+- **PARENT TASKS ONLY** - Subtasks cannot be escalated to CEO
+
+If you need to escalate a subtask, escalate the parent task instead. The CEO reviews the complete feature, not individual components.
 
 ## Good Escalation Format
 

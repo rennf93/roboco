@@ -454,18 +454,14 @@ class OllamaEmbedder:
                         f"{self.base_url}/api/embed",
                         json={"model": self.model, "input": batch},
                     )
-                    return self._handle_embed_response(
-                        response, input_count=len(batch)
-                    )
+                    return self._handle_embed_response(response, input_count=len(batch))
 
                 except httpx.ConnectError as e:
                     last_error = OllamaConnectionError(
                         f"Cannot connect to Ollama at {self.base_url}: {e}"
                     )
                 except httpx.TimeoutException as e:
-                    last_error = OllamaConnectionError(
-                        f"Ollama request timed out: {e}"
-                    )
+                    last_error = OllamaConnectionError(f"Ollama request timed out: {e}")
                 except (OllamaModelError, OllamaEmbedderError):
                     raise
                 except Exception as e:
@@ -653,9 +649,7 @@ class OllamaEmbedder:
                         f"Cannot connect to Ollama at {self.base_url}: {e}"
                     )
                 except httpx.TimeoutException as e:
-                    last_error = OllamaConnectionError(
-                        f"Ollama request timed out: {e}"
-                    )
+                    last_error = OllamaConnectionError(f"Ollama request timed out: {e}")
                 except (OllamaModelError, OllamaEmbedderError):
                     raise
                 except Exception as e:

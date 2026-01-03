@@ -62,7 +62,16 @@ backlog → pending (via roboco_task_activate)
 | `awaiting_qa → needs_revision` | qa only |
 | `awaiting_documentation → awaiting_pm_review` | documenter only |
 | `awaiting_pm_review → completed` | cell_pm, main_pm |
+| `awaiting_pm_review → awaiting_ceo_approval` | cell_pm, main_pm (parent tasks only) |
+| `awaiting_ceo_approval → completed` | ceo only |
+| `awaiting_ceo_approval → needs_revision` | ceo only |
 | `any → cancelled` | cell_pm, main_pm |
+
+## CEO Approval Notes
+
+- Only **parent tasks** (no `parent_task_id`) can be escalated to CEO
+- Subtasks are completed by their Cell PM, not the CEO
+- The CEO reviews the complete feature via the parent task
 
 ## Checking State
 

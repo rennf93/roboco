@@ -41,7 +41,31 @@ roboco_git_create_branch(project_slug, task_id, branch_type, "main")
 Use `roboco_group_create()` in each relevant cell channel. Cell PMs need groups to create sessions.
 
 ### 5. CREATE CELL TASKS
-Use `roboco_task_create()` with `parent_task_id`, `team`, and `assigned_to` Cell PM (be-pm, fe-pm, ux-pm).
+
+**CRITICAL: Always set `parent_task_id` to YOUR task ID.** Without this, you create orphan tasks, not subtasks.
+
+```python
+# Get YOUR task ID first
+my_task = roboco_task_get(task_id)
+
+# Create SUBTASK with parent_task_id
+roboco_task_create(
+    title="Backend: Implement feature X",
+    parent_task_id=my_task["id"],  # REQUIRED - links to your task
+    team="backend",
+    assigned_to="be-pm",  # USE SLUG
+    ...
+)
+```
+
+**Agent slugs:**
+- `be-pm`, `fe-pm`, `ux-pm` - Cell PMs
+
+**Without `parent_task_id`:**
+- Task becomes a sibling (wrong!)
+- Completion tracking breaks
+- Your task can't complete
+
 - Set `project_id` and `branch_name` for git tasks
 - Cell PMs will create subtask branches from your parent branch
 

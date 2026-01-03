@@ -279,6 +279,19 @@ async def handle_escalate_to_ceo(
             {"current_status": current_status},
         )
 
+    # Only parent tasks can be escalated to CEO (not subtasks)
+    if task.get("parent_task_id"):
+        return format_error_response(
+            "IS_SUBTASK",
+            "Cannot escalate subtask to CEO - only parent tasks allowed.",
+            {
+                "task_id": task_id,
+                "parent_task_id": task.get("parent_task_id"),
+                "guidance": "Escalate the parent task instead.",
+            },
+            hint="roboco_kb_search('parent task escalation')",
+        )
+
     payload = {}
     if notes:
         payload["notes"] = notes

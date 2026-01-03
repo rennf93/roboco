@@ -1212,6 +1212,9 @@ async def complete_task(
                 detail="force_with_cancelled requires justification",
             )
 
+    # Store original task info for error reporting
+    original_status = task.status.value if task.status else "unknown"
+
     task = await service.complete(
         task_id,
         agent_id=agent.agent_id,
@@ -1219,10 +1222,41 @@ async def complete_task(
         justification=justification,
     )
     if not task:
+        # Provide specific error based on what blocked completion
+        refetch = await service.get(task_id)
+        if refetch:
+            # Check for incomplete descendants
+            descendants = await service.get_all_descendants(task_id)
+            incomplete = [
+                str(d.id)[:8]
+                for d in descendants
+                if d.status.value not in ("completed", "cancelled")
+            ]
+            max_shown = 5
+            if incomplete:
+                shown = ", ".join(incomplete[:max_shown])
+                extra = (
+                    f" (+{len(incomplete) - max_shown} more)"
+                    if len(incomplete) > max_shown
+                    else ""
+                )
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail=f"Cannot complete task - {len(incomplete)} subtask(s) "
+                    f"still in progress: {shown}{extra}. "
+                    "Monitor and help unblock stuck tasks.",
+                )
+            # Check for status issue
+            if original_status not in ("awaiting_pm_review", "in_progress"):
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail=f"Cannot complete - status is '{original_status}'. "
+                    "Must be 'awaiting_pm_review' or 'in_progress'.",
+                )
+        # Fallback generic error
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Cannot complete task - all subtasks must be in terminal states "
-            "(completed or cancelled). Monitor and help unblock stuck tasks.",
+            detail="Cannot complete task - check task status and subtasks.",
         )
     await db.commit()
     return task_to_response(task)

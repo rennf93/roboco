@@ -72,11 +72,12 @@ class JournalsIndexPlugin(BaseIndexPlugin):
         top_k: int = 5,
     ) -> list:
         """Search journal entries for a specific agent."""
-        return await self.search(
+        outcome = await self.search(
             query=query,
             top_k=top_k,
             filters={"agent_id": str(agent_id)},
         )
+        return outcome.results
 
     async def search_by_type(
         self,
@@ -85,8 +86,9 @@ class JournalsIndexPlugin(BaseIndexPlugin):
         top_k: int = 5,
     ) -> list:
         """Search journal entries of a specific type."""
-        return await self.search(
+        outcome = await self.search(
             query=query,
             top_k=top_k,
             filters={"entry_type": entry_type},
         )
+        return outcome.results

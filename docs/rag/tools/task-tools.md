@@ -67,10 +67,17 @@ roboco_task_complete(task_id)
 ## PM Operations
 
 ```python
-# Create task
+# Create SUBTASK (most common)
+roboco_task_create({
+    title: "Implement auth endpoint",
+    parent_task_id: my_task_id,  # REQUIRED for subtasks
+    team: "backend",
+    assigned_to: "be-dev-1"      # Use SLUG
+})
+
+# Create standalone task (rare)
 roboco_task_create({
     title: "...",
-    description: "...",
     team: "backend",
     status: "backlog"
 })
@@ -83,7 +90,14 @@ roboco_task_cancel(task_id, reason)
 
 # Plan
 roboco_task_plan(task_id, approach, steps)
+
+# Escalate to CEO (parent tasks only)
+roboco_task_escalate_to_ceo(task_id, notes)
 ```
+
+**CRITICAL**: When creating subtasks, ALWAYS include `parent_task_id`. Without it, you create orphan sibling tasks instead of linked subtasks.
+
+**Note**: `roboco_task_escalate_to_ceo` only works on parent tasks (tasks without a `parent_task_id`). Subtasks must have their parent task escalated instead.
 
 ## Progress Updates
 

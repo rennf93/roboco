@@ -7,6 +7,7 @@ Handler functions for test/CI operations. Each handler:
 3. Returns formatted response with results and guidance
 """
 
+from dataclasses import dataclass
 from typing import Any
 
 from roboco.mcp.utils import (
@@ -14,6 +15,17 @@ from roboco.mcp.utils import (
     format_error_response,
     format_success_response,
 )
+
+
+@dataclass
+class TestContext:
+    """Common context for test operations."""
+
+    client: ApiClient
+    project_slug: str
+    task_id: str
+    agent_id: str
+
 
 # =============================================================================
 # READ-ONLY HANDLERS
@@ -54,25 +66,22 @@ async def handle_test_status(
 # =============================================================================
 
 
-async def handle_test_run(  # noqa: PLR0913
-    client: ApiClient,
-    project_slug: str,
-    task_id: str,
+async def handle_test_run(
+    ctx: TestContext,
     test_path: str | None,
     verbose: bool,
-    agent_id: str,
 ) -> dict[str, Any]:
     """Handle test run request."""
     payload: dict[str, Any] = {
-        "project_slug": project_slug,
-        "task_id": task_id,
-        "agent_id": agent_id,
+        "project_slug": ctx.project_slug,
+        "task_id": ctx.task_id,
+        "agent_id": ctx.agent_id,
         "verbose": verbose,
     }
     if test_path:
         payload["test_path"] = test_path
 
-    resp = await client.post("/test/run", json=payload)
+    resp = await ctx.client.post("/test/run", json=payload)
     if not resp.ok:
         return format_error_response(
             "TEST_RUN_FAILED",
@@ -97,25 +106,22 @@ async def handle_test_run(  # noqa: PLR0913
     return format_success_response(data, guidance=guidance, next_step=next_step)
 
 
-async def handle_test_lint(  # noqa: PLR0913
-    client: ApiClient,
-    project_slug: str,
-    task_id: str,
+async def handle_test_lint(
+    ctx: TestContext,
     fix: bool,
     path: str | None,
-    agent_id: str,
 ) -> dict[str, Any]:
     """Handle lint request."""
     payload: dict[str, Any] = {
-        "project_slug": project_slug,
-        "task_id": task_id,
-        "agent_id": agent_id,
+        "project_slug": ctx.project_slug,
+        "task_id": ctx.task_id,
+        "agent_id": ctx.agent_id,
         "fix": fix,
     }
     if path:
         payload["path"] = path
 
-    resp = await client.post("/test/lint", json=payload)
+    resp = await ctx.client.post("/test/lint", json=payload)
     if not resp.ok:
         return format_error_response(
             "LINT_FAILED",
@@ -145,25 +151,22 @@ async def handle_test_lint(  # noqa: PLR0913
     )
 
 
-async def handle_test_format(  # noqa: PLR0913
-    client: ApiClient,
-    project_slug: str,
-    task_id: str,
+async def handle_test_format(
+    ctx: TestContext,
     check_only: bool,
     path: str | None,
-    agent_id: str,
 ) -> dict[str, Any]:
     """Handle format request."""
     payload: dict[str, Any] = {
-        "project_slug": project_slug,
-        "task_id": task_id,
-        "agent_id": agent_id,
+        "project_slug": ctx.project_slug,
+        "task_id": ctx.task_id,
+        "agent_id": ctx.agent_id,
         "check_only": check_only,
     }
     if path:
         payload["path"] = path
 
-    resp = await client.post("/test/format", json=payload)
+    resp = await ctx.client.post("/test/format", json=payload)
     if not resp.ok:
         return format_error_response(
             "FORMAT_FAILED",

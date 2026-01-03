@@ -125,10 +125,10 @@ class DecisionsIndexPlugin(BaseIndexPlugin):
         Returns:
             List of similar past decisions
         """
-        results = await self.search(query=topic, top_k=top_k)
+        outcome = await self.search(query=topic, top_k=top_k)
 
         decisions = []
-        for result in results:
+        for result in outcome.results:
             if result.score >= threshold:
                 decisions.append(
                     Decision(
@@ -176,11 +176,12 @@ class DecisionsIndexPlugin(BaseIndexPlugin):
         top_k: int = 5,
     ) -> list[SearchResult]:
         """Search decisions by scope (team or org)."""
-        return await self.search(
+        outcome = await self.search(
             query=query,
             top_k=top_k,
             filters={"scope": scope},
         )
+        return outcome.results
 
     async def search_by_agent(
         self,
@@ -189,8 +190,9 @@ class DecisionsIndexPlugin(BaseIndexPlugin):
         top_k: int = 5,
     ) -> list[SearchResult]:
         """Search decisions made by a specific agent."""
-        return await self.search(
+        outcome = await self.search(
             query=query,
             top_k=top_k,
             filters={"agent_id": str(agent_id)},
         )
+        return outcome.results

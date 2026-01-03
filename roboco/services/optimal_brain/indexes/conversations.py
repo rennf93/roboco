@@ -76,11 +76,12 @@ class ConversationsIndexPlugin(BaseIndexPlugin):
         top_k: int = 5,
     ) -> list:
         """Search conversations in a specific channel."""
-        return await self.search(
+        outcome = await self.search(
             query=query,
             top_k=top_k,
             filters={"channel_id": str(channel_id)},
         )
+        return outcome.results
 
     async def search_by_session(
         self,
@@ -89,8 +90,9 @@ class ConversationsIndexPlugin(BaseIndexPlugin):
         top_k: int = 5,
     ) -> list:
         """Search conversations in a specific session."""
-        return await self.search(
+        outcome = await self.search(
             query=query,
             top_k=top_k,
             filters={"session_id": str(session_id)},
         )
+        return outcome.results

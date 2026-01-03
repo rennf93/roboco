@@ -85,4 +85,9 @@ roboco_journal_reflect({
 
 QA CANNOT review tasks they originally developed.
 
-System tracks `original_developer` in `quick_context`. If QA == original_developer, claim is FORBIDDEN.
+System tracks `original_developer` in `quick_context`. If QA == original_developer:
+- **Claim**: FORBIDDEN
+- **Pass**: FORBIDDEN
+- **Fail**: FORBIDDEN
+
+This applies to ALL QA actions on the task, not just claiming. The system enforces this at both the API and MCP tool level.

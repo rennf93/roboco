@@ -146,7 +146,8 @@ class LearningsIndexPlugin(BaseIndexPlugin):
         if shareable_only:
             filters["shareable"] = True
 
-        return await self.search(query=query, top_k=top_k, filters=filters)
+        outcome = await self.search(query=query, top_k=top_k, filters=filters)
+        return outcome.results
 
     async def get_learnings_by_category(
         self,
@@ -154,11 +155,12 @@ class LearningsIndexPlugin(BaseIndexPlugin):
         top_k: int = 20,
     ) -> list[SearchResult]:
         """Get all learnings in a category."""
-        return await self.search(
+        outcome = await self.search(
             query=f"learnings about {category}",
             top_k=top_k,
             filters={"category": category},
         )
+        return outcome.results
 
     async def get_learnings_by_role(
         self,
@@ -166,11 +168,12 @@ class LearningsIndexPlugin(BaseIndexPlugin):
         top_k: int = 20,
     ) -> list[SearchResult]:
         """Get learnings from agents with a specific role."""
-        return await self.search(
+        outcome = await self.search(
             query=f"learnings from {agent_role}",
             top_k=top_k,
             filters={"agent_role": agent_role},
         )
+        return outcome.results
 
     async def get_team_learnings(
         self,
@@ -178,8 +181,9 @@ class LearningsIndexPlugin(BaseIndexPlugin):
         top_k: int = 20,
     ) -> list[SearchResult]:
         """Get learnings from a specific team."""
-        return await self.search(
+        outcome = await self.search(
             query="team learnings",
             top_k=top_k,
             filters={"team": team},
         )
+        return outcome.results

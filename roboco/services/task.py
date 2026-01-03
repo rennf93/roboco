@@ -1722,8 +1722,10 @@ class TaskService(BaseService):
         )
 
         if ready_for_pm:
-            # Both conditions met - transition to PM review
-            task.status = TaskStatus.AWAITING_PM_REVIEW
+            # Both conditions met - transition to PM review (validated)
+            self._validate_and_set_status(
+                task, TaskStatus.AWAITING_PM_REVIEW, "documenter"
+            )
             # Clear assignment so PM can claim the task for review
             task.assigned_to = None
             self.log.info(
@@ -1908,178 +1910,89 @@ class TaskService(BaseService):
         )
         return task
 
-    async def complete(  # noqa: PLR0911, PLR0912, PLR0915
-        self,
-        task_id: UUID,
-        agent_id: UUID | None = None,
-        force_with_cancelled: bool = False,
-        justification: str | None = None,
-    ) -> TaskTable | None:
-        """
-        Mark task as completed (PM only).
-
-        Approval hierarchy:
-        1. Cell PM reviews → reassigns to Main PM (same awaiting_pm_review state)
-        2. Main PM reviews leaf task → completes
-        3. Main PM reviews parent task (all descendants terminal) → escalates to CEO
-
-        PM Override for cancelled subtasks:
-        Use force_with_cancelled=True with justification to complete despite
-        cancelled subtasks. Only works if ALL non-completed children are cancelled.
-
-        Args:
-            task_id: The task to complete
-            agent_id: Optional agent UUID - if provided, allows PM to complete
-                      their own in_progress tasks
-            force_with_cancelled: Override cancelled subtask check
-            justification: Required when force_with_cancelled=True
-
-        Returns:
-            The completed task or None if completion not allowed
-        """
-        task = await self.get(task_id)
-        if not task:
+    async def _get_completing_agent_role(self, agent_id: UUID | None) -> str | None:
+        """Get the role of the completing agent."""
+        if not agent_id:
             return None
+        agent_result = await self.session.execute(
+            select(AgentTable).where(AgentTable.id == agent_id)
+        )
+        agent = agent_result.scalar_one_or_none()
+        if agent and agent.role:
+            return agent.role.value if hasattr(agent.role, "value") else str(agent.role)
+        return None
 
-        # Get the completing agent's role
-        completing_agent_role = None
-        if agent_id:
-            agent_result = await self.session.execute(
-                select(AgentTable).where(AgentTable.id == agent_id)
-            )
-            completing_agent = agent_result.scalar_one_or_none()
-            if completing_agent and completing_agent.role:
-                completing_agent_role = (
-                    completing_agent.role.value
-                    if hasattr(completing_agent.role, "value")
-                    else str(completing_agent.role)
-                )
-
-        # Check if PM is completing their own task (assigned to them)
-        is_own_task = agent_id and task.assigned_to == agent_id
-
-        # Two valid completion paths:
-        # 1. Normal workflow: task in awaiting_pm_review (dev → QA → docs → PM)
-        # 2. PM's own work: task in in_progress AND assigned to this PM
+    def _is_valid_completion_status(
+        self, task: TaskTable, agent_id: UUID | None
+    ) -> bool:
+        """Check if task is in a valid status for completion."""
         if task.status == TaskStatus.AWAITING_PM_REVIEW:
-            pass  # Normal completion of developer work
-        elif task.status == TaskStatus.IN_PROGRESS and is_own_task:
-            pass  # PM completing their own task
-        else:
+            return True
+        is_own_task = agent_id and task.assigned_to == agent_id
+        return task.status == TaskStatus.IN_PROGRESS and bool(is_own_task)
+
+    async def _handle_cell_pm_escalation(
+        self, task: TaskTable, task_id: UUID, agent_id: UUID | None
+    ) -> TaskTable | None:
+        """Handle Cell PM escalation to Main PM. Returns task if escalated."""
+        main_pm_result = await self.session.execute(
+            select(AgentTable).where(AgentTable.role == AgentRole.MAIN_PM)
+        )
+        main_pm = main_pm_result.scalar_one_or_none()
+        if not main_pm:
             self.log.warning(
-                "Cannot complete task - invalid status for completion",
-                task_id=str(task_id),
-                current_status=task.status.value,
-                is_own_task=is_own_task,
+                "No Main PM found - proceeding with completion", task_id=str(task_id)
             )
             return None
 
-        # Check ALL descendants (recursive - children, grandchildren, etc.)
+        task.assigned_to = cast("Any", main_pm.id)
+        await self.session.flush()
+        await self._emit_task_event(
+            EventType.TASK_ESCALATED_TO_MAIN_PM,
+            task_id,
+            {
+                "main_pm_id": str(main_pm.id),
+                "cell_pm_id": str(agent_id) if agent_id else None,
+            },
+        )
+        self.log.info(
+            "Cell PM approved - escalating to Main PM",
+            task_id=str(task_id),
+            main_pm_id=str(main_pm.id),
+        )
+        return task
+
+    async def _validate_completion_prerequisites(
+        self, task: TaskTable, task_id: UUID, agent_id: UUID | None
+    ) -> list[TaskTable] | None:
+        """Validate task can be completed. Returns descendants or None."""
+        if not self._is_valid_completion_status(task, agent_id):
+            self.log.warning("Cannot complete - invalid status", task_id=str(task_id))
+            return None
+
         all_descendants = await self.get_all_descendants(task_id)
-        incomplete_descendants = [
+        incomplete = [
             st
             for st in all_descendants
             if st.status not in (TaskStatus.COMPLETED, TaskStatus.CANCELLED)
         ]
-
-        if incomplete_descendants:
-            # Block completion - some descendants are still in progress
+        if incomplete:
             self.log.warning(
-                "Cannot complete task - incomplete descendants exist",
-                task_id=str(task_id),
-                incomplete_count=len(incomplete_descendants),
-                incomplete_ids=[str(st.id) for st in incomplete_descendants[:5]],
+                "Cannot complete - incomplete descendants", task_id=str(task_id)
             )
             return None
+        return all_descendants
 
-        # APPROVAL HIERARCHY: Cell PM → Main PM → CEO
-        if task.status == TaskStatus.AWAITING_PM_REVIEW:
-            # Cell PM reviewed - escalate to Main PM
-            if completing_agent_role == "cell_pm":
-                main_pm_result = await self.session.execute(
-                    select(AgentTable).where(AgentTable.role == AgentRole.MAIN_PM)
-                )
-                main_pm = main_pm_result.scalar_one_or_none()
-                if main_pm:
-                    task.assigned_to = cast("Any", main_pm.id)
-                    await self.session.flush()
-
-                    # Emit event for Main PM notification
-                    await self._emit_task_event(
-                        EventType.TASK_ESCALATED_TO_MAIN_PM,
-                        task_id,
-                        {
-                            "main_pm_id": str(main_pm.id),
-                            "cell_pm_id": str(agent_id) if agent_id else None,
-                        },
-                    )
-
-                    self.log.info(
-                        "Cell PM approved - escalating to Main PM",
-                        task_id=str(task_id),
-                        main_pm_id=str(main_pm.id),
-                    )
-                    return task  # Return without completing - Main PM needs to review
-                else:
-                    self.log.warning(
-                        "No Main PM found - proceeding with completion",
-                        task_id=str(task_id),
-                    )
-
-            # Main PM reviewed - check if parent task needs CEO approval
-            if completing_agent_role == "main_pm" and all_descendants:
-                # Parent task with descendants - needs CEO approval
-                self.log.info(
-                    "Main PM approved parent task - escalating to CEO",
-                    task_id=str(task_id),
-                    descendant_count=len(all_descendants),
-                )
-                return await self.escalate_to_ceo(task_id, "main_pm")
-
-        # Check for cancelled descendants (only matters if force override requested)
-        cancelled_descendants = [
-            st for st in all_descendants if st.status == TaskStatus.CANCELLED
-        ]
-
-        if cancelled_descendants and not force_with_cancelled:
-            self.log.warning(
-                "Cannot complete - cancelled descendants exist",
-                task_id=str(task_id),
-                cancelled_count=len(cancelled_descendants),
-                hint="use force_with_cancelled (CEO only)",
-            )
-            return None
-
-        if force_with_cancelled and cancelled_descendants:
-            if not justification:
-                self.log.warning(
-                    "Cannot force complete - justification required",
-                    task_id=str(task_id),
-                )
-                return None
-            # Log the CEO override
-            self.log.info(
-                "CEO override: completing task with cancelled descendants",
-                task_id=str(task_id),
-                agent_id=str(agent_id) if agent_id else None,
-                justification=justification,
-                cancelled_descendant_ids=[str(st.id) for st in cancelled_descendants],
-            )
-
-        task.completed_at = datetime.now(UTC)
-        # Validate transition with PM role requirement
-        self._validate_and_set_status(task, TaskStatus.COMPLETED, "cell_pm")
-        await self.session.flush()
-
-        # RAG auto-indexing hooks (fire-and-forget)
-        # 1. Extract completion learnings
+    async def _trigger_completion_hooks(
+        self, task: TaskTable, agent_id: UUID | None
+    ) -> None:
+        """Trigger background RAG indexing hooks after completion."""
         bg_task = asyncio.create_task(
             self._extract_completion_learnings(task, agent_id)
         )
         self._background_tasks.add(bg_task)
         bg_task.add_done_callback(self._background_tasks.discard)
 
-        # 2. Index code changes from commits
         if task.commits:
             code_task = asyncio.create_task(
                 self._index_code_changes_background(
@@ -2091,7 +2004,6 @@ class TaskService(BaseService):
             self._background_tasks.add(code_task)
             code_task.add_done_callback(self._background_tasks.discard)
 
-        # 3. Detect and index decisions from notes
         if task.dev_notes:
             decision_task = asyncio.create_task(
                 self._index_decisions_background(
@@ -2105,7 +2017,61 @@ class TaskService(BaseService):
             self._background_tasks.add(decision_task)
             decision_task.add_done_callback(self._background_tasks.discard)
 
-        # Unblock any tasks waiting on this one
+    async def complete(
+        self,
+        task_id: UUID,
+        agent_id: UUID | None = None,
+        force_with_cancelled: bool = False,
+        justification: str | None = None,
+    ) -> TaskTable | None:
+        """
+        Mark task as completed (PM only).
+
+        Approval hierarchy:
+        1. Cell PM reviews → reassigns to Main PM (same awaiting_pm_review state)
+        2. Main PM reviews leaf task → completes
+        3. Main PM reviews parent task (all descendants terminal) → escalates to CEO
+        """
+        task = await self.get(task_id)
+        if not task:
+            return None
+
+        completing_agent_role = await self._get_completing_agent_role(agent_id)
+        all_descendants = await self._validate_completion_prerequisites(
+            task, task_id, agent_id
+        )
+        if all_descendants is None:
+            return None
+
+        # APPROVAL HIERARCHY: Cell PM → Main PM → CEO
+        if task.status == TaskStatus.AWAITING_PM_REVIEW:
+            if completing_agent_role == "cell_pm":
+                escalated = await self._handle_cell_pm_escalation(
+                    task, task_id, agent_id
+                )
+                if escalated:
+                    return escalated
+            if completing_agent_role == "main_pm" and all_descendants:
+                self.log.info(
+                    "Main PM approved parent - escalating to CEO", task_id=str(task_id)
+                )
+                return await self.escalate_to_ceo(task_id, "main_pm")
+
+        # Handle cancelled descendants - require force flag and justification
+        cancelled = [st for st in all_descendants if st.status == TaskStatus.CANCELLED]
+        if cancelled and (not force_with_cancelled or not justification):
+            self.log.warning(
+                "Cannot complete - cancelled descendants", task_id=str(task_id)
+            )
+            return None
+
+        task.completed_at = datetime.now(UTC)
+        self._validate_and_set_status(
+            task, TaskStatus.COMPLETED, completing_agent_role or "cell_pm"
+        )
+        await self.session.flush()
+
+        await self._trigger_completion_hooks(task, agent_id)
         await self._unblock_dependents(task_id)
         return task
 
@@ -2145,6 +2111,15 @@ class TaskService(BaseService):
                 "Cannot escalate to CEO - task not in PM review",
                 task_id=str(task_id),
                 current_status=task.status.value,
+            )
+            return None
+
+        # Only parent tasks can be escalated to CEO (not subtasks)
+        if task.parent_task_id:
+            self.log.warning(
+                "Cannot escalate subtask to CEO - only parent tasks allowed",
+                task_id=str(task_id),
+                parent_task_id=str(task.parent_task_id),
             )
             return None
 

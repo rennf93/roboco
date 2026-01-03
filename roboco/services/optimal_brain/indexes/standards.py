@@ -265,7 +265,8 @@ class StandardsIndexPlugin(BaseIndexPlugin):
         if severity:
             filters["severity"] = severity
 
-        return await self.search(query=query, top_k=top_k, filters=filters)
+        outcome = await self.search(query=query, top_k=top_k, filters=filters)
+        return outcome.results
 
     async def validate_against_standards(
         self,

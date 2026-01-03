@@ -258,6 +258,31 @@ def _validate_qa_issues(issues: list[str]) -> dict[str, Any] | None:
     return None
 
 
+async def _validate_qa_fail_request(
+    client: ApiClient, task_id: str, issues: list[str], agent_id: str
+) -> tuple[dict[str, Any] | None, dict[str, Any] | None]:
+    """Validate QA fail request. Returns (task, None) or (None, error)."""
+    if error := _validate_qa_role(agent_id, "fail"):
+        return None, error
+
+    if error := _validate_qa_issues(issues):
+        return None, error
+
+    task, error = await fetch_task_or_error(client, task_id)
+    if error:
+        return None, error
+    assert task is not None
+
+    if error := validate_task_status_in(task, QA_WORKFLOW_STATUSES, "fail QA on"):
+        return None, error
+
+    # Security: prevent QA from reviewing their own work
+    if error := await _check_self_review(task, agent_id, client):
+        return None, error
+
+    return task, None
+
+
 async def handle_task_qa_fail(
     client: ApiClient,
     task_id: str,
@@ -266,19 +291,10 @@ async def handle_task_qa_fail(
     agent_id: str,
 ) -> dict[str, Any]:
     """Handle task QA failure."""
-    if error := _validate_qa_role(agent_id, "fail"):
-        return error
-
-    if error := _validate_qa_issues(issues):
-        return error
-
-    task, error = await fetch_task_or_error(client, task_id)
+    task, error = await _validate_qa_fail_request(client, task_id, issues, agent_id)
     if error:
         return error
     assert task is not None
-
-    if error := validate_task_status_in(task, QA_WORKFLOW_STATUSES, "fail QA on"):
-        return error
 
     full_notes = f"{qa_notes}\n\nIssues:\n" + "\n".join(f"- {i}" for i in issues)
     fail_resp = await client.post(

@@ -76,9 +76,12 @@ def _register_test_tools(mcp: FastMCP, client: ApiClient, agent_id: str) -> None
         Returns:
             Test results with pass/fail counts and output
         """
-        return await handle_test_run(
-            client, project_slug, task_id, test_path, verbose, agent_id
+        from roboco.mcp.test.handlers import TestContext
+
+        ctx = TestContext(
+            client=client, project_slug=project_slug, task_id=task_id, agent_id=agent_id
         )
+        return await handle_test_run(ctx, test_path, verbose)
 
     @mcp.tool()
     async def roboco_test_lint(
@@ -101,9 +104,12 @@ def _register_test_tools(mcp: FastMCP, client: ApiClient, agent_id: str) -> None
         Returns:
             Lint results with issues found
         """
-        return await handle_test_lint(
-            client, project_slug, task_id, fix, path, agent_id
+        from roboco.mcp.test.handlers import TestContext
+
+        ctx = TestContext(
+            client=client, project_slug=project_slug, task_id=task_id, agent_id=agent_id
         )
+        return await handle_test_lint(ctx, fix, path)
 
     @mcp.tool()
     async def roboco_test_format(
@@ -126,9 +132,12 @@ def _register_test_tools(mcp: FastMCP, client: ApiClient, agent_id: str) -> None
         Returns:
             Format results with files modified
         """
-        return await handle_test_format(
-            client, project_slug, task_id, check_only, path, agent_id
+        from roboco.mcp.test.handlers import TestContext
+
+        ctx = TestContext(
+            client=client, project_slug=project_slug, task_id=task_id, agent_id=agent_id
         )
+        return await handle_test_format(ctx, check_only, path)
 
     @mcp.tool()
     async def roboco_test_typecheck(

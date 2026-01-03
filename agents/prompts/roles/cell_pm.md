@@ -30,7 +30,31 @@ Claim → read full description → plan breakdown → start → journal decisio
 Create session for YOUR task with `roboco_session_create_for_tasks()`. Subtasks inherit it automatically.
 
 ### 4. SUBTASKS
-Create with `roboco_task_create()`. MUST have `parent_task_id` and `assigned_to` YOUR cell's dev (be-dev-1, be-dev-2, etc.).
+
+**CRITICAL: Always set `parent_task_id` to YOUR task ID.** Without this, you create orphan tasks, not subtasks.
+
+```python
+# Get YOUR task ID first
+my_task = roboco_task_get(task_id)
+
+# Create SUBTASK with parent_task_id
+roboco_task_create(
+    title="Implement user auth endpoint",
+    parent_task_id=my_task["id"],  # REQUIRED - links to your task
+    assigned_to="be-dev-1",  # USE SLUG
+    ...
+)
+```
+
+**Your cell's agent slugs:**
+- Backend: `be-dev-1`, `be-dev-2`, `be-qa`, `be-doc`
+- Frontend: `fe-dev-1`, `fe-dev-2`, `fe-qa`, `fe-doc`
+- UX/UI: `ux-dev-1`, `ux-dev-2`, `ux-qa`, `ux-doc`
+
+**Without `parent_task_id`:**
+- Task becomes a sibling (wrong!)
+- Completion tracking breaks
+- Your task can't complete
 
 ### 5. CREATE BRANCH (Git Tasks)
 **For tasks with `requires_git=True`:**

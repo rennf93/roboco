@@ -5,17 +5,16 @@ Request/response models for task endpoints.
 """
 
 from datetime import datetime
-from typing import TYPE_CHECKING, Any
+from typing import Any
 from uuid import UUID
 
 from pydantic import BaseModel, Field
+from sqlalchemy import select
 
+from roboco.db.tables import ProjectTable, TaskTable, WorkSessionTable
 from roboco.models.base import Complexity, TaskNature, TaskStatus, TaskType, Team
 from roboco.models.session import SessionScope
 from roboco.utils.converters import require_uuid, to_python_uuid, to_python_uuid_list
-
-if TYPE_CHECKING:
-    from roboco.db.tables import TaskTable
 
 # =============================================================================
 # NESTED RESPONSE MODELS
@@ -601,10 +600,6 @@ async def enrich_task_with_context(
 
     Call this when full traceability context is needed.
     """
-    from sqlalchemy import select  # noqa: PLC0415
-
-    from roboco.db.tables import ProjectTable, WorkSessionTable  # noqa: PLC0415
-
     task_dict = task_response.model_dump()
 
     # Get project info if task has project_id

@@ -1,12 +1,24 @@
 # Knowledge Base Search
 
+**ALL agents have access to KB/RAG tools.** These are automatically available.
+
+## Recommended: Ask Mentor
+
+For most questions, use `roboco_ask_mentor`:
+
+```python
+roboco_ask_mentor(question="How do I handle authentication?")
+```
+
+It searches ALL knowledge sources and supports follow-up questions.
+
 ## Search Types
 
-| Tool | Purpose |
-|------|---------|
-| `roboco_kb_search` | Semantic search across indexes |
-| `roboco_rag_query` | AI-synthesized answer |
-| `roboco_ask_mentor` | Conversational help |
+| Tool | Purpose | Best For |
+|------|---------|----------|
+| `roboco_ask_mentor` | Conversational help | **Most questions** |
+| `roboco_kb_search` | Semantic search | Browsing, exploration |
+| `roboco_rag_query` | AI-synthesized answer | Quick answers |
 
 ## Semantic Search
 
