@@ -285,6 +285,8 @@ class AgentOrchestrator:
             "mcp__roboco-a2a__*",
             # Test tools - run tests, lint, format
             "mcp__roboco-test__*",
+            # Documentation file management
+            "mcp__roboco-docs__*",
             # File operations for documenters and developers
             # Note: // prefix = absolute path (container paths like /app/docs)
             "Write(//app/docs/**)",
@@ -592,6 +594,7 @@ class AgentOrchestrator:
         - roboco-git: Git operations (role-based at handler level)
         - roboco-a2a: Agent-to-Agent protocol
         - roboco-test: Test/lint/format tools
+        - roboco-docs: Documentation file management
 
         Git context is passed to MCP servers so git tools can use defaults.
         """
@@ -716,6 +719,23 @@ class AgentOrchestrator:
             ],
             "env": mcp_env,
         }
+
+        # Docs server - documentation file management
+        # Only for documenter and cell_pm roles (they write docs)
+        # Other roles can read via API but don't need the MCP tools
+        agent_role = get_agent_role(agent_id)
+        if agent_role in ("documenter", "cell_pm"):
+            mcp_servers["roboco-docs"] = {
+                "command": "uv",
+                "args": [
+                    "run",
+                    "python",
+                    "-m",
+                    "roboco.mcp.docs_server",
+                    agent_id,
+                ],
+                "env": mcp_env,
+            }
 
         config: dict[str, Any] = {"mcpServers": mcp_servers}
 

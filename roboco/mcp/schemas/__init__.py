@@ -307,3 +307,42 @@ class GroupCreateInput(BaseModel):
         le=4,
         description="Access level: 0=CEO, 1=Board, 2=Main PM, 3=Cell PM, 4=Members",
     )
+
+
+# =============================================================================
+# DOCUMENTATION SCHEMAS
+# =============================================================================
+
+
+class WriteDocInput(BaseModel):
+    """Input for writing a documentation file."""
+
+    task_id: str = Field(..., description="Task UUID this documentation belongs to")
+    filename: str = Field(
+        ...,
+        min_length=1,
+        max_length=255,
+        description="Filename (e.g., 'endpoints.md') - no path separators",
+    )
+    doc_type: str = Field(
+        ...,
+        description="Type: api, qa, guide, readme, changelog, architecture, design",
+    )
+    title: str = Field(
+        ...,
+        min_length=1,
+        max_length=500,
+        description="Human-readable title",
+    )
+    content: str = Field(..., min_length=1, description="Full markdown content")
+
+
+class UpdateDocInput(BaseModel):
+    """Input for updating a documentation file."""
+
+    path: str = Field(
+        ...,
+        description="Normalized path to update (e.g., 'backend/api/endpoints.md')",
+    )
+    title: str | None = Field(default=None, description="New title (optional)")
+    content: str | None = Field(default=None, description="New content (optional)")

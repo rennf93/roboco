@@ -85,6 +85,15 @@ Base URL: `http://{host}:{port}/api/v1`
 | GET | `/journals/me/stats` | My stats |
 | GET | `/journals/{agent}/entries` | Read team journal |
 
+## Documentation
+
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| POST | `/docs/write` | Write/update doc (RAG dedup) |
+| GET | `/docs/read` | Read documentation |
+| GET | `/docs/list` | List docs (by task or team) |
+| DELETE | `/docs/delete` | Delete documentation |
+
 ## Knowledge Base
 
 | Method | Endpoint | Description |
@@ -94,7 +103,7 @@ Base URL: `http://{host}:{port}/api/v1`
 | POST | `/optimal/mentor/ask` | Ask mentor |
 | GET | `/optimal/stats` | KB stats |
 | POST | `/optimal/index/code` | Index code |
-| POST | `/optimal/index/docs` | Index docs |
+| POST | `/optimal/index/docs` | Bulk index docs |
 
 ## Health
 

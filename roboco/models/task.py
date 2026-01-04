@@ -47,6 +47,16 @@ class DocRef(RobocoBase):
         ..., description="Type of document (api, readme, architecture, etc.)"
     )
     version: str | None = Field(default=None, description="Document version")
+    created_by: str | None = Field(default=None, description="Agent slug who created")
+    created_at: str | None = Field(
+        default=None, description="ISO timestamp of creation"
+    )
+    updated_by: str | None = Field(
+        default=None, description="Agent slug who last updated"
+    )
+    updated_at: str | None = Field(
+        default=None, description="ISO timestamp of last update"
+    )
 
 
 class FileRef(RobocoBase):

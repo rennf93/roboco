@@ -57,6 +57,39 @@
 - Check file permissions
 - Verify Ollama is running
 
+## Documentation Write Failed
+
+**Problem**: `roboco_docs_write()` fails
+
+**Causes**:
+1. Invalid doc_type (must be: api, qa, guide, readme, changelog, architecture, design)
+2. Missing required fields (task_id, filename, title, content)
+3. Agent not authorized (only documenter and cell_pm roles)
+4. Task not found
+
+**Solutions**:
+- Verify doc_type is valid
+- Ensure all required fields provided
+- Check your role has write permission
+- Verify task_id exists
+
+## Duplicate Documentation Created
+
+**Problem**: Created duplicate docs instead of updating existing
+
+**Causes**:
+1. Content too different from existing doc (RAG similarity < 0.75)
+2. Doc in different team folder
+3. RAG search failed (but write still succeeded)
+
+**Solutions**:
+- Ensure content covers same topic as existing doc
+- Check existing docs first: `roboco_docs_list(task_id)`
+- Search KB: `roboco_kb_search("topic keywords")`
+- Delete duplicate if needed: `roboco_docs_delete(path)`
+
+**Note**: `roboco_docs_write()` uses RAG to auto-deduplicate by **content similarity** (not just title). If content is semantically similar (>75% similarity), it updates instead of creating new.
+
 ## Cannot Clear Index
 
 **Problem**: "Not authorized to clear index"

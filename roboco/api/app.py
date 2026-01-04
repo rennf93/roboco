@@ -17,6 +17,7 @@ from roboco.api.routes.a2a import wellknown_router as a2a_wellknown_router
 from roboco.api.routes.agents import router as agents_router
 from roboco.api.routes.channels import router as channels_router
 from roboco.api.routes.dashboard import router as dashboard_router
+from roboco.api.routes.docs import router as docs_router
 from roboco.api.routes.git import router as git_router
 from roboco.api.routes.groups import router as groups_router
 from roboco.api.routes.health import router as health_router
@@ -276,6 +277,13 @@ def create_app() -> FastAPI:
         work_session_router,
         prefix=f"{api_prefix}/work-sessions",
         tags=["Work Sessions"],
+    )
+
+    # Documentation
+    app.include_router(
+        docs_router,
+        prefix=f"{api_prefix}/docs",
+        tags=["Documentation"],
     )
 
     # ==========================================================================

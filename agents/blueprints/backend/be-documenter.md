@@ -90,28 +90,30 @@ If none: `roboco_agent_idle()`
 - Understand what was built and why
 
 ### 6. WRITE
-**File Paths** - Write documentation to `/app/docs/`:
-- `/app/docs/backend/` - Backend documentation
-- `/app/docs/backend/api/` - API documentation
-- `/app/docs/backend/changelog.md` - Changelog
+Use `roboco_docs_write()` - system handles paths and deduplication automatically:
 
-**API Documentation** (if new/changed endpoints)
-- Endpoint URL, method
-- Request/response schemas
-- Example requests/responses
-- Error cases
-
-**README Updates** (if new features)
-- Feature description
-- Usage examples
-- Configuration options
-
-**Changelog Entry**
-```markdown
-## [version] - YYYY-MM-DD
-### Added/Changed/Fixed
-- {Description}
+```python
+roboco_docs_write({
+    "task_id": "your-task-uuid",
+    "filename": "user-api.md",
+    "doc_type": "api",  # api, qa, guide, readme, changelog, architecture, design
+    "title": "User API Endpoints",
+    "content": "# User API\n\n## GET /api/users\n..."
+})
 ```
+
+**SMART DEDUPLICATION**: System searches RAG for similar existing docs.
+- If similar doc exists → updates it (no duplicates)
+- If no match → creates new doc
+- You don't need to remember paths or check if doc exists
+
+**Doc Types:**
+- `api` - API documentation
+- `qa` - QA test plans
+- `guide` - User guides
+- `readme` - README updates
+- `changelog` - Changelog entries
+- `architecture` - Architecture docs
 
 Update progress: `roboco_task_progress(task_id, "Completed API docs...", 50)`
 
@@ -232,6 +234,9 @@ tools:
   - roboco_channel_list, roboco_channel_history
   - roboco_message_send, roboco_message_get, roboco_ask_question
   - roboco_session_history_for_task  # Get discussion history for your task
+  # Documentation (auto-deduplication via RAG)
+  - roboco_docs_write  # Write/update docs (handles dedup automatically)
+  - roboco_docs_read, roboco_docs_list, roboco_docs_delete
 ```
 
 ## Permissions

@@ -44,7 +44,29 @@ roboco_ask_mentor(
 )
 ```
 
-## Indexing
+## Documentation Writing (Documenter, Cell PM)
+
+```python
+# Write/update documentation (auto-dedup via RAG)
+roboco_docs_write({
+    "task_id": "task-uuid",
+    "filename": "api-endpoints.md",
+    "doc_type": "api",  # api, qa, guide, readme, changelog, architecture, design
+    "title": "API Endpoints",
+    "content": "# API Endpoints\n\n..."
+})
+
+# List docs for a task
+roboco_docs_list(task_id="task-uuid")
+
+# Read a doc
+roboco_docs_read(path="backend/api/endpoints.md")
+```
+
+**SMART DEDUPLICATION**: `roboco_docs_write` searches RAG for similar existing docs.
+If high-similarity match found, updates instead of creating duplicate.
+
+## Bulk Indexing
 
 ```python
 # Index code (PM, Developer)
@@ -53,7 +75,8 @@ roboco_kb_index_code(
     project="roboco"
 )
 
-# Index docs (PM, Documenter)
+# Index docs (PM, Documenter) - for bulk/explicit indexing
+# Note: roboco_docs_write() auto-indexes when writing
 roboco_kb_index_docs(
     sources=["docs/**/*.md"],
     project="roboco"

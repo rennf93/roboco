@@ -87,3 +87,36 @@ Fix all issues before submitting.
 - Read your journal for this task
 - Get proactive context: `roboco_get_proactive_context(task_id)`
 - Read channel history for discussions
+
+## Documentation Path Confusion
+
+**Problem**: Unsure where to write documentation
+
+**Solution**: Use `roboco_docs_write()` - system handles paths automatically
+
+```python
+roboco_docs_write({
+    "task_id": "your-task-uuid",
+    "filename": "feature.md",
+    "doc_type": "api",  # api, qa, guide, readme, changelog, architecture, design
+    "title": "Feature Documentation",
+    "content": "..."
+})
+```
+
+- Team folder: Determined from your agent ID
+- Subfolder: Determined by doc_type
+- No path decisions needed
+
+## Documentation Already Exists
+
+**Problem**: Want to update existing doc but created duplicate
+
+**Cause**: Content was too different from existing doc (RAG similarity < 0.75)
+
+**Solution**:
+- Ensure content covers the same topic
+- Or delete duplicate: `roboco_docs_delete(path)`
+- Check existing: `roboco_docs_list(task_id)` or `roboco_kb_search("topic")`
+
+**Note**: `roboco_docs_write()` auto-deduplicates via RAG by **content similarity**. If content is semantically similar (~75%+), it updates instead of creating new.

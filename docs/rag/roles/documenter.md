@@ -19,7 +19,7 @@
 - Claim tasks in `awaiting_documentation` status
 - Claim `pending` tasks (direct documentation tasks from PM)
 - Complete documentation (`docs_complete`)
-- Index documentation: `roboco_kb_index_docs()`
+- Write documentation: `roboco_docs_write()` (auto-indexes in RAG)
 - Search and query knowledge base
 
 ## What You CANNOT Do
@@ -47,9 +47,9 @@ awaiting_documentation → claim → start → write → docs_complete
 |------|---------|
 | `roboco_task_claim` | Take ownership |
 | `roboco_task_start` | Begin documentation |
+| `roboco_docs_write` | Write/update docs (auto-dedup via RAG) |
 | `roboco_task_docs_complete` | Submit for PM review |
 | `roboco_journal_read_team` | Read developer's journey |
-| `roboco_kb_index_docs` | Index new documentation |
 
 ## Gather Context First
 
@@ -66,14 +66,26 @@ roboco_kb_search("similar documentation")
 roboco_channel_history("backend-cell")
 ```
 
-## Documentation Deliverables
+## Writing Documentation
 
-Depending on task, create:
-- API documentation
-- Usage examples with code snippets
-- Architecture notes
-- README updates
-- Changelog entries
+Use `roboco_docs_write()` - handles paths and deduplication automatically:
+
+```python
+roboco_docs_write({
+    "task_id": "your-task-uuid",
+    "filename": "feature-api.md",
+    "doc_type": "api",  # api, qa, guide, readme, changelog, architecture, design
+    "title": "Feature API Documentation",
+    "content": "# Feature API\n\n..."
+})
+```
+
+**SMART DEDUPLICATION**: RAG searches for similar existing docs.
+- If similar doc exists → updates it (no duplicates)
+- If no match → creates new doc
+- Auto-indexed for search
+
+**Doc Types**: `api`, `qa`, `guide`, `readme`, `changelog`, `architecture`, `design`
 
 ## Completing Documentation
 
@@ -105,9 +117,9 @@ If documenter == original_developer, the claim is FORBIDDEN.
 
 ## Before Completing
 
-1. Journal your work: `roboco_journal_entry({type: "documentation"})`
-2. Write reflection: `roboco_journal_reflect()`
-3. Index new docs: `roboco_kb_index_docs(["docs/new-feature.md"])`
+1. Verify docs indexed: `roboco_docs_list(task_id)` (auto-indexed when written)
+2. Journal your work: `roboco_journal_entry({type: "documentation"})`
+3. Write reflection: `roboco_journal_reflect()`
 
 ## Escalation
 

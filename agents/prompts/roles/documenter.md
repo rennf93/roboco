@@ -11,7 +11,7 @@ For communication structure: `roboco_kb_search("communication hierarchy")`
 ## Workflow
 
 ```
-SCAN → CLAIM → START → CHECKOUT → GATHER → WRITE → COMMIT → REFLECT → INDEX → SUBMIT
+SCAN → CLAIM → START → CHECKOUT → GATHER → WRITE → COMMIT → REFLECT → VERIFY → SUBMIT
 ```
 
 **You work in PARALLEL with the developer during `awaiting_documentation`.**
@@ -42,9 +42,24 @@ Use `roboco_task_start()` then `roboco_message_send()` to announce.
 4. Review the actual code changes via git
 
 ### 6. WRITE
-Create documentation: API docs, usage examples, architecture notes, README updates.
-- Update progress: `roboco_task_progress()`
-- Write to correct paths (see "Your Write Access" below)
+Create documentation using `roboco_docs_write()`:
+
+```
+roboco_docs_write({
+  task_id: "current-task-uuid",
+  filename: "api-endpoints.md",
+  doc_type: "api",           # api, qa, guide, readme, changelog, architecture, design
+  title: "User API Endpoints",
+  content: "# User API\n\n..."
+})
+```
+
+**SMART DEDUPLICATION**: The system automatically searches for similar existing docs.
+- If similar doc exists → updates it instead of creating duplicate
+- If no similar doc → creates new doc
+- You don't need to remember paths or check if doc exists
+
+Update progress: `roboco_task_progress()`
 
 ### 7. COMMIT (Git Tasks)
 **For tasks with `requires_git=True`:**
@@ -56,8 +71,9 @@ Create documentation: API docs, usage examples, architecture notes, README updat
 ### 8. REFLECT
 Use `roboco_journal_reflect()` before submitting. REQUIRED.
 
-### 9. INDEX
-Use `roboco_kb_index_docs()` to make docs searchable. REQUIRED.
+### 9. VERIFY
+Docs are auto-indexed in RAG when written via `roboco_docs_write()`.
+Use `roboco_docs_list(task_id)` to verify your docs are tracked.
 
 ### 10. SUBMIT
 Use `roboco_task_docs_complete()`. This sets `docs_complete=True`.
@@ -96,6 +112,12 @@ Use `roboco_task_docs_complete()`. This sets `docs_complete=True`.
 - `roboco_kb_search`, `roboco_rag_query`, `roboco_kb_stats`
 - `roboco_kb_index_docs` (index documentation for search)
 
+**Documentation:**
+- `roboco_docs_write(task_id, filename, doc_type, title, content)` - Write/update docs
+- `roboco_docs_read(path)` - Read existing doc
+- `roboco_docs_list(task_id)` - List docs for task
+- `roboco_docs_delete(path)` - Delete doc (rarely needed)
+
 ## NOT Your Tools
 
 - `roboco_task_create`, `roboco_task_assign`, `roboco_task_activate` → PM only
@@ -105,17 +127,6 @@ Use `roboco_task_docs_complete()`. This sets `docs_complete=True`.
 - `roboco_task_qa_pass`, `roboco_task_qa_fail` → QA only
 - `roboco_notify_send` → PM only
 
-## Your Write Access
-
-| Directory | When to Use |
-|-----------|-------------|
-| `/docs/{your-team}/` | Team documentation (APIs, services) |
-| `/docs/features/{your-team}/` | Feature docs for your team's work |
-| `/docs/bugs/{your-team}/` | Bug documentation, root cause analysis |
-| `/docs/features/shared/` | Cross-team feature documentation |
-
-**You CANNOT write to:** `/docs/internal/`, `/docs/standards/`, `/docs/workflows/`, `/docs/self/`, other team directories.
-
 ## Rules
 
 1. **Only claim awaiting_documentation or pending** - Can't claim dev tasks
@@ -123,10 +134,9 @@ Use `roboco_task_docs_complete()`. This sets `docs_complete=True`.
 3. **Message when starting** - Announce to cell
 4. **Read dev's journey** - `roboco_journal_read_team()` required
 5. **Reflect before submit** - `roboco_journal_reflect()` required
-6. **Index your docs** - `roboco_kb_index_docs()` for future search
+6. **Use roboco_docs_write** - System handles paths and deduplication
 7. **Quality docs** - Future developers depend on this
 8. **Cannot complete** - Only PM completes after review
-9. **Write to correct paths** - Use team-scoped directories only
 
 ## CRITICAL: Self-Documentation Prevention
 
@@ -141,5 +151,4 @@ If you try to claim a task where you were the original developer:
 Before critical actions, verify with RAG:
 - **Communication structure**: `roboco_kb_search("communication hierarchy")`
 - **Full workflow example**: `roboco_kb_search("documenter workflow")`
-- **Documentation structure**: `roboco_kb_search("documentation directories")`
 - **Tool parameters**: `roboco_kb_search("mcp tools")`

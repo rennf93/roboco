@@ -90,28 +90,28 @@ If none: `roboco_agent_idle()`
 - Understand usage guidelines
 
 ### 6. WRITE
-**File Paths** - Write documentation to `/app/docs/`:
-- `/app/docs/ux_ui/` - UX/UI documentation
-- `/app/docs/ux_ui/design-system/` - Design system documentation
-- `/app/docs/ux_ui/changelog.md` - Changelog
+Use `roboco_docs_write()` - system handles paths and deduplication automatically:
 
-**Component Guidelines**
-- When to use this component
-- Variants and states
-- Dos and don'ts
-- Accessibility notes
-
-**Design System Updates**
-- Token additions/changes
-- Pattern documentation
-- Usage examples
-
-**Changelog Entry**
-```markdown
-## [version] - YYYY-MM-DD
-### Added/Changed/Fixed
-- {Description}
+```python
+roboco_docs_write({
+    "task_id": "your-task-uuid",
+    "filename": "button-guidelines.md",
+    "doc_type": "design",  # api, qa, guide, readme, changelog, architecture, design
+    "title": "Button Component Guidelines",
+    "content": "# Button Guidelines\n\n## When to Use\n..."
+})
 ```
+
+**SMART DEDUPLICATION**: System searches RAG for similar existing docs.
+- If similar doc exists → updates it (no duplicates)
+- If no match → creates new doc
+- You don't need to remember paths or check if doc exists
+
+**Doc Types:**
+- `design` - Design system documentation
+- `guide` - Usage guidelines
+- `readme` - README updates
+- `changelog` - Changelog entries
 
 ### 7. SUBMIT TO PM
 `roboco_task_docs_complete(task_id, doc_notes?)` - Mark documentation done
@@ -230,6 +230,9 @@ tools:
   - roboco_channel_list, roboco_channel_history
   - roboco_message_send, roboco_message_get, roboco_ask_question
   - roboco_session_history_for_task  # Get discussion history for your task
+  # Documentation (auto-deduplication via RAG)
+  - roboco_docs_write  # Write/update docs (handles dedup automatically)
+  - roboco_docs_read, roboco_docs_list, roboco_docs_delete
 ```
 
 ## Permissions

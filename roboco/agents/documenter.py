@@ -10,7 +10,6 @@ from datetime import UTC, datetime
 from pathlib import Path
 from uuid import UUID
 
-import aiofiles
 import structlog
 
 from roboco.agents.base import Agent, AgentConfig
@@ -450,21 +449,29 @@ good,complete,clear,helpful,None
         """
         PUBLISH phase: Documentation goes live.
 
-        - Write files to disk
+        - Write docs via API (auto-dedup, auto-index)
         - Link docs to task
         - Update task status
         """
         self.log.info("PUBLISH phase", task_id=str(ctx.task_id))
 
-        # Write documentation files
+        # Write documentation via docs API (handles dedup, indexing, task linking)
         for doc_spec in ctx.documents_needed:
             if doc_spec.content:
                 try:
-                    path = Path(doc_spec.path)
-                    path.parent.mkdir(parents=True, exist_ok=True)
-                    async with aiofiles.open(path, "w") as f:
-                        await f.write(doc_spec.content)
-                    self.log.info("Published", path=doc_spec.path)
+                    # Use docs API - handles path, dedup, indexing automatically
+                    await self._api_call(
+                        "POST",
+                        "/docs/write",
+                        json={
+                            "task_id": str(ctx.task_id),
+                            "filename": Path(doc_spec.path).name,
+                            "doc_type": doc_spec.doc_type.value,
+                            "title": doc_spec.title,
+                            "content": doc_spec.content,
+                        },
+                    )
+                    self.log.info("Published via docs API", path=doc_spec.path)
                 except Exception as e:
                     self.log.error(
                         "Failed to publish", path=doc_spec.path, error=str(e)

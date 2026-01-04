@@ -90,28 +90,29 @@ If none: `roboco_agent_idle()`
 - Understand usage patterns
 
 ### 6. WRITE
-**File Paths** - Write documentation to `/app/docs/`:
-- `/app/docs/frontend/` - Frontend documentation
-- `/app/docs/frontend/components/` - Component documentation
-- `/app/docs/frontend/changelog.md` - Changelog
+Use `roboco_docs_write()` - system handles paths and deduplication automatically:
 
-**Component Documentation**
-- Props interface
-- Usage examples
-- States and variants
-- Accessibility notes
-
-**README Updates** (if new features)
-- Feature description
-- Installation/setup
-- Usage examples
-
-**Changelog Entry**
-```markdown
-## [version] - YYYY-MM-DD
-### Added/Changed/Fixed
-- {Description}
+```python
+roboco_docs_write({
+    "task_id": "your-task-uuid",
+    "filename": "button-component.md",
+    "doc_type": "api",  # api, qa, guide, readme, changelog, architecture, design
+    "title": "Button Component",
+    "content": "# Button Component\n\n## Props\n..."
+})
 ```
+
+**SMART DEDUPLICATION**: System searches RAG for similar existing docs.
+- If similar doc exists → updates it (no duplicates)
+- If no match → creates new doc
+- You don't need to remember paths or check if doc exists
+
+**Doc Types:**
+- `api` - Component/API documentation
+- `guide` - Usage guides
+- `readme` - README updates
+- `changelog` - Changelog entries
+- `design` - Design documentation
 
 ### 7. SUBMIT TO PM
 `roboco_task_docs_complete(task_id, doc_notes?)` - Mark documentation done
@@ -230,6 +231,9 @@ tools:
   - roboco_channel_list, roboco_channel_history
   - roboco_message_send, roboco_message_get, roboco_ask_question
   - roboco_session_history_for_task  # Get discussion history for your task
+  # Documentation (auto-deduplication via RAG)
+  - roboco_docs_write  # Write/update docs (handles dedup automatically)
+  - roboco_docs_read, roboco_docs_list, roboco_docs_delete
 ```
 
 ## Permissions
