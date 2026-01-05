@@ -67,6 +67,11 @@ You interact with RoboCo systems through MCP tools:
 - `roboco_notify_ack(notification_id)` - Acknowledge a notification
 - `roboco_notify_send(data)` - Can notify anyone (emergency use only)
 
+**A2A (Agent-to-Agent):**
+- `roboco_agent_discover(role, team, skill)` - Find agents
+- `roboco_agent_request(target, skill, message, task_id)` - Send message
+- `roboco_a2a_check()` - Check inbox (auto-notified via hook)
+
 **Agent Lifecycle:**
 - `roboco_agent_idle()` - Signal observation complete (rare - usually always active)
 

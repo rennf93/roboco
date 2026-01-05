@@ -226,3 +226,117 @@ async def mark_as_read(
     if agent_id not in notification.read_by:
         notification.read_by = [*notification.read_by, agent_id]
         await db.flush()
+
+
+@router.get(
+    "/pending-a2a",
+    summary="Check pending A2A",
+    description="Check if there's a pending A2A notification to a target about a task.",
+)
+async def check_pending_a2a(
+    db: DbSession,
+    from_agent: str,
+    to_agent: str,
+    task_id: str,
+) -> dict[str, bool]:
+    """
+    Check if there's already a pending A2A notification.
+
+    Prevents duplicate messages - one message per task until response.
+    """
+    from roboco.models.base import NotificationType
+    from roboco.seeds.initial_data import AGENT_UUIDS
+
+    from_uuid = AGENT_UUIDS.get(from_agent)
+    to_uuid = AGENT_UUIDS.get(to_agent)
+
+    if not from_uuid or not to_uuid:
+        return {"has_pending": False}
+
+    # Validate task_id is a valid UUID
+    try:
+        task_uuid = UUID(task_id)
+    except ValueError:
+        return {"has_pending": False}
+
+    # Check for unacked A2A_REQUEST from this agent to target about this task
+    result = await db.execute(
+        select(NotificationTable).where(
+            NotificationTable.type == NotificationType.A2A_REQUEST,
+            NotificationTable.from_agent == UUID(from_uuid),
+            NotificationTable.related_task_id == task_uuid,
+            NotificationTable.to_agents.contains([UUID(to_uuid)]),
+        )
+    )
+    notifications = result.scalars().all()
+
+    # Check if any are unacked by the target
+    to_uuid_obj = UUID(to_uuid)
+    for notif in notifications:
+        if to_uuid_obj not in notif.acked_by:
+            return {"has_pending": True}
+
+    return {"has_pending": False}
+
+
+@router.post(
+    "/ack-a2a",
+    status_code=status.HTTP_204_NO_CONTENT,
+    summary="Auto-ack A2A notifications",
+    description="Acknowledge A2A notifications when responding. Called by SDK.",
+)
+async def ack_a2a_notifications(
+    db: DbSession,
+    data: dict[str, str],
+) -> None:
+    """
+    Auto-acknowledge A2A notifications when responding.
+
+    When agent B responds to agent A about a task, this acks any pending
+    A2A_REQUEST notifications from A to B about that task.
+
+    Body: {from_agent, to_agent, task_id}
+    """
+    from roboco.models.base import NotificationType
+    from roboco.seeds.initial_data import AGENT_UUIDS
+
+    from_agent_slug = data.get("from_agent", "")
+    to_agent_slug = data.get("to_agent", "")
+    task_id_str = data.get("task_id", "")
+
+    # Get UUIDs from slugs
+    from_agent_uuid = AGENT_UUIDS.get(from_agent_slug)
+    to_agent_uuid = AGENT_UUIDS.get(to_agent_slug)
+
+    if not from_agent_uuid or not to_agent_uuid or not task_id_str:
+        return  # Silently ignore invalid data
+
+    # Validate task_id is a valid UUID
+    try:
+        task_uuid = UUID(task_id_str)
+    except ValueError:
+        return  # Invalid task ID
+
+    # Find matching A2A_REQUEST notifications
+    result = await db.execute(
+        select(NotificationTable).where(
+            NotificationTable.type == NotificationType.A2A_REQUEST,
+            NotificationTable.from_agent == UUID(from_agent_uuid),
+            NotificationTable.related_task_id == task_uuid,
+            NotificationTable.to_agents.contains([UUID(to_agent_uuid)]),
+        )
+    )
+    notifications = result.scalars().all()
+
+    # Acknowledge each matching notification
+    to_uuid = UUID(to_agent_uuid)
+    now = datetime.now(UTC).isoformat()
+
+    for notif in notifications:
+        if to_uuid not in notif.acked_by:
+            notif.acked_by = [*notif.acked_by, to_uuid]
+            notif.acked_at = {**notif.acked_at, str(to_uuid): now}
+        if to_uuid not in notif.read_by:
+            notif.read_by = [*notif.read_by, to_uuid]
+
+    await db.flush()

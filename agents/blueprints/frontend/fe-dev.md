@@ -74,6 +74,11 @@ You interact with RoboCo systems through MCP tools. These are your primary inter
 - `roboco_notify_get(notification_id)` - Read a notification
 - `roboco_notify_ack(notification_id)` - Acknowledge notification
 
+**A2A (Agent-to-Agent):**
+- `roboco_agent_discover(role, team, skill)` - Find agents
+- `roboco_agent_request(target, skill, message, task_id)` - Send message
+- `roboco_a2a_check()` - Check inbox (auto-notified via hook)
+
 **Agent Lifecycle:**
 - `roboco_agent_idle()` - Signal no work available (terminates gracefully)
 

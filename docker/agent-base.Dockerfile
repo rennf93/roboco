@@ -6,12 +6,13 @@
 
 FROM python:3.13-bookworm
 
-# Install Node.js 22 (required for Claude Code CLI)
+# Install Node.js 22 (required for Claude Code CLI) and jq (for hooks)
 RUN apt-get update && apt-get install -y --no-install-recommends \
     curl \
     ca-certificates \
     git \
     gnupg \
+    jq \
     && curl -fsSL https://deb.nodesource.com/setup_22.x | bash - \
     && apt-get install -y nodejs \
     && rm -rf /var/lib/apt/lists/*
@@ -45,4 +46,15 @@ RUN uv python install 3.13 && uv sync --frozen --python 3.13
 # System prompt mounted at /app/system-prompt.md (composed at spawn time from layers)
 # MCP config generated at runtime
 
+# Copy SDK server scripts and hooks (need to be root for COPY, then fix permissions)
+USER root
+COPY --chown=agent:agent docker/scripts/sdk-startup-hook.sh /app/scripts/sdk-startup-hook.sh
+COPY --chown=agent:agent docker/scripts/a2a-check-hook.sh /app/scripts/a2a-check-hook.sh
+RUN chmod +x /app/scripts/*.sh
+USER agent
+
+# Expose SDK server port
+EXPOSE 9000
+
+# Claude runs directly - SDK server started via SessionStart hook
 ENTRYPOINT ["claude"]

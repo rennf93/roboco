@@ -80,6 +80,19 @@ roboco_journal_read_team("be-pm")
 roboco_journal_read_team("fe-pm")
 ```
 
+## Tool Restrictions
+
+**Full MCP access, but use `roboco_git_*` not native git.**
+
+| Allowed | Blocked |
+|---------|---------|
+| `roboco_git_*` | Native `Bash(git:*)` |
+| `roboco_docs_*` | - |
+| `roboco_notify_send` | - |
+| All task management | - |
+
+See: `roboco_kb_search("tool permissions")`
+
 ## Key Tools
 
 | Tool | Purpose |
@@ -96,6 +109,13 @@ When Cell PM escalates:
 2. Review cross-cell impact
 3. Coordinate with other Cell PMs if needed
 4. Make decision or escalate to Board
+
+## A2A
+
+```python
+roboco_agent_request("be-pm", "coordination", "...", task_id)
+roboco_a2a_check()  # Check inbox
+```
 
 ## Escalation
 

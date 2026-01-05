@@ -99,6 +99,18 @@ roboco_notify_list()
 roboco_journal_read_team("be-dev-1", task_id=task_id)
 ```
 
+## Tool Restrictions
+
+**Full MCP access, but use `roboco_git_*` not native git.**
+
+| Allowed | Blocked |
+|---------|---------|
+| `roboco_git_*` | Native `Bash(git:*)` |
+| `roboco_docs_*` | - |
+| `roboco_notify_send` | - |
+
+See: `roboco_kb_search("tool permissions")`
+
 ## Key Tools
 
 | Tool | Purpose |
@@ -119,6 +131,13 @@ When receiving escalation:
 3. Decide or escalate to Main PM
 4. Communicate decision
 5. Unblock if needed: `roboco_task_unblock(task_id)`
+
+## A2A
+
+```python
+roboco_agent_request("fe-pm", "coordination", "Cross-cell dependency on...", task_id)
+roboco_a2a_check()  # Check inbox
+```
 
 ## Escalation
 

@@ -43,6 +43,18 @@ awaiting_qa → claim → start → review → pass/fail
                           fail: needs_revision (back to developer)
 ```
 
+## Tool Restrictions
+
+**You are read-only.** Cannot modify code or commit.
+
+| Allowed | Blocked |
+|---------|---------|
+| `roboco_git_status/log/diff` | `roboco_git_commit/push` |
+| `roboco_test_*` | All `Write/Edit` |
+| `Read(*)` | Native git commands |
+
+See: `roboco_kb_search("tool permissions")`
+
 ## Key Tools
 
 | Tool | Purpose |
@@ -97,6 +109,15 @@ The `original_developer` is tracked in `quick_context`. If QA agent == original 
 1. Journal your review: `roboco_journal_entry({type: "qa_review"})`
 2. Write reflection: `roboco_journal_reflect()`
 3. Provide clear reasoning in pass/fail notes
+
+## A2A Requests
+
+Developers send code review requests via A2A:
+
+```python
+# Check inbox (auto-notified via hook)
+roboco_a2a_check()
+```
 
 ## Escalation
 

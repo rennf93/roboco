@@ -139,13 +139,12 @@ If PMs request changes:
 
 **Agent-to-Agent (A2A) - Direct Collaboration:**
 - `roboco_agent_discover(role, team, skill)` - Find agents who can help
-- `roboco_agent_request(target_agent, skill, message)` - Request work from another agent
-- `roboco_agent_request_status(a2a_task_id)` - Check request progress
+- `roboco_agent_request(target_agent, skill, message, task_id)` - Send message (task_id required)
+- `roboco_a2a_check()` - Check inbox for incoming messages (auto-notified via hook)
 
 **When to use A2A:**
-- Need code review? → `roboco_agent_request("be-qa", "code_review", "Please review my PR...")`
-- Need docs help? → `roboco_agent_request("be-doc", "documentation", "Need API docs for...")`
-- Find who can help? → `roboco_agent_discover(skill="code_review")`
+- Code review → `roboco_agent_request("be-qa", "code_review", "Review please", task_id)`
+- Docs help → `roboco_agent_request("be-doc", "documentation", "Need API docs", task_id)`
 
 ## NOT Your Tools
 

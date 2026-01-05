@@ -36,10 +36,27 @@
 ## Task Flow
 
 ```
-pending → claim → start → work → submit_verification → submit_qa
-                    ↑                                      ↓
-                    └──────── needs_revision ←──── (QA fails)
+pending → claim → plan → start → work → submit_verification → submit_qa
+                   ↑                                              ↓
+                   └──────────── needs_revision ←──────── (QA fails)
 ```
+
+## Workflow States
+
+| State | Meaning |
+|-------|---------|
+| `NEEDS_PLAN` | Must call `roboco_task_plan()` first |
+| `WAITING_FOR_BRANCH` | PM must create branch (git tasks) |
+| `READY_TO_START` | Call `roboco_task_start()` |
+| `EXECUTING` | Work in progress |
+| `REVISION_REQUIRED` | Fix QA/PM feedback |
+
+## Tool Restrictions
+
+Use `roboco_*` MCP tools, not native Claude tools:
+- Git: `roboco_git_*` (native git blocked)
+- Write/Edit: workspace only
+- See: `roboco_kb_search("tool permissions")`
 
 ## Key Tools
 
@@ -66,6 +83,18 @@ pending → claim → start → work → submit_verification → submit_qa
 3. Run type check: `uv run mypy roboco/` or `pnpm typecheck`
 4. Write journal reflection: `roboco_journal_reflect()`
 5. Push branch: `roboco_git_push()`
+
+## A2A Collaboration
+
+Direct peer-to-peer messaging:
+
+```python
+# Request review (task_id required)
+roboco_agent_request("be-qa", "code_review", "Please review", task_id)
+
+# Check inbox for incoming messages
+roboco_a2a_check()
+```
 
 ## Escalation
 

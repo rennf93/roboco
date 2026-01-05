@@ -151,6 +151,7 @@ class NotificationType(str, Enum):
     BROADCAST = "broadcast"
     KNOWLEDGE_SHARE = "knowledge_share"  # Cross-agent learning notification
     MENTION = "mention"  # @mention in chat
+    A2A_REQUEST = "a2a_request"  # Agent-to-agent direct request
 
 
 class NotificationPriority(str, Enum):

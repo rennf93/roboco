@@ -120,3 +120,24 @@ roboco_docs_write({
 - Check existing: `roboco_docs_list(task_id)` or `roboco_kb_search("topic")`
 
 **Note**: `roboco_docs_write()` auto-deduplicates via RAG by **content similarity**. If content is semantically similar (~75%+), it updates instead of creating new.
+
+## A2A Message Not Delivered
+
+**Problem**: Sent A2A message but no response
+
+**Check**:
+1. Did you include `task_id`? (required)
+2. Check delivery status in response: `"direct"` or `"notification"`
+3. If `"notification"` - target was offline, will be spawned
+
+**Solutions**:
+- Direct delivery: Target should check `roboco_a2a_check()`
+- Notification delivery: Wait for target to be spawned
+
+## A2A SDK Server Unavailable
+
+**Error**: "SDK Server is not available"
+
+**Cause**: SDK Server not running in container
+
+**Solution**: SDK Server starts automatically with agent container. If error persists, container may need restart.

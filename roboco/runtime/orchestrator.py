@@ -16,6 +16,7 @@ import asyncio
 import contextlib
 import json
 import os
+import shutil
 import tempfile
 from datetime import UTC, datetime
 from pathlib import Path
@@ -144,8 +145,8 @@ class AgentOrchestrator:
         # Ensure agent image is built
         await self._ensure_agent_image()
 
-        # Ensure agent Claude settings have MCP tools allowed
-        self._ensure_agent_claude_settings()
+        # Note: Per-agent settings are now generated at spawn time
+        # via _generate_agent_settings() - no shared settings needed
 
         # Start background tasks
         self._health_task = asyncio.create_task(self._health_loop())
@@ -181,6 +182,23 @@ class AgentOrchestrator:
     def get_running_agents(self) -> set[str]:
         """Get set of currently running agent IDs."""
         return set(self._instances.keys())
+
+    def is_agent_busy(self, agent_id: str) -> bool:
+        """
+        Check if agent has active work.
+
+        An agent is busy if:
+        1. They're in the running instances, AND
+        2. They have a task claimed/in_progress/verifying
+
+        Note: This is a lightweight check based on instance status.
+        For full busy detection, the event handler queries the database.
+        """
+        if agent_id not in self._instances:
+            return False
+        instance = self._instances[agent_id]
+        # If agent is running with a task, they're busy
+        return instance.current_task_id is not None
 
     async def _ensure_agent_image(self, agent_id: str | None = None) -> None:
         """Ensure the agent Docker images are built.
@@ -259,81 +277,201 @@ class AgentOrchestrator:
                 )
             logger.info("Docker image built successfully", image=image_name)
 
-    def _ensure_agent_claude_settings(self) -> None:
-        """
-        Ensure agent Claude settings have RoboCo MCP tools pre-allowed.
+    # =========================================================================
+    # PER-AGENT SETTINGS GENERATION
+    # =========================================================================
 
-        This prevents agents from needing interactive permission approval
-        for essential MCP tools like roboco_agent_idle.
+    def _get_role_permissions(
+        self, role: str, workspace_path: str
+    ) -> dict[str, list[str]]:
+        """Get role-specific allow/deny lists for Claude Code tools.
+
+        Args:
+            role: Agent role (developer, qa, documenter, cell_pm, main_pm, etc.)
+            workspace_path: Path to agent's workspace directory
+
+        Returns:
+            Dict with 'allow' and 'deny' lists for Claude Code permissions
         """
-        # RoboCo MCP tools that should always be allowed for agents
-        roboco_allowed_tools = [
-            # Task management - always needed
+        configs: dict[str, dict[str, list[str]]] = {
+            "developer": {
+                "allow": [
+                    "mcp__roboco-git__*",
+                    "mcp__roboco-test__*",
+                    # ONLY allow Write/Edit in their workspace
+                    f"Write(/{workspace_path}/**)",
+                    f"Edit(/{workspace_path}/**)",
+                ],
+                "deny": [],
+            },
+            "qa": {
+                "allow": [
+                    # QA gets read-only git access
+                    "mcp__roboco-git__roboco_git_status",
+                    "mcp__roboco-git__roboco_git_log",
+                    "mcp__roboco-git__roboco_git_diff",
+                    "mcp__roboco-test__*",
+                ],
+                "deny": [
+                    # QA cannot write anything - review only
+                    "mcp__roboco-git__roboco_git_commit",
+                    "mcp__roboco-git__roboco_git_push",
+                    "mcp__roboco-git__roboco_git_create_pr",
+                ],
+            },
+            "documenter": {
+                "allow": [
+                    "mcp__roboco-docs__*",
+                    "mcp__roboco-git__*",
+                    # Documenters write to docs/ only
+                    "Write(//app/docs/**)",
+                    "Edit(//app/docs/**)",
+                    "Write(//app/CHANGELOG.md)",
+                    "Edit(//app/CHANGELOG.md)",
+                    "Write(//app/README.md)",
+                    "Edit(//app/README.md)",
+                ],
+                "deny": [],
+            },
+            "cell_pm": {
+                "allow": [
+                    "mcp__roboco-git__*",
+                    "mcp__roboco-docs__*",
+                ],
+                "deny": [],
+            },
+            "main_pm": {
+                "allow": [
+                    "mcp__roboco-git__*",
+                    "mcp__roboco-docs__*",
+                ],
+                "deny": [],
+            },
+            "product_owner": {
+                "allow": [
+                    "mcp__roboco-git__*",
+                    "mcp__roboco-docs__*",
+                ],
+                "deny": [],
+            },
+            "auditor": {
+                "allow": [
+                    # Auditor is read-only observer
+                    "mcp__roboco-git__roboco_git_status",
+                    "mcp__roboco-git__roboco_git_log",
+                    "mcp__roboco-git__roboco_git_diff",
+                ],
+                "deny": [],
+            },
+        }
+
+        return configs.get(role, {"allow": [], "deny": []})
+
+    def _generate_agent_settings(
+        self,
+        agent_id: str,
+        role: str,
+        workspace_path: str,
+    ) -> Path:
+        """Generate per-agent Claude Code settings file with role-specific permissions.
+
+        This replaces the shared settings approach. Each agent gets their own
+        settings.json with:
+        - Base MCP tools allowed for all agents
+        - Role-specific tool permissions
+        - Explicit deny list blocking native git/file operations
+
+        Args:
+            agent_id: Agent identifier (e.g., "be-dev-1")
+            role: Agent role (e.g., "developer")
+            workspace_path: Path to agent's workspace directory
+
+        Returns:
+            Path to the generated settings file
+        """
+        # Base MCP tools for all agents
+        base_allow = [
             "mcp__roboco-task__*",
-            # Messaging - always needed for communication
             "mcp__roboco-message__*",
-            # Notifications - always needed
             "mcp__roboco-notify__*",
-            # Journal - always needed for reflection
             "mcp__roboco-journal__*",
-            # Knowledge base/RAG - needed for research
             "mcp__roboco-optimal__*",
-            # Git - branch management, commits, PRs
-            # Role-based permissions enforced at handler level
-            "mcp__roboco-git__*",
-            # Agent-to-Agent protocol - cross-cell coordination
             "mcp__roboco-a2a__*",
-            # Test tools - run tests, lint, format
-            "mcp__roboco-test__*",
-            # Documentation file management
-            "mcp__roboco-docs__*",
-            # File operations for documenters and developers
-            # Note: // prefix = absolute path (container paths like /app/docs)
-            "Write(//app/docs/**)",
-            "Write(//app/CHANGELOG.md)",
-            "Write(//app/README.md)",
-            "Edit(//app/docs/**)",
-            "Edit(//app/CHANGELOG.md)",
-            "Edit(//app/README.md)",
+            "Read(*)",  # All agents can read any file
         ]
 
-        # Path to agent Claude settings (shared across all agents)
-        # Always use CLAUDE_AUTH_HOST_PATH - agents mount from this location
-        claude_dir = Path(CLAUDE_AUTH_HOST_PATH)
+        # Base denials for all agents - block native tools
+        base_deny = [
+            # Block ALL native git commands - must use roboco_git_* tools
+            "Bash(git:*)",
+            # Block file ops outside workspace (role-specific allows override)
+            "Write(*)",
+            "Edit(*)",
+        ]
 
-        settings_path = claude_dir / "settings.json"
+        # Get role-specific permissions
+        role_config = self._get_role_permissions(role, workspace_path)
 
-        # Load existing settings or create new
-        if settings_path.exists():
-            try:
-                settings = json.loads(settings_path.read_text())
-            except json.JSONDecodeError:
-                settings = {}
+        # Combine base + role-specific
+        settings: dict[str, Any] = {
+            "permissions": {
+                "allow": base_allow + role_config["allow"],
+                "deny": base_deny + role_config["deny"],
+            },
+            "hooks": {
+                # Start SDK server on session start (for A2A communication)
+                "SessionStart": [
+                    {
+                        "hooks": [
+                            {
+                                "type": "command",
+                                "command": "/app/scripts/sdk-startup-hook.sh",
+                            }
+                        ]
+                    }
+                ],
+                # Check for incoming A2A messages after each tool use
+                "PostToolUse": [
+                    {
+                        "matcher": "*",
+                        "hooks": [
+                            {
+                                "type": "command",
+                                "command": "/app/scripts/a2a-check-hook.sh",
+                            }
+                        ],
+                    }
+                ],
+            },
+        }
+
+        # Write to per-agent settings file
+        # When running in container: write to /app/agent-settings (mounted to host)
+        # When running on host: use temp directory
+        if DATA_HOST_PATH:
+            settings_dir = Path("/app/agent-settings")
         else:
-            settings = {}
+            settings_dir = Path(tempfile.gettempdir()) / "roboco-agent-settings"
 
-        # Ensure permissions structure exists
-        if "permissions" not in settings:
-            settings["permissions"] = {}
-        if "allow" not in settings["permissions"]:
-            settings["permissions"]["allow"] = []
+        settings_dir.mkdir(parents=True, exist_ok=True)
+        settings_path = settings_dir / f"{agent_id}-settings.json"
 
-        # Add RoboCo tools if not already present
-        existing_allow = set(settings["permissions"]["allow"])
-        tools_added = []
-        for tool in roboco_allowed_tools:
-            if tool not in existing_allow:
-                settings["permissions"]["allow"].append(tool)
-                tools_added.append(tool)
+        # Handle case where Docker auto-created a directory instead of a file
+        if settings_path.is_dir():
+            shutil.rmtree(settings_path)
 
-        # Only write if we added tools
-        if tools_added:
-            claude_dir.mkdir(parents=True, exist_ok=True)
-            settings_path.write_text(json.dumps(settings, indent=2))
-            logger.info(
-                "Updated agent Claude settings with allowed MCP tools",
-                tools_added=tools_added,
-            )
+        settings_path.write_text(json.dumps(settings, indent=2))
+
+        logger.debug(
+            "Generated per-agent settings",
+            agent_id=agent_id,
+            role=role,
+            settings_path=str(settings_path),
+            allow_count=len(settings["permissions"]["allow"]),
+            deny_count=len(settings["permissions"]["deny"]),
+        )
+
+        return settings_path
 
     # =========================================================================
     # AGENT SPAWNING
@@ -375,19 +513,29 @@ class AgentOrchestrator:
             # Generate composed prompt (replaces static blueprints)
             blueprint_path = self._generate_composed_prompt(agent_id)
 
-            # Ensure agent Claude settings have MCP tools allowed
-            self._ensure_agent_claude_settings()
+            # Determine role and team for this agent
+            canonical_role = get_agent_role(agent_id)
+            team = get_agent_team(agent_id)
+
+            # Determine model using canonical role name
+            if not model:
+                model = ROLE_MODEL_MAP.get(canonical_role, "sonnet")
+
+            # Build workspace path for this agent
+            # Pattern: {workspaces_root}/{project_slug}/{team}/{agent_slug}/
+            project_slug = git_context.project_slug if git_context else "default"
+            workspace_path = f"/data/workspaces/{project_slug}/{team}/{agent_id}"
+
+            # Generate per-agent Claude settings with role-specific permissions
+            agent_settings_path = self._generate_agent_settings(
+                agent_id, canonical_role, workspace_path
+            )
 
             # Ensure agent-specific Docker image is built
             await self._ensure_agent_image(agent_id)
 
             # Generate MCP config with git context if available
             mcp_config_path = await self._generate_mcp_config(agent_id, git_context)
-
-            # Determine model using canonical role name from agents_config
-            if not model:
-                canonical_role = get_agent_role(agent_id)
-                model = ROLE_MODEL_MAP.get(canonical_role, "sonnet")
 
             # Create config
             config = AgentConfig(
@@ -408,9 +556,11 @@ class AgentOrchestrator:
 
             self._instances[agent_id] = instance
 
-        # Spawn the container
+        # Spawn the container with per-agent settings
         try:
-            container_id = await self._spawn_container(config, initial_prompt)
+            container_id = await self._spawn_container(
+                config, initial_prompt, agent_settings_path
+            )
             instance.container_id = container_id
             instance.state = AgentState.ACTIVE
             instance.started_at = datetime.now(UTC)
@@ -440,8 +590,15 @@ class AgentOrchestrator:
         self,
         config: AgentConfig,
         initial_prompt: str | None = None,
+        agent_settings_path: Path | None = None,
     ) -> str:
-        """Spawn a Docker container for the agent."""
+        """Spawn a Docker container for the agent.
+
+        Args:
+            config: Agent configuration
+            initial_prompt: Optional initial prompt for the agent
+            agent_settings_path: Path to per-agent Claude settings file
+        """
         container_name = f"roboco-agent-{config.agent_id}"
 
         # Remove existing container if any
@@ -465,6 +622,12 @@ class AgentOrchestrator:
             prompt_host = (
                 f"{DATA_HOST_PATH}/prompts-generated/{config.agent_id}-prompt.md"
             )
+            # Per-agent settings host path
+            settings_host = (
+                f"{DATA_HOST_PATH}/agent-settings/{config.agent_id}-settings.json"
+                if agent_settings_path
+                else None
+            )
         else:
             # Running directly on host
             blueprints_host = str(self.blueprints_dir.absolute())
@@ -477,6 +640,8 @@ class AgentOrchestrator:
                 / "roboco-prompts"
                 / f"{config.agent_id}-prompt.md"
             )
+            # Per-agent settings path
+            settings_host = str(agent_settings_path) if agent_settings_path else None
 
         # Build docker run command
         cmd = [
@@ -487,29 +652,48 @@ class AgentOrchestrator:
             container_name,
             "--network",
             AGENT_NETWORK,
-            # Mount Claude auth (needs write access for debug logs)
+            # Mount Claude auth directory (for API keys, etc.)
             "-v",
             f"{claude_host}:/home/agent/.claude",
-            # Mount generated system prompt (composed from layers at runtime)
-            "-v",
-            f"{prompt_host}:/app/system-prompt.md:ro",
-            # Mount blueprints (legacy, kept for reference)
-            "-v",
-            f"{blueprints_host}:/app/agents/blueprints:ro",
-            # Mount docs directory
-            # - Documenters get write access to create/update docs
-            # - All other roles get read-only access
-            "-v",
-            f"{docs_host}:/app/docs{'' if config.agent_id in ALL_DOCS else ':ro'}",
-            # Mount MCP config
-            "-v",
-            f"{mcp_config_host}:/app/mcp-config.json:ro",
-            # Environment
-            "-e",
-            f"ROBOCO_AGENT_ID={config.agent_id}",
-            "-e",
-            "ROBOCO_API_URL=http://roboco-orchestrator:8000",
         ]
+
+        # Mount per-agent settings file (overrides shared settings.json)
+        if settings_host:
+            cmd.extend(
+                [
+                    "-v",
+                    f"{settings_host}:/home/agent/.claude/settings.json:ro",
+                ]
+            )
+
+        cmd.extend(
+            [
+                # Mount generated system prompt (composed from layers at runtime)
+                "-v",
+                f"{prompt_host}:/app/system-prompt.md:ro",
+                # Mount blueprints (legacy, kept for reference)
+                "-v",
+                f"{blueprints_host}:/app/agents/blueprints:ro",
+                # Mount docs directory
+                # - Documenters get write access to create/update docs
+                # - All other roles get read-only access
+                "-v",
+                f"{docs_host}:/app/docs{'' if config.agent_id in ALL_DOCS else ':ro'}",
+                # Mount MCP config
+                "-v",
+                f"{mcp_config_host}:/app/mcp-config.json:ro",
+                # Environment
+                "-e",
+                f"ROBOCO_AGENT_ID={config.agent_id}",
+                "-e",
+                "ROBOCO_API_URL=http://roboco-orchestrator:8000",
+                # SDK Server environment
+                "-e",
+                "ROBOCO_SDK_PORT=9000",
+                "-e",
+                "ROBOCO_SDK_URL=http://localhost:9000",
+            ]
+        )
 
         # Add git context environment variables if available
         if config.git_context:
@@ -1707,6 +1891,7 @@ Start now: roboco_task_get("{task_id}")
             await self._dispatch_blocker_work(client)
             await self._dispatch_escalation_work(client)
             await self._dispatch_approval_work(client)
+            await self._dispatch_a2a_work(client)
 
             # Scheduled dispatchers
             await self._dispatch_audit_work(client)
@@ -2314,33 +2499,178 @@ Begin with step 1: roboco_task_get("{task_id}")
         # TODO: Add scheduled periodic audits
         # Check last audit time, spawn if overdue
 
+    async def _dispatch_a2a_work(self, client: httpx.AsyncClient) -> None:
+        """
+        Dispatch A2A (Agent-to-Agent) requests to target agents.
+
+        Monitors: a2a_request notifications (unacknowledged)
+        Spawns: Any agent that is the target of an A2A request
+
+        This is a fallback mechanism - primary A2A routing happens via events.
+        If the event-based spawn fails, these notifications will be picked up here.
+        """
+        notifications = await self._fetch_notifications(client, "a2a_request")
+
+        for notif in notifications:
+            targets = notif.get("to_agents", [])
+
+            for agent_id in targets:
+                if self._is_agent_active(agent_id):
+                    # Agent is online - SDK handles A2A delivery directly
+                    # No action needed here, SDK server receives messages
+                    continue
+
+                # Agent is offline - spawn them with A2A context
+                await self.spawn_agent(
+                    agent_id=agent_id,
+                    initial_prompt=self._build_a2a_prompt(notif),
+                )
+                break
+
     # =========================================================================
     # SMART DISPATCHER - PROMPT BUILDERS
     # =========================================================================
 
+    def _get_workflow_state(
+        self,
+        status: str,
+        has_plan: bool,
+        requires_git: bool,
+        branch_name: str | None,
+    ) -> str:
+        """Determine developer workflow state from task attributes.
+
+        Args:
+            status: Task status (claimed, in_progress, needs_revision, etc.)
+            has_plan: Whether task has a plan submitted
+            requires_git: Whether task requires git workflow
+            branch_name: Branch name if git task (PM creates this)
+
+        Returns:
+            Workflow state string (NEEDS_PLAN, READY_TO_START, EXECUTING, etc.)
+        """
+        # Direct status mappings
+        status_map = {
+            "in_progress": "EXECUTING",
+            "needs_revision": "REVISION_REQUIRED",
+            "verifying": "VERIFYING",
+        }
+
+        if status in status_map:
+            return status_map[status]
+
+        # Handle claimed status with sub-states
+        if status == "claimed":
+            if not has_plan:
+                return "NEEDS_PLAN"
+            if requires_git and not branch_name:
+                return "WAITING_FOR_BRANCH"
+            return "READY_TO_START"
+
+        return status.upper()
+
+    def _get_workflow_instructions(self, state: str, task_id: str) -> str:
+        """Get workflow instructions for the given state.
+
+        Args:
+            state: Workflow state (NEEDS_PLAN, READY_TO_START, etc.)
+            task_id: Task ID for tool call examples
+
+        Returns:
+            Markdown-formatted instructions for the current state
+        """
+        instructions = {
+            "NEEDS_PLAN": f"""## NEXT STEP: Submit Plan
+
+You MUST submit a plan before starting work.
+
+Call roboco_task_plan("{task_id}", {{
+    "approach": "Your implementation strategy",
+    "sub_tasks": [
+        {{"title": "Step 1", "description": "First action"}},
+        {{"title": "Step 2", "description": "Next action"}}
+    ],
+    "risks": ["Potential issues"],
+    "open_questions": ["Clarifications needed"]
+}})
+
+You CANNOT call roboco_task_start() until plan is submitted.
+""",
+            "WAITING_FOR_BRANCH": """## BLOCKED: Waiting for Branch
+
+Your plan is approved, but this is a git task and no branch has been created yet.
+
+The PM must create a branch for you using:
+`roboco_git_create_branch(project_slug, task_id, branch_type)`
+
+**What to do:**
+1. Send a message to your PM requesting branch creation
+2. Or escalate: `roboco_task_escalate(task_id, "Need branch created for git task")`
+3. Wait for notification that branch is ready
+
+You CANNOT call roboco_task_start() until branch_name is set on the task.
+""",
+            "READY_TO_START": f"""## NEXT STEP: Start Work
+
+Your plan is approved. Call roboco_task_start("{task_id}") to begin.
+
+Then proceed to execute your sub_tasks using roboco_git_* tools.
+""",
+            "EXECUTING": """## IN PROGRESS
+
+Continue development:
+1. Make changes in your workspace
+2. roboco_git_commit() for each logical change
+3. roboco_task_progress() to update status (0-100%)
+4. roboco_journal_* to log decisions/learnings
+5. roboco_task_submit_verification() when complete
+""",
+            "REVISION_REQUIRED": f"""## REVISION REQUESTED
+
+QA or PM requested changes:
+1. Call roboco_task_get("{task_id}") to see feedback
+2. Call roboco_task_claim("{task_id}") to reclaim
+3. Update plan if needed: roboco_task_plan()
+4. Call roboco_task_start("{task_id}") to resume
+""",
+            "VERIFYING": """## SELF-VERIFICATION
+
+Run quality checks and verify against acceptance criteria:
+1. Run tests, lint, type checks
+2. Review changes with roboco_git_diff()
+3. If all good: roboco_task_submit_qa()
+4. If issues found: fix and commit
+""",
+        }
+        return instructions.get(
+            state, f'Call roboco_task_get("{task_id}") to check status.'
+        )
+
     def _build_dev_prompt(self, task: dict[str, Any]) -> str:
-        """Build initial prompt for a developer with an assigned task."""
+        """Build state-aware initial prompt for a developer."""
         task_id = task.get("id", "unknown")
         title = task.get("title", "Untitled")
         status = task.get("status", "unknown")
-        team = task.get("team", "unknown")
+
+        # Determine workflow state based on task attributes
+        has_plan = bool(task.get("plan"))
+        requires_git = task.get("requires_git", False)
+        branch_name = task.get("branch_name")
+        workflow_state = self._get_workflow_state(
+            status, has_plan, requires_git, branch_name
+        )
+        instructions = self._get_workflow_instructions(workflow_state, task_id)
 
         return f"""You have been assigned a development task.
 
 TASK ID: {task_id}
 TITLE: {title}
 STATUS: {status}
-TEAM: {team}
+WORKFLOW STATE: {workflow_state}
 
-This task is already CLAIMED for you. Begin work immediately:
+{instructions}
 
-1. Call roboco_task_get("{task_id}") for full details and acceptance criteria
-2. Follow the workflow: UNDERSTAND → PLAN → EXECUTE → VERIFY → SUBMIT QA
-3. When task is submitted for QA, call roboco_task_scan() to check for more work
-4. If more work is assigned to you, continue working
-5. If no more work, call roboco_agent_idle() to shutdown gracefully
-
-Do NOT scan for work first - your task is already assigned. Begin now.
+Start by calling roboco_task_get("{task_id}") for full details.
 """
 
     def _build_qa_prompt(self, task: dict[str, Any]) -> str:
@@ -2544,4 +2874,35 @@ Your job:
 3. Identify any concerns or patterns
 4. Compile audit report for CEO
 5. Call roboco_agent_idle() when complete
+"""
+
+    def _build_a2a_prompt(self, notification: dict[str, Any]) -> str:
+        """Build initial prompt for handling an A2A (Agent-to-Agent) request."""
+        notif_id = notification.get("id", "unknown")
+        from_agent = notification.get("from_agent", "unknown")
+        body = notification.get("body", "No message provided")
+        related_task_id = notification.get("related_task_id")
+        metadata = notification.get("metadata", {})
+        skill = metadata.get("skill", "general")
+        urgent = metadata.get("urgent", False)
+
+        urgency_note = "**URGENT** - This request has priority.\n\n" if urgent else ""
+        task_note = f"RELATED TASK: {related_task_id}\n" if related_task_id else ""
+
+        return f"""You have received an A2A (Agent-to-Agent) REQUEST.
+
+{urgency_note}FROM: {from_agent}
+SKILL: {skill}
+{task_note}
+REQUEST:
+{body}
+
+Your job:
+
+1. Acknowledge the notification with roboco_notify_ack("{notif_id}")
+2. Process the request using your {skill} capabilities
+3. Respond to {from_agent} using roboco_agent_request()
+4. If you need task context, call roboco_task_get("{related_task_id or "task_id"}")
+5. When done, call roboco_task_scan() for other work
+6. If no more work, call roboco_agent_idle() to shutdown gracefully
 """

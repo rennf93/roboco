@@ -75,7 +75,7 @@ pnpm test
 | Cache/Queue | Redis |
 | Container Runtime | Docker + Docker Compose |
 | Cloud LLM | Claude API (claude-opus-4-5-20251101) |
-| Local LLM | Ollama (glm-4.6:cloud for HyDE/RAG) |
+| Local LLM | Ollama (glm-4.7:cloud for HyDE/RAG) |
 | Embeddings | embeddinggemma:300m (768 dim) |
 | Frontend | React / Next.js (future) |
 
@@ -332,7 +332,7 @@ ROBOCO_RAG_USE_HYBRID_SEARCH=true
 
 # AI/LLM
 ROBOCO_DEFAULT_EMBEDDING_MODEL=embeddinggemma:300m
-ROBOCO_LOCAL_LLM_MODEL=glm-4.6:cloud
+ROBOCO_LOCAL_LLM_MODEL=glm-4.7:cloud
 ROBOCO_LOCAL_LLM_BASE_URL=http://roboco-ollama:11434/v1
 ROBOCO_OLLAMA_BASE_URL=http://roboco-ollama:11434
 ```
@@ -359,7 +359,7 @@ The startup order is critical due to dependencies:
 postgres ──┐
 redis ─────┼──> ollama ──> ollama-init ──> orchestrator
            │        │            │
-           │        │            └── Pulls embeddinggemma:300m, glm-4.6:cloud
+           │        │            └── Pulls embeddinggemma:300m, glm-4.7:cloud
            │        └── Healthcheck: ollama list
            └── Healthcheck: pg_isready, redis-cli ping
 ```

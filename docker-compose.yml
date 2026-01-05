@@ -79,14 +79,14 @@ services:
           status=$$(echo "$$line" | grep -o '"status":"[^"]*"' | cut -d'"' -f4)
           [ -n "$$status" ] && echo "  $$status"
         done
-        echo "=== Pulling LLM model (glm-4.6:cloud) ==="
-        curl -sN http://ollama:11434/api/pull -d '{"name":"glm-4.6:cloud"}' | while read -r line; do
+        echo "=== Pulling LLM model (glm-4.7:cloud) ==="
+        curl -sN http://ollama:11434/api/pull -d '{"name":"glm-4.7:cloud"}' | while read -r line; do
           status=$$(echo "$$line" | grep -o '"status":"[^"]*"' | cut -d'"' -f4)
           [ -n "$$status" ] && echo "  $$status"
         done
         echo "=== Verifying models are available ==="
         curl -sf http://ollama:11434/api/tags | grep -q "embeddinggemma" && echo "  embeddinggemma: OK"
-        curl -sf http://ollama:11434/api/tags | grep -q "glm-4.6" && echo "  glm-4.6: OK"
+        curl -sf http://ollama:11434/api/tags | grep -q "glm-4.7" && echo "  glm-4.7: OK"
         echo "=== All models ready! ==="
 
   # ==========================================================================
@@ -219,7 +219,7 @@ services:
       ROBOCO_PORT: 8000
       # Ollama (use container name)
       ROBOCO_LOCAL_LLM_BASE_URL: http://roboco-ollama:11434/v1
-      ROBOCO_LOCAL_LLM_MODEL: glm-4.6:cloud
+      ROBOCO_LOCAL_LLM_MODEL: glm-4.7:cloud
       ROBOCO_DEFAULT_EMBEDDING_MODEL: embeddinggemma:300m
       ROBOCO_OLLAMA_BASE_URL: http://roboco-ollama:11434
       # Host paths for spawning agent containers (required for Docker-in-Docker)
@@ -236,6 +236,8 @@ services:
       - ${ROBOCO_DATA_DIR:-./data}/mcp-configs:/app/mcp-configs
       # Generated prompts directory - composed at runtime from layers
       - ${ROBOCO_DATA_DIR:-./data}/prompts-generated:/app/prompts-generated
+      # Per-agent Claude settings (generated at spawn time)
+      - ${ROBOCO_DATA_DIR:-./data}/agent-settings:/app/agent-settings
     depends_on:
       postgres:
         condition: service_healthy

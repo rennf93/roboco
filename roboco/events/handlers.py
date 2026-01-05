@@ -325,73 +325,6 @@ async def handle_question_answered(event: Event) -> None:
 
 
 # =============================================================================
-# A2A TASK ASSIGNMENT HANDLER
-# =============================================================================
-
-
-async def handle_task_assigned(event: Event) -> None:
-    """
-    Handle TASK_ASSIGNED event from A2A requests.
-
-    When an agent requests work from another agent via A2A:
-    1. If target agent is running → send notification
-    2. If target agent is idle/stopped → spawn them with task context
-    """
-    data = event.data
-    agent_slug = data.get("agent_slug")
-    task_id = data.get("task_id")
-    skill = data.get("skill", "general")
-    message = data.get("message", "")
-
-    if not agent_slug or not task_id:
-        logger.warning("Incomplete TASK_ASSIGNED event", data=data)
-        return
-
-    logger.info(
-        "A2A task assignment received",
-        agent=agent_slug,
-        task_id=task_id,
-        skill=skill,
-    )
-
-    # Check if orchestrator is available
-    if not _context.orchestrator:
-        logger.warning("No orchestrator available to spawn agent")
-        return
-
-    # Check if agent is already running
-    running_agents = _context.orchestrator.get_running_agents()
-    if agent_slug in running_agents:
-        # Agent is running - they'll pick up the task via notifications
-        logger.info(f"Agent {agent_slug} already running, will receive notification")
-        return
-
-    # Agent not running - spawn them with A2A task context
-    initial_prompt = (
-        f"You have received an A2A request.\n\n"
-        f"**Skill requested:** {skill}\n"
-        f"**Task ID:** {task_id}\n"
-        f"**Message:** {message}\n\n"
-        f"Use roboco_task_get('{task_id}') to see the full task details, "
-        f"then proceed with the requested work."
-    )
-
-    try:
-        await _context.orchestrator.spawn_agent(
-            agent_id=agent_slug,
-            initial_prompt=initial_prompt,
-        )
-        logger.info(f"Spawned agent {agent_slug} for A2A task {task_id}")
-    except Exception as e:
-        logger.error(
-            "Failed to spawn agent for A2A task",
-            agent=agent_slug,
-            task_id=task_id,
-            error=str(e),
-        )
-
-
-# =============================================================================
 # HANDLER REGISTRATION
 # =============================================================================
 
@@ -428,7 +361,7 @@ def register_default_handlers(bus: Any = None) -> None:
     # Question handlers
     bus.subscribe(EventType.QUESTION_ANSWERED, handle_question_answered)
 
-    # A2A task assignment handlers
-    bus.subscribe(EventType.TASK_ASSIGNED, handle_task_assigned)
+    # NOTE: A2A routing is now handled by SDK Server directly
+    # Orchestrator dispatcher handles fallback spawning via notification polling
 
     logger.info("Default event handlers registered")

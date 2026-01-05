@@ -30,7 +30,6 @@ from roboco.models.a2a import (
     CancelTaskRequest,
     ListTasksResponse,
     SendMessageRequest,
-    SendMessageResponse,
 )
 from roboco.services.a2a import A2AService
 
@@ -94,21 +93,42 @@ async def get_agent_card(
 async def send_message(
     request: SendMessageRequest,
     db: DbSession,
-) -> SendMessageResponse:
+) -> dict[str, Any]:
     """
-    Send a message to create or update an A2A task.
+    Send an A2A message (fallback endpoint).
 
-    This is the primary A2A interaction endpoint. Messages sent here
-    create new tasks or continue existing conversations.
+    This endpoint is used by the SDK Server when the target agent is offline.
+    It creates a notification that the orchestrator dispatcher will pick up
+    to spawn the target agent.
+
+    DOES NOT create tasks. Creates notifications only.
+    task_id is REQUIRED - A2A is about existing tasks.
     """
     service = A2AService(db)
     message = request.message
     task_id_str = message.task_id
 
-    if task_id_str:
-        # Update existing task
+    # task_id is REQUIRED for A2A
+    if not task_id_str:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail={
+                "error": "TASK_ID_REQUIRED",
+                "message": "A2A requests must include task_id.",
+                "hint": "A2A is for communication about existing tasks. "
+                "Use roboco_task_create() first if you need a new task.",
+            },
+        )
+
+    # Check if this is a response to an existing A2A conversation
+    metadata = request.metadata or {}
+    is_response = metadata.get("is_response", False)
+
+    if is_response:
+        # Update existing task with response message
+        responder = metadata.get("from_agent")
         try:
-            task = await service.update_task_from_message(task_id_str, message)
+            await service.update_task_from_message(task_id_str, message, responder)
         except ValueError as e:
             error_msg = str(e)
             if "Invalid task ID" in error_msg:
@@ -120,19 +140,32 @@ async def send_message(
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail=error_msg,
             ) from None
-    else:
-        # Create new task from message
-        try:
-            task = await service.create_task_from_a2a_message(request)
-        except ValueError as e:
+        await db.commit()
+        return {"status": "response_sent", "task_id": task_id_str}
+
+    # Create A2A notification (NOT a task) and route to agent
+    try:
+        result = await service.create_a2a_notification(request)
+    except ValueError as e:
+        error_str = str(e)
+        # Check if it's a permission error (includes "Hint:")
+        if "Hint:" in error_str:
+            parts = error_str.split(" Hint: ", 1)
             raise HTTPException(
-                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                detail=str(e),
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail={
+                    "error": "A2A_NOT_PERMITTED",
+                    "message": parts[0],
+                    "hint": parts[1] if len(parts) > 1 else "",
+                },
             ) from None
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail={"error": "A2A_ERROR", "message": error_str},
+        ) from None
 
     await db.commit()
-    await db.refresh(task)
-    return SendMessageResponse(task=service.task_to_a2a(task))
+    return {"status": "success", "a2a_request": result}
 
 
 @router.post("/message/stream")

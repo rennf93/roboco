@@ -27,6 +27,10 @@
 - Claim tasks (board observes/approves)
 - Clear/refresh KB indexes
 
+## Tool Note
+
+Use `roboco_git_*` MCP tools, not native git commands.
+
 ## Key Permissions
 
 | Permission | Access |
@@ -46,9 +50,14 @@ Escalates directly to CEO.
 Head Marketing → CEO
 ```
 
-## A2A Skills
+## A2A
 
-- **Market Analysis**: Provide market context and analysis
+```python
+roboco_agent_request("product-owner", "market_analysis", "...", task_id)
+roboco_a2a_check()  # Check inbox
+```
+
+Skills: market_analysis
 
 ## Communication
 

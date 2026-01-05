@@ -28,6 +28,10 @@
 - Claim tasks (board observes/approves)
 - Clear/refresh KB indexes
 
+## Tool Note
+
+Use `roboco_git_*` MCP tools, not native git commands.
+
 ## Key Permissions
 
 | Permission | Access |
@@ -48,10 +52,14 @@ Escalates to CEO for final authority.
 Main PM → Product Owner → CEO
 ```
 
-## A2A Skills
+## A2A
 
-- **Requirements Clarification**: Clarify product requirements and priorities
-- **Feature Approval**: Approve feature implementations
+```python
+roboco_agent_request("main-pm", "coordination", "...", task_id)
+roboco_a2a_check()  # Check inbox
+```
+
+Skills: requirements_clarification, feature_approval
 
 ## Communication
 

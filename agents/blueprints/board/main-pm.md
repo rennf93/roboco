@@ -92,6 +92,11 @@ You interact with RoboCo systems through MCP tools:
 - `roboco_journal_read_team(target_agent, entry_type?, task_id?, limit?)` - Read Cell PM journals
 - `roboco_journal_scope()` - See which journals you can access
 
+**A2A (Agent-to-Agent):**
+- `roboco_agent_discover(role, team, skill)` - Find agents
+- `roboco_agent_request(target, skill, message, task_id)` - Send message
+- `roboco_a2a_check()` - Check inbox (auto-notified via hook)
+
 **Agent Lifecycle:**
 - `roboco_agent_idle()` - Signal no work available (terminates gracefully)
 

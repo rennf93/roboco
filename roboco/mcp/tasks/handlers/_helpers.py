@@ -322,21 +322,33 @@ async def validate_task_start(
         )
 
     if task_status == "claimed" and not task.get("plan"):
+        task_id = task.get("id", "unknown")
         return format_error_response(
             "NO_PLAN",
-            "Cannot start without a plan.",
+            "Cannot start without a plan. Workflow: CLAIM → PLAN → START",
             {
-                "required_action": "roboco_task_plan(task_id, approach, steps)",
-                "workflow": "claim → PLAN → start",
+                "current_status": "claimed",
+                "next_action": "roboco_task_plan",
+                "workflow": ["claimed", "plan submitted", "start", "in_progress"],
+                "why": (
+                    "Planning ensures you understand the task, break it into steps, "
+                    "identify risks, and ask questions before writing code."
+                ),
                 "example": {
-                    "task_id": task.get("id"),
-                    "approach": "Describe your implementation approach",
-                    "steps": [
-                        {"title": "Step 1", "description": "What to do first"},
-                        {"title": "Step 2", "description": "What to do next"},
-                    ],
+                    "tool": "roboco_task_plan",
+                    "args": {
+                        "task_id": task_id,
+                        "approach": "Describe your high-level implementation strategy",
+                        "sub_tasks": [
+                            {"title": "Step 1", "description": "First action to take"},
+                            {"title": "Step 2", "description": "Second action to take"},
+                        ],
+                        "risks": ["Potential issue that could block progress"],
+                        "open_questions": ["Question to clarify with PM if any"],
+                    },
                 },
             },
+            hint="roboco_kb_search('task plan workflow')",
         )
 
     if task_status == "claimed":

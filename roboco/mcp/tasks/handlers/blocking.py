@@ -49,6 +49,10 @@ async def handle_task_block(
             {"status_code": block_resp.status_code, "detail": block_resp.text},
         )
 
+    # Determine PM agent based on agent's team
+    team_prefix = agent_id[:2] if agent_id else "be"
+    pm_agent = f"{team_prefix}-pm"
+
     return format_task_response(
         block_resp.json(),
         "RESOLVE_BLOCKER",
@@ -60,6 +64,11 @@ async def handle_task_block(
         "2. SWITCH - Call roboco_task_scan for other work\n"
         "3. ESCALATE - Use roboco_task_escalate() if PM is unresponsive\n\n"
         "You'll be notified when the task is unblocked.",
+        a2a_suggestion=(
+            f"Need immediate PM attention? Use A2A:\n"
+            f"roboco_agent_request('{pm_agent}', 'coordination', "
+            f"'Blocked: {data.reason}', options={{'urgent': True}})"
+        ),
     )
 
 
@@ -106,8 +115,20 @@ async def handle_task_unblock(
     if not unblock_resp.ok:
         return format_error_response("UNBLOCK_FAILED", "Failed to unblock task")
 
+    # Get the assigned developer to notify
+    assigned_slug = task.get("assigned_to_slug")
+
     return format_task_response(
-        unblock_resp.json(), "CONTINUE", "Task unblocked. Resume from last checkpoint."
+        unblock_resp.json(),
+        "CONTINUE",
+        "Task unblocked. Resume from last checkpoint.",
+        a2a_suggestion=(
+            f"Notify developer that blocker is resolved:\n"
+            f"roboco_agent_request(target_agent='{assigned_slug or 'developer'}', "
+            f"skill='resume', message='Blocker resolved for task {task_id}')"
+        )
+        if assigned_slug
+        else None,
     )
 
 

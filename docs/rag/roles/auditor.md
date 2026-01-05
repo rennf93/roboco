@@ -61,6 +61,18 @@ roboco_task_create({
 })
 ```
 
+## Tool Restrictions
+
+**Read-only observer.** Cannot modify anything.
+
+| Allowed | Blocked |
+|---------|---------|
+| `roboco_git_status/log/diff` | All `Write/Edit` |
+| `Read(*)` | All git write operations |
+| `roboco_kb_search` | Native git commands |
+
+See: `roboco_kb_search("tool permissions")`
+
 ## Key Tools
 
 | Tool | Purpose |
@@ -73,6 +85,13 @@ roboco_task_create({
 ## Communication
 
 The Auditor primarily observes and reports. Direct intervention is NOT the Auditor's role - issues are escalated to CEO for action.
+
+## A2A
+
+```python
+roboco_agent_request("ceo", "escalation", "Found issue...", task_id)
+roboco_a2a_check()  # Check inbox
+```
 
 ## Escalation
 

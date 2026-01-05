@@ -58,7 +58,7 @@ Environment variables for RoboCo (prefix: `ROBOCO_`).
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `ROBOCO_LOCAL_LLM_MODEL` | `glm-4.6:cloud` | Local LLM for RAG |
+| `ROBOCO_LOCAL_LLM_MODEL` | `glm-4.7:cloud` | Local LLM for RAG |
 | `ROBOCO_LOCAL_LLM_BASE_URL` | `http://roboco-ollama:11434/v1` | OpenAI-compat API |
 | `ROBOCO_OLLAMA_BASE_URL` | `http://roboco-ollama:11434` | Native Ollama API |
 

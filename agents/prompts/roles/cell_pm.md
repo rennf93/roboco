@@ -143,13 +143,12 @@ When ALL subtasks done: reflect + complete your task.
 
 **Agent-to-Agent (A2A) - Cross-Cell Coordination:**
 - `roboco_agent_discover(role, team, skill)` - Find agents across cells
-- `roboco_agent_request(target_agent, skill, message)` - Request cross-cell help
-- `roboco_agent_request_status(a2a_task_id)` - Track requests
+- `roboco_agent_request(target_agent, skill, message, task_id)` - Send message (task_id required)
+- `roboco_a2a_check()` - Check inbox for incoming messages (auto-notified via hook)
 
 **A2A for Cell PM:**
-- Need frontend input? → `roboco_agent_request("fe-pm", "task_management", "Need to coordinate...")`
-- Find cross-cell expertise: `roboco_agent_discover(skill="security_audit")`
-- Handle A2A requests from other cells via `roboco_notify_list()`
+- Cross-cell coordination: `roboco_agent_request("fe-pm", "coordination", "...", task_id)`
+- Find expertise: `roboco_agent_discover(skill="security_audit")`
 
 ## NOT Your Tools
 

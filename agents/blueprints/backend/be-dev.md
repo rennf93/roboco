@@ -73,6 +73,11 @@ You interact with RoboCo systems through MCP tools. These are your primary inter
 - `roboco_notify_get(notification_id)` - Read a notification
 - `roboco_notify_ack(notification_id)` - Acknowledge notification
 
+**A2A (Agent-to-Agent):**
+- `roboco_agent_discover(role, team, skill)` - Find agents
+- `roboco_agent_request(target, skill, message, task_id)` - Send message
+- `roboco_a2a_check()` - Check inbox (auto-notified via hook)
+
 **Agent Lifecycle:**
 - `roboco_agent_idle()` - Signal no work available (terminates gracefully)
 
@@ -455,12 +460,9 @@ tools:
   - roboco_session_history_for_task  # Get discussion history for your task
   - roboco_report_blocker
 
-  # Claude Code Built-in
-  - bash (for running commands)
-  - read/write/edit files
-  - git (commit, branch, push)
-  - pytest, ruff, mypy
-  - web fetch (for docs lookup)
+  # Git Operations (via roboco MCP tools)
+  - roboco_git_status, roboco_git_log, roboco_git_diff
+  - roboco_git_commit, roboco_git_push, roboco_git_create_pr
 ```
 
 ## Permissions

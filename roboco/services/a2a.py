@@ -530,48 +530,6 @@ class A2AService:
 
         return None
 
-    async def route_to_agent(
-        self,
-        target_agent_slug: str,
-        task: TaskTable,
-        skill: str | None = None,
-        message: str | None = None,
-    ) -> None:
-        """
-        Route an A2A task to a specific agent.
-
-        This publishes an event that:
-        1. Notifies the agent if they're online (via WebSocket)
-        2. Triggers the orchestrator to spawn them if needed
-        """
-        target_uuid = AGENT_UUIDS.get(target_agent_slug)
-        if not target_uuid:
-            return
-
-        # Assign task to target agent
-        task.assigned_to = cast("Any", UUID(target_uuid))
-        await self.session.flush()
-
-        # Publish A2A request event for routing
-        try:
-            bus = get_event_bus()
-            if bus.is_connected():
-                await bus.publish(
-                    Event(
-                        type=EventType.TASK_ASSIGNED,
-                        data={
-                            "task_id": str(task.id),
-                            "assigned_to": target_uuid,
-                            "agent_slug": target_agent_slug,
-                            "skill": skill or "general",
-                            "message": message or "",
-                            "source": "a2a",
-                        },
-                    )
-                )
-        except Exception:
-            pass  # Don't fail if event bus unavailable
-
     # =========================================================================
     # MESSAGE HANDLING
     # =========================================================================
@@ -627,54 +585,91 @@ class A2AService:
         )
         return result.scalar_one_or_none()
 
-    async def create_task_from_a2a_message(
+    async def create_a2a_notification(
         self,
         request: SendMessageRequest,
-    ) -> TaskTable:
+    ) -> dict[str, Any]:
         """
-        Create a new task from an A2A message request.
+        Create an A2A notification for peer-to-peer communication.
 
-        Handles the full flow: extract message, resolve target, create task, route.
+        Does NOT create tasks - A2A is messaging only.
+        task_id is REQUIRED - A2A is communication about existing tasks.
+
+        Returns dict with notification_id, status, and target_agent.
         """
+        from roboco.services.notification import NotificationService
+
         message = request.message
-        title, description, message_text = self.extract_message_text(message)
-
         metadata = request.metadata or {}
+        config = request.configuration
+
+        # task_id is REQUIRED for A2A
+        task_id = message.task_id
+        if not task_id:
+            raise ValueError("A2A requests must reference a task_id")
+
+        from_agent = metadata.get("from_agent")
         target_agent = self.resolve_target_agent(metadata)
-        skill = metadata.get("skill")
-        team = self.get_team_from_agent(target_agent) if target_agent else Team.BACKEND
+        skill = metadata.get("skill", "general")
 
-        creator_agent = await self.resolve_creator_agent(metadata.get("from_agent"))
-        if creator_agent is None:
-            raise ValueError("No agent available to create tasks")
+        # Enforce A2A hierarchy permissions
+        if from_agent and target_agent:
+            from roboco.agents_config import can_a2a_direct, get_a2a_route_hint
 
-        task = TaskTable(
-            title=f"[A2A] {title}" if target_agent else title,
-            description=description,
-            acceptance_criteria=["Task completed as specified"],
-            status=TaskStatus.PENDING,
-            priority=5,
-            team=team,
-            created_by=creator_agent.id,
-            dev_notes=f"A2A Request | Skill: {skill or 'general'}" if skill else None,
+            allowed, error_msg = can_a2a_direct(from_agent, target_agent)
+            if not allowed:
+                hint = get_a2a_route_hint(from_agent, target_agent)
+                raise ValueError(f"{error_msg} Hint: {hint}")
+        urgent_from_config = config.urgent if config else False
+        urgent = urgent_from_config or metadata.get("urgent", False)
+
+        # Extract message content
+        _, _, message_text = self.extract_message_text(message)
+
+        logger.info(
+            "Creating A2A notification (fallback)",
+            task_id=task_id,
+            from_agent=from_agent,
+            target_agent=target_agent,
+            skill=skill,
+            urgent=urgent,
         )
-        self.session.add(task)
-        await self.session.flush()
 
-        if target_agent:
-            await self.route_to_agent(target_agent, task, skill, message_text)
+        # Create notification - orchestrator dispatcher will handle spawning
+        notification_service = NotificationService()
+        await notification_service.send_a2a_notification(
+            task_id=task_id,
+            a2a_context={
+                "from_agent": from_agent or "unknown",
+                "to_agent": target_agent or "",
+                "skill": skill,
+                "message": message_text,
+                "urgent": urgent,
+            },
+        )
 
-        return task
+        return {
+            "status": "sent",
+            "target_agent": target_agent,
+            "task_id": task_id,
+        }
 
     async def update_task_from_message(
-        self, task_id: str, message: A2AMessage
+        self,
+        task_id: str,
+        message: A2AMessage,
+        responder_agent: str | None = None,
     ) -> TaskTable:
         """
-        Update an existing task with a new message.
+        Update an existing task with a new message (response).
+
+        When a response is received, notifies the original requester
+        and spawns them if offline (bidirectional A2A).
 
         Args:
             task_id: Task UUID string
             message: A2A message to append
+            responder_agent: Agent sending the response (for routing back)
 
         Returns:
             Updated TaskTable
@@ -696,4 +691,68 @@ class A2AService:
             raise ValueError(f"Task not found: {task_id}")
 
         self.update_task_with_message(task, message)
+
+        # Notify original requester of the response (bidirectional A2A)
+        await self._notify_original_requester(task, responder_agent)
+
         return task
+
+    async def _notify_original_requester(
+        self,
+        task: TaskTable,
+        responder_agent: str | None = None,
+    ) -> None:
+        """
+        Notify the original A2A requester of a response.
+
+        If the requester is offline, triggers spawn via event.
+        This enables bidirectional A2A where both parties can be
+        spawned as needed until they're both online.
+        """
+        # Extract original requester from dev_notes or task metadata
+        dev_notes = task.dev_notes or ""
+        if "A2A Request" not in dev_notes:
+            return  # Not an A2A task
+
+        # The original requester is whoever created the task
+        created_by = task.created_by
+        if not created_by:
+            return
+
+        # Find the agent slug for the creator
+        from roboco.seeds.initial_data import AGENT_UUIDS
+
+        requester_slug = None
+        for slug, uuid_str in AGENT_UUIDS.items():
+            if uuid_str == str(created_by):
+                requester_slug = slug
+                break
+
+        if not requester_slug:
+            return
+
+        # Don't notify if responder is the same as requester
+        if responder_agent and responder_agent == requester_slug:
+            return
+
+        # Publish event to notify/spawn the original requester
+        try:
+            bus = get_event_bus()
+            if bus.is_connected():
+                await bus.publish(
+                    Event(
+                        type=EventType.TASK_ASSIGNED,
+                        data={
+                            "task_id": str(task.id),
+                            "assigned_to": str(created_by),
+                            "agent_slug": requester_slug,
+                            "skill": "a2a_response",
+                            "message": f"Response received for A2A task {task.id}",
+                            "source": "a2a_response",
+                            "urgent": False,
+                            "from_agent": responder_agent or "agent",
+                        },
+                    )
+                )
+        except Exception:
+            pass  # Don't fail if event bus unavailable

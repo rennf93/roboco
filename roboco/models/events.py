@@ -153,6 +153,12 @@ class NotificationServiceProtocol(Protocol):
         to_documenter: str,
     ) -> None: ...
 
+    async def send_a2a_notification(
+        self,
+        task_id: str,
+        a2a_context: dict[str, Any],
+    ) -> None: ...
+
 
 class OrchestratorAccessProtocol(Protocol):
     """Protocol for orchestrator access."""
@@ -160,6 +166,10 @@ class OrchestratorAccessProtocol(Protocol):
     def get_waiting_agents(self) -> dict[str, "WaitingRecord"]: ...
 
     def get_running_agents(self) -> set[str]: ...
+
+    def is_agent_busy(self, agent_id: str) -> bool: ...
+
+    def queue_priority_work(self, agent_id: str, work: dict[str, Any]) -> None: ...
 
     async def resolve_wait(self, agent_id: str, resolution: dict[str, Any]) -> Any: ...
 

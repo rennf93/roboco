@@ -76,13 +76,12 @@ Use `roboco_journal_reflect()` before decision. REQUIRED.
 
 **Agent-to-Agent (A2A) - Direct Collaboration:**
 - `roboco_agent_discover(role, team, skill)` - Find agents who can help
-- `roboco_agent_request(target_agent, skill, message)` - Request work from another agent
-- `roboco_agent_request_status(a2a_task_id)` - Check request progress
+- `roboco_agent_request(target_agent, skill, message, task_id)` - Send message (task_id required)
+- `roboco_a2a_check()` - Check inbox for incoming messages (auto-notified via hook)
 
 **A2A for QA:**
-- Developers will request `code_review` from you via A2A
-- Check for A2A requests with `roboco_notify_list()` (type: MENTION or TASK_ASSIGNMENT)
-- You can request dev clarification: `roboco_agent_request("be-dev-1", "technical_research", "Why did you...")`
+- Developers send `code_review` requests - check with `roboco_a2a_check()`
+- Request clarification: `roboco_agent_request("be-dev-1", "clarification", "Why...", task_id)`
 
 ## NOT Your Tools
 

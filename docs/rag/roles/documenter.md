@@ -41,6 +41,18 @@ awaiting_documentation → claim → start → write → docs_complete
                                               awaiting_pm_review
 ```
 
+## Tool Restrictions
+
+**Write access limited to docs directory only.**
+
+| Allowed | Blocked |
+|---------|---------|
+| `roboco_docs_*` | `Write/Edit` outside `/app/docs/` |
+| `roboco_git_*` | Native git commands |
+| `Write/Edit` in `/app/docs/**` | Source code modification |
+
+See: `roboco_kb_search("tool permissions")`
+
 ## Key Tools
 
 | Tool | Purpose |
@@ -120,6 +132,13 @@ If documenter == original_developer, the claim is FORBIDDEN.
 1. Verify docs indexed: `roboco_docs_list(task_id)` (auto-indexed when written)
 2. Journal your work: `roboco_journal_entry({type: "documentation"})`
 3. Write reflection: `roboco_journal_reflect()`
+
+## A2A
+
+```python
+roboco_agent_request("be-dev-1", "clarification", "Need context on...", task_id)
+roboco_a2a_check()  # Check inbox
+```
 
 ## Escalation
 

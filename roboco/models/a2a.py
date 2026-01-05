@@ -319,6 +319,10 @@ class SendMessageConfiguration(RobocoBase):
     blocking: bool = Field(
         default=False, description="Wait for task completion before responding"
     )
+    urgent: bool = Field(
+        default=False,
+        description="Priority request - interrupts busy agents, goes to front of queue",
+    )
     push_notification_config: dict[str, Any] | None = Field(
         default=None,
         alias="pushNotificationConfig",

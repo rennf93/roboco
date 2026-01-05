@@ -27,6 +27,10 @@
 - Cancel tasks (by design - CEO observes/approves, doesn't manage)
 - Should not be doing day-to-day task management
 
+## Tool Note
+
+Prefer `roboco_git_*` MCP tools over native git for audit trail.
+
 ## CEO Approval Workflow
 
 When PM escalates major task:
@@ -61,6 +65,13 @@ Only CEO can use `force_with_cancelled`.
 CEO is the final escalation target. Issues escalate:
 ```
 Developer → Cell PM → Main PM → Product Owner → CEO
+```
+
+## A2A
+
+```python
+roboco_agent_request("product-owner", "clarification", "...", task_id)
+roboco_a2a_check()  # Check inbox
 ```
 
 ## Communication

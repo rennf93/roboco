@@ -62,6 +62,11 @@ You interact with RoboCo systems through MCP tools:
 - `roboco_message_send(channel, content)` - Post to board channels
 - `roboco_channel_history(channel_slug, limit?)` - Read channel history
 
+**A2A (Agent-to-Agent):**
+- `roboco_agent_discover(role, team, skill)` - Find agents
+- `roboco_agent_request(target, skill, message, task_id)` - Send message
+- `roboco_a2a_check()` - Check inbox (auto-notified via hook)
+
 **Agent Lifecycle:**
 - `roboco_agent_idle()` - Signal no work available (terminates gracefully)
 

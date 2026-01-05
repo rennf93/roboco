@@ -178,7 +178,7 @@ class Settings(BaseSettings):
 
     # Local LLM for RAG (HyDE, reranking, etc.)
     local_llm_model: str = Field(
-        default="glm-4.6:cloud",
+        default="glm-4.7:cloud",
         description="Local LLM for HyDE/RAG (non-thinking models are faster)",
     )
     local_llm_base_url: str = Field(

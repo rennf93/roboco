@@ -1,28 +1,41 @@
 """
 A2A MCP Server
 
-Provides tools for agent-to-agent communication using the A2A protocol.
-This enables peer-to-peer agent collaboration without going through
-the orchestrator for every interaction.
+Provides tools for agent-to-agent communication.
+Routes messages through the local SDK Server for true peer-to-peer A2A.
 
 Tools available to ALL agents:
 - roboco_agent_discover: Discover other agents by skill/role/team
-- roboco_agent_request: Request another agent to perform work
-- roboco_agent_request_status: Check status of a pending request
+- roboco_agent_request: Send A2A message to another agent (via SDK)
+- roboco_a2a_check: Poll inbox for incoming A2A messages
 """
 
+import contextlib
+import os
 from typing import Any
 
+import httpx
 from mcp.server.fastmcp import FastMCP
 
 from roboco.agents_config import (
     ALL_AGENTS,
+    can_a2a_direct,
+    get_a2a_route_hint,
     get_agent_role,
     get_agent_skills,
     get_agent_team,
 )
-from roboco.mcp.utils import ApiClient, format_error_response
-from roboco.seeds.initial_data import AGENT_UUIDS
+from roboco.mcp.utils import format_error_response
+
+# Current agent ID from environment (set by orchestrator)
+AGENT_ID = os.environ.get("ROBOCO_AGENT_ID", "unknown")
+
+# SDK Server configuration
+SDK_URL = os.environ.get("ROBOCO_SDK_URL", "http://localhost:9000")
+
+# Main API URL (for notification auto-ack)
+API_URL = os.environ.get("ROBOCO_API_URL", "http://localhost:8000")
+
 
 # =============================================================================
 # TOOL IMPLEMENTATIONS
@@ -34,8 +47,7 @@ async def _handle_discover(
     team: str | None = None,
     skill: str | None = None,
 ) -> dict[str, Any]:
-    """Discover agents by criteria."""
-    # Build local discovery (fast path - no API call needed)
+    """Discover agents by criteria (local lookup, no API call)."""
     agents = []
 
     for agent_slug in ALL_AGENTS:
@@ -72,61 +84,199 @@ async def _handle_discover(
         "agents": agents,
         "count": len(agents),
         "guidance": (
-            f"Found {len(agents)} agent(s). Use roboco_agent_request to request "
-            "work from a specific agent."
+            f"Found {len(agents)} agent(s). Use roboco_agent_request to send "
+            "a message to a specific agent."
         ),
     }
 
 
-async def _handle_request_status(
-    client: ApiClient,
-    a2a_task_id: str,
+def _validate_a2a_target(
+    from_agent: str, target_agent: str, skill: str
+) -> dict[str, Any] | None:
+    """Validate A2A target and permissions. Returns error dict or None if valid."""
+    # Check target exists
+    if target_agent not in ALL_AGENTS:
+        return format_error_response(
+            "AGENT_NOT_FOUND",
+            f"Agent '{target_agent}' not found. Use roboco_agent_discover.",
+        )
+
+    # Check A2A hierarchy permissions
+    allowed, error_msg = can_a2a_direct(from_agent, target_agent)
+    if not allowed:
+        return format_error_response(
+            "A2A_NOT_PERMITTED",
+            error_msg or f"Cannot A2A {target_agent} directly.",
+            hint=get_a2a_route_hint(from_agent, target_agent),
+        )
+
+    # Check skill exists
+    target_skills = get_agent_skills(target_agent)
+    skill_ids = [s.get("id", "") for s in target_skills]
+    if skill not in skill_ids:
+        available = ", ".join(skill_ids)
+        return format_error_response(
+            "SKILL_NOT_FOUND",
+            f"Agent '{target_agent}' lacks skill '{skill}'. Has: {available}",
+        )
+
+    return None
+
+
+async def _auto_ack_a2a_notifications(
+    from_agent: str, target_agent: str, task_id: str
+) -> None:
+    """Auto-acknowledge A2A notifications when responding.
+
+    When agent B responds to agent A about a task, ack any pending
+    A2A_REQUEST notifications from A about that task.
+    """
+    async with httpx.AsyncClient() as client:
+        with contextlib.suppress(Exception):
+            await client.post(
+                f"{API_URL}/api/v1/notifications/ack-a2a",
+                json={
+                    "from_agent": target_agent,  # Original sender
+                    "to_agent": from_agent,  # Us (the responder)
+                    "task_id": task_id,
+                },
+                timeout=5.0,
+            )
+
+
+async def _check_pending_a2a(
+    from_agent: str, target_agent: str, task_id: str
+) -> dict[str, Any] | None:
+    """Check if there's already a pending A2A to target about this task.
+
+    Returns error dict if pending message exists, None if ok to send.
+    """
+    async with httpx.AsyncClient() as client:
+        try:
+            resp = await client.get(
+                f"{API_URL}/api/v1/notifications/pending-a2a",
+                params={
+                    "from_agent": from_agent,
+                    "to_agent": target_agent,
+                    "task_id": task_id,
+                },
+                timeout=5.0,
+            )
+            resp.raise_for_status()
+            data = resp.json()
+            if data.get("has_pending"):
+                return format_error_response(
+                    "A2A_PENDING",
+                    f"Already sent A2A to {target_agent} about this task.",
+                    hint="Wait for their response before sending another message.",
+                )
+        except Exception:
+            pass  # Non-critical check, allow send if check fails
+    return None
+
+
+async def _send_via_sdk(
+    target_agent: str, skill: str, message: str, task_id: str, urgent: bool
 ) -> dict[str, Any]:
-    """Check status of an A2A request."""
-    resp = await client.get(f"/a2a/tasks/{a2a_task_id}")
+    """Send A2A message via SDK Server."""
+    async with httpx.AsyncClient() as client:
+        try:
+            resp = await client.post(
+                f"{SDK_URL}/a2a/send",
+                json={
+                    "target_agent": target_agent,
+                    "skill": skill,
+                    "message": message,
+                    "task_id": task_id,
+                    "urgent": urgent,
+                },
+                timeout=10.0,
+            )
+            resp.raise_for_status()
+            result = resp.json()
 
-    if resp.is_status(404):
-        return format_error_response(
-            "TASK_NOT_FOUND",
-            f"A2A task '{a2a_task_id}' not found",
-        )
+            delivery = result.get("delivery", "unknown")
+            urgency_note = " (URGENT)" if urgent else ""
 
-    if not resp.ok:
-        return format_error_response(
-            "STATUS_CHECK_FAILED",
-            f"Failed to check status: {resp.text}",
-        )
+            return {
+                "status": "success",
+                "target_agent": target_agent,
+                "skill": skill,
+                "task_id": task_id,
+                "message_id": result.get("message_id"),
+                "delivery": delivery,
+                "guidance": (
+                    f"A2A sent to {target_agent}{urgency_note}. "
+                    f"Delivery: {delivery}."
+                ),
+            }
 
-    task = resp.json()
-    status = task.get("status", {})
-    state = status.get("state", "unknown")
-    message = status.get("message", {})
+        except httpx.ConnectError:
+            return format_error_response(
+                "SDK_UNAVAILABLE",
+                "SDK Server not available.",
+                hint="SDK Server should be running alongside Claude Code.",
+            )
+        except httpx.HTTPStatusError as e:
+            return format_error_response(
+                "A2A_SEND_FAILED",
+                f"Failed to send: {e.response.text}",
+            )
 
-    result_text = None
-    if message and message.get("parts"):
-        for part in message["parts"]:
-            if part.get("type") == "text":
-                result_text = part.get("text")
-                break
 
-    guidance = ""
-    if state == "completed":
-        guidance = "Request completed. Review the result below."
-    elif state == "working":
-        guidance = "Agent is still working on this request. Check again later."
-    elif state == "input_required":
-        guidance = "Agent needs more information. Review the message and respond."
-    elif state in ["failed", "cancelled", "rejected"]:
-        guidance = f"Request ended with state: {state}."
+async def _handle_check() -> dict[str, Any]:
+    """Poll inbox for incoming A2A messages via SDK Server."""
+    async with httpx.AsyncClient() as client:
+        try:
+            resp = await client.get(f"{SDK_URL}/inbox/poll", timeout=5.0)
+            resp.raise_for_status()
+            data = resp.json()
 
-    return {
-        "a2a_task_id": a2a_task_id,
-        "state": state,
-        "result": result_text,
-        "artifacts": task.get("artifacts", []),
-        "metadata": task.get("metadata", {}),
-        "guidance": guidance,
-    }
+            messages = data.get("messages", [])
+            count = data.get("count", 0)
+
+            if count == 0:
+                return {
+                    "messages": [],
+                    "count": 0,
+                    "guidance": "No pending A2A messages.",
+                }
+
+            # Format messages for display
+            formatted = []
+            for msg in messages:
+                formatted.append(
+                    {
+                        "id": str(msg.get("id", "")),
+                        "from": msg.get("from_agent", "unknown"),
+                        "task_id": msg.get("task_id", ""),
+                        "skill": msg.get("skill", ""),
+                        "message": msg.get("content", ""),
+                        "priority": msg.get("priority", "normal"),
+                        "timestamp": msg.get("timestamp", ""),
+                    }
+                )
+
+            return {
+                "messages": formatted,
+                "count": count,
+                "guidance": (
+                    f"You have {count} A2A message(s). "
+                    "Review and respond to each as appropriate."
+                ),
+            }
+
+        except httpx.ConnectError:
+            return format_error_response(
+                "SDK_UNAVAILABLE",
+                "SDK Server is not available. Cannot check inbox.",
+                hint="The SDK Server should be running alongside Claude Code.",
+            )
+        except httpx.HTTPStatusError as e:
+            return format_error_response(
+                "INBOX_CHECK_FAILED",
+                f"Failed to check inbox: {e.response.text}",
+            )
 
 
 # =============================================================================
@@ -145,7 +295,6 @@ def create_a2a_mcp_server(agent_id: str) -> FastMCP:
         Configured FastMCP server
     """
     mcp = FastMCP(f"roboco-a2a-{agent_id}", json_response=True)
-    client = ApiClient(agent_id)
 
     @mcp.tool()
     async def roboco_agent_discover(
@@ -173,112 +322,69 @@ def create_a2a_mcp_server(agent_id: str) -> FastMCP:
         target_agent: str,
         skill: str,
         message: str,
-        task_id: str | None = None,
-        blocking: bool = False,
+        task_id: str,
+        options: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         """
-        Request another agent to perform work using A2A protocol.
+        Send an A2A message to another agent about a specific task.
 
-        This enables direct peer-to-peer collaboration between agents.
+        Messages are delivered directly if the agent is online,
+        or via notification if they are offline.
 
         Args:
-            target_agent: Agent slug to request (e.g., "be-qa", "fe-dev-1")
-            skill: Skill to invoke (e.g., "code_review", "code_implementation")
-            message: Description of what you need
-            task_id: Related task ID (optional, for context)
-            blocking: Wait for response (default: false, async)
+            target_agent: Agent slug to message (e.g., "be-qa", "fe-dev-1")
+            skill: Skill being requested (e.g., "code_review", "clarification")
+            message: Your message content
+            task_id: REQUIRED - The task this message is about
+            options: Optional dict with 'urgent' (bool) flag
 
         Returns:
-            A2A task ID for tracking the request
+            Status of the A2A message delivery
         """
-        # Validate target agent exists
-        if target_agent not in ALL_AGENTS:
+        if not task_id:
             return format_error_response(
-                "AGENT_NOT_FOUND",
-                f"Agent '{target_agent}' not found. "
-                "Use roboco_agent_discover to find agents.",
+                "TASK_ID_REQUIRED",
+                "A2A messages must reference a task. Provide task_id.",
+                hint="A2A is for communication about existing tasks.",
             )
 
-        # Validate skill exists for target
-        target_skills = get_agent_skills(target_agent)
-        skill_ids = [s.get("id", "") for s in target_skills]
-        if skill not in skill_ids:
-            return format_error_response(
-                "SKILL_NOT_FOUND",
-                f"Agent '{target_agent}' does not have skill '{skill}'. "
-                f"Available skills: {', '.join(skill_ids)}",
-            )
+        # Validate permissions (hierarchy enforcement)
+        validation_error = _validate_a2a_target(agent_id, target_agent, skill)
+        if validation_error:
+            return validation_error
 
-        # Resolve target agent UUID
-        target_uuid = AGENT_UUIDS.get(target_agent)
-        if not target_uuid:
-            return format_error_response(
-                "AGENT_UUID_NOT_FOUND",
-                f"Could not resolve UUID for agent '{target_agent}'",
-            )
+        # Check if we already have a pending A2A to this agent about this task
+        pending_error = await _check_pending_a2a(agent_id, target_agent, task_id)
+        if pending_error:
+            return pending_error
 
-        # Build A2A message payload
-        context_id = task_id or f"request-{agent_id}-to-{target_agent}"
-        payload = {
-            "message": {
-                "role": "user",
-                "parts": [{"type": "text", "text": message}],
-                "contextId": context_id,
-            },
-            "configuration": {
-                "blocking": blocking,
-                "acceptedOutputModes": ["text/plain", "application/json"],
-            },
-            "metadata": {
-                "from_agent": agent_id,
-                "target_agent": target_agent,
-                "skill": skill,
-                "task_id": task_id,
-            },
-        }
+        opts = options or {}
+        urgent = opts.get("urgent", False)
 
-        # Send A2A request
-        resp = await client.post("/a2a/message/send", json=payload)
+        # Auto-ack any pending A2A notifications from target about this task
+        # (responding = acknowledging the original request)
+        await _auto_ack_a2a_notifications(agent_id, target_agent, task_id)
 
-        if not resp.ok:
-            return format_error_response(
-                "A2A_REQUEST_FAILED",
-                f"Failed to send A2A request: {resp.text}",
-            )
-
-        result = resp.json()
-        a2a_task = result.get("task", {})
-        a2a_task_id = a2a_task.get("id", "unknown")
-        a2a_state = a2a_task.get("status", {}).get("state", "submitted")
-
-        return {
-            "status": "submitted",
-            "a2a_task_id": a2a_task_id,
-            "target_agent": target_agent,
-            "skill": skill,
-            "state": a2a_state,
-            "guidance": (
-                f"Request sent to {target_agent}. "
-                f"Task ID: {a2a_task_id}. "
-                "Use roboco_agent_request_status to check progress, or wait for "
-                "a notification when complete."
-            ),
-        }
+        return await _send_via_sdk(
+            target_agent=target_agent,
+            skill=skill,
+            message=message,
+            task_id=task_id,
+            urgent=urgent,
+        )
 
     @mcp.tool()
-    async def roboco_agent_request_status(
-        a2a_task_id: str,
-    ) -> dict[str, Any]:
+    async def roboco_a2a_check() -> dict[str, Any]:
         """
-        Check the status of an A2A request.
+        Check for incoming A2A messages.
 
-        Args:
-            a2a_task_id: The A2A task ID returned from roboco_agent_request
+        Poll your inbox for messages from other agents.
+        Messages are removed from the queue once retrieved.
 
         Returns:
-            Current status and any results
+            List of pending A2A messages
         """
-        return await _handle_request_status(client, a2a_task_id)
+        return await _handle_check()
 
     return mcp
 

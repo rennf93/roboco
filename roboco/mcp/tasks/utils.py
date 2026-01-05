@@ -22,12 +22,20 @@ def format_task_response(
     next_step: str,
     guidance: str,
     project: dict[str, Any] | None = None,
+    a2a_suggestion: str | None = None,
 ) -> dict[str, Any]:
     """
     Format a standardized task response with guidance.
 
     Includes both JSON task data and TOON-encoded version for
     token-efficient LLM consumption.
+
+    Args:
+        task: Task data dictionary
+        next_step: Next workflow step identifier
+        guidance: Human-readable guidance text
+        project: Optional project data
+        a2a_suggestion: Optional A2A communication suggestion for handoffs
     """
     # Encode task data as TOON for token efficiency when LLM processes response
     task_toon = _toon.encode(task)
@@ -42,6 +50,8 @@ def format_task_response(
     if project:
         response["project"] = project
         response["project_toon"] = _toon.encode(project)
+    if a2a_suggestion:
+        response["a2a_suggestion"] = a2a_suggestion
     return response
 
 

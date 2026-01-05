@@ -78,6 +78,10 @@ async def handle_docs_complete(
             {"status_code": docs_resp.status_code, "api_error": docs_resp.text},
         )
 
+    # Determine PM agent based on documenter's team
+    team_prefix = agent_id[:2] if agent_id else "be"
+    pm_agent = f"{team_prefix}-pm"
+
     return format_task_response(
         docs_resp.json(),
         "AWAITING_PM",
@@ -87,6 +91,11 @@ async def handle_docs_complete(
         "  roboco_kb_index_docs(['/docs/backend/your-doc.md'])\n"
         "You can still index after submitting - unindexed docs won't be searchable!\n\n"
         "Call roboco_task_scan for next documentation task.",
+        a2a_suggestion=(
+            f"Notify PM that docs are ready:\n"
+            f"roboco_agent_request(target_agent='{pm_agent}', "
+            f"skill='coordination', message='Task {task_id} ready for review')"
+        ),
     )
 
 
@@ -400,11 +409,24 @@ async def handle_ceo_reject(
             {"status_code": resp.status_code, "api_error": resp.text},
         )
 
+    # Get the original developer from quick_context to suggest A2A notification
+    quick_context = task.get("quick_context", "")
+    from roboco.services.task import extract_original_developer
+
+    original_dev = extract_original_developer(quick_context)
+
     return format_task_response(
         resp.json(),
         "NEEDS_REVISION",
         f"Task rejected and returned for revision.\nReason: {reason}\n"
         "The developer will address feedback and resubmit.",
+        a2a_suggestion=(
+            f"Notify developer immediately (urgent):\n"
+            f"roboco_agent_request('{original_dev}', 'revision', "
+            f"'CEO rejected: {reason[:50]}...', options={{'urgent': True}})"
+        )
+        if original_dev
+        else None,
     )
 
 

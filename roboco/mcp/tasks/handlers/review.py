@@ -134,7 +134,7 @@ async def _validate_qa_submission(
 
 
 async def _save_notes_and_submit(
-    client: ApiClient, task_id: str, dev_notes: str, handoff_summary: str
+    client: ApiClient, task_id: str, dev_notes: str, handoff_summary: str, agent_id: str
 ) -> dict[str, Any]:
     """Save notes and submit for QA. Returns response dict."""
     combined_notes = f"{dev_notes}\n\n---\nHandoff Summary:\n{handoff_summary}"
@@ -151,6 +151,10 @@ async def _save_notes_and_submit(
     if not qa_resp.ok:
         return format_error_response("SUBMIT_FAILED", "Failed to submit for QA")
 
+    # Determine QA agent based on agent's team
+    team_prefix = agent_id[:2] if agent_id else "be"
+    qa_agent = f"{team_prefix}-qa"
+
     return format_task_response(
         qa_resp.json(),
         "WAIT_FOR_QA",
@@ -160,6 +164,11 @@ async def _save_notes_and_submit(
         "- If PASS: goes to documentation, then PM review\n"
         "- If FAIL: returns to you with feedback for revision\n\n"
         "Call roboco_task_scan for other work while waiting.",
+        a2a_suggestion=(
+            f"Notify QA directly for faster review:\n"
+            f"roboco_agent_request(target_agent='{qa_agent}', "
+            f"skill='qa_review', message='Task {task_id} ready for QA review')"
+        ),
     )
 
 
@@ -182,7 +191,9 @@ async def handle_task_submit_qa(
     if error:
         return error
 
-    return await _save_notes_and_submit(client, task_id, dev_notes, handoff_summary)
+    return await _save_notes_and_submit(
+        client, task_id, dev_notes, handoff_summary, agent_id
+    )
 
 
 def _validate_qa_role(agent_id: str, action: str) -> dict[str, Any] | None:
@@ -240,11 +251,20 @@ async def handle_task_qa_pass(
             {"status_code": pass_resp.status_code, "api_error": pass_resp.text},
         )
 
+    # Determine documenter based on QA's team
+    team_prefix = agent_id[:2] if agent_id else "be"
+    doc_agent = f"{team_prefix}-doc"
+
     return format_task_response(
         pass_resp.json(),
         "NOTIFY_DEV",
         "Task passed QA. Documenter will be notified.\n"
         "Call roboco_task_scan for next QA task.",
+        a2a_suggestion=(
+            f"Notify documenter directly:\n"
+            f"roboco_agent_request(target_agent='{doc_agent}', "
+            f"skill='documentation', message='Task {task_id} ready for docs')"
+        ),
     )
 
 
@@ -307,9 +327,21 @@ async def handle_task_qa_fail(
             {"status_code": fail_resp.status_code, "api_error": fail_resp.text},
         )
 
+    # Get the original developer from quick_context
+    quick_context = task.get("quick_context", "")
+    original_dev = extract_original_developer(quick_context)
+    issues_summary = "; ".join(issues[:3])  # First 3 issues for message
+
     return format_task_response(
         fail_resp.json(),
         "NOTIFY_DEV",
         f"Task returned for revision with {len(issues)} issue(s).\n"
         "Developer will be notified.\nCall roboco_task_scan for next QA task.",
+        a2a_suggestion=(
+            f"Notify developer immediately (urgent):\n"
+            f"roboco_agent_request('{original_dev}', 'revision', "
+            f"'QA failed: {issues_summary}', options={{'urgent': True}})"
+        )
+        if original_dev
+        else None,
     )

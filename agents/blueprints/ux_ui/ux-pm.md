@@ -80,6 +80,11 @@ You interact with RoboCo systems through MCP tools:
 - `roboco_escalate(escalate_to, subject, description)` - Escalate to Main PM (PM only)
 - `roboco_request_approval(approver, subject, what_needs_approval)` - Request approval (PM only)
 
+**A2A (Agent-to-Agent):**
+- `roboco_agent_discover(role, team, skill)` - Find agents
+- `roboco_agent_request(target, skill, message, task_id)` - Send message
+- `roboco_a2a_check()` - Check inbox (auto-notified via hook)
+
 **Agent Lifecycle:**
 - `roboco_agent_idle()` - Signal done (terminates gracefully)
 

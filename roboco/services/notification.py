@@ -6,6 +6,8 @@ Sends notifications through the API with proper enforcement.
 
 from __future__ import annotations
 
+from typing import Any
+
 import structlog
 
 from roboco.db.base import get_db_context
@@ -166,6 +168,53 @@ class NotificationService:
                 from_agent="system",
                 to_agents=[to_developer],
                 subject=f"QA Failed: Task {task_id}",
+                body=body,
+                related_task_id=task_id,
+            )
+        )
+
+    async def send_a2a_notification(
+        self,
+        task_id: str,
+        a2a_context: dict[str, Any],
+    ) -> None:
+        """Send notification for A2A request (when recipient is busy or offline).
+
+        Args:
+            task_id: Related task ID
+            a2a_context: Dict with from_agent, to_agent, skill, message, urgent
+        """
+        from_agent = a2a_context.get("from_agent", "unknown")
+        to_agent = a2a_context.get("to_agent", "")
+        skill = a2a_context.get("skill", "general")
+        message = a2a_context.get("message", "")
+        urgent = a2a_context.get("urgent", False)
+
+        logger.info(
+            "Sending A2A notification",
+            task_id=task_id,
+            from_agent=from_agent,
+            to_agent=to_agent,
+            skill=skill,
+            urgent=urgent,
+        )
+
+        urgency_label = "[URGENT] " if urgent else ""
+        body = (
+            f"{urgency_label}A2A request from {from_agent}.\n\n"
+            f"Skill: {skill}\n\n"
+            f"Message: {message}"
+        )
+        priority = (
+            NotificationPriority.URGENT if urgent else NotificationPriority.NORMAL
+        )
+        await self._create_notification(
+            CreateNotificationParams(
+                notification_type=NotificationType.A2A_REQUEST,
+                priority=priority,
+                from_agent=from_agent,
+                to_agents=[to_agent],
+                subject=f"{urgency_label}A2A: {skill}",
                 body=body,
                 related_task_id=task_id,
             )

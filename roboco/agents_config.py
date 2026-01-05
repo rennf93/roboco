@@ -579,3 +579,125 @@ def get_agent_skills(agent_id: str) -> list[dict]:
     """Get A2A skills for an agent based on their role."""
     role = get_agent_role(agent_id)
     return list(ROLE_SKILLS.get(role, []))
+
+
+# =============================================================================
+# A2A PERMISSION ENFORCEMENT
+# =============================================================================
+# A2A follows the same hierarchy as escalations and notifications:
+# - Within cell: Direct A2A allowed
+# - Cross-cell: Must go through Cell PM → Main PM
+# - To board: Must go through Main PM
+# - To CEO: Must go through board
+
+# Roles that can reach each other directly (CEO is human - use notifications)
+_BOARD_ROLES: Final[frozenset[str]] = frozenset(
+    {"product_owner", "head_marketing", "auditor", "main_pm"}
+)
+_MAIN_PM_TARGETS: Final[frozenset[str]] = frozenset(
+    {"cell_pm", "main_pm", "product_owner", "head_marketing", "auditor"}
+)
+
+
+def _check_cell_pm_a2a(
+    from_team: str | None, to_agent: str, to_role: str, to_team: str | None
+) -> tuple[bool, str | None]:
+    """Check A2A permissions for cell PM."""
+    # Own cell, other PMs, or main-pm
+    if to_team == from_team or to_role in ("cell_pm", "main_pm"):
+        return True, None
+    # Board/CEO - escalate
+    if to_role in _BOARD_ROLES:
+        return False, f"Cell PMs cannot A2A {to_role}. Escalate through main-pm."
+    # Other cell members
+    return False, f"Cannot A2A {to_agent} (different cell). Use main-pm."
+
+
+def _check_cell_member_a2a(
+    from_agent: str, from_team: str, to_agent: str, to_role: str, to_team: str | None
+) -> tuple[bool, str | None]:
+    """Check A2A permissions for cell members (dev, qa, doc)."""
+    cell_pm = get_pm_for_team(from_team)
+    # Same cell - allowed
+    if to_team == from_team:
+        return True, None
+    # Cross-cell
+    if to_team:
+        target_pm = get_pm_for_team(to_team)
+        return (
+            False,
+            f"Cannot A2A {to_agent} (cell: {to_team}). "
+            f"Ask {cell_pm} to coordinate with {target_pm}.",
+        )
+    # Management - not direct
+    return False, f"Cannot A2A {to_role}. Route: {from_agent} → {cell_pm} → main-pm."
+
+
+def _check_main_pm_a2a(
+    to_role: str, to_team: str | None
+) -> tuple[bool, str | None]:
+    """Check A2A permissions for main PM."""
+    if to_role in _MAIN_PM_TARGETS:
+        return True, None
+    pm = get_pm_for_team(to_team) if to_team else "cell-pm"
+    return False, f"Main PM cannot A2A {to_role}s. Route through {pm or 'cell-pm'}."
+
+
+def can_a2a_direct(from_agent: str, to_agent: str) -> tuple[bool, str | None]:
+    """
+    Check if from_agent can send A2A directly to to_agent.
+
+    Returns (allowed, error_message). Error explains who to contact instead.
+    """
+    from_role = get_agent_role(from_agent)
+    to_role = get_agent_role(to_agent)
+    from_team = get_agent_team(from_agent)
+    to_team = get_agent_team(to_agent)
+
+    # CEO is human - cannot A2A, use notifications
+    if to_role == "ceo":
+        return False, "CEO is human. Use roboco_notify_send() instead of A2A."
+
+    # Board → board/main-pm (not CEO, not cells directly)
+    if from_role in ("product_owner", "head_marketing", "auditor"):
+        return (True, None) if to_role in _BOARD_ROLES else (
+            False, f"Board cannot A2A {to_role}s. Route through main-pm."
+        )
+
+    # Dispatch to role-specific handlers
+    handlers: dict[str, tuple[bool, str | None]] = {
+        "main_pm": _check_main_pm_a2a(to_role, to_team),
+        "cell_pm": _check_cell_pm_a2a(from_team, to_agent, to_role, to_team),
+    }
+    if from_role in handlers:
+        return handlers[from_role]
+
+    # Cell members - use helper
+    if from_team:
+        return _check_cell_member_a2a(from_agent, from_team, to_agent, to_role, to_team)
+
+    return False, f"A2A from {from_agent} to {to_agent} not permitted."
+
+
+def get_a2a_route_hint(from_agent: str, to_agent: str) -> str:
+    """Get a hint for how to properly route an A2A message."""
+    to_role = get_agent_role(to_agent)
+    from_team = get_agent_team(from_agent)
+    to_team = get_agent_team(to_agent)
+
+    # CEO is human - no A2A route, use notifications
+    if to_role == "ceo":
+        return "CEO is human. Use roboco_notify_send() for CEO communication."
+
+    # Cross-cell routing
+    if from_team and to_team and from_team != to_team:
+        from_pm = get_pm_for_team(from_team)
+        to_pm = get_pm_for_team(to_team)
+        return f"Route: {from_agent}→{from_pm}→main-pm→{to_pm}→{to_agent}"
+
+    # Cell member to management
+    if from_team:
+        cell_pm = get_pm_for_team(from_team)
+        return f"Route: {from_agent}→{cell_pm}→main-pm→board"
+
+    return "Use roboco_task_escalate() for proper escalation."
