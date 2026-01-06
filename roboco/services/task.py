@@ -2051,9 +2051,12 @@ class TaskService(BaseService):
                 )
                 if escalated:
                     return escalated
-            if completing_agent_role == "main_pm" and all_descendants:
+            # Only escalate root-level parents to CEO (subtasks complete directly)
+            is_root_parent = all_descendants and not task.parent_task_id
+            if completing_agent_role == "main_pm" and is_root_parent:
                 self.log.info(
-                    "Main PM approved parent - escalating to CEO", task_id=str(task_id)
+                    "Main PM approved root parent - escalating to CEO",
+                    task_id=str(task_id),
                 )
                 return await self.escalate_to_ceo(task_id, "main_pm")
 
