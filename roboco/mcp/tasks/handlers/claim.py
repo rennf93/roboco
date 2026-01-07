@@ -104,6 +104,15 @@ async def handle_task_claim(
     if error := await validate_task_claimable(task, agent_role, agent_id, client):
         return error
 
+    # Validate branch exists for git tasks (PM must create branch first)
+    if task.get("requires_git") and not task.get("branch_name"):
+        return format_error_response(
+            "BRANCH_REQUIRED",
+            "Cannot claim git task - PM must create branch first.",
+            {"task_id": task_id, "requires_git": True},
+            hint="PM should call roboco_git_create_branch() before developer can claim",
+        )
+
     # Execute the claim
     claimed_task, error = await _execute_claim(client, task_id, agent_id)
     if error:

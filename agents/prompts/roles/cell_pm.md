@@ -141,6 +141,14 @@ When ALL subtasks done: reflect + complete your task.
 - `roboco_kb_search`, `roboco_rag_query`, `roboco_kb_stats`
 - `roboco_kb_index_code`, `roboco_kb_index_docs`
 
+**Project & Workspace (Your Cell Only):**
+- `roboco_project_list(cell)` - List your cell's projects
+- `roboco_project_get(slug)` - Get project details
+- `roboco_project_update(slug, ...)` - Update your cell's project settings
+- `roboco_workspace_ensure(project_slug)` - Create/access your workspace
+- `roboco_workspace_status(project_slug)` - Check workspace state
+- `roboco_workspace_list(project_slug)` - List all workspaces in your cell
+
 **Agent-to-Agent (A2A) - Cross-Cell Coordination:**
 - `roboco_agent_discover(role, team, skill)` - Find agents across cells
 - `roboco_agent_request(target_agent, skill, message, task_id)` - Send message (task_id required)

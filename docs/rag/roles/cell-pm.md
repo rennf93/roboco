@@ -122,6 +122,31 @@ See: `roboco_kb_search("tool permissions")`
 | `roboco_task_unblock` | Unblock blocked task |
 | `roboco_git_create_branch` | Create task branch |
 | `roboco_notify_send` | Send notification |
+| `roboco_project_update` | Update own cell's projects |
+| `roboco_workspace_list` | List own cell's workspaces |
+
+## Project Management
+
+Update projects assigned to your cell:
+
+```python
+roboco_project_update(
+    slug="roboco",
+    test_command="uv run pytest -v"
+)
+```
+
+Create tasks with project selection:
+
+```python
+roboco_task_create(
+    title="Backend task",
+    team="backend",
+    project_slug="roboco"  # Required for git tasks
+)
+```
+
+**Note:** Cannot create projects (Main PM only) or update other cells' projects.
 
 ## Handling Escalations
 

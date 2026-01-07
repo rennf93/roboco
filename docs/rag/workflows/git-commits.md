@@ -19,7 +19,8 @@ Example:
 roboco_git_commit(
     project_slug="roboco",
     task_id="a1b2c3d4-e5f6-7890-abcd-ef1234567890",
-    message="Add rate limiting endpoint"
+    message="Add rate limiting endpoint",
+    commit_type="feat"  # Required
 )
 ```
 
@@ -62,7 +63,7 @@ Co-authored-by: {agent-name}
 ## Push Commits
 
 ```python
-roboco_git_push(project_slug="roboco")
+roboco_git_push(project_slug="roboco", task_id="a1b2c3d4...")
 ```
 
 Push before:

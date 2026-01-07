@@ -8,10 +8,10 @@ Workspace Structure:
     Each agent gets their own workspace (git clone) for a project:
 
     {workspaces_root}/
-    └── {project-slug}/
-        └── {team}/
-            └── {agent-slug}/
-                └── [git repo files]
+    +-- {project-slug}/
+        +-- {team}/
+            +-- {agent-slug}/
+                +-- [git repo files]
 
     Example:
         /data/workspaces/roboco/backend/be-dev-1/
@@ -21,8 +21,7 @@ Workspace Structure:
     each on their own branch, without file conflicts.
 """
 
-import subprocess
-from pathlib import Path
+from datetime import datetime
 from uuid import UUID
 
 from fastapi import APIRouter, HTTPException, Query, status
@@ -48,135 +47,36 @@ from roboco.api.schemas.git import (
     GitPushResponse,
     GitStatusResponse,
 )
-from roboco.config import settings
-from roboco.services.project import get_project_service
-from roboco.services.workspace import WorkspaceError, get_workspace_service
+from roboco.exceptions import GitCommandError, GitTimeoutError
+from roboco.services.base import NotFoundError, ServiceError, ValidationError
+from roboco.services.git import get_git_service
+from roboco.services.task import get_task_service
+from roboco.services.work_session import get_work_session_service
 from roboco.utils.converters import require_uuid
 
 router = APIRouter()
-
-# Git command timeout in seconds
-_GIT_TIMEOUT = 30
-
-# Expected number of parts in rev-list output (ahead/behind count)
-_REV_LIST_PARTS = 2
 
 # Expected number of parts in log format output
 _LOG_FORMAT_PARTS = 5
 
 
-async def _run_git(
-    workspace: Path,
-    args: list[str],
-    check: bool = True,
-) -> subprocess.CompletedProcess[str]:
-    """Run a git command in the workspace (non-blocking)."""
-    import asyncio
-
-    def _run() -> subprocess.CompletedProcess[str]:
-        return subprocess.run(
-            ["git", *args],
-            cwd=workspace,
-            capture_output=True,
-            text=True,
-            timeout=_GIT_TIMEOUT,
-            check=check,
+def _translate_error(e: ServiceError) -> HTTPException:
+    """Translate service errors to HTTP exceptions."""
+    if isinstance(e, NotFoundError):
+        return HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=e.message)
+    if isinstance(e, ValidationError):
+        return HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=e.message)
+    if isinstance(e, GitTimeoutError):
+        return HTTPException(
+            status_code=status.HTTP_504_GATEWAY_TIMEOUT, detail=e.message
         )
-
-    try:
-        return await asyncio.to_thread(_run)
-    except subprocess.TimeoutExpired as e:
-        raise HTTPException(
-            status_code=status.HTTP_504_GATEWAY_TIMEOUT,
-            detail=f"Git command timed out: {' '.join(args)}",
-        ) from e
-    except subprocess.CalledProcessError as e:
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Git command failed: {e.stderr or e.stdout}",
-        ) from e
-
-
-async def _get_workspace(
-    db: DbSession,
-    project_slug: str,
-    agent_id: UUID | None = None,
-) -> Path:
-    """
-    Get the workspace path for an agent on a project.
-
-    Uses multi-agent workspace structure:
-        {workspaces_root}/{project_slug}/{team}/{agent_slug}/
-
-    If workspace doesn't exist and auto_clone is enabled, clones the repo.
-
-    Args:
-        db: Database session
-        project_slug: Project identifier
-        agent_id: Agent UUID (uses workspace service to resolve path)
-
-    Returns:
-        Path to the workspace directory
-
-    Raises:
-        HTTPException: If project not found or workspace setup fails
-    """
-    # Get project info
-    project_service = get_project_service(db)
-    project = await project_service.get_by_slug(project_slug)
-    if not project:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"Project '{project_slug}' not found",
+    if isinstance(e, GitCommandError):
+        return HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=e.message
         )
-
-    # If no agent_id, fall back to legacy workspace_path (for backwards compat)
-    if agent_id is None:
-        if not project.workspace_path:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail=f"Project '{project_slug}' has no workspace configured "
-                "and no agent_id provided for dynamic workspace resolution",
-            )
-        workspace = Path(project.workspace_path)
-        if not workspace.exists():
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail=f"Workspace path does not exist: {workspace}",
-            )
-        return workspace
-
-    # Use workspace service for multi-agent workspace resolution
-    workspace_service = get_workspace_service(db)
-
-    try:
-        if settings.workspace_auto_clone:
-            # Ensure workspace exists (clone if needed)
-            workspace = await workspace_service.ensure_workspace(
-                project_slug=project_slug,
-                agent_id=agent_id,
-                git_url=project.git_url,
-                default_branch=project.default_branch or "main",
-            )
-        else:
-            # Just resolve path, don't auto-clone
-            workspace = await workspace_service.resolve_workspace(
-                project_slug=project_slug,
-                agent_id=agent_id,
-            )
-            if not workspace.exists():
-                raise HTTPException(
-                    status_code=status.HTTP_400_BAD_REQUEST,
-                    detail=f"Workspace does not exist: {workspace}. "
-                    "Clone the repository first or enable auto_clone.",
-                )
-    except WorkspaceError as e:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=str(e),
-        ) from e
-
-    return workspace
+    return HTTPException(
+        status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=e.message
+    )
 
 
 # =============================================================================
@@ -192,56 +92,23 @@ async def get_git_status(
     _task_id: str | None = Query(default=None),
 ) -> GitStatusResponse:
     """Get git status for a project."""
-    workspace = await _get_workspace(db, project_slug, agent.agent_id)
+    git_service = get_git_service(db)
 
-    # Get current branch
-    branch_result = await _run_git(workspace, ["branch", "--show-current"])
-    current_branch = branch_result.stdout.strip()
-
-    # Get status
-    status_result = await _run_git(workspace, ["status", "--porcelain"])
-    lines = status_result.stdout.strip().split("\n") if status_result.stdout else []
-
-    staged_files = []
-    unstaged_files = []
-    untracked_files = []
-
-    for line in lines:
-        if not line:
-            continue
-        status_code = line[:2]
-        file_path = line[3:]
-
-        if status_code[0] in "MADRC":  # Staged
-            staged_files.append(file_path)
-        if status_code[1] in "MADRC":  # Unstaged
-            unstaged_files.append(file_path)
-        if status_code == "??":  # Untracked
-            untracked_files.append(file_path)
-
-    # Get ahead/behind
-    ahead, behind = 0, 0
     try:
-        rev_cmd = f"{current_branch}...origin/{current_branch}"
-        rev_result = await _run_git(
-            workspace,
-            ["rev-list", "--left-right", "--count", rev_cmd],
-            check=False,
+        workspace = await git_service.get_workspace(project_slug, agent.agent_id)
+        current_branch, has_changes, staged, unstaged, untracked, ahead, behind = (
+            await git_service.get_status(workspace)
         )
-        if rev_result.returncode == 0:
-            parts = rev_result.stdout.strip().split()
-            if len(parts) == _REV_LIST_PARTS:
-                ahead, behind = int(parts[0]), int(parts[1])
-    except Exception:
-        pass
+    except ServiceError as e:
+        raise _translate_error(e) from e
 
     return GitStatusResponse(
         project_slug=project_slug,
         current_branch=current_branch,
-        has_changes=bool(staged_files or unstaged_files or untracked_files),
-        staged_files=staged_files,
-        unstaged_files=unstaged_files,
-        untracked_files=untracked_files,
+        has_changes=has_changes,
+        staged_files=staged,
+        unstaged_files=unstaged,
+        untracked_files=untracked,
         ahead=ahead,
         behind=behind,
     )
@@ -256,19 +123,22 @@ async def get_git_log(
     branch: str | None = Query(default=None),
 ) -> GitLogResponse:
     """Get git log for a project."""
-    workspace = await _get_workspace(db, project_slug, agent.agent_id)
+    git_service = get_git_service(db)
 
-    # Get current branch if not specified
-    if not branch:
-        branch_result = await _run_git(workspace, ["branch", "--show-current"])
-        branch = branch_result.stdout.strip()
+    try:
+        workspace = await git_service.get_workspace(project_slug, agent.agent_id)
 
-    # Get log with format
-    log_format = "%H|%h|%s|%an|%aI"
-    log_result = await _run_git(
-        workspace,
-        ["log", f"--format={log_format}", f"-n{limit}", branch],
-    )
+        # Get current branch if not specified
+        if not branch:
+            branch = await git_service.get_current_branch(workspace)
+
+        # Get log with format
+        log_format = "%H|%h|%s|%an|%aI"
+        log_result = await git_service._run_git(
+            workspace, ["log", f"--format={log_format}", f"-n{limit}", branch]
+        )
+    except ServiceError as e:
+        raise _translate_error(e) from e
 
     commits = []
     for line in log_result.stdout.strip().split("\n"):
@@ -276,8 +146,6 @@ async def get_git_log(
             continue
         parts = line.split("|", 4)
         if len(parts) == _LOG_FORMAT_PARTS:
-            from datetime import datetime
-
             commits.append(
                 CommitInfo(
                     hash=parts[0],
@@ -303,20 +171,22 @@ async def list_branches(
     include_remote: bool = Query(default=False),
 ) -> GitBranchListResponse:
     """List git branches for a project."""
-    workspace = await _get_workspace(db, project_slug, agent.agent_id)
+    git_service = get_git_service(db)
 
-    # Get current branch
-    current_result = await _run_git(workspace, ["branch", "--show-current"])
-    current_branch = current_result.stdout.strip()
+    try:
+        workspace = await git_service.get_workspace(project_slug, agent.agent_id)
+        current_branch = await git_service.get_current_branch(workspace)
 
-    # Get branches
-    args = ["branch", "--format=%(refname:short)|%(objectname:short)"]
-    if include_remote:
-        args.append("-a")
+        # Get branches
+        args = ["branch", "--format=%(refname:short)|%(objectname:short)"]
+        if include_remote:
+            args.append("-a")
 
-    branch_result = await _run_git(workspace, args)
+        branch_result = await git_service._run_git(workspace, args)
+    except ServiceError as e:
+        raise _translate_error(e) from e
+
     branches = []
-
     for line in branch_result.stdout.strip().split("\n"):
         if not line:
             continue
@@ -353,21 +223,27 @@ async def get_git_diff(
     file_path: str | None = Query(default=None),
 ) -> GitDiffResponse:
     """Get git diff for a project."""
-    workspace = await _get_workspace(db, project_slug, agent.agent_id)
+    git_service = get_git_service(db)
 
-    args = ["diff"]
-    if staged:
-        args.append("--staged")
-    if file_path:
-        args.extend(["--", file_path])
+    try:
+        workspace = await git_service.get_workspace(project_slug, agent.agent_id)
 
-    diff_result = await _run_git(workspace, args)
+        args = ["diff"]
+        if staged:
+            args.append("--staged")
+        if file_path:
+            args.extend(["--", file_path])
 
-    # Count files changed
-    stat_args = ["diff", "--stat"]
-    if staged:
-        stat_args.append("--staged")
-    stat_result = await _run_git(workspace, stat_args)
+        diff_result = await git_service._run_git(workspace, args)
+
+        # Count files changed
+        stat_args = ["diff", "--stat"]
+        if staged:
+            stat_args.append("--staged")
+        stat_result = await git_service._run_git(workspace, stat_args)
+    except ServiceError as e:
+        raise _translate_error(e) from e
+
     files_changed = stat_result.stdout.count("\n") - 1 if stat_result.stdout else 0
 
     return GitDiffResponse(
@@ -391,56 +267,30 @@ async def create_commit(
     agent: CurrentAgentContext,
 ) -> GitCommitResponse:
     """Create a git commit and link it to the task."""
-    workspace = await _get_workspace(db, data.project_slug, agent.agent_id)
-
-    # Stage files
-    if data.files:
-        for file in data.files:
-            await _run_git(workspace, ["add", file])
-    else:
-        await _run_git(workspace, ["add", "-A"])
-
-    # Create commit with task ID prefix
-    message = f"[{data.task_id[:8]}] {data.message}"
-    await _run_git(workspace, ["commit", "-m", message])
-
-    # Get commit info
-    log_result = await _run_git(workspace, ["log", "-1", "--format=%H|%s"])
-    parts = log_result.stdout.strip().split("|")
-    commit_hash = parts[0] if parts else "unknown"
-
-    # Get stats
-    stat_result = await _run_git(workspace, ["diff", "--stat", "HEAD~1..HEAD"])
-    insertions, deletions, files_changed = 0, 0, 0
-    for line in stat_result.stdout.split("\n"):
-        if "insertion" in line or "deletion" in line:
-            parts = line.split(",")
-            for part in parts:
-                if "insertion" in part:
-                    insertions = int(part.strip().split()[0])
-                if "deletion" in part:
-                    deletions = int(part.strip().split()[0])
-                if "file" in part:
-                    files_changed = int(part.strip().split()[0])
-
-    # Link commit to task (ensures traceability)
-    from roboco.services.task import get_task_service
-    from roboco.services.work_session import get_work_session_service
+    git_service = get_git_service(db)
+    task_service = get_task_service(db)
 
     try:
-        task_uuid = UUID(data.task_id)
+        workspace = await git_service.get_workspace(data.project_slug, agent.agent_id)
 
-        # Add commit to task record
-        task_service = get_task_service(db)
+        commit_hash, message, files_changed, insertions, deletions = (
+            await git_service.create_commit(workspace, agent.agent_id, data)
+        )
+    except ServiceError as e:
+        raise _translate_error(e) from e
+
+    # Link commit to task (ensures traceability)
+    task_uuid = UUID(data.task_id)
+    try:
+        task = await task_service.get(task_uuid)
         await task_service.add_commit(
             task_id=task_uuid,
             hash=commit_hash,
-            message=data.message,  # Store original message without prefix
+            message=data.message,
             agent_id=agent.agent_id,
         )
 
         # If task has a work session, add commit there too
-        task = await task_service.get(task_uuid)
         if task and task.work_session_id:
             work_session_service = get_work_session_service(db)
             await work_session_service.add_commit(
@@ -450,7 +300,6 @@ async def create_commit(
         await db.commit()
     except Exception:
         # Don't fail the commit response if linking fails
-        # The commit was still made successfully
         pass
 
     return GitCommitResponse(
@@ -469,34 +318,19 @@ async def push_commits(
     agent: CurrentAgentContext,
 ) -> GitPushResponse:
     """Push commits to remote."""
-    workspace = await _get_workspace(db, data.project_slug, agent.agent_id)
+    git_service = get_git_service(db)
 
-    # Get current branch
-    branch_result = await _run_git(workspace, ["branch", "--show-current"])
-    branch = branch_result.stdout.strip()
-
-    # Get commits to push
-    count_result = await _run_git(
-        workspace,
-        ["rev-list", "--count", f"origin/{branch}..{branch}"],
-        check=False,
-    )
-    commits_to_push = (
-        int(count_result.stdout.strip()) if count_result.returncode == 0 else 0
-    )
-
-    # Push
-    args = ["push", "-u", "origin", branch]
-    if data.force:
-        args.insert(1, "--force")
-
-    await _run_git(workspace, args)
+    try:
+        workspace = await git_service.get_workspace(data.project_slug, agent.agent_id)
+        branch, commits_pushed = await git_service.push(workspace, data.force)
+    except ServiceError as e:
+        raise _translate_error(e) from e
 
     return GitPushResponse(
         branch=branch,
-        commits_pushed=commits_to_push,
+        commits_pushed=commits_pushed,
         remote="origin",
-        ready_for_pr=commits_to_push > 0,
+        ready_for_pr=commits_pushed > 0,
     )
 
 
@@ -506,31 +340,30 @@ async def create_branch(
     db: DbSession,
     agent: CurrentAgentContext,
 ) -> GitCreateBranchResponse:
-    """Create a task branch (PM only)."""
-    workspace = await _get_workspace(db, data.project_slug, agent.agent_id)
+    """Create a task branch (PM only).
 
-    # Get team from agent context
-    team = agent.team or "unknown"
+    Uses hierarchical branch naming: {type}/{team}/{root}/{sub}/{subsub}
+    """
+    git_service = get_git_service(db)
+    task_service = get_task_service(db)
 
-    # Generate branch name
-    branch_name = f"{data.branch_type}/{team}/{data.task_id[:8]}"
+    try:
+        workspace = await git_service.get_workspace(data.project_slug, agent.agent_id)
 
-    # Get base branch
-    base_branch = data.parent_branch
-    if not base_branch:
-        project_service = get_project_service(db)
-        project = await project_service.get_by_slug(data.project_slug)
-        base_branch = str(project.default_branch) if project else "main"
+        branch_name, created_from = await git_service.create_branch(
+            workspace, agent.team or "unknown", data
+        )
 
-    # Create and checkout branch
-    await _run_git(workspace, ["checkout", base_branch])
-    await _run_git(workspace, ["pull", "origin", base_branch])
-    await _run_git(workspace, ["checkout", "-b", branch_name])
-    await _run_git(workspace, ["push", "-u", "origin", branch_name])
+        # Store branch name on task
+        task_uuid = UUID(data.task_id)
+        await task_service.update(task_uuid, branch_name=branch_name)
+        await db.commit()
+    except ServiceError as e:
+        raise _translate_error(e) from e
 
     return GitCreateBranchResponse(
         branch_name=branch_name,
-        created_from=base_branch,
+        created_from=created_from,
         project_slug=data.project_slug,
     )
 
@@ -542,9 +375,13 @@ async def checkout_branch(
     agent: CurrentAgentContext,
 ) -> GitCheckoutResponse:
     """Checkout a branch."""
-    workspace = await _get_workspace(db, data.project_slug, agent.agent_id)
+    git_service = get_git_service(db)
 
-    await _run_git(workspace, ["checkout", data.branch])
+    try:
+        workspace = await git_service.get_workspace(data.project_slug, agent.agent_id)
+        await git_service.checkout(workspace, data.branch)
+    except ServiceError as e:
+        raise _translate_error(e) from e
 
     return GitCheckoutResponse(
         branch=data.branch,
@@ -561,72 +398,24 @@ async def create_pull_request(
     """Create a pull request using GitHub CLI.
 
     After PR creation, marks pr_created=True on the task.
-    This is part of the parallel execution in awaiting_documentation:
-    - Documenter sets docs_complete=True
-    - Developer sets pr_created=True (this endpoint)
-    - When BOTH are true, task transitions to awaiting_pm_review
+    Uses templates to auto-generate PR title/body if not provided.
     """
-    workspace = await _get_workspace(db, data.project_slug, agent.agent_id)
-
-    # Get current branch
-    branch_result = await _run_git(workspace, ["branch", "--show-current"])
-    source_branch = branch_result.stdout.strip()
-
-    # Get target branch (from project default or parent task)
-    project_service = get_project_service(db)
-    project = await project_service.get_by_slug(data.project_slug)
-    target_branch = str(project.default_branch) if project else "main"
-
-    # Create PR using gh CLI (wrapped in thread to avoid blocking)
-    import asyncio
-
-    def _create_pr() -> subprocess.CompletedProcess[str]:
-        return subprocess.run(
-            [
-                "gh",
-                "pr",
-                "create",
-                "--title",
-                data.title,
-                "--body",
-                data.body,
-                "--base",
-                target_branch,
-                "--head",
-                source_branch,
-            ],
-            cwd=workspace,
-            capture_output=True,
-            text=True,
-            timeout=_GIT_TIMEOUT,
-            check=True,
-        )
+    git_service = get_git_service(db)
+    task_service = get_task_service(db)
 
     try:
-        result = await asyncio.to_thread(_create_pr)
-        # Parse PR URL from output
-        pr_url = result.stdout.strip()
-        pr_number = int(pr_url.split("/")[-1]) if pr_url else 0
-    except subprocess.CalledProcessError as e:
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Failed to create PR: {e.stderr or e.stdout}",
-        ) from e
-    except FileNotFoundError as e:
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="GitHub CLI (gh) not found. Please install it.",
-        ) from e
+        workspace = await git_service.get_workspace(data.project_slug, agent.agent_id)
 
-    # Mark pr_created=True on the task (parallel execution with documenter)
-    # This triggers transition to awaiting_pm_review if docs are also complete
-    from uuid import UUID
+        pr_number, pr_url, title, source_branch, target_branch = (
+            await git_service.create_pull_request(workspace, data)
+        )
+    except ServiceError as e:
+        raise _translate_error(e) from e
 
-    from roboco.services.task import TaskService
-
-    task_service = TaskService(db)
+    # Mark pr_created=True on the task
+    task_uuid = UUID(data.task_id)
     await task_service.mark_pr_created(
-        task_id=UUID(data.task_id),
+        task_id=task_uuid,
         pr_number=pr_number,
         pr_url=pr_url,
     )
@@ -634,7 +423,7 @@ async def create_pull_request(
     return GitCreatePRResponse(
         pr_number=pr_number,
         pr_url=pr_url,
-        title=data.title,
+        title=title,
         source_branch=source_branch,
         target_branch=target_branch,
     )
@@ -647,46 +436,18 @@ async def merge_pull_request(
     agent: CurrentAgentContext,
 ) -> GitMergePRResponse:
     """Merge a pull request using GitHub CLI (PM only)."""
-    workspace = await _get_workspace(db, data.project_slug, agent.agent_id)
-
-    # Merge PR using gh CLI (wrapped in thread to avoid blocking)
-    import asyncio
-
-    def _merge_pr() -> subprocess.CompletedProcess[str]:
-        return subprocess.run(
-            [
-                "gh",
-                "pr",
-                "merge",
-                str(data.pr_number),
-                f"--{data.merge_method}",
-                "--delete-branch",
-            ],
-            cwd=workspace,
-            capture_output=True,
-            text=True,
-            timeout=_GIT_TIMEOUT,
-            check=True,
-        )
+    git_service = get_git_service(db)
 
     try:
-        await asyncio.to_thread(_merge_pr)
-    except subprocess.CalledProcessError as e:
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Failed to merge PR: {e.stderr or e.stdout}",
-        ) from e
-
-    # Get target branch
-    project_service = get_project_service(db)
-    project = await project_service.get_by_slug(data.project_slug)
-    target_branch = str(project.default_branch) if project else "main"
-
-    # Get merge commit
-    await _run_git(workspace, ["checkout", target_branch])
-    await _run_git(workspace, ["pull"])
-    log_result = await _run_git(workspace, ["log", "-1", "--format=%H"])
-    merge_commit = log_result.stdout.strip()
+        workspace = await git_service.get_workspace(data.project_slug, agent.agent_id)
+        target_branch, merge_commit = await git_service.merge_pull_request(
+            workspace=workspace,
+            pr_number=data.pr_number,
+            merge_method=data.merge_method,
+            project_slug=data.project_slug,
+        )
+    except ServiceError as e:
+        raise _translate_error(e) from e
 
     return GitMergePRResponse(
         pr_number=data.pr_number,

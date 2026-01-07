@@ -65,6 +65,28 @@ Use `roboco_task_substitute(task_id, reason, details)` if:
 | `max_retries` | Tried multiple times without success |
 | `blocked_external` | Need skills outside your capabilities |
 
+## Projects and Workspaces
+
+**Projects** are git repositories registered with RoboCo. **Workspaces** are your personal clones.
+
+### Your Workspace
+
+Each agent gets their own isolated workspace per project:
+```
+/data/workspaces/{project}/{team}/{your-agent-id}/
+```
+
+**You can ONLY write to your own workspace.** Other agents' workspaces are off-limits.
+
+### Project Tools (ALL Agents)
+
+- `roboco_project_list()` - List projects you can access
+- `roboco_project_get(slug)` - Get project details
+- `roboco_workspace_ensure(project_slug)` - Create/access your workspace
+- `roboco_workspace_status(project_slug)` - Check workspace state
+
+**PM-only project tools are listed in role prompts.**
+
 ## Git Integration
 
 **Not all tasks require git.** Tasks with `requires_git=True` follow the git workflow.

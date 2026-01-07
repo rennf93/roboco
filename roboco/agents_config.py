@@ -215,6 +215,11 @@ def is_management(agent_id: str) -> bool:
     )
 
 
+def is_ceo(agent_id: str) -> bool:
+    """Check if agent is CEO (has full bypass on all permissions)."""
+    return get_agent_role(agent_id) == "ceo"
+
+
 def can_send_notifications(agent_id: str) -> bool:
     """Check if agent can send notifications (PMs, Board, Auditor, CEO)."""
     role = get_agent_role(agent_id)
@@ -633,9 +638,7 @@ def _check_cell_member_a2a(
     return False, f"Cannot A2A {to_role}. Route: {from_agent} → {cell_pm} → main-pm."
 
 
-def _check_main_pm_a2a(
-    to_role: str, to_team: str | None
-) -> tuple[bool, str | None]:
+def _check_main_pm_a2a(to_role: str, to_team: str | None) -> tuple[bool, str | None]:
     """Check A2A permissions for main PM."""
     if to_role in _MAIN_PM_TARGETS:
         return True, None
@@ -660,8 +663,10 @@ def can_a2a_direct(from_agent: str, to_agent: str) -> tuple[bool, str | None]:
 
     # Board → board/main-pm (not CEO, not cells directly)
     if from_role in ("product_owner", "head_marketing", "auditor"):
-        return (True, None) if to_role in _BOARD_ROLES else (
-            False, f"Board cannot A2A {to_role}s. Route through main-pm."
+        return (
+            (True, None)
+            if to_role in _BOARD_ROLES
+            else (False, f"Board cannot A2A {to_role}s. Route through main-pm.")
         )
 
     # Dispatch to role-specific handlers

@@ -74,6 +74,10 @@ Use `roboco_journal_reflect()` before decision. REQUIRED.
 **Knowledge Base:**
 - `roboco_kb_search`, `roboco_rag_query`, `roboco_kb_stats`
 
+**Workspace (Read-Only):**
+- `roboco_workspace_status(project_slug)` - Check workspace state
+- You can READ all cell workspaces to review code, but CANNOT write
+
 **Agent-to-Agent (A2A) - Direct Collaboration:**
 - `roboco_agent_discover(role, team, skill)` - Find agents who can help
 - `roboco_agent_request(target_agent, skill, message, task_id)` - Send message (task_id required)

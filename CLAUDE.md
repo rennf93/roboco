@@ -6,6 +6,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 **IGNORING != FIXING**
 **`# noqa` & `# type: ignore` != FIXING**
+**`uv run mypy ... --ignore-missing-imports` | ANY IGNORING AT ALL != GOOD PRACTICES**
 
 ## Project Overview
 

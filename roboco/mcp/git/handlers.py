@@ -26,6 +26,18 @@ class GitContext:
     agent_id: str
 
 
+@dataclass
+class CommitParams:
+    """Parameters for creating a commit."""
+
+    message: str
+    task_id: str
+    commit_type: str
+    files: list[str] | None = None
+    scope: str | None = None
+    body: str | None = None
+
+
 # =============================================================================
 # READ-ONLY HANDLERS
 # =============================================================================
@@ -185,19 +197,22 @@ async def handle_git_diff(
 
 async def handle_git_commit(
     ctx: GitContext,
-    message: str,
-    task_id: str,
-    files: list[str] | None,
+    params: CommitParams,
 ) -> dict[str, Any]:
     """Handle git commit request."""
     payload: dict[str, Any] = {
         "project_slug": ctx.project_slug,
-        "message": message,
-        "task_id": task_id,
+        "message": params.message,
+        "task_id": params.task_id,
         "agent_id": ctx.agent_id,
+        "commit_type": params.commit_type,
     }
-    if files:
-        payload["files"] = files
+    if params.files:
+        payload["files"] = params.files
+    if params.scope:
+        payload["scope"] = params.scope
+    if params.body:
+        payload["body"] = params.body
 
     resp = await ctx.client.post("/git/commit", json=payload)
     if not resp.ok:
@@ -259,17 +274,21 @@ async def handle_git_push(
 async def handle_git_create_pr(
     ctx: GitContext,
     task_id: str,
-    title: str,
-    body: str,
+    title: str | None = None,
+    body: str | None = None,
+    is_root_pr: bool = False,
 ) -> dict[str, Any]:
     """Handle PR creation request."""
     payload: dict[str, Any] = {
         "project_slug": ctx.project_slug,
         "task_id": task_id,
-        "title": title,
-        "body": body,
         "agent_id": ctx.agent_id,
+        "is_root_pr": is_root_pr,
     }
+    if title:
+        payload["title"] = title
+    if body:
+        payload["body"] = body
 
     resp = await ctx.client.post("/git/pr/create", json=payload)
     if not resp.ok:

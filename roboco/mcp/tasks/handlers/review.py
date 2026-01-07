@@ -212,16 +212,38 @@ def _validate_qa_role(agent_id: str, action: str) -> dict[str, Any] | None:
 async def _check_self_review(
     task: dict[str, Any], agent_id: str, client: ApiClient
 ) -> dict[str, Any] | None:
-    """Check if agent is reviewing their own work. Returns error or None."""
+    """Check if agent is reviewing their own work. Returns error or None.
+
+    SECURITY: Implements fail-secure logic - blocks if identity cannot be verified.
+    """
     quick_context = task.get("quick_context")
     original_dev = extract_original_developer(quick_context)
-    agent_uuid = await resolve_agent_uuid_cached(agent_id, client)
-    if agent_uuid and not can_review_task(agent_uuid, original_dev):
+
+    # Block if we can't determine original developer
+    if not original_dev:
         return format_error_response(
-            "SELF_REVIEW",
-            "Cannot review your own work.",
-            hint="roboco_kb_search('self review prevention')",
+            "SELF_REVIEW_UNVERIFIABLE",
+            "Cannot verify reviewer - task missing original developer info.",
+            hint="Task may not have been claimed by a developer first",
         )
+
+    agent_uuid = await resolve_agent_uuid_cached(agent_id, client)
+
+    # Block if we can't verify the reviewer's identity (fail-secure)
+    if not agent_uuid:
+        return format_error_response(
+            "SELF_REVIEW_UNVERIFIABLE",
+            "Cannot verify your identity for self-review check. Try again.",
+            {"agent_id": agent_id},
+        )
+
+    if not can_review_task(agent_uuid, original_dev):
+        return format_error_response(
+            "SELF_REVIEW_FORBIDDEN",
+            "Cannot review your own work.",
+            hint="Another QA agent must review this task",
+        )
+
     return None
 
 

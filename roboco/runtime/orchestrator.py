@@ -200,6 +200,19 @@ class AgentOrchestrator:
         # If agent is running with a task, they're busy
         return instance.current_task_id is not None
 
+    def queue_priority_work(self, agent_id: str, work: dict[str, Any]) -> None:
+        """
+        Queue priority work for an agent.
+
+        This is a placeholder for future priority queue functionality.
+        Currently logs the request for observability.
+        """
+        logger.info(
+            "Priority work queued (not yet implemented)",
+            agent_id=agent_id,
+            work_type=work.get("type", "unknown"),
+        )
+
     async def _ensure_agent_image(self, agent_id: str | None = None) -> None:
         """Ensure the agent Docker images are built.
 
@@ -282,25 +295,28 @@ class AgentOrchestrator:
     # =========================================================================
 
     def _get_role_permissions(
-        self, role: str, workspace_path: str
+        self, role: str, workspace_path: str, cell_workspace_path: str
     ) -> dict[str, list[str]]:
         """Get role-specific allow/deny lists for Claude Code tools.
 
         Args:
             role: Agent role (developer, qa, documenter, cell_pm, main_pm, etc.)
-            workspace_path: Path to agent's workspace directory
+            workspace_path: Path to agent's own workspace directory
+            cell_workspace_path: Path to cell's workspace root (for QA/Docs access)
 
         Returns:
             Dict with 'allow' and 'deny' lists for Claude Code permissions
         """
+        # workspace_path: /data/workspaces/{project}/{team}/{agent}
+        # cell_workspace_path: /data/workspaces/{project}/{team}
         configs: dict[str, dict[str, list[str]]] = {
             "developer": {
                 "allow": [
                     "mcp__roboco-git__*",
                     "mcp__roboco-test__*",
-                    # ONLY allow Write/Edit in their workspace
-                    f"Write(/{workspace_path}/**)",
-                    f"Edit(/{workspace_path}/**)",
+                    # ONLY allow Write/Edit in their OWN workspace
+                    f"Write({workspace_path}/**)",
+                    f"Edit({workspace_path}/**)",
                 ],
                 "deny": [],
             },
@@ -311,25 +327,33 @@ class AgentOrchestrator:
                     "mcp__roboco-git__roboco_git_log",
                     "mcp__roboco-git__roboco_git_diff",
                     "mcp__roboco-test__*",
+                    # QA can READ all cell workspaces to review code
+                    # (Read is already allowed globally, this is for clarity)
                 ],
                 "deny": [
                     # QA cannot write anything - review only
                     "mcp__roboco-git__roboco_git_commit",
                     "mcp__roboco-git__roboco_git_push",
                     "mcp__roboco-git__roboco_git_create_pr",
+                    # Block ALL write operations for QA
+                    "Write(*)",
+                    "Edit(*)",
                 ],
             },
             "documenter": {
                 "allow": [
                     "mcp__roboco-docs__*",
                     "mcp__roboco-git__*",
-                    # Documenters write to docs/ only
-                    "Write(//app/docs/**)",
-                    "Edit(//app/docs/**)",
-                    "Write(//app/CHANGELOG.md)",
-                    "Edit(//app/CHANGELOG.md)",
-                    "Write(//app/README.md)",
-                    "Edit(//app/README.md)",
+                    # Documenters write to ALL cell workspaces (docs on dev branches)
+                    f"Write({cell_workspace_path}/**)",
+                    f"Edit({cell_workspace_path}/**)",
+                    # Also project-level docs
+                    "Write(/app/docs/**)",
+                    "Edit(/app/docs/**)",
+                    "Write(/app/CHANGELOG.md)",
+                    "Edit(/app/CHANGELOG.md)",
+                    "Write(/app/README.md)",
+                    "Edit(/app/README.md)",
                 ],
                 "deny": [],
             },
@@ -337,6 +361,9 @@ class AgentOrchestrator:
                 "allow": [
                     "mcp__roboco-git__*",
                     "mcp__roboco-docs__*",
+                    # Cell PM can write to their own workspace
+                    f"Write({workspace_path}/**)",
+                    f"Edit({workspace_path}/**)",
                 ],
                 "deny": [],
             },
@@ -344,6 +371,9 @@ class AgentOrchestrator:
                 "allow": [
                     "mcp__roboco-git__*",
                     "mcp__roboco-docs__*",
+                    # Main PM can write to their own workspace
+                    f"Write({workspace_path}/**)",
+                    f"Edit({workspace_path}/**)",
                 ],
                 "deny": [],
             },
@@ -351,17 +381,22 @@ class AgentOrchestrator:
                 "allow": [
                     "mcp__roboco-git__*",
                     "mcp__roboco-docs__*",
+                    f"Write({workspace_path}/**)",
+                    f"Edit({workspace_path}/**)",
                 ],
                 "deny": [],
             },
             "auditor": {
                 "allow": [
-                    # Auditor is read-only observer
+                    # Auditor is read-only observer - NO write access anywhere
                     "mcp__roboco-git__roboco_git_status",
                     "mcp__roboco-git__roboco_git_log",
                     "mcp__roboco-git__roboco_git_diff",
                 ],
-                "deny": [],
+                "deny": [
+                    "Write(*)",
+                    "Edit(*)",
+                ],
             },
         }
 
@@ -372,6 +407,7 @@ class AgentOrchestrator:
         agent_id: str,
         role: str,
         workspace_path: str,
+        cell_workspace_path: str,
     ) -> Path:
         """Generate per-agent Claude Code settings file with role-specific permissions.
 
@@ -384,7 +420,8 @@ class AgentOrchestrator:
         Args:
             agent_id: Agent identifier (e.g., "be-dev-1")
             role: Agent role (e.g., "developer")
-            workspace_path: Path to agent's workspace directory
+            workspace_path: Path to agent's own workspace directory
+            cell_workspace_path: Path to cell's workspace root (for QA/Docs)
 
         Returns:
             Path to the generated settings file
@@ -397,6 +434,7 @@ class AgentOrchestrator:
             "mcp__roboco-journal__*",
             "mcp__roboco-optimal__*",
             "mcp__roboco-a2a__*",
+            "mcp__roboco-project__*",
             "Read(*)",  # All agents can read any file
         ]
 
@@ -410,7 +448,9 @@ class AgentOrchestrator:
         ]
 
         # Get role-specific permissions
-        role_config = self._get_role_permissions(role, workspace_path)
+        role_config = self._get_role_permissions(
+            role, workspace_path, cell_workspace_path
+        )
 
         # Combine base + role-specific
         settings: dict[str, Any] = {
@@ -521,14 +561,16 @@ class AgentOrchestrator:
             if not model:
                 model = ROLE_MODEL_MAP.get(canonical_role, "sonnet")
 
-            # Build workspace path for this agent
+            # Build workspace paths for this agent
             # Pattern: {workspaces_root}/{project_slug}/{team}/{agent_slug}/
             project_slug = git_context.project_slug if git_context else "default"
             workspace_path = f"/data/workspaces/{project_slug}/{team}/{agent_id}"
+            # Cell workspace path for QA/Docs to access all cell's dev workspaces
+            cell_workspace_path = f"/data/workspaces/{project_slug}/{team}"
 
             # Generate per-agent Claude settings with role-specific permissions
             agent_settings_path = self._generate_agent_settings(
-                agent_id, canonical_role, workspace_path
+                agent_id, canonical_role, workspace_path, cell_workspace_path
             )
 
             # Ensure agent-specific Docker image is built
@@ -885,6 +927,21 @@ class AgentOrchestrator:
                 "python",
                 "-m",
                 "roboco.mcp.a2a_server",
+                agent_id,
+            ],
+            "env": mcp_env,
+        }
+
+        # Project server - project and workspace management
+        # All agents can list/view projects and manage their own workspace
+        # PMs can create projects and list all workspaces
+        mcp_servers["roboco-project"] = {
+            "command": "uv",
+            "args": [
+                "run",
+                "python",
+                "-m",
+                "roboco.mcp.project_server",
                 agent_id,
             ],
             "env": mcp_env,

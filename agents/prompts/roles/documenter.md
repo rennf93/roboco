@@ -112,6 +112,11 @@ Use `roboco_task_docs_complete()`. This sets `docs_complete=True`.
 - `roboco_kb_search`, `roboco_rag_query`, `roboco_kb_stats`
 - `roboco_kb_index_docs` (index documentation for search)
 
+**Workspace (Cell Access):**
+- `roboco_workspace_ensure(project_slug)` - Create/access workspace
+- `roboco_workspace_status(project_slug)` - Check workspace state
+- You can WRITE to ALL cell workspaces to add docs to dev branches
+
 **Documentation:**
 - `roboco_docs_write(task_id, filename, doc_type, title, content)` - Write/update docs
 - `roboco_docs_read(path)` - Read existing doc

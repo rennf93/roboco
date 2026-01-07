@@ -29,9 +29,9 @@ Use `roboco_task_claim()`. Status: pending → claimed.
 
 ### 4. CHECKOUT (Git Tasks)
 **For tasks with `requires_git=True`:**
-- Branch already created by PM: `roboco_git_status(project_slug)` to verify
-- Switch to task branch: Branch name is in task context
-- Pull latest: Ensure you have current code
+- Branch already created by PM
+- **Auto-checkout happens on `roboco_task_start()`** - no manual checkout needed
+- System blocks if you have uncommitted changes
 
 ### 5. RESEARCH
 Search KB and journals before planning: `roboco_kb_search()`, `roboco_rag_query()`, `roboco_journal_search()`.
@@ -45,7 +45,7 @@ Use `roboco_task_start()` then `roboco_message_send()` to announce. **`task_id` 
 ### 8. EXECUTE + COMMIT (Loop)
 1. Write code, make changes
 2. Test your changes locally
-3. Stage and commit: `roboco_git_commit(project_slug, message, task_id)`
+3. Stage and commit: `roboco_git_commit(project_slug, message, task_id, commit_type)`
 4. Update progress: `roboco_task_progress()`
 5. Journal decisions/learnings
 6. If blocked: `roboco_task_block()` + `roboco_task_escalate()`
@@ -89,9 +89,7 @@ When QA passes, you receive a notification. The task is now in `awaiting_documen
 
 ### 13. CREATE PR
 1. Ensure all changes pushed: `roboco_git_push(project_slug, task_id)`
-2. Create PR: `roboco_git_create_pr(project_slug, task_id, title, body)`
-   - Title: Clear description of changes
-   - Body: Summary, testing notes, link to task
+2. Create PR: `roboco_git_create_pr(project_slug, task_id, is_root_pr=False)` or `roboco_git_create_pr(project_slug, task_id, is_root_pr=True)` for root tasks merging to main. Title/body auto-generated if not provided
 3. This sets `pr_created=True` on the task
 4. When BOTH `pr_created` AND `docs_complete` are true → task moves to `awaiting_pm_review`
 
@@ -120,9 +118,11 @@ If PMs request changes:
 - `roboco_git_diff(project_slug, staged)` - View changes
 
 **Git (Write - Developer):**
-- `roboco_git_commit(project_slug, message, task_id)` - Create commit (must be on task branch)
+- `roboco_git_commit(project_slug, task_id, message, commit_type, options={})` - Create commit
+  - `commit_type` REQUIRED: feat, fix, chore, docs, refactor, test, style, perf, ci, build
+  - `options`: scope, body, files (all optional)
 - `roboco_git_push(project_slug, task_id)` - Push to remote
-- `roboco_git_create_pr(project_slug, task_id, title, body)` - Create PR (after QA + Docs)
+- `roboco_git_create_pr(project_slug, task_id, is_root_pr=False)` - Create PR (title/body auto-generated)
 
 **Communication:**
 - `roboco_message_send`, `roboco_channel_history`, `roboco_channel_list`
@@ -136,6 +136,10 @@ If PMs request changes:
 **Knowledge Base:**
 - `roboco_kb_search`, `roboco_rag_query`, `roboco_kb_stats`
 - `roboco_kb_index_code` (index code for search)
+
+**Workspace:**
+- `roboco_workspace_ensure(project_slug)` - Create/access your workspace
+- `roboco_workspace_status(project_slug)` - Check workspace state (branch, uncommitted changes)
 
 **Agent-to-Agent (A2A) - Direct Collaboration:**
 - `roboco_agent_discover(role, team, skill)` - Find agents who can help

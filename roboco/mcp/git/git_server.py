@@ -128,31 +128,46 @@ def _register_developer_tools(mcp: FastMCP, client: ApiClient, agent_id: str) ->
     @mcp.tool()
     async def roboco_git_commit(
         project_slug: str,
-        message: str,
         task_id: str,
-        files: list[str] | None = None,
+        message: str,
+        commit_type: str,
+        options: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         """
-        Create a git commit.
+        Create a git commit with conventional commit format.
 
         ENFORCEMENT:
         - Must be on a task branch (not main/master)
-        - Commit message should reference the task
         - You must be assigned to the task
+        - Commit message will be built with task traceability
 
         Args:
             project_slug: Project identifier
-            message: Commit message (will be prefixed with task ID)
             task_id: Task ID this commit is for
-            files: Optional list of files to stage; if None, stages all
+            message: Short description of changes
+            commit_type: Conventional commit type (feat, fix, chore, docs,
+                         refactor, test, style, perf, ci, build)
+            options: Optional dict with keys:
+                - files: list[str] - files to stage (default: stage all)
+                - scope: str - module/component (e.g., 'api', 'auth')
+                - body: str - detailed explanation of changes
 
         Returns:
             Commit details with hash and files changed
         """
-        from roboco.mcp.git.handlers import GitContext
+        from roboco.mcp.git.handlers import CommitParams, GitContext
 
+        opts = options or {}
         ctx = GitContext(client=client, project_slug=project_slug, agent_id=agent_id)
-        return await handle_git_commit(ctx, message, task_id, files)
+        params = CommitParams(
+            message=message,
+            task_id=task_id,
+            commit_type=commit_type,
+            files=opts.get("files"),
+            scope=opts.get("scope"),
+            body=opts.get("body"),
+        )
+        return await handle_git_commit(ctx, params)
 
     @mcp.tool()
     async def roboco_git_push(
@@ -181,11 +196,16 @@ def _register_developer_tools(mcp: FastMCP, client: ApiClient, agent_id: str) ->
     async def roboco_git_create_pr(
         project_slug: str,
         task_id: str,
-        title: str,
-        body: str,
+        title: str | None = None,
+        body: str | None = None,
+        is_root_pr: bool = False,
     ) -> dict[str, Any]:
         """
         Create a Pull Request for the current branch.
+
+        PR title and body are auto-generated from templates if not provided.
+        Root PRs (is_root_pr=True) include full task tree with all links.
+        Internal PRs (is_root_pr=False) are simpler subtask merge summaries.
 
         ENFORCEMENT:
         - Task must be in AWAITING_DOCUMENTATION status (QA passed)
@@ -195,8 +215,9 @@ def _register_developer_tools(mcp: FastMCP, client: ApiClient, agent_id: str) ->
         Args:
             project_slug: Project identifier
             task_id: Task ID this PR is for
-            title: PR title
-            body: PR description (include what was done, testing notes)
+            title: Optional PR title (auto-generated if not set)
+            body: Optional PR body (auto-generated from template if not set)
+            is_root_pr: True for CEO-level PRs to main, False for internal merges
 
         Returns:
             PR details with URL and number
@@ -204,7 +225,7 @@ def _register_developer_tools(mcp: FastMCP, client: ApiClient, agent_id: str) ->
         from roboco.mcp.git.handlers import GitContext
 
         ctx = GitContext(client=client, project_slug=project_slug, agent_id=agent_id)
-        return await handle_git_create_pr(ctx, task_id, title, body)
+        return await handle_git_create_pr(ctx, task_id, title, body, is_root_pr)
 
 
 def _register_pm_branch_tools(mcp: FastMCP, client: ApiClient, agent_id: str) -> None:

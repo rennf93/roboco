@@ -128,9 +128,18 @@ class GitCommitRequest(BaseModel):
     """Request to create a commit."""
 
     project_slug: str
-    message: str
     task_id: str
     agent_id: str
+    # Commit message fields
+    message: str = Field(..., description="Short description of changes")
+    commit_type: str = Field(
+        ...,
+        pattern=r"^(feat|fix|chore|docs|refactor|test|style|perf|ci|build)$",
+        description="Conventional commit type",
+    )
+    scope: str | None = Field(None, description="Module/component affected")
+    body: str | None = Field(None, description="Detailed explanation of changes")
+    # Files to stage (None = stage all)
     files: list[str] | None = None
 
 
@@ -177,9 +186,15 @@ class GitCreatePRRequest(BaseModel):
 
     project_slug: str
     task_id: str
-    title: str
-    body: str
     agent_id: str
+    # PR content (auto-generated from templates if not provided)
+    title: str | None = Field(None, description="PR title (auto-generated if not set)")
+    body: str | None = Field(None, description="PR body (auto-generated if not set)")
+    # PR type determines template used
+    is_root_pr: bool = Field(
+        False,
+        description="Root task PR (CEO level) vs internal merge (PM level)",
+    )
 
 
 class GitCreatePRResponse(BaseModel):

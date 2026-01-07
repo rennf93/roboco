@@ -68,10 +68,69 @@ async def handle_task_plan(
     return _format_plan_response(updated_task, plan_params.get("open_questions"))
 
 
+async def _safe_checkout(
+    client: ApiClient,
+    project_slug: str,
+    branch_name: str,
+    agent_id: str,
+) -> dict[str, Any] | None:
+    """Safely checkout branch with pre-flight checks.
+
+    Returns error dict if checkout should be blocked, None if successful.
+    """
+    # 1. Get current git status
+    status_resp = await client.get("/git/status", params={"project_slug": project_slug})
+    if not status_resp.ok:
+        return format_error_response(
+            "GIT_STATUS_FAILED",
+            "Cannot verify git status before checkout",
+            {"status_code": status_resp.status_code, "detail": status_resp.text},
+        )
+
+    status_data = status_resp.json()
+
+    # 2. Check for uncommitted changes (staged or unstaged)
+    staged = status_data.get("staged_files", [])
+    unstaged = status_data.get("unstaged_files", [])
+    if staged or unstaged:
+        return format_error_response(
+            "UNCOMMITTED_CHANGES",
+            "Cannot checkout: uncommitted changes in workspace. "
+            "Commit or stash your changes before starting this task.",
+            {
+                "staged_files": staged[:5],  # Limit to first 5
+                "unstaged_files": unstaged[:5],
+                "current_branch": status_data.get("current_branch"),
+            },
+            hint="Use roboco_git_commit() or git stash before starting.",
+        )
+
+    # 3. Checkout the branch (API will fetch if needed)
+    checkout_resp = await client.post(
+        "/git/checkout",
+        json={
+            "project_slug": project_slug,
+            "branch": branch_name,
+            "agent_id": agent_id,
+        },
+    )
+
+    if not checkout_resp.ok:
+        return format_error_response(
+            "CHECKOUT_FAILED",
+            f"Failed to checkout branch '{branch_name}'",
+            {"status_code": checkout_resp.status_code, "detail": checkout_resp.text},
+            hint="Branch may not exist yet. Ask PM to create it.",
+        )
+
+    # Success - no error
+    return None
+
+
 async def handle_task_start(
     client: ApiClient, task_id: str, agent_id: str
 ) -> dict[str, Any]:
-    """Handle task start."""
+    """Handle task start with auto-checkout for git tasks."""
     task, error = await fetch_task_or_error(client, task_id)
     if error:
         return error
@@ -80,22 +139,37 @@ async def handle_task_start(
     if error := await validate_task_start(task, agent_id, client):
         return error
 
+    # Auto-checkout for git tasks
+    branch_name = task.get("branch_name")
+    project_slug = task.get("project_slug")
+    requires_git = task.get("requires_git", False)
+
+    if requires_git and branch_name and project_slug:
+        checkout_error = await _safe_checkout(
+            client, project_slug, branch_name, agent_id
+        )
+        if checkout_error:
+            return checkout_error
+
     start_resp = await client.post(f"/tasks/{task_id}/start")
     if not start_resp.ok:
         return format_error_response(
             "START_FAILED", "Failed to start task", {"api_error": start_resp.text}
         )
 
-    return format_task_response(
-        start_resp.json(),
-        "EXECUTE",
-        "Task started. Work through your plan step by step:\n"
+    # Build guidance based on whether git checkout happened
+    guidance = "Task started. Work through your plan step by step:\n"
+    if requires_git and branch_name:
+        guidance += f"✓ Checked out branch: {branch_name}\n\n"
+    guidance += (
         "1. Implement each sub-task\n"
         "2. Commit frequently with clear messages\n"
         "3. Call roboco_task_progress to update status\n"
         "4. If blocked, call roboco_task_block immediately\n"
-        "5. When done, call roboco_task_submit_verification",
+        "5. When done, call roboco_task_submit_verification"
     )
+
+    return format_task_response(start_resp.json(), "EXECUTE", guidance)
 
 
 def _validate_percentage(percentage: int) -> dict[str, Any] | None:

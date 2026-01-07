@@ -35,7 +35,7 @@ branches = roboco_git_branch_list(project_slug="roboco")
 roboco_git_create_branch(
     project_slug="roboco",
     task_id=task_id,
-    branch_type="feature"  # feature, fix, refactor, docs
+    branch_type="feature"  # feature, bug, chore, docs, hotfix
 )
 # Creates: feature/backend/a1b2c3d4
 
@@ -53,12 +53,13 @@ roboco_git_checkout(
 roboco_git_commit(
     project_slug="roboco",
     task_id=task_id,
-    message="Add rate limiting endpoint"
+    message="Add rate limiting endpoint",
+    commit_type="feat"  # Required
 )
-# Creates: [a1b2c3d4] Add rate limiting endpoint
+# Creates: [a1b2c3d4] feat: Add rate limiting endpoint
 
 # Push to remote
-roboco_git_push(project_slug="roboco")
+roboco_git_push(project_slug="roboco", task_id=task_id)
 ```
 
 ## Pull Requests
@@ -76,6 +77,7 @@ roboco_git_create_pr(
 roboco_git_merge_pr(
     project_slug="roboco",
     pr_number=123,
+    task_id=task_id,
     merge_method="squash"  # squash, merge, rebase
 )
 ```
@@ -89,6 +91,7 @@ roboco_git_merge_pr(
 | Type | Use |
 |------|-----|
 | `feature/` | New functionality |
-| `fix/` | Bug fixes |
-| `refactor/` | Code restructuring |
+| `bug/` | Bug fixes |
+| `chore/` | Maintenance |
 | `docs/` | Documentation |
+| `hotfix/` | Urgent fixes |

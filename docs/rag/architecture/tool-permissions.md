@@ -63,3 +63,17 @@ Native tools are blocked; use `roboco_*` MCP tools instead.
 
 **Blocked:**
 - All write operations - observer role
+
+## Project Tools
+
+| Tool | Dev/QA/Doc | Cell PM | Main PM | CEO |
+|------|------------|---------|---------|-----|
+| `roboco_project_list` | Own cell | Own cell | All | All |
+| `roboco_project_get` | Yes | Yes | Yes | Yes |
+| `roboco_project_create` | No | No | Yes | Yes |
+| `roboco_project_update` | No | Own cell | All | All |
+| `roboco_workspace_ensure` | Yes | Yes | Yes | Yes |
+| `roboco_workspace_status` | Yes | Yes | Yes | Yes |
+| `roboco_workspace_list` | No | Own cell | All | All |
+
+**CEO Bypass:** CEO has full access to all project operations.

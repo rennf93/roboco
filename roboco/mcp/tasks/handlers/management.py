@@ -248,7 +248,71 @@ def _validate_cell_pm_team(agent_id: str, requested_team: str) -> dict[str, Any]
     return None
 
 
-def _build_task_payload(input_data: TaskCreateInput) -> dict[str, Any]:
+async def _validate_project(
+    client: ApiClient,
+    input_data: TaskCreateInput,
+) -> tuple[str | None, dict[str, Any] | None]:
+    """Validate project for git-enabled tasks.
+
+    Returns (project_id, None) on success, or (None, error) on failure.
+    """
+    # Non-git tasks don't need project validation
+    if not input_data.requires_git:
+        return None, None
+
+    # Git tasks require project_slug
+    if not input_data.project_slug:
+        return None, format_error_response(
+            "PROJECT_REQUIRED",
+            "Git tasks require a project. Set project_slug or requires_git=False.",
+            {"hint": "Use roboco_project_list() to see available projects."},
+        )
+
+    # Fetch and validate project
+    return await _fetch_and_validate_project(client, input_data)
+
+
+async def _fetch_and_validate_project(
+    client: ApiClient,
+    input_data: TaskCreateInput,
+) -> tuple[str | None, dict[str, Any] | None]:
+    """Fetch project and validate cell match. Returns (project_id, None) or error."""
+    try:
+        resp = await client.get(f"/projects/{input_data.project_slug}")
+    except Exception as e:
+        return None, format_error_response(
+            "CONNECTION_ERROR", f"Failed to validate project: {type(e).__name__}"
+        )
+
+    if resp.is_status(status.HTTP_404_NOT_FOUND):
+        return None, format_error_response(
+            "PROJECT_NOT_FOUND",
+            f"Project '{input_data.project_slug}' not found",
+            {"hint": "Use roboco_project_list() to see available projects."},
+        )
+
+    if not resp.ok:
+        return None, format_error_response(
+            "PROJECT_VALIDATION_FAILED",
+            "Failed to validate project",
+            {"status_code": resp.status_code},
+        )
+
+    project = resp.json()
+    project_cell = project.get("assigned_cell")
+    if project_cell and project_cell != input_data.team:
+        return None, format_error_response(
+            "CELL_MISMATCH",
+            f"Project is {project_cell}, task is {input_data.team}",
+            {"hint": "Change task team or select a project for that team."},
+        )
+
+    return project.get("id"), None
+
+
+def _build_task_payload(
+    input_data: TaskCreateInput, project_id: str | None = None
+) -> dict[str, Any]:
     """Build task creation payload from input data."""
     payload: dict[str, Any] = {
         "title": input_data.title,
@@ -260,11 +324,14 @@ def _build_task_payload(input_data: TaskCreateInput) -> dict[str, Any]:
         "nature": input_data.nature,
         "status": input_data.status,  # Always included, defaults to "backlog"
         "sequence": input_data.sequence,  # Task ordering (lower = first)
+        "requires_git": input_data.requires_git,
     }
     if input_data.parent_task_id:
         payload["parent_task_id"] = input_data.parent_task_id
     if input_data.dependency_ids:
         payload["dependency_ids"] = input_data.dependency_ids
+    if project_id:
+        payload["project_id"] = project_id
     return payload
 
 
@@ -288,25 +355,36 @@ def _format_create_guidance(task: dict[str, Any], assigned_to: str | None) -> st
     return guidance
 
 
+async def _validate_task_create_inputs(
+    client: ApiClient, input_data: TaskCreateInput, agent_id: str
+) -> tuple[str | None, dict[str, Any] | None]:
+    """Validate all inputs for task creation. Returns (project_id, None) or error."""
+    if error := _validate_create_permissions(agent_id):
+        return None, error
+
+    if error := _validate_cell_pm_team(agent_id, input_data.team):
+        return None, error
+
+    # Validate assignee BEFORE creating task
+    assignee = input_data.assigned_to
+    if assignee:
+        error = validate_assignee_can_work_on_team(assignee, input_data.team)
+        if error:
+            return None, error
+
+    # Validate project for git-enabled tasks
+    return await _validate_project(client, input_data)
+
+
 async def handle_task_create(
     client: ApiClient, input_data: TaskCreateInput, agent_id: str
 ) -> dict[str, Any]:
     """Handle task creation by PM."""
-    if error := _validate_create_permissions(agent_id):
+    project_id, error = await _validate_task_create_inputs(client, input_data, agent_id)
+    if error:
         return error
 
-    if error := _validate_cell_pm_team(agent_id, input_data.team):
-        return error
-
-    # Validate assignee BEFORE creating task (avoid orphan tasks)
-    if input_data.assigned_to:
-        error = validate_assignee_can_work_on_team(
-            input_data.assigned_to, input_data.team
-        )
-        if error:
-            return error
-
-    payload = _build_task_payload(input_data)
+    payload = _build_task_payload(input_data, project_id)
 
     try:
         create_resp = await client.post("/tasks", json=payload)

@@ -168,6 +168,10 @@ class TaskCreateInput(BaseModel):
     ORDERING: Use sequence and dependency_ids to control task execution order.
     - sequence: Lower numbers execute first (1, 2, 3...)
     - dependency_ids: Tasks that must complete before this one can be claimed
+
+    PROJECT: For git-enabled tasks, project_slug is required.
+    - Use 'roboco' for internal RoboCo codebase work
+    - Use roboco_project_list() to see available projects
     """
 
     title: str = Field(..., description="Task title")
@@ -176,6 +180,18 @@ class TaskCreateInput(BaseModel):
         ..., min_length=1, description="At least one acceptance criterion"
     )
     team: str = Field(..., description="Team: backend, frontend, ux_ui")
+    # Project selection - required for git tasks
+    project_slug: str | None = Field(
+        default=None,
+        description=(
+            "Project slug (e.g., 'roboco', 'roboco-panel'). "
+            "Required when requires_git=True. Use 'roboco' for internal codebase."
+        ),
+    )
+    requires_git: bool = Field(
+        default=True,
+        description="Whether task requires git. If True, project_slug is required.",
+    )
     parent_task_id: str | None = Field(
         default=None, description="Parent task for subtasks"
     )
@@ -346,3 +362,89 @@ class UpdateDocInput(BaseModel):
     )
     title: str | None = Field(default=None, description="New title (optional)")
     content: str | None = Field(default=None, description="New content (optional)")
+
+
+# =============================================================================
+# PROJECT SCHEMAS
+# =============================================================================
+
+
+class ProjectCreateInput(BaseModel):
+    """Input for creating/registering a new project (Main PM+ only).
+
+    Projects are git repositories that agents work on.
+    Workspaces are created automatically when agents need them.
+    """
+
+    name: str = Field(
+        ...,
+        min_length=1,
+        max_length=100,
+        description="Human-readable project name",
+    )
+    slug: str = Field(
+        ...,
+        min_length=1,
+        max_length=50,
+        pattern=r"^[a-z0-9-]+$",
+        description="URL-safe identifier (lowercase, hyphens only)",
+    )
+    git_url: str = Field(
+        ...,
+        description="Git repository URL (SSH: git@github.com:... or HTTPS)",
+    )
+    assigned_cell: str = Field(
+        ...,
+        description="Cell that owns this project: backend, frontend, ux_ui",
+    )
+    default_branch: str = Field(
+        default="main",
+        description="Default branch name",
+    )
+    protected_branches: list[str] = Field(
+        default_factory=lambda: ["main", "master"],
+        description="Branches that cannot be pushed directly",
+    )
+    test_command: str | None = Field(
+        default=None,
+        description="Command to run tests (e.g., 'uv run pytest')",
+    )
+    lint_command: str | None = Field(
+        default=None,
+        description="Command to run linter (e.g., 'uv run ruff check .')",
+    )
+    format_command: str | None = Field(
+        default=None,
+        description="Command to format code (e.g., 'uv run ruff format .')",
+    )
+    typecheck_command: str | None = Field(
+        default=None,
+        description="Command to run type checker (e.g., 'uv run mypy src/')",
+    )
+    build_command: str | None = Field(
+        default=None,
+        description="Command to build (e.g., 'pnpm build')",
+    )
+
+
+class ProjectUpdateInput(BaseModel):
+    """Input for updating a project (PM only).
+
+    Cell PMs can only update projects in their cell.
+    Main PM and above can update any project.
+    """
+
+    name: str | None = Field(default=None, description="New project name")
+    git_url: str | None = Field(default=None, description="New git URL")
+    default_branch: str | None = Field(default=None, description="New default branch")
+    protected_branches: list[str] | None = Field(
+        default=None, description="New protected branches list"
+    )
+    test_command: str | None = Field(default=None, description="New test command")
+    lint_command: str | None = Field(default=None, description="New lint command")
+    format_command: str | None = Field(default=None, description="New format command")
+    typecheck_command: str | None = Field(
+        default=None, description="New typecheck command"
+    )
+    build_command: str | None = Field(default=None, description="New build command")
+    is_active: bool | None = Field(default=None, description="Set active/inactive")

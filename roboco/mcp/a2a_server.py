@@ -206,8 +206,7 @@ async def _send_via_sdk(
                 "message_id": result.get("message_id"),
                 "delivery": delivery,
                 "guidance": (
-                    f"A2A sent to {target_agent}{urgency_note}. "
-                    f"Delivery: {delivery}."
+                    f"A2A sent to {target_agent}{urgency_note}. Delivery: {delivery}."
                 ),
             }
 

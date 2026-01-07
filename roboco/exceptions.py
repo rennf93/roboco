@@ -534,3 +534,47 @@ class RAGError(ServiceError):
                 **(details or {}),
             },
         )
+
+
+# =============================================================================
+# GIT ERRORS
+# =============================================================================
+
+
+class GitError(ServiceError):
+    """Base exception for git operation errors."""
+
+    def __init__(
+        self,
+        message: str,
+        details: dict[str, Any] | None = None,
+    ):
+        super().__init__(
+            service="git",
+            message=message,
+            details=details,
+        )
+
+
+class GitCommandError(GitError):
+    """Git command execution failed."""
+
+    def __init__(self, command: str, stderr: str) -> None:
+        super().__init__(
+            message=f"Command failed: {command}",
+            details={"command": command, "stderr": stderr},
+        )
+        self.command = command
+        self.stderr = stderr
+
+
+class GitTimeoutError(GitError):
+    """Git command timed out."""
+
+    def __init__(self, command: str, timeout: int) -> None:
+        super().__init__(
+            message=f"Command timed out after {timeout}s",
+            details={"command": command, "timeout": timeout},
+        )
+        self.command = command
+        self.timeout = timeout

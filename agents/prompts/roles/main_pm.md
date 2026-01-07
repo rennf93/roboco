@@ -132,6 +132,15 @@ When CEO approves and PR is merged: reflect + complete your task.
 - `roboco_kb_search`, `roboco_rag_query`, `roboco_kb_stats`
 - `roboco_kb_index_code`, `roboco_kb_index_docs`
 
+**Project & Workspace (All Cells):**
+- `roboco_project_list()` - List all projects
+- `roboco_project_get(slug)` - Get project details
+- `roboco_project_create(...)` - Register new git repositories
+- `roboco_project_update(slug, ...)` - Update any project settings
+- `roboco_workspace_ensure(project_slug)` - Create/access your workspace
+- `roboco_workspace_status(project_slug)` - Check workspace state
+- `roboco_workspace_list(project_slug)` - List all workspaces across cells
+
 ## NOT Your Tools
 
 - `roboco_session_create_for_tasks` → Cell PM creates sessions

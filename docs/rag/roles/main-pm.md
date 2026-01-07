@@ -101,6 +101,32 @@ See: `roboco_kb_search("tool permissions")`
 | `roboco_kb_clear_index` | Clear KB index |
 | `roboco_reindex_all` | Trigger full reindex |
 | `roboco_session_create_for_tasks` | Group related tasks |
+| `roboco_project_create` | Register new project |
+| `roboco_project_update` | Update any project |
+| `roboco_workspace_list` | List all workspaces |
+
+## Project Management
+
+Register new git repositories:
+
+```python
+roboco_project_create(
+    name="New Project",
+    slug="new-project",
+    git_url="git@github.com:org/repo.git",
+    assigned_cell="backend"
+)
+```
+
+Create tasks with project:
+
+```python
+roboco_task_create(
+    title="Backend task",
+    team="backend",
+    project_slug="roboco"  # Required for git tasks
+)
+```
 
 ## Handling Cell PM Escalations
 

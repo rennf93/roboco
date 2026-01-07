@@ -498,9 +498,7 @@ class DocsService(BaseService):
         await asyncio.to_thread(_do_delete)
         self.log.debug("File deleted", path=str(path))
 
-    async def _get_existing_doc_ref(
-        self, task_id: UUID, path: str
-    ) -> DocRef | None:
+    async def _get_existing_doc_ref(self, task_id: UUID, path: str) -> DocRef | None:
         """Get existing DocRef from task.documents by path."""
         result = await self.session.execute(
             select(TaskTable).where(TaskTable.id == task_id)

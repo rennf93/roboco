@@ -55,17 +55,24 @@ ROBOCO_WORKSPACE_CLONE_TIMEOUT=300
 3. **Branch Flexibility**: Different branches simultaneously
 4. **Clean State**: Fresh clone if needed
 
-## Workspace Resolution
+## MCP Tools
 
-When agent needs workspace:
+| Tool | Purpose |
+|------|---------|
+| `roboco_workspace_ensure` | Create workspace if needed |
+| `roboco_workspace_status` | Check workspace state |
+| `roboco_workspace_list` | List all workspaces (PM only) |
 
 ```python
-# Service resolves path
-workspace_path = await workspace_service.get_workspace(
-    project_slug="roboco",
-    agent_id="be-dev-1"
-)
-# Returns: /data/workspaces/roboco/backend/be-dev-1
+# Ensure workspace exists (auto-clones if needed)
+roboco_workspace_ensure(project_slug="roboco")
+
+# Check status
+roboco_workspace_status(project_slug="roboco")
 ```
 
-If `auto_clone=True` and workspace doesn't exist, it's created automatically.
+## Workspace Resolution
+
+Path resolved automatically: `{workspaces_root}/{project}/{team}/{agent}/`
+
+If `auto_clone=True` and workspace doesn't exist, it's created on first access.
