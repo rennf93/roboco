@@ -113,9 +113,17 @@ Register new git repositories:
 roboco_project_create(
     name="New Project",
     slug="new-project",
-    git_url="git@github.com:org/repo.git",
-    assigned_cell="backend"
+    git_url="https://github.com/org/repo.git",
+    assigned_cell="backend",
+    git_token="ghp_xxxx..."  # Required for HTTPS repos
 )
+```
+
+**IMPORTANT:** Include `git_token` (GitHub PAT with `repo` scope) for HTTPS repositories. Without it, workspace creation and git operations will fail.
+
+To update or rotate tokens:
+```python
+roboco_project_update(slug="new-project", git_token="ghp_newtoken...")
 ```
 
 Create tasks with project:

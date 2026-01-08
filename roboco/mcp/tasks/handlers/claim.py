@@ -6,6 +6,8 @@ Handler for claiming tasks.
 
 from typing import Any
 
+from starlette import status
+
 from roboco.agents_config import get_agent_role
 from roboco.mcp.tasks import format_task_response
 from roboco.mcp.tasks.handlers._helpers import (
@@ -56,6 +58,51 @@ async def _is_pre_assigned_to_agent(
     return agent_uuid is not None and str(assigned_to) == agent_uuid
 
 
+async def _validate_branch_hierarchy(
+    client: ApiClient, task: dict[str, Any]
+) -> dict[str, Any] | None:
+    """Walk up task hierarchy ensuring all git-enabled ancestors have branches.
+
+    Returns error dict if hierarchy is incomplete, None if valid.
+    Branch hierarchy must be created from root down:
+    - Main PM creates root branch
+    - Cell PM creates subtask branch
+    - Developer works on subsubtask branch
+    """
+    current_parent_id = task.get("parent_task_id")
+    ancestors_checked: list[str] = []
+
+    while current_parent_id:
+        parent_resp = await client.get(f"/tasks/{current_parent_id}")
+        if parent_resp.status_code != status.HTTP_200_OK:
+            # Can't fetch parent - may have been deleted, allow to proceed
+            break
+
+        parent = parent_resp.json()
+        parent_title = parent.get("title", str(current_parent_id)[:8])
+        ancestors_checked.append(parent_title)
+
+        # Check if parent is a git task missing its branch
+        if parent.get("requires_git") and not parent.get("branch_name"):
+            return format_error_response(
+                "BRANCH_HIERARCHY_INCOMPLETE",
+                f"Parent task '{parent_title}' has no branch yet.",
+                {
+                    "missing_branch_task": str(current_parent_id),
+                    "ancestors_checked": ancestors_checked,
+                },
+                hint=(
+                    "Branch hierarchy must be created from root down. "
+                    "Main PM creates root branch, Cell PM creates subtask branch. "
+                    "Ask your PM to create the parent branch first."
+                ),
+            )
+
+        current_parent_id = parent.get("parent_task_id")
+
+    return None
+
+
 async def _execute_claim(
     client: ApiClient, task_id: str, agent_id: str
 ) -> tuple[dict[str, Any] | None, dict[str, Any] | None]:
@@ -70,6 +117,29 @@ async def _execute_claim(
         )
     claimed: dict[str, Any] = claim_resp.json()
     return claimed, None
+
+
+async def _validate_git_requirements(
+    client: ApiClient, task: dict[str, Any], task_id: str
+) -> dict[str, Any] | None:
+    """Validate git-related requirements. Returns error or None."""
+    if not task.get("requires_git"):
+        return None
+
+    # Branch must exist for git tasks
+    if not task.get("branch_name"):
+        return format_error_response(
+            "BRANCH_REQUIRED",
+            "Cannot claim git task - PM must create branch first.",
+            {"task_id": task_id, "requires_git": True},
+            hint="PM should call roboco_git_create_branch() before developer can claim",
+        )
+
+    # Validate full branch hierarchy for git tasks with parent
+    if task.get("parent_task_id"):
+        return await _validate_branch_hierarchy(client, task)
+
+    return None
 
 
 async def handle_task_claim(
@@ -104,14 +174,9 @@ async def handle_task_claim(
     if error := await validate_task_claimable(task, agent_role, agent_id, client):
         return error
 
-    # Validate branch exists for git tasks (PM must create branch first)
-    if task.get("requires_git") and not task.get("branch_name"):
-        return format_error_response(
-            "BRANCH_REQUIRED",
-            "Cannot claim git task - PM must create branch first.",
-            {"task_id": task_id, "requires_git": True},
-            hint="PM should call roboco_git_create_branch() before developer can claim",
-        )
+    # Validate git requirements (branch exists, hierarchy valid)
+    if error := await _validate_git_requirements(client, task, task_id):
+        return error
 
     # Execute the claim
     claimed_task, error = await _execute_claim(client, task_id, agent_id)

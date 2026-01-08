@@ -76,3 +76,14 @@ roboco_workspace_status(project_slug="roboco")
 Path resolved automatically: `{workspaces_root}/{project}/{team}/{agent}/`
 
 If `auto_clone=True` and workspace doesn't exist, it's created on first access.
+
+## Authentication
+
+HTTPS repositories require a GitHub PAT configured on the project:
+
+- **Token configured**: Auto-clone works, git operations succeed
+- **Token missing**: Error "Project requires a git token for HTTPS repositories"
+
+**If you see this error**: Contact your PM to configure the project's git token.
+
+PMs use `roboco_project_update(slug, git_token="...")` to set credentials.

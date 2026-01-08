@@ -1,5 +1,21 @@
 # Git Error Troubleshooting
 
+## Missing Git Token
+
+**Error**: "Project requires a git token for HTTPS repositories"
+
+**Cause**: No GitHub PAT configured for this project
+
+**Solutions**:
+1. Open project settings in UI
+2. Add GitHub token (Personal Access Token)
+3. Token needs `repo` scope for clone/push/PR
+
+**Notes**:
+- Each project requires its own token (no global fallback)
+- Tokens are encrypted at rest
+- Token never exposed in API responses
+
 ## Workspace Not Found
 
 **Error**: "Workspace does not exist"

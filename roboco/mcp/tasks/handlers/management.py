@@ -451,6 +451,15 @@ async def handle_task_assign(
     if assign_error or assigned_task is None:
         return assign_error or format_error_response("ASSIGN_FAILED", "No task")
 
+    # Warning if reassigning a claimed task (not an error, just informational)
+    reassign_warning = ""
+    if task.get("status") == "claimed" and task.get("claimed_by"):
+        reassign_warning = (
+            "\n\n⚠️ Note: This task was already claimed. If you're delegating work, "
+            "consider using roboco_task_create(parent_task_id=...) to create a subtask "
+            "for better tracking and branch hierarchy management."
+        )
+
     guidance = (
         f"Task assigned to {input_data.assignee} and set to pending. "
         "Orchestrator will spawn them to claim and work on it."
@@ -460,6 +469,9 @@ async def handle_task_assign(
     role_warning = get_role_mismatch_warning(task, input_data.assignee)
     if role_warning:
         guidance += f"\n\n⚠️ ROLE WARNING: {role_warning}"
+
+    # Add reassign warning if applicable
+    guidance += reassign_warning
 
     return format_task_response(assigned_task, "ASSIGNED", guidance)
 

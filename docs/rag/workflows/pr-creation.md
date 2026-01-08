@@ -54,6 +54,12 @@ In `awaiting_documentation`:
 
 Task advances to `awaiting_pm_review` when BOTH are done.
 
+## Prerequisites
+
+- **Git token configured**: Project must have a GitHub PAT set
+- Token must have `repo` scope for PR creation
+- If missing, error: "Project has no git token configured"
+
 ## Before Creating PR
 
 1. Push all commits: `roboco_git_push()`

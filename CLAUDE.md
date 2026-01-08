@@ -147,6 +147,29 @@ When a developer claims a git-enabled task, a **WorkSession** is created that tr
 - PR number/URL when created
 - Merge status and who merged
 
+### Git Credentials
+
+Git authentication is managed **per-project** through encrypted GitHub PATs:
+
+- **Each project stores its own git token** - no global fallback
+- **Tokens are encrypted at rest** using Fernet symmetric encryption
+- **API never exposes tokens** - only returns `has_git_token: boolean`
+- **Self-service via UI** - users set/update tokens in project settings
+
+**Project fields:**
+| Field | Description |
+|-------|-------------|
+| `git_token_encrypted` | Fernet-encrypted GitHub PAT (DB column) |
+| `has_git_token` | Boolean indicator for API responses |
+
+**Token flow:**
+1. User creates project in UI, enters GitHub PAT
+2. Token encrypted and stored in `projects.git_token_encrypted`
+3. WorkspaceService decrypts token when cloning repos
+4. GitService decrypts token for PR operations (gh CLI)
+
+**HTTPS URLs require tokens** - attempting to clone without a token will raise `WorkspaceError`.
+
 ## Task Lifecycle
 
 ### Task States
@@ -319,6 +342,10 @@ ROBOCO_DATABASE_NAME=roboco
 # Redis
 ROBOCO_REDIS_HOST=localhost
 ROBOCO_REDIS_PORT=6379
+
+# Security (REQUIRED)
+# Generate with: python -c 'from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())'
+ROBOCO_ENCRYPTION_KEY=<your-fernet-key>
 
 # Workspaces
 ROBOCO_WORKSPACES_ROOT=/data/workspaces

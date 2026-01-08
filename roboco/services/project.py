@@ -15,6 +15,7 @@ from roboco.db.tables import ProjectTable
 from roboco.models.base import Team
 from roboco.models.project import ProjectCreate, ProjectUpdate
 from roboco.services.base import BaseService, ConflictError, NotFoundError
+from roboco.utils.crypto import EncryptionError, decrypt_token, encrypt_token
 
 
 class ProjectService(BaseService):
@@ -60,6 +61,15 @@ class ProjectService(BaseService):
                 resource_type="project",
             )
 
+        # Encrypt git token if provided
+        encrypted_token = None
+        if data.git_token:
+            try:
+                encrypted_token = encrypt_token(data.git_token)
+            except EncryptionError as e:
+                self.log.error("Failed to encrypt git token", error=str(e))
+                raise
+
         project = ProjectTable(
             name=data.name,
             slug=data.slug,
@@ -67,6 +77,7 @@ class ProjectService(BaseService):
             default_branch=data.default_branch,
             protected_branches=data.protected_branches,
             assigned_cell=data.assigned_cell,
+            git_token_encrypted=encrypted_token,
             test_command=data.test_command,
             lint_command=data.lint_command,
             format_command=data.format_command,
@@ -83,6 +94,7 @@ class ProjectService(BaseService):
             project_id=str(project.id),
             slug=data.slug,
             git_url=data.git_url,
+            has_git_token=bool(encrypted_token),
             cell=data.assigned_cell.value
             if isinstance(data.assigned_cell, Team)
             else data.assigned_cell,
@@ -129,18 +141,42 @@ class ProjectService(BaseService):
         if not project:
             return None
 
-        # Apply updates for non-None fields
-        update_data = data.model_dump(exclude_unset=True, exclude_none=True)
+        # Handle git_token specially (empty string clears, None leaves unchanged)
+        token_updated = False
+        if data.git_token is not None:
+            if data.git_token == "":
+                # Clear the token
+                project.git_token_encrypted = None
+                token_updated = True
+                self.log.info("Git token cleared", project_id=str(project_id))
+            else:
+                # Encrypt and set new token
+                try:
+                    project.git_token_encrypted = encrypt_token(data.git_token)
+                    token_updated = True
+                    self.log.info("Git token updated", project_id=str(project_id))
+                except EncryptionError as e:
+                    self.log.error("Failed to encrypt git token", error=str(e))
+                    raise
+
+        # Apply updates for non-None fields (excluding git_token which we handled)
+        update_data = data.model_dump(
+            exclude_unset=True, exclude_none=True, exclude={"git_token"}
+        )
         for key, value in update_data.items():
             if hasattr(project, key):
                 setattr(project, key, value)
 
         await self.session.flush()
 
+        updated_fields = list(update_data.keys())
+        if token_updated:
+            updated_fields.append("git_token")
+
         self.log.info(
             "Project updated",
             project_id=str(project_id),
-            updates=list(update_data.keys()),
+            updates=updated_fields,
         )
         return project
 
@@ -286,6 +322,69 @@ class ProjectService(BaseService):
             head_commit=head_commit[:8],  # Short SHA
         )
         return project
+
+    # =========================================================================
+    # GIT TOKEN MANAGEMENT
+    # =========================================================================
+
+    async def get_decrypted_token(self, project_id: UUID) -> str | None:
+        """
+        Get the decrypted git token for a project.
+
+        Used by WorkspaceService and GitService for git operations.
+        The token is decrypted on-demand and should not be cached.
+
+        Args:
+            project_id: Project to get token for
+
+        Returns:
+            Decrypted token or None if no token is set
+
+        Raises:
+            EncryptionError: If decryption fails (key mismatch, corrupted data)
+        """
+        project = await self.get(project_id)
+        if not project or not project.git_token_encrypted:
+            return None
+
+        try:
+            return decrypt_token(project.git_token_encrypted)
+        except EncryptionError:
+            self.log.error(
+                "Failed to decrypt git token",
+                project_id=str(project_id),
+                error="encryption_key_mismatch_or_corrupted",
+            )
+            raise
+
+    async def get_decrypted_token_by_slug(self, slug: str) -> str | None:
+        """
+        Get the decrypted git token for a project by slug.
+
+        Convenience method for services that work with project slugs.
+
+        Args:
+            slug: Project slug
+
+        Returns:
+            Decrypted token or None if no token is set
+
+        Raises:
+            EncryptionError: If decryption fails
+        """
+        project = await self.get_by_slug(slug)
+        if not project or not project.git_token_encrypted:
+            return None
+
+        try:
+            return decrypt_token(project.git_token_encrypted)
+        except EncryptionError:
+            self.log.error(
+                "Failed to decrypt git token",
+                project_slug=slug,
+                error="encryption_key_mismatch_or_corrupted",
+            )
+            raise
 
     # =========================================================================
     # ACCESS CONTROL

@@ -33,6 +33,9 @@ class ProjectResponse(BaseModel):
     protected_branches: list[str]
     assigned_cell: Team
 
+    # Git authentication status (token never exposed, only boolean)
+    has_git_token: bool = False
+
     # Optional commands
     test_command: str | None = None
     lint_command: str | None = None
@@ -63,9 +66,11 @@ class ProjectSummaryResponse(BaseModel):
     id: UUID
     name: str
     slug: str
+    git_url: str
     assigned_cell: Team
     is_active: bool
     has_workspace: bool = False
+    has_git_token: bool = False
 
     class Config:
         """Pydantic config."""
@@ -85,8 +90,17 @@ class ProjectCreateRequest(BaseModel):
     slug: str = Field(..., min_length=1, max_length=50, pattern=r"^[a-z0-9-]+$")
     git_url: str
     default_branch: str = "main"
-    protected_branches: list[str] = Field(default_factory=lambda: ["main", "master"])
+    protected_branches: list[str] | None = Field(
+        default=None,
+        description="Branches to protect. Defaults to [default_branch].",
+    )
     assigned_cell: Team
+
+    # Git authentication (will be encrypted and stored securely)
+    git_token: str | None = Field(
+        default=None,
+        description="GitHub PAT for clone/push/PR (stored encrypted, never returned)",
+    )
 
     # Optional commands
     test_command: str | None = None
@@ -104,6 +118,12 @@ class ProjectUpdateRequest(BaseModel):
     default_branch: str | None = None
     protected_branches: list[str] | None = None
     assigned_cell: Team | None = None
+
+    # Git authentication (empty string clears token, None leaves unchanged)
+    git_token: str | None = Field(
+        default=None,
+        description="GitHub PAT (empty string clears, None leaves unchanged)",
+    )
 
     # Commands
     test_command: str | None = None
@@ -144,6 +164,7 @@ def project_to_response(project: "ProjectTable") -> ProjectResponse:
         default_branch=str(default_branch) if default_branch else "main",
         protected_branches=list(project.protected_branches or []),
         assigned_cell=project.assigned_cell,
+        has_git_token=bool(project.git_token_encrypted),
         test_command=project.test_command,
         lint_command=project.lint_command,
         format_command=project.format_command,
@@ -165,7 +186,9 @@ def project_to_summary(project: "ProjectTable") -> ProjectSummaryResponse:
         id=typing_cast("UUID", project.id),
         name=str(project.name),
         slug=str(project.slug),
+        git_url=str(project.git_url),
         assigned_cell=project.assigned_cell,
         is_active=bool(project.is_active),
         has_workspace=bool(project.workspace_path),
+        has_git_token=bool(project.git_token_encrypted),
     )

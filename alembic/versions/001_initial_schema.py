@@ -105,6 +105,8 @@ def upgrade() -> None:
         sa.Column(
             "protected_branches", postgresql.ARRAY(sa.String()), server_default="{}"
         ),
+        # Git Authentication (encrypted)
+        sa.Column("git_token_encrypted", sa.Text(), nullable=True),
         # CI/CD Commands (optional)
         sa.Column("test_command", sa.String(500), nullable=True),
         sa.Column("lint_command", sa.String(500), nullable=True),

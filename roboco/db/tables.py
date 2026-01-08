@@ -300,6 +300,9 @@ class ProjectTable(Base):
     protected_branches: Mapped[list[str]] = mapped_column(
         ARRAY(String), default=lambda: ["main", "master"]
     )
+    git_token_encrypted: Mapped[str | None] = mapped_column(
+        Text, nullable=True
+    )  # Fernet-encrypted GitHub PAT
 
     # CI/CD Commands (optional)
     test_command: Mapped[str | None] = mapped_column(String(500), nullable=True)
