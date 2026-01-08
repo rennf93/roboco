@@ -96,9 +96,15 @@ async def get_git_status(
 
     try:
         workspace = await git_service.get_workspace(project_slug, agent.agent_id)
-        current_branch, has_changes, staged, unstaged, untracked, ahead, behind = (
-            await git_service.get_status(workspace)
-        )
+        (
+            current_branch,
+            has_changes,
+            staged,
+            unstaged,
+            untracked,
+            ahead,
+            behind,
+        ) = await git_service.get_status(workspace)
     except ServiceError as e:
         raise _translate_error(e) from e
 
@@ -273,9 +279,13 @@ async def create_commit(
     try:
         workspace = await git_service.get_workspace(data.project_slug, agent.agent_id)
 
-        commit_hash, message, files_changed, insertions, deletions = (
-            await git_service.create_commit(workspace, agent.agent_id, data)
-        )
+        (
+            commit_hash,
+            message,
+            files_changed,
+            insertions,
+            deletions,
+        ) = await git_service.create_commit(workspace, agent.agent_id, data)
     except ServiceError as e:
         raise _translate_error(e) from e
 
@@ -406,9 +416,13 @@ async def create_pull_request(
     try:
         workspace = await git_service.get_workspace(data.project_slug, agent.agent_id)
 
-        pr_number, pr_url, title, source_branch, target_branch = (
-            await git_service.create_pull_request(workspace, data)
-        )
+        (
+            pr_number,
+            pr_url,
+            title,
+            source_branch,
+            target_branch,
+        ) = await git_service.create_pull_request(workspace, data)
     except ServiceError as e:
         raise _translate_error(e) from e
 

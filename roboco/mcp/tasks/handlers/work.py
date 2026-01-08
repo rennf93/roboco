@@ -160,10 +160,14 @@ async def handle_task_start(
     # Build guidance based on whether git checkout happened
     guidance = "Task started. Work through your plan step by step:\n"
     if requires_git and branch_name:
-        guidance += f"✓ Checked out branch: {branch_name}\n\n"
+        guidance += (
+            f"✓ Checked out branch: {branch_name}\n"
+            f"   Workspace: /data/workspaces/{project_slug}/...\n"
+            "   Use roboco_git_* tools for git operations.\n\n"
+        )
     guidance += (
         "1. Implement each sub-task\n"
-        "2. Commit frequently with clear messages\n"
+        "2. Use roboco_git_commit() to commit frequently\n"
         "3. Call roboco_task_progress to update status\n"
         "4. If blocked, call roboco_task_block immediately\n"
         "5. When done, call roboco_task_submit_verification"

@@ -30,12 +30,22 @@ Claim → read full description → plan breakdown across cells → start → jo
 ### 3. CREATE PARENT BRANCH (Git Tasks)
 **For tasks with `requires_git=True`:**
 ```
-roboco_git_create_branch(project_slug, task_id, branch_type, "main")
+roboco_git_create_branch(project_slug, task_id, branch_type)
 ```
 
-- Creates parent branch from `main`
+- Creates parent branch from the project's default branch (e.g., `main`, `master`)
 - Cell PM subtask branches will fork from this
 - Example: `feature/cross/abc123` for cross-cell work
+
+**Branch Hierarchy for Git Tasks:**
+- For hierarchical branching: default branch → Your branch → Cell PM branch → Dev branch
+- If using hierarchical branches, create root branch before Cell PMs create theirs
+- Cell PM branches fork from your branch (set as `parent_branch`)
+
+**Typical order for hierarchical branching:**
+1. Create your root branch from project's default branch
+2. Create cell tasks, Cell PMs create branches from your branch
+3. Devs create branches from Cell PM branches
 
 ### 4. CREATE GROUP
 Use `roboco_group_create()` in each relevant cell channel. Cell PMs need groups to create sessions.

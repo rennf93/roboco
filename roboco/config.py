@@ -198,6 +198,10 @@ class Settings(BaseSettings):
         min_length=32,
         description="Secret key for JWT signing",
     )
+    encryption_key: str = Field(
+        default="",
+        description="Fernet encryption key for secrets.",
+    )
     access_token_expire_minutes: int = Field(default=60 * 24, ge=1)  # 24 hours
     algorithm: str = "HS256"
 

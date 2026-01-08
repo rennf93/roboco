@@ -19,7 +19,9 @@ Returns projects you have access to (cell-scoped for non-PMs).
 roboco_project_get(slug="roboco")
 ```
 
-Returns: `name`, `git_url`, `assigned_cell`, `default_branch`, `test_command`, etc.
+Returns: `name`, `git_url`, `assigned_cell`, `default_branch`, `has_git_token`, `test_command`, etc.
+
+**Note:** `has_git_token` indicates if authentication is configured (required for HTTPS repos).
 
 ## Create Project (PM+ Only)
 
@@ -27,8 +29,9 @@ Returns: `name`, `git_url`, `assigned_cell`, `default_branch`, `test_command`, e
 roboco_project_create(
     name="RoboCo Panel",
     slug="roboco-panel",
-    git_url="git@github.com:org/roboco-panel.git",
+    git_url="https://github.com/org/roboco-panel.git",
     assigned_cell="frontend",
+    git_token="ghp_xxxx...",  # GitHub PAT with repo scope
     default_branch="main",
     test_command="pnpm test",
     lint_command="pnpm lint"
@@ -37,11 +40,14 @@ roboco_project_create(
 
 **Who can create:** Main PM, Board, CEO
 
+**IMPORTANT:** `git_token` is **required** for HTTPS repositories. Without it, workspace creation and git operations will fail.
+
 ## Update Project
 
 ```python
 roboco_project_update(
     slug="roboco-panel",
+    git_token="ghp_newtoken...",  # Update/rotate token
     test_command="pnpm test:ci",
     lint_command="pnpm lint:fix"
 )
@@ -50,6 +56,8 @@ roboco_project_update(
 **Who can update:**
 - CEO, Main PM: Any project
 - Cell PM: Own cell's projects only
+
+**Token rotation:** Pass `git_token` to update credentials. Pass empty string to clear.
 
 ## Workspace Tools
 

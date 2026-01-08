@@ -77,6 +77,12 @@ class Project(TimestampMixin):
         default=None, description="Specific agents allowed (None = all in cell)"
     )
 
+    # Git Authentication (token stored encrypted, never exposed)
+    has_git_token: bool = Field(
+        default=False,
+        description="Whether a git token is configured (token never exposed)",
+    )
+
     # Runtime State
     workspace_path: str | None = Field(
         default=None,
@@ -102,6 +108,12 @@ class ProjectCreate(RobocoBase):
     protected_branches: list[str] = Field(default_factory=lambda: ["main", "master"])
     assigned_cell: Team
 
+    # Git authentication (will be encrypted and stored securely)
+    git_token: str | None = Field(
+        default=None,
+        description="GitHub PAT for clone/push/PR operations (stored encrypted)",
+    )
+
     # Optional commands
     test_command: str | None = None
     lint_command: str | None = None
@@ -117,6 +129,13 @@ class ProjectUpdate(RobocoBase):
     git_url: str | None = None
     default_branch: str | None = None
     protected_branches: list[str] | None = None
+
+    # Git authentication (empty string clears token, None leaves unchanged)
+    git_token: str | None = Field(
+        default=None,
+        description="GitHub PAT (empty string clears, None leaves unchanged)",
+    )
+
     test_command: str | None = None
     lint_command: str | None = None
     format_command: str | None = None

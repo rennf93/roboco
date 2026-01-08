@@ -655,6 +655,7 @@ class AgentOrchestrator:
             # Running inside orchestrator container - use host paths
             blueprints_host = f"{PROJECT_HOST_PATH}/agents/blueprints"
             docs_host = f"{PROJECT_HOST_PATH}/docs"
+            workspaces_host = f"{DATA_HOST_PATH}/workspaces"
             claude_host = CLAUDE_AUTH_HOST_PATH
             mcp_config_host = (
                 f"{DATA_HOST_PATH}/mcp-configs/{config.mcp_config_path.name}"
@@ -674,6 +675,7 @@ class AgentOrchestrator:
             # Running directly on host
             blueprints_host = str(self.blueprints_dir.absolute())
             docs_host = str(self.blueprints_dir.parent / "docs")
+            workspaces_host = str(Path(settings.workspaces_root))
             claude_host = CLAUDE_AUTH_HOST_PATH
             mcp_config_host = str(config.mcp_config_path)
             # Generated prompts in temp dir
@@ -721,6 +723,9 @@ class AgentOrchestrator:
                 # - All other roles get read-only access
                 "-v",
                 f"{docs_host}:/app/docs{'' if config.agent_id in ALL_DOCS else ':ro'}",
+                # Mount workspaces directory for git operations
+                "-v",
+                f"{workspaces_host}:/data/workspaces",
                 # Mount MCP config
                 "-v",
                 f"{mcp_config_host}:/app/mcp-config.json:ro",

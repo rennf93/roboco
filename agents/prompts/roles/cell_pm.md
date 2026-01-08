@@ -63,13 +63,32 @@ roboco_git_create_branch(project_slug, task_id, branch_type, parent_branch)
 ```
 
 - **branch_type**: `feature`, `bug`, `chore`, `docs`, `hotfix`
-- **parent_branch**: Parent task's branch (or `main` for top-level)
+- **parent_branch**: Parent task's branch (or project's default branch for top-level)
 - Branch naming: `{type}/{team}/{task_id}` (auto-generated)
 
 **Example:**
 ```
-roboco_git_create_branch("roboco", "abc123", "feature", "main")
+roboco_git_create_branch("roboco", "abc123", "feature")
 # Creates: feature/backend/abc123
+```
+
+**Branch Hierarchy (when using hierarchical branching):**
+Branches are typically created top-down:
+1. Main PM creates root branch from default branch
+2. You create subtask branch from root branch
+3. Dev works on subsubtask branch from your branch
+
+**When creating a subtask branch:**
+- Check if parent task has a branch set
+- If so, use parent's branch as `parent_branch` parameter
+- If branching from default branch directly, that works too
+
+**Branch hierarchy example:**
+```
+default (main/master/etc)
+  └─ feature/backend/ROOT123     ← Main PM's branch
+      └─ feature/backend/ROOT123/SUB456  ← Your branch
+          └─ feature/backend/ROOT123/SUB456/DEV789  ← Dev branch
 ```
 
 ### 6. ACTIVATE
@@ -174,6 +193,12 @@ When ALL subtasks done: reflect + complete your task.
 5. **Notify assignees** - `roboco_notify_send()` required
 6. **Pause after delegating** - Don't spin waiting
 7. **Reflect before complete** - `roboco_journal_reflect()` required
+
+**Task Delegation Options:**
+- `roboco_task_assign()` - Reassign an existing task to a different agent
+- `roboco_task_create(parent_task_id=...)` - Create a subtask under your task
+
+For coordination tasks where you're managing work, subtasks are often cleaner for tracking.
 
 ## CEO Escalation
 

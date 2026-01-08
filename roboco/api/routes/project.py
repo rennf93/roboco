@@ -146,14 +146,20 @@ async def create_project(
 
     service = get_project_service(db)
 
+    # If protected_branches wasn't provided, default to just the default_branch
+    protected_branches = data.protected_branches
+    if protected_branches is None:
+        protected_branches = [data.default_branch]
+
     # Convert request to service model
     create_data = ProjectCreate(
         name=data.name,
         slug=data.slug,
         git_url=data.git_url,
         default_branch=data.default_branch,
-        protected_branches=data.protected_branches,
+        protected_branches=protected_branches,
         assigned_cell=data.assigned_cell,
+        git_token=data.git_token,
         test_command=data.test_command,
         lint_command=data.lint_command,
         format_command=data.format_command,
@@ -218,6 +224,7 @@ async def update_project(
         default_branch=data.default_branch,
         protected_branches=data.protected_branches,
         assigned_cell=data.assigned_cell,
+        git_token=data.git_token,
         test_command=data.test_command,
         lint_command=data.lint_command,
         format_command=data.format_command,

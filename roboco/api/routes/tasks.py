@@ -93,6 +93,19 @@ async def create_task(
             detail="Not authorized to create tasks",
         )
 
+    # Validate: git tasks require project_id
+    if data.requires_git and not data.project_id:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail={
+                "error": {
+                    "code": "PROJECT_REQUIRED",
+                    "message": "Tasks with requires_git=True must have project_id set",
+                    "hint": "Specify project_id or set requires_git=False",
+                }
+            },
+        )
+
     service = get_task_service(db)
     req = TaskCreateRequest(
         title=data.title,
@@ -109,6 +122,10 @@ async def create_task(
         status=data.status,
         sequence=data.sequence,  # Task ordering within siblings
         dependency_ids=data.dependency_ids,  # Dependencies for claim filtering
+        # Git configuration
+        task_type=data.task_type,
+        requires_git=data.requires_git,
+        project_id=data.project_id,
     )
     task = await service.create(req)
     await db.commit()

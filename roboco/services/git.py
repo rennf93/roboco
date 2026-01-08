@@ -6,6 +6,7 @@ All business logic for git commands, commit templates, PR generation.
 """
 
 import asyncio
+import os
 import subprocess
 from pathlib import Path
 from typing import ClassVar
@@ -48,6 +49,24 @@ from roboco.templates.git.pr_root import CommitInfo as PRCommitInfo
 
 # Git command timeout in seconds
 _GIT_TIMEOUT = 30
+
+
+def _get_gh_env(token: str | None = None) -> dict[str, str]:
+    """
+    Get environment variables for gh CLI commands.
+
+    Args:
+        token: Project-specific GitHub PAT (required for gh operations)
+
+    Returns:
+        Environment dict with GITHUB_TOKEN set
+    """
+    env = os.environ.copy()
+    if token:
+        env["GITHUB_TOKEN"] = token
+        env["GH_TOKEN"] = token
+    return env
+
 
 # Expected number of parts in various git outputs
 _REV_LIST_PARTS = 2
@@ -285,9 +304,7 @@ class GitService(BaseService):
         commit_hash = parts[0] if parts else "unknown"
 
         # Get stats
-        stat_result = await self._run_git(
-            workspace, ["diff", "--stat", "HEAD~1..HEAD"]
-        )
+        stat_result = await self._run_git(workspace, ["diff", "--stat", "HEAD~1..HEAD"])
         insertions, deletions, files_changed = self._parse_commit_stats(
             stat_result.stdout
         )
@@ -334,6 +351,25 @@ class GitService(BaseService):
                 project_service = get_project_service(self.session)
                 project = await project_service.get_by_slug(request.project_slug)
                 base_branch = str(project.default_branch) if project else "main"
+
+        # Validate parent branch exists on remote (unless it's the default branch)
+        project_service = get_project_service(self.session)
+        project = await project_service.get_by_slug(request.project_slug)
+        default_branch = str(project.default_branch) if project else "main"
+
+        if base_branch != default_branch:
+            # Parent is not the default branch - verify it exists on remote
+            result = await self._run_git(
+                workspace,
+                ["ls-remote", "--heads", "origin", base_branch],
+                check=False,
+            )
+            if not result.stdout.strip():
+                raise ValidationError(
+                    f"Parent branch '{base_branch}' does not exist on remote. "
+                    f"The parent task's branch must be created and pushed first. "
+                    f"Ensure Main PM/Cell PM created their branches before this task."
+                )
 
         # Create and push branch
         await self._run_git(workspace, ["checkout", base_branch])
@@ -498,10 +534,20 @@ class GitService(BaseService):
 
         source_branch = await self.get_current_branch(workspace)
 
-        # Determine target branch
+        # Determine target branch and get project token
         project_service = get_project_service(self.session)
         project = await project_service.get_by_slug(request.project_slug)
         default_branch = str(project.default_branch) if project else "main"
+
+        # Get decrypted token from project (required for PR creation)
+        git_token = await project_service.get_decrypted_token_by_slug(
+            request.project_slug
+        )
+        if not git_token:
+            raise GitError(
+                f"Project '{request.project_slug}' has no git token configured. "
+                "Configure a GitHub PAT in the project settings to create PRs."
+            )
 
         if request.is_root_pr:
             target_branch = default_branch
@@ -531,7 +577,7 @@ class GitService(BaseService):
                 pr_title = pr_title or build_pr_title_internal(internal_ctx)
                 pr_body = pr_body or build_pr_body_internal(internal_ctx, api_base)
 
-        # Create PR using gh CLI
+        # Create PR using gh CLI with project token
         def _create_pr() -> subprocess.CompletedProcess[str]:
             return subprocess.run(
                 [
@@ -552,6 +598,7 @@ class GitService(BaseService):
                 text=True,
                 timeout=_GIT_TIMEOUT,
                 check=True,
+                env=_get_gh_env(git_token),
             )
 
         try:
@@ -575,6 +622,14 @@ class GitService(BaseService):
 
         Returns: (target_branch, merge_commit)
         """
+        # Get project token for gh CLI
+        project_service = get_project_service(self.session)
+        git_token = await project_service.get_decrypted_token_by_slug(project_slug)
+        if not git_token:
+            raise GitError(
+                f"Project '{project_slug}' has no git token configured. "
+                "Configure a GitHub PAT in the project settings to merge PRs."
+            )
 
         def _merge_pr() -> subprocess.CompletedProcess[str]:
             return subprocess.run(
@@ -591,6 +646,7 @@ class GitService(BaseService):
                 text=True,
                 timeout=_GIT_TIMEOUT,
                 check=True,
+                env=_get_gh_env(git_token),
             )
 
         try:
@@ -599,7 +655,6 @@ class GitService(BaseService):
             raise GitCommandError("gh pr merge", e.stderr or e.stdout or "") from e
 
         # Get target branch
-        project_service = get_project_service(self.session)
         project = await project_service.get_by_slug(project_slug)
         target_branch = str(project.default_branch) if project else "main"
 

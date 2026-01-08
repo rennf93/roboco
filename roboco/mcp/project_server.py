@@ -345,7 +345,10 @@ async def _handle_workspace_ensure(
             "branch": git_status.get("current_branch"),
             "has_uncommitted": git_status.get("has_changes", False),
         },
-        "guidance": "Workspace ready. Use git tools to make changes.",
+        "guidance": (
+            "Workspace ready. Use roboco_git_* MCP tools for git operations. "
+            f"Direct filesystem access at /data/workspaces/{project_slug}/..."
+        ),
     }
 
 
@@ -384,7 +387,11 @@ async def _handle_workspace_status(
             "staged_files": git_status.get("staged_files", []),
             "unstaged_files": git_status.get("unstaged_files", []),
         },
-        "guidance": "Use git tools to make changes.",
+        "guidance": (
+            "Workspace ready. Use roboco_git_* MCP tools for git operations "
+            "(commit, push, branch, etc). Direct filesystem access is available "
+            f"at /data/workspaces/{project_slug}/... for your agent."
+        ),
     }
 
 

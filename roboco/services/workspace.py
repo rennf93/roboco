@@ -19,6 +19,7 @@ Example:
 """
 
 import asyncio
+import re
 import subprocess
 from pathlib import Path
 from uuid import UUID
@@ -26,11 +27,40 @@ from uuid import UUID
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from roboco.config import settings
-from roboco.db.tables import AgentTable, ProjectTable
+from roboco.db.tables import AgentTable
 from roboco.logging import get_logger
 from roboco.models.base import Team
 
 logger = get_logger(__name__)
+
+
+def _inject_token_into_url(git_url: str, token: str | None) -> str:
+    """
+    Inject GitHub PAT into HTTPS git URL for authentication.
+
+    Args:
+        git_url: Original git URL (SSH or HTTPS)
+        token: GitHub PAT (if None, returns original URL)
+
+    Returns:
+        URL with embedded token for HTTPS, or original URL for SSH
+
+    Example:
+        https://github.com/org/repo.git -> https://TOKEN@github.com/org/repo.git
+    """
+    if not token:
+        return git_url
+
+    # Only inject for HTTPS URLs
+    if not git_url.startswith("https://"):
+        return git_url
+
+    # Check if token already present
+    if "@" in git_url.split("//")[1].split("/")[0]:
+        return git_url
+
+    # Inject token: https://github.com -> https://TOKEN@github.com
+    return re.sub(r"^https://", f"https://{token}@", git_url)
 
 
 class WorkspaceError(Exception):
@@ -145,7 +175,27 @@ class WorkspaceService:
         Raises:
             WorkspaceError: If workspace creation fails
         """
-        workspace = await self.resolve_workspace(project_slug, agent_id)
+        from sqlalchemy import select
+
+        from roboco.services.project import get_project_service
+
+        # Look up agent for workspace path and git identity
+        agent_id_str = str(agent_id)
+        query = select(AgentTable)
+        try:
+            agent_uuid = UUID(agent_id_str)
+            query = query.where(AgentTable.id == agent_uuid)
+        except ValueError:
+            query = query.where(AgentTable.slug == agent_id_str)
+
+        result = await self.session.execute(query)
+        agent = result.scalar_one_or_none()
+        if not agent:
+            raise WorkspaceError(f"Agent not found: {agent_id}")
+
+        # Compute workspace path
+        team = agent.team if agent.team else Team.BACKEND
+        workspace = self.get_workspace_path(project_slug, team, agent.slug)
 
         # Check if already exists
         if (workspace / ".git").exists():
@@ -156,21 +206,34 @@ class WorkspaceService:
             )
             return workspace
 
-        # Get git URL if not provided
-        if not git_url:
-            from sqlalchemy import select
+        # Get git URL and token from project
+        project_service = get_project_service(self.session)
+        project = await project_service.get_by_slug(project_slug)
+        if not project:
+            raise WorkspaceError(f"Project not found: {project_slug}")
 
-            result = await self.session.execute(
-                select(ProjectTable).where(ProjectTable.slug == project_slug)
-            )
-            project = result.scalar_one_or_none()
-            if not project:
-                raise WorkspaceError(f"Project not found: {project_slug}")
+        if not git_url:
             git_url = project.git_url
             default_branch = project.default_branch or default_branch
 
-        # Clone the repository
-        await self._clone_repo(workspace, git_url, default_branch)
+        # Get decrypted token from project (per-project token, no global fallback)
+        git_token = await project_service.get_decrypted_token_by_slug(project_slug)
+
+        # Validate token is set for HTTPS URLs (no global fallback)
+        if git_url.startswith("https://") and not git_token:
+            raise WorkspaceError(
+                f"Project '{project_slug}' requires a git token for HTTPS clone. "
+                "Configure a GitHub PAT in the project settings."
+            )
+
+        # Clone the repository with agent identity
+        await self._clone_repo(
+            workspace,
+            git_url,
+            default_branch,
+            git_token,
+            agent=agent,
+        )
         return workspace
 
     async def _clone_repo(
@@ -178,6 +241,8 @@ class WorkspaceService:
         workspace: Path,
         git_url: str,
         default_branch: str,
+        git_token: str | None = None,
+        agent: AgentTable | None = None,
     ) -> None:
         """
         Clone a git repository to the workspace.
@@ -186,6 +251,8 @@ class WorkspaceService:
             workspace: Target directory
             git_url: Git URL to clone
             default_branch: Branch to checkout
+            git_token: GitHub PAT for authentication (per-project)
+            agent: Agent for git identity (name/email in commits)
 
         Raises:
             WorkspaceError: If clone fails
@@ -193,11 +260,16 @@ class WorkspaceService:
         # Create parent directories
         workspace.parent.mkdir(parents=True, exist_ok=True)
 
+        # Inject project-specific token for HTTPS URLs
+        auth_url = _inject_token_into_url(git_url, git_token)
+
+        # Log without exposing token
         logger.info(
             "Cloning repository",
             workspace=str(workspace),
-            git_url=git_url,
+            git_url=git_url,  # Log original URL, not auth URL
             branch=default_branch,
+            using_token=bool(git_token and auth_url != git_url),
         )
 
         def _do_clone() -> subprocess.CompletedProcess[str]:
@@ -208,7 +280,7 @@ class WorkspaceService:
                     "--branch",
                     default_branch,
                     "--single-branch",
-                    git_url,
+                    auth_url,
                     str(workspace),
                 ],
                 capture_output=True,
@@ -217,8 +289,27 @@ class WorkspaceService:
                 check=True,
             )
 
+        def _configure_git() -> None:
+            """Configure git author info based on agent identity."""
+            name = agent.name if agent else "RoboCo Agent"
+            slug = agent.slug if agent else "agent"
+
+            subprocess.run(
+                ["git", "config", "user.name", name],
+                cwd=str(workspace),
+                check=True,
+                capture_output=True,
+            )
+            subprocess.run(
+                ["git", "config", "user.email", f"{slug}@agents.roboco.dev"],
+                cwd=str(workspace),
+                check=True,
+                capture_output=True,
+            )
+
         try:
             await asyncio.to_thread(_do_clone)
+            await asyncio.to_thread(_configure_git)
             logger.info(
                 "Repository cloned successfully",
                 workspace=str(workspace),
