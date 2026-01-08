@@ -33,7 +33,7 @@ class IndexConfig:
     use_hyde: bool = True
     use_hybrid_search: bool = True
     use_cross_encoder: bool = False
-    embedding_model: str = "embeddinggemma:300m"
+    embedding_model: str = "qwen3-embedding:0.6b"
     llm_model: str = "glm-4.7:cloud"
     llm_base_url: str = "http://roboco-ollama:11434/v1"
 

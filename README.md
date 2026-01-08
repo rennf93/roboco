@@ -176,7 +176,7 @@ uv run mypy roboco/
 | Vector Store | pgvector (via piragi) |
 | Cache/Queue | Redis |
 | RAG Library | piragi |
-| Embeddings | embeddinggemma:300m (sentence-transformers) |
+| Embeddings | qwen3-embedding:0.6b (sentence-transformers) |
 | Local LLM | Ollama (glm-4.7:cloud) |
 | Cloud LLM | Claude API (Anthropic) |
 | Package Manager | uv |

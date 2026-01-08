@@ -145,7 +145,7 @@ class OllamaEmbedder:
 
     def __init__(
         self,
-        model: str = "embeddinggemma:300m",
+        model: str = "qwen3-embedding:0.6b",
         base_url: str | None = None,
         timeout: float = 120.0,
         max_concurrent: int = MAX_CONCURRENT_BATCHES,

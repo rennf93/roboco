@@ -2,7 +2,7 @@
 Shared Embedder Singleton
 
 Provides a single embedder instance shared across all index plugins.
-Supports both Ollama models (embeddinggemma, etc.) and SentenceTransformers (BGE, etc.).
+Supports both Ollama models (qwen3-embedding, ...) and SentenceTransformers (BGE, ...).
 """
 
 import asyncio
@@ -45,6 +45,7 @@ class Embedder(Protocol):
 
 # Known Ollama embedding models
 OLLAMA_EMBEDDING_MODELS = {
+    "qwen3-embedding",
     "embeddinggemma",
     "nomic-embed-text",
     "mxbai-embed-large",

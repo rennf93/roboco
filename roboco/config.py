@@ -168,12 +168,12 @@ class Settings(BaseSettings):
 
     # Default models
     default_embedding_model: str = Field(
-        default="embeddinggemma:300m",
-        description="Embedding model (Ollama). embeddinggemma:300m for quality.",
+        default="qwen3-embedding:0.6b",
+        description="Embedding model. Qwen3 Embedding for quality + 32K context.",
     )
     embedding_dimensions: int = Field(
-        default=768,
-        description="Embedding dimensions (768 for embeddinggemma/nomic-embed-text)",
+        default=1024,
+        description="Embedding dimensions (1024 for qwen3-embedding)",
     )
 
     # Local LLM for RAG (HyDE, reranking, etc.)

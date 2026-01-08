@@ -72,10 +72,10 @@ services:
     command:
       - |
         set -e
-        echo "=== Pulling embedding model (embeddinggemma:300m) ==="
+        echo "=== Pulling embedding model (qwen3-embedding:0.6b) ==="
         # Ollama /api/pull streams JSON lines until complete - consume full stream
         # Note: $$ escapes $ for docker-compose variable substitution
-        curl -sN http://ollama:11434/api/pull -d '{"name":"embeddinggemma:300m"}' | while read -r line; do
+        curl -sN http://ollama:11434/api/pull -d '{"name":"qwen3-embedding:0.6b"}' | while read -r line; do
           status=$$(echo "$$line" | grep -o '"status":"[^"]*"' | cut -d'"' -f4)
           [ -n "$$status" ] && echo "  $$status"
         done
@@ -85,7 +85,7 @@ services:
           [ -n "$$status" ] && echo "  $$status"
         done
         echo "=== Verifying models are available ==="
-        curl -sf http://ollama:11434/api/tags | grep -q "embeddinggemma" && echo "  embeddinggemma: OK"
+        curl -sf http://ollama:11434/api/tags | grep -q "qwen3-embedding" && echo "  qwen3-embedding: OK"
         curl -sf http://ollama:11434/api/tags | grep -q "glm-4.7" && echo "  glm-4.7: OK"
         echo "=== All models ready! ==="
 
@@ -221,7 +221,7 @@ services:
       # Ollama (use container name)
       ROBOCO_LOCAL_LLM_BASE_URL: http://roboco-ollama:11434/v1
       ROBOCO_LOCAL_LLM_MODEL: glm-4.7:cloud
-      ROBOCO_DEFAULT_EMBEDDING_MODEL: embeddinggemma:300m
+      ROBOCO_DEFAULT_EMBEDDING_MODEL: qwen3-embedding:0.6b
       ROBOCO_OLLAMA_BASE_URL: http://roboco-ollama:11434
       # Host paths for spawning agent containers (required for Docker-in-Docker)
       # IMPORTANT: These must be ABSOLUTE paths on the host filesystem

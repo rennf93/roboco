@@ -77,7 +77,7 @@ pnpm test
 | Container Runtime | Docker + Docker Compose |
 | Cloud LLM | Claude API (claude-opus-4-5-20251101) |
 | Local LLM | Ollama (glm-4.7:cloud for HyDE/RAG) |
-| Embeddings | embeddinggemma:300m (768 dim) |
+| Embeddings | qwen3-embedding:0.6b (1024 dim) |
 | Frontend | React / Next.js (future) |
 
 ## Multi-Agent Workspace Structure
@@ -359,7 +359,7 @@ ROBOCO_RAG_USE_HYDE=true
 ROBOCO_RAG_USE_HYBRID_SEARCH=true
 
 # AI/LLM
-ROBOCO_DEFAULT_EMBEDDING_MODEL=embeddinggemma:300m
+ROBOCO_DEFAULT_EMBEDDING_MODEL=qwen3-embedding:0.6b
 ROBOCO_LOCAL_LLM_MODEL=glm-4.7:cloud
 ROBOCO_LOCAL_LLM_BASE_URL=http://roboco-ollama:11434/v1
 ROBOCO_OLLAMA_BASE_URL=http://roboco-ollama:11434
@@ -387,7 +387,7 @@ The startup order is critical due to dependencies:
 postgres ──┐
 redis ─────┼──> ollama ──> ollama-init ──> orchestrator
            │        │            │
-           │        │            └── Pulls embeddinggemma:300m, glm-4.7:cloud
+           │        │            └── Pulls qwen3-embedding:0.6b, glm-4.7:cloud
            │        └── Healthcheck: ollama list
            └── Healthcheck: pg_isready, redis-cli ping
 ```
@@ -404,7 +404,7 @@ Ollama provides two APIs:
 - `/v1/*` - OpenAI-compatible API (for LLM chat/completion)
 - `/api/*` - Native Ollama API (for embeddings, model management)
 
-The embedder uses `/api/embed` endpoint with the `embeddinggemma:300m` model.
+The embedder uses `/api/embed` endpoint with the `qwen3-embedding:0.6b` model.
 
 **Environment variables for Docker:**
 ```bash

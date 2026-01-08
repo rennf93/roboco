@@ -51,7 +51,7 @@ from roboco.services.optimal_brain.indexes.reviews import (
 logger = structlog.get_logger()
 
 # Max chars per citation content - increased for better synthesis quality
-# embeddinggemma:300m retrieves higher quality chunks, so more context helps
+# qwen3-embedding:0.6b retrieves higher quality chunks, so more context helps
 MAX_CONTENT_CHARS = 800
 
 

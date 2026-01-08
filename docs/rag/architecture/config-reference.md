@@ -41,8 +41,8 @@ Environment variables for RoboCo (prefix: `ROBOCO_`).
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `ROBOCO_DEFAULT_EMBEDDING_MODEL` | `embeddinggemma:300m` | Embedding model |
-| `ROBOCO_EMBEDDING_DIMENSIONS` | `768` | Embedding dimensions |
+| `ROBOCO_DEFAULT_EMBEDDING_MODEL` | `qwen3-embedding:0.6b` | Embedding model |
+| `ROBOCO_EMBEDDING_DIMENSIONS` | `1024` | Embedding dimensions |
 | `ROBOCO_RAG_CHUNK_STRATEGY` | `fixed` | fixed/semantic/hierarchical/contextual |
 | `ROBOCO_RAG_CHUNK_SIZE` | `512` | Base chunk size |
 | `ROBOCO_RAG_CHUNK_SIZE_DOCS` | `1536` | Chunk size for docs |
