@@ -370,6 +370,9 @@ class GitService(BaseService):
                     f"The parent task must be claimed first (claim creates branch)."
                 )
 
+        # Fetch to ensure we have the latest refs (critical for parent branches)
+        await self._run_git(workspace, ["fetch", "origin"])
+
         # Create and push branch
         await self._run_git(workspace, ["checkout", base_branch])
         await self._run_git(workspace, ["pull", "origin", base_branch])
@@ -382,7 +385,12 @@ class GitService(BaseService):
         return branch_name, base_branch
 
     async def checkout(self, workspace: Path, branch: str) -> None:
-        """Checkout a branch."""
+        """Checkout a branch.
+
+        Fetches from origin first to ensure remote branches are available.
+        """
+        # Fetch to ensure we have the latest refs
+        await self._run_git(workspace, ["fetch", "origin"])
         await self._run_git(workspace, ["checkout", branch])
 
     async def push(self, workspace: Path, force: bool = False) -> tuple[str, int]:

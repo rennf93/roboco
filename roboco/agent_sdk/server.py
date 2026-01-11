@@ -18,6 +18,7 @@ import httpx
 import structlog
 import uvicorn
 from fastapi import FastAPI
+from fastapi import status as http_status
 
 from roboco.agent_sdk.models import (
     A2AMessage,
@@ -244,6 +245,187 @@ async def inbox_count() -> dict[str, int]:
         "urgent": len(urgent_inbox),
         "normal": len(normal_inbox),
         "total": len(urgent_inbox) + len(normal_inbox),
+    }
+
+
+# =============================================================================
+# TRACEABILITY REMINDERS
+# =============================================================================
+
+# Complete traceability reminder mapping (25+ tools)
+# Format: (reminder_type, suggestion_text)
+# Types: verify, reflect, journal, struggle, message, kb
+TRACEABILITY_REMINDERS: dict[str, tuple[str, str]] = {
+    # === TASK LIFECYCLE (ALL ROLES) ===
+    "roboco_task_claim": (
+        "kb",
+        "Search KB for similar tasks with roboco_ask_mentor() before planning",
+    ),
+    "roboco_task_plan": (
+        "journal",
+        "Journal your approach with roboco_journal_decision()",
+    ),
+    "roboco_task_start": (
+        "message",
+        "Announce in cell channel via roboco_message_send() and journal your approach",
+    ),
+    "roboco_task_progress": (
+        "journal",
+        "If milestone reached, capture learnings with roboco_journal_learning()",
+    ),
+    "roboco_task_pause": (
+        "journal",
+        "Ensure checkpoint captures current state for resumption",
+    ),
+    "roboco_task_block": (
+        "struggle",
+        "Document with roboco_journal_struggle() - include what you tried",
+    ),
+    "roboco_task_unblock": (
+        "struggle",
+        "Document resolution with roboco_journal_struggle() for future reference",
+    ),
+    "roboco_task_escalate": (
+        "struggle",
+        "Journal context with roboco_journal_struggle() so PM understands",
+    ),
+    "roboco_task_escalate_to_ceo": (
+        "reflect",
+        "Summarize full task journey with roboco_journal_reflect()",
+    ),
+    "roboco_task_substitute": (
+        "journal",
+        "Document context for next agent with roboco_journal_entry()",
+    ),
+    # === DEVELOPER SUBMISSION ===
+    "roboco_task_submit_verification": (
+        "verify",
+        "Check ALL acceptance criteria before proceeding",
+    ),
+    "roboco_task_submit_qa": (
+        "reflect",
+        "Use roboco_journal_reflect() - document what you did, learned, struggled with",
+    ),
+    "roboco_task_submit_pm_review": (
+        "reflect",
+        "Reflect with roboco_journal_reflect() before submission",
+    ),
+    # === QA TOOLS ===
+    "roboco_task_qa_pass": (
+        "journal",
+        "Journal your approval decision with roboco_journal_decision()",
+    ),
+    "roboco_task_qa_fail": (
+        "journal",
+        "Ensure issues are clear for developer - journal your review",
+    ),
+    # === DOCUMENTER TOOLS ===
+    "roboco_task_docs_complete": (
+        "verify",
+        "Verify documentation covers implementation details",
+    ),
+    # === PM TOOLS ===
+    "roboco_task_create": (
+        "verify",
+        "Ensure clear description and measurable acceptance criteria",
+    ),
+    "roboco_task_activate": (
+        "verify",
+        "Confirm session created first with roboco_session_create_for_tasks()",
+    ),
+    "roboco_task_complete": (
+        "reflect",
+        "Verify ALL subtasks terminal, then roboco_journal_reflect()",
+    ),
+    "roboco_task_cancel": (
+        "journal",
+        "Document cancellation reason with roboco_journal_entry()",
+    ),
+    # === GIT TOOLS ===
+    "roboco_git_commit": (
+        "journal",
+        "Significant change? Capture insights with roboco_journal_learning()",
+    ),
+    "roboco_git_push": (
+        "verify",
+        "Ensure commits describe changes clearly",
+    ),
+    "roboco_git_create_pr": (
+        "reflect",
+        "Reflect on all changes with roboco_journal_reflect()",
+    ),
+    "roboco_git_merge_pr": (
+        "verify",
+        "Verify all CI checks pass before merging",
+    ),
+    # === A2A TOOLS ===
+    "roboco_agent_request": (
+        "journal",
+        "Journal the coordination context with roboco_journal_entry()",
+    ),
+    # === KB TOOLS ===
+    "roboco_ask_mentor": (
+        "journal",
+        "Useful insight? Capture with roboco_journal_learning()",
+    ),
+}
+
+
+@app.get("/traceability/remind")
+async def traceability_remind(tool: str = "") -> dict:
+    """
+    Check if agent should be reminded about documentation.
+
+    Returns context-aware suggestion based on which tool triggered the check.
+    Different reminder types for different contexts:
+    - verify: Check criteria, descriptions
+    - reflect: Journal reflection
+    - journal: General journaling
+    - struggle: Document blockers
+    - message: Communication reminders
+    - kb: Knowledge base search
+    """
+    # Normalize tool name (strip MCP prefix if present)
+    # Example: "mcp__roboco-task__roboco_task_claim" -> "roboco_task_claim"
+    tool_name = tool.split("__")[-1] if "__" in tool else tool
+
+    # Get suggestion based on tool
+    if tool_name not in TRACEABILITY_REMINDERS:
+        return {"should_remind": False}
+
+    reminder_type, suggestion = TRACEABILITY_REMINDERS[tool_name]
+
+    # For journal-type reminders, check if agent has journaled recently
+    if reminder_type in ("journal", "reflect", "learning", "struggle"):
+        try:
+            async with httpx.AsyncClient() as client:
+                resp = await client.get(
+                    f"{MAIN_API_URL}/api/v1/journals/me/entries",
+                    params={"limit": 3},
+                    headers={
+                        "X-Agent-ID": AGENT_ID,
+                        "X-Agent-Role": os.environ.get(
+                            "ROBOCO_AGENT_ROLE", "developer"
+                        ),
+                    },
+                    timeout=5.0,
+                )
+
+                if resp.status_code == http_status.HTTP_200_OK:
+                    entries = resp.json()
+                    # If recent entry exists, skip reminder
+                    if entries and len(entries) > 0:
+                        return {"should_remind": False}
+        except Exception as e:
+            logger.warning("Failed to check journal status", error=str(e))
+            # On error, don't nag - fail quietly
+            return {"should_remind": False}
+
+    # For verify/message/kb reminders, always show
+    return {
+        "should_remind": True,
+        "type": reminder_type,
+        "suggestion": suggestion,
     }
 
 

@@ -82,6 +82,45 @@ AGENT_IMAGES: dict[str, str] = {
     "auditor": "roboco-agent-pm",
 }
 
+# Complete list of MCP tools that trigger traceability reminders
+# These tools represent key decision points where agents should document their work
+TRACEABILITY_TRIGGER_TOOLS: list[str] = [
+    # === Task Lifecycle (All Roles) ===
+    "mcp__roboco-task__roboco_task_claim",
+    "mcp__roboco-task__roboco_task_plan",
+    "mcp__roboco-task__roboco_task_start",
+    "mcp__roboco-task__roboco_task_progress",
+    "mcp__roboco-task__roboco_task_pause",
+    "mcp__roboco-task__roboco_task_block",
+    "mcp__roboco-task__roboco_task_unblock",
+    "mcp__roboco-task__roboco_task_escalate",
+    "mcp__roboco-task__roboco_task_escalate_to_ceo",
+    "mcp__roboco-task__roboco_task_substitute",
+    # === Developer Submission ===
+    "mcp__roboco-task__roboco_task_submit_verification",
+    "mcp__roboco-task__roboco_task_submit_qa",
+    "mcp__roboco-task__roboco_task_submit_pm_review",
+    # === QA Tools ===
+    "mcp__roboco-task__roboco_task_qa_pass",
+    "mcp__roboco-task__roboco_task_qa_fail",
+    # === Documenter Tools ===
+    "mcp__roboco-task__roboco_task_docs_complete",
+    # === PM Tools ===
+    "mcp__roboco-task__roboco_task_create",
+    "mcp__roboco-task__roboco_task_activate",
+    "mcp__roboco-task__roboco_task_complete",
+    "mcp__roboco-task__roboco_task_cancel",
+    # === Git Tools ===
+    "mcp__roboco-git__roboco_git_commit",
+    "mcp__roboco-git__roboco_git_push",
+    "mcp__roboco-git__roboco_git_create_pr",
+    "mcp__roboco-git__roboco_git_merge_pr",
+    # === A2A Tools ===
+    "mcp__roboco-a2a__roboco_agent_request",
+    # === KB Tools ===
+    "mcp__roboco-optimal__roboco_ask_mentor",
+]
+
 
 def get_agent_image(agent_id: str) -> str:
     """Get the Docker image for an agent."""
@@ -470,8 +509,18 @@ class AgentOrchestrator:
                         ]
                     }
                 ],
-                # Check for incoming A2A messages after each tool use
                 "PostToolUse": [
+                    # Traceability reminders (context-aware, runs on specific tools)
+                    {
+                        "matcher": "|".join(TRACEABILITY_TRIGGER_TOOLS),
+                        "hooks": [
+                            {
+                                "type": "command",
+                                "command": "/app/scripts/traceability-hook.sh",
+                            }
+                        ],
+                    },
+                    # Check for incoming A2A messages after each tool use
                     {
                         "matcher": "*",
                         "hooks": [
@@ -480,7 +529,7 @@ class AgentOrchestrator:
                                 "command": "/app/scripts/a2a-check-hook.sh",
                             }
                         ],
-                    }
+                    },
                 ],
             },
         }
@@ -2622,12 +2671,15 @@ Begin with step 1: roboco_task_get("{task_id}")
         Monitors: escalation notifications (unacknowledged)
         Spawns: be-pm, fe-pm, ux-pm, main-pm, product-owner, head-marketing
         """
-        notifications = await self._fetch_notifications(client, "escalation")
+        notifications = await self._fetch_notifications(client, "blocker_escalation")
 
         for notif in notifications:
             targets = notif.get("to_agents", [])
 
             for agent_id in targets:
+                # Resolve UUID to slug - to_agents contains UUIDs from database
+                agent_slug = self._resolve_agent_slug(str(agent_id))
+
                 valid_targets = [
                     "be-pm",
                     "fe-pm",
@@ -2636,14 +2688,14 @@ Begin with step 1: roboco_task_get("{task_id}")
                     "product-owner",
                     "head-marketing",
                 ]
-                if agent_id not in valid_targets:
+                if agent_slug not in valid_targets:
                     continue
 
-                if self._is_agent_active(agent_id):
+                if self._is_agent_active(agent_slug):
                     continue
 
                 await self.spawn_agent(
-                    agent_id=agent_id,
+                    agent_id=agent_slug,
                     initial_prompt=self._build_escalation_prompt(notif),
                 )
                 break
@@ -2661,14 +2713,17 @@ Begin with step 1: roboco_task_get("{task_id}")
             targets = notif.get("to_agents", [])
 
             for agent_id in targets:
-                if agent_id not in ["product-owner", "head-marketing", "main-pm"]:
+                # Resolve UUID to slug - to_agents contains UUIDs from database
+                agent_slug = self._resolve_agent_slug(str(agent_id))
+
+                if agent_slug not in ["product-owner", "head-marketing", "main-pm"]:
                     continue
 
-                if self._is_agent_active(agent_id):
+                if self._is_agent_active(agent_slug):
                     continue
 
                 await self.spawn_agent(
-                    agent_id=agent_id,
+                    agent_id=agent_slug,
                     initial_prompt=self._build_approval_prompt(notif),
                 )
                 break
@@ -2686,7 +2741,9 @@ Begin with step 1: roboco_task_get("{task_id}")
 
         for alert in alerts:
             targets = alert.get("to_agents", [])
-            if "auditor" in targets and not self._is_agent_active("auditor"):
+            # Resolve UUIDs to slugs and check if auditor is a target
+            target_slugs = [self._resolve_agent_slug(str(t)) for t in targets]
+            if "auditor" in target_slugs and not self._is_agent_active("auditor"):
                 await self.spawn_agent(
                     agent_id="auditor",
                     initial_prompt=self._build_audit_prompt(alert),
@@ -2804,14 +2861,17 @@ Begin with step 1: roboco_task_get("{task_id}")
             targets = notif.get("to_agents", [])
 
             for agent_id in targets:
-                if self._is_agent_active(agent_id):
+                # Resolve UUID to slug - to_agents contains UUIDs from database
+                agent_slug = self._resolve_agent_slug(str(agent_id))
+
+                if self._is_agent_active(agent_slug):
                     # Agent is online - SDK handles A2A delivery directly
                     # No action needed here, SDK server receives messages
                     continue
 
                 # Agent is offline - spawn them with A2A context
                 await self.spawn_agent(
-                    agent_id=agent_id,
+                    agent_id=agent_slug,
                     initial_prompt=self._build_a2a_prompt(notif),
                 )
                 break

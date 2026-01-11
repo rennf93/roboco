@@ -2,7 +2,11 @@
 Branch Name Builder.
 
 Generates git branch names following the format:
-{type}/{team}/{root_uuid}/{subtask_uuid}/{subsubtask_uuid}
+{type}/{team}/{root_uuid}--{subtask_uuid}--{subsubtask_uuid}
+
+Uses '--' separator for task hierarchy to avoid git ref conflicts.
+Git cannot have both 'foo' as a branch AND 'foo/bar' as another branch,
+so we use '--' instead of '/' for the task hierarchy portion.
 
 Max 3 levels deep (root → subtask → sub-subtask).
 """
@@ -35,7 +39,7 @@ async def build_branch_name(
         task_service: TaskService instance for fetching task hierarchy
 
     Returns:
-        Branch name in format: {type}/{team}/{root}/{sub}/{subsub}
+        Branch name in format: {type}/{team}/{root}--{sub}--{subsub}
 
     Raises:
         BranchNameError: If branch_type invalid, task not found, or hierarchy too deep
@@ -70,9 +74,10 @@ async def build_branch_name(
             f"Task {task_id} has ancestors beyond the maximum depth."
         )
 
-    # Reverse to get root-first order: root/sub/subsub
+    # Reverse to get root-first order: root--sub--subsub
+    # Use '--' separator to avoid git ref conflicts
     ancestors.reverse()
-    path = "/".join(ancestors)
+    path = "--".join(ancestors)
 
     return f"{branch_type}/{team}/{path}"
 

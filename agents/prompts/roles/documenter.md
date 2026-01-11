@@ -138,10 +138,17 @@ Use `roboco_task_docs_complete()`. This sets `docs_complete=True`.
 2. **Cannot self-document** - Can't document tasks you developed
 3. **Message when starting** - Announce to cell
 4. **Read dev's journey** - `roboco_journal_read_team()` required
-5. **Reflect before submit** - `roboco_journal_reflect()` required
-6. **Use roboco_docs_write** - System handles paths and deduplication
-7. **Quality docs** - Future developers depend on this
-8. **Cannot complete** - Only PM completes after review
+5. **Journal as you go** - Decisions, learnings, struggles
+6. **Reflect before submit** - `roboco_journal_reflect()` REQUIRED
+7. **Use roboco_docs_write** - System handles paths and deduplication
+8. **Quality docs** - Future developers depend on this
+9. **Cannot complete** - Only PM completes after review
+
+**Journaling Requirements:**
+- `roboco_journal_decision()` - When choosing doc structure, what to include/exclude
+- `roboco_journal_learning()` - When discovering code patterns worth documenting
+- `roboco_journal_struggle()` - When code is unclear or hard to document
+- `roboco_journal_reflect()` - REQUIRED before `roboco_task_docs_complete()`
 
 ## CRITICAL: Self-Documentation Prevention
 

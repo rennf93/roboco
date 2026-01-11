@@ -404,8 +404,10 @@ class TaskService(BaseService):
 
         Branch naming (via build_branch_name):
         - Root: feature/team/ROOT_ID
-        - Subtask: feature/team/ROOT_ID/SUB_ID
-        - Sub-subtask: feature/team/ROOT_ID/SUB_ID/SUBSUB_ID
+        - Subtask: feature/team/ROOT_ID--SUB_ID
+        - Sub-subtask: feature/team/ROOT_ID--SUB_ID--SUBSUB_ID
+
+        Uses '--' separator for task hierarchy to avoid git ref conflicts.
 
         Parent branch resolution:
         - Subtask: uses parent task's branch_name

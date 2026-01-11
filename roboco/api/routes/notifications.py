@@ -12,7 +12,7 @@ from uuid import UUID
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy import select
 
-from roboco.api.deps import CurrentAgentId, DbSession
+from roboco.api.deps import CurrentAgentContext, CurrentAgentId, DbSession
 from roboco.api.schemas.notifications import (
     ListNotificationsParams,
     NotificationCreateRequest,
@@ -46,19 +46,56 @@ router = APIRouter()
 )
 async def list_notifications(
     db: DbSession,
-    agent_id: CurrentAgentId,
+    agent: CurrentAgentContext,
     params: Annotated[ListNotificationsParams, Depends()],
 ) -> NotificationListResponse:
-    """List notifications for the agent."""
-    query = build_notification_query(NotificationTable, agent_id, params)
-    result: Any = await db.execute(query)
-    notifications = result.scalars().all()
+    """List notifications for the agent.
 
-    unread_count = sum(1 for n in notifications if agent_id not in n.read_by)
+    System role (orchestrator) can see ALL notifications by type.
+    Regular agents only see notifications where they are a target.
+    """
+    agent_id = agent.agent_id
+
+    # System role (orchestrator) bypasses to_agents filter
+    # This allows the dispatcher to query all pending escalations/a2a/etc.
+    if agent.role and agent.role.value == "system":
+        # Build query without to_agents filter
+        query = select(NotificationTable)
+        if params.pending_ack_only:
+            # For system, "pending" means has at least one target not yet acked
+            # We can't easily express "not fully acked" in SQL, so we filter
+            # after fetching. But we can at least require requires_ack=True.
+            query = query.where(NotificationTable.requires_ack.is_(True))
+        if params.type_filter:
+            query = query.where(NotificationTable.type == params.type_filter)
+        query = query.order_by(NotificationTable.timestamp.desc()).limit(params.limit)
+
+        # Execute and filter out fully acknowledged
+        result_all: Any = await db.execute(query)
+        all_notifications = result_all.scalars().all()
+        if params.pending_ack_only:
+            # Filter to only notifications not fully acknowledged
+            notifications = [
+                n for n in all_notifications
+                if not all(t in n.acked_by for t in n.to_agents)
+            ]
+        else:
+            notifications = list(all_notifications)
+    else:
+        # Normal query - filter by to_agents
+        query = build_notification_query(NotificationTable, agent_id, params)
+        result: Any = await db.execute(query)
+        notifications = list(result.scalars().all())
+
+    # For system role, use a dummy agent_id for response formatting
+    response_agent_id = agent_id
+
+    unread_count = sum(1 for n in notifications if response_agent_id not in n.read_by)
     pending_ack_count = sum(
-        1 for n in notifications if n.requires_ack and agent_id not in n.acked_by
+        1 for n in notifications
+        if n.requires_ack and response_agent_id not in n.acked_by
     )
-    items = [notification_to_response(n, agent_id) for n in notifications]
+    items = [notification_to_response(n, response_agent_id) for n in notifications]
 
     return NotificationListResponse(
         items=items,

@@ -119,14 +119,16 @@ Each agent gets their own git clone of a project, enabling parallel development 
 
 ### Branch Naming Convention
 
-Branch names follow the pattern: `{type}/{team}/{task-id[:8]}`
+Branch names follow the pattern: `{type}/{team}/{task-hierarchy}`
 
 **Types:** `feature`, `bug`, `chore`, `docs`, `hotfix`
 
+**Task Hierarchy:** Uses `--` separator (not `/`) to avoid git ref conflicts.
+
 **Examples:**
-- `feature/backend/ABC12345`
-- `bug/frontend/DEF67890`
-- `hotfix/backend/GHI11111`
+- Root task: `feature/backend/ABC12345`
+- Subtask: `feature/backend/ABC12345--DEF67890`
+- Sub-subtask: `feature/backend/ABC12345--DEF67890--GHI11111`
 
 ### Commit Format
 

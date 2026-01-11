@@ -50,6 +50,7 @@ RUN uv python install 3.13 && uv sync --frozen --python 3.13
 USER root
 COPY --chown=agent:agent docker/scripts/sdk-startup-hook.sh /app/scripts/sdk-startup-hook.sh
 COPY --chown=agent:agent docker/scripts/a2a-check-hook.sh /app/scripts/a2a-check-hook.sh
+COPY --chown=agent:agent docker/scripts/traceability-hook.sh /app/scripts/traceability-hook.sh
 RUN chmod +x /app/scripts/*.sh
 USER agent
 

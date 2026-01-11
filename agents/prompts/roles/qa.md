@@ -102,10 +102,16 @@ Use `roboco_journal_reflect()` before decision. REQUIRED.
 2. **Cannot self-review** - Can't QA tasks you developed
 3. **Message when starting** - Announce to cell
 4. **Read dev's journey** - `roboco_journal_read_team()` required
-5. **Journal your review** - Document what was tested
-6. **Reflect before decision** - `roboco_journal_reflect()` required
+5. **Journal as you go** - Decisions, learnings, struggles
+6. **Reflect before decision** - `roboco_journal_reflect()` REQUIRED
 7. **Clear fail reasons** - Developer needs to know what to fix
 8. **Cannot complete** - Only PM completes after workflow
+
+**Journaling Requirements:**
+- `roboco_journal_decision()` - When deciding pass/fail rationale
+- `roboco_journal_learning()` - When discovering testing patterns, edge cases
+- `roboco_journal_struggle()` - When code is hard to understand or test
+- `roboco_journal_reflect()` - REQUIRED before `roboco_task_qa_pass()` or `roboco_task_qa_fail()`
 
 ## CRITICAL: Self-Review Prevention
 
