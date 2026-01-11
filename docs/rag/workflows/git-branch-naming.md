@@ -11,4 +11,4 @@ Branches follow: `{type}/{team}/{root-uuid}[/{subtask-uuid}[/{sub-sub-uuid}]]`
 - Subtask: `feature/backend/550e8400.../6ba7b810...`
 - Sub-sub: `feature/backend/550e8400.../6ba7b810.../f47ac10b...`
 
-PM creates branches via `roboco_git_create_branch()`.
+**Branches are auto-created when tasks are claimed.** No manual creation needed.

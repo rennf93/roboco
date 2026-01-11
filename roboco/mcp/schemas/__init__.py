@@ -174,8 +174,10 @@ class TaskCreateInput(BaseModel):
     - Use roboco_project_list() to see available projects
     """
 
-    title: str = Field(..., description="Task title")
-    description: str = Field(..., description="Task description")
+    title: str = Field(..., min_length=1, max_length=200, description="Task title")
+    description: str = Field(
+        ..., min_length=10, description="Task description (min 10 chars)"
+    )
     acceptance_criteria: list[str] = Field(
         ..., min_length=1, description="At least one acceptance criterion"
     )
@@ -191,6 +193,13 @@ class TaskCreateInput(BaseModel):
     requires_git: bool = Field(
         default=True,
         description="Whether task requires git. If True, project_slug is required.",
+    )
+    task_type: str = Field(
+        default="code",
+        description=(
+            "Task type: code (git work), documentation, research, planning, "
+            "design, administrative. For subtasks, inherits from parent if not set."
+        ),
     )
     parent_task_id: str | None = Field(
         default=None, description="Parent task for subtasks"
@@ -269,6 +278,10 @@ class SessionCreateForTasksInput(BaseModel):
         ..., min_length=1, description="Task IDs to link to the session"
     )
     channel_slug: str = Field(..., description="Channel where session is created")
+    group_id: str | None = Field(
+        default=None,
+        description="Group ID to place session under (from roboco_group_create)",
+    )
     scope: str = Field(
         default="cell",
         description="Scope level: initiative (Main PM), cell (Cell PM), task (dev)",

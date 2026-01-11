@@ -139,6 +139,20 @@ async def validate_task_claimable(
     Special case: If an agent is already assigned to a pending task (PM assigned
     it directly to them), they can claim it to transition to 'claimed' status.
     """
+    # ENFORCEMENT: Main PM must delegate code tasks, not execute them
+    task_type = task.get("task_type", "code")
+    if agent_role == "main_pm" and task_type == "code":
+        return format_error_response(
+            "PM_CANNOT_EXECUTE_CODE",
+            "Main PM cannot claim code tasks. You coordinate, not execute.",
+            {"task_type": task_type, "your_role": agent_role},
+            hint=(
+                "Create a subtask for the appropriate Cell PM (be-pm, fe-pm, ux-pm) "
+                "using roboco_task_create(parent_task_id=this_task_id, team='backend', "
+                "assigned_to='be-pm'). Then activate it with roboco_task_activate()."
+            ),
+        )
+
     task_status = task.get("status")
     claimable_statuses = {
         # QA: pending (direct QA tasks from PM) or awaiting_qa (normal workflow)

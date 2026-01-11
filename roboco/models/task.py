@@ -176,7 +176,7 @@ class Task(TimestampMixin):
         default=True, description="Whether this task requires git workflow"
     )
 
-    # Project & Branch (set by PM during setup)
+    # Project & Branch (branch auto-created on claim)
     project_id: UUID | None = Field(
         default=None, description="Project this task works on"
     )

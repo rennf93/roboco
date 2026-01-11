@@ -316,7 +316,7 @@ def create_git_mcp_server(agent_id: str) -> FastMCP:
     Tools are registered based on role:
     - All agents: read-only tools (status, log, branch list, diff)
     - Developers: commit, push, create PR
-    - PMs: create branch, checkout, merge PR
+    - PMs: checkout, merge PR (branches auto-created on claim)
 
     Args:
         agent_id: The agent identifier (e.g., "be-dev-1")

@@ -27,13 +27,13 @@
 
 **Causes**:
 1. Task not claimed by you
-2. For git tasks: branch not created yet
-3. Task in wrong status
+2. Task in wrong status
 
 **Solutions**:
 - Claim first: `roboco_task_claim(task_id)`
-- Wait for PM to create branch (git tasks)
 - Check current status
+
+Note: Git branches are auto-created on claim, no waiting needed.
 
 ## Cannot Submit for QA
 
@@ -74,16 +74,15 @@ parent_id = task.parent_task_id
 roboco_task_escalate_to_ceo(parent_id, notes="...")
 ```
 
-## Git Task: No Branch
+## Git Task: Parent Branch Required
 
-**Error**: "Branch name required for git tasks"
+**Error**: "Parent task must be claimed first to create its branch"
 
-**Cause**: PM hasn't created branch yet
+**Cause**: Trying to claim a subtask when parent task hasn't been claimed yet
 
-**Solution**: Wait for PM or ask PM to create branch:
-```python
-roboco_git_create_branch(project_slug, task_id, "feature")
-```
+**Solution**: Parent task must be claimed first. Branches are auto-created hierarchically:
+1. Parent is claimed → parent branch created
+2. Then subtask can be claimed → subtask branch created (forked from parent)
 
 ## Task Has Incomplete Subtasks
 

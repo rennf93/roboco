@@ -73,6 +73,10 @@ class SessionForTasksCreateRequest(BaseModel):
 
     task_ids: list[UUID] = Field(..., min_length=1)
     channel_slug: str
+    group_id: UUID | None = Field(
+        default=None,
+        description="Optional group ID to place session under",
+    )
     scope: SessionScope = Field(
         default=SessionScope.CELL,
         description="Scope level: initiative (Main PM), cell (Cell PM), task (dev)",

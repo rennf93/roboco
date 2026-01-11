@@ -21,7 +21,9 @@ from roboco.db.tables import (
     WorkSessionTable,
 )
 from roboco.enforcement import (
+    GitContext,
     TaskOwnershipError,
+    validate_git_requirements,
     validate_task_ownership,
     validate_task_transition,
 )
@@ -157,7 +159,8 @@ class TaskService(BaseService):
         Validate and set task status with lifecycle enforcement.
 
         This is the single point of truth for status changes. All transitions
-        are validated against VALID_TRANSITIONS and ROLE_RESTRICTED_TRANSITIONS.
+        are validated against VALID_TRANSITIONS, ROLE_RESTRICTED_TRANSITIONS,
+        and git requirements.
 
         Args:
             task: The task to update
@@ -166,6 +169,7 @@ class TaskService(BaseService):
 
         Raises:
             TaskLifecycleError: If transition is invalid or role not permitted
+            GitRequirementError: If git requirements not met
         """
         current = (
             task.status.value if isinstance(task.status, TaskStatus) else task.status
@@ -174,6 +178,17 @@ class TaskService(BaseService):
 
         # Validate the transition (raises TaskLifecycleError if invalid)
         validate_task_transition(current, target, agent_role)
+
+        # Validate git requirements (raises GitRequirementError if not met)
+        if task.requires_git:
+            git_ctx = GitContext(
+                requires_git=True,
+                docs_complete=bool(task.docs_complete),
+                pr_created=bool(task.pr_created),
+                pr_number=task.pr_number,
+                branch_name=str(task.branch_name) if task.branch_name else None,
+            )
+            validate_git_requirements(current, target, git_ctx)
 
         # Apply the status change
         task.status = new_status
@@ -211,6 +226,10 @@ class TaskService(BaseService):
             status=req.status if req.status else TaskStatus.PENDING,
             sequence=req.sequence,  # Task ordering within siblings
             dependency_ids=req.dependency_ids,  # Task IDs that must complete first
+            # Git configuration - CRITICAL: These must be passed through
+            task_type=req.task_type,
+            requires_git=req.requires_git,
+            project_id=req.project_id,
         )
         self.session.add(task)
         await self.session.flush()
@@ -325,6 +344,16 @@ class TaskService(BaseService):
                 "before activating."
             )
 
+        # ENFORCEMENT: Git tasks require project_id before activation
+        if task.requires_git and not task.project_id:
+            raise ValueError(
+                f"Cannot activate task '{task.title}' - requires git but no project. "
+                "Fix: (1) Re-create task with project_slug, OR "
+                "(2) Set requires_git=False if git not needed."
+            )
+
+        # NOTE: Git branch is auto-created on claim, not required at activation
+
         # Transition to PENDING
         task.status = TaskStatus.PENDING
         await self.session.flush()
@@ -335,6 +364,120 @@ class TaskService(BaseService):
             session_id=str(session_link.session_id),
         )
         return task
+
+    async def _ensure_branch_for_git_task(
+        self,
+        task: TaskTable,
+        agent_id: UUID,
+    ) -> str:
+        """Auto-create hierarchical branch for git tasks. Raises on failure.
+
+        Strategy:
+        - If branch exists: return it
+        - If no project: raise error
+        - Create NEW branch (hierarchical name built by build_branch_name)
+        - Branch created from parent's branch (or default if root)
+
+        Raises:
+            ValueError: If branch cannot be created (mandatory for git tasks)
+        """
+        if not task.requires_git:
+            raise ValueError("Task does not require git")
+
+        if task.branch_name:
+            return str(task.branch_name)
+
+        if not task.project_id:
+            raise ValueError(
+                "Git task requires project_id to create branch. "
+                "Assign a project before claiming."
+            )
+
+        return await self._auto_create_branch(task, agent_id)
+
+    async def _auto_create_branch(
+        self,
+        task: TaskTable,
+        agent_id: UUID,
+    ) -> str:
+        """Create hierarchical branch for git task. Raises on failure.
+
+        Branch naming (via build_branch_name):
+        - Root: feature/team/ROOT_ID
+        - Subtask: feature/team/ROOT_ID/SUB_ID
+        - Sub-subtask: feature/team/ROOT_ID/SUB_ID/SUBSUB_ID
+
+        Parent branch resolution:
+        - Subtask: uses parent task's branch_name
+        - Root: uses project's default branch (main/master)
+
+        Raises:
+            ValueError: If branch cannot be created
+        """
+        from roboco.api.schemas.git import GitCreateBranchRequest
+        from roboco.services.git import get_git_service
+        from roboco.services.project import get_project_service
+
+        git_service = get_git_service(self.session)
+        project_service = get_project_service(self.session)
+
+        project = await project_service.get(UUID(str(task.project_id)))
+        if not project:
+            raise ValueError(f"Project {task.project_id} not found")
+
+        parent_branch: str | None = None
+        if task.parent_task_id:
+            parent_task = await self.get(UUID(str(task.parent_task_id)))
+            if parent_task and parent_task.branch_name:
+                parent_branch = str(parent_task.branch_name)
+            else:
+                raise ValueError(
+                    "Parent task must be claimed first. "
+                    "Subtasks fork from parent branch (auto-created on claim)."
+                )
+
+        workspace = await git_service.get_workspace(project.slug, agent_id)
+
+        project_cell = (
+            project.assigned_cell.value
+            if project.assigned_cell and hasattr(project.assigned_cell, "value")
+            else str(project.assigned_cell)
+            if project.assigned_cell
+            else None
+        )
+        task_team = (
+            task.team.value if task.team and hasattr(task.team, "value") else None
+        )
+
+        if project_cell == "fullstack":
+            team = f"{project.slug}/{task_team or 'cross'}"
+        elif project_cell:
+            team = project_cell
+        elif task_team:
+            team = task_team
+        else:
+            team = "cross"
+
+        request = GitCreateBranchRequest(
+            task_id=str(task.id),
+            project_slug=project.slug,
+            branch_type="feature",
+            agent_id=str(agent_id),
+            parent_branch=parent_branch,
+        )
+
+        branch_name, _ = await git_service.create_branch(workspace, team, request)
+
+        task.branch_name = branch_name
+        await self.session.flush()
+
+        self.log.info(
+            "Auto-created hierarchical branch",
+            task_id=str(task.id),
+            branch_name=branch_name,
+            parent_branch=parent_branch or "default",
+        )
+        return branch_name
 
     async def get(self, task_id: UUID) -> TaskTable | None:
         """Get a task by ID."""
@@ -544,7 +687,14 @@ class TaskService(BaseService):
 
         await self.session.flush()
 
+        # Auto-create hierarchical branch for git tasks (mandatory - raises on failure)
+        # Must happen BEFORE work session creation (work session needs branch_name)
+        if task.requires_git and not task.branch_name:
+            await self._ensure_branch_for_git_task(task, agent_id)
+            await self.session.refresh(task)
+
         # Create work session for git-enabled tasks claimed by developers
+        # (now branch exists, so work session can be created)
         await self._create_work_session_if_needed(task, agent_id, agent_role)
 
         # Trigger proactive knowledge injection (fire-and-forget)
@@ -624,7 +774,7 @@ class TaskService(BaseService):
         Only creates a session if:
         - Task requires git (requires_git=True)
         - Task has a project_id set
-        - Task has a branch_name set (PM created the branch)
+        - Task has a branch_name set (auto-created on claim)
         - Agent is a developer (not QA/Documenter claiming for review)
 
         Args:
@@ -2123,6 +2273,16 @@ class TaskService(BaseService):
                 "Cannot escalate subtask to CEO - only parent tasks allowed",
                 task_id=str(task_id),
                 parent_task_id=str(task.parent_task_id),
+            )
+            return None
+
+        # ENFORCEMENT: Git tasks must have PR created before CEO approval
+        if task.requires_git and not task.pr_number:
+            self.log.warning(
+                "Cannot escalate to CEO - git task has no PR",
+                task_id=str(task_id),
+                requires_git=task.requires_git,
+                pr_created=task.pr_created,
             )
             return None
 

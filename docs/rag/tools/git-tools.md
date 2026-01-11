@@ -27,19 +27,18 @@ log = roboco_git_log(
 
 ## Branch Operations
 
+**Branches are auto-created when tasks are claimed:**
+- Root task claim → `feature/team/ROOT_ID`
+- Subtask claim → `feature/team/ROOT_ID/SUB_ID`
+- Sub-subtask claim → `feature/team/ROOT_ID/SUB_ID/SUBSUB_ID`
+
+No manual branch creation needed.
+
 ```python
 # List branches
 branches = roboco_git_branch_list(project_slug="roboco")
 
-# Create branch (PM only)
-roboco_git_create_branch(
-    project_slug="roboco",
-    task_id=task_id,
-    branch_type="feature"  # feature, bug, chore, docs, hotfix
-)
-# Creates: feature/backend/a1b2c3d4
-
-# Checkout branch
+# Checkout branch (if needed)
 roboco_git_checkout(
     project_slug="roboco",
     branch="feature/backend/a1b2c3d4"

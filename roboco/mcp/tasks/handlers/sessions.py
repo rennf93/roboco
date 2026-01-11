@@ -97,6 +97,8 @@ async def handle_session_create_for_tasks(
         "scope": input_data.scope,
         "relationship_type": input_data.relationship_type,
     }
+    if input_data.group_id:
+        payload["group_id"] = input_data.group_id
 
     try:
         resp = await client.post("/sessions/for-tasks", json=payload)

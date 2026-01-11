@@ -431,6 +431,7 @@ async def create_session_for_tasks(
     req = SessionForTasksCreate(
         task_ids=data.task_ids,
         channel_slug=data.channel_slug,
+        group_id=data.group_id,
         scope=data.scope,
         relationship_type=rel_type,
     )

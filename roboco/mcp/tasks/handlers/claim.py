@@ -6,8 +6,6 @@ Handler for claiming tasks.
 
 from typing import Any
 
-from starlette import status
-
 from roboco.agents_config import get_agent_role
 from roboco.mcp.tasks import format_task_response
 from roboco.mcp.tasks.handlers._helpers import (
@@ -58,51 +56,6 @@ async def _is_pre_assigned_to_agent(
     return agent_uuid is not None and str(assigned_to) == agent_uuid
 
 
-async def _validate_branch_hierarchy(
-    client: ApiClient, task: dict[str, Any]
-) -> dict[str, Any] | None:
-    """Walk up task hierarchy ensuring all git-enabled ancestors have branches.
-
-    Returns error dict if hierarchy is incomplete, None if valid.
-    Branch hierarchy must be created from root down:
-    - Main PM creates root branch
-    - Cell PM creates subtask branch
-    - Developer works on subsubtask branch
-    """
-    current_parent_id = task.get("parent_task_id")
-    ancestors_checked: list[str] = []
-
-    while current_parent_id:
-        parent_resp = await client.get(f"/tasks/{current_parent_id}")
-        if parent_resp.status_code != status.HTTP_200_OK:
-            # Can't fetch parent - may have been deleted, allow to proceed
-            break
-
-        parent = parent_resp.json()
-        parent_title = parent.get("title", str(current_parent_id)[:8])
-        ancestors_checked.append(parent_title)
-
-        # Check if parent is a git task missing its branch
-        if parent.get("requires_git") and not parent.get("branch_name"):
-            return format_error_response(
-                "BRANCH_HIERARCHY_INCOMPLETE",
-                f"Parent task '{parent_title}' has no branch yet.",
-                {
-                    "missing_branch_task": str(current_parent_id),
-                    "ancestors_checked": ancestors_checked,
-                },
-                hint=(
-                    "Branch hierarchy must be created from root down. "
-                    "Main PM creates root branch, Cell PM creates subtask branch. "
-                    "Ask your PM to create the parent branch first."
-                ),
-            )
-
-        current_parent_id = parent.get("parent_task_id")
-
-    return None
-
-
 async def _execute_claim(
     client: ApiClient, task_id: str, agent_id: str
 ) -> tuple[dict[str, Any] | None, dict[str, Any] | None]:
@@ -122,45 +75,105 @@ async def _execute_claim(
 async def _validate_git_requirements(
     client: ApiClient, task: dict[str, Any], task_id: str
 ) -> dict[str, Any] | None:
-    """Validate git-related requirements. Returns error or None."""
+    """Validate git requirements for hierarchical branching.
+
+    Rules:
+    - Must have project_id (always)
+    - Root tasks: branch auto-created from default branch
+    - Subtasks: need parent to have branch (for forking)
+    """
     if not task.get("requires_git"):
         return None
 
-    # Branch must exist for git tasks
-    if not task.get("branch_name"):
+    # Must have project
+    if not task.get("project_id"):
         return format_error_response(
-            "BRANCH_REQUIRED",
-            "Cannot claim git task - PM must create branch first.",
-            {"task_id": task_id, "requires_git": True},
-            hint="PM should call roboco_git_create_branch() before developer can claim",
+            "PROJECT_REQUIRED",
+            "Git tasks require a project for branch creation.",
+            {"task_id": task_id},
+            hint="Assign a project to this task.",
         )
 
-    # Validate full branch hierarchy for git tasks with parent
-    if task.get("parent_task_id"):
-        return await _validate_branch_hierarchy(client, task)
+    # If already has branch, good to go
+    if task.get("branch_name"):
+        return None
+
+    # For subtasks, parent must have branch (so we can fork from it)
+    parent_id = task.get("parent_task_id")
+    if parent_id:
+        parent_resp = await client.get(f"/tasks/{parent_id}")
+        if parent_resp.ok:
+            parent = parent_resp.json()
+            if parent.get("requires_git") and not parent.get("branch_name"):
+                return format_error_response(
+                    "PARENT_BRANCH_REQUIRED",
+                    "Parent task must be claimed first to create its branch.",
+                    {
+                        "task_id": task_id,
+                        "parent_id": parent_id,
+                        "parent_title": parent.get("title", "")[:50],
+                    },
+                    hint="Parent task must be claimed first. Branch is auto-created.",
+                )
+
+    # Root task or parent has branch - will auto-create on claim
+    return None
+
+
+async def _validate_sibling_sequence(
+    client: ApiClient, task: dict[str, Any]
+) -> dict[str, Any] | None:
+    """Ensure earlier sequence siblings are complete before claiming.
+
+    If task has sequence=2, then sequence=1 siblings must be completed first.
+    """
+    parent_id = task.get("parent_task_id")
+    if not parent_id:
+        return None  # Root task - no siblings
+
+    my_sequence = task.get("sequence", 0)
+    if my_sequence == 0:
+        return None  # First in sequence, no prior siblings
+
+    # Get all sibling tasks (same parent)
+    siblings_resp = await client.get(f"/tasks?parent_task_id={parent_id}")
+    if not siblings_resp.ok:
+        return None
+
+    siblings = siblings_resp.json()
+
+    # Check if any earlier sequence siblings are NOT complete
+    terminal_statuses = ["completed", "cancelled"]
+    for sibling in siblings:
+        sibling_seq = sibling.get("sequence", 0)
+        sibling_status = sibling.get("status")
+
+        # Skip self
+        if sibling.get("id") == task.get("id"):
+            continue
+
+        # If sibling has lower sequence and isn't complete, block
+        if sibling_seq < my_sequence and sibling_status not in terminal_statuses:
+            return format_error_response(
+                "SEQUENCE_ORDER_VIOLATION",
+                f"Cannot claim - task with sequence {sibling_seq} must complete first.",
+                {
+                    "your_sequence": my_sequence,
+                    "blocking_task_id": sibling.get("id"),
+                    "blocking_sequence": sibling_seq,
+                    "blocking_status": sibling_status,
+                    "blocking_title": sibling.get("title", "")[:50],
+                },
+                hint=f"Wait for '{sibling.get('title', '')[:30]}' to complete.",
+            )
 
     return None
 
 
-async def handle_task_claim(
-    client: ApiClient, task_id: str, agent_id: str
-) -> dict[str, Any]:
-    """Handle task claiming.
-
-    Flow:
-    1. Fetch the task first
-    2. Check if it's pre-assigned to this agent (PM assigned directly)
-    3. If pre-assigned, skip blocking check for THIS task
-    4. Otherwise, run full blocking check
-    5. Validate task is claimable for this role
-    6. Execute claim
-    """
-    # Fetch task first - we need to check if it's pre-assigned
-    task, error = await fetch_task_or_error(client, task_id)
-    if error:
-        return error
-    assert task is not None
-
+async def _run_claim_validations(
+    client: ApiClient, task: dict[str, Any], task_id: str, agent_id: str
+) -> dict[str, Any] | None:
+    """Run all claim validations. Returns error dict or None if all pass."""
     # Check if this task is pre-assigned to the agent
     is_pre_assigned = await _is_pre_assigned_to_agent(task, agent_id, client)
 
@@ -174,8 +187,36 @@ async def handle_task_claim(
     if error := await validate_task_claimable(task, agent_role, agent_id, client):
         return error
 
-    # Validate git requirements (branch exists, hierarchy valid)
+    # Validate git requirements (project exists, parent has branch if subtask)
     if error := await _validate_git_requirements(client, task, task_id):
+        return error
+
+    # TODO: Re-enable when sequence workflow is refined
+    # Validate sibling sequence order (earlier sequence must complete first)
+    # if error := await _validate_sibling_sequence(client, task):
+    #     return error
+
+    return None
+
+
+async def handle_task_claim(
+    client: ApiClient, task_id: str, agent_id: str
+) -> dict[str, Any]:
+    """Handle task claiming.
+
+    Flow:
+    1. Fetch the task first
+    2. Run validations (blocking tasks, role, git, sequence)
+    3. Execute claim
+    """
+    # Fetch task first
+    task, error = await fetch_task_or_error(client, task_id)
+    if error:
+        return error
+    assert task is not None
+
+    # Run all validations
+    if error := await _run_claim_validations(client, task, task_id, agent_id):
         return error
 
     # Execute the claim

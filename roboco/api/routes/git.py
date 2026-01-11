@@ -48,8 +48,10 @@ from roboco.api.schemas.git import (
     GitStatusResponse,
 )
 from roboco.exceptions import GitCommandError, GitTimeoutError
+from roboco.models.base import TaskStatus
 from roboco.services.base import NotFoundError, ServiceError, ValidationError
 from roboco.services.git import get_git_service
+from roboco.services.project import get_project_service
 from roboco.services.task import get_task_service
 from roboco.services.work_session import get_work_session_service
 from roboco.utils.converters import require_uuid
@@ -356,17 +358,55 @@ async def create_branch(
     """
     git_service = get_git_service(db)
     task_service = get_task_service(db)
+    project_service = get_project_service(db)
 
     try:
         workspace = await git_service.get_workspace(data.project_slug, agent.agent_id)
 
+        task_uuid = UUID(data.task_id)
+        task = await task_service.get(task_uuid)
+        project = await project_service.get_by_slug(data.project_slug)
+
+        project_cell: str | None = None
+        if project and project.assigned_cell:
+            project_cell = (
+                project.assigned_cell.value
+                if hasattr(project.assigned_cell, "value")
+                else str(project.assigned_cell)
+            )
+
+        task_team: str | None = None
+        if task and task.team:
+            task_team = (
+                task.team.value if hasattr(task.team, "value") else str(task.team)
+            )
+
+        if project_cell == "fullstack":
+            effective_team = task_team or "cross"
+            team_for_branch = f"{data.project_slug}/{effective_team}"
+        elif project_cell:
+            team_for_branch = project_cell
+        elif task_team:
+            team_for_branch = task_team
+        else:
+            team_for_branch = "cross"
+
         branch_name, created_from = await git_service.create_branch(
-            workspace, agent.team or "unknown", data
+            workspace, team_for_branch, data
         )
 
-        # Store branch name on task
-        task_uuid = UUID(data.task_id)
         await task_service.update(task_uuid, branch_name=branch_name)
+
+        children = await task_service.get_subtasks(task_uuid)
+        for child in children:
+            if (
+                child.status == TaskStatus.BACKLOG
+                and child.requires_git
+                and not child.branch_name
+            ):
+                child_uuid = UUID(str(child.id))
+                await task_service.update(child_uuid, branch_name=branch_name)
+
         await db.commit()
     except ServiceError as e:
         raise _translate_error(e) from e

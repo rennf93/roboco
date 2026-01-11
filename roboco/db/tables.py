@@ -143,7 +143,7 @@ class TaskTable(Base):
     )
     requires_git: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
 
-    # Project & Branch (set by PM during setup)
+    # Project & Branch (branch auto-created on claim)
     project_id: Mapped[UUID | None] = mapped_column(
         UUID(as_uuid=True),
         ForeignKey("projects.id", ondelete="SET NULL"),

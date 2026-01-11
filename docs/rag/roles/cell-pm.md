@@ -14,7 +14,7 @@
 3. Assign work to cell members
 4. Complete tasks after full workflow
 5. Handle escalations from cell
-6. Create branches for git tasks
+6. Review and merge PRs for git tasks
 
 ## What You CAN Do
 
@@ -26,7 +26,7 @@
 - Unblock blocked tasks
 - Send notifications
 - Index code and documentation
-- Create branches: `roboco_git_create_branch()`
+- Merge PRs: `roboco_git_merge_pr()`
 
 ## What You CANNOT Do
 
@@ -62,17 +62,13 @@ roboco_notify_send({
 
 For tasks with `requires_git=True`:
 
-```python
-# Create branch BEFORE developer can start
-roboco_git_create_branch(
-    project_slug="roboco",
-    task_id=task_id,
-    branch_type="feature"
-)
-# Creates: feature/backend/a1b2c3d4
-```
+**Branches are auto-created when tasks are claimed:**
+- When you claim your task: `feature/team/MAIN_PM_ID/YOUR_ID`
+- When devs claim their subtasks: `feature/team/MAIN_PM_ID/YOUR_ID/DEV_ID`
 
-Developer cannot start (`claimed` → `in_progress`) until branch exists.
+**No manual branch creation needed.** Just claim the task and the hierarchical branch is auto-created.
+
+PRs merge bottom-up: dev branch → your branch → main PM branch → main.
 
 ## Completing Tasks
 
@@ -120,7 +116,7 @@ See: `roboco_kb_search("tool permissions")`
 | `roboco_task_complete` | Finish task |
 | `roboco_task_cancel` | Cancel task |
 | `roboco_task_unblock` | Unblock blocked task |
-| `roboco_git_create_branch` | Create task branch |
+| `roboco_git_merge_pr` | Merge developer PRs |
 | `roboco_notify_send` | Send notification |
 | `roboco_project_update` | Update own cell's projects |
 | `roboco_workspace_list` | List own cell's workspaces |

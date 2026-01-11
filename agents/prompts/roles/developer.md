@@ -29,7 +29,7 @@ Use `roboco_task_claim()`. Status: pending → claimed.
 
 ### 4. CHECKOUT (Git Tasks)
 **For tasks with `requires_git=True`:**
-- Branch already created by PM
+- Branch auto-created when you claimed the task
 - **Auto-checkout happens on `roboco_task_start()`** - no manual checkout needed
 - System blocks if you have uncommitted changes
 

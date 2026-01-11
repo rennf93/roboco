@@ -17,7 +17,7 @@ For communication structure: `roboco_kb_search("communication hierarchy")`
 ## Workflow
 
 ```
-SCAN → CLAIM → PLAN → SESSION → SUBTASKS → CREATE_BRANCH → ACTIVATE → NOTIFY → PAUSE → MONITOR → REVIEW_PR → COMPLETE
+SCAN → CLAIM → PLAN → SESSION → SUBTASKS → ACTIVATE → NOTIFY → PAUSE → MONITOR → REVIEW_PR → COMPLETE
 ```
 
 ### 1. SCAN
@@ -56,54 +56,19 @@ roboco_task_create(
 - Completion tracking breaks
 - Your task can't complete
 
-### 5. CREATE BRANCH (Git Tasks)
-**For tasks with `requires_git=True`:**
-```
-roboco_git_create_branch(project_slug, task_id, branch_type, parent_branch)
-```
-
-- **branch_type**: `feature`, `bug`, `chore`, `docs`, `hotfix`
-- **parent_branch**: Parent task's branch (or project's default branch for top-level)
-- Branch naming: `{type}/{team}/{task_id}` (auto-generated)
-
-**Example:**
-```
-roboco_git_create_branch("roboco", "abc123", "feature")
-# Creates: feature/backend/abc123
-```
-
-**Branch Hierarchy (when using hierarchical branching):**
-Branches are typically created top-down:
-1. Main PM creates root branch from default branch
-2. You create subtask branch from root branch
-3. Dev works on subsubtask branch from your branch
-
-**When creating a subtask branch:**
-- Check if parent task has a branch set
-- If so, use parent's branch as `parent_branch` parameter
-- If branching from default branch directly, that works too
-
-**Branch hierarchy example:**
-```
-default (main/master/etc)
-  └─ feature/backend/ROOT123     ← Main PM's branch
-      └─ feature/backend/ROOT123/SUB456  ← Your branch
-          └─ feature/backend/ROOT123/SUB456/DEV789  ← Dev branch
-```
-
-### 6. ACTIVATE
+### 5. ACTIVATE
 `roboco_task_activate()` moves backlog → pending. Now visible to devs.
 
-### 7. NOTIFY
+### 6. NOTIFY
 `roboco_notify_send()` to each assignee. REQUIRED.
 
-### 8. PAUSE + IDLE
+### 7. PAUSE + IDLE
 `roboco_task_pause()` with checkpoint, then `roboco_agent_idle()`.
 
-### 9. MONITOR
+### 8. MONITOR
 When respawned: scan, read journals, update progress, handle blockers.
 
-### 10. REVIEW PR (Git Tasks)
+### 9. REVIEW PR (Git Tasks)
 When subtasks reach `awaiting_pm_review`:
 1. Review the PR: `roboco_git_diff(project_slug)` to see changes
 2. Check QA notes and documentation
@@ -113,7 +78,7 @@ When subtasks reach `awaiting_pm_review`:
 
 **Merge methods:** `squash` (default), `merge`, `rebase`
 
-### 11. COMPLETE
+### 10. COMPLETE
 When ALL subtasks done: reflect + complete your task.
 
 ## Your Tools
@@ -134,9 +99,10 @@ When ALL subtasks done: reflect + complete your task.
 - `roboco_git_diff(project_slug, staged)` - View changes
 
 **Git (PM Branch Management):**
-- `roboco_git_create_branch(project_slug, task_id, branch_type, parent_branch)` - Create task branch
 - `roboco_git_checkout(project_slug, branch)` - Switch branches
 - `roboco_git_merge_pr(project_slug, pr_number, task_id, merge_method)` - Merge PR (subtask→parent)
+
+**Note:** Branches are auto-created when tasks are claimed. No manual branch creation needed.
 
 **Git (Developer Tools - You Have These Too):**
 - `roboco_git_commit`, `roboco_git_push`, `roboco_git_create_pr`

@@ -88,9 +88,10 @@ roboco_task_cancel(task_id)    # If no longer needed
 - `roboco_git_log(project_slug, limit)` - Recent commits
 - `roboco_git_branch_list(project_slug)` - List branches
 - `roboco_git_diff(project_slug, staged)` - View code changes
-- `roboco_git_create_branch(project_slug, task_id, branch_type, parent_branch)` - Create branches
 - `roboco_git_checkout(project_slug, branch)` - Switch branches
 - `roboco_git_merge_pr(project_slug, pr_number, task_id, merge_method)` - Merge PRs
+
+**Note:** Branches are auto-created when tasks are claimed. No manual creation needed.
 
 **Session Management:**
 - `roboco_session_create_for_tasks`, `roboco_session_link_task`

@@ -46,10 +46,11 @@ pending → claim → plan → start → work → submit_verification → submit
 | State | Meaning |
 |-------|---------|
 | `NEEDS_PLAN` | Must call `roboco_task_plan()` first |
-| `WAITING_FOR_BRANCH` | PM must create branch (git tasks) |
 | `READY_TO_START` | Call `roboco_task_start()` |
 | `EXECUTING` | Work in progress |
 | `REVISION_REQUIRED` | Fix QA/PM feedback |
+
+Note: Git branches are auto-created when you claim the task. No waiting needed.
 
 ## Tool Restrictions
 

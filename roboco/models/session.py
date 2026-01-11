@@ -198,6 +198,9 @@ class SessionForTasksCreate(RobocoBase):
 
     task_ids: list[UUID] = Field(..., min_length=1, description="Tasks to link")
     channel_slug: str = Field(..., description="Channel where session is created")
+    group_id: UUID | None = Field(
+        default=None, description="Optional group ID to place session under"
+    )
     scope: SessionScope = Field(
         default=SessionScope.CELL,
         description="Session scope level for context loading strategy",

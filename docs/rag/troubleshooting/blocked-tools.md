@@ -44,13 +44,14 @@
 
 See: `roboco_kb_search("task planning workflow")`
 
-## WAITING_FOR_BRANCH
+## Parent Branch Required
 
-**Symptom:** Can't start git task, state is WAITING_FOR_BRANCH
+**Symptom:** Can't claim subtask, error "Parent task must be claimed first"
 
-**Cause:** PM hasn't created the branch yet
+**Cause:** Parent task hasn't been claimed yet, so it has no branch
 
 **Solution:**
-1. Message PM to create branch
-2. Or escalate: `roboco_task_escalate(task_id, "Need branch")`
-3. Wait for branch_name to be set on task
+1. Parent task must be claimed first (branch auto-creates on claim)
+2. Then subtask can be claimed (its branch forks from parent's)
+
+Note: Branches are auto-created hierarchically. No manual creation needed.

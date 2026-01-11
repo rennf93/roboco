@@ -18,7 +18,7 @@ import json
 import os
 import shutil
 import tempfile
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any, ClassVar
 
@@ -910,7 +910,7 @@ class AgentOrchestrator:
         # Role-based permissions enforced at handler level:
         # - All agents: read-only (status, log, diff, branch list)
         # - Developers: commit, push, create PR
-        # - PMs: create branch, checkout, merge PR
+        # - PMs: checkout, merge PR (branches auto-created on claim)
         mcp_servers["roboco-git"] = {
             "command": "uv",
             "args": [
@@ -1449,6 +1449,113 @@ Start by:
             return False
         return self._instances[agent_id].state == AgentState.ACTIVE
 
+    async def _validate_task_for_spawn(
+        self,
+        client: httpx.AsyncClient,
+        task: dict,
+        agent_slug: str,
+    ) -> str | None:
+        """
+        Validate task is ready for agent spawn.
+
+        Returns None if valid, or error message if task cannot proceed.
+        This prevents spawning agents on tasks that are missing prerequisites.
+        """
+        task_id = task.get("id")
+        if not task_id:
+            return "Task missing ID"
+        min_description_len = 10
+
+        # VALIDATION 1: Check description is not empty/trivial
+        description = (task.get("description") or "").strip()
+        if len(description) < min_description_len:
+            return (
+                f"Task {task_id} has inadequate description ({len(description)} chars)"
+            )
+
+        # VALIDATION 2: For git tasks, check project + parent branch requirements
+        requires_git = task.get("requires_git", False)
+        if requires_git:
+            # Must have project
+            if not task.get("project_id"):
+                await self._auto_block_task(
+                    client, task_id, "Git task needs project_id"
+                )
+                return f"Task {task_id} needs project"
+
+            # For subtasks, parent must have branch (for forking)
+            parent_id = task.get("parent_task_id")
+            if parent_id:
+                parent_resp = await client.get(f"{self._api_url}/tasks/{parent_id}")
+                if parent_resp.is_success:
+                    parent = parent_resp.json()
+                    if parent.get("requires_git") and not parent.get("branch_name"):
+                        await self._auto_block_task(
+                            client,
+                            task_id,
+                            "Parent task must be claimed first to create its branch",
+                        )
+                        return f"Task {task_id} waiting for parent branch"
+
+            # Root task or parent has branch - branch will auto-create on claim
+            logger.info(
+                "Git task ready for hierarchical branch creation", task_id=task_id
+            )
+
+        # VALIDATION 3: Check complexity vs subtasks for devs
+        from roboco.agents_config import get_agent_role
+
+        agent_role = get_agent_role(agent_slug)
+        if agent_role == "developer":
+            complexity = task.get("estimated_complexity", "low")
+            parent_task_id = task.get("parent_task_id")
+
+            if complexity in ("medium", "high", "critical") and not parent_task_id:
+                # Check if this task has subtasks
+                try:
+                    resp = await client.get(f"{self._api_url}/tasks/{task_id}/subtasks")
+                    subtasks = resp.json() if resp.is_success else []
+                except Exception:
+                    subtasks = []
+
+                if not subtasks:
+                    await self._auto_block_task(
+                        client,
+                        task_id,
+                        f"Task complexity is {complexity} but no subtasks. "
+                        "Cell PM must break down work first.",
+                    )
+                    return (
+                        f"Task {task_id} is {complexity} complexity "
+                        "without subtasks - Cell PM must break it down"
+                    )
+
+        return None  # All validations passed
+
+    async def _auto_block_task(
+        self, client: httpx.AsyncClient, task_id: str, reason: str
+    ) -> None:
+        """Auto-block a task that cannot proceed due to missing prerequisites."""
+        try:
+            await client.patch(
+                f"{self._api_url}/tasks/{task_id}",
+                json={
+                    "status": "blocked",
+                    "dev_notes": f"[AUTO-BLOCKED] {reason}",
+                },
+            )
+            logger.info(
+                "Auto-blocked task with missing prerequisites",
+                task_id=task_id,
+                reason=reason,
+            )
+        except Exception as e:
+            logger.error(
+                "Failed to auto-block task",
+                task_id=task_id,
+                error=str(e),
+            )
+
     def _select_agent_for_cell(self, cell: str, role: str) -> str | None:
         """
         Select the best available agent for a cell and role.
@@ -1546,7 +1653,7 @@ Start by:
     ) -> list[dict[str, Any]]:
         """Fetch notifications by type."""
         params: dict[str, Any] = {
-            "type": notification_type,
+            "type_filter": notification_type,
             "pending_ack_only": str(unacknowledged).lower(),
         }
         try:
@@ -1638,39 +1745,49 @@ Start by:
 
     def _classify_task_routing(self, task: dict[str, Any]) -> str:
         """
-        Classify a task for routing based on team, complexity, and keywords.
+        Classify a task for routing based on task_type, team, complexity, and keywords.
 
         Returns one of: "board", "main_pm", "cell_pm", "dev", "marketing"
         """
         team = task.get("team")
+        task_type = task.get("task_type", "code")
+        cell_teams = ("backend", "frontend", "ux_ui")
+        result: str | None = None
 
-        # Explicit team assignment takes precedence
-        if team in self._TEAM_ROUTING_MAP:
-            return self._TEAM_ROUTING_MAP[team]
+        # Task type takes precedence for non-code work
+        if task_type in ("planning", "research", "administrative"):
+            result = "cell_pm" if team in cell_teams else "main_pm"
+        elif task_type == "design" and team not in ("backend", "frontend"):
+            result = "cell_pm"
+        elif task_type == "documentation" and not task.get("requires_git"):
+            result = "cell_pm" if team in cell_teams else "main_pm"
+        elif team in self._TEAM_ROUTING_MAP:
+            result = self._TEAM_ROUTING_MAP[team]
 
-        # For cell teams, use keyword/complexity analysis
+        if result:
+            return result
+
+        # Keyword/complexity analysis for code tasks without explicit routing
         title = (task.get("title") or "").lower()
         description = (task.get("description") or "").lower()
         text = f"{title} {description}"
         complexity = task.get("estimated_complexity", "medium").lower()
 
-        # Board-level keywords → Board
         if self._has_board_keywords(text):
             return "board"
 
-        # Cross-cell keywords (e.g., "all teams") → Main PM (regardless of complexity)
-        if self._has_cross_cell_keywords(text):
+        needs_main_pm = (
+            self._has_cross_cell_keywords(text)
+            or complexity in ("high", "critical")
+            or not team
+            or team == "all"
+        )
+        if needs_main_pm:
             return "main_pm"
 
-        # High complexity or cross-team → Main PM
-        if complexity in ("high", "critical") or not team or team == "all":
-            return "main_pm"
-
-        # PM keywords or medium complexity → Cell PM
         if self._has_pm_keywords(text) or complexity == "medium":
             return "cell_pm"
 
-        # Low complexity, single team → Direct to dev
         return "dev"
 
     # Team to PM mapping for routing
@@ -1957,6 +2074,9 @@ Start now: roboco_task_get("{task_id}")
 
             # Scheduled dispatchers
             await self._dispatch_audit_work(client)
+
+            # Proactive enforcement - detect and block stuck tasks
+            await self._detect_stuck_tasks(client)
 
     # =========================================================================
     # SMART DISPATCHER - TASK-BASED DISPATCHERS
@@ -2254,6 +2374,21 @@ Begin with step 1: roboco_task_get("{task_id}")
             # For pending tasks that ARE already assigned (by PM),
             # spawn the assigned agent with the appropriate prompt
             if agent_slug and not self._is_agent_active(agent_slug):
+                # PRE-SPAWN VALIDATION: Check task readiness before spawning
+                # This prevents spawning agents on tasks that can't proceed
+                validation_issue = await self._validate_task_for_spawn(
+                    client, task, agent_slug
+                )
+                if validation_issue:
+                    # Log and skip - don't spawn on invalid tasks
+                    logger.warning(
+                        "Skipping spawn due to validation failure",
+                        task_id=task["id"],
+                        agent=agent_slug,
+                        reason=validation_issue,
+                    )
+                    continue
+
                 await self.spawn_agent(
                     agent_id=agent_slug,
                     task_id=task["id"],
@@ -2561,6 +2696,98 @@ Begin with step 1: roboco_task_get("{task_id}")
         # TODO: Add scheduled periodic audits
         # Check last audit time, spawn if overdue
 
+    async def _detect_stuck_tasks(self, client: httpx.AsyncClient) -> None:
+        """
+        Detect and auto-block tasks that are stuck.
+
+        This is a proactive enforcement mechanism that finds tasks which
+        have been pending without progress and have prerequisite issues.
+        Runs every dispatcher cycle but only takes action on truly stuck tasks.
+
+        CEO-approved timeout: 10 minutes
+        """
+        STUCK_THRESHOLD_MINUTES = 10  # CEO-approved threshold
+
+        tasks = await self._fetch_tasks(client, "pending")
+
+        for task in tasks:
+            age = self._get_task_age(task)
+            if age is None or age < timedelta(minutes=STUCK_THRESHOLD_MINUTES):
+                continue
+
+            issues = self._check_stuck_conditions(task)
+            issues.extend(await self._check_dev_subtask_issue(client, task))
+
+            if issues:
+                task_id = task.get("id")
+                if not task_id:
+                    continue
+                age_mins = int(age.total_seconds() // 60)
+                reason = f"Task stuck for {age_mins} minutes: " + ", ".join(issues)
+                await self._auto_block_task(client, task_id, reason)
+                logger.warning(
+                    "Auto-blocked stuck task",
+                    task_id=task_id,
+                    age_minutes=age_mins,
+                    issues=issues,
+                )
+
+    def _get_task_age(self, task: dict[str, Any]) -> timedelta | None:
+        """Parse task created_at and return age, or None if unparseable."""
+        created_at_str = task.get("created_at")
+        if not created_at_str:
+            return None
+        try:
+            if created_at_str.endswith("Z"):
+                created_at_str = created_at_str[:-1] + "+00:00"
+            created_at = datetime.fromisoformat(created_at_str)
+            if created_at.tzinfo is None:
+                created_at = created_at.replace(tzinfo=UTC)
+            return datetime.now(UTC) - created_at
+        except (ValueError, TypeError):
+            return None
+
+    _MIN_DESCRIPTION_LEN = 10
+
+    def _check_stuck_conditions(self, task: dict[str, Any]) -> list[str]:
+        """Check for common stuck conditions (git, description)."""
+        issues: list[str] = []
+        if task.get("requires_git") and not task.get("branch_name"):
+            issues.append("Git task missing branch_name")
+        description = (task.get("description") or "").strip()
+        if len(description) < self._MIN_DESCRIPTION_LEN:
+            issues.append("Empty or inadequate description")
+        return issues
+
+    async def _check_dev_subtask_issue(
+        self, client: httpx.AsyncClient, task: dict[str, Any]
+    ) -> list[str]:
+        """Check if complex dev task is missing subtasks."""
+        from roboco.agents_config import get_agent_role
+
+        assigned_to = task.get("assigned_to")
+        if not assigned_to:
+            return []
+
+        agent_slug = self._resolve_agent_slug(assigned_to)
+        if not agent_slug or get_agent_role(agent_slug) != "developer":
+            return []
+
+        complexity = task.get("estimated_complexity", "low")
+        is_low_complexity = complexity not in ("medium", "high", "critical")
+        if is_low_complexity or task.get("parent_task_id"):
+            return []
+
+        try:
+            resp = await client.get(f"{self._api_url}/tasks/{task.get('id')}/subtasks")
+            subtasks = resp.json() if resp.is_success else []
+        except Exception:
+            subtasks = []
+
+        if not subtasks:
+            return [f"{complexity} complexity task without subtasks"]
+        return []
+
     async def _dispatch_a2a_work(self, client: httpx.AsyncClient) -> None:
         """
         Dispatch A2A (Agent-to-Agent) requests to target agents.
@@ -2597,16 +2824,12 @@ Begin with step 1: roboco_task_get("{task_id}")
         self,
         status: str,
         has_plan: bool,
-        requires_git: bool,
-        branch_name: str | None,
     ) -> str:
         """Determine developer workflow state from task attributes.
 
         Args:
             status: Task status (claimed, in_progress, needs_revision, etc.)
             has_plan: Whether task has a plan submitted
-            requires_git: Whether task requires git workflow
-            branch_name: Branch name if git task (PM creates this)
 
         Returns:
             Workflow state string (NEEDS_PLAN, READY_TO_START, EXECUTING, etc.)
@@ -2625,8 +2848,6 @@ Begin with step 1: roboco_task_get("{task_id}")
         if status == "claimed":
             if not has_plan:
                 return "NEEDS_PLAN"
-            if requires_git and not branch_name:
-                return "WAITING_FOR_BRANCH"
             return "READY_TO_START"
 
         return status.upper()
@@ -2657,20 +2878,6 @@ Call roboco_task_plan("{task_id}", {{
 }})
 
 You CANNOT call roboco_task_start() until plan is submitted.
-""",
-            "WAITING_FOR_BRANCH": """## BLOCKED: Waiting for Branch
-
-Your plan is approved, but this is a git task and no branch has been created yet.
-
-The PM must create a branch for you using:
-`roboco_git_create_branch(project_slug, task_id, branch_type)`
-
-**What to do:**
-1. Send a message to your PM requesting branch creation
-2. Or escalate: `roboco_task_escalate(task_id, "Need branch created for git task")`
-3. Wait for notification that branch is ready
-
-You CANNOT call roboco_task_start() until branch_name is set on the task.
 """,
             "READY_TO_START": f"""## NEXT STEP: Start Work
 
@@ -2716,11 +2923,7 @@ Run quality checks and verify against acceptance criteria:
 
         # Determine workflow state based on task attributes
         has_plan = bool(task.get("plan"))
-        requires_git = task.get("requires_git", False)
-        branch_name = task.get("branch_name")
-        workflow_state = self._get_workflow_state(
-            status, has_plan, requires_git, branch_name
-        )
+        workflow_state = self._get_workflow_state(status, has_plan)
         instructions = self._get_workflow_instructions(workflow_state, task_id)
 
         return f"""You have been assigned a development task.

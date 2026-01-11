@@ -18,7 +18,7 @@ For communication structure: `roboco_kb_search("communication hierarchy")`
 ## Workflow
 
 ```
-SCAN → CLAIM → PLAN → CREATE_PARENT_BRANCH → CREATE GROUP → CREATE CELL TASKS → ACTIVATE → NOTIFY → PAUSE → MONITOR → REVIEW_PR → COMPLETE
+SCAN → CLAIM → PLAN → CREATE GROUP → CREATE CELL TASKS → ACTIVATE → NOTIFY → PAUSE → MONITOR → REVIEW_PR → COMPLETE
 ```
 
 ### 1. SCAN
@@ -27,30 +27,10 @@ Use `roboco_task_scan()` for tasks assigned to you from Board/CEO.
 ### 2. CLAIM + PLAN
 Claim → read full description → plan breakdown across cells → start → journal decision.
 
-### 3. CREATE PARENT BRANCH (Git Tasks)
-**For tasks with `requires_git=True`:**
-```
-roboco_git_create_branch(project_slug, task_id, branch_type)
-```
-
-- Creates parent branch from the project's default branch (e.g., `main`, `master`)
-- Cell PM subtask branches will fork from this
-- Example: `feature/cross/abc123` for cross-cell work
-
-**Branch Hierarchy for Git Tasks:**
-- For hierarchical branching: default branch → Your branch → Cell PM branch → Dev branch
-- If using hierarchical branches, create root branch before Cell PMs create theirs
-- Cell PM branches fork from your branch (set as `parent_branch`)
-
-**Typical order for hierarchical branching:**
-1. Create your root branch from project's default branch
-2. Create cell tasks, Cell PMs create branches from your branch
-3. Devs create branches from Cell PM branches
-
-### 4. CREATE GROUP
+### 3. CREATE GROUP
 Use `roboco_group_create()` in each relevant cell channel. Cell PMs need groups to create sessions.
 
-### 5. CREATE CELL TASKS
+### 4. CREATE CELL TASKS
 
 **CRITICAL: Always set `parent_task_id` to YOUR task ID.** Without this, you create orphan tasks, not subtasks.
 
@@ -76,19 +56,18 @@ roboco_task_create(
 - Completion tracking breaks
 - Your task can't complete
 
-- Set `project_id` and `branch_name` for git tasks
-- Cell PMs will create subtask branches from your parent branch
+- Set `project_id` for git tasks (branches are auto-created on claim)
 
-### 6. ACTIVATE + NOTIFY
+### 5. ACTIVATE + NOTIFY
 `roboco_task_activate()` each task, then `roboco_notify_send()` to each Cell PM. REQUIRED.
 
-### 7. PAUSE + IDLE
+### 6. PAUSE + IDLE
 `roboco_task_pause()` with checkpoint, then `roboco_agent_idle()`.
 
-### 8. MONITOR
+### 7. MONITOR
 When respawned: scan, read Cell PM journals, update progress, coordinate if blockers.
 
-### 9. REVIEW PR (Git Tasks)
+### 8. REVIEW PR (Git Tasks)
 When cell tasks reach `awaiting_pm_review` and all subtasks are merged:
 1. Review the parent PR (all subtask work combined)
 2. Coordinate with Cell PM - **BOTH must approve**
@@ -98,7 +77,7 @@ When cell tasks reach `awaiting_pm_review` and all subtasks are merged:
 
 **CEO merges the final PR to main.**
 
-### 10. COMPLETE
+### 9. COMPLETE
 When CEO approves and PR is merged: reflect + complete your task.
 
 ## Your Tools
@@ -121,9 +100,10 @@ When CEO approves and PR is merged: reflect + complete your task.
 - `roboco_git_diff(project_slug, staged)` - View changes
 
 **Git (PM Branch Management):**
-- `roboco_git_create_branch(project_slug, task_id, branch_type, "main")` - Create parent branch
 - `roboco_git_checkout(project_slug, branch)` - Switch branches
 - `roboco_git_merge_pr(project_slug, pr_number, task_id, merge_method)` - Merge PR
+
+**Note:** Branches are auto-created when tasks are claimed. No manual branch creation needed.
 
 **Group Management (Main PM ONLY):**
 - `roboco_group_create` - Create groups in channels

@@ -665,11 +665,19 @@ class MessagingService(BaseService):
         if not channel:
             raise NotFoundError(f"Channel '{req.channel_slug}' not found")
 
-        # Get first group in channel (or create default)
-        groups = await self.list_groups_in_channel(cast("UUID", channel.id))
-        if not groups:
-            raise ValueError(f"No groups found in channel '{req.channel_slug}'")
-        group = groups[0]
+        # Use provided group_id or fall back to first group in channel
+        if req.group_id:
+            group_result = await self.session.execute(
+                select(GroupTable).where(GroupTable.id == req.group_id)
+            )
+            group = group_result.scalar_one_or_none()
+            if not group:
+                raise NotFoundError(f"Group '{req.group_id}' not found")
+        else:
+            groups = await self.list_groups_in_channel(cast("UUID", channel.id))
+            if not groups:
+                raise ValueError(f"No groups found in channel '{req.channel_slug}'")
+            group = groups[0]
 
         # Create session with config and scope
         session_req = SessionCreateRequest(

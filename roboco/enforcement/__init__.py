@@ -40,12 +40,15 @@ from roboco.enforcement.notification_perms import (
 from roboco.enforcement.task_lifecycle import (
     ROLE_RESTRICTED_TRANSITIONS,
     VALID_TRANSITIONS,
+    GitContext,
+    GitRequirementError,
     TaskLifecycleError,
     can_agent_transition,
     get_valid_transitions,
     is_active_state,
     is_terminal_state,
     is_waiting_state,
+    validate_git_requirements,
     validate_task_transition,
 )
 from roboco.enforcement.task_ownership import (
@@ -61,6 +64,8 @@ __all__ = [
     "ROLE_RESTRICTED_TRANSITIONS",
     "VALID_TRANSITIONS",
     "ChannelAccessDeniedError",
+    "GitContext",
+    "GitRequirementError",
     "JournalAccessDeniedError",
     "NotificationPermissionError",
     "TaskClaimContext",
@@ -77,6 +82,7 @@ __all__ = [
     "is_terminal_state",
     "is_waiting_state",
     "validate_channel_access",
+    "validate_git_requirements",
     "validate_journal_access",
     "validate_notification_permission",
     "validate_task_claim",

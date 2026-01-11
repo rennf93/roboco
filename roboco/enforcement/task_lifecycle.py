@@ -297,7 +297,7 @@ def validate_git_requirements(
         Requires pr_number to be set (PR exists)
 
     - claimed → in_progress (git tasks):
-        Should have branch_name set (PM created the branch)
+        Should have branch_name set (auto-created on claim)
 
     Args:
         current_status: Current task status
@@ -361,8 +361,8 @@ def validate_git_requirements(
             requirement="branch_name",
             message=(
                 "Cannot start work: no branch assigned to this task. "
-                "For git tasks, PM must create a branch first using "
-                "roboco_git_create_branch(project_slug, task_id, branch_type)."
+                "Branches are auto-created on claim. If missing, either "
+                "re-claim the task or check if parent task needs claiming first."
             ),
         )
 

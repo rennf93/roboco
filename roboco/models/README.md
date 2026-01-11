@@ -169,7 +169,7 @@ class Task:
     task_type: TaskType              # code, documentation, research, planning, design, administrative
     requires_git: bool               # Whether git workflow applies
 
-    # Project & Branch (set by PM during setup)
+    # Project & Branch (branch auto-created on claim)
     project_id: UUID | None
     branch_name: str | None
     work_session_id: UUID | None

@@ -1638,11 +1638,28 @@ async def escalate_task(
     delivery_service = get_notification_delivery_service(db)
     await delivery_service.deliver(require_uuid(notification.id))
 
+    # CRITICAL FIX: Set task to BLOCKED to stop orchestrator from respawning dev
+    # Previously used PENDING which could still cause respawn loops.
+    # BLOCKED ensures task is truly paused until PM unblocks it.
+    task.assigned_to = target_agent.id
+    task.status = TaskStatus.BLOCKED  # Blocked until PM addresses it
+
+    # Add escalation note for context
+    existing_notes = task.dev_notes or ""
+    escalation_note = (
+        f"\n\n[ESCALATED] From {agent_record.slug} to {target_slug}\n"
+        f"Reason: {data.reason}"
+    )
+    task.dev_notes = existing_notes + escalation_note
+
+    await db.flush()
+
     await db.commit()
 
     msg = (
-        f"Task escalated to {target_slug}. "
-        "They will be notified and can reassign or provide guidance."
+        f"Task escalated to {target_slug} and set to BLOCKED. "
+        f"PM will receive notification and must call roboco_task_unblock() "
+        "to provide guidance or reassign."
     )
     return EscalateResponse(
         status="escalated",

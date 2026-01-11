@@ -2,11 +2,14 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
-## IMPORTANT NOTES
+## IGNORING THESE WILL FORCE A COMPLETE SHUTDOWN OF CLAUDE CODE
 
 **IGNORING != FIXING**
 **`# noqa` & `# type: ignore` != FIXING**
 **`uv run mypy ... --ignore-missing-imports` | ANY IGNORING AT ALL != GOOD PRACTICES**
+**`http://192.168.50.111:8000/docs` IS THE API DOCS**
+** You need `X-Agent-Id` and `X-Agent-Role` headers to be set as 'ceo' for all API calls **
+**`ssh renzof@renzof-nas.local` SSH TO THE SERVER**
 
 ## Project Overview
 
@@ -223,7 +226,7 @@ Certain transitions require specific roles:
 ### Git Integration Requirements
 
 For tasks with `requires_git=True`:
-1. **claimed -> in_progress**: Must have `branch_name` set (PM creates branch first)
+1. **claimed -> in_progress**: `branch_name` is auto-set on claim (hierarchical branches)
 2. **awaiting_documentation -> awaiting_pm_review**: Requires BOTH `docs_complete=True` AND `pr_created=True`
 3. **awaiting_pm_review -> awaiting_ceo_approval**: Must have `pr_number` set
 
@@ -259,7 +262,7 @@ Major tasks are escalated to CEO for final approval:
 task_type: TaskType      # code, documentation, research, planning, design, administrative
 requires_git: bool       # Whether git workflow applies
 project_id: UUID         # Project this task works on
-branch_name: str         # Branch created for this task (set by PM)
+branch_name: str         # Branch for this task (auto-created on claim)
 work_session_id: UUID    # Active work session
 
 # PR tracking (parallel execution in awaiting_documentation)

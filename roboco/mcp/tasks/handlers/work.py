@@ -120,7 +120,7 @@ async def _safe_checkout(
             "CHECKOUT_FAILED",
             f"Failed to checkout branch '{branch_name}'",
             {"status_code": checkout_resp.status_code, "detail": checkout_resp.text},
-            hint="Branch may not exist yet. Ask PM to create it.",
+            hint="Branch may not exist. Re-claim or check if parent needs claiming.",
         )
 
     # Success - no error

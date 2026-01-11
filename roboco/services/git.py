@@ -367,8 +367,7 @@ class GitService(BaseService):
             if not result.stdout.strip():
                 raise ValidationError(
                     f"Parent branch '{base_branch}' does not exist on remote. "
-                    f"The parent task's branch must be created and pushed first. "
-                    f"Ensure Main PM/Cell PM created their branches before this task."
+                    f"The parent task must be claimed first (claim creates branch)."
                 )
 
         # Create and push branch
