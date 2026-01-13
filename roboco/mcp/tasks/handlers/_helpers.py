@@ -139,18 +139,28 @@ async def validate_task_claimable(
     Special case: If an agent is already assigned to a pending task (PM assigned
     it directly to them), they can claim it to transition to 'claimed' status.
     """
-    # ENFORCEMENT: Main PM must delegate code tasks, not execute them
+    # ENFORCEMENT: ALL PMs must delegate code tasks, not execute them
     task_type = task.get("task_type", "code")
-    if agent_role == "main_pm" and task_type == "code":
-        return format_error_response(
-            "PM_CANNOT_EXECUTE_CODE",
-            "Main PM cannot claim code tasks. You coordinate, not execute.",
-            {"task_type": task_type, "your_role": agent_role},
-            hint=(
+    pm_roles = ("main_pm", "cell_pm")
+    if agent_role in pm_roles and task_type == "code":
+        if agent_role == "main_pm":
+            hint = (
                 "Create a subtask for the appropriate Cell PM (be-pm, fe-pm, ux-pm) "
                 "using roboco_task_create(parent_task_id=this_task_id, team='backend', "
                 "assigned_to='be-pm'). Then activate it with roboco_task_activate()."
-            ),
+            )
+        else:  # cell_pm
+            hint = (
+                "You cannot claim code tasks. Create a subtask for a developer "
+                "(be-dev-1, be-dev-2, etc.) using roboco_task_create(parent_task_id="
+                "this_task_id, assigned_to='be-dev-1'). Then roboco_task_activate()."
+            )
+        return format_error_response(
+            "PM_CANNOT_EXECUTE_CODE",
+            f"{agent_role.replace('_', ' ').title()} cannot claim code tasks. "
+            "PMs coordinate, developers execute.",
+            {"task_type": task_type, "your_role": agent_role},
+            hint=hint,
         )
 
     task_status = task.get("status")

@@ -252,6 +252,7 @@ class TaskResponse(BaseModel):
     created_at: datetime
     updated_at: datetime | None
     claimed_at: datetime | None
+    claimed_by: UUID | None
     started_at: datetime | None
     completed_at: datetime | None
     target_date: datetime | None
@@ -563,6 +564,7 @@ def task_to_response(task: "TaskTable") -> TaskResponse:
         created_at=task.created_at,
         updated_at=task.updated_at,
         claimed_at=task.claimed_at,
+        claimed_by=to_python_uuid(task.claimed_by),
         started_at=task.started_at,
         completed_at=task.completed_at,
         target_date=task.target_date,

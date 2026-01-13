@@ -12,6 +12,7 @@ Tools available to ALL agents:
 
 import contextlib
 import os
+from dataclasses import dataclass
 from typing import Any
 
 import httpx
@@ -279,6 +280,219 @@ async def _handle_check() -> dict[str, Any]:
 
 
 # =============================================================================
+# PERSISTENT CONVERSATION HANDLERS
+# =============================================================================
+
+
+@dataclass
+class StartConversationParams:
+    """Parameters for starting a conversation."""
+
+    agent_id: str
+    target_agent: str
+    message: str
+    topic: str | None = None
+    task_id: str | None = None
+    requires_response: bool = False
+
+
+async def _handle_start_conversation(params: StartConversationParams) -> dict[str, Any]:
+    """Start or continue a persistent A2A conversation."""
+    # Validate target
+    if params.target_agent not in ALL_AGENTS:
+        return format_error_response(
+            "AGENT_NOT_FOUND",
+            f"Agent '{params.target_agent}' not found.",
+        )
+
+    # Check A2A permissions
+    allowed, error_msg = can_a2a_direct(params.agent_id, params.target_agent)
+    if not allowed:
+        return format_error_response(
+            "A2A_NOT_PERMITTED",
+            error_msg or f"Cannot A2A {params.target_agent} directly.",
+            hint=get_a2a_route_hint(params.agent_id, params.target_agent),
+        )
+
+    # Call main API to create conversation
+    async with httpx.AsyncClient() as client:
+        try:
+            resp = await client.post(
+                f"{API_URL}/api/v1/a2a/chat/conversations",
+                json={
+                    "target_agent": params.target_agent,
+                    "topic": params.topic,
+                    "task_id": params.task_id,
+                    "initial_message": params.message,
+                    "requires_response": params.requires_response,
+                },
+                headers={"X-Agent-ID": params.agent_id},
+                timeout=10.0,
+            )
+            resp.raise_for_status()
+            data = resp.json()
+
+            return {
+                "status": "success",
+                "conversation_id": data.get("id"),
+                "target_agent": params.target_agent,
+                "topic": params.topic,
+                "task_id": params.task_id,
+                "guidance": (
+                    f"Started conversation with {params.target_agent}. "
+                    f"Conversation ID: {data.get('id')}"
+                ),
+            }
+
+        except httpx.HTTPStatusError as e:
+            error_detail = e.response.json() if e.response.content else {}
+            return format_error_response(
+                error_detail.get("error", "CONVERSATION_FAILED"),
+                error_detail.get("message", str(e)),
+                hint=error_detail.get("route_hint"),
+            )
+        except httpx.ConnectError:
+            return format_error_response(
+                "API_UNAVAILABLE",
+                "Main API not available.",
+            )
+
+
+async def _handle_list_conversations(
+    agent_id: str,
+    status: str | None = None,
+    with_agent: str | None = None,
+    task_id: str | None = None,
+) -> dict[str, Any]:
+    """List persistent A2A conversations."""
+    params: dict[str, Any] = {}
+    if status:
+        params["status"] = status
+    if with_agent:
+        params["with_agent"] = with_agent
+    if task_id:
+        params["task_id"] = task_id
+
+    async with httpx.AsyncClient() as client:
+        try:
+            resp = await client.get(
+                f"{API_URL}/api/v1/a2a/chat/conversations",
+                params=params,
+                headers={"X-Agent-ID": agent_id},
+                timeout=10.0,
+            )
+            resp.raise_for_status()
+            data = resp.json()
+
+            conversations = data.get("items", [])
+            return {
+                "conversations": conversations,
+                "count": len(conversations),
+                "guidance": (
+                    f"You have {len(conversations)} conversation(s)."
+                    if conversations
+                    else "No conversations found."
+                ),
+            }
+
+        except httpx.ConnectError:
+            return format_error_response("API_UNAVAILABLE", "Main API not available.")
+        except httpx.HTTPStatusError as e:
+            return format_error_response("LIST_FAILED", str(e))
+
+
+async def _handle_send_chat_message(
+    agent_id: str,
+    conversation_id: str,
+    message: str,
+    requires_response: bool = False,
+) -> dict[str, Any]:
+    """Send message in existing conversation."""
+    async with httpx.AsyncClient() as client:
+        try:
+            resp = await client.post(
+                f"{API_URL}/api/v1/a2a/chat/conversations/{conversation_id}/messages",
+                json={
+                    "content": message,
+                    "requires_response": requires_response,
+                },
+                headers={"X-Agent-ID": agent_id},
+                timeout=10.0,
+            )
+            resp.raise_for_status()
+            data = resp.json()
+
+            return {
+                "status": "success",
+                "message_id": data.get("id"),
+                "conversation_id": conversation_id,
+                "guidance": "Message sent.",
+            }
+
+        except httpx.HTTPStatusError as e:
+            return format_error_response("SEND_FAILED", str(e))
+        except httpx.ConnectError:
+            return format_error_response("API_UNAVAILABLE", "Main API not available.")
+
+
+async def _handle_get_inbox(agent_id: str) -> dict[str, Any]:
+    """Get persistent A2A inbox summary."""
+    async with httpx.AsyncClient() as client:
+        try:
+            resp = await client.get(
+                f"{API_URL}/api/v1/a2a/chat/inbox",
+                headers={"X-Agent-ID": agent_id},
+                timeout=10.0,
+            )
+            resp.raise_for_status()
+            data = resp.json()
+
+            return {
+                "total_unread": data.get("total_unread", 0),
+                "conversations_with_unread": data.get("conversations_with_unread", 0),
+                "pending_responses": data.get("pending_responses", 0),
+                "unanswered_requests": data.get("unanswered_requests", 0),
+                "guidance": (
+                    f"You have {data.get('total_unread', 0)} unread message(s) "
+                    f"in {data.get('conversations_with_unread', 0)} conversation(s)."
+                ),
+            }
+
+        except httpx.ConnectError:
+            return format_error_response("API_UNAVAILABLE", "Main API not available.")
+        except httpx.HTTPStatusError as e:
+            return format_error_response("INBOX_FAILED", str(e))
+
+
+async def _handle_close_conversation(
+    agent_id: str,
+    conversation_id: str,
+    resolution: str | None = None,
+) -> dict[str, Any]:
+    """Close a conversation."""
+    async with httpx.AsyncClient() as client:
+        try:
+            resp = await client.post(
+                f"{API_URL}/api/v1/a2a/chat/conversations/{conversation_id}/close",
+                json={"resolution": resolution} if resolution else {},
+                headers={"X-Agent-ID": agent_id},
+                timeout=10.0,
+            )
+            resp.raise_for_status()
+
+            return {
+                "status": "success",
+                "conversation_id": conversation_id,
+                "guidance": "Conversation closed.",
+            }
+
+        except httpx.HTTPStatusError as e:
+            return format_error_response("CLOSE_FAILED", str(e))
+        except httpx.ConnectError:
+            return format_error_response("API_UNAVAILABLE", "Main API not available.")
+
+
+# =============================================================================
 # MCP SERVER FACTORY
 # =============================================================================
 
@@ -384,6 +598,126 @@ def create_a2a_mcp_server(agent_id: str) -> FastMCP:
             List of pending A2A messages
         """
         return await _handle_check()
+
+    # =========================================================================
+    # PERSISTENT CONVERSATION TOOLS
+    # =========================================================================
+
+    @mcp.tool()
+    async def roboco_a2a_start_conversation(
+        target_agent: str,
+        message: str,
+        topic: str | None = None,
+        task_id: str | None = None,
+        requires_response: bool = False,
+    ) -> dict[str, Any]:
+        """
+        Start or continue a persistent A2A conversation.
+
+        Creates a conversation thread that persists across agent spawns.
+        Messages are stored in the database and can be retrieved later.
+
+        Args:
+            target_agent: Agent slug to chat with (e.g., "be-pm", "fe-dev-1")
+            message: Your initial message
+            topic: Optional topic/subject for the conversation
+            task_id: Optional task to link this conversation to
+            requires_response: Set true if you need a response
+
+        Returns:
+            Conversation details including conversation_id
+        """
+        return await _handle_start_conversation(
+            StartConversationParams(
+                agent_id=agent_id,
+                target_agent=target_agent,
+                message=message,
+                topic=topic,
+                task_id=task_id,
+                requires_response=requires_response,
+            )
+        )
+
+    @mcp.tool()
+    async def roboco_a2a_list_conversations(
+        status: str | None = None,
+        with_agent: str | None = None,
+        task_id: str | None = None,
+    ) -> dict[str, Any]:
+        """
+        List your A2A conversations.
+
+        Args:
+            status: Filter by status (active, paused, closed)
+            with_agent: Filter by specific agent
+            task_id: Filter by linked task
+
+        Returns:
+            List of conversation summaries
+        """
+        return await _handle_list_conversations(
+            agent_id=agent_id,
+            status=status,
+            with_agent=with_agent,
+            task_id=task_id,
+        )
+
+    @mcp.tool()
+    async def roboco_a2a_send(
+        conversation_id: str,
+        message: str,
+        requires_response: bool = False,
+    ) -> dict[str, Any]:
+        """
+        Send a message in an existing conversation.
+
+        Args:
+            conversation_id: The conversation to send to
+            message: Your message content
+            requires_response: Set true if you need a response
+
+        Returns:
+            Message details including message_id
+        """
+        return await _handle_send_chat_message(
+            agent_id=agent_id,
+            conversation_id=conversation_id,
+            message=message,
+            requires_response=requires_response,
+        )
+
+    @mcp.tool()
+    async def roboco_a2a_inbox() -> dict[str, Any]:
+        """
+        Get your A2A inbox summary.
+
+        Shows unread counts, pending responses, and unanswered requests.
+
+        Returns:
+            Inbox summary with counts
+        """
+        return await _handle_get_inbox(agent_id)
+
+    @mcp.tool()
+    async def roboco_a2a_close_conversation(
+        conversation_id: str,
+        resolution: str | None = None,
+    ) -> dict[str, Any]:
+        """
+        Close a conversation.
+
+        Args:
+            conversation_id: The conversation to close
+            resolution: Optional note about why/how it was resolved
+
+        Returns:
+            Status confirmation
+        """
+        return await _handle_close_conversation(
+            agent_id=agent_id,
+            conversation_id=conversation_id,
+            resolution=resolution,
+        )
 
     return mcp
 

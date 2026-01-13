@@ -85,8 +85,16 @@ roboco_task_create(
 ### 7. PAUSE + IDLE
 `roboco_task_pause()` with checkpoint, then `roboco_agent_idle()`.
 
-### 8. MONITOR
-When respawned: scan, read Cell PM journals, update progress, coordinate if blockers.
+### 8. MONITOR + HANDLE ESCALATIONS
+When respawned: scan, read Cell PM journals, update progress, handle escalated blockers.
+
+**When Cell PM escalates a blocker to you:**
+1. Investigate the root cause
+2. Fix the issue (infrastructure, permissions, cross-cell coordination, etc.)
+3. **Call `roboco_task_unblock(task_id, resolution_notes)` on the blocked task**
+4. The system will notify and respawn the affected agents
+
+**DO NOT just send a message and hope they figure it out. CALL UNBLOCK.**
 
 ### 9. REVIEW PR (Git Tasks)
 When cell tasks reach `awaiting_pm_review` and all subtasks are merged:

@@ -338,6 +338,12 @@ def upgrade() -> None:
         ),
         sa.Column("updated_at", sa.DateTime(), nullable=True),
         sa.Column("claimed_at", sa.DateTime(), nullable=True),
+        sa.Column(
+            "claimed_by",
+            postgresql.UUID(as_uuid=True),
+            sa.ForeignKey("agents.id", ondelete="SET NULL"),
+            nullable=True,
+        ),
         sa.Column("started_at", sa.DateTime(), nullable=True),
         sa.Column("completed_at", sa.DateTime(), nullable=True),
         sa.Column("target_date", sa.DateTime(), nullable=True),
@@ -866,6 +872,128 @@ def upgrade() -> None:
     )
 
     # ==========================================================================
+    # A2A CONVERSATIONS TABLE
+    # ==========================================================================
+    op.create_table(
+        "a2a_conversations",
+        sa.Column("id", postgresql.UUID(as_uuid=True), primary_key=True),
+        # The pair (canonical order: lexically smaller first)
+        sa.Column("agent_a", sa.String(50), nullable=False, index=True),
+        sa.Column("agent_b", sa.String(50), nullable=False, index=True),
+        # Context
+        sa.Column("topic", sa.String(255), nullable=True),
+        sa.Column(
+            "task_id",
+            postgresql.UUID(as_uuid=True),
+            sa.ForeignKey("tasks.id", ondelete="SET NULL"),
+            nullable=True,
+            index=True,
+        ),
+        # Status
+        sa.Column(
+            "status",
+            sa.Enum("active", "paused", "closed", name="a2aconversationstatus"),
+            nullable=False,
+            server_default="active",
+            index=True,
+        ),
+        sa.Column("resolution", sa.Text(), nullable=True),
+        # Stats
+        sa.Column("message_count", sa.Integer(), nullable=False, server_default="0"),
+        sa.Column("unread_by_a", sa.Integer(), nullable=False, server_default="0"),
+        sa.Column("unread_by_b", sa.Integer(), nullable=False, server_default="0"),
+        # Timestamps
+        sa.Column(
+            "created_at",
+            sa.DateTime(timezone=True),
+            nullable=False,
+            server_default=sa.func.now(),
+        ),
+        sa.Column(
+            "updated_at",
+            sa.DateTime(timezone=True),
+            nullable=False,
+            server_default=sa.func.now(),
+            onupdate=sa.func.now(),
+        ),
+        sa.Column("last_message_at", sa.DateTime(timezone=True), nullable=True),
+    )
+
+    # Unique constraint for pair + topic
+    op.create_unique_constraint(
+        "uq_a2a_pair_topic", "a2a_conversations", ["agent_a", "agent_b", "topic"]
+    )
+
+    # Composite indexes
+    op.create_index("ix_a2a_conv_pair", "a2a_conversations", ["agent_a", "agent_b"])
+    op.create_index(
+        "ix_a2a_conv_status_updated", "a2a_conversations", ["status", "updated_at"]
+    )
+
+    # ==========================================================================
+    # A2A MESSAGES TABLE
+    # ==========================================================================
+    op.create_table(
+        "a2a_messages",
+        sa.Column("id", postgresql.UUID(as_uuid=True), primary_key=True),
+        sa.Column(
+            "conversation_id",
+            postgresql.UUID(as_uuid=True),
+            sa.ForeignKey("a2a_conversations.id", ondelete="CASCADE"),
+            nullable=False,
+            index=True,
+        ),
+        # Sender
+        sa.Column("from_agent", sa.String(50), nullable=False, index=True),
+        # Content
+        sa.Column("content", sa.Text(), nullable=False),
+        sa.Column(
+            "message_kind",
+            sa.Enum("message", "request", "response", "system", name="a2amessagekind"),
+            nullable=False,
+            server_default="message",
+        ),
+        # Threading
+        sa.Column(
+            "response_to_id",
+            postgresql.UUID(as_uuid=True),
+            sa.ForeignKey("a2a_messages.id", ondelete="SET NULL"),
+            nullable=True,
+        ),
+        sa.Column(
+            "requires_response", sa.Boolean(), nullable=False, server_default="false"
+        ),
+        # Read tracking
+        sa.Column("read_at", sa.DateTime(timezone=True), nullable=True),
+        # Timestamps
+        sa.Column(
+            "created_at",
+            sa.DateTime(timezone=True),
+            nullable=False,
+            server_default=sa.func.now(),
+            index=True,
+        ),
+        # Edit support
+        sa.Column("edited_at", sa.DateTime(timezone=True), nullable=True),
+        sa.Column("edit_history", postgresql.JSON(), server_default="[]"),
+    )
+
+    # Composite indexes
+    op.create_index(
+        "ix_a2a_msg_conv_created", "a2a_messages", ["conversation_id", "created_at"]
+    )
+    op.create_index(
+        "ix_a2a_msg_from_created", "a2a_messages", ["from_agent", "created_at"]
+    )
+    # Partial index for pending responses
+    op.create_index(
+        "ix_a2a_msg_pending",
+        "a2a_messages",
+        ["conversation_id"],
+        postgresql_where=sa.text("requires_response = true"),
+    )
+
+    # ==========================================================================
     # PERFORMANCE INDEXES
     # ==========================================================================
 
@@ -911,21 +1039,34 @@ def upgrade() -> None:
     op.create_index("ix_tasks_project_status", "tasks", ["project_id", "status"])
 
 
-def downgrade() -> None:
-    # Drop new indexes
+def _downgrade_indexes() -> None:
+    """Drop all indexes."""
+    # Performance indexes
     op.drop_index("ix_tasks_project_status", table_name="tasks")
     op.drop_index("ix_work_sessions_agent_status", table_name="work_sessions")
     op.drop_index("ix_work_sessions_project_status", table_name="work_sessions")
     op.drop_index("ix_projects_active", table_name="projects")
     op.drop_index("ix_projects_cell", table_name="projects")
-
-    # Drop original indexes
     op.drop_index("ix_notifications_to_timestamp", table_name="notifications")
     op.drop_index("ix_messages_channel_timestamp", table_name="messages")
     op.drop_index("ix_tasks_assigned_status", table_name="tasks")
     op.drop_index("ix_tasks_team_status", table_name="tasks")
 
-    # Drop tables in reverse order
+
+def _downgrade_a2a() -> None:
+    """Drop A2A tables and indexes."""
+    op.drop_index("ix_a2a_msg_pending", table_name="a2a_messages")
+    op.drop_index("ix_a2a_msg_from_created", table_name="a2a_messages")
+    op.drop_index("ix_a2a_msg_conv_created", table_name="a2a_messages")
+    op.drop_table("a2a_messages")
+    op.drop_index("ix_a2a_conv_status_updated", table_name="a2a_conversations")
+    op.drop_index("ix_a2a_conv_pair", table_name="a2a_conversations")
+    op.drop_constraint("uq_a2a_pair_topic", "a2a_conversations", type_="unique")
+    op.drop_table("a2a_conversations")
+
+
+def _downgrade_tables() -> None:
+    """Drop all tables in reverse order."""
     op.drop_table("handoffs")
     op.drop_table("journal_entries")
     op.drop_table("journals")
@@ -936,17 +1077,17 @@ def downgrade() -> None:
     op.drop_table("sessions")
     op.drop_table("groups")
     op.drop_table("channels")
-
     # Drop FKs before dropping tasks
     op.drop_constraint("fk_agents_current_task", "agents", type_="foreignkey")
     op.drop_constraint("fk_work_sessions_task", "work_sessions", type_="foreignkey")
-
     op.drop_table("tasks")
     op.drop_table("work_sessions")
     op.drop_table("projects")
     op.drop_table("agents")
 
-    # Drop enums
+
+def _downgrade_enums() -> None:
+    """Drop all enum types."""
     op.execute("DROP TYPE IF EXISTS worksessionstatus")
     op.execute("DROP TYPE IF EXISTS tasktype")
     op.execute("DROP TYPE IF EXISTS tasknature")
@@ -963,3 +1104,12 @@ def downgrade() -> None:
     op.execute("DROP TYPE IF EXISTS agentstatus")
     op.execute("DROP TYPE IF EXISTS team")
     op.execute("DROP TYPE IF EXISTS agentrole")
+    op.execute("DROP TYPE IF EXISTS a2amessagekind")
+    op.execute("DROP TYPE IF EXISTS a2aconversationstatus")
+
+
+def downgrade() -> None:
+    _downgrade_indexes()
+    _downgrade_a2a()
+    _downgrade_tables()
+    _downgrade_enums()

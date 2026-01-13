@@ -7,6 +7,7 @@ Provides business logic for A2A protocol operations including:
 - Message handling and routing
 """
 
+from datetime import datetime
 from typing import Any, cast
 from uuid import UUID
 
@@ -16,11 +17,24 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from roboco.agents_config import ALL_AGENTS, get_agent_skills, get_agent_team
 from roboco.config import settings
-from roboco.db.tables import AgentTable, TaskTable
+from roboco.db.tables import (
+    A2AConversationTable,
+    A2AMessageTable,
+    AgentTable,
+    TaskTable,
+)
+from roboco.enforcement import validate_a2a_access
 from roboco.events import Event, EventType, get_event_bus
 from roboco.models.a2a import (
     A2AArtifact,
+    A2AChatMessage,
+    A2AConversation,
+    A2AConversationStatus,
+    A2AConversationSummary,
+    A2AInboxSummary,
     A2AMessage,
+    A2AMessageKind,
+    A2APair,
     A2ATask,
     A2ATaskStatus,
     AgentCapabilities,
@@ -756,3 +770,521 @@ class A2AService:
                 )
         except Exception:
             pass  # Don't fail if event bus unavailable
+
+    # =========================================================================
+    # PERSISTENT CONVERSATION MANAGEMENT
+    # =========================================================================
+    # These methods handle persistent A2A conversations stored in the database.
+    # They complement the existing A2A protocol methods above.
+
+    @staticmethod
+    def _canonical_pair(agent_a: str, agent_b: str) -> tuple[str, str]:
+        """Return agents in canonical order (lexically smaller first)."""
+        return (agent_a, agent_b) if agent_a < agent_b else (agent_b, agent_a)
+
+    async def get_or_create_conversation(
+        self,
+        agent_a: str,
+        agent_b: str,
+        topic: str | None = None,
+        task_id: UUID | None = None,
+    ) -> A2AConversation:
+        """
+        Get existing conversation or create new one.
+
+        Args:
+            agent_a: First agent slug
+            agent_b: Second agent slug
+            topic: Optional conversation topic
+            task_id: Optional task to link
+
+        Returns:
+            A2AConversation model
+
+        Raises:
+            A2AAccessDeniedError: If A2A not permitted between agents
+        """
+        # Validate permissions
+        validate_a2a_access(agent_a, agent_b)
+
+        # Canonical ordering
+        a, b = self._canonical_pair(agent_a, agent_b)
+
+        # Try to find existing
+        query = select(A2AConversationTable).where(
+            A2AConversationTable.agent_a == a,
+            A2AConversationTable.agent_b == b,
+        )
+        if topic:
+            query = query.where(A2AConversationTable.topic == topic)
+        else:
+            query = query.where(A2AConversationTable.topic.is_(None))
+
+        result = await self.session.execute(query)
+        existing = result.scalar_one_or_none()
+
+        if existing:
+            return self._conv_to_model(existing)
+
+        # Create new conversation
+        conv = A2AConversationTable(
+            agent_a=a,
+            agent_b=b,
+            topic=topic,
+            task_id=task_id,
+            status=A2AConversationStatus.ACTIVE,
+        )
+        self.session.add(conv)
+        await self.session.flush()
+        await self.session.refresh(conv)
+
+        logger.info(
+            "Created A2A conversation",
+            conversation_id=str(conv.id),
+            agent_a=a,
+            agent_b=b,
+            topic=topic,
+        )
+
+        return self._conv_to_model(conv)
+
+    async def get_conversation(
+        self,
+        conversation_id: UUID,
+        agent_slug: str,
+    ) -> A2AConversation | None:
+        """
+        Get conversation by ID if agent is a participant.
+
+        Args:
+            conversation_id: Conversation UUID
+            agent_slug: Agent requesting (must be participant)
+
+        Returns:
+            A2AConversation or None if not found/not authorized
+        """
+        result = await self.session.execute(
+            select(A2AConversationTable).where(
+                A2AConversationTable.id == conversation_id
+            )
+        )
+        conv = result.scalar_one_or_none()
+
+        if conv is None:
+            return None
+
+        # Verify agent is participant
+        if agent_slug not in (conv.agent_a, conv.agent_b):
+            return None
+
+        return self._conv_to_model(conv)
+
+    async def list_conversations(
+        self,
+        agent_slug: str,
+        status: A2AConversationStatus | None = None,
+        with_agent: str | None = None,
+        task_id: UUID | None = None,
+        limit: int = 50,
+    ) -> list[A2AConversationSummary]:
+        """
+        List conversations for an agent.
+
+        Args:
+            agent_slug: Agent to list for
+            status: Filter by status
+            with_agent: Filter by other participant
+            task_id: Filter by linked task
+            limit: Max results
+
+        Returns:
+            List of conversation summaries
+        """
+        from sqlalchemy import or_
+
+        query = select(A2AConversationTable).where(
+            or_(
+                A2AConversationTable.agent_a == agent_slug,
+                A2AConversationTable.agent_b == agent_slug,
+            )
+        )
+
+        if status:
+            query = query.where(A2AConversationTable.status == status)
+
+        if with_agent:
+            a, b = self._canonical_pair(agent_slug, with_agent)
+            query = query.where(
+                A2AConversationTable.agent_a == a,
+                A2AConversationTable.agent_b == b,
+            )
+
+        if task_id:
+            query = query.where(A2AConversationTable.task_id == task_id)
+
+        query = query.order_by(A2AConversationTable.updated_at.desc()).limit(limit)
+
+        result = await self.session.execute(query)
+        conversations = result.scalars().all()
+
+        summaries = []
+        for conv in conversations:
+            # Get last message preview
+            msg_query = (
+                select(A2AMessageTable)
+                .where(A2AMessageTable.conversation_id == conv.id)
+                .order_by(A2AMessageTable.created_at.desc())
+                .limit(1)
+            )
+            msg_result = await self.session.execute(msg_query)
+            last_msg = msg_result.scalar_one_or_none()
+
+            other = conv.agent_b if agent_slug == conv.agent_a else conv.agent_a
+            unread = (
+                conv.unread_by_a if agent_slug == conv.agent_a else conv.unread_by_b
+            )
+
+            summaries.append(
+                A2AConversationSummary(
+                    id=str(conv.id),
+                    other_agent=other,
+                    topic=conv.topic,
+                    task_id=str(conv.task_id) if conv.task_id else None,
+                    status=conv.status,
+                    message_count=conv.message_count,
+                    unread_count=unread,
+                    last_message_at=conv.last_message_at,
+                    last_message_preview=(last_msg.content[:100] if last_msg else None),
+                )
+            )
+
+        return summaries
+
+    async def close_conversation(
+        self,
+        conversation_id: UUID,
+        agent_slug: str,
+        resolution: str | None = None,
+    ) -> None:
+        """Close a conversation."""
+        result = await self.session.execute(
+            select(A2AConversationTable).where(
+                A2AConversationTable.id == conversation_id
+            )
+        )
+        conv = result.scalar_one_or_none()
+
+        if conv is None:
+            raise ValueError(f"Conversation not found: {conversation_id}")
+
+        if agent_slug not in (conv.agent_a, conv.agent_b):
+            raise ValueError("Not a participant in this conversation")
+
+        conv.status = A2AConversationStatus.CLOSED
+        conv.resolution = resolution
+        await self.session.flush()
+
+        logger.info(
+            "Closed A2A conversation",
+            conversation_id=str(conversation_id),
+            by_agent=agent_slug,
+        )
+
+    async def send_chat_message(
+        self,
+        conversation_id: UUID,
+        from_agent: str,
+        content: str,
+        options: dict[str, Any] | None = None,
+    ) -> A2AChatMessage:
+        """
+        Send message in conversation.
+
+        Args:
+            conversation_id: Target conversation
+            from_agent: Sender slug
+            content: Message content
+            options: Optional dict with message_kind, response_to_id, requires_response
+
+        Returns:
+            Created A2AChatMessage
+
+        Raises:
+            ValueError: If conversation not found or sender not participant
+        """
+        from datetime import UTC, datetime
+
+        opts = options or {}
+        message_kind = opts.get("message_kind", A2AMessageKind.MESSAGE)
+        response_to_id = opts.get("response_to_id")
+        requires_response = opts.get("requires_response", False)
+
+        result = await self.session.execute(
+            select(A2AConversationTable).where(
+                A2AConversationTable.id == conversation_id
+            )
+        )
+        conv = result.scalar_one_or_none()
+
+        if conv is None:
+            raise ValueError(f"Conversation not found: {conversation_id}")
+
+        if from_agent not in (conv.agent_a, conv.agent_b):
+            raise ValueError("Not a participant in this conversation")
+
+        # Create message
+        msg = A2AMessageTable(
+            conversation_id=conversation_id,
+            from_agent=from_agent,
+            content=content,
+            message_kind=message_kind,
+            response_to_id=response_to_id,
+            requires_response=requires_response,
+        )
+        self.session.add(msg)
+
+        # Update conversation stats
+        conv.message_count += 1
+        conv.last_message_at = datetime.now(UTC)
+
+        # Update unread count for the OTHER agent
+        if from_agent == conv.agent_a:
+            conv.unread_by_b += 1
+        else:
+            conv.unread_by_a += 1
+
+        await self.session.flush()
+        await self.session.refresh(msg)
+
+        logger.info(
+            "Sent A2A chat message",
+            conversation_id=str(conversation_id),
+            message_id=str(msg.id),
+            from_agent=from_agent,
+        )
+
+        return self._msg_to_model(msg)
+
+    async def get_messages(
+        self,
+        conversation_id: UUID,
+        agent_slug: str,
+        limit: int = 100,
+        before: datetime | None = None,
+    ) -> list[A2AChatMessage]:
+        """Get messages in conversation."""
+        # Verify access
+        conv_result = await self.session.execute(
+            select(A2AConversationTable).where(
+                A2AConversationTable.id == conversation_id
+            )
+        )
+        conv = conv_result.scalar_one_or_none()
+
+        if conv is None:
+            return []
+
+        if agent_slug not in (conv.agent_a, conv.agent_b):
+            return []
+
+        query = (
+            select(A2AMessageTable)
+            .where(A2AMessageTable.conversation_id == conversation_id)
+            .order_by(A2AMessageTable.created_at.desc())
+            .limit(limit)
+        )
+
+        if before:
+            query = query.where(A2AMessageTable.created_at < before)
+
+        result = await self.session.execute(query)
+        messages = result.scalars().all()
+
+        # Return in chronological order
+        return [self._msg_to_model(m) for m in reversed(list(messages))]
+
+    async def mark_read(
+        self,
+        conversation_id: UUID,
+        agent_slug: str,
+    ) -> None:
+        """Mark all messages in conversation as read by agent."""
+        from datetime import UTC, datetime
+
+        result = await self.session.execute(
+            select(A2AConversationTable).where(
+                A2AConversationTable.id == conversation_id
+            )
+        )
+        conv = result.scalar_one_or_none()
+
+        if conv is None:
+            return
+
+        if agent_slug not in (conv.agent_a, conv.agent_b):
+            return
+
+        # Reset unread count
+        if agent_slug == conv.agent_a:
+            conv.unread_by_a = 0
+        else:
+            conv.unread_by_b = 0
+
+        # Mark messages as read using SQLAlchemy update statement
+        from sqlalchemy import update
+
+        stmt = (
+            update(A2AMessageTable)
+            .where(A2AMessageTable.conversation_id == conversation_id)
+            .where(A2AMessageTable.from_agent != agent_slug)
+            .where(A2AMessageTable.read_at.is_(None))
+            .values(read_at=datetime.now(UTC))
+        )
+        await self.session.execute(stmt)
+
+        await self.session.flush()
+
+    async def get_inbox_summary(self, agent_slug: str) -> A2AInboxSummary:
+        """Get summary of pending A2A for agent."""
+        from sqlalchemy import func, or_
+
+        # Get conversations with unread
+        conv_query = select(A2AConversationTable).where(
+            or_(
+                A2AConversationTable.agent_a == agent_slug,
+                A2AConversationTable.agent_b == agent_slug,
+            )
+        )
+        conv_result = await self.session.execute(conv_query)
+        conversations = conv_result.scalars().all()
+
+        total_unread = 0
+        conversations_with_unread = 0
+
+        for conv in conversations:
+            unread = (
+                conv.unread_by_a if agent_slug == conv.agent_a else conv.unread_by_b
+            )
+            if unread > 0:
+                conversations_with_unread += 1
+                total_unread += unread
+
+        # Count pending responses (messages I sent that require response)
+        pending_query = (
+            select(func.count())
+            .select_from(A2AMessageTable)
+            .where(
+                A2AMessageTable.from_agent == agent_slug,
+                A2AMessageTable.requires_response.is_(True),
+            )
+        )
+        pending_result = await self.session.execute(pending_query)
+        pending_responses = pending_result.scalar() or 0
+
+        # Count unanswered requests (messages to me that require response)
+        unanswered_query = (
+            select(func.count())
+            .select_from(A2AMessageTable)
+            .join(A2AConversationTable)
+            .where(
+                or_(
+                    A2AConversationTable.agent_a == agent_slug,
+                    A2AConversationTable.agent_b == agent_slug,
+                ),
+                A2AMessageTable.from_agent != agent_slug,
+                A2AMessageTable.requires_response.is_(True),
+            )
+        )
+        unanswered_result = await self.session.execute(unanswered_query)
+        unanswered_requests = unanswered_result.scalar() or 0
+
+        return A2AInboxSummary(
+            total_unread=total_unread,
+            conversations_with_unread=conversations_with_unread,
+            pending_responses=pending_responses,
+            unanswered_requests=unanswered_requests,
+        )
+
+    async def list_pairs(self, agent_slug: str) -> list[A2APair]:
+        """List unique agent pairs for frontend display."""
+        from sqlalchemy import or_
+
+        query = (
+            select(A2AConversationTable)
+            .where(
+                or_(
+                    A2AConversationTable.agent_a == agent_slug,
+                    A2AConversationTable.agent_b == agent_slug,
+                )
+            )
+            .order_by(A2AConversationTable.updated_at.desc())
+        )
+
+        result = await self.session.execute(query)
+        conversations = result.scalars().all()
+
+        # Group by pair
+        pairs: dict[tuple[str, str], A2APair] = {}
+        for conv in conversations:
+            pair_key = (conv.agent_a, conv.agent_b)
+            if pair_key not in pairs:
+                pairs[pair_key] = A2APair(
+                    agent_a=conv.agent_a,
+                    agent_b=conv.agent_b,
+                    conversation_count=0,
+                    total_unread=0,
+                    last_activity=None,
+                )
+
+            pairs[pair_key].conversation_count += 1
+
+            unread = (
+                conv.unread_by_a if agent_slug == conv.agent_a else conv.unread_by_b
+            )
+            pairs[pair_key].total_unread += unread
+
+            current_activity = pairs[pair_key].last_activity
+            if current_activity is None or (
+                conv.updated_at is not None and conv.updated_at > current_activity
+            ):
+                pairs[pair_key].last_activity = conv.updated_at
+
+        return list(pairs.values())
+
+    # =========================================================================
+    # MODEL CONVERSIONS
+    # =========================================================================
+
+    def _conv_to_model(self, conv: A2AConversationTable) -> A2AConversation:
+        """Convert table row to Pydantic model."""
+        return A2AConversation(
+            id=str(conv.id),
+            agent_a=conv.agent_a,
+            agent_b=conv.agent_b,
+            topic=conv.topic,
+            task_id=str(conv.task_id) if conv.task_id else None,
+            status=conv.status,
+            resolution=conv.resolution,
+            message_count=conv.message_count,
+            unread_by_a=conv.unread_by_a,
+            unread_by_b=conv.unread_by_b,
+            created_at=conv.created_at,
+            updated_at=conv.updated_at,
+            last_message_at=conv.last_message_at,
+        )
+
+    def _msg_to_model(self, msg: A2AMessageTable) -> A2AChatMessage:
+        """Convert table row to Pydantic model."""
+        return A2AChatMessage(
+            id=str(msg.id),
+            conversation_id=str(msg.conversation_id),
+            from_agent=msg.from_agent,
+            content=msg.content,
+            message_kind=msg.message_kind,
+            response_to_id=str(msg.response_to_id) if msg.response_to_id else None,
+            requires_response=msg.requires_response,
+            read_at=msg.read_at,
+            created_at=msg.created_at,
+            edited_at=msg.edited_at,
+            edit_history=msg.edit_history or [],
+        )

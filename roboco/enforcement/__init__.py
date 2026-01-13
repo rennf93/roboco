@@ -20,6 +20,11 @@ All functions are designed to be imported as needed. Some are internal
 helpers used by the primary validate_* functions.
 """
 
+from roboco.enforcement.a2a_access import (
+    A2AAccessDeniedError,
+    get_a2a_allowed_targets,
+    validate_a2a_access,
+)
 from roboco.enforcement.channel_access import (
     CHANNEL_ACCESS,
     ChannelAccessDeniedError,
@@ -63,6 +68,7 @@ __all__ = [
     "CHANNEL_ACCESS",
     "ROLE_RESTRICTED_TRANSITIONS",
     "VALID_TRANSITIONS",
+    "A2AAccessDeniedError",
     "ChannelAccessDeniedError",
     "GitContext",
     "GitRequirementError",
@@ -74,6 +80,7 @@ __all__ = [
     "can_agent_transition",
     "can_read_journal",
     "can_review_task",
+    "get_a2a_allowed_targets",
     "get_agent_channels",
     "get_notification_scope",
     "get_readable_journals",
@@ -81,6 +88,7 @@ __all__ = [
     "is_active_state",
     "is_terminal_state",
     "is_waiting_state",
+    "validate_a2a_access",
     "validate_channel_access",
     "validate_git_requirements",
     "validate_journal_access",

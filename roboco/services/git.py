@@ -350,12 +350,20 @@ class GitService(BaseService):
             if not base_branch:
                 project_service = get_project_service(self.session)
                 project = await project_service.get_by_slug(request.project_slug)
-                base_branch = str(project.default_branch) if project else "main"
+                base_branch = (
+                    str(project.default_branch)
+                    if project and project.default_branch
+                    else "main"
+                )
 
         # Validate parent branch exists on remote (unless it's the default branch)
         project_service = get_project_service(self.session)
         project = await project_service.get_by_slug(request.project_slug)
-        default_branch = str(project.default_branch) if project else "main"
+        default_branch = (
+            str(project.default_branch)
+            if project and project.default_branch
+            else "main"
+        )
 
         if base_branch != default_branch:
             # Parent is not the default branch - verify it exists on remote
@@ -544,7 +552,11 @@ class GitService(BaseService):
         # Determine target branch and get project token
         project_service = get_project_service(self.session)
         project = await project_service.get_by_slug(request.project_slug)
-        default_branch = str(project.default_branch) if project else "main"
+        default_branch = (
+            str(project.default_branch)
+            if project and project.default_branch
+            else "main"
+        )
 
         # Get decrypted token from project (required for PR creation)
         git_token = await project_service.get_decrypted_token_by_slug(
@@ -663,7 +675,11 @@ class GitService(BaseService):
 
         # Get target branch
         project = await project_service.get_by_slug(project_slug)
-        target_branch = str(project.default_branch) if project else "main"
+        target_branch = (
+            str(project.default_branch)
+            if project and project.default_branch
+            else "main"
+        )
 
         # Get merge commit
         await self._run_git(workspace, ["checkout", target_branch])

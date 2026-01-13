@@ -395,6 +395,46 @@ class TaskService(BaseService):
 
         return await self._auto_create_branch(task, agent_id)
 
+    async def _find_ancestor_branch(self, task: TaskTable) -> str | None:
+        """Walk up task hierarchy to find nearest ancestor with a branch.
+
+        This handles cases where immediate parent doesn't have a branch
+        (e.g., planning tasks created by PMs that don't need branches).
+
+        Returns:
+            Branch name of nearest ancestor, or None if no ancestor has one.
+        """
+        current_parent_id = task.parent_task_id
+        visited: set[str] = set()  # Prevent infinite loops
+
+        while current_parent_id:
+            parent_id_str = str(current_parent_id)
+            if parent_id_str in visited:
+                self.log.warning(
+                    "Circular reference detected in task hierarchy",
+                    task_id=str(task.id),
+                    cycle_at=parent_id_str,
+                )
+                break
+            visited.add(parent_id_str)
+
+            parent = await self.get(UUID(parent_id_str))
+            if not parent:
+                break
+
+            if parent.branch_name:
+                self.log.info(
+                    "Found ancestor branch",
+                    task_id=str(task.id),
+                    ancestor_id=parent_id_str,
+                    branch=str(parent.branch_name),
+                )
+                return str(parent.branch_name)
+
+            current_parent_id = parent.parent_task_id
+
+        return None
+
     async def _auto_create_branch(
         self,
         task: TaskTable,
@@ -427,16 +467,23 @@ class TaskService(BaseService):
         if not project:
             raise ValueError(f"Project {task.project_id} not found")
 
+        # Resolve parent branch - walk up hierarchy to find nearest ancestor with branch
         parent_branch: str | None = None
         if task.parent_task_id:
-            parent_task = await self.get(UUID(str(task.parent_task_id)))
-            if parent_task and parent_task.branch_name:
-                parent_branch = str(parent_task.branch_name)
-            else:
-                raise ValueError(
-                    "Parent task must be claimed first. "
-                    "Subtasks fork from parent branch (auto-created on claim)."
-                )
+            parent_branch = await self._find_ancestor_branch(task)
+
+        # Fallback to project default branch if no ancestor has a branch
+        # This handles cases like: Root planning task (no branch) → Dev subtask
+        if not parent_branch:
+            default_branch = (
+                str(project.default_branch) if project.default_branch else "main"
+            )
+            self.log.info(
+                "No ancestor branch found, using project default",
+                task_id=str(task.id),
+                default_branch=default_branch,
+            )
+            parent_branch = default_branch
 
         workspace = await git_service.get_workspace(project.slug, agent_id)
 
@@ -672,8 +719,9 @@ class TaskService(BaseService):
         # Set context for QA/Documenter claims (only if not already set)
         self._set_original_developer_context(task, agent)
 
-        # Update assignment
+        # Update assignment and claim tracking
         task.assigned_to = cast("Any", agent_id)
+        task.claimed_by = cast("Any", agent_id)
         task.claimed_at = datetime.now(UTC)
 
         # Transition to CLAIMED - validated with role for proper enforcement

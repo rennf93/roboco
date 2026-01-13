@@ -17,14 +17,31 @@ Endpoints:
 import asyncio
 import contextlib
 from collections.abc import AsyncGenerator
-from typing import Any
+from typing import Annotated, Any
 
-from fastapi import APIRouter, HTTPException, Query, Request, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from fastapi.responses import JSONResponse
 from sse_starlette import EventSourceResponse
 
-from roboco.api.deps import DbSession
+from roboco.api.deps import CurrentAgentSlug, DbSession
+from roboco.api.schemas.a2a_chat import (
+    ConversationCloseRequest,
+    ConversationCreateRequest,
+    ConversationListResponse,
+    ConversationResponse,
+    ConversationSummaryResponse,
+    InboxSummaryResponse,
+    ListConversationsParams,
+    ListMessagesParams,
+    MessageCreateRequest,
+    MessageListResponse,
+    MessageResponse,
+    PairListResponse,
+    PairResponse,
+)
+from roboco.enforcement import A2AAccessDeniedError
 from roboco.models.a2a import (
+    A2AConversationStatus,
     A2ATask,
     AgentCard,
     CancelTaskRequest,
@@ -32,6 +49,7 @@ from roboco.models.a2a import (
     SendMessageRequest,
 )
 from roboco.services.a2a import A2AService
+from roboco.utils.converters import require_uuid
 
 # Router for A2A API endpoints (mounted at /api/v1/a2a)
 router = APIRouter()
@@ -462,3 +480,342 @@ async def get_agent_card_by_id(
         )
 
     return card
+
+
+# =============================================================================
+# PERSISTENT A2A CHAT ENDPOINTS
+# =============================================================================
+# These endpoints manage persistent conversations stored in the database.
+
+
+@router.get("/chat/inbox")
+async def get_inbox_summary(
+    db: DbSession,
+    agent_slug: CurrentAgentSlug,
+) -> InboxSummaryResponse:
+    """Get A2A inbox summary for current agent."""
+    service = A2AService(db)
+    summary = await service.get_inbox_summary(agent_slug)
+    return InboxSummaryResponse(
+        total_unread=summary.total_unread,
+        conversations_with_unread=summary.conversations_with_unread,
+        pending_responses=summary.pending_responses,
+        unanswered_requests=summary.unanswered_requests,
+    )
+
+
+@router.get("/chat/pairs")
+async def list_pairs(
+    db: DbSession,
+    agent_slug: CurrentAgentSlug,
+) -> PairListResponse:
+    """List unique agent pairs for current agent."""
+    service = A2AService(db)
+    pairs = await service.list_pairs(agent_slug)
+    return PairListResponse(
+        items=[
+            PairResponse(
+                agent_a=p.agent_a,
+                agent_b=p.agent_b,
+                conversation_count=p.conversation_count,
+                total_unread=p.total_unread,
+                last_activity=p.last_activity,
+            )
+            for p in pairs
+        ],
+        total=len(pairs),
+    )
+
+
+@router.get("/chat/conversations")
+async def list_chat_conversations(
+    db: DbSession,
+    agent_slug: CurrentAgentSlug,
+    params: Annotated[ListConversationsParams, Depends()],
+) -> ConversationListResponse:
+    """List A2A conversations for current agent."""
+    service = A2AService(db)
+
+    status_filter = None
+    if params.status:
+        status_filter = A2AConversationStatus(params.status)
+
+    conversations = await service.list_conversations(
+        agent_slug=agent_slug,
+        status=status_filter,
+        with_agent=params.with_agent,
+        task_id=params.task_id,
+        limit=params.limit,
+    )
+
+    return ConversationListResponse(
+        items=[
+            ConversationSummaryResponse(
+                id=require_uuid(c.id),
+                other_agent=c.other_agent,
+                topic=c.topic,
+                task_id=require_uuid(c.task_id) if c.task_id else None,
+                status=c.status,
+                message_count=c.message_count,
+                unread_count=c.unread_count,
+                last_message_at=c.last_message_at,
+                last_message_preview=c.last_message_preview,
+            )
+            for c in conversations
+        ],
+        total=len(conversations),
+    )
+
+
+@router.post("/chat/conversations", status_code=status.HTTP_201_CREATED)
+async def create_conversation(
+    db: DbSession,
+    agent_slug: CurrentAgentSlug,
+    data: ConversationCreateRequest,
+) -> ConversationResponse:
+    """Start a new A2A conversation."""
+    service = A2AService(db)
+
+    try:
+        conv = await service.get_or_create_conversation(
+            agent_a=agent_slug,
+            agent_b=data.target_agent,
+            topic=data.topic,
+            task_id=data.task_id,
+        )
+    except A2AAccessDeniedError as e:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail={
+                "error": "A2A_ACCESS_DENIED",
+                "message": e.message,
+                "route_hint": e.route_hint,
+            },
+        ) from None
+
+    # Send initial message
+    await service.send_chat_message(
+        conversation_id=require_uuid(conv.id),
+        from_agent=agent_slug,
+        content=data.initial_message,
+        options={"requires_response": data.requires_response},
+    )
+
+    # Refresh conversation to get updated stats
+    refreshed = await service.get_conversation(require_uuid(conv.id), agent_slug)
+    if refreshed is None:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to retrieve created conversation",
+        )
+
+    await db.commit()
+
+    return ConversationResponse(
+        id=require_uuid(refreshed.id),
+        agent_a=refreshed.agent_a,
+        agent_b=refreshed.agent_b,
+        topic=refreshed.topic,
+        task_id=require_uuid(refreshed.task_id) if refreshed.task_id else None,
+        status=refreshed.status,
+        resolution=refreshed.resolution,
+        message_count=refreshed.message_count,
+        unread_by_a=refreshed.unread_by_a,
+        unread_by_b=refreshed.unread_by_b,
+        created_at=refreshed.created_at,
+        updated_at=refreshed.updated_at,
+        last_message_at=refreshed.last_message_at,
+    )
+
+
+@router.get("/chat/conversations/{conversation_id}")
+async def get_conversation(
+    conversation_id: str,
+    db: DbSession,
+    agent_slug: CurrentAgentSlug,
+) -> ConversationResponse:
+    """Get a specific conversation."""
+    service = A2AService(db)
+    conv = await service.get_conversation(require_uuid(conversation_id), agent_slug)
+
+    if conv is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Conversation not found: {conversation_id}",
+        )
+
+    return ConversationResponse(
+        id=require_uuid(conv.id),
+        agent_a=conv.agent_a,
+        agent_b=conv.agent_b,
+        topic=conv.topic,
+        task_id=require_uuid(conv.task_id) if conv.task_id else None,
+        status=conv.status,
+        resolution=conv.resolution,
+        message_count=conv.message_count,
+        unread_by_a=conv.unread_by_a,
+        unread_by_b=conv.unread_by_b,
+        created_at=conv.created_at,
+        updated_at=conv.updated_at,
+        last_message_at=conv.last_message_at,
+    )
+
+
+@router.post("/chat/conversations/{conversation_id}/close")
+async def close_conversation(
+    conversation_id: str,
+    db: DbSession,
+    agent_slug: CurrentAgentSlug,
+    data: ConversationCloseRequest | None = None,
+) -> None:
+    """Close a conversation."""
+    service = A2AService(db)
+
+    try:
+        await service.close_conversation(
+            conversation_id=require_uuid(conversation_id),
+            agent_slug=agent_slug,
+            resolution=data.resolution if data else None,
+        )
+    except ValueError as e:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=str(e),
+        ) from None
+
+    await db.commit()
+
+
+@router.get("/chat/conversations/{conversation_id}/messages")
+async def list_chat_messages(
+    conversation_id: str,
+    db: DbSession,
+    agent_slug: CurrentAgentSlug,
+    params: Annotated[ListMessagesParams, Depends()],
+) -> MessageListResponse:
+    """Get messages in a conversation."""
+    service = A2AService(db)
+
+    messages = await service.get_messages(
+        conversation_id=require_uuid(conversation_id),
+        agent_slug=agent_slug,
+        limit=params.limit + 1,  # +1 to detect has_more
+        before=params.before,
+    )
+
+    has_more = len(messages) > params.limit
+    if has_more:
+        messages = messages[: params.limit]
+
+    return MessageListResponse(
+        items=[
+            MessageResponse(
+                id=require_uuid(m.id),
+                conversation_id=require_uuid(m.conversation_id),
+                from_agent=m.from_agent,
+                content=m.content,
+                message_kind=m.message_kind,
+                response_to_id=(
+                    require_uuid(m.response_to_id) if m.response_to_id else None
+                ),
+                requires_response=m.requires_response,
+                read_at=m.read_at,
+                created_at=m.created_at,
+                edited_at=m.edited_at,
+            )
+            for m in messages
+        ],
+        total=len(messages),
+        has_more=has_more,
+    )
+
+
+@router.post(
+    "/chat/conversations/{conversation_id}/messages",
+    status_code=status.HTTP_201_CREATED,
+)
+async def send_chat_message(
+    conversation_id: str,
+    db: DbSession,
+    agent_slug: CurrentAgentSlug,
+    data: MessageCreateRequest,
+) -> MessageResponse:
+    """Send a message in a conversation."""
+    service = A2AService(db)
+
+    try:
+        msg = await service.send_chat_message(
+            conversation_id=require_uuid(conversation_id),
+            from_agent=agent_slug,
+            content=data.content,
+            options={
+                "message_kind": data.message_kind,
+                "response_to_id": data.response_to_id,
+                "requires_response": data.requires_response,
+            },
+        )
+    except ValueError as e:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=str(e),
+        ) from None
+
+    await db.commit()
+
+    return MessageResponse(
+        id=require_uuid(msg.id),
+        conversation_id=require_uuid(msg.conversation_id),
+        from_agent=msg.from_agent,
+        content=msg.content,
+        message_kind=msg.message_kind,
+        response_to_id=require_uuid(msg.response_to_id) if msg.response_to_id else None,
+        requires_response=msg.requires_response,
+        read_at=msg.read_at,
+        created_at=msg.created_at,
+        edited_at=msg.edited_at,
+    )
+
+
+@router.post("/chat/conversations/{conversation_id}/read", status_code=204)
+async def mark_read(
+    conversation_id: str,
+    db: DbSession,
+    agent_slug: CurrentAgentSlug,
+) -> None:
+    """Mark all messages in conversation as read."""
+    service = A2AService(db)
+    await service.mark_read(require_uuid(conversation_id), agent_slug)
+    await db.commit()
+
+
+@router.get("/chat/tasks/{task_id}/conversations")
+async def get_task_conversations(
+    task_id: str,
+    db: DbSession,
+    agent_slug: CurrentAgentSlug,
+) -> ConversationListResponse:
+    """Get A2A conversations linked to a specific task."""
+    service = A2AService(db)
+
+    conversations = await service.list_conversations(
+        agent_slug=agent_slug,
+        task_id=require_uuid(task_id),
+    )
+
+    return ConversationListResponse(
+        items=[
+            ConversationSummaryResponse(
+                id=require_uuid(c.id),
+                other_agent=c.other_agent,
+                topic=c.topic,
+                task_id=require_uuid(c.task_id) if c.task_id else None,
+                status=c.status,
+                message_count=c.message_count,
+                unread_count=c.unread_count,
+                last_message_at=c.last_message_at,
+                last_message_preview=c.last_message_preview,
+            )
+            for c in conversations
+        ],
+        total=len(conversations),
+    )

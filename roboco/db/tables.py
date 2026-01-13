@@ -27,6 +27,7 @@ from sqlalchemy.dialects.postgresql import ARRAY, UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from roboco.db.base import Base
+from roboco.models.a2a import A2AConversationStatus, A2AMessageKind
 from roboco.models.base import (
     AgentRole,
     AgentStatus,
@@ -205,6 +206,11 @@ class TaskTable(Base):
     )
     claimed_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True
+    )
+    claimed_by: Mapped[UUID | None] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("agents.id", ondelete="SET NULL"),
+        nullable=True,
     )
     started_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True
@@ -1224,4 +1230,168 @@ class IndexedDocumentTable(Base):
         # Prevent duplicate indexing of same source
         UniqueConstraint("index_type", "source_hash", name="uq_indexed_doc_source"),
         Index("ix_indexed_docs_type_time", "index_type", "indexed_at"),
+    )
+
+
+# =============================================================================
+# A2A CONVERSATION TABLE
+# =============================================================================
+
+
+class A2AConversationTable(Base):
+    """
+    Persistent A2A conversation between two agents.
+
+    Uses canonical ordering (agent_a < agent_b) for unique pair identification.
+    This enables persistent chat history across agent spawns.
+    """
+
+    __tablename__ = "a2a_conversations"
+
+    # Identity
+    id: Mapped[UUID] = mapped_column(
+        UUID(as_uuid=True), primary_key=True, default=uuid4
+    )
+
+    # The pair (canonical order: lexically smaller first)
+    agent_a: Mapped[str] = mapped_column(String(50), nullable=False, index=True)
+    agent_b: Mapped[str] = mapped_column(String(50), nullable=False, index=True)
+
+    # Context
+    topic: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    task_id: Mapped[UUID | None] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("tasks.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
+
+    # Status
+    status: Mapped[A2AConversationStatus] = mapped_column(
+        Enum(A2AConversationStatus),
+        nullable=False,
+        default=A2AConversationStatus.ACTIVE,
+        index=True,
+    )
+    resolution: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+    # Stats
+    message_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    unread_by_a: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    unread_by_b: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+
+    # Timestamps
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=lambda: datetime.now(UTC), nullable=False
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        default=lambda: datetime.now(UTC),
+        onupdate=lambda: datetime.now(UTC),
+        nullable=False,
+    )
+    last_message_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+
+    # Relationships
+    task: Mapped["TaskTable | None"] = relationship("TaskTable", lazy="select")
+    messages: Mapped[list["A2AMessageTable"]] = relationship(
+        "A2AMessageTable", back_populates="conversation", lazy="select"
+    )
+
+    __table_args__ = (
+        # Unique pair + topic combination
+        UniqueConstraint("agent_a", "agent_b", "topic", name="uq_a2a_pair_topic"),
+        # Ensure canonical ordering
+        # CheckConstraint("agent_a < agent_b", name="ck_a2a_agent_order"),
+        # Composite indexes
+        Index("ix_a2a_conv_pair", "agent_a", "agent_b"),
+        Index("ix_a2a_conv_status_updated", "status", "updated_at"),
+    )
+
+
+# =============================================================================
+# A2A MESSAGE TABLE
+# =============================================================================
+
+
+class A2AMessageTable(Base):
+    """
+    Individual message in persistent A2A conversation.
+
+    Supports threading via response_to_id and read tracking.
+    """
+
+    __tablename__ = "a2a_messages"
+
+    # Identity
+    id: Mapped[UUID] = mapped_column(
+        UUID(as_uuid=True), primary_key=True, default=uuid4
+    )
+    conversation_id: Mapped[UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("a2a_conversations.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+
+    # Sender (must be agent_a or agent_b from conversation)
+    from_agent: Mapped[str] = mapped_column(String(50), nullable=False, index=True)
+
+    # Content
+    content: Mapped[str] = mapped_column(Text, nullable=False)
+    message_kind: Mapped[A2AMessageKind] = mapped_column(
+        Enum(A2AMessageKind),
+        nullable=False,
+        default=A2AMessageKind.MESSAGE,
+    )
+
+    # Threading
+    response_to_id: Mapped[UUID | None] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("a2a_messages.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    requires_response: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False
+    )
+
+    # Read tracking
+    read_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+
+    # Timestamps
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        default=lambda: datetime.now(UTC),
+        nullable=False,
+        index=True,
+    )
+
+    # Edit support
+    edited_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    edit_history: Mapped[list[dict[str, Any]]] = mapped_column(JSON, default=list)
+
+    # Relationships
+    conversation: Mapped["A2AConversationTable"] = relationship(
+        "A2AConversationTable", back_populates="messages"
+    )
+    response_to: Mapped["A2AMessageTable | None"] = relationship(
+        "A2AMessageTable", remote_side=[id], lazy="select"
+    )
+
+    __table_args__ = (
+        # Composite indexes for message queries
+        Index("ix_a2a_msg_conv_created", "conversation_id", "created_at"),
+        Index("ix_a2a_msg_from_created", "from_agent", "created_at"),
+        # Partial index for pending responses
+        Index(
+            "ix_a2a_msg_pending",
+            "conversation_id",
+            postgresql_where=(requires_response.is_(True)),
+        ),
     )

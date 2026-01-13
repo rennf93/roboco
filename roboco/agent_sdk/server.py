@@ -69,7 +69,9 @@ async def receive_message(msg: A2AMessage) -> dict[str, str]:
     Receive A2A message from another agent.
 
     Messages are queued by priority for Claude Code to poll.
+    Also persists to database for conversation history.
     """
+    # Queue for immediate polling
     if msg.priority == MessagePriority.URGENT:
         urgent_inbox.append(msg)
         logger.info(
@@ -87,7 +89,40 @@ async def receive_message(msg: A2AMessage) -> dict[str, str]:
             skill=msg.skill,
         )
 
+    # Also persist to database for conversation history
+    # This enables resuming conversations across agent spawns
+    await _persist_received_message(msg)
+
     return {"status": "queued", "message_id": str(msg.id)}
+
+
+async def _persist_received_message(msg: A2AMessage) -> None:
+    """Persist received message to database via main API."""
+    try:
+        async with httpx.AsyncClient() as client:
+            # First, ensure conversation exists
+            conv_resp = await client.post(
+                f"{MAIN_API_URL}/api/v1/a2a/chat/conversations",
+                json={
+                    "target_agent": msg.from_agent,
+                    "topic": msg.skill,  # Use skill as topic
+                    "task_id": msg.task_id,
+                    "initial_message": msg.content,
+                    "requires_response": False,
+                },
+                headers={"X-Agent-ID": AGENT_ID},
+                timeout=5.0,
+            )
+            # Note: 409 conflict is ok - conversation already exists
+            if conv_resp.status_code not in (200, 201, 409):
+                logger.warning(
+                    "Failed to persist A2A message",
+                    status_code=conv_resp.status_code,
+                    from_agent=msg.from_agent,
+                )
+    except Exception as e:
+        # Don't fail receive if persistence fails
+        logger.warning("Failed to persist A2A message", error=str(e))
 
 
 # =============================================================================

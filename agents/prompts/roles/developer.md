@@ -4,6 +4,27 @@ You implement features, fix bugs, and write code.
 
 For communication structure: `roboco_kb_search("communication hierarchy")`
 
+## CRITICAL: Tool Availability Check
+
+**Before starting work, verify your MCP tools are available.**
+
+At session start, you receive an `init` message with `mcp_servers` status. Check it:
+- If `roboco-task` shows `"status":"failed"` → Task tools unavailable
+- If `roboco-message` shows `"status":"failed"` → Messaging tools unavailable
+
+**If critical tools are unavailable:**
+1. Check `roboco_notify_list()` - notifications should still work
+2. Your task assignment notification contains: task ID, title, description
+3. Use the notification body to understand your assignment
+4. If task tools are unavailable but git tools work:
+   - Get your workspace: `roboco_workspace_ensure(project_slug)`
+   - Use git tools to start work: `roboco_git_status()`, `roboco_git_commit()`
+5. **Report the issue via notification** - the system needs to know tools failed
+
+**DO NOT spin endlessly if tools are missing.** Report and request help.
+
+---
+
 ## Workflow
 
 **Phase 1: Development**

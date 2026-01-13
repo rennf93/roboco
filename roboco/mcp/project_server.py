@@ -301,7 +301,7 @@ async def _handle_project_update(
 
 
 async def _handle_workspace_ensure(
-    client: ApiClient, project_slug: str
+    client: ApiClient, project_slug: str, agent_id: str
 ) -> dict[str, Any]:
     """Handle workspace ensure request."""
     # First check project exists
@@ -337,23 +337,29 @@ async def _handle_workspace_ensure(
             {"status": git_resp.status_code, "detail": git_resp.text},
         )
 
+    # Compute full workspace path for agent
+    agent_team = get_agent_team(agent_id)
+    workspace_path = f"/data/workspaces/{project_slug}/{agent_team}/{agent_id}"
+
     git_status = git_resp.json()
+    guidance = (
+        f"Workspace ready at {workspace_path}. "
+        "Use roboco_git_* MCP tools for git operations."
+    )
     return {
         "status": "success",
         "data": {
             "exists": True,
             "branch": git_status.get("current_branch"),
             "has_uncommitted": git_status.get("has_changes", False),
+            "path": workspace_path,
         },
-        "guidance": (
-            "Workspace ready. Use roboco_git_* MCP tools for git operations. "
-            f"Direct filesystem access at /data/workspaces/{project_slug}/..."
-        ),
+        "guidance": guidance,
     }
 
 
 async def _handle_workspace_status(
-    client: ApiClient, project_slug: str
+    client: ApiClient, project_slug: str, agent_id: str
 ) -> dict[str, Any]:
     """Handle workspace status request."""
     try:
@@ -363,11 +369,19 @@ async def _handle_workspace_status(
             "CONNECTION_ERROR", f"Failed to connect: {type(e).__name__}"
         )
 
+    # Compute full workspace path for agent
+    agent_team = get_agent_team(agent_id)
+    workspace_path = f"/data/workspaces/{project_slug}/{agent_team}/{agent_id}"
+
     if resp.is_status(status.HTTP_404_NOT_FOUND):
+        not_found_guidance = (
+            f"Workspace not found at {workspace_path}. "
+            "Use roboco_workspace_ensure() to create."
+        )
         return {
             "status": "success",
-            "data": {"exists": False},
-            "guidance": "Workspace not found. Use roboco_workspace_ensure() to create.",
+            "data": {"exists": False, "path": workspace_path},
+            "guidance": not_found_guidance,
         }
 
     if not resp.ok:
@@ -378,6 +392,10 @@ async def _handle_workspace_status(
         )
 
     git_status = resp.json()
+    ready_guidance = (
+        f"Workspace ready at {workspace_path}. "
+        "Use roboco_git_* MCP tools for git operations."
+    )
     return {
         "status": "success",
         "data": {
@@ -386,12 +404,9 @@ async def _handle_workspace_status(
             "has_uncommitted": git_status.get("has_changes", False),
             "staged_files": git_status.get("staged_files", []),
             "unstaged_files": git_status.get("unstaged_files", []),
+            "path": workspace_path,
         },
-        "guidance": (
-            "Workspace ready. Use roboco_git_* MCP tools for git operations "
-            "(commit, push, branch, etc). Direct filesystem access is available "
-            f"at /data/workspaces/{project_slug}/... for your agent."
-        ),
+        "guidance": ready_guidance,
     }
 
 
@@ -499,24 +514,25 @@ def create_project_mcp_server(agent_id: str) -> FastMCP:
             project_slug: Project to create workspace for
 
         Returns:
-            Workspace path and status
+            Workspace path and status including full filesystem path
         """
-        return await _handle_workspace_ensure(client, project_slug)
+        return await _handle_workspace_ensure(client, project_slug, agent_id)
 
     @mcp.tool()
     async def roboco_workspace_status(project_slug: str) -> dict[str, Any]:
         """
         Get your workspace status for a project.
 
-        Returns whether workspace exists, current branch, and changes.
+        Returns whether workspace exists, current branch, changes, and your
+        full filesystem path for direct file access.
 
         Args:
             project_slug: Project to check workspace for
 
         Returns:
-            Workspace status
+            Workspace status including path
         """
-        return await _handle_workspace_status(client, project_slug)
+        return await _handle_workspace_status(client, project_slug, agent_id)
 
     # -------------------------------------------------------------------------
     # Tools available ONLY to PM/Board/CEO

@@ -17,7 +17,7 @@ from uuid import UUID
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy.orm import joinedload
+from sqlalchemy.orm import joinedload, selectinload
 
 from roboco.db.tables import (
     ChannelTable,
@@ -639,6 +639,61 @@ class MessagingService(BaseService):
         )
         return list(result.scalars().all())
 
+    async def _resolve_group_from_parent_tasks(
+        self,
+        task_ids: list[UUID],
+    ) -> GroupTable | None:
+        """
+        Resolve group by looking at parent tasks' sessions.
+
+        When creating a session for subtasks, inherit the group from
+        the parent task's session. This maintains proper hierarchy.
+
+        Args:
+            task_ids: Task IDs to check for parent sessions
+
+        Returns:
+            Group from parent task's session, or None if no parent has a session
+        """
+        from roboco.db.tables import TaskTable
+
+        for task_id in task_ids:
+            # Get the task to find its parent
+            task_result = await self.session.execute(
+                select(TaskTable).where(TaskTable.id == task_id)
+            )
+            task = task_result.scalar_one_or_none()
+
+            if not task or not task.parent_task_id:
+                continue
+
+            # Find parent task's primary session
+            parent_session_link = await self.session.execute(
+                select(SessionTaskTable)
+                .where(
+                    SessionTaskTable.task_id == task.parent_task_id,
+                    SessionTaskTable.is_primary.is_(True),
+                )
+                .options(
+                    selectinload(SessionTaskTable.session).selectinload(
+                        SessionTable.group
+                    )
+                )
+            )
+            link = parent_session_link.scalar_one_or_none()
+
+            if link and link.session and link.session.group:
+                self.log.info(
+                    "Inherited group from parent task's session",
+                    task_id=str(task_id),
+                    parent_task_id=str(task.parent_task_id),
+                    group_id=str(link.session.group.id),
+                    group_name=link.session.group.name,
+                )
+                return link.session.group
+
+        return None
+
     async def create_session_for_tasks(
         self,
         req: SessionForTasksCreate,
@@ -665,8 +720,11 @@ class MessagingService(BaseService):
         if not channel:
             raise NotFoundError(f"Channel '{req.channel_slug}' not found")
 
-        # Use provided group_id or fall back to first group in channel
+        # Resolve group: explicit > inherited from parent > fallback to first
+        group: GroupTable | None = None
+
         if req.group_id:
+            # Explicit group_id provided
             group_result = await self.session.execute(
                 select(GroupTable).where(GroupTable.id == req.group_id)
             )
@@ -674,10 +732,24 @@ class MessagingService(BaseService):
             if not group:
                 raise NotFoundError(f"Group '{req.group_id}' not found")
         else:
-            groups = await self.list_groups_in_channel(cast("UUID", channel.id))
-            if not groups:
-                raise ValueError(f"No groups found in channel '{req.channel_slug}'")
-            group = groups[0]
+            # Try to inherit group from parent task's session
+            group = await self._resolve_group_from_parent_tasks(req.task_ids)
+
+            if not group:
+                # Fall back to first group in channel (last resort)
+                groups = await self.list_groups_in_channel(cast("UUID", channel.id))
+                if not groups:
+                    raise ValueError(
+                        f"No groups found in channel '{req.channel_slug}'. "
+                        "Create a group first or specify group_id."
+                    )
+                group = groups[0]
+                self.log.warning(
+                    "Session created without explicit group, using first group",
+                    channel_slug=req.channel_slug,
+                    group_name=group.name,
+                    task_ids=[str(t) for t in req.task_ids],
+                )
 
         # Create session with config and scope
         session_req = SessionCreateRequest(

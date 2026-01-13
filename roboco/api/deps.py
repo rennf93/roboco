@@ -121,6 +121,36 @@ async def get_current_agent_id(
 CurrentAgentId = Annotated[UUID, Depends(get_current_agent_id)]
 
 
+async def get_current_agent_slug(
+    x_agent_id: Annotated[str | None, Header()] = None,
+) -> str:
+    """
+    Get the current agent slug from request headers.
+
+    Unlike get_current_agent_id, this returns the slug directly without
+    resolving to UUID. Useful for A2A where we work with agent slugs.
+
+    Args:
+        x_agent_id: Agent slug from X-Agent-ID header
+
+    Returns:
+        Agent slug string
+
+    Raises:
+        HTTPException: If agent ID header is missing
+    """
+    if not x_agent_id:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Missing X-Agent-ID header",
+        )
+    return x_agent_id
+
+
+# Type alias for agent slug dependency
+CurrentAgentSlug = Annotated[str, Depends(get_current_agent_slug)]
+
+
 async def get_optional_agent_id(
     db: DbSession,
     x_agent_id: Annotated[str | None, Header()] = None,

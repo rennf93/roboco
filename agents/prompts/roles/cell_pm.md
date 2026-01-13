@@ -31,17 +31,56 @@ Create session for YOUR task with `roboco_session_create_for_tasks()`. Subtasks 
 
 ### 4. SUBTASKS
 
-**CRITICAL: Always set `parent_task_id` to YOUR task ID.** Without this, you create orphan tasks, not subtasks.
+## CRITICAL: Task Lifecycle vs. Separate Tasks
+
+**DO NOT create separate tasks for Dev, QA, and Documenter!**
+
+A task AUTOMATICALLY flows through the lifecycle:
+```
+Developer → QA → Documenter → PM Review
+pending → claimed → in_progress → awaiting_qa → awaiting_documentation → awaiting_pm_review → completed
+```
+
+**WRONG approach (duplicates work):**
+```
+❌ Create "Feature X - Development" → assign to be-dev-1
+❌ Create "Feature X - QA Review" → assign to be-qa
+❌ Create "Feature X - Documentation" → assign to be-doc
+```
+
+**CORRECT approach (one task flows through roles):**
+```
+✅ Create "Implement Feature X" → assign to be-dev-1
+   - Dev completes → task moves to awaiting_qa (QA auto-notified)
+   - QA completes → task moves to awaiting_documentation (Doc auto-notified)
+   - Doc completes → task moves to awaiting_pm_review (You review)
+   - You complete the task
+```
+
+**When to create MULTIPLE subtasks:**
+- Parallel work (e.g., "API endpoint" + "Database schema" can be done simultaneously)
+- Different features that are independent
+- Large tasks that need to be broken down into smaller chunks
+
+**When to create ONE subtask:**
+- A single unit of work that goes through dev → QA → docs → review
+
+---
+
+**Always set `parent_task_id` to YOUR task ID.** Without this, you create orphan tasks, not subtasks.
 
 ```python
 # Get YOUR task ID first
 my_task = roboco_task_get(task_id)
 
-# Create SUBTASK with parent_task_id
+# Create ONE SUBTASK for the developer - it will flow through the lifecycle
 roboco_task_create(
     title="Implement user auth endpoint",
     parent_task_id=my_task["id"],  # REQUIRED - links to your task
-    assigned_to="be-dev-1",  # USE SLUG
+    assigned_to="be-dev-1",  # Developer - task will flow to QA/Doc automatically
+    task_type="code",
+    requires_git=True,
+    team="backend",
     ...
 )
 ```
@@ -56,6 +95,11 @@ roboco_task_create(
 - Completion tracking breaks
 - Your task can't complete
 
+**Task Types for Subtasks:**
+- Use `task_type: "code"` for developer work that modifies files
+- Use `requires_git: true` for code changes
+- Use `task_type: "research"` for investigation without code changes
+
 ### 5. ACTIVATE
 `roboco_task_activate()` moves backlog → pending. Now visible to devs.
 
@@ -65,8 +109,37 @@ roboco_task_create(
 ### 7. PAUSE + IDLE
 `roboco_task_pause()` with checkpoint, then `roboco_agent_idle()`.
 
-### 8. MONITOR
+### 8. MONITOR + HANDLE BLOCKERS
 When respawned: scan, read journals, update progress, handle blockers.
+
+**CRITICAL: When you resolve a blocker, you MUST call `roboco_task_unblock()`!**
+
+Blocker resolution workflow:
+1. Developer calls `roboco_task_block()` → task status becomes `blocked`
+2. Developer escalates to you with `roboco_task_escalate()`
+3. You receive notification and investigate
+4. You fix the issue (create branch, resolve dependency, etc.)
+5. **YOU MUST CALL `roboco_task_unblock(task_id, resolution_notes)`**
+6. Task returns to `in_progress`, developer is notified and respawned
+
+```python
+# After resolving a blocker:
+roboco_task_unblock(
+    task_id="...",
+    resolution="Created missing branch manually. Developer can now proceed."
+)
+```
+
+**DO NOT:**
+- ❌ Just message the developer and hope they figure it out
+- ❌ Create new duplicate tasks instead of unblocking
+- ❌ Move tasks to random statuses manually
+- ❌ Claim the blocked task yourself (it's assigned to the developer!)
+
+**DO:**
+- ✅ Fix the root cause
+- ✅ Call `roboco_task_unblock()` with clear resolution notes
+- ✅ The system will notify and respawn the developer automatically
 
 ### 9. REVIEW PR (Git Tasks)
 When subtasks reach `awaiting_pm_review`:

@@ -446,3 +446,155 @@ def a2a_state_to_task_status(a2a_state: A2ATaskState) -> str:
         A2ATaskState.AUTH_REQUIRED: "blocked",
     }
     return mapping.get(a2a_state, "pending")
+
+
+# =============================================================================
+# PERSISTENT A2A CONVERSATION MODELS
+# =============================================================================
+# These models represent persistent storage for agent-to-agent conversations.
+# Unlike the A2A protocol models above (which are for wire format), these are
+# stored in the database to maintain conversation history across agent spawns.
+
+
+class A2AConversationStatus(str, Enum):
+    """A2A conversation states."""
+
+    ACTIVE = "active"
+    PAUSED = "paused"
+    CLOSED = "closed"
+
+
+class A2AMessageKind(str, Enum):
+    """Types of persistent A2A messages."""
+
+    MESSAGE = "message"  # Regular message
+    REQUEST = "request"  # Explicit request for help
+    RESPONSE = "response"  # Reply to request
+    SYSTEM = "system"  # System-generated (e.g., "conversation closed")
+
+
+class A2AConversation(RobocoBase):
+    """
+    Persistent A2A conversation between two agents.
+
+    Uses canonical ordering (agent_a < agent_b) for unique pair identification.
+    Stored in database to maintain history across agent spawns.
+    """
+
+    id: str = Field(default_factory=lambda: str(uuid4()))
+    # The pair (canonical order: lexically smaller first)
+    agent_a: str = Field(..., description="First agent slug (lexically smaller)")
+    agent_b: str = Field(..., description="Second agent slug (lexically larger)")
+
+    # Context
+    topic: str | None = Field(default=None, description="Optional conversation topic")
+    task_id: str | None = Field(default=None, description="Optional linked task UUID")
+
+    # Status
+    status: A2AConversationStatus = A2AConversationStatus.ACTIVE
+    resolution: str | None = Field(default=None, description="Why conversation closed")
+
+    # Stats
+    message_count: int = Field(default=0, description="Total messages in conversation")
+    unread_by_a: int = Field(default=0, description="Unread count for agent_a")
+    unread_by_b: int = Field(default=0, description="Unread count for agent_b")
+
+    # Timestamps
+    created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
+    updated_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
+    last_message_at: datetime | None = None
+
+    def other_agent(self, my_slug: str) -> str:
+        """Get the other agent's slug."""
+        return self.agent_b if my_slug == self.agent_a else self.agent_a
+
+    def my_unread(self, my_slug: str) -> int:
+        """Get my unread count."""
+        return self.unread_by_a if my_slug == self.agent_a else self.unread_by_b
+
+    def is_participant(self, agent_slug: str) -> bool:
+        """Check if agent is a participant in this conversation."""
+        return agent_slug in (self.agent_a, self.agent_b)
+
+
+class A2AChatMessage(RobocoBase):
+    """
+    Individual message in persistent A2A conversation.
+
+    Distinct from A2AMessage (protocol format) - this is for database storage.
+    """
+
+    id: str = Field(default_factory=lambda: str(uuid4()))
+    conversation_id: str = Field(..., description="Parent conversation ID")
+
+    # Sender (must be agent_a or agent_b from conversation)
+    from_agent: str = Field(..., description="Agent slug who sent this message")
+
+    # Content
+    content: str = Field(..., description="Message content")
+    message_kind: A2AMessageKind = Field(
+        default=A2AMessageKind.MESSAGE, description="Type of message"
+    )
+
+    # Threading
+    response_to_id: str | None = Field(
+        default=None, description="ID of message this replies to"
+    )
+    requires_response: bool = Field(
+        default=False, description="Whether sender is waiting for response"
+    )
+
+    # Read tracking
+    read_at: datetime | None = Field(
+        default=None, description="When other party read this message"
+    )
+
+    # Timestamps
+    created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
+
+    # Edit support (like existing messages)
+    edited_at: datetime | None = None
+    edit_history: list[dict[str, Any]] = Field(default_factory=list)
+
+
+class A2AInboxSummary(RobocoBase):
+    """Summary of pending A2A for an agent."""
+
+    total_unread: int = Field(default=0, description="Total unread messages")
+    conversations_with_unread: int = Field(
+        default=0, description="Number of conversations with unread messages"
+    )
+    pending_responses: int = Field(
+        default=0, description="Messages where I'm waiting for response"
+    )
+    unanswered_requests: int = Field(
+        default=0, description="Messages where they're waiting for my response"
+    )
+
+
+class A2AConversationSummary(RobocoBase):
+    """Summary of an A2A conversation for list views."""
+
+    id: str
+    other_agent: str = Field(..., description="The other agent's slug")
+    topic: str | None = None
+    task_id: str | None = None
+    status: A2AConversationStatus
+    message_count: int
+    unread_count: int = Field(description="Unread messages for requesting agent")
+    last_message_at: datetime | None
+    last_message_preview: str | None = Field(
+        default=None, description="Truncated last message content"
+    )
+
+
+class A2APair(RobocoBase):
+    """Unique agent pair for frontend display."""
+
+    agent_a: str
+    agent_b: str
+    conversation_count: int = Field(
+        default=0, description="Number of conversations between this pair"
+    )
+    total_unread: int = Field(default=0, description="Total unread across all convos")
+    last_activity: datetime | None = None

@@ -2389,17 +2389,21 @@ Begin with step 1: roboco_task_get("{task_id}")
 
     async def _dispatch_dev_work(self, client: httpx.AsyncClient) -> None:
         """
-        Dispatch assigned pending work to the assigned agent.
+        Dispatch assigned work to the assigned agent.
 
-        NOTE: This handles PRE-ASSIGNED tasks (assigned by PM) and
-        needs_revision tasks. New unassigned pending tasks are handled by
+        NOTE: This handles PRE-ASSIGNED tasks (assigned by PM),
+        needs_revision tasks, and in_progress tasks where agent is not active
+        (e.g., after unblock). New unassigned pending tasks are handled by
         _dispatch_pm_work() which routes them through the PM hierarchy.
 
-        Monitors: assigned pending tasks, needs_revision tasks
+        Monitors: assigned pending tasks, needs_revision tasks, orphaned in_progress
         Spawns: Any assigned agent (dev, doc, qa) with appropriate prompt
         """
         # Get tasks needing attention
-        tasks = await self._fetch_tasks(client, ["pending", "needs_revision"])
+        # Include in_progress to catch unblocked tasks that need agent respawn
+        tasks = await self._fetch_tasks(
+            client, ["pending", "needs_revision", "in_progress"]
+        )
 
         for task in tasks:
             team = task.get("team")
@@ -2413,6 +2417,22 @@ Begin with step 1: roboco_task_get("{task_id}")
             # For needs_revision, spawn the assigned dev to fix
             if task.get("status") == "needs_revision" and agent_slug:
                 if not self._is_agent_active(agent_slug):
+                    await self.spawn_agent(
+                        agent_id=agent_slug,
+                        task_id=task["id"],
+                        initial_prompt=self._build_dev_prompt(task),
+                    )
+                continue
+
+            # For in_progress tasks where agent is NOT active (e.g., after unblock),
+            # respawn them to continue their work
+            if task.get("status") == "in_progress" and agent_slug:
+                if not self._is_agent_active(agent_slug):
+                    logger.info(
+                        "Respawning agent for orphaned in_progress task",
+                        task_id=task["id"],
+                        agent=agent_slug,
+                    )
                     await self.spawn_agent(
                         agent_id=agent_slug,
                         task_id=task["id"],

@@ -48,7 +48,6 @@ from roboco.api.schemas.git import (
     GitStatusResponse,
 )
 from roboco.exceptions import GitCommandError, GitTimeoutError
-from roboco.models.base import TaskStatus
 from roboco.services.base import NotFoundError, ServiceError, ValidationError
 from roboco.services.git import get_git_service
 from roboco.services.project import get_project_service
@@ -397,15 +396,9 @@ async def create_branch(
 
         await task_service.update(task_uuid, branch_name=branch_name)
 
-        children = await task_service.get_subtasks(task_uuid)
-        for child in children:
-            if (
-                child.status == TaskStatus.BACKLOG
-                and child.requires_git
-                and not child.branch_name
-            ):
-                child_uuid = UUID(str(child.id))
-                await task_service.update(child_uuid, branch_name=branch_name)
+        # NOTE: Do NOT propagate branch_name to children.
+        # Each task creates its OWN branch when claimed, forking from parent's branch.
+        # Children's branches follow hierarchy: parent--child--grandchild
 
         await db.commit()
     except ServiceError as e:
