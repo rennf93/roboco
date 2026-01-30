@@ -74,7 +74,11 @@ from roboco.services.optimal import (
     QueryContext,
     get_optimal_service,
 )
-from roboco.services.optimal_brain import get_mentor_service, get_reviewer_service
+from roboco.services.optimal_brain import (
+    get_mentor_service,
+    get_reviewer_service,
+    get_validator_service,
+)
 
 router = APIRouter()
 
@@ -1081,22 +1085,62 @@ async def validate_action(
 ) -> ValidateActionResponse:
     """
     Validate an action against organizational standards.
+
+    Uses LLM-based analysis to check the provided context against relevant
+    standards from the knowledge base. Returns violations (blocking) and
+    warnings (non-blocking) with suggestions for remediation.
     """
     _ = agent  # Used for authentication
-    service = await get_optimal_service()
 
-    # Get relevant standards for the action type
-    # TODO: Use LLM to check request.context against standards
-    results = await service.get_standards(
-        domain=request.action_type,  # Use action_type as domain filter
+    # Get the validator service
+    validator = await get_validator_service()
+    optimal_service = await get_optimal_service()
+
+    # Initialize validator if not already initialized
+    if validator._optimal_service is None:
+        await validator.initialize(optimal_service)
+
+    # Detect language from context if not provided
+    language = getattr(request, "language", None)
+    if language is None:
+        # Try to infer language from context
+        context_lower = request.context.lower()
+        if "def " in context_lower or "import " in context_lower:
+            language = "python"
+        elif "function " in context_lower or "const " in context_lower:
+            language = "typescript"
+
+    # Perform validation
+    result = await validator.validate(
+        action_type=request.action_type,
+        context=request.context,
+        language=language,
     )
 
-    # For now, return all as allowed with no violations
-    # In production, this would use an LLM to check the context against standards
     return ValidateActionResponse(
-        allowed=True,
-        violations=[],
-        warnings=[],
+        allowed=result.allowed,
+        violations=[
+            {
+                "rule_id": v.get("rule_id", "UNKNOWN"),
+                "rule_title": v.get("rule_title", "Unknown Rule"),
+                "message": v.get("message", ""),
+                "severity": v.get("severity", "error"),
+                "line_number": v.get("line_number"),
+                "suggestion": v.get("suggestion"),
+            }
+            for v in result.violations
+        ],
+        warnings=[
+            {
+                "rule_id": w.get("rule_id", "UNKNOWN"),
+                "rule_title": w.get("rule_title", "Unknown Rule"),
+                "message": w.get("message", ""),
+                "severity": w.get("severity", "warning"),
+                "line_number": w.get("line_number"),
+                "suggestion": w.get("suggestion"),
+            }
+            for w in result.warnings
+        ],
         relevant_standards=[
             SearchResultResponse(
                 content=r.content,
@@ -1105,7 +1149,7 @@ async def validate_action(
                 index_type=r.index_type.value,
                 metadata=r.metadata,
             )
-            for r in results[:5]
+            for r in result.relevant_standards[:5]
         ],
     )
 

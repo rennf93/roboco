@@ -2,21 +2,59 @@
 Validator Service
 
 Validates agent actions against organizational standards indexed in the
-knowledge base. Parses markdown standards files and provides rule-based
-validation with violation reporting.
+knowledge base. Uses LLM-based analysis to detect violations and provide
+actionable feedback.
 """
 
+import asyncio
+import json
 import re
 from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
 from typing import Any
 
+import httpx
 import structlog
 
+from roboco.config import settings
 from roboco.models.optimal import SearchResult, ValidationResult
 
 logger = structlog.get_logger()
+
+# LLM timeout for validation calls
+LLM_TIMEOUT_SECONDS = 60.0
+
+# System prompt for LLM-based validation
+VALIDATION_SYSTEM_PROMPT = """You are a code standards validator. Your job is to check if code or actions violate organizational standards.
+
+You will be given:
+1. An action type (what the agent is trying to do)
+2. Context (the code or content to validate)
+3. Relevant standards from the knowledge base
+
+Analyze the context against EACH standard and identify any violations.
+
+IMPORTANT: Be thorough but fair. Only flag actual violations, not stylistic preferences.
+
+Respond in this exact JSON format:
+{
+    "violations": [
+        {
+            "rule_id": "RULE-ID from standard",
+            "rule_title": "Title of the rule",
+            "message": "Clear explanation of what violates the rule",
+            "severity": "error|warning|info",
+            "line_number": null or line number if applicable,
+            "suggestion": "How to fix this violation"
+        }
+    ],
+    "summary": "Brief summary of validation result"
+}
+
+If there are no violations, return: {"violations": [], "summary": "No violations found"}
+
+Do NOT include any text outside the JSON. Do NOT use markdown code blocks."""
 
 
 class RuleSeverity(Enum):
@@ -263,8 +301,8 @@ class ValidatorService:
     """
     Validates agent actions against organizational standards.
 
-    Uses semantic search to find relevant rules, then applies
-    pattern matching and heuristics to detect violations.
+    Uses LLM-based analysis to detect violations, with fallback to
+    heuristic pattern matching when LLM is unavailable.
     """
 
     def __init__(self) -> None:
@@ -272,6 +310,7 @@ class ValidatorService:
         self._optimal_service: Any = None
         self._rules_cache: list[ParsedRule] = []
         self._rules_indexed = False
+        self._llm_available = True  # Assume available, set False on failure
 
     async def initialize(
         self,
@@ -290,7 +329,25 @@ class ValidatorService:
         if standards_dir:
             await self.index_standards(standards_dir)
 
-        logger.info("ValidatorService initialized")
+        # Test LLM connectivity
+        await self._test_llm_connectivity()
+
+        logger.info(
+            "ValidatorService initialized",
+            llm_available=self._llm_available,
+        )
+
+    async def _test_llm_connectivity(self) -> None:
+        """Test if LLM is available for validation."""
+        try:
+            async with httpx.AsyncClient(timeout=10.0) as client:
+                response = await client.get(
+                    f"{settings.local_llm_base_url}/models"
+                )
+                self._llm_available = response.is_success
+        except Exception as e:
+            logger.warning("LLM not available for validation", error=str(e))
+            self._llm_available = False
 
     async def index_standards(self, standards_dir: Path | str) -> int:
         """
@@ -351,7 +408,7 @@ class ValidatorService:
         language: str | None = None,
     ) -> ValidationResult:
         """
-        Validate an action against relevant standards.
+        Validate an action against relevant standards using LLM analysis.
 
         Args:
             action_type: Type of action (e.g., "write_code", "api_call")
@@ -371,11 +428,210 @@ class ValidatorService:
             language=language,
         )
 
-        # Check context against each relevant rule
+        if not relevant_standards:
+            logger.info(
+                "No relevant standards found for validation",
+                action_type=action_type,
+                domain=domain,
+            )
+            return ValidationResult(
+                allowed=True,
+                violations=[],
+                warnings=[],
+                relevant_standards=[],
+            )
+
+        # Use LLM-based validation if available, otherwise fall back to heuristics
+        if self._llm_available:
+            try:
+                violations, warnings = await self._validate_with_llm(
+                    action_type=action_type,
+                    context=context,
+                    standards=relevant_standards,
+                )
+            except Exception as e:
+                logger.warning(
+                    "LLM validation failed, using heuristics",
+                    error=str(e),
+                )
+                violations, warnings = self._validate_with_heuristics(
+                    context=context,
+                    standards=relevant_standards,
+                    action_type=action_type,
+                )
+        else:
+            violations, warnings = self._validate_with_heuristics(
+                context=context,
+                standards=relevant_standards,
+                action_type=action_type,
+            )
+
+        allowed = len(violations) == 0
+
+        logger.info(
+            "Validation complete",
+            action_type=action_type,
+            allowed=allowed,
+            violations=len(violations),
+            warnings=len(warnings),
+            standards_checked=len(relevant_standards),
+        )
+
+        return ValidationResult(
+            allowed=allowed,
+            violations=violations,
+            warnings=warnings,
+            relevant_standards=relevant_standards,
+        )
+
+    async def _validate_with_llm(
+        self,
+        action_type: str,
+        context: str,
+        standards: list[SearchResult],
+    ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+        """
+        Use LLM to validate context against standards.
+
+        Returns:
+            Tuple of (violations, warnings)
+        """
+        # Build the standards context for the LLM
+        standards_text = self._build_standards_context(standards)
+
+        # Build the user prompt
+        user_prompt = f"""ACTION TYPE: {action_type}
+
+CONTEXT TO VALIDATE:
+```
+{context[:4000]}
+```
+
+RELEVANT STANDARDS:
+{standards_text}
+
+Analyze the context and identify any violations of the standards above.
+Return your analysis as JSON."""
+
+        try:
+            async with asyncio.timeout(LLM_TIMEOUT_SECONDS):
+                async with httpx.AsyncClient(timeout=LLM_TIMEOUT_SECONDS) as client:
+                    response = await client.post(
+                        f"{settings.local_llm_base_url}/chat/completions",
+                        json={
+                            "model": settings.local_llm_model,
+                            "messages": [
+                                {"role": "system", "content": VALIDATION_SYSTEM_PROMPT},
+                                {"role": "user", "content": user_prompt},
+                            ],
+                            "max_tokens": 2048,
+                            "temperature": 0.1,  # Low temp for consistent analysis
+                            "options": {"num_ctx": 8192},
+                        },
+                    )
+
+                    if response.is_success:
+                        data = response.json()
+                        raw_response = data["choices"][0]["message"]["content"]
+                        return self._parse_llm_response(raw_response)
+                    else:
+                        logger.warning(
+                            "LLM validation call failed",
+                            status=response.status_code,
+                            error=response.text[:200],
+                        )
+                        raise RuntimeError(f"LLM call failed: {response.status_code}")
+
+        except (TimeoutError, asyncio.TimeoutError):
+            logger.warning("LLM validation timed out")
+            raise
+        except httpx.TimeoutException:
+            logger.warning("LLM validation HTTP timeout")
+            raise
+
+    def _build_standards_context(self, standards: list[SearchResult]) -> str:
+        """Build a formatted string of standards for the LLM."""
+        parts = []
+        for i, standard in enumerate(standards[:10], 1):  # Limit to 10 standards
+            # Extract rule ID if present
+            rule_id_match = re.search(r"([A-Z]{2,4}-\d{3})", standard.content)
+            rule_id = rule_id_match.group(1) if rule_id_match else f"RULE-{i:03d}"
+
+            parts.append(f"--- Standard {rule_id} ---")
+            parts.append(standard.content[:800])  # Limit each standard
+            parts.append("")
+
+        return "\n".join(parts)
+
+    def _parse_llm_response(
+        self,
+        raw_response: str,
+    ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+        """
+        Parse LLM response JSON into violations and warnings.
+
+        Returns:
+            Tuple of (violations, warnings)
+        """
         violations: list[dict[str, Any]] = []
         warnings: list[dict[str, Any]] = []
 
-        for standard in relevant_standards:
+        # Clean up the response - remove markdown code blocks if present
+        cleaned = raw_response.strip()
+        if cleaned.startswith("```"):
+            # Remove ```json and ``` markers
+            cleaned = re.sub(r"^```(?:json)?\s*", "", cleaned)
+            cleaned = re.sub(r"\s*```$", "", cleaned)
+
+        # Also handle <think> tags from some models
+        cleaned = re.sub(r"<think>.*?</think>", "", cleaned, flags=re.DOTALL)
+        cleaned = cleaned.strip()
+
+        try:
+            data = json.loads(cleaned)
+        except json.JSONDecodeError as e:
+            logger.warning(
+                "Failed to parse LLM validation response",
+                error=str(e),
+                response_preview=cleaned[:200],
+            )
+            return [], []
+
+        # Extract violations from response
+        for item in data.get("violations", []):
+            entry = {
+                "rule_id": item.get("rule_id", "UNKNOWN"),
+                "rule_title": item.get("rule_title", "Unknown Rule"),
+                "message": item.get("message", "Violation detected"),
+                "severity": item.get("severity", "error"),
+                "line_number": item.get("line_number"),
+                "suggestion": item.get("suggestion"),
+            }
+
+            severity = entry["severity"].lower()
+            if severity == "error":
+                violations.append(entry)
+            else:
+                warnings.append(entry)
+
+        return violations, warnings
+
+    def _validate_with_heuristics(
+        self,
+        context: str,
+        standards: list[SearchResult],
+        action_type: str,
+    ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+        """
+        Fallback heuristic-based validation when LLM is unavailable.
+
+        Returns:
+            Tuple of (violations, warnings)
+        """
+        violations: list[dict[str, Any]] = []
+        warnings: list[dict[str, Any]] = []
+
+        for standard in standards:
             violation = self._check_rule(standard, context, action_type)
             if violation:
                 entry = {
@@ -391,14 +647,7 @@ class ValidatorService:
                 else:
                     warnings.append(entry)
 
-        allowed = len(violations) == 0
-
-        return ValidationResult(
-            allowed=allowed,
-            violations=violations,
-            warnings=warnings,
-            relevant_standards=relevant_standards,
-        )
+        return violations, warnings
 
     def _action_to_domain(self, action_type: str) -> str:
         """Map action type to standards domain."""
