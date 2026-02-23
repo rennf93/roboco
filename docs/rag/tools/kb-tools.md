@@ -114,21 +114,67 @@ roboco_record_decision(params={
 })
 ```
 
-## Standards
+## Standards & Validation
+
+### Get Standards
 
 ```python
-# Get standards
 roboco_get_standards(domain="coding", language="python")
+```
 
-# Validate action
-roboco_validate_action(
+**Domains:** `coding`, `security`, `workflow`, `architecture`
+
+### Validate Action (LLM-Based)
+
+Uses LLM to check code/context against organizational standards.
+
+```python
+result = roboco_validate_action(
     action_type="create_endpoint",
-    context="Adding user API"
-)
-
-# Code review
-roboco_review_code(
-    code="def handle(...):",
-    file_path="src/api/auth.py"
+    context="""
+def create_user(email, password):
+    user = User(email=email, password=password)
+    db.add(user)
+    return user
+"""
 )
 ```
+
+**Returns:**
+
+```json
+{
+  "allowed": false,
+  "violations": [
+    {
+      "rule_id": "SEC-001",
+      "rule_title": "Password Hashing",
+      "message": "Password stored in plaintext",
+      "severity": "error",
+      "suggestion": "Hash password with bcrypt before storage"
+    }
+  ],
+  "warnings": [...],
+  "relevant_standards": [...]
+}
+```
+
+**How it works:**
+1. Searches KB for relevant standards based on `action_type`
+2. Sends standards + context to LLM for analysis
+3. Returns structured violations with fix suggestions
+4. Falls back to heuristic matching if LLM unavailable
+
+**Action types:** `create_endpoint`, `add_dependency`, `database_migration`, `auth_change`, `file_upload`, `external_api`
+
+### Code Review
+
+```python
+roboco_review_code(
+    code="def handle(...):",
+    file_path="src/api/auth.py",
+    change_type="modify"  # add, modify, delete
+)
+```
+
+**Returns:** Score (0-100), comments by severity, approval status
