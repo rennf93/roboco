@@ -667,7 +667,14 @@ async def handle_task_cancel(
 
 
 async def _check_in_progress_tasks(client: ApiClient) -> dict[str, Any] | None:
-    """Check for in-progress tasks. Returns error or None."""
+    """Check for in-progress tasks. Returns error or None.
+
+    If the scan itself fails (API unreachable etc.), we log and conservatively
+    allow the idle — an unreachable API is a bigger problem that the agent
+    can't resolve here, and blocking the idle handshake only compounds it.
+    """
+    import structlog
+
     try:
         scan_resp = await client.get("/tasks/my", params={"status": "in_progress"})
         if scan_resp.ok:
@@ -681,8 +688,11 @@ async def _check_in_progress_tasks(client: ApiClient) -> dict[str, Any] | None:
                     "You have in-progress tasks. Handle them before going idle.",
                     {"tasks": task_info},
                 )
-    except Exception:
-        pass
+    except Exception as e:
+        structlog.get_logger().warning(
+            "Failed to check in-progress tasks before idle",
+            error=str(e),
+        )
     return None
 
 

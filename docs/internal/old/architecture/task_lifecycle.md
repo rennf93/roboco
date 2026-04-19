@@ -164,7 +164,7 @@ The following roles can cancel tasks:
 
 ## Git Integration
 
-Tasks with `requires_git=True` have additional requirements:
+All tasks follow the git workflow:
 
 ### Git Workflow Requirements
 
@@ -190,25 +190,23 @@ During `awaiting_documentation`:
 Both must complete before transitioning to `awaiting_pm_review`.
 
 ```python
-def check_parallel_completion(docs_complete: bool, pr_created: bool, requires_git: bool = True) -> bool:
+def check_parallel_completion(docs_complete: bool, pr_created: bool) -> bool:
     """Check if parallel execution is complete."""
-    if not requires_git:
-        return docs_complete
     return docs_complete and pr_created
 ```
 
 ## Task Types
 
-Task types determine whether git workflow applies:
+All task types follow the git workflow:
 
-| Type | Git Required | Description |
-|------|-------------|-------------|
-| `code` | Yes | Technical work - full git workflow |
-| `documentation` | Optional | May or may not need git |
-| `research` | No | Investigation/analysis tasks |
-| `planning` | No | Planning and design tasks |
-| `design` | No | UX/UI design tasks |
-| `administrative` | No | Administrative tasks |
+| Type | Artifacts | Description |
+|------|-----------|-------------|
+| `code` | Source code | Technical work |
+| `documentation` | Docs files | Documentation updates |
+| `research` | Research notes | Investigation/analysis tasks |
+| `planning` | Plan docs | Planning and design tasks |
+| `design` | Design assets | UX/UI design tasks |
+| `administrative` | Process docs | Administrative tasks |
 
 ## Workflow Enforcement
 
@@ -235,7 +233,6 @@ validate_task_transition(
 from roboco.enforcement.task_lifecycle import GitContext
 
 git_ctx = GitContext(
-    requires_git=True,
     docs_complete=True,
     pr_created=True,
     pr_number=42,

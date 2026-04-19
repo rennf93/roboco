@@ -49,6 +49,13 @@ def validate_a2a_access(from_agent: str, to_agent: str) -> bool:
     Raises:
         A2AAccessDeniedError: If A2A not permitted
     """
+    if from_agent == to_agent:
+        raise A2AAccessDeniedError(
+            from_agent=from_agent,
+            to_agent=to_agent,
+            reason="cannot A2A yourself — use your own journal or task notes instead",
+        )
+
     allowed, error = can_a2a_direct(from_agent, to_agent)
 
     if not allowed:

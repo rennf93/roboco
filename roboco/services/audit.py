@@ -2,11 +2,13 @@
 Audit Service
 
 Logs permission denials and security events for visibility by Auditor and CEO.
-All audit logs are persisted and queryable.
+All audit logs are written to structured logs AND persisted to the
+`audit_log` table so the Auditor agent can query them.
 """
 
+from dataclasses import dataclass, field
 from datetime import UTC, datetime
-from typing import ClassVar
+from typing import Any, ClassVar
 from uuid import UUID
 
 from roboco.models.audit import (
@@ -15,6 +17,34 @@ from roboco.models.audit import (
     StateTransitionDenialContext,
 )
 from roboco.services.base import SingletonService
+
+
+@dataclass
+class _AuditEvent:
+    """Bundled fields for an audit row write.
+
+    Grouped into a dataclass so `_persist` stays under pylint's arg limit
+    and so we have one obvious shape for every call site.
+    """
+
+    event_type: str
+    agent_id: str | UUID | None = None
+    target_type: str | None = None
+    target_id: str | UUID | None = None
+    severity: str = "info"
+    details: dict[str, Any] = field(default_factory=dict)
+
+
+def _coerce_uuid(value: str | UUID | None) -> UUID | None:
+    """Best-effort coerce to UUID; returns None for slugs or invalid input."""
+    if value is None:
+        return None
+    if isinstance(value, UUID):
+        return value
+    try:
+        return UUID(str(value))
+    except (ValueError, AttributeError):
+        return None
 
 
 class AuditService(SingletonService):
@@ -42,6 +72,40 @@ class AuditService(SingletonService):
     service_name: ClassVar[str] = "audit"
 
     # =========================================================================
+    # PERSISTENCE HELPER
+    # =========================================================================
+
+    async def _persist(self, event: _AuditEvent) -> None:
+        """Write an audit row to the audit_log table.
+
+        Best-effort: failures are logged but never propagate, since audit
+        failures must not block the operation being audited. Uses its own
+        session so it doesn't depend on the caller holding one.
+        """
+        try:
+            from roboco.db.base import get_session_factory
+            from roboco.db.tables import AuditLogTable
+
+            session_factory = get_session_factory()
+            async with session_factory() as db:
+                row = AuditLogTable(
+                    event_type=event.event_type,
+                    agent_id=_coerce_uuid(event.agent_id),
+                    target_type=event.target_type,
+                    target_id=_coerce_uuid(event.target_id),
+                    severity=event.severity,
+                    details=dict(event.details or {}),
+                )
+                db.add(row)
+                await db.commit()
+        except Exception as e:
+            self.log.error(
+                "Failed to persist audit event",
+                event_type=event.event_type,
+                error=str(e),
+            )
+
+    # =========================================================================
     # LOGGING METHODS
     # =========================================================================
 
@@ -66,6 +130,20 @@ class AuditService(SingletonService):
             details=ctx.details,
             timestamp=datetime.now(UTC).isoformat(),
         )
+        await self._persist(
+            _AuditEvent(
+                event_type=AuditEventType.PERMISSION_DENIED.value,
+                agent_id=ctx.agent_id,
+                target_type=ctx.resource,
+                target_id=ctx.resource_id,
+                severity="warning",
+                details={
+                    "action": ctx.action,
+                    "reason": ctx.reason,
+                    **(ctx.details or {}),
+                },
+            )
+        )
 
     async def log_channel_access_denial(
         self,
@@ -83,6 +161,19 @@ class AuditService(SingletonService):
             access_type=access_type,
             reason=reason,
             timestamp=datetime.now(UTC).isoformat(),
+        )
+        await self._persist(
+            _AuditEvent(
+                event_type=AuditEventType.CHANNEL_ACCESS_DENIED.value,
+                agent_id=agent_id,
+                target_type="channel",
+                severity="warning",
+                details={
+                    "channel_slug": channel_slug,
+                    "access_type": access_type,
+                    "reason": reason,
+                },
+            )
         )
 
     async def log_task_action_denial(
@@ -104,6 +195,20 @@ class AuditService(SingletonService):
             reason=reason,
             timestamp=datetime.now(UTC).isoformat(),
         )
+        await self._persist(
+            _AuditEvent(
+                event_type=AuditEventType.TASK_ACTION_DENIED.value,
+                agent_id=agent_id,
+                target_type="task",
+                target_id=task_id,
+                severity="warning",
+                details={
+                    "agent_role": agent_role,
+                    "action": action,
+                    "reason": reason,
+                },
+            )
+        )
 
     async def log_state_transition_denial(
         self,
@@ -120,6 +225,21 @@ class AuditService(SingletonService):
             target_status=ctx.target_status,
             reason=ctx.reason,
             timestamp=datetime.now(UTC).isoformat(),
+        )
+        await self._persist(
+            _AuditEvent(
+                event_type=AuditEventType.STATE_TRANSITION_DENIED.value,
+                agent_id=ctx.agent_id,
+                target_type="task",
+                target_id=ctx.task_id,
+                severity="warning",
+                details={
+                    "agent_role": ctx.agent_role,
+                    "current_status": ctx.current_status,
+                    "target_status": ctx.target_status,
+                    "reason": ctx.reason,
+                },
+            )
         )
 
     async def log_notification_denial(
@@ -139,6 +259,19 @@ class AuditService(SingletonService):
             reason=reason,
             timestamp=datetime.now(UTC).isoformat(),
         )
+        await self._persist(
+            _AuditEvent(
+                event_type=AuditEventType.NOTIFICATION_DENIED.value,
+                agent_id=agent_id,
+                target_type="notification",
+                severity="warning",
+                details={
+                    "agent_role": agent_role,
+                    "notification_type": notification_type,
+                    "reason": reason,
+                },
+            )
+        )
 
     async def log_security_event(
         self,
@@ -155,6 +288,14 @@ class AuditService(SingletonService):
             description=description,
             details=details,
             timestamp=datetime.now(UTC).isoformat(),
+        )
+        await self._persist(
+            _AuditEvent(
+                event_type=event_type.value,
+                agent_id=agent_id,
+                severity="warning",
+                details={"description": description, **(details or {})},
+            )
         )
 
     async def log_pm_override(
@@ -180,6 +321,71 @@ class AuditService(SingletonService):
             cancelled_subtask_ids=cancelled_subtask_ids,
             timestamp=datetime.now(UTC).isoformat(),
         )
+        await self._persist(
+            _AuditEvent(
+                event_type=AuditEventType.PM_OVERRIDE.value,
+                agent_id=agent_id,
+                target_type="task",
+                target_id=task_id,
+                severity="info",
+                details={
+                    "action": action,
+                    "justification": justification,
+                    "cancelled_subtask_ids": cancelled_subtask_ids or [],
+                },
+            )
+        )
+
+    # =========================================================================
+    # QUERY METHODS
+    # =========================================================================
+
+    async def get_recent_events(
+        self,
+        limit: int = 50,
+        event_type: str | None = None,
+        agent_id: UUID | None = None,
+        min_severity: str | None = None,
+    ) -> list[dict[str, Any]]:
+        """Fetch recent audit events. Intended for the Auditor/CEO queries.
+
+        Returns a list of dicts rather than ORM rows so callers don't need
+        to keep a session open.
+        """
+        from sqlalchemy import select
+
+        from roboco.db.base import get_session_factory
+        from roboco.db.tables import AuditLogTable
+
+        session_factory = get_session_factory()
+        async with session_factory() as db:
+            query = select(AuditLogTable).order_by(AuditLogTable.timestamp.desc())
+            if event_type:
+                query = query.where(AuditLogTable.event_type == event_type)
+            if agent_id:
+                query = query.where(AuditLogTable.agent_id == agent_id)
+            if min_severity == "warning":
+                query = query.where(AuditLogTable.severity.in_(("warning", "error")))
+            elif min_severity == "error":
+                query = query.where(AuditLogTable.severity == "error")
+            query = query.limit(limit)
+
+            result = await db.execute(query)
+            rows = list(result.scalars().all())
+
+        return [
+            {
+                "id": str(r.id),
+                "event_type": r.event_type,
+                "agent_id": str(r.agent_id) if r.agent_id else None,
+                "target_type": r.target_type,
+                "target_id": str(r.target_id) if r.target_id else None,
+                "severity": r.severity,
+                "details": dict(r.details or {}),
+                "timestamp": r.timestamp.isoformat() if r.timestamp else None,
+            }
+            for r in rows
+        ]
 
 
 # =============================================================================

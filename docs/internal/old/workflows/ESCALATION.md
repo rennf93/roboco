@@ -79,7 +79,7 @@ roboco_task_escalate_to_ceo(
 
 **Requirements:**
 - Task must be in `awaiting_pm_review` status
-- For git tasks, PR must exist (`pr_number` must be set)
+- PR must exist (`pr_number` must be set)
 - Only PMs (cell_pm, main_pm) can escalate to CEO
 
 **Result:**

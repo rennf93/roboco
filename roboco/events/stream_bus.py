@@ -7,6 +7,8 @@ Replaces the pub/sub-based EventBus with persistence and consumer groups.
 
 import asyncio
 import contextlib
+import os
+import socket
 from collections.abc import Callable, Coroutine
 from typing import Any
 
@@ -46,7 +48,13 @@ class StreamEventBus:
         group_name: str | None = None,
     ):
         self.redis_url = redis_url or settings.redis_url
-        self.consumer_name = consumer_name or f"consumer-{id(self)}"
+        # Default consumer name is stable across restarts of the same process
+        # (host + pid), so pending messages don't get orphaned to a new
+        # id(self)-based name every time the orchestrator restarts. Redis
+        # consumer groups still auto-reassign via xclaim after idle_time.
+        self.consumer_name = consumer_name or (
+            f"consumer-{socket.gethostname()}-{os.getpid()}"
+        )
         self.group_name = group_name or self.DEFAULT_GROUP
         self._redis: redis.Redis | None = None
         self._handlers: dict[EventType, list[EventHandler]] = {}

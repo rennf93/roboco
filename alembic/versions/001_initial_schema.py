@@ -259,7 +259,6 @@ def upgrade() -> None:
             nullable=False,
             server_default="code",
         ),
-        sa.Column("requires_git", sa.Boolean(), nullable=False, server_default="true"),
         sa.Column(
             "nature",
             sa.Enum("technical", "non_technical", name="tasknature"),
@@ -269,8 +268,8 @@ def upgrade() -> None:
         sa.Column(
             "project_id",
             postgresql.UUID(as_uuid=True),
-            sa.ForeignKey("projects.id", ondelete="SET NULL"),
-            nullable=True,
+            sa.ForeignKey("projects.id", ondelete="RESTRICT"),
+            nullable=False,
             index=True,
         ),
         sa.Column("branch_name", sa.String(500), nullable=True),

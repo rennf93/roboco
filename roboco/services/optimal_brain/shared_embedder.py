@@ -56,7 +56,7 @@ OLLAMA_EMBEDDING_MODELS = {
 
 def _is_ollama_model(model: str) -> bool:
     """Check if model name is an Ollama embedding model."""
-    model_base = model.split(":")[0].lower()
+    model_base = model.split(":", maxsplit=1)[0].lower()
     return model_base in OLLAMA_EMBEDDING_MODELS
 
 
@@ -157,14 +157,18 @@ async def get_shared_embedder(
                     )
                     raise RuntimeError(f"Failed to load embedding model: {e}") from e
 
-            # Validate embedder implements required protocol methods
-            assert _SharedEmbedderHolder.instance is not None
+            # Validate embedder implements required protocol methods.
+            # Using explicit check (not assert) so this survives `python -O`.
+            if _SharedEmbedderHolder.instance is None:
+                raise RuntimeError(
+                    "Shared embedder construction succeeded but instance is None"
+                )
             _validate_embedder_protocol(_SharedEmbedderHolder.instance, model)
 
             logger.info("Shared embedder created successfully", model=model)
 
-        # At this point instance is guaranteed to be set (or exception raised)
-        assert _SharedEmbedderHolder.instance is not None
+        if _SharedEmbedderHolder.instance is None:
+            raise RuntimeError("Shared embedder not initialized")
         return _SharedEmbedderHolder.instance
 
 

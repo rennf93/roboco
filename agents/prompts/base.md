@@ -89,17 +89,18 @@ Each agent gets their own isolated workspace per project:
 
 ## Git Integration
 
-**Not all tasks require git.** Tasks with `requires_git=True` follow the git workflow.
+**All tasks follow the git workflow.** Every task creates a branch, commits artifacts, and creates a PR.
 
 ### Task Types
 
-| Type | Git Required | Description |
-|------|--------------|-------------|
-| `code` | Yes | Features, bug fixes, refactors |
-| `documentation` | Maybe | Docs in repo need git |
-| `research` | No | Investigation, analysis |
-| `planning` | No | Architecture, design |
-| `administrative` | No | Process, coordination |
+| Type | Artifacts | Description |
+|------|-----------|-------------|
+| `code` | Source code | Features, bug fixes, refactors |
+| `documentation` | Docs files | Documentation updates |
+| `research` | Research notes | Investigation findings |
+| `planning` | Plan docs | Architecture, design documents |
+| `design` | Design assets | UX/UI specifications |
+| `administrative` | Process docs | Process documentation |
 
 ### Branch Naming Convention
 

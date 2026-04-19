@@ -34,7 +34,7 @@ class WorkSessionService(BaseService):
     Service for managing git work sessions.
 
     Provides:
-    - Session creation when developer claims a git-enabled task
+    - Session creation when developer claims a task
     - Branch name generation following naming conventions
     - Commit and file tracking
     - PR lifecycle management
@@ -98,7 +98,7 @@ class WorkSessionService(BaseService):
         """
         Create a new work session.
 
-        Called when a developer claims a git-enabled task.
+        Called when a developer claims a task.
 
         Args:
             data: Work session creation data

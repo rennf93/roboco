@@ -659,19 +659,21 @@ class SubstituteReason(str, Enum):
 
 ## 12. Task Ownership Rules (EXACT from `enforcement/task_ownership.py`)
 
-### validate_task_claim() Rules
+### Claim validation (live path)
 
-1. **Task must be in 'pending' status**
-2. **Agent cannot have active tasks** (claimed, in_progress, verifying)
-3. **Agent must resume paused tasks first** (before claiming new)
-4. **Team should match** (warning only, cross-team allowed)
+Claim validation is not a single function. The live flow is:
+
+1. `mcp/tasks/handlers/_helpers.py::validate_task_claimable(task, agent_role, agent_id, client)` — role ↔ status matching.
+2. `mcp/tasks/handlers/claim.py::_check_active_tasks` — blocks if the agent already has an active claim.
+3. `mcp/tasks/handlers/claim.py::_validate_git_requirements` — project/parent branch present.
+4. `mcp/tasks/handlers/claim.py::_validate_sibling_sequence` — earlier-sequence siblings must be terminal.
+5. `services/task.py::TaskService.claim` — inline role/team/self-review checks, then auto-creates branch + work session.
 
 ### validate_task_ownership() Rules
 
-- **CLAIM**: Task must be unassigned
 - **REASSIGN**: Only PMs can reassign; Cell PM only within their cell
 - **VIEW**: Generally allowed
-- **All other actions**: Must be assigned to the agent
+- **All other actions** (e.g. `start`): Must be assigned to the agent
 
 ### Self-Review Prevention
 

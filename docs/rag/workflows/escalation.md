@@ -71,7 +71,7 @@ roboco_task_escalate_to_ceo(
 
 Requirements:
 - Task must be in `awaiting_pm_review`
-- PR must exist (for git tasks)
+- PR must exist
 - Only PMs can do this
 - **PARENT TASKS ONLY** - Subtasks cannot be escalated to CEO
 

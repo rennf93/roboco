@@ -135,20 +135,19 @@ class TaskTable(Base):
     )
     priority: Mapped[int] = mapped_column(Integer, nullable=False, default=2)
 
-    # Task Type & Git Configuration
+    # Task Type & Git Configuration (all tasks follow git workflow)
     task_type: Mapped[TaskType] = mapped_column(
         Enum(TaskType), nullable=False, default=TaskType.CODE
     )
     nature: Mapped[TaskNature] = mapped_column(
         Enum(TaskNature), nullable=False, default=TaskNature.TECHNICAL
     )
-    requires_git: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
 
     # Project & Branch (branch auto-created on claim)
-    project_id: Mapped[UUID | None] = mapped_column(
+    project_id: Mapped[UUID] = mapped_column(
         UUID(as_uuid=True),
-        ForeignKey("projects.id", ondelete="SET NULL"),
-        nullable=True,
+        ForeignKey("projects.id", ondelete="RESTRICT"),
+        nullable=False,
         index=True,
     )
     branch_name: Mapped[str | None] = mapped_column(String(500), nullable=True)
@@ -264,6 +263,9 @@ class TaskTable(Base):
     )
     parent_task: Mapped["TaskTable | None"] = relationship(
         "TaskTable", remote_side=[id], lazy="select"
+    )
+    project: Mapped["ProjectTable"] = relationship(
+        "ProjectTable", foreign_keys=[project_id], lazy="joined"
     )
     # Session links (many-to-many via SessionTaskTable)
     session_links: Mapped[list["SessionTaskTable"]] = relationship(
@@ -1394,4 +1396,79 @@ class A2AMessageTable(Base):
             "conversation_id",
             postgresql_where=(requires_response.is_(True)),
         ),
+    )
+
+
+# =============================================================================
+# ORCHESTRATOR WAITING RECORDS
+# =============================================================================
+
+
+class WaitingRecordTable(Base):
+    """Persistent backing for orchestrator agents in WAITING_LONG state.
+
+    Previously kept only in `AgentOrchestrator._waiting_records` (in-memory),
+    so an orchestrator restart stranded every waiting agent permanently.
+    """
+
+    __tablename__ = "waiting_records"
+
+    id: Mapped[UUID] = mapped_column(
+        UUID(as_uuid=True), primary_key=True, default=uuid4
+    )
+    agent_id: Mapped[str] = mapped_column(
+        String(64), nullable=False, unique=True, index=True
+    )
+    task_id: Mapped[UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("tasks.id", ondelete="SET NULL"), nullable=True
+    )
+    waiting_for: Mapped[str] = mapped_column(String(64), nullable=False)
+    waiting_since: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False
+    )
+    context: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=lambda: datetime.now(UTC), nullable=False
+    )
+
+    __table_args__ = (Index("ix_waiting_records_waiting_for", "waiting_for"),)
+
+
+# =============================================================================
+# AUDIT LOG
+# =============================================================================
+
+
+class AuditLogTable(Base):
+    """Durable audit events for compliance and the Auditor agent.
+
+    Replaces log-only audit. Dot-separated event_type (task.claimed,
+    session.closed, project.deleted, etc.) + JSON details.
+    """
+
+    __tablename__ = "audit_log"
+
+    id: Mapped[UUID] = mapped_column(
+        UUID(as_uuid=True), primary_key=True, default=uuid4
+    )
+    event_type: Mapped[str] = mapped_column(String(80), nullable=False, index=True)
+    agent_id: Mapped[UUID | None] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("agents.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    target_type: Mapped[str | None] = mapped_column(String(40), nullable=True)
+    target_id: Mapped[UUID | None] = mapped_column(UUID(as_uuid=True), nullable=True)
+    severity: Mapped[str] = mapped_column(String(16), nullable=False, default="info")
+    details: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict, nullable=False)
+    timestamp: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        default=lambda: datetime.now(UTC),
+        nullable=False,
+        index=True,
+    )
+
+    __table_args__ = (
+        Index("ix_audit_log_agent_timestamp", "agent_id", "timestamp"),
+        Index("ix_audit_log_target", "target_type", "target_id"),
     )

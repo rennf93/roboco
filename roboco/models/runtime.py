@@ -26,7 +26,7 @@ class OrchestratorAgentState(str, Enum):
 
 @dataclass
 class SpawnGitContext:
-    """Git context passed when spawning an agent for a git-enabled task."""
+    """Git context passed when spawning an agent for a task."""
 
     project_slug: str | None = None
     branch_name: str | None = None
@@ -79,8 +79,8 @@ class WaitingRecord:
 
 # Model mapping for cost optimization
 MODEL_MAP: dict[str, str] = {
-    "sonnet": "claude-sonnet-4-20250514",
-    "opus": "claude-opus-4-5-20251101",
+    "opus": "claude-opus-4-7",
+    "sonnet": "claude-sonnet-4-6",
     "haiku": "claude-haiku-4-5-20251001",
 }
 

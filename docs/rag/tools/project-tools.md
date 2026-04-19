@@ -99,14 +99,13 @@ Lists all agent workspaces for a project. Cell PM sees own cell only.
 
 ## Task Creation with Project
 
-When creating git-enabled tasks:
+When creating tasks:
 
 ```python
 roboco_task_create(
     title="Add rate limiting",
     team="backend",
-    project_slug="roboco",    # Required for git tasks
-    requires_git=True         # Default: True
+    project_slug="roboco",    # Required - all tasks follow git workflow
 )
 ```
 

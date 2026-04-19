@@ -20,6 +20,7 @@ Example:
 
 import asyncio
 import re
+import shutil
 import subprocess
 from pathlib import Path
 from uuid import UUID
@@ -32,6 +33,22 @@ from roboco.logging import get_logger
 from roboco.models.base import Team
 
 logger = get_logger(__name__)
+
+# Per (project_slug, agent_slug) async lock to serialize concurrent
+# ensure_workspace calls in the same orchestrator process. Prevents two
+# coroutines from both passing the ".git exists?" check and then both
+# trying to clone into the same directory.
+_ENSURE_WORKSPACE_LOCKS: dict[tuple[str, str], asyncio.Lock] = {}
+
+
+def _ensure_lock_for(project_slug: str, agent_slug: str) -> asyncio.Lock:
+    """Return the asyncio.Lock for a (project, agent) pair, creating lazily."""
+    key = (project_slug, agent_slug)
+    lock = _ENSURE_WORKSPACE_LOCKS.get(key)
+    if lock is None:
+        lock = asyncio.Lock()
+        _ENSURE_WORKSPACE_LOCKS[key] = lock
+    return lock
 
 
 def _inject_token_into_url(git_url: str, token: str | None) -> str:
@@ -56,7 +73,7 @@ def _inject_token_into_url(git_url: str, token: str | None) -> str:
         return git_url
 
     # Check if token already present
-    if "@" in git_url.split("//")[1].split("/")[0]:
+    if "@" in git_url.split("//")[1].split("/", maxsplit=1)[0]:
         return git_url
 
     # Inject token: https://github.com -> https://TOKEN@github.com
@@ -163,6 +180,13 @@ class WorkspaceService:
         """
         Ensure workspace exists, cloning if necessary.
 
+        Protects against:
+        - Partial clones (directory exists but `.git` does not) — cleans up
+          the incomplete directory before re-cloning.
+        - Concurrent callers — per (project, agent) asyncio.Lock serializes
+          ensure_workspace calls so two coroutines can't both try to clone
+          into the same directory.
+
         Args:
             project_slug: Project identifier
             agent_id: Agent UUID or slug
@@ -197,44 +221,70 @@ class WorkspaceService:
         team = agent.team if agent.team else Team.BACKEND
         workspace = self.get_workspace_path(project_slug, team, agent.slug)
 
-        # Check if already exists
-        if (workspace / ".git").exists():
-            logger.debug(
-                "Workspace already exists",
-                workspace=str(workspace),
-                project=project_slug,
+        lock = _ensure_lock_for(project_slug, agent.slug)
+        async with lock:
+            # Healthy clone — nothing to do.
+            if (workspace / ".git").exists():
+                logger.debug(
+                    "Workspace already exists",
+                    workspace=str(workspace),
+                    project=project_slug,
+                )
+                return workspace
+
+            # Partial clone: directory exists but no `.git`. git clone
+            # refuses to clone into a non-empty directory, so remove it
+            # first instead of letting the next clone fail.
+            if workspace.exists():
+                logger.warning(
+                    "Removing partial workspace before re-clone",
+                    workspace=str(workspace),
+                    project=project_slug,
+                )
+                shutil.rmtree(workspace)
+
+            # Get git URL and token from project
+            project_service = get_project_service(self.session)
+            project = await project_service.get_by_slug(project_slug)
+            if not project:
+                raise WorkspaceError(f"Project not found: {project_slug}")
+
+            if not git_url:
+                git_url = project.git_url
+                default_branch = project.default_branch or default_branch
+
+            # Get decrypted token from project (per-project token, no global fallback).
+            # Convert cryptographic failures into a clear WorkspaceError — callers
+            # would otherwise see an opaque 500.
+            from roboco.utils.crypto import EncryptionError
+
+            try:
+                git_token = await project_service.get_decrypted_token_by_slug(
+                    project_slug
+                )
+            except EncryptionError as e:
+                raise WorkspaceError(
+                    f"Failed to decrypt git token for project '{project_slug}'. "
+                    "The ROBOCO_ENCRYPTION_KEY may have been rotated or the "
+                    "stored token is corrupted. Re-set the project token."
+                ) from e
+
+            # Validate token is set for HTTPS URLs (no global fallback)
+            if git_url.startswith("https://") and not git_token:
+                raise WorkspaceError(
+                    f"Project '{project_slug}' requires a git token for HTTPS clone. "
+                    "Configure a GitHub PAT in the project settings."
+                )
+
+            # Clone the repository with agent identity
+            await self._clone_repo(
+                workspace,
+                git_url,
+                default_branch,
+                git_token,
+                agent=agent,
             )
             return workspace
-
-        # Get git URL and token from project
-        project_service = get_project_service(self.session)
-        project = await project_service.get_by_slug(project_slug)
-        if not project:
-            raise WorkspaceError(f"Project not found: {project_slug}")
-
-        if not git_url:
-            git_url = project.git_url
-            default_branch = project.default_branch or default_branch
-
-        # Get decrypted token from project (per-project token, no global fallback)
-        git_token = await project_service.get_decrypted_token_by_slug(project_slug)
-
-        # Validate token is set for HTTPS URLs (no global fallback)
-        if git_url.startswith("https://") and not git_token:
-            raise WorkspaceError(
-                f"Project '{project_slug}' requires a git token for HTTPS clone. "
-                "Configure a GitHub PAT in the project settings."
-            )
-
-        # Clone the repository with agent identity
-        await self._clone_repo(
-            workspace,
-            git_url,
-            default_branch,
-            git_token,
-            agent=agent,
-        )
-        return workspace
 
     async def _clone_repo(
         self,

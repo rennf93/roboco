@@ -57,10 +57,8 @@ from roboco.enforcement.task_lifecycle import (
     validate_task_transition,
 )
 from roboco.enforcement.task_ownership import (
-    TaskClaimContext,
     TaskOwnershipError,
     can_review_task,
-    validate_task_claim,
     validate_task_ownership,
 )
 
@@ -74,7 +72,6 @@ __all__ = [
     "GitRequirementError",
     "JournalAccessDeniedError",
     "NotificationPermissionError",
-    "TaskClaimContext",
     "TaskLifecycleError",
     "TaskOwnershipError",
     "can_agent_transition",
@@ -93,7 +90,6 @@ __all__ = [
     "validate_git_requirements",
     "validate_journal_access",
     "validate_notification_permission",
-    "validate_task_claim",
     "validate_task_ownership",
     "validate_task_transition",
 ]

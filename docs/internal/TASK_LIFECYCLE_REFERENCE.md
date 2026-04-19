@@ -231,16 +231,24 @@ CANCEL_ALLOWED_ROLES = {
 
 ### Claiming Validation Checks
 
-```python
-def validate_task_claim(context: TaskClaimContext):
-    """
-    Validates:
-    1. Task is in valid claimable status for role
-    2. Agent has no active tasks (claimed, in_progress, verifying)
-    3. Agent has no paused tasks (must resume first)
-    4. Team matches (or agent is management)
-    5. Not self-reviewing (QA/Doc can't review own work)
-    """
+Claim validation is layered across the MCP handler and the service:
+
+```text
+mcp.tasks.handlers._helpers.validate_task_claimable(task, role, agent_id, client)
+    → role ↔ status matching (e.g. QA may only claim AWAITING_QA, etc.)
+
+mcp.tasks.handlers.claim._check_active_tasks(client, exclude_task_id)
+    → no other claimed/in_progress/verifying tasks for the agent
+
+mcp.tasks.handlers.claim._validate_git_requirements(client, task, task_id)
+    → project_id is set; parent task has a branch (for subtasks)
+
+mcp.tasks.handlers.claim._validate_sibling_sequence(client, task)
+    → earlier-sequence siblings must be completed/cancelled
+
+services.task.TaskService.claim(task_id, agent_id, allow_reassign)
+    → _validate_claim_status / _validate_claim_team / _validate_not_self_review
+    → auto-create branch + work session
 ```
 
 ### Active Task Blocking

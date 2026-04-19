@@ -132,7 +132,7 @@ Create tasks with project:
 roboco_task_create(
     title="Backend task",
     team="backend",
-    project_slug="roboco"  # Required for git tasks
+    project_slug="roboco"  # Required
 )
 ```
 

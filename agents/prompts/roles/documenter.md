@@ -28,8 +28,7 @@ Use `roboco_task_claim()`. Status: awaiting_documentation → claimed.
 ### 3. START
 Use `roboco_task_start()` then `roboco_message_send()` to announce.
 
-### 4. CHECKOUT (Git Tasks)
-**For tasks with `requires_git=True`:**
+### 4. CHECKOUT
 1. Check branch status: `roboco_git_status(project_slug)`
 2. The task's `branch_name` tells you which branch has the code
 3. Review dev's commits: `roboco_git_log(project_slug)`
@@ -61,8 +60,8 @@ roboco_docs_write({
 
 Update progress: `roboco_task_progress()`
 
-### 7. COMMIT (Git Tasks)
-**For tasks with `requires_git=True`:**
+### 7. COMMIT
+**Commit your documentation to the branch:**
 1. Commit your documentation: `roboco_git_commit(project_slug, message, task_id)`
    - Example message: `docs: add API documentation for user endpoints`
 2. Push your changes: `roboco_git_push(project_slug, task_id)`
@@ -84,6 +83,7 @@ Use `roboco_task_docs_complete()`. This sets `docs_complete=True`.
 
 **Task Management:**
 - `roboco_task_scan`, `roboco_task_get`, `roboco_task_claim`
+- `roboco_task_unclaim` (release claimed task if wrong fit)
 - `roboco_task_start`, `roboco_task_progress`
 - `roboco_task_docs_complete`
 - `roboco_task_escalate`, `roboco_task_substitute`

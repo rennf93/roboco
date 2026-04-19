@@ -180,15 +180,13 @@ class TaskService(BaseService):
         validate_task_transition(current, target, agent_role)
 
         # Validate git requirements (raises GitRequirementError if not met)
-        if task.requires_git:
-            git_ctx = GitContext(
-                requires_git=True,
-                docs_complete=bool(task.docs_complete),
-                pr_created=bool(task.pr_created),
-                pr_number=task.pr_number,
-                branch_name=str(task.branch_name) if task.branch_name else None,
-            )
-            validate_git_requirements(current, target, git_ctx)
+        git_ctx = GitContext(
+            docs_complete=bool(task.docs_complete),
+            pr_created=bool(task.pr_created),
+            pr_number=task.pr_number,
+            branch_name=str(task.branch_name) if task.branch_name else None,
+        )
+        validate_git_requirements(current, target, git_ctx)
 
         # Apply the status change
         task.status = new_status
@@ -204,6 +202,39 @@ class TaskService(BaseService):
     # CRUD OPERATIONS
     # =========================================================================
 
+    async def _validate_parent_depth(self, parent_task_id: UUID) -> None:
+        """Enforce MAX_TASK_DEPTH at creation time.
+
+        Walks up the parent chain counting ancestors. Raises ValueError if
+        adding a child under this parent would exceed MAX_TASK_DEPTH.
+        Previously this was only enforced at branch-name generation time,
+        so invalid hierarchies could be created and only fail later at claim.
+        """
+        from roboco.templates.git.constants import MAX_TASK_DEPTH
+
+        current_id: UUID | None = parent_task_id
+        depth = 0
+        visited: set[str] = set()
+        while current_id is not None:
+            key = str(current_id)
+            if key in visited:
+                raise ValueError(
+                    f"Circular reference detected at {key} while validating depth"
+                )
+            visited.add(key)
+            parent = await self.get(current_id)
+            if parent is None:
+                raise ValueError(f"Parent task {current_id} not found")
+            depth += 1
+            if depth >= MAX_TASK_DEPTH:
+                raise ValueError(
+                    f"Task hierarchy would exceed MAX_TASK_DEPTH={MAX_TASK_DEPTH}. "
+                    "Create this work as a sibling of the deepest task instead "
+                    "of a further nested subtask."
+                )
+            parent_parent = parent.parent_task_id
+            current_id = UUID(str(parent_parent)) if parent_parent else None
+
     async def create(self, req: TaskCreateRequest) -> TaskTable:
         """
         Create a new task.
@@ -211,6 +242,9 @@ class TaskService(BaseService):
         Default status is PENDING. PM can pass status=BACKLOG when creating
         subtasks that need session setup before activation.
         """
+        if req.parent_task_id:
+            await self._validate_parent_depth(req.parent_task_id)
+
         task = TaskTable(
             title=req.title,
             description=req.description,
@@ -226,9 +260,8 @@ class TaskService(BaseService):
             status=req.status if req.status else TaskStatus.PENDING,
             sequence=req.sequence,  # Task ordering within siblings
             dependency_ids=req.dependency_ids,  # Task IDs that must complete first
-            # Git configuration - CRITICAL: These must be passed through
+            # Git configuration (all tasks follow git workflow)
             task_type=req.task_type,
-            requires_git=req.requires_git,
             project_id=req.project_id,
         )
         self.session.add(task)
@@ -303,7 +336,7 @@ class TaskService(BaseService):
         )
         return link
 
-    async def activate(self, task_id: UUID) -> TaskTable:
+    async def activate(self, task_id: UUID, agent_role: str = "cell_pm") -> TaskTable:
         """
         Activate a task from BACKLOG to PENDING status.
 
@@ -315,12 +348,14 @@ class TaskService(BaseService):
 
         Args:
             task_id: The task to activate
+            agent_role: Role of the agent performing activation (must be PM)
 
         Returns:
             The activated task
 
         Raises:
             ValueError: If task not found, not in BACKLOG, or has no session
+            TaskLifecycleError: If role is not allowed to activate
         """
         task = await self.get(task_id)
         if not task:
@@ -344,18 +379,18 @@ class TaskService(BaseService):
                 "before activating."
             )
 
-        # ENFORCEMENT: Git tasks require project_id before activation
-        if task.requires_git and not task.project_id:
+        # ENFORCEMENT: All tasks require project_id (double-check here)
+        if not task.project_id:
             raise ValueError(
-                f"Cannot activate task '{task.title}' - requires git but no project. "
-                "Fix: (1) Re-create task with project_slug, OR "
-                "(2) Set requires_git=False if git not needed."
+                f"Cannot activate task '{task.title}' - no project set. "
+                "All tasks require a project for git workflow."
             )
 
         # NOTE: Git branch is auto-created on claim, not required at activation
 
-        # Transition to PENDING
-        task.status = TaskStatus.PENDING
+        # Transition to PENDING with role enforcement
+        # (PM-only per ROLE_RESTRICTED_TRANSITIONS)
+        self._validate_and_set_status(task, TaskStatus.PENDING, agent_role)
         await self.session.flush()
 
         self.log.info(
@@ -365,31 +400,28 @@ class TaskService(BaseService):
         )
         return task
 
-    async def _ensure_branch_for_git_task(
+    async def _ensure_branch_for_task(
         self,
         task: TaskTable,
         agent_id: UUID,
     ) -> str:
-        """Auto-create hierarchical branch for git tasks. Raises on failure.
+        """Auto-create hierarchical branch for task. Raises on failure.
 
         Strategy:
         - If branch exists: return it
-        - If no project: raise error
+        - If no project: raise error (should not happen - project_id is required)
         - Create NEW branch (hierarchical name built by build_branch_name)
         - Branch created from parent's branch (or default if root)
 
         Raises:
-            ValueError: If branch cannot be created (mandatory for git tasks)
+            ValueError: If branch cannot be created
         """
-        if not task.requires_git:
-            raise ValueError("Task does not require git")
-
         if task.branch_name:
             return str(task.branch_name)
 
         if not task.project_id:
             raise ValueError(
-                "Git task requires project_id to create branch. "
+                "Task requires project_id to create branch. "
                 "Assign a project before claiming."
             )
 
@@ -689,8 +721,18 @@ class TaskService(BaseService):
         - Developers/PMs: can claim PENDING tasks
         - QA: can claim AWAITING_QA tasks
         - Documenters: can claim PENDING (direct assignment) or AWAITING_DOCUMENTATION
+
+        Uses SELECT ... FOR UPDATE to serialize concurrent claim attempts on
+        the same task, preventing last-write-wins races between two agents
+        racing for the same pending task.
         """
-        task = await self.get(task_id)
+        # Lock the task row for the duration of this transaction so concurrent
+        # claim attempts serialize at the DB level. `with_for_update` maps to
+        # PostgreSQL's `SELECT ... FOR UPDATE`.
+        lock_result = await self.session.execute(
+            select(TaskTable).where(TaskTable.id == task_id).with_for_update()
+        )
+        task = lock_result.scalar_one_or_none()
         if not task:
             return None
 
@@ -709,6 +751,22 @@ class TaskService(BaseService):
         # Validate team
         if error := self._validate_claim_team(task, agent):
             self.log.warning(f"Cannot claim task - {error}", task_id=str(task_id))
+            return None
+
+        # Prevent pre-assigned theft: if the task is already assigned to a
+        # DIFFERENT agent and the claimant is not allowed to reassign, reject.
+        # PMs with allow_reassign=True can still take over (used for handoffs).
+        if (
+            task.assigned_to is not None
+            and str(task.assigned_to) != str(agent_id)
+            and not allow_reassign
+        ):
+            self.log.warning(
+                "Cannot claim task - assigned to another agent",
+                task_id=str(task_id),
+                assigned_to=str(task.assigned_to),
+                requesting_agent=str(agent_id),
+            )
             return None
 
         # Prevent self-review: QA/Documenter cannot claim tasks they developed
@@ -737,13 +795,13 @@ class TaskService(BaseService):
 
         await self.session.flush()
 
-        # Auto-create hierarchical branch for git tasks (mandatory - raises on failure)
+        # Auto-create hierarchical branch (mandatory - raises on failure)
         # Must happen BEFORE work session creation (work session needs branch_name)
-        if task.requires_git and not task.branch_name:
-            await self._ensure_branch_for_git_task(task, agent_id)
+        if not task.branch_name:
+            await self._ensure_branch_for_task(task, agent_id)
             await self.session.refresh(task)
 
-        # Create work session for git-enabled tasks claimed by developers
+        # Create work session for tasks claimed by developers
         # (now branch exists, so work session can be created)
         await self._create_work_session_if_needed(task, agent_id, agent_role)
 
@@ -752,6 +810,80 @@ class TaskService(BaseService):
         self._background_tasks.add(bg_task)
         bg_task.add_done_callback(self._background_tasks.discard)
 
+        return task
+
+    async def unclaim(
+        self,
+        task_id: UUID,
+        agent_id: UUID,
+        agent_role: str | None = None,
+        return_to_assignee: UUID | None = None,
+    ) -> TaskTable | None:
+        """
+        Release a claimed task back to the task pool.
+
+        Use this when an agent claimed a task but realizes they shouldn't work on it
+        (e.g., Main PM claimed to help with branch but Cell PM should do the work).
+
+        This enables the CLAIMED → PENDING transition defined in VALID_TRANSITIONS.
+
+        Args:
+            task_id: The task to unclaim
+            agent_id: The agent releasing the task (must be current assignee)
+            agent_role: Role of the agent (for transition validation)
+            return_to_assignee: Optional agent to assign the task to (PM handoff)
+
+        Returns:
+            The task in PENDING state, or None if unclaim not allowed
+        """
+        task = await self.get(task_id)
+        if not task:
+            return None
+
+        # Only allow unclaiming from CLAIMED status (not IN_PROGRESS, etc.)
+        if task.status != TaskStatus.CLAIMED:
+            self.log.warning(
+                "Cannot unclaim - task not in CLAIMED status",
+                task_id=str(task_id),
+                current_status=task.status.value,
+            )
+            return None
+
+        # Verify the agent is the current assignee
+        if task.assigned_to != agent_id:
+            self.log.warning(
+                "Cannot unclaim - not assigned to you",
+                task_id=str(task_id),
+                assigned_to=str(task.assigned_to),
+                requesting_agent=str(agent_id),
+            )
+            return None
+
+        # Use validated transition (CLAIMED → PENDING is allowed for all roles)
+        self._validate_and_set_status(task, TaskStatus.PENDING, agent_role)
+
+        # Either assign to specified agent or clear assignment
+        if return_to_assignee:
+            task.assigned_to = cast("Any", return_to_assignee)
+            self.log.info(
+                "Task unclaimed and handed off",
+                task_id=str(task_id),
+                from_agent=str(agent_id),
+                to_agent=str(return_to_assignee),
+            )
+        else:
+            task.assigned_to = None
+            self.log.info(
+                "Task unclaimed and returned to pool",
+                task_id=str(task_id),
+                from_agent=str(agent_id),
+            )
+
+        # Clear claimed tracking
+        task.claimed_by = None
+        task.claimed_at = None
+
+        await self.session.flush()
         return task
 
     async def _inject_proactive_context(self, task: TaskTable, agent_id: UUID) -> None:
@@ -819,10 +951,9 @@ class TaskService(BaseService):
         agent_role: str | None,
     ) -> WorkSessionTable | None:
         """
-        Create a WorkSession when a developer claims a git-enabled task.
+        Create a WorkSession when a developer claims a task.
 
         Only creates a session if:
-        - Task requires git (requires_git=True)
         - Task has a project_id set
         - Task has a branch_name set (auto-created on claim)
         - Agent is a developer (not QA/Documenter claiming for review)
@@ -837,10 +968,6 @@ class TaskService(BaseService):
         """
         # Only developers need work sessions (not QA/Documenter claiming)
         if agent_role not in ("developer", None):
-            return None
-
-        # Check if task requires git workflow
-        if not getattr(task, "requires_git", True):
             return None
 
         # Need project and branch to create a session
@@ -1400,7 +1527,10 @@ class TaskService(BaseService):
             )
 
     async def start(
-        self, task_id: UUID, agent_id: UUID | None = None
+        self,
+        task_id: UUID,
+        agent_id: UUID | None = None,
+        agent_role: str | None = None,
     ) -> TaskTable | None:
         """
         Start working on a task.
@@ -1408,6 +1538,7 @@ class TaskService(BaseService):
         Args:
             task_id: The task to start
             agent_id: Optional agent ID to validate ownership
+            agent_role: Optional agent role for transition validation
 
         Returns:
             The started task, or None if not allowed
@@ -1464,12 +1595,23 @@ class TaskService(BaseService):
         # Only update started_at if this is the first time starting
         if task.started_at is None:
             task.started_at = datetime.now(UTC)
-        self._validate_and_set_status(task, TaskStatus.IN_PROGRESS)
+        self._validate_and_set_status(task, TaskStatus.IN_PROGRESS, agent_role)
         await self.session.flush()
         return task
 
-    async def block(self, task_id: UUID, blocker_task_id: UUID) -> TaskTable | None:
-        """Block a task due to a dependency."""
+    async def block(
+        self,
+        task_id: UUID,
+        blocker_task_id: UUID,
+        agent_role: str | None = None,
+    ) -> TaskTable | None:
+        """Block a task due to a dependency.
+
+        Args:
+            task_id: The task to block
+            blocker_task_id: The task causing the block
+            agent_role: Role of agent performing the block (for validation)
+        """
         task = await self.get(task_id)
         if not task:
             return None
@@ -1477,7 +1619,7 @@ class TaskService(BaseService):
         if blocker_task_id not in task.dependency_ids:
             new_deps = [*task.dependency_ids, blocker_task_id]
             task.dependency_ids = new_deps
-        self._validate_and_set_status(task, TaskStatus.BLOCKED)
+        self._validate_and_set_status(task, TaskStatus.BLOCKED, agent_role)
         await self.session.flush()
 
         # Update the blocker task to reference this as blocked
@@ -1517,6 +1659,7 @@ class TaskService(BaseService):
         reason: str,
         blocker_type: str,
         what_needed: str,
+        agent_role: str | None = None,
     ) -> TaskTable | None:
         """
         Block a task due to an external factor (not a task dependency).
@@ -1532,6 +1675,7 @@ class TaskService(BaseService):
             reason: Why the task is blocked
             blocker_type: Type of blocker (external/internal/question/dependency)
             what_needed: What is needed to unblock
+            agent_role: Role of agent performing the block (for validation)
 
         Returns:
             The blocked task, or None if blocking not allowed
@@ -1555,7 +1699,7 @@ class TaskService(BaseService):
         else:
             task.dev_notes = blocker_note
 
-        task.status = TaskStatus.BLOCKED
+        self._validate_and_set_status(task, TaskStatus.BLOCKED, agent_role)
         await self.session.flush()
 
         # Index blocker as error pattern (fire-and-forget)
@@ -1581,8 +1725,15 @@ class TaskService(BaseService):
         )
         return task
 
-    async def unblock(self, task_id: UUID) -> TaskTable | None:
-        """Unblock a task and resume to in_progress."""
+    async def unblock(
+        self, task_id: UUID, agent_role: str | None = None
+    ) -> TaskTable | None:
+        """Unblock a task and resume to in_progress.
+
+        Args:
+            task_id: The task to unblock
+            agent_role: Role of agent performing the unblock (for validation)
+        """
         task = await self.get(task_id)
         if not task:
             return None
@@ -1590,7 +1741,7 @@ class TaskService(BaseService):
         if task.status != TaskStatus.BLOCKED:
             return None
 
-        task.status = TaskStatus.IN_PROGRESS
+        self._validate_and_set_status(task, TaskStatus.IN_PROGRESS, agent_role)
         await self.session.flush()
 
         self.log.info("Task unblocked", task_id=str(task_id))
@@ -1609,8 +1760,15 @@ class TaskService(BaseService):
 
         return task
 
-    async def pause(self, task_id: UUID) -> TaskTable | None:
-        """Pause a task."""
+    async def pause(
+        self, task_id: UUID, agent_role: str | None = None
+    ) -> TaskTable | None:
+        """Pause a task.
+
+        Args:
+            task_id: The task to pause
+            agent_role: Role of agent pausing the task (for validation)
+        """
         task = await self.get(task_id)
         if not task:
             return None
@@ -1618,7 +1776,7 @@ class TaskService(BaseService):
         if task.status != TaskStatus.IN_PROGRESS:
             return None
 
-        task.status = TaskStatus.PAUSED
+        self._validate_and_set_status(task, TaskStatus.PAUSED, agent_role)
         await self.session.flush()
 
         self.log.info("Task paused", task_id=str(task_id))
@@ -1637,8 +1795,15 @@ class TaskService(BaseService):
 
         return task
 
-    async def resume(self, task_id: UUID) -> TaskTable | None:
-        """Resume a paused task."""
+    async def resume(
+        self, task_id: UUID, agent_role: str | None = None
+    ) -> TaskTable | None:
+        """Resume a paused task.
+
+        Args:
+            task_id: The task to resume
+            agent_role: Role of agent resuming the task (for validation)
+        """
         task = await self.get(task_id)
         if not task:
             return None
@@ -1646,7 +1811,7 @@ class TaskService(BaseService):
         if task.status != TaskStatus.PAUSED:
             return None
 
-        task.status = TaskStatus.IN_PROGRESS
+        self._validate_and_set_status(task, TaskStatus.IN_PROGRESS, agent_role)
         await self.session.flush()
 
         self.log.info("Task resumed", task_id=str(task_id))
@@ -1665,8 +1830,15 @@ class TaskService(BaseService):
 
         return task
 
-    async def submit_for_verification(self, task_id: UUID) -> TaskTable | None:
-        """Submit task for self-verification."""
+    async def submit_for_verification(
+        self, task_id: UUID, agent_role: str | None = None
+    ) -> TaskTable | None:
+        """Submit task for self-verification.
+
+        Args:
+            task_id: The task to verify
+            agent_role: Role of agent submitting for verification (for validation)
+        """
         task = await self.get(task_id)
         if not task:
             return None
@@ -1674,14 +1846,21 @@ class TaskService(BaseService):
         if task.status != TaskStatus.IN_PROGRESS:
             return None
 
-        task.status = TaskStatus.VERIFYING
+        self._validate_and_set_status(task, TaskStatus.VERIFYING, agent_role)
         await self.session.flush()
 
         self.log.info("Task submitted for verification", task_id=str(task_id))
         return task
 
-    async def submit_for_qa(self, task_id: UUID) -> TaskTable | None:
-        """Submit task for QA review."""
+    async def submit_for_qa(
+        self, task_id: UUID, agent_role: str | None = None
+    ) -> TaskTable | None:
+        """Submit task for QA review.
+
+        Args:
+            task_id: The task to submit for QA
+            agent_role: Role of agent submitting (for validation)
+        """
         task = await self.get(task_id)
         if not task:
             return None
@@ -1699,7 +1878,7 @@ class TaskService(BaseService):
         # The original developer is preserved in quick_context
         task.assigned_to = None
         task.self_verified = True
-        task.status = TaskStatus.AWAITING_QA
+        self._validate_and_set_status(task, TaskStatus.AWAITING_QA, agent_role)
         await self.session.flush()
 
         self.log.info(
@@ -1710,12 +1889,17 @@ class TaskService(BaseService):
         return task
 
     async def pass_qa(
-        self, task_id: UUID, notes: str | None = None
+        self, task_id: UUID, notes: str | None = None, agent_role: str = "qa"
     ) -> TaskTable | None:
         """Mark task as passed QA.
 
         QA workflow: awaiting_qa → claimed → in_progress → pass_qa
         → awaiting_documentation. Accept claimed/in_progress status.
+
+        Args:
+            task_id: The task to pass
+            notes: Optional QA notes
+            agent_role: Role of agent passing QA (must be 'qa')
         """
         task = await self.get(task_id)
         if not task:
@@ -1740,7 +1924,15 @@ class TaskService(BaseService):
         # Clear assignment so documenter can claim the task
         task.assigned_to = None
         task.qa_verified = True
-        task.status = TaskStatus.AWAITING_DOCUMENTATION
+        # Reset parallel-phase flags so revisions re-enter the phase cleanly.
+        # Without this, a task cycled through needs_revision keeps stale
+        # docs_complete/pr_created from the prior round and skips the phase.
+        task.docs_complete = False
+        task.pr_created = False
+        # Use validated transition - QA role required per ROLE_RESTRICTED_TRANSITIONS
+        self._validate_and_set_status(
+            task, TaskStatus.AWAITING_DOCUMENTATION, agent_role
+        )
         await self.session.flush()
 
         # Index positive QA review (fire-and-forget)
@@ -1759,7 +1951,9 @@ class TaskService(BaseService):
         self.log.info("Task passed QA", task_id=str(task_id))
         return task
 
-    async def fail_qa(self, task_id: UUID, notes: str) -> TaskTable | None:
+    async def fail_qa(
+        self, task_id: UUID, notes: str, agent_role: str = "qa"
+    ) -> TaskTable | None:
         """
         Mark task as failed QA and reassign to original developer.
 
@@ -1769,6 +1963,11 @@ class TaskService(BaseService):
 
         QA workflow: awaiting_qa → claimed → in_progress → fail_qa → needs_revision
         So we need to accept tasks in claimed or in_progress status.
+
+        Args:
+            task_id: The task to fail
+            notes: QA notes explaining why it failed
+            agent_role: Role of agent failing the task (must be 'qa')
         """
         task = await self.get(task_id)
         if not task:
@@ -1785,7 +1984,8 @@ class TaskService(BaseService):
 
         task.qa_notes = notes
         task.qa_verified = False
-        task.status = TaskStatus.NEEDS_REVISION
+        # Use validated transition - QA role required per ROLE_RESTRICTED_TRANSITIONS
+        self._validate_and_set_status(task, TaskStatus.NEEDS_REVISION, agent_role)
 
         # Store QA agent before reassigning
         qa_agent_id = task.assigned_to
@@ -1911,14 +2111,13 @@ class TaskService(BaseService):
                     else doc_context
                 )
 
-        # For git tasks: check if BOTH docs_complete AND pr_created are true
+        # Check if BOTH docs_complete AND pr_created are true
         # (Developer works in parallel, creating PR)
         from roboco.enforcement.task_lifecycle import check_parallel_completion
 
         ready_for_pm = check_parallel_completion(
             docs_complete=True,  # We just set this
             pr_created=task.pr_created,
-            requires_git=task.requires_git,
         )
 
         if ready_for_pm:
@@ -1931,11 +2130,10 @@ class TaskService(BaseService):
             self.log.info(
                 "Documentation complete, awaiting PM review",
                 task_id=str(task_id),
-                requires_git=task.requires_git,
                 pr_created=task.pr_created,
             )
         else:
-            # Git task: docs done but PR not yet created
+            # Docs done but PR not yet created
             # Stay in awaiting_documentation, waiting for developer to create PR
             self.log.info(
                 "Documentation complete, waiting for developer to create PR",
@@ -2015,12 +2213,13 @@ class TaskService(BaseService):
         ready_for_pm = check_parallel_completion(
             docs_complete=task.docs_complete,
             pr_created=True,  # We just set this
-            requires_git=task.requires_git,
         )
 
         if ready_for_pm:
-            # Both conditions met - transition to PM review
-            task.status = TaskStatus.AWAITING_PM_REVIEW
+            # Both conditions met - transition to PM review using proper validation
+            self._validate_and_set_status(
+                task, TaskStatus.AWAITING_PM_REVIEW, "developer"
+            )
             # Clear assignment so PM can claim the task for review
             task.assigned_to = None
             self.log.info(
@@ -2045,18 +2244,23 @@ class TaskService(BaseService):
     async def submit_for_pm_review(
         self,
         task_id: UUID,
+        agent_role: str = "cell_pm",
         notes: str | None = None,
     ) -> TaskTable | None:
         """
-        Submit a task directly for PM review (any assigned agent).
+        Submit a task directly for PM review (PM, QA, or Documenter only).
 
         Use this for tasks that don't follow the standard dev→QA→docs workflow,
         such as PM validation tasks, QA audit tasks, or other directly-assigned work.
+        Even these tasks must have a branch and PR created to maintain git workflow.
 
         Transitions task from IN_PROGRESS to AWAITING_PM_REVIEW.
 
+        Note: Only PM roles, QA, and Documenter can use this method (not developers).
+
         Args:
             task_id: The task to submit
+            agent_role: Role of the agent submitting (must be PM, QA, or documenter)
             notes: Optional completion notes
 
         Returns:
@@ -2072,6 +2276,23 @@ class TaskService(BaseService):
                 "Cannot submit for PM review - task not in progress",
                 task_id=str(task_id),
                 current_status=task.status.value,
+            )
+            return None
+
+        # Validate git workflow requirements (all tasks must have branch and PR)
+        if not task.branch_name:
+            self.log.warning(
+                "Cannot submit for PM review - no branch (claim task first)",
+                task_id=str(task_id),
+            )
+            return None
+
+        if not task.pr_created or not task.pr_number:
+            self.log.warning(
+                "Cannot submit for PM review - PR must be created first",
+                task_id=str(task_id),
+                pr_created=task.pr_created,
+                pr_number=task.pr_number,
             )
             return None
 
@@ -2101,12 +2322,14 @@ class TaskService(BaseService):
                 else note_entry
             )
 
-        task.status = TaskStatus.AWAITING_PM_REVIEW
+        # Role-restricted transition (PM/QA/documenter only)
+        self._validate_and_set_status(task, TaskStatus.AWAITING_PM_REVIEW, agent_role)
         await self.session.flush()
 
         self.log.info(
             "Task submitted for PM review",
             task_id=str(task_id),
+            agent_role=agent_role,
         )
         return task
 
@@ -2326,12 +2549,11 @@ class TaskService(BaseService):
             )
             return None
 
-        # ENFORCEMENT: Git tasks must have PR created before CEO approval
-        if task.requires_git and not task.pr_number:
+        # ENFORCEMENT: Tasks must have PR created before CEO approval
+        if not task.pr_number:
             self.log.warning(
-                "Cannot escalate to CEO - git task has no PR",
+                "Cannot escalate to CEO - task has no PR",
                 task_id=str(task_id),
-                requires_git=task.requires_git,
                 pr_created=task.pr_created,
             )
             return None
@@ -2375,6 +2597,7 @@ class TaskService(BaseService):
         CEO approves and completes a task.
 
         Final approval step for major tasks. Only CEO can perform this action.
+        PR must be merged before approval (CEO merges as final action).
 
         Args:
             task_id: The task to approve
@@ -2395,6 +2618,23 @@ class TaskService(BaseService):
                 current_status=task.status.value,
             )
             return None
+
+        # Verify PR is merged (CEO merges as final action before approving)
+        if task.work_session_id:
+            work_session_result = await self.session.execute(
+                select(WorkSessionTable).where(
+                    WorkSessionTable.id == task.work_session_id
+                )
+            )
+            work_session = work_session_result.scalar_one_or_none()
+            if work_session and work_session.pr_status != "merged":
+                self.log.warning(
+                    "Cannot CEO approve - PR must be merged first",
+                    task_id=str(task_id),
+                    pr_status=work_session.pr_status,
+                    pr_number=work_session.pr_number,
+                )
+                return None
 
         # Store CEO notes
         if notes:
@@ -2504,6 +2744,21 @@ class TaskService(BaseService):
         )
         return task
 
+    async def _abandon_work_session_for_task(
+        self, task: TaskTable, reason: str
+    ) -> None:
+        """Mark the task's active work session as abandoned, if any.
+
+        Without this, cancelled tasks leave their WorkSessionTable row in
+        ACTIVE status forever, polluting list_active_sessions queries.
+        """
+        if not task.work_session_id:
+            return
+        from roboco.services.work_session import get_work_session_service
+
+        ws_service = get_work_session_service(self.session)
+        await ws_service.abandon(require_uuid(task.work_session_id), reason=reason)
+
     async def cancel(
         self, task_id: UUID, agent_role: str = "cell_pm"
     ) -> TaskTable | None:
@@ -2513,13 +2768,33 @@ class TaskService(BaseService):
             return None
 
         # Cancel all descendants first (children, grandchildren, etc.)
-        # Skip tasks already in terminal states (completed or cancelled)
+        # Skip tasks already in terminal states (completed or cancelled).
+        # Route every descendant through _validate_and_set_status so role
+        # restrictions (e.g., only CEO can cancel awaiting_ceo_approval) still
+        # apply to cascaded cancels — skip descendants that fail validation
+        # rather than bypassing the rules.
         descendants = await self.get_all_descendants(task_id)
         cancelled_count = 0
         for descendant in descendants:
-            if descendant.status not in (TaskStatus.COMPLETED, TaskStatus.CANCELLED):
-                descendant.status = TaskStatus.CANCELLED
-                cancelled_count += 1
+            if descendant.status in (TaskStatus.COMPLETED, TaskStatus.CANCELLED):
+                continue
+            try:
+                self._validate_and_set_status(
+                    descendant, TaskStatus.CANCELLED, agent_role
+                )
+            except Exception as e:
+                self.log.warning(
+                    "Skipping cascade-cancel of descendant; role not permitted",
+                    descendant_id=str(descendant.id),
+                    descendant_status=descendant.status.value,
+                    agent_role=agent_role,
+                    error=str(e),
+                )
+                continue
+            cancelled_count += 1
+            await self._abandon_work_session_for_task(
+                descendant, reason="parent task cancelled"
+            )
 
         if cancelled_count > 0:
             self.log.info(
@@ -2530,6 +2805,7 @@ class TaskService(BaseService):
 
         # Validate transition with PM role requirement
         self._validate_and_set_status(task, TaskStatus.CANCELLED, agent_role)
+        await self._abandon_work_session_for_task(task, reason="task cancelled")
         await self.session.flush()
 
         # Index lifecycle event (fire-and-forget)
@@ -2595,9 +2871,9 @@ class TaskService(BaseService):
             task.dependency_ids = [
                 dep_id for dep_id in task.dependency_ids if dep_id != completed_task_id
             ]
-            # If no more dependencies, unblock
+            # If no more dependencies, unblock (system action - no role validation)
             if not task.dependency_ids and task.status == TaskStatus.BLOCKED:
-                task.status = TaskStatus.IN_PROGRESS
+                self._validate_and_set_status(task, TaskStatus.IN_PROGRESS, None)
                 self.log.info(
                     "Task auto-unblocked",
                     task_id=str(task.id),

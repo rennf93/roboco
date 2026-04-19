@@ -252,19 +252,15 @@ async def _validate_project(
     client: ApiClient,
     input_data: TaskCreateInput,
 ) -> tuple[str | None, dict[str, Any] | None]:
-    """Validate project for git-enabled tasks.
+    """Validate project for task (all tasks require project).
 
     Returns (project_id, None) on success, or (None, error) on failure.
     """
-    # Non-git tasks don't need project validation
-    if not input_data.requires_git:
-        return None, None
-
-    # Git tasks require project_slug
+    # All tasks require project_slug
     if not input_data.project_slug:
         return None, format_error_response(
             "PROJECT_REQUIRED",
-            "Git tasks require a project. Set project_slug or requires_git=False.",
+            "All tasks require a project. Specify project_slug.",
             {"hint": "Use roboco_project_list() to see available projects."},
         )
 
@@ -358,8 +354,8 @@ def _build_task_payload(
         "nature": input_data.nature,
         "status": input_data.status,  # Always included, defaults to "backlog"
         "sequence": input_data.sequence,  # Task ordering (lower = first)
-        "requires_git": input_data.requires_git,
         "task_type": task_type,
+        "project_id": project_id,  # Required for all tasks
     }
     if input_data.parent_task_id:
         payload["parent_task_id"] = input_data.parent_task_id
@@ -367,8 +363,6 @@ def _build_task_payload(
         # Each task in the hierarchy gets its own branch forked from parent's branch.
     if input_data.dependency_ids:
         payload["dependency_ids"] = input_data.dependency_ids
-    if project_id:
-        payload["project_id"] = project_id
     return payload
 
 
@@ -392,6 +386,59 @@ def _format_create_guidance(task: dict[str, Any], assigned_to: str | None) -> st
     return guidance
 
 
+def _validate_description_length(
+    input_data: TaskCreateInput,
+) -> dict[str, Any] | None:
+    """Enforce a minimum description length; stricter for subtasks."""
+    description = input_data.description.strip()
+    is_subtask = input_data.parent_task_id is not None
+    min_len = 50 if is_subtask else 30
+    if len(description) >= min_len:
+        return None
+
+    if is_subtask:
+        return format_error_response(
+            "SUBTASK_DESCRIPTION_REQUIRED",
+            f"Subtasks MUST have detailed descriptions "
+            f"(min {min_len} chars, got {len(description)}). "
+            "Explain what to do, why, and expected outcome.",
+            {
+                "parent_task_id": input_data.parent_task_id,
+                "description_length": len(description),
+            },
+        )
+    return format_error_response(
+        "TASK_DESCRIPTION_REQUIRED",
+        f"Tasks MUST have meaningful descriptions "
+        f"(min {min_len} chars, got {len(description)}). "
+        "Main PM must explain what Cell PM should accomplish.",
+        {
+            "description_length": len(description),
+            "guidance": "Include: goal, context, and acceptance criteria.",
+        },
+    )
+
+
+def _validate_assignee_role(
+    caller_role: str | None,
+    assignee: str | None,
+    task_type: str,
+) -> dict[str, Any] | None:
+    """PMs cannot assign code tasks to other PMs (or themselves)."""
+    pm_roles = ("main_pm", "cell_pm")
+    if caller_role not in pm_roles or task_type != "code" or not assignee:
+        return None
+    assignee_role = get_agent_role(assignee)
+    if assignee_role not in pm_roles:
+        return None
+    return format_error_response(
+        "PM_CANNOT_OWN_CODE_TASKS",
+        "PMs cannot be assigned code tasks. Assign to a developer.",
+        {"assignee": assignee, "assignee_role": assignee_role},
+        hint="Assign to: be-dev-1, be-dev-2, fe-dev-1, etc.",
+    )
+
+
 async def _validate_task_create_inputs(
     client: ApiClient, input_data: TaskCreateInput, agent_id: str
 ) -> tuple[str | None, dict[str, Any] | None]:
@@ -402,67 +449,70 @@ async def _validate_task_create_inputs(
     if error := _validate_cell_pm_team(agent_id, input_data.team):
         return None, error
 
-    # ENFORCEMENT: All tasks require meaningful descriptions
-    # Main PM delegating to Cell PM needs to explain the work clearly
-    description = input_data.description.strip()
-    min_root_description_len = 30
-    min_subtask_description_len = 50
+    if error := _validate_description_length(input_data):
+        return None, error
 
-    is_subtask = input_data.parent_task_id is not None
-    min_len = min_subtask_description_len if is_subtask else min_root_description_len
-
-    if is_subtask and len(description) < min_len:
-        # Subtasks need more detail (Cell PM → Dev)
-        return None, format_error_response(
-            "SUBTASK_DESCRIPTION_REQUIRED",
-            f"Subtasks MUST have detailed descriptions "
-            f"(min {min_len} chars, got {len(description)}). "
-            "Explain what to do, why, and expected outcome.",
-            {
-                "parent_task_id": input_data.parent_task_id,
-                "description_length": len(description),
-            },
-        )
-    elif not is_subtask and len(description) < min_len:
-        # Root tasks also need context (Main PM → Cell PM)
-        return None, format_error_response(
-            "TASK_DESCRIPTION_REQUIRED",
-            f"Tasks MUST have meaningful descriptions "
-            f"(min {min_len} chars, got {len(description)}). "
-            "Main PM must explain what Cell PM should accomplish.",
-            {
-                "description_length": len(description),
-                "guidance": "Include: goal, context, and acceptance criteria.",
-            },
-        )
-
-    # Validate assignee BEFORE creating task
     assignee = input_data.assigned_to
-    if assignee:
-        error = validate_assignee_can_work_on_team(assignee, input_data.team)
-        if error:
-            return None, error
+    if assignee and (
+        error := validate_assignee_can_work_on_team(assignee, input_data.team)
+    ):
+        return None, error
 
-    # ENFORCEMENT: PMs cannot assign code tasks to PMs (including themselves)
     caller_role = get_agent_role(agent_id)
-    pm_roles = ("main_pm", "cell_pm")
-    is_pm_assigning_code = (
-        caller_role in pm_roles
-        and input_data.task_type == "code"
-        and assignee
-    )
-    if is_pm_assigning_code and assignee:  # assignee guaranteed by condition above
-        assignee_role = get_agent_role(assignee)
-        if assignee_role in pm_roles:
-            return None, format_error_response(
-                "PM_CANNOT_OWN_CODE_TASKS",
-                "PMs cannot be assigned code tasks. Assign to a developer.",
-                {"assignee": assignee, "assignee_role": assignee_role},
-                hint="Assign to: be-dev-1, be-dev-2, fe-dev-1, etc.",
-            )
+    if error := _validate_assignee_role(caller_role, assignee, input_data.task_type):
+        return None, error
 
-    # Validate project for git-enabled tasks
     return await _validate_project(client, input_data)
+
+
+async def _resolve_parent_task(
+    client: ApiClient, parent_task_id: str | None
+) -> tuple[dict[str, Any] | None, dict[str, Any] | None]:
+    """Fetch parent task and enforce the claim-before-subtask rule.
+
+    Returns (parent_task, error). parent_task is None when no parent_task_id
+    is given or the fetch fails; error is non-None if the parent is not yet
+    claimed.
+    """
+    if not parent_task_id:
+        return None, None
+
+    parent_resp = await client.get(f"/tasks/{parent_task_id}")
+    if not parent_resp.ok:
+        return None, None
+
+    parent_task = parent_resp.json()
+    if parent_task.get("claimed_by"):
+        return parent_task, None
+
+    return parent_task, format_error_response(
+        "CLAIM_REQUIRED",
+        "You must CLAIM this task before creating subtasks.",
+        {
+            "parent_task_id": parent_task["id"],
+            "parent_status": parent_task.get("status"),
+            "parent_claimed_by": parent_task.get("claimed_by"),
+            "workflow": "SCAN → CLAIM → PLAN → SUBTASKS",
+        },
+        hint=f"Call roboco_task_claim('{parent_task['id']}') first.",
+    )
+
+
+async def _apply_assignment(
+    client: ApiClient, task: dict[str, Any], assigned_to: str | None
+) -> tuple[dict[str, Any], str | None]:
+    """Apply assignment to a newly-created task. Returns (task, failure_msg)."""
+    if not assigned_to:
+        return task, None
+    assigned_task, assign_error = await assign_task_to_agent(
+        client, task["id"], assigned_to
+    )
+    if assigned_task:
+        return assigned_task, None
+    failure_msg = (
+        assign_error.get("guidance", "Assignment failed") if assign_error else None
+    )
+    return task, failure_msg
 
 
 async def handle_task_create(
@@ -473,43 +523,11 @@ async def handle_task_create(
     if error:
         return error
 
-    # Fetch parent task for inheritance (task_type, etc.)
-    parent_task = None
-    if input_data.parent_task_id:
-        parent_resp = await client.get(f"/tasks/{input_data.parent_task_id}")
-        if parent_resp.ok:
-            parent_task = parent_resp.json()
-
-    # HARD ENFORCEMENT: You must CLAIM a task before creating subtasks for it.
-    # Workflow: SCAN → CLAIM → PLAN → SUBTASKS. No skipping CLAIM.
-    # Check claimed_by directly - status can be misleading (paused without claim, etc.)
-    if parent_task:
-        parent_claimed_by = parent_task.get("claimed_by")
-        if not parent_claimed_by:
-            return format_error_response(
-                "CLAIM_REQUIRED",
-                "You must CLAIM this task before creating subtasks.",
-                {
-                    "parent_task_id": parent_task["id"],
-                    "parent_status": parent_task.get("status"),
-                    "parent_claimed_by": parent_claimed_by,
-                    "workflow": "SCAN → CLAIM → PLAN → SUBTASKS",
-                },
-                hint=f"Call roboco_task_claim('{parent_task['id']}') first.",
-            )
-
-    # GUARDRAIL: If parent requires git, child must also require git (hierarchy)
-    if parent_task and parent_task.get("requires_git") and not input_data.requires_git:
-        return format_error_response(
-            "GIT_INHERITANCE_REQUIRED",
-            "Subtasks of git tasks must also require git.",
-            {
-                "parent_task_id": parent_task["id"],
-                "parent_requires_git": True,
-                "child_requires_git": input_data.requires_git,
-            },
-            hint="Set requires_git=True (or omit it, defaults to True).",
-        )
+    parent_task, parent_error = await _resolve_parent_task(
+        client, input_data.parent_task_id
+    )
+    if parent_error:
+        return parent_error
 
     payload = _build_task_payload(input_data, project_id, parent_task)
 
@@ -528,30 +546,16 @@ async def handle_task_create(
             {"status_code": create_resp.status_code, "detail": create_resp.text},
         )
 
-    task = create_resp.json()
-
-    # CRITICAL: Handle assignment failures explicitly - DO NOT silently discard errors
-    assignment_failed = False
-    assignment_error_msg = ""
-    if input_data.assigned_to:
-        assigned_task, assign_error = await assign_task_to_agent(
-            client, task["id"], input_data.assigned_to
-        )
-        if assigned_task:
-            task = assigned_task
-        elif assign_error:
-            # Assignment FAILED - this is critical, don't silently ignore!
-            assignment_failed = True
-            assignment_error_msg = assign_error.get("guidance", "Assignment failed")
-            # Log but continue - task was created but assignment failed
+    task, assignment_failure = await _apply_assignment(
+        client, create_resp.json(), input_data.assigned_to
+    )
 
     guidance = _format_create_guidance(task, input_data.assigned_to)
 
-    # Add CRITICAL WARNING if assignment failed
-    if assignment_failed:
+    if assignment_failure:
         guidance += (
             f"\n\n🚨 CRITICAL: Assignment to '{input_data.assigned_to}' FAILED! "
-            f"Error: {assignment_error_msg}. "
+            f"Error: {assignment_failure}. "
             "Task was created but NOT assigned to intended agent. "
             "You may need to manually assign using roboco_task_assign()."
         )
@@ -634,18 +638,13 @@ async def _check_assignment_guardrails(
                     },
                 )
 
-    # GUARDRAIL: Git tasks need branch before assigning to developers
-    if (
-        task.get("requires_git")
-        and not task.get("branch_name")
-        and assignee_role == "developer"
-    ):
+    # GUARDRAIL: Tasks need branch before assigning to developers
+    if not task.get("branch_name") and assignee_role == "developer":
         return format_error_response(
-            "NO_BRANCH_FOR_GIT_TASK",
-            "Git task must have a branch before assigning to developer.",
+            "NO_BRANCH_FOR_TASK",
+            "Task must have a branch before assigning to developer.",
             {
                 "task_id": task_id,
-                "requires_git": True,
                 "has_branch": False,
             },
             hint=(
@@ -880,10 +879,9 @@ async def handle_task_activate(
             {"role": get_agent_role(agent_id)},
         )
 
-    # TODO: Re-enable when sequence workflow is refined
     # Validate parent is started before activating subtask
-    # if error := await _validate_activation_sequence(client, task_id):
-    #     return error
+    if error := await _validate_activation_sequence(client, task_id):
+        return error
 
     try:
         resp = await client.post(f"/tasks/{task_id}/activate")

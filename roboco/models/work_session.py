@@ -2,7 +2,7 @@
 WorkSession Model
 
 Tracks an agent's working session on a task, including branch management,
-commits, and PR tracking. Created when a developer claims a git-enabled task.
+commits, and PR tracking. Created when a developer claims a task.
 """
 
 from datetime import UTC, datetime
@@ -26,7 +26,7 @@ class WorkSession(TimestampMixin):
     """
     A working session linking an agent to a task on a project.
 
-    Created when a developer claims a git-enabled task.
+    Created when a developer claims a task.
     Tracks branch, commits, and PR throughout the task lifecycle.
     """
 

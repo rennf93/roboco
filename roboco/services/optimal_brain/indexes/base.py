@@ -18,6 +18,12 @@ from piragi.types import Citation, Document
 from roboco.config import settings
 from roboco.models.optimal import IndexType, SearchOutcome, SearchResult
 
+# Apply piragi runtime patches (chunker tokenizer) BEFORE importing piragi
+# itself anywhere in the plugin stack. Importing for side effects only.
+from roboco.services.optimal_brain import (
+    piragi_patches as _piragi_patches,  # noqa: F401
+)
+
 logger = structlog.get_logger()
 
 
@@ -34,7 +40,7 @@ class IndexConfig:
     use_hybrid_search: bool = True
     use_cross_encoder: bool = False
     embedding_model: str = "qwen3-embedding:0.6b"
-    llm_model: str = "glm-4.7:cloud"
+    llm_model: str = "glm-5.1:cloud"
     llm_base_url: str = "http://roboco-ollama:11434/v1"
 
     @classmethod

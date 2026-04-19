@@ -73,7 +73,7 @@ class NotificationDeliveryService(BaseService):
         # Publish to Redis for real-time delivery
         try:
             bus = get_event_bus()
-            if bus._redis:
+            if bus.is_connected():
                 for recipient_id in notification.to_agents:
                     await bus.publish(
                         Event(
@@ -107,6 +107,48 @@ class NotificationDeliveryService(BaseService):
             select(NotificationTable).where(NotificationTable.id == notification_id)
         )
         return result.scalar_one_or_none()
+
+    async def sweep_expired_notifications(self) -> int:
+        """Log notifications past their `expires_at` that still require ACK.
+
+        `NotificationTable.expires_at` existed but nothing acted on it. This
+        sweep surfaces notifications that have become stale so an operator
+        (or an escalation follow-up) can decide what to do. We log rather
+        than auto-cancel because the notification is the record; rewriting
+        status would be ambiguous. Returns the count of stale items.
+        """
+        now = datetime.now(UTC)
+        result = await self.session.execute(
+            select(NotificationTable).where(
+                and_(
+                    NotificationTable.expires_at.is_not(None),
+                    NotificationTable.expires_at < now,
+                    NotificationTable.requires_ack.is_(True),
+                )
+            )
+        )
+        stale = list(result.scalars().all())
+
+        # Skip notifications that every recipient has already ACK'd.
+        unacked = [
+            n
+            for n in stale
+            if any(str(r) not in {str(a) for a in (n.acked_by or [])}
+                   for r in (n.to_agents or []))
+        ]
+
+        for n in unacked:
+            self.log.warning(
+                "Notification expired without full ACK",
+                notification_id=str(n.id),
+                type=n.type.value if n.type else None,
+                priority=n.priority.value if n.priority else None,
+                recipient_count=len(n.to_agents or []),
+                ack_count=len(n.acked_by or []),
+                expired_at=n.expires_at.isoformat() if n.expires_at else None,
+            )
+
+        return len(unacked)
 
     async def get_pending_for_agent(
         self,
@@ -254,7 +296,7 @@ class NotificationDeliveryService(BaseService):
         # Publish ACK event
         try:
             bus = get_event_bus()
-            if bus._redis:
+            if bus.is_connected():
                 await bus.publish(
                     Event(
                         type=EventType.NOTIFICATION_ACKED,

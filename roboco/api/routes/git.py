@@ -48,6 +48,7 @@ from roboco.api.schemas.git import (
     GitStatusResponse,
 )
 from roboco.exceptions import GitCommandError, GitTimeoutError
+from roboco.models.base import AgentRole, TaskStatus
 from roboco.services.base import NotFoundError, ServiceError, ValidationError
 from roboco.services.git import get_git_service
 from roboco.services.project import get_project_service
@@ -440,11 +441,13 @@ async def create_pull_request(
 ) -> GitCreatePRResponse:
     """Create a pull request using GitHub CLI.
 
-    After PR creation, marks pr_created=True on the task.
+    After PR creation, marks pr_created=True on the task and records
+    PR info on the associated work session.
     Uses templates to auto-generate PR title/body if not provided.
     """
     git_service = get_git_service(db)
     task_service = get_task_service(db)
+    work_session_service = get_work_session_service(db)
 
     try:
         workspace = await git_service.get_workspace(data.project_slug, agent.agent_id)
@@ -461,11 +464,21 @@ async def create_pull_request(
 
     # Mark pr_created=True on the task
     task_uuid = UUID(data.task_id)
-    await task_service.mark_pr_created(
+    task = await task_service.mark_pr_created(
         task_id=task_uuid,
         pr_number=pr_number,
         pr_url=pr_url,
     )
+
+    # Record PR on the work session so CEO approval guard can pass
+    if task and task.work_session_id:
+        await work_session_service.create_pr(
+            require_uuid(task.work_session_id),
+            pr_number,
+            pr_url,
+        )
+
+    await db.commit()
 
     return GitCreatePRResponse(
         pr_number=pr_number,
@@ -476,14 +489,52 @@ async def create_pull_request(
     )
 
 
+async def _auto_complete_on_merge(
+    db: DbSession,
+    task_uuid: UUID,
+    agent: CurrentAgentContext,
+) -> None:
+    """Auto-transition task after PR merge based on current status + merger role.
+
+    - awaiting_ceo_approval + CEO merger → ceo_approve (→ completed)
+    - awaiting_pm_review + PM merger → complete (may escalate or finish)
+    Otherwise leave the task alone.
+    """
+    task_service = get_task_service(db)
+    task = await task_service.get(task_uuid)
+    if not task:
+        return
+
+    status_value = task.status.value if hasattr(task.status, "value") else task.status
+    pm_roles = {AgentRole.CELL_PM, AgentRole.MAIN_PM}
+
+    if (
+        status_value == TaskStatus.AWAITING_CEO_APPROVAL.value
+        and agent.role == AgentRole.CEO
+    ):
+        await task_service.ceo_approve(task_uuid)
+    elif (
+        status_value == TaskStatus.AWAITING_PM_REVIEW.value
+        and agent.role in pm_roles
+    ):
+        await task_service.complete(task_uuid, agent.agent_id)
+
+
 @router.post("/pr/merge", response_model=GitMergePRResponse)
 async def merge_pull_request(
     data: GitMergePRRequest,
     db: DbSession,
     agent: CurrentAgentContext,
 ) -> GitMergePRResponse:
-    """Merge a pull request using GitHub CLI (PM only)."""
+    """Merge a pull request using GitHub CLI (PM/CEO).
+
+    After merge, records merge on the work session and auto-completes the
+    task when the merger holds the role required for the current state
+    (PM for awaiting_pm_review, CEO for awaiting_ceo_approval).
+    """
     git_service = get_git_service(db)
+    task_service = get_task_service(db)
+    work_session_service = get_work_session_service(db)
 
     try:
         workspace = await git_service.get_workspace(data.project_slug, agent.agent_id)
@@ -495,6 +546,21 @@ async def merge_pull_request(
         )
     except ServiceError as e:
         raise _translate_error(e) from e
+
+    task_uuid = UUID(data.task_id)
+    task = await task_service.get(task_uuid)
+
+    # Record merge on the work session (satisfies ceo_approve's pr_status guard)
+    if task and task.work_session_id:
+        await work_session_service.merge_pr(
+            require_uuid(task.work_session_id),
+            agent.agent_id,
+        )
+
+    # Auto-transition task to completed based on merger role + current state
+    await _auto_complete_on_merge(db, task_uuid, agent)
+
+    await db.commit()
 
     return GitMergePRResponse(
         pr_number=data.pr_number,

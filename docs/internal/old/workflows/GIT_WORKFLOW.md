@@ -164,7 +164,7 @@ Co-authored-by: be-dev-1
    │  roboco_task_claim(task_id)
    │
    ▼
-2. START WORK (requires branch for git tasks)
+2. START WORK (requires branch)
    │  roboco_task_start(task_id)
    │
    ▼
@@ -338,7 +338,7 @@ For significant changes, PM escalates to CEO:
 
 ## Git Requirements for Transitions
 
-Tasks with `requires_git=True` have additional validation:
+All tasks have git validation:
 
 ### claimed -> in_progress
 - **Requirement**: `branch_name` must be set

@@ -148,7 +148,7 @@ async def create_session(
     """
     Create a new work session (Developer or PM).
 
-    Typically created automatically when claiming a git-enabled task.
+    Typically created automatically when claiming a task.
     """
     _require_developer_or_above(agent, "create work sessions")
 

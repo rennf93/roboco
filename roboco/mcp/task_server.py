@@ -8,6 +8,7 @@ Tools (Core - all agents):
 - roboco_task_scan: List available tasks (paused, assigned, available)
 - roboco_task_get: Get task details
 - roboco_task_claim: Claim a task
+- roboco_task_unclaim: Release a claimed task back to the pool
 - roboco_task_plan: Submit implementation plan
 - roboco_task_start: Start working on task
 - roboco_task_progress: Update progress
@@ -92,6 +93,7 @@ from roboco.mcp.tasks.handlers import (
     handle_task_submit_verification,
     handle_task_substitute,
     handle_task_unblock,
+    handle_task_unclaim,
 )
 from roboco.mcp.utils import ApiClient
 
@@ -147,6 +149,33 @@ def _register_core_tools(mcp: FastMCP, client: ApiClient, agent_id: str) -> None
             Claimed task with project context and next step guidance
         """
         return await handle_task_claim(client, task_id, agent_id)
+
+    @mcp.tool()
+    async def roboco_task_unclaim(
+        task_id: str, hand_off_to: str | None = None
+    ) -> dict[str, Any]:
+        """
+        Release a claimed task back to the pool.
+
+        Use this when you claimed a task but realize you shouldn't work on it:
+        - Task is out of your team's scope
+        - Task requires a different role
+        - You need to prioritize other work
+        - Better suited for another agent
+
+        ENFORCEMENT:
+        - Task must be in 'claimed' status (not yet started)
+        - You must be the agent who claimed it
+        - If task is in_progress, use roboco_task_substitute instead
+
+        Args:
+            task_id: The task UUID to release
+            hand_off_to: Optional agent slug to hand off to (e.g., "be-dev-2")
+
+        Returns:
+            Confirmation with next steps
+        """
+        return await handle_task_unclaim(client, task_id, agent_id, hand_off_to)
 
     @mcp.tool()
     async def roboco_task_plan(

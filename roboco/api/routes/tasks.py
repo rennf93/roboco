@@ -47,6 +47,7 @@ from roboco.api.schemas.tasks import (
     transform_update_data,
 )
 from roboco.db.tables import AgentTable, NotificationTable
+from roboco.exceptions import TaskLifecycleError
 from roboco.models.base import AgentRole, SubstituteReason, TaskStatus, Team
 from roboco.models.task import TaskCreate
 from roboco.services.audit import get_audit_service
@@ -93,15 +94,15 @@ async def create_task(
             detail="Not authorized to create tasks",
         )
 
-    # Validate: git tasks require project_id
-    if data.requires_git and not data.project_id:
+    # Validate: all tasks require project_id
+    if not data.project_id:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail={
                 "error": {
                     "code": "PROJECT_REQUIRED",
-                    "message": "Tasks with requires_git=True must have project_id set",
-                    "hint": "Specify project_id or set requires_git=False",
+                    "message": "All tasks require project_id",
+                    "hint": "Specify project_id for the git repository",
                 }
             },
         )
@@ -122,9 +123,8 @@ async def create_task(
         status=data.status,
         sequence=data.sequence,  # Task ordering within siblings
         dependency_ids=data.dependency_ids,  # Dependencies for claim filtering
-        # Git configuration
+        # Git configuration (all tasks follow git workflow)
         task_type=data.task_type,
-        requires_git=data.requires_git,
         project_id=data.project_id,
     )
     task = await service.create(req)
@@ -540,6 +540,53 @@ async def claim_task(
     return task_to_response(task)
 
 
+@router.post("/{task_id}/unclaim", response_model=TaskResponse)
+async def unclaim_task(
+    task_id: UUID,
+    db: DbSession,
+    agent: CurrentAgentContext,
+    data: Annotated[ClaimRequest | None, Body()] = None,
+) -> TaskResponse:
+    """
+    Release a claimed task back to the task pool.
+
+    Use this when an agent claimed a task but realizes they shouldn't work on it.
+    Optionally specify a different agent to hand off to.
+    """
+    service = get_task_service(db)
+    task = await service.get(task_id)
+    if not task:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="Task not found"
+        )
+
+    # Only assigned agent can unclaim
+    if task.assigned_to != agent.agent_id:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Only the assigned agent can unclaim this task",
+        )
+
+    # Optionally hand off to a specific agent
+    return_to: UUID | None = None
+    if data and data.agent_id:
+        return_to = await _resolve_claim_agent_id(db, data.agent_id)
+
+    task = await service.unclaim(
+        task_id,
+        agent_id=agent.agent_id,
+        agent_role=agent.role,
+        return_to_assignee=return_to,
+    )
+    if not task:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Cannot unclaim task - must be in CLAIMED status",
+        )
+    await db.commit()
+    return task_to_response(task)
+
+
 @router.post("/{task_id}/start", response_model=TaskResponse)
 async def start_task(
     task_id: UUID,
@@ -561,8 +608,8 @@ async def start_task(
             detail="Only the assigned agent can start this task",
         )
 
-    # Pass agent_id for defense-in-depth validation in service layer
-    task = await service.start(task_id, agent_id=agent.agent_id)
+    # Pass agent_id and role for defense-in-depth validation in service layer
+    task = await service.start(task_id, agent_id=agent.agent_id, agent_role=agent.role)
     if not task:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
@@ -641,7 +688,7 @@ async def soft_block_task(
         )
 
     task = await service.soft_block(
-        task_id, data.reason, data.blocker_type, data.what_needed
+        task_id, data.reason, data.blocker_type, data.what_needed, agent.role
     )
     if not task:
         raise HTTPException(
@@ -731,7 +778,7 @@ async def unblock_task(
     # Remember the assigned agent before unblocking
     assigned_agent_id = task.assigned_to
 
-    task = await service.unblock(task_id)
+    task = await service.unblock(task_id, agent.role)
     if not task:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
@@ -789,7 +836,7 @@ async def pause_task(
             detail="Only the assigned agent can pause this task",
         )
 
-    task = await service.pause(task_id)
+    task = await service.pause(task_id, agent.role)
     if not task:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
@@ -820,7 +867,7 @@ async def resume_task(
             detail="Only the assigned agent can resume this task",
         )
 
-    task = await service.resume(task_id)
+    task = await service.resume(task_id, agent.role)
     if not task:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
@@ -851,7 +898,7 @@ async def submit_for_verification(
             detail="Only the assigned agent can submit for verification",
         )
 
-    task = await service.submit_for_verification(task_id)
+    task = await service.submit_for_verification(task_id, agent.role)
     if not task:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
@@ -882,7 +929,7 @@ async def submit_for_qa(
             detail="Only the assigned agent can submit for QA",
         )
 
-    task = await service.submit_for_qa(task_id)
+    task = await service.submit_for_qa(task_id, agent.role)
     if not task:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
@@ -941,7 +988,7 @@ async def pass_qa(
         )
 
     notes = data.notes if data else None
-    task = await service.pass_qa(task_id, notes)
+    task = await service.pass_qa(task_id, notes, agent.role)
     if not task:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
@@ -983,7 +1030,7 @@ async def fail_qa(
             detail="Cannot QA review your own task",
         )
 
-    task = await service.fail_qa(task_id, data.notes)
+    task = await service.fail_qa(task_id, data.notes, agent.role)
     if not task:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
@@ -1121,7 +1168,7 @@ async def submit_for_pm_review(
         )
 
     notes = data.notes if data else None
-    task = await service.submit_for_pm_review(task_id, notes)
+    task = await service.submit_for_pm_review(task_id, agent.role.value, notes)
     if not task:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
@@ -1922,10 +1969,15 @@ async def activate_task(
     service = get_task_service(db)
 
     try:
-        task = await service.activate(task_id)
+        task = await service.activate(task_id, agent.role)
     except ValueError as e:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(e),
+        ) from e
+    except TaskLifecycleError as e:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
             detail=str(e),
         ) from e
 

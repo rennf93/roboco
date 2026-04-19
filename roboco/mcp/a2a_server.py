@@ -171,8 +171,18 @@ async def _check_pending_a2a(
                     f"Already sent A2A to {target_agent} about this task.",
                     hint="Wait for their response before sending another message.",
                 )
-        except Exception:
-            pass  # Non-critical check, allow send if check fails
+        except Exception as e:
+            # Non-critical check; allow send if check fails, but surface the
+            # failure in logs so repeated API flakiness is visible instead
+            # of silently bypassing the duplicate-A2A guard.
+            import structlog
+
+            structlog.get_logger().warning(
+                "A2A pending check failed; allowing send",
+                from_agent=from_agent,
+                target_agent=target_agent,
+                error=str(e),
+            )
     return None
 
 

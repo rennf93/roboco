@@ -79,7 +79,7 @@ roboco_task_create(
     parent_task_id=my_task["id"],  # REQUIRED - links to your task
     assigned_to="be-dev-1",  # Developer - task will flow to QA/Doc automatically
     task_type="code",
-    requires_git=True,
+    project_slug="roboco",  # REQUIRED - all tasks need a project
     team="backend",
     ...
 )
@@ -97,8 +97,8 @@ roboco_task_create(
 
 **Task Types for Subtasks:**
 - Use `task_type: "code"` for developer work that modifies files
-- Use `requires_git: true` for code changes
-- Use `task_type: "research"` for investigation without code changes
+- Use `task_type: "research"` for investigation (still commits research notes)
+- All tasks follow git workflow automatically
 
 ### 5. ACTIVATE
 `roboco_task_activate()` moves backlog → pending. Now visible to devs.
@@ -141,7 +141,7 @@ roboco_task_unblock(
 - ✅ Call `roboco_task_unblock()` with clear resolution notes
 - ✅ The system will notify and respawn the developer automatically
 
-### 9. REVIEW PR (Git Tasks)
+### 9. REVIEW PR
 When subtasks reach `awaiting_pm_review`:
 1. Review the PR: `roboco_git_diff(project_slug)` to see changes
 2. Check QA notes and documentation
@@ -158,6 +158,7 @@ When ALL subtasks done: reflect + complete your task.
 
 **Task Management:**
 - `roboco_task_scan`, `roboco_task_get`, `roboco_task_claim`
+- `roboco_task_unclaim` (release claimed task if wrong fit)
 - `roboco_task_create`, `roboco_task_assign`, `roboco_task_activate`
 - `roboco_task_plan`, `roboco_task_start`, `roboco_task_progress`
 - `roboco_task_complete`, `roboco_task_cancel`

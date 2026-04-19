@@ -76,7 +76,8 @@ async def list_notifications(
         if params.pending_ack_only:
             # Filter to only notifications not fully acknowledged
             notifications = [
-                n for n in all_notifications
+                n
+                for n in all_notifications
                 if not all(t in n.acked_by for t in n.to_agents)
             ]
         else:
@@ -92,7 +93,8 @@ async def list_notifications(
 
     unread_count = sum(1 for n in notifications if response_agent_id not in n.read_by)
     pending_ack_count = sum(
-        1 for n in notifications
+        1
+        for n in notifications
         if n.requires_ack and response_agent_id not in n.acked_by
     )
     items = [notification_to_response(n, response_agent_id) for n in notifications]

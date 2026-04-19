@@ -302,20 +302,20 @@ def get_pm_for_agent(agent_id: str) -> str | None:
 # =============================================================================
 
 CHANNEL_ACCESS: Final[dict[str, dict[str, list[str]]]] = {
-    # Cell channels - members read/write, main-pm read (monitoring), auditor silent
+    # Cell channels - members + main-pm read/write, auditor silent
     "backend-cell": {
         "read": [*CELL_MEMBERS["backend"], "main-pm"],
-        "write": CELL_MEMBERS["backend"],
+        "write": [*CELL_MEMBERS["backend"], "main-pm"],
         "silent": ["auditor"],
     },
     "frontend-cell": {
         "read": [*CELL_MEMBERS["frontend"], "main-pm"],
-        "write": CELL_MEMBERS["frontend"],
+        "write": [*CELL_MEMBERS["frontend"], "main-pm"],
         "silent": ["auditor"],
     },
     "uxui-cell": {
         "read": [*CELL_MEMBERS["ux_ui"], "main-pm"],
-        "write": CELL_MEMBERS["ux_ui"],
+        "write": [*CELL_MEMBERS["ux_ui"], "main-pm"],
         "silent": ["auditor"],
     },
     # Cross-cell role channels

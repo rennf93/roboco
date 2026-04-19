@@ -9,7 +9,7 @@ from roboco.mcp.tasks.handlers.blocking import (
     handle_task_pause,
     handle_task_unblock,
 )
-from roboco.mcp.tasks.handlers.claim import handle_task_claim
+from roboco.mcp.tasks.handlers.claim import handle_task_claim, handle_task_unclaim
 from roboco.mcp.tasks.handlers.lifecycle import (
     handle_agent_idle,
     handle_ceo_approve,
@@ -79,4 +79,5 @@ __all__ = [
     "handle_task_submit_verification",
     "handle_task_substitute",
     "handle_task_unblock",
+    "handle_task_unclaim",
 ]

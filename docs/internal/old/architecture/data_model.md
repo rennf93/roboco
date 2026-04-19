@@ -99,8 +99,7 @@ The atomic unit of work in RoboCo. Every piece of work follows the universal tas
 | `status` | Enum | Current lifecycle state (see [Task Lifecycle](./task_lifecycle.md)) |
 | `priority` | Integer | 0=P0 (highest) to 3=P3 (lowest) |
 | `task_type` | Enum | `code`, `documentation`, `research`, `planning`, `design`, `administrative` |
-| `requires_git` | Boolean | Whether git workflow applies |
-| `project_id` | UUID | Associated project (FK) |
+| `project_id` | UUID | Associated project (required) |
 | `branch_name` | String(500) | Git branch for this task |
 | `work_session_id` | UUID | Active work session (FK) |
 | `pr_number` | Integer | GitHub/GitLab PR number |

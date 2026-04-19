@@ -28,7 +28,7 @@
 3. Invalid transition attempted
 
 **Check**:
-- For git tasks: branch exists?
+- Branch exists?
 - For `awaiting_pm_review`: both `docs_complete` AND `pr_created`?
 - Is transition valid from current status?
 

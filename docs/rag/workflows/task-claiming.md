@@ -41,7 +41,35 @@ roboco_task_claim(task_id)
 - **One at a time**: Don't claim multiple in_progress tasks
 - **Self-review prevention**: QA cannot claim tasks they developed
 - **Self-documentation prevention**: Documenter cannot claim tasks they developed
-- **Git requirement**: For git tasks, branch must exist before starting
+- **Branch requirement**: Branch auto-created on claim
+
+## Releasing a Claimed Task
+
+If you claimed a task but realize you shouldn't work on it, use `unclaim`:
+
+```python
+# Release back to pool
+roboco_task_unclaim(task_id)
+
+# Hand off to specific agent
+roboco_task_unclaim(task_id, hand_off_to="be-dev-2")
+
+# Result:
+# - status: pending
+# - assigned_to: None (or hand_off_to agent)
+# - You can now claim new work
+```
+
+**When to use unclaim:**
+- Task is out of your team's scope
+- Task requires a different role
+- You need to prioritize other work
+- Better suited for another agent
+
+**Restrictions:**
+- Only works on `claimed` status (not yet started)
+- You must be the agent who claimed it
+- If task is `in_progress`, use `roboco_task_substitute` instead
 
 ## Status After Claim
 

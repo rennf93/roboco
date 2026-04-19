@@ -165,21 +165,16 @@ class Task(TimestampMixin):
         default=2, ge=0, le=3, description="0=P0(highest), 3=P3(lowest)"
     )
 
-    # Task Type & Git Configuration
+    # Task Type & Git Configuration (all tasks follow git workflow)
     task_type: TaskType = Field(
         default=TaskType.CODE, description="Type of task (code, research, etc.)"
     )
     nature: TaskNature = Field(
         default=TaskNature.TECHNICAL, description="Technical or non-technical work"
     )
-    requires_git: bool = Field(
-        default=True, description="Whether this task requires git workflow"
-    )
 
     # Project & Branch (branch auto-created on claim)
-    project_id: UUID | None = Field(
-        default=None, description="Project this task works on"
-    )
+    project_id: UUID = Field(..., description="Project this task works on")
     branch_name: str | None = Field(
         default=None, description="Branch created for this task"
     )
@@ -193,9 +188,7 @@ class Task(TimestampMixin):
 
     # Parallel Execution Tracking (for AWAITING_DOCUMENTATION phase)
     docs_complete: bool = Field(default=False, description="Documenter has finished")
-    pr_created: bool = Field(
-        default=False, description="Developer has created PR (if requires_git)"
-    )
+    pr_created: bool = Field(default=False, description="Developer has created PR")
 
     # PM Approval Tracking (for AWAITING_PM_REVIEW phase)
     pm_approvals: dict[str, bool] = Field(
@@ -302,11 +295,10 @@ class TaskCreate(RobocoBase):
         description="Task IDs that must complete before this task can be claimed",
     )
 
-    # Git configuration
+    # Git configuration (all tasks follow git workflow)
     task_type: TaskType = TaskType.CODE
     nature: TaskNature = TaskNature.TECHNICAL
-    requires_git: bool = True
-    project_id: UUID | None = None
+    project_id: UUID  # Required - all tasks need a project
 
 
 class TaskUpdate(RobocoBase):
@@ -327,7 +319,6 @@ class TaskUpdate(RobocoBase):
     # Git fields
     task_type: TaskType | None = None
     nature: TaskNature | None = None
-    requires_git: bool | None = None
     project_id: UUID | None = None
     branch_name: str | None = None
     pr_number: int | None = None
@@ -346,11 +337,15 @@ class TaskUpdate(RobocoBase):
 class TaskCreateRequest:
     """Request data for creating a task via TaskService."""
 
+    # Required fields (no defaults)
     title: str
     description: str
     acceptance_criteria: list[str]
     team: Team
     created_by: UUID
+    project_id: UUID  # Required - all tasks need a project for git workflow
+
+    # Optional fields (with defaults)
     priority: int = 2
     parent_task_id: UUID | None = None
     assigned_to: UUID | None = None
@@ -362,8 +357,6 @@ class TaskCreateRequest:
     sequence: int = 0  # Order within siblings (lower = first)
     dependency_ids: list[UUID] = field(default_factory=list)
 
-    # Git configuration
+    # Git configuration (all tasks follow git workflow)
     task_type: TaskType = field(default=TaskType.CODE)
     nature: TaskNature = field(default=TaskNature.TECHNICAL)
-    requires_git: bool = True
-    project_id: UUID | None = None

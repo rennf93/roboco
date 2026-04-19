@@ -77,7 +77,7 @@ roboco_task_create(
 - Completion tracking breaks
 - Your task can't complete
 
-- Set `project_id` for git tasks (branches are auto-created on claim)
+- Set `project_id` (required - branches are auto-created on claim)
 
 ### 6. ACTIVATE + NOTIFY
 `roboco_task_activate()` each task, then `roboco_notify_send()` to each Cell PM. REQUIRED.
@@ -96,7 +96,7 @@ When respawned: scan, read Cell PM journals, update progress, handle escalated b
 
 **DO NOT just send a message and hope they figure it out. CALL UNBLOCK.**
 
-### 9. REVIEW PR (Git Tasks)
+### 9. REVIEW PR
 When cell tasks reach `awaiting_pm_review` and all subtasks are merged:
 1. Review the parent PR (all subtask work combined)
 2. Coordinate with Cell PM - **BOTH must approve**

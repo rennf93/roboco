@@ -27,8 +27,7 @@
 
 | Field | Description |
 |-------|-------------|
-| `requires_git` | Whether git workflow applies |
-| `project_id` | Associated project |
+| `project_id` | Associated project (required) |
 | `branch_name` | Git branch for task |
 | `work_session_id` | Active work session |
 | `pr_number` | PR number |

@@ -7,6 +7,7 @@
 | `roboco_task_get` | Get task details |
 | `roboco_task_scan` | Find available tasks |
 | `roboco_task_claim` | Take ownership |
+| `roboco_task_unclaim` | Release claimed task |
 | `roboco_task_start` | Begin work |
 
 ## Task Retrieval
@@ -27,6 +28,10 @@ tasks = roboco_task_scan(
 ```python
 # Claim task
 roboco_task_claim(task_id)
+
+# Release if you shouldn't work on it
+roboco_task_unclaim(task_id)
+roboco_task_unclaim(task_id, hand_off_to="be-dev-2")
 
 # Start work (also resumes paused tasks)
 roboco_task_start(task_id)

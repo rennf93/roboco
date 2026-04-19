@@ -159,7 +159,7 @@ Git operations for agents working on code tasks.
 
 ## Work Session API (`/work-sessions`)
 
-Work session tracking for git-enabled tasks.
+Work session tracking for tasks.
 
 | Method | Endpoint | Description |
 |--------|----------|-------------|

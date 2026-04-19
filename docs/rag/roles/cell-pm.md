@@ -14,7 +14,7 @@
 3. Assign work to cell members
 4. Complete tasks after full workflow
 5. Handle escalations from cell
-6. Review and merge PRs for git tasks
+6. Review and merge PRs
 
 ## What You CAN Do
 
@@ -58,9 +58,9 @@ roboco_notify_send({
 })
 ```
 
-## Git Tasks
+## Git Workflow
 
-For tasks with `requires_git=True`:
+All tasks follow the git workflow:
 
 **Branches are auto-created when tasks are claimed:**
 - When you claim your task: `feature/team/MAIN_PM_ID/YOUR_ID`
@@ -138,7 +138,7 @@ Create tasks with project selection:
 roboco_task_create(
     title="Backend task",
     team="backend",
-    project_slug="roboco"  # Required for git tasks
+    project_slug="roboco"  # Required
 )
 ```
 

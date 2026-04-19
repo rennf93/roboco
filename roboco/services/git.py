@@ -382,7 +382,18 @@ class GitService(BaseService):
         await self._run_git(workspace, ["fetch", "origin"])
 
         # Create and push branch
-        await self._run_git(workspace, ["checkout", base_branch])
+        # Try direct checkout first (works if local branch exists)
+        checkout_result = await self._run_git(
+            workspace, ["checkout", base_branch], check=False
+        )
+        if checkout_result.returncode != 0:
+            # Branch doesn't exist locally - create tracking branch from remote
+            # This handles freshly cloned workspaces where remote branch exists
+            # but local tracking branch hasn't been created yet
+            await self._run_git(
+                workspace,
+                ["checkout", "-b", base_branch, f"origin/{base_branch}"],
+            )
         await self._run_git(workspace, ["pull", "origin", base_branch])
         await self._run_git(workspace, ["checkout", "-b", branch_name])
         await self._run_git(workspace, ["push", "-u", "origin", branch_name])
@@ -396,10 +407,18 @@ class GitService(BaseService):
         """Checkout a branch.
 
         Fetches from origin first to ensure remote branches are available.
+        If the branch doesn't exist locally, creates a tracking branch from remote.
         """
         # Fetch to ensure we have the latest refs
         await self._run_git(workspace, ["fetch", "origin"])
-        await self._run_git(workspace, ["checkout", branch])
+
+        # Try direct checkout first (works if local branch exists)
+        result = await self._run_git(workspace, ["checkout", branch], check=False)
+        if result.returncode != 0:
+            # Branch doesn't exist locally - create tracking branch from remote
+            await self._run_git(
+                workspace, ["checkout", "-b", branch, f"origin/{branch}"]
+            )
 
     async def push(self, workspace: Path, force: bool = False) -> tuple[str, int]:
         """Push commits to remote.
@@ -477,7 +496,7 @@ class GitService(BaseService):
 
         task_type = "feature"
         if "/" in source_branch:
-            task_type = source_branch.split("/")[0]
+            task_type = source_branch.split("/", maxsplit=1)[0]
 
         criteria = list(task.acceptance_criteria) if task.acceptance_criteria else []
 
@@ -558,10 +577,18 @@ class GitService(BaseService):
             else "main"
         )
 
-        # Get decrypted token from project (required for PR creation)
-        git_token = await project_service.get_decrypted_token_by_slug(
-            request.project_slug
-        )
+        # Get decrypted token from project (required for PR creation).
+        from roboco.utils.crypto import EncryptionError
+
+        try:
+            git_token = await project_service.get_decrypted_token_by_slug(
+                request.project_slug
+            )
+        except EncryptionError as e:
+            raise GitError(
+                f"Failed to decrypt git token for project '{request.project_slug}'. "
+                "The encryption key may have been rotated; re-set the project token."
+            ) from e
         if not git_token:
             raise GitError(
                 f"Project '{request.project_slug}' has no git token configured. "
@@ -643,7 +670,15 @@ class GitService(BaseService):
         """
         # Get project token for gh CLI
         project_service = get_project_service(self.session)
-        git_token = await project_service.get_decrypted_token_by_slug(project_slug)
+        from roboco.utils.crypto import EncryptionError
+
+        try:
+            git_token = await project_service.get_decrypted_token_by_slug(project_slug)
+        except EncryptionError as e:
+            raise GitError(
+                f"Failed to decrypt git token for project '{project_slug}'. "
+                "The encryption key may have been rotated; re-set the project token."
+            ) from e
         if not git_token:
             raise GitError(
                 f"Project '{project_slug}' has no git token configured. "

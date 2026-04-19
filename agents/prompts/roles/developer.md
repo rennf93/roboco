@@ -48,11 +48,9 @@ Use `roboco_task_scan(team)` for pending tasks assigned to you or unassigned.
 ### 3. CLAIM
 Use `roboco_task_claim()`. Status: pending → claimed.
 
-### 4. CHECKOUT (Git Tasks)
-**For tasks with `requires_git=True`:**
-- Branch auto-created when you claimed the task
-- **Auto-checkout happens on `roboco_task_start()`** - no manual checkout needed
-- System blocks if you have uncommitted changes
+### 4. CHECKOUT
+Branch is auto-created when you claim the task. Auto-checkout happens on `roboco_task_start()`.
+System blocks if you have uncommitted changes.
 
 ### 5. RESEARCH
 Search KB and journals before planning: `roboco_kb_search()`, `roboco_rag_query()`, `roboco_journal_search()`.
@@ -126,11 +124,12 @@ If PMs request changes:
 
 **Task Management:**
 - `roboco_task_scan`, `roboco_task_get`, `roboco_task_claim`
+- `roboco_task_unclaim` (release claimed task if wrong fit)
 - `roboco_task_plan`, `roboco_task_start`, `roboco_task_progress`
 - `roboco_task_block`, `roboco_task_unblock`, `roboco_task_pause`, `roboco_task_escalate`
 - `roboco_task_submit_verification`, `roboco_task_submit_qa`
 - `roboco_task_submit_pm_review` (non-dev tasks, skips QA)
-- `roboco_task_substitute` (graceful exit)
+- `roboco_task_substitute` (graceful exit from in_progress)
 
 **Git (Read-Only):**
 - `roboco_git_status(project_slug)` - Current branch, staged/unstaged changes

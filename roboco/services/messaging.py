@@ -356,7 +356,7 @@ class MessagingService(BaseService):
         # Publish event
         try:
             bus = get_event_bus()
-            if bus._redis:
+            if bus.is_connected():
                 await bus.publish(
                     Event(
                         type=EventType.SESSION_CREATED,
@@ -382,6 +382,46 @@ class MessagingService(BaseService):
             select(SessionTable).where(SessionTable.id == session_id)
         )
         return result.scalar_one_or_none()
+
+    async def sweep_timed_out_sessions(self) -> int:
+        """Close sessions whose inactivity exceeds `timeout_seconds`.
+
+        `SessionTable.timeout_seconds` and `SessionTable.max_time_window` were
+        stored but never enforced; sessions stayed ACTIVE indefinitely.
+        The orchestrator's session-sweeper loop calls this periodically.
+
+        Returns the number of sessions closed.
+        """
+
+        now = datetime.now(UTC)
+        result = await self.session.execute(
+            select(SessionTable).where(SessionTable.status == SessionStatus.ACTIVE)
+        )
+        active_sessions = list(result.scalars().all())
+
+        closed = 0
+        for session in active_sessions:
+            last_active = session.last_activity_at or session.started_at
+            idle = (now - last_active).total_seconds()
+
+            timeout_exceeded = (
+                session.timeout_seconds is not None
+                and idle >= session.timeout_seconds
+            )
+            window_exceeded = (
+                session.max_time_window is not None
+                and (now - session.started_at) >= session.max_time_window
+            )
+            if not (timeout_exceeded or window_exceeded):
+                continue
+
+            reason = "Inactivity timeout" if timeout_exceeded else "Max time window"
+            await self.close_session(cast("UUID", session.id), reason)
+            closed += 1
+
+        if closed:
+            self.log.info("Session sweeper closed sessions", count=closed)
+        return closed
 
     async def close_session(
         self,
@@ -409,7 +449,7 @@ class MessagingService(BaseService):
         # Publish event
         try:
             bus = get_event_bus()
-            if bus._redis:
+            if bus.is_connected():
                 await bus.publish(
                     Event(
                         type=EventType.SESSION_CLOSED,

@@ -5,9 +5,7 @@ Validates task ownership and claim rules.
 """
 
 from roboco.agents_config import get_agent_role, get_agent_team
-from roboco.enforcement.task_lifecycle import is_waiting_state
 from roboco.exceptions import RobocoError
-from roboco.models.enforcement import TaskClaimContext
 
 
 class TaskOwnershipError(RobocoError):
@@ -66,17 +64,6 @@ def validate_task_ownership(
     role = get_agent_role(agent_id)
     agent_team = get_agent_team(agent_id)
 
-    # CLAIM action - task must be unassigned
-    if action == "claim":
-        if task_assigned_to is not None:
-            raise TaskOwnershipError(
-                agent_id=agent_id,
-                task_id=task_id,
-                action=action,
-                message=f"Task is already assigned to {task_assigned_to}",
-            )
-        return True
-
     # REASSIGN action - only PMs
     if action == "reassign":
         if role not in ("cell_pm", "main_pm"):
@@ -108,71 +95,6 @@ def validate_task_ownership(
             action=action,
             message=f"Task is assigned to {task_assigned_to}, not you",
         )
-
-    return True
-
-
-def validate_task_claim(ctx: TaskClaimContext) -> bool:
-    """
-    Validate agent can claim a specific task.
-
-    Rules:
-    - Task must be in 'pending' status
-    - Agent cannot have an active task (claimed, in_progress, verifying)
-    - Agent must resume paused tasks before claiming new ones
-    - Agent should be in the same team as the task (warning, not error)
-
-    Args:
-        ctx: Task claim context with all required validation data
-
-    Returns:
-        True if can claim
-
-    Raises:
-        TaskOwnershipError: If cannot claim
-    """
-    # Check task is pending
-    if ctx.task_status != "pending":
-        msg = (
-            f"Cannot claim task in '{ctx.task_status}' status. "
-            "Only 'pending' tasks can be claimed."
-        )
-        raise TaskOwnershipError(
-            agent_id=ctx.agent_id,
-            task_id=ctx.task_id,
-            action="claim",
-            message=msg,
-        )
-
-    # Check for paused tasks
-    if ctx.agent_paused_tasks:
-        paused_ids = [t.get("id") for t in ctx.agent_paused_tasks]
-        raise TaskOwnershipError(
-            agent_id=ctx.agent_id,
-            task_id=ctx.task_id,
-            action="claim",
-            message=f"You have {len(ctx.agent_paused_tasks)} paused task(s). "
-            f"Resume paused work before claiming new tasks. Paused: {paused_ids}",
-        )
-
-    # Check for active tasks
-    active = [
-        t for t in ctx.agent_active_tasks if not is_waiting_state(t.get("status", ""))
-    ]
-    if active:
-        raise TaskOwnershipError(
-            agent_id=ctx.agent_id,
-            task_id=ctx.task_id,
-            action="claim",
-            message=f"You already have an active task: {active[0].get('id')}. "
-            "Complete or pause it before claiming new work.",
-        )
-
-    # Check team match (warning only - agents can claim cross-team if needed)
-    agent_team = get_agent_team(ctx.agent_id)
-    if agent_team and agent_team != ctx.task_team:
-        # This is allowed but unusual - could log a warning
-        pass
 
     return True
 

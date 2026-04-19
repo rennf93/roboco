@@ -130,7 +130,7 @@ async def _safe_checkout(
 async def handle_task_start(
     client: ApiClient, task_id: str, agent_id: str
 ) -> dict[str, Any]:
-    """Handle task start with auto-checkout for git tasks."""
+    """Handle task start with auto-checkout."""
     task, error = await fetch_task_or_error(client, task_id)
     if error:
         return error
@@ -139,12 +139,11 @@ async def handle_task_start(
     if error := await validate_task_start(task, agent_id, client):
         return error
 
-    # Auto-checkout for git tasks
+    # Auto-checkout for task (all tasks follow git workflow)
     branch_name = task.get("branch_name")
     project_slug = task.get("project_slug")
-    requires_git = task.get("requires_git", False)
 
-    if requires_git and branch_name and project_slug:
+    if branch_name and project_slug:
         checkout_error = await _safe_checkout(
             client, project_slug, branch_name, agent_id
         )
@@ -157,9 +156,9 @@ async def handle_task_start(
             "START_FAILED", "Failed to start task", {"api_error": start_resp.text}
         )
 
-    # Build guidance based on whether git checkout happened
+    # Build guidance with git checkout info
     guidance = "Task started. Work through your plan step by step:\n"
-    if requires_git and branch_name:
+    if branch_name:
         guidance += (
             f"✓ Checked out branch: {branch_name}\n"
             f"   Workspace: /data/workspaces/{project_slug}/...\n"

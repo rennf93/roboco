@@ -180,12 +180,28 @@ class ProjectService(BaseService):
         )
         return project
 
-    async def delete(self, project_id: UUID) -> bool:
+    async def delete(
+        self,
+        project_id: UUID,
+        *,
+        delete_workspaces: bool = False,
+    ) -> bool:
         """
         Delete a project.
 
+        Before the delete, abandon any ACTIVE work sessions tied to this
+        project so they don't remain ACTIVE with no owning project.
+        Optionally remove cloned workspaces from disk (caller opt-in; safer
+        default is to leave them for recovery).
+
+        The DB-level cascade on tasks is `RESTRICT`, so if any tasks
+        reference this project the delete still fails at the DB layer —
+        callers should cancel those tasks first.
+
         Args:
             project_id: Project to delete
+            delete_workspaces: If True, remove on-disk workspaces for this
+                project. Default False so disk cleanup is explicit.
 
         Returns:
             True if deleted, False if not found
@@ -194,8 +210,62 @@ class ProjectService(BaseService):
         if not project:
             return False
 
+        from roboco.db.tables import WorkSessionTable
+        from roboco.models.work_session import WorkSessionStatus
+        from roboco.services.work_session import get_work_session_service
+
+        active_sessions = await self.session.execute(
+            select(WorkSessionTable).where(
+                WorkSessionTable.project_id == project_id,
+                WorkSessionTable.status == WorkSessionStatus.ACTIVE,
+            )
+        )
+        ws_service = get_work_session_service(self.session)
+        abandoned = 0
+        for ws in active_sessions.scalars().all():
+            from roboco.utils.converters import require_uuid
+
+            await ws_service.abandon(
+                require_uuid(ws.id), reason="project deleted"
+            )
+            abandoned += 1
+        if abandoned:
+            self.log.info(
+                "Abandoned active work sessions before project delete",
+                project_id=str(project_id),
+                count=abandoned,
+            )
+
+        project_slug = project.slug
+
         await self.session.delete(project)
         await self.session.flush()
+
+        if delete_workspaces:
+            from roboco.services.workspace import get_workspace_service
+
+            ws_svc = get_workspace_service(self.session)
+            try:
+                workspaces = await ws_svc.list_workspaces(project_slug)
+                for ws_info in workspaces:
+                    from pathlib import Path
+
+                    path = Path(ws_info["path"])
+                    if path.exists():
+                        import shutil
+
+                        shutil.rmtree(path)
+                self.log.info(
+                    "Deleted workspaces for project",
+                    project_slug=project_slug,
+                    count=len(workspaces),
+                )
+            except Exception as e:
+                self.log.warning(
+                    "Failed to clean up some workspaces after project delete",
+                    project_slug=project_slug,
+                    error=str(e),
+                )
 
         self.log.info("Project deleted", project_id=str(project_id))
         return True

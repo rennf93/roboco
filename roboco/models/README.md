@@ -134,12 +134,12 @@ ABANDONED = "abandoned"   # Session cancelled
 
 ### TaskType (from `base.py`)
 ```python
-CODE = "code"                     # Technical work - requires git workflow
-DOCUMENTATION = "documentation"   # May or may not need git
-RESEARCH = "research"             # Investigation/analysis - no git
-PLANNING = "planning"             # Planning/design tasks - no git
-DESIGN = "design"                 # UX/UI design tasks - no git
-ADMINISTRATIVE = "administrative" # Administrative tasks - no git
+CODE = "code"                     # Source code changes
+DOCUMENTATION = "documentation"   # Documentation updates
+RESEARCH = "research"             # Research findings committed as notes
+PLANNING = "planning"             # Plans/architecture committed as docs
+DESIGN = "design"                 # Designs/specs committed as assets
+ADMINISTRATIVE = "administrative" # Process docs committed
 ```
 
 ### BranchReason (from `project.py`)
@@ -165,12 +165,11 @@ class Task:
     created_by: UUID
     assigned_to: UUID | None
 
-    # Task Type & Git Configuration
+    # Task Type
     task_type: TaskType              # code, documentation, research, planning, design, administrative
-    requires_git: bool               # Whether git workflow applies
 
-    # Project & Branch (branch auto-created on claim)
-    project_id: UUID | None
+    # Project & Branch (all tasks follow git workflow, branch auto-created on claim)
+    project_id: UUID
     branch_name: str | None
     work_session_id: UUID | None
 

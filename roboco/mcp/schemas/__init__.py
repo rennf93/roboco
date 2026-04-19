@@ -169,7 +169,7 @@ class TaskCreateInput(BaseModel):
     - sequence: Lower numbers execute first (1, 2, 3...)
     - dependency_ids: Tasks that must complete before this one can be claimed
 
-    PROJECT: For git-enabled tasks, project_slug is required.
+    PROJECT: project_slug is required (all tasks follow git workflow).
     - Use 'roboco' for internal RoboCo codebase work
     - Use roboco_project_list() to see available projects
     """
@@ -182,23 +182,19 @@ class TaskCreateInput(BaseModel):
         ..., min_length=1, description="At least one acceptance criterion"
     )
     team: str = Field(..., description="Team: backend, frontend, ux_ui")
-    # Project selection - required for git tasks
-    project_slug: str | None = Field(
-        default=None,
+    # Project selection - required for all tasks (git workflow is mandatory)
+    project_slug: str = Field(
+        ...,
         description=(
             "Project slug (e.g., 'roboco', 'roboco-panel'). "
-            "Required when requires_git=True. Use 'roboco' for internal codebase."
+            "Required for all tasks. Use 'roboco' for internal codebase."
         ),
-    )
-    requires_git: bool = Field(
-        default=True,
-        description="Whether task requires git. If True, project_slug is required.",
     )
     task_type: str = Field(
         default="code",
         description=(
-            "Task type: code (git work), documentation, research, planning, "
-            "design, administrative. For subtasks, inherits from parent if not set."
+            "Task type: code, documentation, research, planning, "
+            "design, administrative. All types follow git workflow."
         ),
     )
     parent_task_id: str | None = Field(

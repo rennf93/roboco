@@ -1,7 +1,8 @@
 """
 Tasks API Schemas
 
-Request/response models for task endpoints.
+Request/response models for task endpoints, plus the conversion helpers
+that build responses from ORM rows and normalize update payloads.
 """
 
 from datetime import datetime
@@ -226,10 +227,10 @@ class TaskResponse(BaseModel):
     sequence: int  # Order number within siblings
     nature: TaskNature  # Technical or non-technical work
 
-    # Task Type & Git Configuration
+    # Task Type & Git Configuration (all tasks follow git workflow)
     task_type: TaskType  # code, documentation, research, etc.
-    requires_git: bool  # Whether this task requires git workflow
-    project_id: UUID | None = None  # Project this task works on
+    project_id: UUID  # Project this task works on (required)
+    project_slug: str | None = None  # Project slug for MCP/git tool calls
 
     # Parallel Execution Tracking (for AWAITING_DOCUMENTATION phase)
     docs_complete: bool = False  # Documenter has finished
@@ -443,29 +444,23 @@ class TeamTasksQuery(BaseModel):
     limit: int = Field(100, ge=1, le=500)
 
 
-# =============================================================================
-# CONVERTERS (from database/dict to response models)
-# =============================================================================
-
-
 def convert_plan(plan_data: dict | None) -> TaskPlanResponse | None:
     """Convert plan JSON dict to TaskPlanResponse."""
     if not plan_data:
         return None
 
-    sub_tasks = []
-    for st in plan_data.get("sub_tasks", []):
-        sub_tasks.append(
-            SubTaskResponse(
-                id=st.get("id"),
-                title=st.get("title", ""),
-                description=st.get("description"),
-                completed=st.get("completed", False),
-                order=st.get("order", 0),
-                estimated_hours=st.get("estimated_hours"),
-                notes=st.get("notes"),
-            )
+    sub_tasks = [
+        SubTaskResponse(
+            id=st.get("id"),
+            title=st.get("title", ""),
+            description=st.get("description"),
+            completed=st.get("completed", False),
+            order=st.get("order", 0),
+            estimated_hours=st.get("estimated_hours"),
+            notes=st.get("notes"),
         )
+        for st in plan_data.get("sub_tasks", [])
+    ]
 
     return TaskPlanResponse(
         approach=plan_data.get("approach", ""),
@@ -480,20 +475,17 @@ def convert_checkpoints(checkpoints_data: list | None) -> list[CheckpointRespons
     """Convert checkpoints JSON list to CheckpointResponse list."""
     if not checkpoints_data:
         return []
-
-    result = []
-    for cp in checkpoints_data:
-        result.append(
-            CheckpointResponse(
-                id=cp.get("id"),
-                timestamp=cp.get("timestamp"),
-                agent_id=cp.get("agent_id"),
-                state_summary=cp.get("state_summary", ""),
-                remaining_work=cp.get("remaining_work", []),
-                notes=cp.get("notes"),
-            )
+    return [
+        CheckpointResponse(
+            id=cp.get("id"),
+            timestamp=cp.get("timestamp"),
+            agent_id=cp.get("agent_id"),
+            state_summary=cp.get("state_summary", ""),
+            remaining_work=cp.get("remaining_work", []),
+            notes=cp.get("notes"),
         )
-    return result
+        for cp in checkpoints_data
+    ]
 
 
 def convert_progress_updates(
@@ -502,36 +494,30 @@ def convert_progress_updates(
     """Convert progress_updates JSON list to ProgressUpdateResponse list."""
     if not updates_data:
         return []
-
-    result = []
-    for pu in updates_data:
-        result.append(
-            ProgressUpdateResponse(
-                timestamp=pu.get("timestamp"),
-                agent_id=pu.get("agent_id"),
-                message=pu.get("message", ""),
-                percentage=pu.get("percentage"),
-            )
+    return [
+        ProgressUpdateResponse(
+            timestamp=pu.get("timestamp"),
+            agent_id=pu.get("agent_id"),
+            message=pu.get("message", ""),
+            percentage=pu.get("percentage"),
         )
-    return result
+        for pu in updates_data
+    ]
 
 
 def convert_commits(commits_data: list | None) -> list[CommitRefResponse]:
     """Convert commits JSON list to CommitRefResponse list."""
     if not commits_data:
         return []
-
-    result = []
-    for cm in commits_data:
-        result.append(
-            CommitRefResponse(
-                hash=cm.get("hash", ""),
-                message=cm.get("message", ""),
-                timestamp=cm.get("timestamp"),
-                author_agent_id=cm.get("author_agent_id"),
-            )
+    return [
+        CommitRefResponse(
+            hash=cm.get("hash", ""),
+            message=cm.get("message", ""),
+            timestamp=cm.get("timestamp"),
+            author_agent_id=cm.get("author_agent_id"),
         )
-    return result
+        for cm in commits_data
+    ]
 
 
 def task_to_response(task: "TaskTable") -> TaskResponse:
@@ -545,16 +531,12 @@ def task_to_response(task: "TaskTable") -> TaskResponse:
         priority=task.priority,
         sequence=task.sequence,
         nature=task.nature,
-        # Task Type & Git Configuration
         task_type=task.task_type,
-        requires_git=task.requires_git,
-        project_id=to_python_uuid(task.project_id),
-        # Parallel Execution Tracking
+        project_id=require_uuid(task.project_id),
+        project_slug=task.project.slug if getattr(task, "project", None) else None,
         docs_complete=task.docs_complete,
         pr_created=task.pr_created,
-        # PM Approval Tracking
         pm_approvals=task.pm_approvals or {},
-        # Ownership
         team=task.team,
         created_by=require_uuid(task.created_by),
         assigned_to=to_python_uuid(task.assigned_to),
@@ -569,26 +551,25 @@ def task_to_response(task: "TaskTable") -> TaskResponse:
         completed_at=task.completed_at,
         target_date=task.target_date,
         estimated_complexity=task.estimated_complexity,
-        # Planning
         plan=convert_plan(task.plan),
-        # Execution
         checkpoints=convert_checkpoints(task.checkpoints),
         progress_updates=convert_progress_updates(task.progress_updates),
-        # Artifacts
         commits=convert_commits(task.commits),
-        # Documentation
         dev_notes=task.dev_notes,
         qa_notes=task.qa_notes,
         auditor_notes=task.auditor_notes,
         quick_context=task.quick_context,
-        # Review Status
         self_verified=task.self_verified,
         qa_verified=task.qa_verified,
-        # Git context from task record
         branch_name=getattr(task, "branch_name", None),
         pr_number=getattr(task, "pr_number", None),
         pr_url=getattr(task, "pr_url", None),
     )
+
+
+def task_list_to_response(tasks: list["TaskTable"]) -> list[TaskResponse]:
+    """Convert list of TaskTable to list of TaskResponse."""
+    return [task_to_response(t) for t in tasks]
 
 
 async def enrich_task_with_context(
@@ -597,20 +578,9 @@ async def enrich_task_with_context(
     include_project: bool = True,
     include_work_session: bool = True,
 ) -> TaskResponse:
-    """
-    Enrich a TaskResponse with related context (project, work session).
-
-    Call this when full traceability context is needed.
-    """
+    """Enrich a TaskResponse with related context (project, work session)."""
     task_dict = task_response.model_dump()
 
-    # Get project info if task has project_id
-    if include_project:
-        # Task doesn't have project_id in response yet, need to fetch from related data
-        # This requires knowing the project_id from the task record
-        pass  # TODO: Add project_id to TaskResponse or fetch via work session
-
-    # Get work session info
     if include_work_session and hasattr(task_response, "id"):
         query = select(WorkSessionTable).where(
             WorkSessionTable.task_id == task_response.id
@@ -630,7 +600,6 @@ async def enrich_task_with_context(
                 pr_status=work_session.pr_status,
             )
 
-            # Also get project info from work session
             if include_project and work_session.project_id:
                 proj_query = select(ProjectTable).where(
                     ProjectTable.id == work_session.project_id
@@ -650,11 +619,6 @@ async def enrich_task_with_context(
     return TaskResponse(**task_dict)
 
 
-def task_list_to_response(tasks: list["TaskTable"]) -> list[TaskResponse]:
-    """Convert list of TaskTable to list of TaskResponse."""
-    return [task_to_response(t) for t in tasks]
-
-
 def parse_uuid_or_none(value: str | None) -> UUID | None:
     """Parse a string to UUID, returning None if empty or None."""
     if not value:
@@ -672,10 +636,7 @@ def _parse_uuid_list(id_strings: list[str] | None) -> list[UUID]:
     return [UUID(id_str) for id_str in id_strings if id_str]
 
 
-# Fields that need UUID parsing (single value)
 _SINGLE_UUID_FIELDS = ("assigned_to", "parent_task_id")
-
-# Fields that need UUID list parsing
 _UUID_LIST_FIELDS = ("dependency_ids", "blocker_ids")
 
 
@@ -683,12 +644,10 @@ def transform_update_data(data: TaskUpdate) -> dict:
     """Transform TaskUpdate input to format suitable for database storage."""
     updates = data.model_dump(exclude_unset=True)
 
-    # Convert single UUID fields
     for field in _SINGLE_UUID_FIELDS:
         if field in updates:
             updates[field] = parse_uuid_or_none(updates[field])
 
-    # Convert UUID list fields
     for field in _UUID_LIST_FIELDS:
         if field in updates:
             updates[field] = _parse_uuid_list(updates[field])

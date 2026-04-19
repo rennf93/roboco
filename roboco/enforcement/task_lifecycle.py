@@ -3,15 +3,14 @@ Task Lifecycle State Machine Enforcement
 
 Validates task state transitions follow the defined lifecycle.
 
-Git Integration:
-    Tasks with requires_git=True have additional requirements:
-        - awaiting_documentation → awaiting_pm_review:
-            requires BOTH docs_complete AND pr_created
-        - awaiting_pm_review → awaiting_ceo_approval:
-            PR should exist (pr_number set)
-        - awaiting_ceo_approval → completed: PR should be merged (CEO merges)
+Git Integration (all tasks follow git workflow):
+    - awaiting_documentation → awaiting_pm_review:
+        requires BOTH docs_complete AND pr_created
+    - awaiting_pm_review → awaiting_ceo_approval:
+        PR should exist (pr_number set)
+    - awaiting_ceo_approval → completed: PR should be merged (CEO merges)
 
-    See validate_git_requirements() for enforcement.
+See validate_git_requirements() for enforcement.
 """
 
 from dataclasses import dataclass
@@ -117,9 +116,11 @@ ROLE_RESTRICTED_TRANSITIONS: dict[tuple[str, str], list[str]] = {
     # QA direct assignment: QA can pass/fail from in_progress when directly assigned
     ("in_progress", "awaiting_documentation"): ["qa"],  # QA pass
     ("in_progress", "needs_revision"): ["qa"],  # QA fail
-    # Only documenter can claim docs tasks and mark complete
+    # Only documenter can claim docs tasks
     ("awaiting_documentation", "claimed"): ["documenter"],
-    ("awaiting_documentation", "awaiting_pm_review"): ["documenter"],
+    # Parallel completion: either documenter or developer can trigger transition
+    # (whoever finishes their work last triggers the transition)
+    ("awaiting_documentation", "awaiting_pm_review"): ["documenter", "developer"],
     # Only PM can claim PM review tasks
     ("awaiting_pm_review", "claimed"): _CANCEL_ROLES,
     # Only PM can complete tasks (either after PM review or their own work)
@@ -270,9 +271,8 @@ class GitRequirementError(Exception):
 
 @dataclass
 class GitContext:
-    """Git-related task state for validation."""
+    """Git-related task state for validation (all tasks follow git workflow)."""
 
-    requires_git: bool = False
     docs_complete: bool = False
     pr_created: bool = False
     pr_number: int | None = None
@@ -287,7 +287,7 @@ def validate_git_requirements(
     """
     Validate git-related requirements for task transitions.
 
-    For tasks with requires_git=True, additional requirements apply:
+    All tasks follow git workflow:
 
     - awaiting_documentation → awaiting_pm_review:
         Requires BOTH docs_complete=True AND pr_created=True
@@ -296,13 +296,13 @@ def validate_git_requirements(
     - awaiting_pm_review → awaiting_ceo_approval:
         Requires pr_number to be set (PR exists)
 
-    - claimed → in_progress (git tasks):
+    - claimed → in_progress:
         Should have branch_name set (auto-created on claim)
 
     Args:
         current_status: Current task status
         target_status: Target task status
-        git_ctx: Git context with workflow state (None = no git requirements)
+        git_ctx: Git context with workflow state
 
     Returns:
         True if all requirements met
@@ -310,8 +310,8 @@ def validate_git_requirements(
     Raises:
         GitRequirementError: If git requirements not met
     """
-    # Non-git tasks or no context have no git requirements
-    if git_ctx is None or not git_ctx.requires_git:
+    # No context means no validation needed (context not provided)
+    if git_ctx is None:
         return True
 
     transition = (current_status, target_status)
@@ -353,7 +353,7 @@ def validate_git_requirements(
             ),
         )
 
-    # claimed → in_progress (for git tasks)
+    # claimed → in_progress
     # Should have a branch ready
     if transition == ("claimed", "in_progress") and not git_ctx.branch_name:
         raise GitRequirementError(
@@ -369,11 +369,7 @@ def validate_git_requirements(
     return True
 
 
-def check_parallel_completion(
-    docs_complete: bool,
-    pr_created: bool,
-    requires_git: bool = True,
-) -> bool:
+def check_parallel_completion(docs_complete: bool, pr_created: bool) -> bool:
     """
     Check if parallel execution in awaiting_documentation is complete.
 
@@ -386,12 +382,8 @@ def check_parallel_completion(
     Args:
         docs_complete: Whether documenter finished
         pr_created: Whether developer created PR
-        requires_git: Whether task requires git (if False, only docs needed)
 
     Returns:
         True if ready to transition to awaiting_pm_review
     """
-    if not requires_git:
-        return docs_complete
-
     return docs_complete and pr_created

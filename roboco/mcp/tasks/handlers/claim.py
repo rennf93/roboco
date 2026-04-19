@@ -14,6 +14,7 @@ from roboco.mcp.tasks.handlers._helpers import (
     get_project_context,
     resolve_agent_uuid_cached,
     validate_task_claimable,
+    validate_task_ownership,
 )
 from roboco.mcp.utils import ApiClient, format_error_response
 
@@ -78,18 +79,15 @@ async def _validate_git_requirements(
     """Validate git requirements for hierarchical branching.
 
     Rules:
-    - Must have project_id (always)
+    - Must have project_id (always - validated at creation)
     - Root tasks: branch auto-created from default branch
     - Subtasks: need parent to have branch (for forking)
     """
-    if not task.get("requires_git"):
-        return None
-
-    # Must have project
+    # Must have project (should always be true - validated at creation)
     if not task.get("project_id"):
         return format_error_response(
             "PROJECT_REQUIRED",
-            "Git tasks require a project for branch creation.",
+            "Tasks require a project for branch creation.",
             {"task_id": task_id},
             hint="Assign a project to this task.",
         )
@@ -104,7 +102,7 @@ async def _validate_git_requirements(
         parent_resp = await client.get(f"/tasks/{parent_id}")
         if parent_resp.ok:
             parent = parent_resp.json()
-            if parent.get("requires_git") and not parent.get("branch_name"):
+            if not parent.get("branch_name"):
                 return format_error_response(
                     "PARENT_BRANCH_REQUIRED",
                     "Parent task must be claimed first to create its branch.",
@@ -191,10 +189,9 @@ async def _run_claim_validations(
     if error := await _validate_git_requirements(client, task, task_id):
         return error
 
-    # TODO: Re-enable when sequence workflow is refined
     # Validate sibling sequence order (earlier sequence must complete first)
-    # if error := await _validate_sibling_sequence(client, task):
-    #     return error
+    if error := await _validate_sibling_sequence(client, task):
+        return error
 
     return None
 
@@ -304,3 +301,69 @@ def _build_claim_guidance(claimed_task: dict, original_task: dict) -> str:
         "3. Call roboco_task_plan(task_id, approach, steps)\n"
         "4. Then call roboco_task_start(task_id)"
     )
+
+
+async def handle_task_unclaim(
+    client: ApiClient, task_id: str, agent_id: str, hand_off_to: str | None = None
+) -> dict[str, Any]:
+    """Handle releasing a claimed task back to the pool.
+
+    Use this when you claimed a task but realize you shouldn't work on it.
+    Optionally specify another agent to hand off to.
+
+    Args:
+        client: API client
+        task_id: Task to unclaim
+        agent_id: Agent releasing the task
+        hand_off_to: Optional agent slug to assign the task to
+    """
+    # Fetch task first
+    task, error = await fetch_task_or_error(client, task_id)
+    if error:
+        return error
+    assert task is not None
+
+    # Validate ownership
+    if error := await validate_task_ownership(task, agent_id, client):
+        return error
+
+    # Validate status
+    if task.get("status") != "claimed":
+        return format_error_response(
+            "INVALID_STATE",
+            "Can only unclaim tasks in 'claimed' status. "
+            f"Current: '{task.get('status')}'",
+            hint="If task is in_progress, use roboco_task_pause() instead.",
+        )
+
+    # Build request payload
+    payload: dict[str, Any] = {}
+    if hand_off_to:
+        payload["agent_id"] = hand_off_to
+
+    # Execute unclaim
+    resp = await client.post(f"/tasks/{task_id}/unclaim", json=payload or None)
+
+    if not resp.ok:
+        return format_error_response(
+            "UNCLAIM_FAILED",
+            f"Failed to unclaim task: {resp.text}",
+            {"status_code": resp.status_code},
+        )
+
+    result = resp.json()
+
+    if hand_off_to:
+        guidance = (
+            f"Task released and handed off to {hand_off_to}.\n"
+            "They can now claim and work on it.\n"
+            "Call roboco_task_scan() to find your next task."
+        )
+    else:
+        guidance = (
+            "Task released back to the pool.\n"
+            "It can now be claimed by any eligible agent.\n"
+            "Call roboco_task_scan() to find your next task."
+        )
+
+    return format_task_response(result, "SCAN_FOR_WORK", guidance)

@@ -37,14 +37,14 @@ class TaskStatus(str, Enum):
 
 
 class TaskType(str, Enum):
-    """Task type classification - determines if git workflow applies."""
+    """Task classification. ALL types follow git workflow."""
 
-    CODE = "code"  # Technical - full git workflow
-    DOCUMENTATION = "documentation"  # May or may not need git
-    RESEARCH = "research"  # No git
-    PLANNING = "planning"  # No git
-    DESIGN = "design"  # No git
-    ADMINISTRATIVE = "administrative"  # No git
+    CODE = "code"  # Source code changes
+    DOCUMENTATION = "documentation"  # Documentation updates
+    RESEARCH = "research"  # Research findings committed as notes
+    PLANNING = "planning"  # Plans/architecture committed as docs
+    DESIGN = "design"  # Designs/specs committed as assets
+    ADMINISTRATIVE = "administrative"  # Process docs committed
 
 
 class TaskNature(str, Enum):
@@ -148,6 +148,7 @@ class NotificationType(str, Enum):
     BLOCKER_ESCALATION = "blocker_escalation"
     REVIEW_REQUEST = "review_request"
     DOCUMENTATION_REQUEST = "documentation_request"
+    APPROVAL = "approval"  # Board-level approval requests (PO/HM/Main PM)
     ALERT = "alert"
     BROADCAST = "broadcast"
     KNOWLEDGE_SHARE = "knowledge_share"  # Cross-agent learning notification

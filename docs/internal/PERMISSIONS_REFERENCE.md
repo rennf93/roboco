@@ -437,8 +437,9 @@ is_waiting_state(status: str) -> bool
 
 # Task Ownership
 validate_task_ownership(agent_id, task_id, assigned_to, team, action)
-validate_task_claim(context: TaskClaimContext)
 can_review_task(agent_id: str, developed_by: str) -> bool
+# Claim validation happens in mcp/tasks/handlers/_helpers.validate_task_claimable
+# and TaskService.claim — there is no standalone validate_task_claim.
 
 # Channel Access
 validate_channel_access(agent_id: str, channel_slug: str, action: str)

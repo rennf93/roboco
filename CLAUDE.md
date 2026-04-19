@@ -79,7 +79,7 @@ pnpm test
 | Cache/Queue | Redis |
 | Container Runtime | Docker + Docker Compose |
 | Cloud LLM | Claude API (claude-opus-4-5-20251101) |
-| Local LLM | Ollama (glm-4.7:cloud for HyDE/RAG) |
+| Local LLM | Ollama (glm-5.1:cloud for HyDE/RAG) |
 | Embeddings | qwen3-embedding:0.6b (1024 dim) |
 | Frontend | React / Next.js (future) |
 
@@ -145,7 +145,7 @@ Commits are automatically prefixed with the task ID:
 
 ### Work Sessions
 
-When a developer claims a git-enabled task, a **WorkSession** is created that tracks:
+When a developer claims a task, a **WorkSession** is created that tracks:
 - Branch name and base/target branches
 - All commits made during the session
 - Files modified
@@ -218,16 +218,26 @@ backlog -> pending -> claimed -> in_progress -> [blocked|paused] -> verifying
 
 ### Role-Based Transitions
 
-Certain transitions require specific roles:
-- **Cancel any task**: PM roles only (`cell_pm`, `main_pm`, `product_owner`, `head_marketing`)
-- **QA actions**: Only `qa` role can pass/fail QA
-- **Documentation actions**: Only `documenter` role
-- **CEO approval**: Only `ceo` role can approve/reject from `awaiting_ceo_approval`
-- **PM review completion**: PM roles only
+All status transitions are validated through the enforcement layer. Key restrictions:
+
+| Transition | Allowed Roles |
+|------------|---------------|
+| `backlog` → `pending` (activate) | PM roles only |
+| `pending` → `claimed` (claim) | Role must match task type (QA for awaiting_qa, etc.) |
+| `claimed` → `pending` (unclaim) | Assignee or PM |
+| `awaiting_qa` → `awaiting_documentation` (pass) | QA only |
+| `awaiting_qa` → `needs_revision` (fail) | QA only |
+| `awaiting_documentation` → `awaiting_pm_review` | Documenter or Developer (parallel completion) |
+| `awaiting_pm_review` → `completed` | PM roles only |
+| `awaiting_pm_review` → `awaiting_ceo_approval` | PM roles only |
+| `awaiting_ceo_approval` → `completed/needs_revision/cancelled` | CEO only |
+| Any → `cancelled` | PM roles only |
+
+**Unclaim Operation**: Agents can release claimed tasks back to the pool using `unclaim()`. This transitions `claimed` → `pending` and optionally reassigns to another agent.
 
 ### Git Integration Requirements
 
-For tasks with `requires_git=True`:
+All tasks follow git workflow:
 1. **claimed -> in_progress**: `branch_name` is auto-set on claim (hierarchical branches)
 2. **awaiting_documentation -> awaiting_pm_review**: Requires BOTH `docs_complete=True` AND `pr_created=True`
 3. **awaiting_pm_review -> awaiting_ceo_approval**: Must have `pr_number` set
@@ -260,10 +270,9 @@ Major tasks are escalated to CEO for final approval:
 ### Task Model Key Fields
 
 ```python
-# Git configuration
+# Git configuration (all tasks follow git workflow)
 task_type: TaskType      # code, documentation, research, planning, design, administrative
-requires_git: bool       # Whether git workflow applies
-project_id: UUID         # Project this task works on
+project_id: UUID         # Project this task works on (required)
 branch_name: str         # Branch for this task (auto-created on claim)
 work_session_id: UUID    # Active work session
 
@@ -365,7 +374,7 @@ ROBOCO_RAG_USE_HYBRID_SEARCH=true
 
 # AI/LLM
 ROBOCO_DEFAULT_EMBEDDING_MODEL=qwen3-embedding:0.6b
-ROBOCO_LOCAL_LLM_MODEL=glm-4.7:cloud
+ROBOCO_LOCAL_LLM_MODEL=glm-5.1:cloud
 ROBOCO_LOCAL_LLM_BASE_URL=http://roboco-ollama:11434/v1
 ROBOCO_OLLAMA_BASE_URL=http://roboco-ollama:11434
 ```
@@ -392,7 +401,7 @@ The startup order is critical due to dependencies:
 postgres ──┐
 redis ─────┼──> ollama ──> ollama-init ──> orchestrator
            │        │            │
-           │        │            └── Pulls qwen3-embedding:0.6b, glm-4.7:cloud
+           │        │            └── Pulls qwen3-embedding:0.6b, glm-5.1:cloud
            │        └── Healthcheck: ollama list
            └── Healthcheck: pg_isready, redis-cli ping
 ```

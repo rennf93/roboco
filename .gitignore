@@ -82,3 +82,12 @@ alembic/versions/*.pyc
 /data
 /#recycle
 .OLD/
+
+# Panel (Next.js frontend)
+panel/node_modules/
+panel/.next/
+panel/out/
+panel/coverage/
+panel/tsconfig.tsbuildinfo
+panel/.env.local
+panel/.env.*.local

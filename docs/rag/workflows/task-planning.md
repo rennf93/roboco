@@ -37,9 +37,9 @@ Calling `roboco_task_start()` without a plan returns:
 - Message: "Cannot start without a plan"
 - Hint: Submit plan first
 
-## Git Tasks
+## Git Workflow
 
-For tasks with `requires_git=True`:
+All tasks follow the git workflow:
 - **Branches are auto-created when you claim the task**
 - Root tasks: branch created from default branch (main/master)
 - Subtasks: branch forked from parent's branch

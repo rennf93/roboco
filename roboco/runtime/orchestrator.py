@@ -170,6 +170,7 @@ class AgentOrchestrator:
         self._waiting_records: dict[str, WaitingRecord] = {}
         self._health_task: asyncio.Task | None = None
         self._dispatcher_task: asyncio.Task | None = None
+        self._sweeper_task: asyncio.Task | None = None
         self._running = False
         self._lock = asyncio.Lock()
 
@@ -184,12 +185,17 @@ class AgentOrchestrator:
         # Ensure agent image is built
         await self._ensure_agent_image()
 
+        # Restore any WaitingRecord rows left by a prior orchestrator run so
+        # agents that were WAITING_LONG at shutdown can still be resolved.
+        await self.restore_waiting_records()
+
         # Note: Per-agent settings are now generated at spawn time
         # via _generate_agent_settings() - no shared settings needed
 
         # Start background tasks
         self._health_task = asyncio.create_task(self._health_loop())
         self._dispatcher_task = asyncio.create_task(self._dispatcher_loop())
+        self._sweeper_task = asyncio.create_task(self._sweeper_loop())
 
         logger.info(
             "Orchestrator started",
@@ -211,6 +217,11 @@ class AgentOrchestrator:
             self._dispatcher_task.cancel()
             with contextlib.suppress(asyncio.CancelledError):
                 await self._dispatcher_task
+
+        if self._sweeper_task:
+            self._sweeper_task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await self._sweeper_task
 
         # Stop all agents
         for agent_id in list(self._instances.keys()):
@@ -353,7 +364,6 @@ class AgentOrchestrator:
                 "allow": [
                     "mcp__roboco-git__*",
                     "mcp__roboco-test__*",
-                    # ONLY allow Write/Edit in their OWN workspace
                     f"Write({workspace_path}/**)",
                     f"Edit({workspace_path}/**)",
                 ],
@@ -361,20 +371,15 @@ class AgentOrchestrator:
             },
             "qa": {
                 "allow": [
-                    # QA gets read-only git access
                     "mcp__roboco-git__roboco_git_status",
                     "mcp__roboco-git__roboco_git_log",
                     "mcp__roboco-git__roboco_git_diff",
                     "mcp__roboco-test__*",
-                    # QA can READ all cell workspaces to review code
-                    # (Read is already allowed globally, this is for clarity)
                 ],
                 "deny": [
-                    # QA cannot write anything - review only
                     "mcp__roboco-git__roboco_git_commit",
                     "mcp__roboco-git__roboco_git_push",
                     "mcp__roboco-git__roboco_git_create_pr",
-                    # Block ALL write operations for QA
                     "Write(*)",
                     "Edit(*)",
                 ],
@@ -383,10 +388,9 @@ class AgentOrchestrator:
                 "allow": [
                     "mcp__roboco-docs__*",
                     "mcp__roboco-git__*",
-                    # Documenters write to ALL cell workspaces (docs on dev branches)
+                    "mcp__roboco-test__*",
                     f"Write({cell_workspace_path}/**)",
                     f"Edit({cell_workspace_path}/**)",
-                    # Also project-level docs
                     "Write(/app/docs/**)",
                     "Edit(/app/docs/**)",
                     "Write(/app/CHANGELOG.md)",
@@ -400,7 +404,7 @@ class AgentOrchestrator:
                 "allow": [
                     "mcp__roboco-git__*",
                     "mcp__roboco-docs__*",
-                    # Cell PM can write to their own workspace
+                    "mcp__roboco-test__*",
                     f"Write({workspace_path}/**)",
                     f"Edit({workspace_path}/**)",
                 ],
@@ -410,7 +414,7 @@ class AgentOrchestrator:
                 "allow": [
                     "mcp__roboco-git__*",
                     "mcp__roboco-docs__*",
-                    # Main PM can write to their own workspace
+                    "mcp__roboco-test__*",
                     f"Write({workspace_path}/**)",
                     f"Edit({workspace_path}/**)",
                 ],
@@ -420,6 +424,18 @@ class AgentOrchestrator:
                 "allow": [
                     "mcp__roboco-git__*",
                     "mcp__roboco-docs__*",
+                    "mcp__roboco-test__*",
+                    f"Write({workspace_path}/**)",
+                    f"Edit({workspace_path}/**)",
+                ],
+                "deny": [],
+            },
+            "head_marketing": {
+                "allow": [
+                    "mcp__roboco-docs__*",
+                    "mcp__roboco-git__roboco_git_status",
+                    "mcp__roboco-git__roboco_git_log",
+                    "mcp__roboco-git__roboco_git_diff",
                     f"Write({workspace_path}/**)",
                     f"Edit({workspace_path}/**)",
                 ],
@@ -427,10 +443,10 @@ class AgentOrchestrator:
             },
             "auditor": {
                 "allow": [
-                    # Auditor is read-only observer - NO write access anywhere
                     "mcp__roboco-git__roboco_git_status",
                     "mcp__roboco-git__roboco_git_log",
                     "mcp__roboco-git__roboco_git_diff",
+                    "mcp__roboco-test__roboco_test_status",
                 ],
                 "deny": [
                     "Write(*)",
@@ -439,6 +455,12 @@ class AgentOrchestrator:
             },
         }
 
+        if role not in configs:
+            logger.warning(
+                "No Claude Code permissions configured for role; "
+                "agent will be limited to base_allow/base_deny.",
+                role=role,
+            )
         return configs.get(role, {"allow": [], "deny": []})
 
     def _generate_agent_settings(
@@ -491,9 +513,13 @@ class AgentOrchestrator:
             role, workspace_path, cell_workspace_path
         )
 
-        # Combine base + role-specific
+        # Combine base + role-specific.
+        # defaultMode=bypassPermissions lets unlisted operations proceed
+        # without an interactive prompt (which would hang a non-TTY agent
+        # container). Explicit deny rules still apply.
         settings: dict[str, Any] = {
             "permissions": {
+                "defaultMode": "bypassPermissions",
                 "allow": base_allow + role_config["allow"],
                 "deny": base_deny + role_config["deny"],
             },
@@ -566,6 +592,54 @@ class AgentOrchestrator:
     # AGENT SPAWNING
     # =========================================================================
 
+    def _task_git_context(self, task: dict[str, Any]) -> SpawnGitContext | None:
+        """Build SpawnGitContext from a task dict for workspace mounting.
+
+        Without this, spawned agents fall back to project_slug="default"
+        and get a Write/Edit permission lock to /data/workspaces/default/...
+        which does not exist, so the agent's file tools fail.
+        """
+        project_slug = task.get("project_slug")
+        if not project_slug:
+            return None
+        return SpawnGitContext(
+            project_slug=project_slug,
+            branch_name=task.get("branch_name"),
+        )
+
+    async def _safe_spawn(
+        self,
+        *,
+        agent_id: str,
+        task_id: str | None = None,
+        initial_prompt: str | None = None,
+        git_context: SpawnGitContext | None = None,
+        context_label: str = "dispatcher",
+    ) -> AgentInstance | None:
+        """Spawn an agent, absorbing errors so one bad spawn doesn't abort the
+        rest of the dispatcher's loop.
+
+        Each dispatcher iterates many tasks; if `spawn_agent` raised, the
+        remaining tasks were skipped until the next tick. This wrapper logs
+        and returns None on failure so siblings still get dispatched.
+        """
+        try:
+            return await self.spawn_agent(
+                agent_id=agent_id,
+                task_id=task_id,
+                initial_prompt=initial_prompt,
+                git_context=git_context,
+            )
+        except Exception as e:
+            logger.error(
+                "Spawn failed during dispatch; continuing with next task",
+                context=context_label,
+                agent_id=agent_id,
+                task_id=task_id,
+                error=str(e),
+            )
+            return None
+
     async def spawn_agent(
         self,
         agent_id: str,
@@ -612,7 +686,19 @@ class AgentOrchestrator:
 
             # Build workspace paths for this agent
             # Pattern: {workspaces_root}/{project_slug}/{team}/{agent_slug}/
-            project_slug = git_context.project_slug if git_context else "default"
+            project_slug = (
+                git_context.project_slug
+                if git_context and git_context.project_slug
+                else None
+            )
+            if not project_slug:
+                logger.warning(
+                    "Spawning agent without project_slug; workspace fallback used. "
+                    "Agent file tools will be locked to a nonexistent path.",
+                    agent_id=agent_id,
+                    task_id=task_id,
+                )
+                project_slug = "default"
             workspace_path = f"/data/workspaces/{project_slug}/{team}/{agent_id}"
             # Cell workspace path for QA/Docs to access all cell's dev workspaces
             cell_workspace_path = f"/data/workspaces/{project_slug}/{team}"
@@ -1015,11 +1101,18 @@ class AgentOrchestrator:
             "env": mcp_env,
         }
 
-        # Docs server - documentation file management
-        # Only for documenter and cell_pm roles (they write docs)
-        # Other roles can read via API but don't need the MCP tools
+        # Docs server - documentation file management.
+        # Registered for every role that is granted mcp__roboco-docs__* in
+        # _get_role_permissions; handlers still enforce per-role access.
         agent_role = get_agent_role(agent_id)
-        if agent_role in ("documenter", "cell_pm"):
+        docs_roles = (
+            "documenter",
+            "cell_pm",
+            "main_pm",
+            "product_owner",
+            "head_marketing",
+        )
+        if agent_role in docs_roles:
             mcp_servers["roboco-docs"] = {
                 "command": "uv",
                 "args": [
@@ -1255,6 +1348,8 @@ class AgentOrchestrator:
         Mark an agent as WAITING_LONG and terminate.
 
         The agent will be respawned when the wait condition is resolved.
+        The record is mirrored to `waiting_records` in Postgres so a later
+        orchestrator restart can still resolve the wait.
         """
         record = WaitingRecord(
             agent_id=agent_id,
@@ -1265,6 +1360,7 @@ class AgentOrchestrator:
         )
 
         self._waiting_records[agent_id] = record
+        await self._persist_waiting_record(record)
 
         # Stop the agent
         await self.stop_agent(agent_id)
@@ -1281,6 +1377,98 @@ class AgentOrchestrator:
             waiting_for=waiting_for,
             task_id=task_id,
         )
+
+    async def _persist_waiting_record(self, record: WaitingRecord) -> None:
+        """Upsert a WaitingRecord into the waiting_records table."""
+        try:
+            from uuid import UUID as _UUID
+
+            from sqlalchemy import delete
+
+            from roboco.db.base import get_session_factory
+            from roboco.db.tables import WaitingRecordTable
+
+            session_factory = get_session_factory()
+            async with session_factory() as db:
+                # One record per agent; delete prior then insert.
+                await db.execute(
+                    delete(WaitingRecordTable).where(
+                        WaitingRecordTable.agent_id == record.agent_id
+                    )
+                )
+                row = WaitingRecordTable(
+                    agent_id=record.agent_id,
+                    task_id=(_UUID(record.task_id) if record.task_id else None),
+                    waiting_for=record.waiting_for,
+                    waiting_since=record.waiting_since,
+                    context=record.context,
+                )
+                db.add(row)
+                await db.commit()
+        except Exception as e:
+            logger.error(
+                "Failed to persist waiting record",
+                agent_id=record.agent_id,
+                error=str(e),
+            )
+
+    async def _delete_waiting_record(self, agent_id: str) -> None:
+        """Delete a persisted waiting record when its wait resolves."""
+        try:
+            from sqlalchemy import delete
+
+            from roboco.db.base import get_session_factory
+            from roboco.db.tables import WaitingRecordTable
+
+            session_factory = get_session_factory()
+            async with session_factory() as db:
+                await db.execute(
+                    delete(WaitingRecordTable).where(
+                        WaitingRecordTable.agent_id == agent_id
+                    )
+                )
+                await db.commit()
+        except Exception as e:
+            logger.error(
+                "Failed to delete waiting record",
+                agent_id=agent_id,
+                error=str(e),
+            )
+
+    async def restore_waiting_records(self) -> int:
+        """Load persisted waiting records into memory on orchestrator start.
+
+        Call this from `start()` so agents marked WAITING_LONG before the
+        previous orchestrator exited can still be resolved.
+        """
+        try:
+            from sqlalchemy import select
+
+            from roboco.db.base import get_session_factory
+            from roboco.db.tables import WaitingRecordTable
+
+            session_factory = get_session_factory()
+            async with session_factory() as db:
+                rows = await db.execute(select(WaitingRecordTable))
+                count = 0
+                for row in rows.scalars().all():
+                    self._waiting_records[row.agent_id] = WaitingRecord(
+                        agent_id=row.agent_id,
+                        task_id=str(row.task_id) if row.task_id else None,
+                        waiting_for=row.waiting_for,
+                        waiting_since=row.waiting_since,
+                        context=dict(row.context or {}),
+                    )
+                    count += 1
+                if count:
+                    logger.info(
+                        "Restored waiting records from database",
+                        count=count,
+                    )
+                return count
+        except Exception as e:
+            logger.error("Failed to restore waiting records", error=str(e))
+            return 0
 
     async def resolve_wait(
         self,
@@ -1302,15 +1490,24 @@ class AgentOrchestrator:
 
         record = self._waiting_records[agent_id]
         del self._waiting_records[agent_id]
+        await self._delete_waiting_record(agent_id)
 
         # Generate resume prompt
         resume_prompt = self._generate_resume_prompt(record, resolution)
+
+        # Preserve the original git_context from the prior instance so the
+        # respawned agent keeps the same workspace mount path.
+        prior = self._instances.get(agent_id)
+        prior_git_context = (
+            prior.config.git_context if prior and prior.config else None
+        )
 
         # Respawn
         return await self.spawn_agent(
             agent_id=agent_id,
             initial_prompt=resume_prompt,
             task_id=record.task_id,
+            git_context=prior_git_context,
         )
 
     def _generate_resume_prompt(
@@ -1385,6 +1582,54 @@ Start by:
             except Exception as e:
                 logger.error("Health check error", error=str(e))
 
+    async def _sweeper_loop(self) -> None:
+        """Background sweeper for session timeouts and stale notifications.
+
+        Addresses two silent-failure surfaces:
+        - SessionTable.timeout_seconds / max_time_window were never enforced;
+          sessions stayed ACTIVE forever.
+        - NotificationTable.expires_at existed but no job ever acted on it.
+
+        Runs on its own interval so a slow sweep can't delay agent dispatch.
+        """
+        sweep_interval = 60  # seconds
+        while self._running:
+            try:
+                await asyncio.sleep(sweep_interval)
+                await self._run_sweep()
+            except asyncio.CancelledError:
+                break
+            except Exception as e:
+                logger.error("Sweeper loop error", error=str(e))
+
+    async def _run_sweep(self) -> None:
+        """Run one pass of session + notification sweepers."""
+        from roboco.db.base import get_session_factory
+        from roboco.services.messaging import get_messaging_service
+        from roboco.services.notification_delivery import (
+            get_notification_delivery_service,
+        )
+
+        session_factory = get_session_factory()
+        async with session_factory() as db:
+            msg_svc = get_messaging_service(db)
+            try:
+                closed = await msg_svc.sweep_timed_out_sessions()
+                if closed:
+                    await db.commit()
+            except Exception as e:
+                await db.rollback()
+                logger.warning("Session sweep failed", error=str(e))
+
+            deliv_svc = get_notification_delivery_service(db)
+            try:
+                expired = await deliv_svc.sweep_expired_notifications()
+                if expired:
+                    await db.commit()
+            except Exception as e:
+                await db.rollback()
+                logger.warning("Notification sweep failed", error=str(e))
+
     async def _check_health(self) -> None:
         """Check health of all running agents."""
         for agent_id, instance in list(self._instances.items()):
@@ -1427,7 +1672,97 @@ Start by:
                     await self.spawn_agent(
                         agent_id=agent_id,
                         task_id=instance.current_task_id,
+                        git_context=(
+                            instance.config.git_context
+                            if instance.config
+                            else None
+                        ),
                     )
+                elif instance.error_count == max_retries:
+                    # Exactly at the threshold — escalate once to humans so a
+                    # stranded agent doesn't die silently. Subsequent crashes
+                    # stay quiet to avoid notification spam.
+                    logger.error(
+                        "Agent exceeded max restart attempts; escalating",
+                        agent_id=agent_id,
+                        error_count=instance.error_count,
+                        task_id=instance.current_task_id,
+                    )
+                    await self._notify_agent_stranded(
+                        agent_id=agent_id,
+                        error_count=instance.error_count,
+                        task_id=instance.current_task_id,
+                    )
+
+    async def _notify_agent_stranded(
+        self,
+        agent_id: str,
+        error_count: int,
+        task_id: str | None,
+    ) -> None:
+        """Create a notification for humans when an agent can't be restarted.
+
+        Posts a high-priority notification addressed to the auditor and CEO.
+        Fire-and-forget: the agent is already dead; don't let our own failure
+        stop the health loop.
+        """
+        try:
+            from sqlalchemy import select
+
+            from roboco.db.base import get_session_factory
+            from roboco.db.tables import AgentTable, NotificationTable
+            from roboco.models.base import (
+                AgentRole,
+                NotificationPriority,
+                NotificationType,
+            )
+            from roboco.services.notification_delivery import (
+                get_notification_delivery_service,
+            )
+            from roboco.utils.converters import require_uuid
+
+            session_factory = get_session_factory()
+            async with session_factory() as db:
+                orch_agent = await db.execute(
+                    select(AgentTable).where(AgentTable.role == AgentRole.AUDITOR)
+                )
+                auditor = orch_agent.scalar_one_or_none()
+                ceo_result = await db.execute(
+                    select(AgentTable).where(AgentTable.role == AgentRole.CEO)
+                )
+                ceo = ceo_result.scalar_one_or_none()
+                recipients = [a.id for a in (auditor, ceo) if a is not None]
+                if not recipients:
+                    logger.warning(
+                        "No auditor/ceo found for stranded-agent notification",
+                        agent_id=agent_id,
+                    )
+                    return
+                from_agent = auditor.id if auditor else ceo.id  # type: ignore[union-attr]
+                notification = NotificationTable(
+                    type=NotificationType.ALERT,
+                    priority=NotificationPriority.HIGH,
+                    from_agent=from_agent,
+                    to_agents=recipients,
+                    subject=f"Agent stranded: {agent_id}",
+                    body=(
+                        f"Agent '{agent_id}' exceeded max restart attempts "
+                        f"({error_count}) and will not auto-recover. "
+                        f"Task: {task_id or 'none'}. Manual intervention needed."
+                    ),
+                    requires_ack=True,
+                )
+                db.add(notification)
+                await db.flush()
+                delivery = get_notification_delivery_service(db)
+                await delivery.deliver(require_uuid(notification.id))
+                await db.commit()
+        except Exception as e:
+            logger.error(
+                "Failed to send stranded-agent notification",
+                agent_id=agent_id,
+                error=str(e),
+            )
 
     # =========================================================================
     # STATUS API
@@ -1522,34 +1857,28 @@ Start by:
                 f"Task {task_id} has inadequate description ({len(description)} chars)"
             )
 
-        # VALIDATION 2: For git tasks, check project + parent branch requirements
-        requires_git = task.get("requires_git", False)
-        if requires_git:
-            # Must have project
-            if not task.get("project_id"):
-                await self._auto_block_task(
-                    client, task_id, "Git task needs project_id"
-                )
-                return f"Task {task_id} needs project"
+        # VALIDATION 2: Check project + parent branch requirements (all tasks use git)
+        # Must have project (validated at creation, but double-check)
+        if not task.get("project_id"):
+            await self._auto_block_task(client, task_id, "Task needs project_id")
+            return f"Task {task_id} needs project"
 
-            # For subtasks, parent must have branch (for forking)
-            parent_id = task.get("parent_task_id")
-            if parent_id:
-                parent_resp = await client.get(f"{self._api_url}/tasks/{parent_id}")
-                if parent_resp.is_success:
-                    parent = parent_resp.json()
-                    if parent.get("requires_git") and not parent.get("branch_name"):
-                        await self._auto_block_task(
-                            client,
-                            task_id,
-                            "Parent task must be claimed first to create its branch",
-                        )
-                        return f"Task {task_id} waiting for parent branch"
+        # For subtasks, parent must have branch (for forking)
+        parent_id = task.get("parent_task_id")
+        if parent_id:
+            parent_resp = await client.get(f"{self._api_url}/tasks/{parent_id}")
+            if parent_resp.is_success:
+                parent = parent_resp.json()
+                if not parent.get("branch_name"):
+                    await self._auto_block_task(
+                        client,
+                        task_id,
+                        "Parent task must be claimed first to create its branch",
+                    )
+                    return f"Task {task_id} waiting for parent branch"
 
-            # Root task or parent has branch - branch will auto-create on claim
-            logger.info(
-                "Git task ready for hierarchical branch creation", task_id=task_id
-            )
+        # Root task or parent has branch - branch will auto-create on claim
+        logger.info("Task ready for hierarchical branch creation", task_id=task_id)
 
         # VALIDATION 3: Check complexity vs subtasks for devs
         from roboco.agents_config import get_agent_role
@@ -1804,12 +2133,11 @@ Start by:
         result: str | None = None
 
         # Task type takes precedence for non-code work
+        # NOTE: All tasks follow git workflow now, but some types route to PM
         if task_type in ("planning", "research", "administrative"):
             result = "cell_pm" if team in cell_teams else "main_pm"
         elif task_type == "design" and team not in ("backend", "frontend"):
             result = "cell_pm"
-        elif task_type == "documentation" and not task.get("requires_git"):
-            result = "cell_pm" if team in cell_teams else "main_pm"
         elif team in self._TEAM_ROUTING_MAP:
             result = self._TEAM_ROUTING_MAP[team]
 
@@ -2093,39 +2421,44 @@ Start now: roboco_task_get("{task_id}")
                 logger.error("Dispatcher loop error", error=str(e))
 
     async def _dispatch_all_work(self) -> None:
-        """Run all dispatchers to check for and assign work."""
+        """Run all dispatchers to check for and assign work.
+
+        Each dispatcher is isolated: if one raises (e.g., a transient API
+        error), the rest still run in this tick instead of waiting for the
+        next one.
+        """
         # Orchestrator uses SYSTEM role for internal API calls
         # Using a well-known UUID for the orchestrator identity
         headers = {
             "X-Agent-ID": "00000000-0000-0000-0000-000000000000",
             "X-Agent-Role": "system",
         }
+        dispatchers: list[tuple[str, Any]] = []
         async with httpx.AsyncClient(timeout=30.0, headers=headers) as client:
-            # PM triage first - routes new tasks to appropriate level
-            await self._dispatch_pm_work(client)
-
-            # PM closure - check parent tasks ready to close
-            await self._dispatch_pm_closure_work(client)
-
-            # Task-based dispatchers (check task statuses)
-            # Dev work only picks up pre-assigned tasks now
-            await self._dispatch_dev_work(client)
-            await self._dispatch_qa_work(client)
-            await self._dispatch_doc_work(client)
-            await self._dispatch_pm_review_work(client)
-            await self._dispatch_marketing_work(client)
-
-            # Event-based dispatchers (check blockers, notifications)
-            await self._dispatch_blocker_work(client)
-            await self._dispatch_escalation_work(client)
-            await self._dispatch_approval_work(client)
-            await self._dispatch_a2a_work(client)
-
-            # Scheduled dispatchers
-            await self._dispatch_audit_work(client)
-
-            # Proactive enforcement - detect and block stuck tasks
-            await self._detect_stuck_tasks(client)
+            dispatchers = [
+                ("pm_work", self._dispatch_pm_work(client)),
+                ("pm_closure_work", self._dispatch_pm_closure_work(client)),
+                ("dev_work", self._dispatch_dev_work(client)),
+                ("qa_work", self._dispatch_qa_work(client)),
+                ("doc_work", self._dispatch_doc_work(client)),
+                ("pm_review_work", self._dispatch_pm_review_work(client)),
+                ("marketing_work", self._dispatch_marketing_work(client)),
+                ("blocker_work", self._dispatch_blocker_work(client)),
+                ("escalation_work", self._dispatch_escalation_work(client)),
+                ("approval_work", self._dispatch_approval_work(client)),
+                ("a2a_work", self._dispatch_a2a_work(client)),
+                ("audit_work", self._dispatch_audit_work(client)),
+                ("detect_stuck_tasks", self._detect_stuck_tasks(client)),
+            ]
+            for name, coro in dispatchers:
+                try:
+                    await coro
+                except Exception as e:
+                    logger.error(
+                        "Dispatcher raised; continuing with next dispatcher",
+                        dispatcher=name,
+                        error=str(e),
+                    )
 
     # =========================================================================
     # SMART DISPATCHER - TASK-BASED DISPATCHERS
@@ -2177,6 +2510,7 @@ Start now: roboco_task_get("{task_id}")
                         agent_id=agent_slug,
                         task_id=task["id"],
                         initial_prompt=pm_prompt,
+                        git_context=self._task_git_context(task),
                     )
                 continue
 
@@ -2218,6 +2552,7 @@ Start now: roboco_task_get("{task_id}")
                     agent_id=agent_id,
                     task_id=task["id"],
                     initial_prompt=prompt,
+                    git_context=self._task_git_context(task),
                 )
 
     async def _dispatch_pm_closure_work(self, client: httpx.AsyncClient) -> None:
@@ -2279,6 +2614,7 @@ Start now: roboco_task_get("{task_id}")
                     agent_id=pm_id,
                     task_id=task_id,
                     initial_prompt=prompt,
+                    git_context=self._task_git_context(task),
                 )
 
     async def _fetch_subtasks(
@@ -2421,6 +2757,7 @@ Begin with step 1: roboco_task_get("{task_id}")
                         agent_id=agent_slug,
                         task_id=task["id"],
                         initial_prompt=self._build_dev_prompt(task),
+                        git_context=self._task_git_context(task),
                     )
                 continue
 
@@ -2437,6 +2774,7 @@ Begin with step 1: roboco_task_get("{task_id}")
                         agent_id=agent_slug,
                         task_id=task["id"],
                         initial_prompt=self._build_dev_prompt(task),
+                        git_context=self._task_git_context(task),
                     )
                 continue
 
@@ -2462,6 +2800,7 @@ Begin with step 1: roboco_task_get("{task_id}")
                     agent_id=agent_slug,
                     task_id=task["id"],
                     initial_prompt=self._get_prompt_for_agent(agent_slug, task),
+                    git_context=self._task_git_context(task),
                 )
 
     async def _dispatch_qa_work(self, client: httpx.AsyncClient) -> None:
@@ -2491,6 +2830,7 @@ Begin with step 1: roboco_task_get("{task_id}")
                     agent_id=assigned_slug,
                     task_id=task["id"],
                     initial_prompt=self._build_qa_prompt(task),
+                    git_context=self._task_git_context(task),
                 )
                 continue
 
@@ -2517,6 +2857,7 @@ Begin with step 1: roboco_task_get("{task_id}")
                 agent_id=agent_id,
                 task_id=task["id"],
                 initial_prompt=self._build_qa_prompt(task),
+                git_context=self._task_git_context(task),
             )
             # Only spawn one QA at a time per cell
             break
@@ -2547,6 +2888,7 @@ Begin with step 1: roboco_task_get("{task_id}")
                     agent_id=assigned_slug,
                     task_id=task["id"],
                     initial_prompt=self._build_doc_prompt(task),
+                    git_context=self._task_git_context(task),
                 )
                 continue
 
@@ -2571,6 +2913,7 @@ Begin with step 1: roboco_task_get("{task_id}")
                 agent_id=agent_id,
                 task_id=task["id"],
                 initial_prompt=self._build_doc_prompt(task),
+                git_context=self._task_git_context(task),
             )
             break
 
@@ -2597,6 +2940,7 @@ Begin with step 1: roboco_task_get("{task_id}")
                     agent_id=assigned_slug,
                     task_id=task["id"],
                     initial_prompt=self._build_pm_review_prompt(task),
+                    git_context=self._task_git_context(task),
                 )
                 continue
 
@@ -2624,6 +2968,7 @@ Begin with step 1: roboco_task_get("{task_id}")
                 agent_id=pm_id,
                 task_id=task["id"],
                 initial_prompt=self._build_pm_review_prompt(task),
+                git_context=self._task_git_context(task),
             )
             break
 
@@ -2649,6 +2994,7 @@ Begin with step 1: roboco_task_get("{task_id}")
                 agent_id="head-marketing",
                 task_id=task["id"],
                 initial_prompt=self._build_marketing_prompt(task),
+                git_context=self._task_git_context(task),
             )
             break
 
@@ -2681,6 +3027,7 @@ Begin with step 1: roboco_task_get("{task_id}")
                 agent_id=agent_id,
                 task_id=task["id"],
                 initial_prompt=self._build_pm_blocker_prompt(task),
+                git_context=self._task_git_context(task),
             )
             break
 
@@ -2829,8 +3176,8 @@ Begin with step 1: roboco_task_get("{task_id}")
     def _check_stuck_conditions(self, task: dict[str, Any]) -> list[str]:
         """Check for common stuck conditions (git, description)."""
         issues: list[str] = []
-        if task.get("requires_git") and not task.get("branch_name"):
-            issues.append("Git task missing branch_name")
+        if not task.get("branch_name"):
+            issues.append("Task missing branch_name")
         description = (task.get("description") or "").strip()
         if len(description) < self._MIN_DESCRIPTION_LEN:
             issues.append("Empty or inadequate description")

@@ -62,7 +62,7 @@ roboco_task_escalate_to_ceo(
 
 Requirements:
 - Task in `awaiting_pm_review`
-- PR exists (for git tasks)
+- PR exists
 - Only PMs can call this
 
 ## Cannot Skip Levels

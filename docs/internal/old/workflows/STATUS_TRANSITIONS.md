@@ -272,7 +272,7 @@ The CEO is human and receives notifications when tasks are escalated. CEO uses t
 
 ## Git Integration
 
-Tasks with `requires_git=True` follow the git workflow alongside the task lifecycle.
+All tasks follow the git workflow alongside the task lifecycle.
 
 ### Git Workflow Overview
 

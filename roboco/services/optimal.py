@@ -559,12 +559,24 @@ class OptimalService:
         logger.info("OptimalService closed")
 
     def _get_plugin(self, index_type: IndexType) -> BaseIndexPlugin:
-        """Get the plugin for an index type."""
+        """Get the plugin for an index type.
+
+        Raises a clear error when a plugin is missing (e.g. removed or
+        failed to initialize), rather than leaking a bare KeyError.
+        """
         if not self._initialized:
             raise RuntimeError(
                 "OptimalService not initialized. Call initialize() first."
             )
-        return self._plugins[index_type]
+        plugin = self._plugins.get(index_type)
+        if plugin is None:
+            available = sorted(t.value for t in self._plugins)
+            raise RuntimeError(
+                f"No plugin registered for index type '{index_type.value}'. "
+                f"Available: {available}. "
+                "This usually means the index is disabled or failed to initialize."
+            )
+        return plugin
 
     # =========================================================================
     # INDEXING OPERATIONS (Existing - Backwards Compatible)

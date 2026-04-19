@@ -31,8 +31,8 @@
 ### Developer Flow
 ```
 pending → claimed → in_progress → verifying → awaiting_qa
-                         ↑                         ↓
-                         └── needs_revision ←──────┘
+     ↑        ↓           ↑                         ↓
+     └─ unclaim           └── needs_revision ←──────┘
 ```
 
 ### QA Flow
@@ -58,9 +58,10 @@ backlog → pending (via roboco_task_activate)
 | Transition | Allowed Roles |
 |------------|---------------|
 | `backlog → pending` | cell_pm, main_pm |
+| `claimed → pending` (unclaim) | assignee or PM |
 | `awaiting_qa → awaiting_documentation` | qa only |
 | `awaiting_qa → needs_revision` | qa only |
-| `awaiting_documentation → awaiting_pm_review` | documenter only |
+| `awaiting_documentation → awaiting_pm_review` | documenter, developer (parallel) |
 | `awaiting_pm_review → completed` | cell_pm, main_pm |
 | `awaiting_pm_review → awaiting_ceo_approval` | cell_pm, main_pm (parent tasks only) |
 | `awaiting_ceo_approval → completed` | ceo only |

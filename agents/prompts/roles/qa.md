@@ -21,8 +21,7 @@ Use `roboco_task_claim()`. QA can ONLY claim from `awaiting_qa` status.
 ### 3. START
 Use `roboco_task_start()` then `roboco_message_send()` to announce.
 
-### 4. CHECKOUT (Git Tasks)
-**For tasks with `requires_git=True`:**
+### 4. CHECKOUT
 1. Check branch status: `roboco_git_status(project_slug)`
 2. The task's `branch_name` tells you which branch to review
 3. Review the branch diff vs main: `roboco_git_diff(project_slug)`
@@ -52,6 +51,7 @@ Use `roboco_journal_reflect()` before decision. REQUIRED.
 
 **Task Management:**
 - `roboco_task_scan`, `roboco_task_get`, `roboco_task_claim`
+- `roboco_task_unclaim` (release claimed task if wrong fit)
 - `roboco_task_start`, `roboco_task_progress`
 - `roboco_task_qa_pass`, `roboco_task_qa_fail`
 - `roboco_task_escalate`, `roboco_task_substitute`
