@@ -722,12 +722,31 @@ async def refresh_index(
         ) from e
 
     service = await get_optimal_service()
-    await service.refresh_index(idx_type, request.sources)
+
+    # Empty sources = "refresh everything currently registered in this
+    # index". Look up the source list from indexed_documents so the UI's
+    # "Refresh All" button doesn't have to enumerate them client-side.
+    sources = request.sources
+    if not sources:
+        from sqlalchemy import select
+
+        from roboco.db.base import get_db_context
+        from roboco.db.tables import IndexedDocumentTable
+
+        async with get_db_context() as db:
+            rows = await db.execute(
+                select(IndexedDocumentTable.source).where(
+                    IndexedDocumentTable.index_type == request.index_type
+                )
+            )
+            sources = [r[0] for r in rows.all() if r[0]]
+
+    await service.refresh_index(idx_type, sources)
 
     return RefreshIndexResponse(
         status="refreshed",
         index_type=request.index_type,
-        sources=request.sources,
+        sources=sources,
     )
 
 

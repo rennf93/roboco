@@ -48,6 +48,7 @@ from roboco.api.schemas.git import (
     GitStatusResponse,
 )
 from roboco.exceptions import GitCommandError, GitTimeoutError
+from roboco.logging import get_logger
 from roboco.models.base import AgentRole, TaskStatus
 from roboco.services.base import NotFoundError, ServiceError, ValidationError
 from roboco.services.git import get_git_service
@@ -55,6 +56,8 @@ from roboco.services.project import get_project_service
 from roboco.services.task import get_task_service
 from roboco.services.work_session import get_work_session_service
 from roboco.utils.converters import require_uuid
+
+logger = get_logger(__name__)
 
 router = APIRouter()
 
@@ -140,11 +143,25 @@ async def get_git_log(
         if not branch:
             branch = await git_service.get_current_branch(workspace)
 
-        # Get log with format
+        # Get log with format. Don't raise if the branch doesn't exist in
+        # this workspace yet — that's a normal race (branch created in a
+        # different agent's clone, not yet fetched here). Return empty.
         log_format = "%H|%h|%s|%an|%aI"
         log_result = await git_service._run_git(
-            workspace, ["log", f"--format={log_format}", f"-n{limit}", branch]
+            workspace,
+            ["log", f"--format={log_format}", f"-n{limit}", branch],
+            check=False,
         )
+        if log_result.returncode != 0:
+            logger.info(
+                "git log on missing/unknown ref; returning empty",
+                project_slug=project_slug,
+                branch=branch,
+                stderr=log_result.stderr[:200] if log_result.stderr else "",
+            )
+            return GitLogResponse(
+                project_slug=project_slug, branch=branch, commits=[]
+            )
     except ServiceError as e:
         raise _translate_error(e) from e
 

@@ -79,14 +79,14 @@ services:
           status=$$(echo "$$line" | grep -o '"status":"[^"]*"' | cut -d'"' -f4)
           [ -n "$$status" ] && echo "  $$status"
         done
-        echo "=== Pulling LLM model (glm-5.1:cloud) ==="
-        curl -sN http://ollama:11434/api/pull -d '{"name":"glm-5.1:cloud"}' | while read -r line; do
+        echo "=== Pulling LLM model (glm-5:cloud) ==="
+        curl -sN http://ollama:11434/api/pull -d '{"name":"glm-5:cloud"}' | while read -r line; do
           status=$$(echo "$$line" | grep -o '"status":"[^"]*"' | cut -d'"' -f4)
           [ -n "$$status" ] && echo "  $$status"
         done
         echo "=== Verifying models are available ==="
         curl -sf http://ollama:11434/api/tags | grep -q "qwen3-embedding" && echo "  qwen3-embedding: OK"
-        curl -sf http://ollama:11434/api/tags | grep -q "glm-5.1" && echo "  glm-5.1: OK"
+        curl -sf http://ollama:11434/api/tags | grep -q "glm-5" && echo "  glm-5: OK"
         echo "=== All models ready! ==="
 
   # ==========================================================================
@@ -220,7 +220,7 @@ services:
       ROBOCO_ENCRYPTION_KEY: ${ROBOCO_ENCRYPTION_KEY:?ROBOCO_ENCRYPTION_KEY is required}
       # Ollama (use container name)
       ROBOCO_LOCAL_LLM_BASE_URL: http://roboco-ollama:11434/v1
-      ROBOCO_LOCAL_LLM_MODEL: glm-5.1:cloud
+      ROBOCO_LOCAL_LLM_MODEL: glm-5:cloud
       ROBOCO_DEFAULT_EMBEDDING_MODEL: qwen3-embedding:0.6b
       ROBOCO_OLLAMA_BASE_URL: http://roboco-ollama:11434
       # Host paths for spawning agent containers (required for Docker-in-Docker)
@@ -241,6 +241,10 @@ services:
       - ${ROBOCO_DATA_DIR:-./data}/agent-settings:/app/agent-settings
       # Agent workspaces (git clones) - persisted across restarts
       - ${ROBOCO_DATA_DIR:-./data}/workspaces:/data/workspaces
+      # Persistent logs — survive `docker compose down/up`. Orchestrator and
+      # each spawned agent write structured logs here so we can audit past
+      # runs instead of relying on ephemeral `docker logs`.
+      - ${ROBOCO_DATA_DIR:-./data}/logs:/data/logs
     depends_on:
       postgres:
         condition: service_healthy
@@ -254,6 +258,41 @@ services:
         condition: service_completed_successfully
     # Default agents to spawn (override in .env or command line)
     # command: ["--spawn", "main-pm", "be-dev-1", "be-qa"]
+
+  # ==========================================================================
+  # Next.js Control Panel (Frontend)
+  # ==========================================================================
+  # Not exposed directly - nginx is the single entry point (port 3000).
+  # API/WS traffic is proxied to the orchestrator, everything else to panel.
+  panel:
+    build:
+      context: .
+      dockerfile: docker/panel.Dockerfile
+    image: roboco-panel
+    container_name: roboco-panel
+    restart: unless-stopped
+    expose:
+      - "3000"
+    depends_on:
+      - orchestrator
+
+  # ==========================================================================
+  # Nginx - Reverse proxy fronting panel + orchestrator
+  # ==========================================================================
+  # Single entry point on port 3000 so the browser hits one origin and we
+  # don't need CORS. /api/* and /ws/* go to the orchestrator, everything
+  # else goes to the Next.js panel.
+  nginx:
+    image: nginx:alpine
+    container_name: roboco-nginx
+    restart: unless-stopped
+    ports:
+      - "3000:80"
+    volumes:
+      - ./docker/nginx.conf:/etc/nginx/conf.d/default.conf:ro
+    depends_on:
+      - panel
+      - orchestrator
 
 networks:
   default:

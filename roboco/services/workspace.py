@@ -19,6 +19,7 @@ Example:
 """
 
 import asyncio
+import os
 import re
 import shutil
 import subprocess
@@ -33,6 +34,73 @@ from roboco.logging import get_logger
 from roboco.models.base import Team
 
 logger = get_logger(__name__)
+
+# Agent container runs the `agent` user created in agent-base.Dockerfile.
+# Debian's `useradd -m` defaults to uid 1000 when that uid is free.
+# Overridable via env so operators can customize if they rebuild agent-base
+# with a different id.
+_AGENT_UID = int(os.environ.get("ROBOCO_AGENT_UID", "1000"))
+_AGENT_GID = int(os.environ.get("ROBOCO_AGENT_GID", "1000"))
+
+
+def _ensure_agent_owned(workspace: Path) -> None:
+    """Recursively chown + group-write a workspace for the agent user.
+
+    Orchestrator runs as root so anything it clones or writes is root-owned.
+    Agent containers run as uid 1000 and must be able to create
+    .git/index.lock, refs, packed-refs, and new source files — otherwise
+    every git operation (and even plain file writes) fails with
+    "Permission denied". Called after clone and on every ensure_workspace
+    so legacy (pre-fix) workspaces get repaired.
+
+    Two defenses (both cheap, both idempotent):
+    1. chown every entry to (AGENT_UID, AGENT_GID). On setups where user
+       namespaces silently remap or reject the chown (some NAS / rootless
+       docker configs), we log the failure instead of swallowing it — so
+       when writes still fail from the agent, we can actually see why.
+    2. chmod g+w on every file/dir. If chown doesn't take effect, having
+       the group writable (and with AGENT_GID) is enough for uid 1000 to
+       write, provided agent is in that group. Belt + suspenders.
+
+    The previous fast-path (skip walk if top-level stat already matches)
+    was unsafe: a root-owned file deep under an agent-owned top dir would
+    not get repaired, which is exactly how README.md ends up root:root
+    even after ensure_workspace runs.
+    """
+    import stat as _stat
+
+    failed_chowns = 0
+    for root, dirs, files in os.walk(workspace):
+        for entry in (root, *[str(Path(root) / d) for d in dirs],
+                      *[str(Path(root) / f) for f in files]):
+            try:
+                st = Path(entry).stat()
+                if st.st_uid != _AGENT_UID or st.st_gid != _AGENT_GID:
+                    os.chown(entry, _AGENT_UID, _AGENT_GID)
+            except OSError:
+                failed_chowns += 1
+            try:
+                st = Path(entry).stat()
+                # Add group read + write (and execute for dirs). chmod
+                # always respects the caller's capabilities — if chown
+                # failed because we're not root, we still can't chmod
+                # files we don't own.
+                new_mode = st.st_mode | _stat.S_IRGRP | _stat.S_IWGRP
+                if _stat.S_ISDIR(st.st_mode):
+                    new_mode |= _stat.S_IXGRP
+                if new_mode != st.st_mode:
+                    Path(entry).chmod(new_mode)
+            except OSError:
+                pass
+
+    if failed_chowns:
+        logger.warning(
+            "Some chowns failed during ensure_agent_owned — "
+            "agent writes may still fail. Check docker user-namespace "
+            "config or run agents as root on this host.",
+            workspace=str(workspace),
+            failures=failed_chowns,
+        )
 
 # Per (project_slug, agent_slug) async lock to serialize concurrent
 # ensure_workspace calls in the same orchestrator process. Prevents two
@@ -223,8 +291,23 @@ class WorkspaceService:
 
         lock = _ensure_lock_for(project_slug, agent.slug)
         async with lock:
-            # Healthy clone — nothing to do.
-            if (workspace / ".git").exists():
+            # Healthy clone — nothing to do except make sure it's still
+            # owned by the agent user. Orchestrator restarts or older
+            # clones (pre-ownership-fix) may leave root-owned trees that
+            # break every subsequent write from inside the agent container.
+            #
+            # `.git` existing is necessary but NOT sufficient — a failed
+            # clone can leave behind a stub .git/ with only FETCH_HEAD and
+            # no HEAD/objects, which looks "healthy" to a naive check but
+            # breaks every subsequent fetch/checkout ("origin/<branch> is
+            # not a commit"). Require HEAD + objects/ as the real signal.
+            git_dir = workspace / ".git"
+            if (
+                git_dir.exists()
+                and (git_dir / "HEAD").exists()
+                and (git_dir / "objects").exists()
+            ):
+                await asyncio.to_thread(_ensure_agent_owned, workspace)
                 logger.debug(
                     "Workspace already exists",
                     workspace=str(workspace),
@@ -232,14 +315,16 @@ class WorkspaceService:
                 )
                 return workspace
 
-            # Partial clone: directory exists but no `.git`. git clone
-            # refuses to clone into a non-empty directory, so remove it
-            # first instead of letting the next clone fail.
+            # Partial clone: directory exists but `.git` is missing or
+            # a stub. git clone refuses to clone into a non-empty
+            # directory, so remove it first instead of letting the next
+            # clone fail.
             if workspace.exists():
                 logger.warning(
-                    "Removing partial workspace before re-clone",
+                    "Removing partial/stub workspace before re-clone",
                     workspace=str(workspace),
                     project=project_slug,
+                    had_git_dir=git_dir.exists(),
                 )
                 shutil.rmtree(workspace)
 
@@ -323,13 +408,21 @@ class WorkspaceService:
         )
 
         def _do_clone() -> subprocess.CompletedProcess[str]:
+            # Do NOT pass --single-branch. Agents work on feature branches
+            # pushed by peers; QA and documenter need to `git fetch` those
+            # branches after a dev pushes. --single-branch locks the remote
+            # refspec to `+refs/heads/{default_branch}:refs/remotes/origin/
+            # {default_branch}`, so subsequent fetches silently ignore every
+            # other branch. The symptom is QA doing `checkout origin/
+            # feature/...` and seeing "not a commit" even though the branch
+            # is on GitHub. --no-tags keeps the clone light.
             return subprocess.run(
                 [
                     "git",
                     "clone",
                     "--branch",
                     default_branch,
-                    "--single-branch",
+                    "--no-tags",
                     auth_url,
                     str(workspace),
                 ],
@@ -340,7 +433,20 @@ class WorkspaceService:
             )
 
         def _configure_git() -> None:
-            """Configure git author info based on agent identity."""
+            """Configure git author info + scrub embedded PAT from remote URL.
+
+            The clone URL carries the PAT for authentication (`https://TOKEN@
+            github.com/...`), which `git clone` then writes into
+            `.git/config`. Leaving it there lets anyone with read access to
+            the workspace — including the agent inside its container — read
+            the token and exfiltrate or use it directly against GitHub,
+            bypassing the orchestrator's git service.
+
+            We keep push/fetch working by letting the orchestrator inject
+            the token just-in-time at the subprocess level (`-c
+            http.extraheader='Authorization: bearer TOKEN'`) when it needs
+            to hit origin; see GitService.
+            """
             name = agent.name if agent else "RoboCo Agent"
             slug = agent.slug if agent else "agent"
 
@@ -357,9 +463,21 @@ class WorkspaceService:
                 capture_output=True,
             )
 
+            # Scrub embedded credentials from the remote URL.
+            if git_token and auth_url != git_url:
+                subprocess.run(
+                    ["git", "remote", "set-url", "origin", git_url],
+                    cwd=str(workspace),
+                    check=True,
+                    capture_output=True,
+                )
+
         try:
             await asyncio.to_thread(_do_clone)
             await asyncio.to_thread(_configure_git)
+            # Transfer ownership to the agent user so the agent can write
+            # into .git/ and the working tree from inside its container.
+            await asyncio.to_thread(_ensure_agent_owned, workspace)
             logger.info(
                 "Repository cloned successfully",
                 workspace=str(workspace),

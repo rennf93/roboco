@@ -336,6 +336,77 @@ class AuditService(SingletonService):
             )
         )
 
+    async def log_task_event(
+        self,
+        *,
+        event_type: str,
+        task_id: str | UUID,
+        agent_id: str | UUID | None = None,
+        details: dict[str, Any] | None = None,
+        severity: str = "info",
+    ) -> None:
+        """Log a task-lifecycle event (creation, status transition, etc.).
+
+        Meant to be called from TaskService at every meaningful transition —
+        without this the audit_log table only captures denial cases, which
+        is why past runs had zero recorded activity.
+        """
+        self.log.info(
+            "Task event",
+            event_type=event_type,
+            task_id=str(task_id),
+            agent_id=str(agent_id) if agent_id else None,
+            details=details or {},
+            timestamp=datetime.now(UTC).isoformat(),
+        )
+        await self._persist(
+            _AuditEvent(
+                event_type=event_type,
+                agent_id=agent_id,
+                target_type="task",
+                target_id=task_id,
+                severity=severity,
+                details=details or {},
+            )
+        )
+
+    async def log_agent_event(
+        self,
+        *,
+        event_type: str,
+        agent_slug: str,
+        task_id: str | UUID | None = None,
+        details: dict[str, Any] | None = None,
+        severity: str = "info",
+    ) -> None:
+        """Log an orchestrator-level agent event (spawned, stopped, stranded).
+
+        agent_slug is stored in details because audit_log.agent_id is a UUID
+        and the orchestrator only sees slugs at spawn time.
+        """
+        payload: dict[str, Any] = {"agent_slug": agent_slug}
+        if details:
+            payload.update(details)
+
+        self.log.info(
+            "Agent event",
+            event_type=event_type,
+            agent_slug=agent_slug,
+            task_id=str(task_id) if task_id else None,
+            timestamp=datetime.now(UTC).isoformat(),
+            **(details or {}),
+        )
+        await self._persist(
+            _AuditEvent(
+                event_type=event_type,
+                agent_id=None,
+                target_type="task" if task_id else "agent",
+                target_id=task_id,
+                severity=severity,
+                details=payload,
+            )
+        )
+
     # =========================================================================
     # QUERY METHODS
     # =========================================================================

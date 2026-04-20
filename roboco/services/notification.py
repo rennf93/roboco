@@ -7,16 +7,41 @@ Sends notifications through the API with proper enforcement.
 from __future__ import annotations
 
 from typing import Any
+from uuid import UUID
 
 import structlog
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from roboco.db.base import get_db_context
-from roboco.db.tables import NotificationTable
+from roboco.db.tables import AgentTable, NotificationTable
 from roboco.models import NotificationPriority, NotificationType
 from roboco.models.notification import CreateNotificationParams
 from roboco.utils.converters import require_uuid
 
 logger = structlog.get_logger()
+
+
+async def _resolve_agent_uuid(db: AsyncSession, value: str | UUID | None) -> UUID | None:
+    """Turn an agent slug or UUID (any case / any form) into a real UUID.
+
+    `notifications.from_agent` is UUID-typed in the DB, but callers across
+    the codebase (MCP handlers, A2A fallback route, etc.) pass slugs like
+    "be-doc" because that's what agents use internally. Without this
+    resolver, slug-valued from_agent blows up the INSERT with "invalid
+    UUID 'be-doc': length must be between 32..36 characters".
+    """
+    if value is None or value == "" or value == "unknown":
+        return None
+    if isinstance(value, UUID):
+        return value
+    try:
+        return UUID(str(value))
+    except ValueError:
+        pass
+    result = await db.execute(select(AgentTable).where(AgentTable.slug == str(value)))
+    agent = result.scalar_one_or_none()
+    return UUID(str(agent.id)) if agent else None
 
 
 class NotificationService:
@@ -223,10 +248,11 @@ class NotificationService:
     async def _create_notification(self, params: CreateNotificationParams) -> None:
         """Create a notification via the database and deliver it."""
         async with get_db_context() as db:
+            from_agent_uuid = await _resolve_agent_uuid(db, params.from_agent)
             notification = NotificationTable(
                 type=params.notification_type,
                 priority=params.priority,
-                from_agent=params.from_agent,
+                from_agent=from_agent_uuid,
                 to_agents=params.to_agents,
                 subject=params.subject,
                 body=params.body,

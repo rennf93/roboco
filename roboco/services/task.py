@@ -28,7 +28,7 @@ from roboco.enforcement import (
     validate_task_transition,
 )
 from roboco.events import Event, EventType, get_event_bus
-from roboco.models.base import AgentRole, TaskStatus, Team
+from roboco.models.base import AgentRole, BlockerResolverType, TaskStatus, Team
 from roboco.models.task import TaskCreateRequest
 from roboco.models.work_session import WorkSessionStatus
 from roboco.services.base import BaseService
@@ -104,8 +104,10 @@ def extract_original_developer(quick_context: str | None) -> str | None:
     """
     Safely extract original developer ID from quick_context.
 
-    The quick_context stores original developer as: "original_developer:{uuid}"
-    This is used to prevent self-review (QA reviewing their own work).
+    The quick_context stores original developer as the "original_developer:
+    {uuid}" entry on its own line. Other entries (doc_notes, documenter,
+    etc.) may be appended on subsequent lines, so scan line-by-line rather
+    than assuming the field is the first and only token.
 
     Args:
         quick_context: The task's quick_context field value
@@ -117,17 +119,15 @@ def extract_original_developer(quick_context: str | None) -> str | None:
         return None
 
     prefix = "original_developer:"
-    if not quick_context.startswith(prefix):
-        return None
-
-    try:
-        dev_id = quick_context[len(prefix) :].strip()
-        # Validate it looks like a UUID
+    for raw in quick_context.splitlines():
+        line = raw.strip()
+        if not line.startswith(prefix):
+            continue
+        dev_id = line[len(prefix) :].strip()
         if len(dev_id) == _UUID_LENGTH and dev_id.count("-") == _UUID_HYPHEN_COUNT:
             return dev_id
         return None
-    except Exception:
-        return None
+    return None
 
 
 class TaskService(BaseService):
@@ -197,6 +197,55 @@ class TaskService(BaseService):
             to_status=target,
             agent_role=agent_role,
         )
+
+        # Poke the orchestrator's dispatcher so it reacts immediately to
+        # this transition. Without this, agents wait up to 30 seconds for
+        # the next poll (10 minutes cumulative in the pathological case we
+        # saw on be-dev-1 spawn). Uses lazy import + silent fallback so
+        # code paths that don't have an orchestrator (tests, sync tools)
+        # don't break.
+        try:
+            from roboco.api.deps import get_orchestrator
+
+            get_orchestrator().trigger_dispatch()
+        except Exception:
+            pass
+
+        # Fire-and-forget audit write. Critical: we must hold a strong
+        # reference to the Task object (via `_background_tasks`) — the event
+        # loop only weak-refs tasks, so without this the audit write can be
+        # garbage-collected before it commits. That's why audit_log was
+        # coming up empty even though the log call ran.
+        import asyncio
+        import contextlib
+
+        from roboco.services.audit import get_audit_service
+
+        audit = get_audit_service()
+        with contextlib.suppress(RuntimeError):
+            bg = asyncio.get_running_loop().create_task(
+                audit.log_task_event(
+                    event_type=f"task.{target}",
+                    task_id=str(task.id),
+                    agent_id=(
+                        str(task.claimed_by)
+                        if task.claimed_by is not None
+                        else None
+                    ),
+                    details={
+                        "from_status": current,
+                        "to_status": target,
+                        "agent_role": agent_role,
+                        "team": (
+                            task.team.value
+                            if hasattr(task.team, "value")
+                            else str(task.team)
+                        ),
+                    },
+                )
+            )
+            self._background_tasks.add(bg)
+            bg.add_done_callback(self._background_tasks.discard)
 
     # =========================================================================
     # CRUD OPERATIONS
@@ -727,10 +776,14 @@ class TaskService(BaseService):
         racing for the same pending task.
         """
         # Lock the task row for the duration of this transaction so concurrent
-        # claim attempts serialize at the DB level. `with_for_update` maps to
-        # PostgreSQL's `SELECT ... FOR UPDATE`.
+        # claim attempts serialize at the DB level. `with_for_update(of=...)`
+        # scopes the lock to tasks only — otherwise, because TaskTable.project
+        # is lazy="joined", SA emits an outer join and Postgres rejects
+        # `FOR UPDATE` on the nullable side with FeatureNotSupportedError.
         lock_result = await self.session.execute(
-            select(TaskTable).where(TaskTable.id == task_id).with_for_update()
+            select(TaskTable)
+            .where(TaskTable.id == task_id)
+            .with_for_update(of=TaskTable)
         )
         task = lock_result.scalar_one_or_none()
         if not task:
@@ -1619,6 +1672,9 @@ class TaskService(BaseService):
         if blocker_task_id not in task.dependency_ids:
             new_deps = [*task.dependency_ids, blocker_task_id]
             task.dependency_ids = new_deps
+        # Task-dependency blocks always resolve when the blocker task
+        # completes — that's inherently an agent-resolvable condition.
+        task.blocker_resolver_type = BlockerResolverType.AGENT
         self._validate_and_set_status(task, TaskStatus.BLOCKED, agent_role)
         await self.session.flush()
 
@@ -1653,13 +1709,14 @@ class TaskService(BaseService):
 
         return task
 
-    async def soft_block(
+    async def soft_block(  # noqa: PLR0913 — rich signature is intentional
         self,
         task_id: UUID,
         reason: str,
         blocker_type: str,
         what_needed: str,
         agent_role: str | None = None,
+        resolver_type: BlockerResolverType | None = None,
     ) -> TaskTable | None:
         """
         Block a task due to an external factor (not a task dependency).
@@ -1699,6 +1756,10 @@ class TaskService(BaseService):
         else:
             task.dev_notes = blocker_note
 
+        # Default resolver is AGENT — preserves pre-existing behavior where
+        # the dispatcher would respawn. Caller passes HUMAN to tell the
+        # dispatcher to stop churning and wait for HITL.
+        task.blocker_resolver_type = resolver_type or BlockerResolverType.AGENT
         self._validate_and_set_status(task, TaskStatus.BLOCKED, agent_role)
         await self.session.flush()
 
@@ -1741,6 +1802,8 @@ class TaskService(BaseService):
         if task.status != TaskStatus.BLOCKED:
             return None
 
+        # Clear resolver metadata — only meaningful while BLOCKED.
+        task.blocker_resolver_type = None
         self._validate_and_set_status(task, TaskStatus.IN_PROGRESS, agent_role)
         await self.session.flush()
 

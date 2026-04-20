@@ -38,6 +38,85 @@ For full communication structure: `roboco_kb_search("communication hierarchy")`
 3. **Plan before start** - Required step
 4. **Journal as you go** - Document decisions, learnings, struggles
 5. **Escalate blockers** - Don't spin, ask for help
+
+## Safety Rules (HARD CONSTRAINTS)
+
+These are not guidelines — violating them is a critical failure.
+
+1. **Never read `.git/config`, `~/.gitconfig`, `/etc/gitconfig`, `.git-credentials`, or `.netrc`.**
+   They contain credentials. The Bash/Read tools will deny it anyway, but don't try.
+
+2. **Never call `curl` or `wget` against `github.com` / `api.github.com`.**
+   Use the `roboco_git_*` MCP tools. They handle authentication correctly and
+   preserve task traceability. Direct API calls bypass both.
+
+3. **Never run `git push/fetch/pull/clone` via `Bash`.**
+   The `Bash(git:*)` permission is denied. Use `roboco_git_*` MCP tools.
+
+4. **If an MCP tool returns an error, DO NOT bypass it with Bash/curl.**
+   Instead:
+   - Journal it: `roboco_journal_struggle(task_id, summary, details)`
+   - Escalate: `roboco_task_escalate(task_id, reason)` — or notify your PM
+   - Then idle if there's no other work.
+
+   Agents that try to "just do it via Bash" when MCP errors are the #1 cause
+   of stuck runs and burned tokens. Don't be that agent.
+
+5. **Local git ops are fine.** `git status`, `git log`, `git diff` via the
+   `roboco_git_*` tools work normally. The restriction is on *remote* git and
+   on anything that touches credentials.
+
+## Startup: Load MCP Tool Schemas First (MANDATORY)
+
+In Claude Code v2.1.114+, MCP tool schemas are **deferred** — you must load
+them before you can call them. Calling an MCP tool directly will return
+`<tool_use_error>No such tool available: mcp__roboco-...__...`.
+
+**Your very first action on spawn must be a single `ToolSearch` call with a
+`select:` query listing every tool you will use — both roboco MCP tools
+AND built-in tools (`Edit`, `Write`, `Bash`, `TaskCreate`, `TaskGet`,
+`TaskUpdate`, etc.). In claude-code v2.1.114 the built-ins are deferred
+too, not just MCP — if you don't pre-load `Edit`, calling it resolves to
+a no-op ToolSearch instead of an actual file edit.** Example:
+
+```
+ToolSearch({
+  query: "select:Edit,Write,Bash,Read,Glob,Grep,TaskCreate,TaskGet,TaskUpdate,mcp__roboco-task__roboco_task_get,mcp__roboco-task__roboco_task_claim,mcp__roboco-task__roboco_task_plan,mcp__roboco-task__roboco_task_start,mcp__roboco-task__roboco_task_progress,mcp__roboco-task__roboco_task_submit_verification,mcp__roboco-task__roboco_task_submit_qa,mcp__roboco-task__roboco_task_qa_pass,mcp__roboco-task__roboco_task_qa_fail,mcp__roboco-task__roboco_task_pause,mcp__roboco-task__roboco_task_unclaim,mcp__roboco-task__roboco_task_escalate,mcp__roboco-task__roboco_task_substitute,mcp__roboco-task__roboco_task_activate,mcp__roboco-task__roboco_task_create,mcp__roboco-task__roboco_task_scan,mcp__roboco-task__roboco_session_create_for_tasks,mcp__roboco-task__roboco_group_create,mcp__roboco-task__roboco_agent_idle,mcp__roboco-journal__roboco_journal_reflect,mcp__roboco-journal__roboco_journal_struggle,mcp__roboco-journal__roboco_journal_decision,mcp__roboco-message__roboco_message_send,mcp__roboco-notify__roboco_notify_send,mcp__roboco-notify__roboco_notify_list,mcp__roboco-notify__roboco_notify_ack,mcp__roboco-git__roboco_git_status,mcp__roboco-git__roboco_git_commit,mcp__roboco-git__roboco_git_push,mcp__roboco-git__roboco_git_create_pr,mcp__roboco-project__roboco_workspace_ensure"
+})
+```
+
+If a specific `mcp__roboco-*__*` tool is still pending at first call (server
+not yet connected), you'll see "Some MCP servers are still connecting" —
+just call the same `ToolSearch(select:...)` again after a second. Do NOT
+repeatedly call it every turn forever; 2–3 retries is the ceiling.
+
+After this one call, the tools are callable normally. **Do NOT** poll with
+keyword searches ("roboco task", "journal", etc.) — those return a ranked
+subset and will miss tools. **Do NOT** call ToolSearch repeatedly. One
+`select:` call with everything you need, then start working.
+
+If a specific tool you need wasn't in your first `select:` list, call
+`ToolSearch({query: "select:<exact-name>"})` to load it before use —
+single shot, no loop.
+
+If a call still fails with "No such tool available" *after* loading the
+schema, that's an infra issue: journal + escalate per rule 4 above, don't
+keep retrying.
+
+## Your Tools (load via the single `select:` call above)
+
+All roles have these MCP servers available under `mcp__roboco-<name>__*`:
+
+- `roboco-task` — task CRUD, claim/plan/start/pause/complete, escalate
+- `roboco-message` — channel messages, sessions, groups
+- `roboco-journal` — personal decision log, reflections, struggles
+- `roboco-notify` — list/ack notifications (PMs can also send)
+- `roboco-optimal` — RAG search, mentor, knowledge base
+- `roboco-a2a` — agent-to-agent direct conversations
+- `roboco-project` — project + workspace ops
+- `roboco-git` — git operations (role-gated: read for all, write for devs/PMs)
+- `roboco-test` — test/lint/format commands (devs)
+- `roboco-docs` — doc file management (documenters)
 6. **State is sacred** - Recovery must be possible
 
 ## CRITICAL: Actually Do The Work

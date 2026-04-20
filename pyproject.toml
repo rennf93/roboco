@@ -48,6 +48,11 @@ dependencies = [
     # Streaming
     "sse-starlette",  # Server-Sent Events for A2A streaming
     "einops",
+
+    # Transitive via piragi, listed explicitly so [tool.uv.sources] below
+    # can redirect to the CPU-only PyTorch wheel index (saves ~2.5GB of
+    # unused CUDA libs — our stack uses Ollama over HTTP for all ML work).
+    "torch",
 ]
 
 [project.optional-dependencies]
@@ -107,6 +112,22 @@ packages = ["roboco"]
 
 [tool.hatch.metadata]
 allow-direct-references = true
+
+# =============================================================================
+# uv: pin torch to the CPU-only wheel index
+# =============================================================================
+# `piragi` transitively depends on torch. Our stack uses Ollama over HTTP for
+# all embeddings/LLM, so torch is never actually loaded at runtime — but uv
+# would otherwise resolve torch from PyPI, which bundles the full NVIDIA CUDA
+# stack (~2.5GB across nvidia-cublas, cudnn, cufft, cusolver, nccl, etc.).
+# The CPU-only index provides a ~200MB torch wheel and drops every CUDA dep.
+[[tool.uv.index]]
+name = "pytorch-cpu"
+url = "https://download.pytorch.org/whl/cpu"
+explicit = true
+
+[tool.uv.sources]
+torch = [{ index = "pytorch-cpu" }]
 
 # =============================================================================
 # RUFF Configuration

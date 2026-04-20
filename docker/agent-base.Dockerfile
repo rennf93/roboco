@@ -1,61 +1,87 @@
 # =============================================================================
-# Agent Base Image
+# Agent Base Image — multi-stage build
 # =============================================================================
-# Python 3.13 with dev tools for Claude Code agent containers
+# Shared runtime for Claude Code agent containers: Python venv + Node.js +
+# @anthropic-ai/claude-code CLI. Specialized images (agent-dev-be, agent-qa-fe,
+# etc.) extend this one.
 # =============================================================================
 
-FROM python:3.13-bookworm
+# ---- Builder ----------------------------------------------------------------
+FROM python:3.13-slim-bookworm AS builder
 
-# Install Node.js 22 (required for Claude Code CLI) and jq (for hooks)
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    curl \
-    ca-certificates \
-    git \
-    gnupg \
-    jq \
-    && curl -fsSL https://deb.nodesource.com/setup_22.x | bash - \
-    && apt-get install -y nodejs \
+        build-essential \
+        git \
     && rm -rf /var/lib/apt/lists/*
 
-# Install Claude Code CLI
-RUN npm install -g @anthropic-ai/claude-code
-
-# Install uv for Python package management
 COPY --from=ghcr.io/astral-sh/uv:latest /uv /usr/local/bin/uv
 
-# Create agent user BEFORE copying files
+WORKDIR /app
+
+ENV UV_HTTP_TIMEOUT=300 \
+    UV_CONCURRENT_DOWNLOADS=4 \
+    UV_LINK_MODE=copy \
+    UV_PYTHON_PREFERENCE=only-system
+
+# Use base-image Python so venv symlinks stay valid after COPY to runner
+# (uv's managed python at /root/.local/share/uv/python isn't carried across).
+COPY pyproject.toml uv.lock README.md /app/
+RUN uv sync --frozen --no-dev --no-install-project
+
+COPY roboco /app/roboco
+RUN uv sync --frozen --no-dev
+
+# ---- Runner -----------------------------------------------------------------
+FROM python:3.13-slim-bookworm AS runner
+
+# Runtime deps: Node.js 22 for claude CLI, git for workspace ops, jq for hooks.
+# gnupg is only needed to add the NodeSource repo, purged after install.
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    curl ca-certificates git gnupg jq \
+    && curl -fsSL https://deb.nodesource.com/setup_22.x | bash - \
+    && apt-get install -y --no-install-recommends nodejs \
+    && npm install -g @anthropic-ai/claude-code@2.1.114 \
+    && npm cache clean --force \
+    && apt-get purge -y --auto-remove gnupg \
+    && rm -rf /var/lib/apt/lists/* /root/.npm /tmp/*
+
 RUN useradd -m -s /bin/bash agent
 
-# Create app directory and set ownership
+# uv is required at runtime: mcp-config.json spawns every MCP server via
+# `uv run python -m roboco.mcp.<server>`. Without it, all 10 roboco MCP
+# servers fail to start and the agent falls back to raw HTTP, losing every
+# guardrail and inline schema the MCP layer provides.
+COPY --from=ghcr.io/astral-sh/uv:latest /uv /usr/local/bin/uv
+
 WORKDIR /app
-RUN chown agent:agent /app
 
-# Copy MCP server code (needed for agent tools) AS agent
-COPY --chown=agent:agent roboco /app/roboco
-COPY --chown=agent:agent pyproject.toml uv.lock README.md /app/
+# Copy the pre-built venv + source from builder, owned by agent user
+COPY --from=builder --chown=agent:agent /app /app
 
-# Switch to agent user for installing dependencies
+# Hook scripts: 0755 so the `agent` user (not root) can read+execute them.
+# SessionStart hook runs these as agent; stricter perms break the hook with
+# "Permission denied" (exit 126).
+COPY docker/scripts/sdk-startup-hook.sh /app/scripts/sdk-startup-hook.sh
+COPY docker/scripts/a2a-check-hook.sh /app/scripts/a2a-check-hook.sh
+COPY docker/scripts/traceability-hook.sh /app/scripts/traceability-hook.sh
+RUN chmod 0755 /app/scripts/*.sh
+
 USER agent
 
-# Install Python dependencies for MCP servers (as agent)
-ENV UV_HTTP_TIMEOUT=300
-ENV UV_CONCURRENT_DOWNLOADS=4
-RUN uv python install 3.13 && uv sync --frozen --python 3.13
+# Workspaces are cloned by the orchestrator (running as root) into a shared
+# volume, so inside the agent container they show up owned by a different
+# uid. Git 2.35+ refuses to operate on such repos with "dubious ownership"
+# until safe.directory is set. `*` trusts everything, which is fine inside
+# a per-agent sandbox that only mounts its own workspace.
+RUN git config --global --add safe.directory '*'
 
-# Claude Code will use mounted ~/.claude for auth
-# System prompt mounted at /app/system-prompt.md (composed at spawn time from layers)
-# MCP config generated at runtime
+ENV PATH="/app/.venv/bin:$PATH" \
+    VIRTUAL_ENV=/app/.venv
 
-# Copy SDK server scripts and hooks (need to be root for COPY, then fix permissions)
-USER root
-COPY --chown=agent:agent docker/scripts/sdk-startup-hook.sh /app/scripts/sdk-startup-hook.sh
-COPY --chown=agent:agent docker/scripts/a2a-check-hook.sh /app/scripts/a2a-check-hook.sh
-COPY --chown=agent:agent docker/scripts/traceability-hook.sh /app/scripts/traceability-hook.sh
-RUN chmod +x /app/scripts/*.sh
-USER agent
+# Claude Code uses mounted ~/.claude for auth.
+# System prompt mounted at /app/system-prompt.md at spawn time.
+# MCP config generated at runtime.
 
-# Expose SDK server port
 EXPOSE 9000
 
-# Claude runs directly - SDK server started via SessionStart hook
 ENTRYPOINT ["claude"]

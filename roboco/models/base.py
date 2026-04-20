@@ -36,6 +36,18 @@ class TaskStatus(str, Enum):
     QUARANTINED = "quarantined"  # Special state for problematic tasks
 
 
+class BlockerResolverType(str, Enum):
+    """Who is expected to resolve a BLOCKED task.
+
+    Distinguishes blocks that an agent can work through vs blocks that
+    require a human (CEO) to intervene — so the dispatcher doesn't keep
+    respawning agents when it's waiting on manual action.
+    """
+
+    AGENT = "agent"  # Another agent resolves — dispatcher can respawn
+    HUMAN = "human"  # HITL/CEO only — dispatcher must NOT respawn
+
+
 class TaskType(str, Enum):
     """Task classification. ALL types follow git workflow."""
 

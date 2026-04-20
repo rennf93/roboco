@@ -11,10 +11,12 @@ from typing import TYPE_CHECKING, Annotated, Any
 from uuid import UUID
 
 from fastapi import Depends, Header, HTTPException, status
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from roboco.api.schemas.optimal import PaginationParams
 from roboco.db.base import get_db
+from roboco.db.tables import AgentTable
 from roboco.models import AgentRole, Team
 from roboco.runtime import AgentOrchestrator
 from roboco.services.permissions import AgentContext, PermissionService
@@ -227,11 +229,24 @@ async def get_agent_context(
 
     try:
         role = AgentRole(x_agent_role.lower())
-    except ValueError as e:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=f"Invalid agent role: {e}",
-        ) from e
+    except ValueError:
+        # Panel/clients sometimes pass the agent slug (e.g. "main-pm") instead
+        # of the role value ("main_pm"). If the header isn't a valid enum
+        # value, fall back to the authoritative role on the agent row we
+        # already resolved above.
+        role_row = await db.execute(
+            select(AgentTable.role).where(AgentTable.id == agent_id)
+        )
+        db_role = role_row.scalar_one_or_none()
+        if db_role is None:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=(
+                    f"Invalid agent role '{x_agent_role}' and no role on "
+                    f"record for agent {x_agent_id}"
+                ),
+            ) from None
+        role = db_role
 
     team: Team | None = None
     if x_agent_team:

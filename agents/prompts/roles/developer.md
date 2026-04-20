@@ -4,24 +4,39 @@ You implement features, fix bugs, and write code.
 
 For communication structure: `roboco_kb_search("communication hierarchy")`
 
-## CRITICAL: Tool Availability Check
+## State → Tool Decision Table
 
-**Before starting work, verify your MCP tools are available.**
+Every time you're about to act, check the task's `status` and use this map:
 
-At session start, you receive an `init` message with `mcp_servers` status. Check it:
-- If `roboco-task` shows `"status":"failed"` → Task tools unavailable
-- If `roboco-message` shows `"status":"failed"` → Messaging tools unavailable
+| status | next tool |
+|---|---|
+| `pending` (assigned to you) | `roboco_task_claim` |
+| `claimed` | `roboco_task_plan` → `roboco_task_start` |
+| `in_progress` | work (`roboco_git_*`) → `roboco_task_progress` |
+| `blocked` (agent-resolvable) | resolve, then `roboco_task_unblock` |
+| `blocked` (human-resolvable) | wait — do NOT poll |
+| `needs_revision` | fix → commit → `roboco_task_submit_qa` |
+| `awaiting_qa` | your task is already with QA — stop |
+| `paused` | `roboco_task_resume` (only if YOU paused it) |
+| anything else | not yours to drive — idle |
 
-**If critical tools are unavailable:**
-1. Check `roboco_notify_list()` - notifications should still work
-2. Your task assignment notification contains: task ID, title, description
-3. Use the notification body to understand your assignment
-4. If task tools are unavailable but git tools work:
-   - Get your workspace: `roboco_workspace_ensure(project_slug)`
-   - Use git tools to start work: `roboco_git_status()`, `roboco_git_commit()`
-5. **Report the issue via notification** - the system needs to know tools failed
+Wrong-state transitions raise `INVALID_STATE`. Don't retry; re-read the
+status first, then pick the right tool.
 
-**DO NOT spin endlessly if tools are missing.** Report and request help.
+## If MCP Tools Fail
+
+If the `init` message shows `roboco-task` or `roboco-git` with status
+`failed`, or an MCP call returns a hard error:
+
+1. Retry the call ONCE.
+2. If still failing: `roboco_journal_struggle(task_id, summary, details)` +
+   notify your Cell PM.
+3. Then `roboco_agent_idle()`.
+
+**Do NOT:** fall back to `curl`, read `.git/config` for credentials, or run
+direct GitHub API calls. Those are blocked by your sandbox and are also
+how we leaked a PAT on 2026-04-19. If the roboco MCP tools can't do it,
+a human needs to intervene — flag it, don't bypass it.
 
 ---
 

@@ -8,6 +8,7 @@ from contextlib import asynccontextmanager
 import structlog
 from sqlalchemy import MetaData, text
 from sqlalchemy.ext.asyncio import (
+    AsyncConnection,
     AsyncEngine,
     AsyncSession,
     async_sessionmaker,
@@ -107,15 +108,91 @@ async def get_db_context() -> AsyncGenerator[AsyncSession]:
             raise
 
 
+async def _db_has_tables(conn: AsyncConnection) -> bool:
+    """Does the DB have any application tables (excluding alembic_version)?"""
+    result = await conn.execute(
+        text(
+            "SELECT EXISTS ("
+            "  SELECT 1 FROM information_schema.tables "
+            "  WHERE table_schema = 'public' "
+            "    AND table_name NOT IN ('alembic_version')"
+            ")"
+        )
+    )
+    return bool(result.scalar())
+
+
+async def _db_has_alembic_version(conn: AsyncConnection) -> bool:
+    result = await conn.execute(
+        text(
+            "SELECT EXISTS ("
+            "  SELECT 1 FROM information_schema.tables "
+            "  WHERE table_schema = 'public' AND table_name = 'alembic_version'"
+            ")"
+        )
+    )
+    return bool(result.scalar())
+
+
+async def run_migrations() -> None:
+    """
+    Apply Alembic migrations up to head.
+
+    Auto-stamps pre-migration DBs (schema created by a prior `create_all` run
+    with no `alembic_version`) at the initial revision so subsequent migrations
+    (e.g. adding an enum value) apply cleanly instead of re-running 001.
+
+    Runs in a worker thread — Alembic's command.upgrade uses the sync SA API.
+    """
+    import asyncio
+    from pathlib import Path
+
+    from alembic import command
+    from alembic.config import Config
+
+    from roboco.config import settings
+
+    # First: decide if we need to stamp. Done with the async engine so we
+    # don't need a second sync-DB round-trip inside the worker thread.
+    engine = get_engine()
+    needs_stamp = False
+    async with engine.connect() as conn:
+        has_version = await _db_has_alembic_version(conn)
+        if not has_version:
+            has_tables = await _db_has_tables(conn)
+            needs_stamp = has_tables
+
+    ini_path = Path(__file__).resolve().parents[2] / "alembic.ini"
+    initial_revision = "001_initial_schema"
+
+    def _run_alembic() -> None:
+        cfg = Config(str(ini_path))
+        cfg.set_main_option("sqlalchemy.url", settings.database_url_sync)
+        if needs_stamp:
+            # Existing schema from create_all — mark 001 as applied so the
+            # upgrade that follows only runs 002+.
+            logger.info(
+                "Stamping pre-migration DB at initial revision",
+                revision=initial_revision,
+            )
+            command.stamp(cfg, initial_revision)
+        command.upgrade(cfg, "head")
+
+    await asyncio.to_thread(_run_alembic)
+
+
 async def init_db() -> None:
     """
-    Initialize the database (create all tables).
+    Initialize the database: pgvector extension, then Alembic migrations, with
+    a create_all fallback if the migration chain itself is broken.
 
-    Should only be used in development. Use Alembic for production.
+    Migrations are authoritative — `create_all` alone cannot add enum values
+    or alter existing objects, which is why notificationtype.APPROVAL was
+    missing from live DBs even though it had been added to the Python enum.
     """
     engine = get_engine()
     async with engine.begin() as conn:
-        # Create pgvector extension if available (required for RAG)
+        # pgvector must exist before tables that use the vector type
         try:
             await conn.execute(text("CREATE EXTENSION IF NOT EXISTS vector"))
             logger.info("pgvector extension enabled")
@@ -125,7 +202,25 @@ async def init_db() -> None:
                 error=str(e),
             )
 
-        await conn.run_sync(Base.metadata.create_all)
+    try:
+        await run_migrations()
+        logger.info("Alembic migrations applied (head)")
+    except Exception as e:
+        logger.warning(
+            "Alembic upgrade failed, falling back to create_all",
+            error=str(e),
+        )
+        async with engine.begin() as conn:
+            await conn.run_sync(Base.metadata.create_all)
+        logger.info("Tables created via create_all fallback")
+
+    # Dispose the async engine's connection pool. asyncpg caches enum type
+    # OIDs and their values at connection-establishment time; any connection
+    # opened BEFORE a migration that ran `ALTER TYPE ... ADD VALUE` will
+    # reject the new value as if it didn't exist. Disposing forces every
+    # subsequent request to introspect the current (post-migration) schema.
+    await engine.dispose()
+    logger.info("DB engine pool disposed to refresh asyncpg type cache")
 
 
 async def drop_db() -> None:

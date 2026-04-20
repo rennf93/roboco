@@ -1,0 +1,25 @@
+# Dependencies (installed fresh in container)
+node_modules
+
+# Build output (created fresh in container)
+.next
+
+# Development files
+*.log
+.env*.local
+.DS_Store
+
+# Git
+.git
+.gitignore
+
+# IDE
+.vscode
+.idea
+
+# Documentation (not needed in container)
+README.md
+
+# NAS recycle bin (UGREEN NAS)
+\#recycle
+Recycling Bin

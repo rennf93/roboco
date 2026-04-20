@@ -40,7 +40,7 @@ class IndexConfig:
     use_hybrid_search: bool = True
     use_cross_encoder: bool = False
     embedding_model: str = "qwen3-embedding:0.6b"
-    llm_model: str = "glm-5.1:cloud"
+    llm_model: str = "glm-5:cloud"
     llm_base_url: str = "http://roboco-ollama:11434/v1"
 
     @classmethod

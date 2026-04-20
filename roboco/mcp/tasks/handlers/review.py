@@ -71,8 +71,9 @@ async def _validate_verification_submission(
     if not _has_work_evidence(task):
         return None, format_error_response(
             "NO_WORK_EVIDENCE",
-            "No evidence of work found. Add commits with roboco_task_add_commit "
-            "or update progress with roboco_task_progress before verification.",
+            "No evidence of work found. Make a commit with roboco_git_commit "
+            "(it registers the commit on the task automatically) or update "
+            "progress with roboco_task_progress before verification.",
             hint="roboco_kb_search('task progress commits')",
         )
 

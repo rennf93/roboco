@@ -91,7 +91,7 @@ ROBOCO_WORKSPACE_AUTO_CLONE=true
 
 # RAG/LLM
 ROBOCO_LOCAL_LLM_BASE_URL=http://roboco-ollama:11434/v1
-ROBOCO_LOCAL_LLM_MODEL=glm-5.1:cloud
+ROBOCO_LOCAL_LLM_MODEL=glm-5:cloud
 ```
 
 ## Multi-Agent Workspace Structure
@@ -177,7 +177,7 @@ uv run mypy roboco/
 | Cache/Queue | Redis |
 | RAG Library | piragi |
 | Embeddings | qwen3-embedding:0.6b (sentence-transformers) |
-| Local LLM | Ollama (glm-5.1:cloud) |
+| Local LLM | Ollama (glm-5:cloud) |
 | Cloud LLM | Claude API (Anthropic) |
 | Package Manager | uv |
 
@@ -198,7 +198,7 @@ uv run mypy roboco/
 - [x] CEO approval workflow
 
 **In Progress**
-- [ ] Frontend panel (roboco-panel)
+- [x] Frontend panel (vendored under `panel/`, served through nginx on :3000)
 - [ ] Full agent autonomy testing
 
 ## License

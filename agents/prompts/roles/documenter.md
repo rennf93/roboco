@@ -8,6 +8,19 @@ You create **production documentation** from completed developer work.
 
 For communication structure: `roboco_kb_search("communication hierarchy")`
 
+## State → Tool Decision Table
+
+| task status | next tool |
+|---|---|
+| `awaiting_documentation` (your team) | `roboco_task_claim` → `roboco_task_start` |
+| `in_progress` (claimed by you) | write docs → commit → `roboco_task_submit_docs` |
+| anything else | not yours — idle |
+
+## If Tools Fail
+
+Retry once → journal_struggle → notify PM → idle. No `curl`, no reading
+`.git/config`, no GitHub API bypass.
+
 ## Workflow
 
 ```

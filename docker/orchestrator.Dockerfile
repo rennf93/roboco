@@ -1,62 +1,81 @@
 # =============================================================================
-# Orchestrator
+# Orchestrator — multi-stage build
 # =============================================================================
-# API Server + Agent Spawner using Python 3.13
+# Builder stage compiles the Python venv; runner stage is slim Debian with
+# docker-cli (needed to spawn agent containers over the mounted docker socket)
+# and the pre-built venv copied in.
 # =============================================================================
 
-FROM python:3.13-bookworm
+# ---- Builder ----------------------------------------------------------------
+FROM python:3.13-slim-bookworm AS builder
 
-# Install dependencies + Docker CLI
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    curl \
-    ca-certificates \
-    git \
-    gnupg \
-    lsb-release \
+        build-essential \
+        git \
     && rm -rf /var/lib/apt/lists/*
 
-# Install Docker CLI (for spawning agent containers)
-# Note: Using 'trixie' for Debian 13, fallback to bookworm if not available
-RUN curl -fsSL https://download.docker.com/linux/debian/gpg | gpg --dearmor -o /usr/share/keyrings/docker-archive-keyring.gpg \
-    && DEBIAN_CODENAME=$(lsb_release -cs) \
-    && if [ "$DEBIAN_CODENAME" = "trixie" ]; then DEBIAN_CODENAME="bookworm"; fi \
-    && echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/docker-archive-keyring.gpg] https://download.docker.com/linux/debian ${DEBIAN_CODENAME} stable" > /etc/apt/sources.list.d/docker.list \
-    && apt-get update \
-    && apt-get install -y docker-ce-cli \
-    && rm -rf /var/lib/apt/lists/*
-
-# Install Node.js 22 (for building agent image)
-RUN curl -fsSL https://deb.nodesource.com/setup_22.x | bash - \
-    && apt-get install -y nodejs \
-    && rm -rf /var/lib/apt/lists/*
-
-# Install uv for Python package management
 COPY --from=ghcr.io/astral-sh/uv:latest /uv /usr/local/bin/uv
 
 WORKDIR /app
 
-# Copy project files
+ENV UV_HTTP_TIMEOUT=300 \
+    UV_CONCURRENT_DOWNLOADS=4 \
+    UV_LINK_MODE=copy \
+    UV_PYTHON_PREFERENCE=only-system
+
+# Dependency layer first so source changes don't invalidate the big install.
+# --python-preference=only-system forces uv to use the base-image's /usr/local
+# Python (shipped with python:3.13-slim-bookworm) instead of downloading its
+# own — otherwise the venv symlinks into /root/.local/share/uv/python/... and
+# breaks when COPY --from=builder only copies /app.
+COPY pyproject.toml uv.lock README.md /app/
+RUN uv sync --frozen --no-dev --no-install-project
+
+# Project layer
 COPY roboco /app/roboco
-# agents/prompts/ contains layered prompt components (base, roles, teams, identities)
-# These are composed at runtime by compose_prompt() when spawning agents
 COPY agents /app/agents
-COPY docker /app/docker
-# docs/ contains standards and workflows for RAG auto-indexing
 COPY docs /app/docs
-COPY pyproject.toml uv.lock alembic.ini README.md /app/
+COPY alembic.ini /app/
 COPY alembic /app/alembic
+RUN uv sync --frozen --no-dev
 
-# Install Python dependencies
-# Increase timeout for large NVIDIA packages (674MB cudnn, 858MB torch)
-ENV UV_HTTP_TIMEOUT=300
-ENV UV_CONCURRENT_DOWNLOADS=4
-RUN uv python install 3.13 && uv sync --frozen --python 3.13
+# ---- Runner -----------------------------------------------------------------
+FROM python:3.13-slim-bookworm AS runner
 
-# Expose API port
+# Runtime apt deps: docker-cli (spawn agents), git (workspace ops).
+# curl/gnupg/lsb-release are only needed to add the docker repo, then purged.
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        curl ca-certificates gnupg lsb-release git \
+    && curl -fsSL https://download.docker.com/linux/debian/gpg \
+        | gpg --dearmor -o /usr/share/keyrings/docker-archive-keyring.gpg \
+    && DEBIAN_CODENAME=$(lsb_release -cs) \
+    && if [ "$DEBIAN_CODENAME" = "trixie" ]; then DEBIAN_CODENAME="bookworm"; fi \
+    && echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/docker-archive-keyring.gpg] https://download.docker.com/linux/debian ${DEBIAN_CODENAME} stable" \
+        > /etc/apt/sources.list.d/docker.list \
+    && apt-get update \
+    && apt-get install -y --no-install-recommends docker-ce-cli \
+    && apt-get purge -y --auto-remove curl gnupg lsb-release \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /app
+
+# Copy the already-built venv + app tree from builder
+COPY --from=builder /app /app
+
+# Orchestrator clones workspaces as root, then chowns them to the agent
+# user (uid 1000) so the agent container can read/write. After the chown,
+# the orchestrator (still root) needs to run git commands (claim branch
+# creation, status, log, fetch) inside those now-1000-owned dirs — git's
+# "dubious ownership" check refuses unless safe.directory is set. `*`
+# trusts every path, which is fine here since this container only mounts
+# the sandboxed /data/workspaces tree.
+RUN git config --global --add safe.directory '*'
+
+ENV PATH="/app/.venv/bin:$PATH" \
+    VIRTUAL_ENV=/app/.venv
+
 EXPOSE 8000
 
-# Start orchestrator WITHOUT spawning agents - the smart dispatcher will spawn
-# agents on-demand when work is available (avoiding wasteful spawns).
-# To manually spawn agents at startup, override: docker run ... roboco-orchestrator --spawn main-pm
-ENTRYPOINT ["uv", "run", "python", "-m", "roboco.cli"]
+# Smart dispatcher spawns agents on-demand. Override with --spawn to pre-start.
+ENTRYPOINT ["python", "-m", "roboco.cli"]
 CMD []

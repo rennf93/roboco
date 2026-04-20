@@ -111,7 +111,14 @@ class RefreshRequest(BaseModel):
     """Request to refresh an index."""
 
     index_type: str = Field(..., description="Index type to refresh")
-    sources: list[str] = Field(..., min_length=1, description="Sources to refresh")
+    # Empty / omitted list means "refresh every source currently registered
+    # for this index" — the refresh route discovers them from
+    # `indexed_documents`. This is what the panel's Refresh All button
+    # sends, which was rejecting with a 422 under the old min_length=1.
+    sources: list[str] = Field(
+        default_factory=list,
+        description="Sources to refresh (empty = all sources in this index)",
+    )
 
 
 class IndexResponse(BaseModel):

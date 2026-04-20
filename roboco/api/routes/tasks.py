@@ -107,6 +107,35 @@ async def create_task(
             },
         )
 
+    # Resolve assigned_to: accept either a UUID string or an agent slug
+    # (e.g. "main-pm"). Slugs are how agents are addressed everywhere else
+    # in the tooling, so requiring a raw UUID here was a paper cut.
+    assigned_to_uuid: UUID | None = None
+    if data.assigned_to:
+        try:
+            assigned_to_uuid = UUID(data.assigned_to)
+        except ValueError:
+            from roboco.services.repositories.query_helpers import (
+                get_agent_by_slug,
+            )
+
+            agent_row = await get_agent_by_slug(db, data.assigned_to)
+            if agent_row is None:
+                raise HTTPException(
+                    status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                    detail={
+                        "error": {
+                            "code": "ASSIGNEE_NOT_FOUND",
+                            "message": (
+                                f"No agent with slug or UUID "
+                                f"'{data.assigned_to}'"
+                            ),
+                            "hint": "Use an agent slug (e.g. 'main-pm') or UUID",
+                        }
+                    },
+                ) from None
+            assigned_to_uuid = agent_row.id
+
     service = get_task_service(db)
     req = TaskCreateRequest(
         title=data.title,
@@ -116,7 +145,7 @@ async def create_task(
         created_by=agent.agent_id,
         priority=data.priority,
         parent_task_id=data.parent_task_id,
-        assigned_to=data.assigned_to,
+        assigned_to=assigned_to_uuid,
         target_date=data.target_date,
         estimated_complexity=data.estimated_complexity,
         nature=data.nature,
@@ -687,8 +716,22 @@ async def soft_block_task(
             detail="Not authorized to block this task",
         )
 
+    # Parse resolver_type (validated: only "agent" or "human"); fall back to
+    # "agent" on anything else so a bad client string never blocks the call.
+    from roboco.models.base import BlockerResolverType
+
+    try:
+        resolver_type = BlockerResolverType(data.resolver_type)
+    except ValueError:
+        resolver_type = BlockerResolverType.AGENT
+
     task = await service.soft_block(
-        task_id, data.reason, data.blocker_type, data.what_needed, agent.role
+        task_id,
+        data.reason,
+        data.blocker_type,
+        data.what_needed,
+        agent.role,
+        resolver_type=resolver_type,
     )
     if not task:
         raise HTTPException(

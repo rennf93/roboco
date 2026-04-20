@@ -168,8 +168,10 @@ class OllamaEmbedder:
         self._cache = EmbeddingCache(max_size=cache_size)
         # Reusable sync client (async clients created per-operation)
         self._sync_client: httpx.Client | None = None
-        # Semaphore for limiting concurrent requests
+        # Semaphore for limiting concurrent requests. Track the loop it was
+        # created on so we can rebuild when the loop rotates.
         self._semaphore: asyncio.Semaphore | None = None
+        self._semaphore_loop: asyncio.AbstractEventLoop | None = None
 
     def _get_sync_client(self) -> httpx.Client:
         """Get or create sync HTTP client with connection pooling."""
@@ -210,9 +212,18 @@ class OllamaEmbedder:
         )
 
     def _get_semaphore(self) -> asyncio.Semaphore:
-        """Get or create semaphore for limiting concurrent requests."""
-        if self._semaphore is None:
+        """Get or create semaphore for limiting concurrent requests.
+
+        asyncio.Semaphore binds to the event loop it was created in. If the
+        orchestrator's loop rotates (e.g. lifespan restart, test teardown),
+        a cached semaphore raises "bound to a different event loop". Detect
+        loop rotation by comparing the current running loop to the one we
+        recorded at creation time, and rebuild if they differ.
+        """
+        current_loop = asyncio.get_running_loop()
+        if self._semaphore is None or self._semaphore_loop is not current_loop:
             self._semaphore = asyncio.Semaphore(self.max_concurrent)
+            self._semaphore_loop = current_loop
         return self._semaphore
 
     def close(self) -> None:

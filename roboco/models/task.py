@@ -281,7 +281,9 @@ class TaskCreate(RobocoBase):
     team: Team
     priority: int = Field(default=2, ge=0, le=3)
     parent_task_id: UUID | None = None
-    assigned_to: UUID | None = None  # Optional: assign on creation
+    # Accepts an agent UUID or an agent slug (e.g. "main-pm", "be-dev-1").
+    # The route handler resolves slugs to UUIDs before persisting.
+    assigned_to: str | None = None
     target_date: datetime | None = None
     estimated_complexity: Complexity = Complexity.MEDIUM
     status: TaskStatus | None = None  # PM can set 'backlog' for subtasks needing setup

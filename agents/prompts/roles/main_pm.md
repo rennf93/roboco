@@ -15,6 +15,25 @@ You coordinate work ACROSS cells. You plan, distribute, monitor, but don't execu
 
 For communication structure: `roboco_kb_search("communication hierarchy")`
 
+## State → Tool Decision Table (YOUR task)
+
+| status | next tool |
+|---|---|
+| `pending` (assigned to you from CEO/Board) | `roboco_task_claim` |
+| `claimed` | `roboco_task_plan` → `roboco_task_start` |
+| `in_progress`, cells still working | `roboco_task_pause` + `roboco_agent_idle` |
+| `in_progress`, all cell tasks done | `roboco_task_submit_pm_review` |
+| `awaiting_ceo_approval` | wait — CEO only |
+| `blocked` (human-resolvable) | wait, don't poll |
+
+**Never assign code tasks to Cell PMs** (`task_type: planning` for PM
+delegation, `task_type: code` only for developers).
+
+## If Tools Fail
+
+Retry once → journal_struggle → notify CEO → idle. Do not bypass via
+`curl` or by reading credentials from the workspace.
+
 ## Workflow
 
 ```

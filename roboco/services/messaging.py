@@ -847,12 +847,30 @@ class MessagingService(BaseService):
         self,
         session_id: UUID,
     ) -> tuple[SessionTable, GroupTable, ChannelTable]:
-        """Get session, group, and channel for sending a message."""
+        """Get session, group, and channel for sending a message.
+
+        If the requested session has closed (timed out, boundary hit,
+        manually closed), transparently redirect to the group's current
+        active session — or open a fresh one if none exists. QA/PM agents
+        that held a session reference from earlier in the task lifecycle
+        shouldn't be blocked from posting an escalation just because the
+        session expired; the message still belongs in the group.
+        """
         session = await self.get_session(session_id)
         if not session:
             raise ValueError(f"Session {session_id} not found")
+
         if session.status != SessionStatus.ACTIVE:
-            raise ValueError("Session is not active")
+            group_id = cast("UUID", session.group_id)
+            group = await self.get_group(group_id)
+            if not group:
+                raise ValueError(f"Group {group_id} not found")
+            channel = await self.get_channel(cast("UUID", group.channel_id))
+            if not channel:
+                raise ValueError(f"Channel {group.channel_id} not found")
+            # Find the group's current active session, or create one.
+            session = await self.get_or_create_active_session(group_id)
+            return session, group, channel
 
         group = await self.get_group(cast("UUID", session.group_id))
         if not group:

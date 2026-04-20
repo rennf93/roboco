@@ -78,10 +78,11 @@ pnpm test
 | RAG Engine | piragi (HyDE, hybrid search, BM25) |
 | Cache/Queue | Redis |
 | Container Runtime | Docker + Docker Compose |
-| Cloud LLM | Claude API (claude-opus-4-5-20251101) |
-| Local LLM | Ollama (glm-5.1:cloud for HyDE/RAG) |
+| Cloud LLM | Claude API (claude-opus-4-6) |
+| Local LLM | Ollama (glm-5:cloud for HyDE/RAG) |
 | Embeddings | qwen3-embedding:0.6b (1024 dim) |
-| Frontend | React / Next.js (future) |
+| Frontend | Next.js 16 + TypeScript + Tailwind + Radix UI (in `panel/`) |
+| Edge / Proxy | nginx (single entry point on port 3000) |
 
 ## Multi-Agent Workspace Structure
 
@@ -99,16 +100,16 @@ Each agent gets their own git clone of a project, enabling parallel development 
 ```
 /data/workspaces/
 +-- roboco/
-|   +-- backend/
-|   |   +-- be-dev-1/     # be-dev-1's workspace
-|   |   +-- be-dev-2/     # be-dev-2's workspace
-|   +-- frontend/
-|       +-- fe-dev-1/
-|       +-- fe-dev-2/
-+-- roboco-panel/
+    +-- backend/
+    |   +-- be-dev-1/     # be-dev-1's workspace
+    |   +-- be-dev-2/     # be-dev-2's workspace
     +-- frontend/
         +-- fe-dev-1/
+        +-- fe-dev-2/
 ```
+
+Note: the Next.js control panel now lives at `roboco/panel/` inside this
+repo (no longer a separate `roboco-panel` project or workspace).
 
 **Key Configuration (roboco/config.py):**
 - `ROBOCO_WORKSPACES_ROOT`: Root directory for workspaces (default: `/data/workspaces`)
@@ -374,7 +375,7 @@ ROBOCO_RAG_USE_HYBRID_SEARCH=true
 
 # AI/LLM
 ROBOCO_DEFAULT_EMBEDDING_MODEL=qwen3-embedding:0.6b
-ROBOCO_LOCAL_LLM_MODEL=glm-5.1:cloud
+ROBOCO_LOCAL_LLM_MODEL=glm-5:cloud
 ROBOCO_LOCAL_LLM_BASE_URL=http://roboco-ollama:11434/v1
 ROBOCO_OLLAMA_BASE_URL=http://roboco-ollama:11434
 ```
@@ -383,7 +384,9 @@ ROBOCO_OLLAMA_BASE_URL=http://roboco-ollama:11434
 
 ### Container Architecture
 
-The system runs as Docker Compose services:
+The system runs as Docker Compose services. All Dockerfiles live under
+`docker/` at the project root; every service uses `context: .` plus
+`dockerfile: docker/<name>.Dockerfile`.
 
 | Service | Purpose | Healthcheck |
 |---------|---------|-------------|
@@ -391,7 +394,20 @@ The system runs as Docker Compose services:
 | `redis` | Cache, sessions, event bus | `redis-cli ping` |
 | `ollama` | Local LLM + embeddings | `ollama list` |
 | `ollama-init` | Pulls models on startup | One-shot |
+| `agent-base-image` / `agent-*-image` | Pre-built images spawned per agent | One-shot |
 | `orchestrator` | API + agent spawner | Depends on all above |
+| `panel` | Next.js control panel (internal, port 3000) | — |
+| `nginx` | Reverse proxy fronting panel + orchestrator | — |
+
+### Single Entry Point
+
+`nginx` is the only externally-exposed service. It listens on `localhost:3000` and routes:
+
+- `/api/*` and `/ws/*` → `orchestrator:8000`
+- everything else → `panel:3000`
+
+This avoids CORS since the browser sees one origin. The Next.js code uses
+relative URLs (`/api/v1`, `/ws`) and lets nginx do the dispatch.
 
 ### Startup Sequence
 
@@ -399,9 +415,9 @@ The startup order is critical due to dependencies:
 
 ```
 postgres ──┐
-redis ─────┼──> ollama ──> ollama-init ──> orchestrator
+redis ─────┼──> ollama ──> ollama-init ──> orchestrator ──> panel ──> nginx
            │        │            │
-           │        │            └── Pulls qwen3-embedding:0.6b, glm-5.1:cloud
+           │        │            └── Pulls qwen3-embedding:0.6b, glm-5:cloud
            │        └── Healthcheck: ollama list
            └── Healthcheck: pg_isready, redis-cli ping
 ```
@@ -411,6 +427,17 @@ redis ─────┼──> ollama ──> ollama-init ──> orchestrator
 2. Orchestrator waits for models before starting
 3. FastAPI lifespan indexes documents using Ollama (~30-60s)
 4. Orchestrator polls `/health` until API is ready before starting dispatcher
+5. After orchestrator is up, `panel` (Next.js) builds/starts, then `nginx`
+
+### Database migrations
+
+Schema changes ship as Alembic migrations under `alembic/versions/`. Run:
+
+```bash
+docker compose exec orchestrator alembic upgrade head
+```
+
+after pulling any change that adds a new migration.
 
 ### Ollama Configuration
 

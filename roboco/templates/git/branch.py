@@ -2,7 +2,12 @@
 Branch Name Builder.
 
 Generates git branch names following the format:
-{type}/{team}/{root_uuid}--{subtask_uuid}--{subsubtask_uuid}
+{type}/{team}/{root_short}--{sub_short}--{subsub_short}
+
+Each `*_short` is the first 8 characters of the task UUID, per the CLAUDE.md
+convention — full UUIDs produced 140-char branch names that were ugly and
+fragile in some tools. 8-char prefix gives 16^8 = ~4 billion distinct values
+per level, which is more than enough to distinguish siblings.
 
 Uses '--' separator for task hierarchy to avoid git ref conflicts.
 Git cannot have both 'foo' as a branch AND 'foo/bar' as another branch,
@@ -15,6 +20,10 @@ from typing import TYPE_CHECKING
 from uuid import UUID
 
 from roboco.templates.git.constants import BRANCH_TYPES, MAX_TASK_DEPTH
+
+# 8-char UUID prefix is the CLAUDE.md convention; 16**8 values per level is
+# plenty of room for siblings while keeping branch names readable.
+_SHORT_ID_LEN = 8
 
 if TYPE_CHECKING:
     from roboco.services.task import TaskService
@@ -61,7 +70,7 @@ async def build_branch_name(
         if task is None:
             raise BranchNameError(f"Task not found: {current_id}")
 
-        ancestors.append(str(task.id))
+        ancestors.append(str(task.id)[:_SHORT_ID_LEN])
         # parent_task_id is SQLAlchemy UUID type, cast to Python UUID
         parent_id = task.parent_task_id
         current_id = UUID(str(parent_id)) if parent_id is not None else None

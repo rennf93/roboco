@@ -10,6 +10,7 @@ from typing import Any
 from uuid import UUID
 
 from pydantic import BaseModel, Field
+from sqlalchemy import inspect as sa_inspect
 from sqlalchemy import select
 
 from roboco.db.tables import ProjectTable, TaskTable, WorkSessionTable
@@ -373,6 +374,17 @@ class SoftBlockRequest(BaseModel):
         ..., description="Type of blocker: external, internal, question, dependency"
     )
     what_needed: str = Field(..., description="What is needed to unblock the task")
+    # Who can resolve: another agent ("agent") or only a human ("human").
+    # Default is "agent" for back-compat with existing clients. When "human",
+    # the dispatcher will NOT respawn agents on this task and only a HITL
+    # unblock will move it forward.
+    resolver_type: str = Field(
+        default="agent",
+        description=(
+            "Who resolves: 'agent' (another agent can fix it — dispatcher "
+            "keeps working) or 'human' (HITL/CEO only — dispatcher stops)"
+        ),
+    )
 
 
 class EscalateRequest(BaseModel):
@@ -533,7 +545,15 @@ def task_to_response(task: "TaskTable") -> TaskResponse:
         nature=task.nature,
         task_type=task.task_type,
         project_id=require_uuid(task.project_id),
-        project_slug=task.project.slug if getattr(task, "project", None) else None,
+        # Don't trigger a lazy load — on freshly-created tasks `project` is
+        # unloaded, and a sync attribute access here would raise
+        # MissingGreenlet. Omit the slug rather than force an async round-trip.
+        project_slug=(
+            task.project.slug
+            if "project" not in sa_inspect(task).unloaded
+            and task.project is not None
+            else None
+        ),
         docs_complete=task.docs_complete,
         pr_created=task.pr_created,
         pm_approvals=task.pm_approvals or {},

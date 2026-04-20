@@ -171,6 +171,14 @@ class AgentOrchestrator:
         self._health_task: asyncio.Task | None = None
         self._dispatcher_task: asyncio.Task | None = None
         self._sweeper_task: asyncio.Task | None = None
+        # Strong refs for fire-and-forget audit writes. Without this, the
+        # event loop only weak-refs the Task and may GC it before it
+        # commits — audit_log was silently empty because of this.
+        self._bg_tasks: set[asyncio.Task[None]] = set()
+        # Wake-up signal for the dispatcher. Set() by API routes immediately
+        # after status transitions so the dispatcher reacts in milliseconds
+        # instead of waiting for the next 30-second tick.
+        self._dispatch_wake: asyncio.Event = asyncio.Event()
         self._running = False
         self._lock = asyncio.Lock()
 
@@ -499,13 +507,39 @@ class AgentOrchestrator:
             "Read(*)",  # All agents can read any file
         ]
 
-        # Base denials for all agents - block native tools
+        # Base denials for all agents - block native tools + sensitive reads.
+        # The Read/Bash denies below are critical: without them an agent can
+        # read `.git/config` (which, pre-fix, had the PAT embedded in the
+        # remote URL) or `~/.gitconfig` and exfiltrate project secrets.
+        # We also block direct curl/wget to github.com — any git-remote op
+        # must go through the orchestrator's git service, which injects the
+        # token via bearer header at subprocess time rather than exposing it.
         base_deny = [
             # Block ALL native git commands - must use roboco_git_* tools
             "Bash(git:*)",
             # Block file ops outside workspace (role-specific allows override)
             "Write(*)",
             "Edit(*)",
+            # Block reads of credential stores, anywhere on the FS
+            "Read(**/.git/config)",
+            "Read(**/.gitconfig)",
+            "Read(/etc/gitconfig)",
+            "Read(~/.netrc)",
+            "Read(**/.git-credentials)",
+            # Block direct GitHub API/wire access — agents must use
+            # roboco_git_* MCP tools so secrets + traceability stay on the
+            # orchestrator side.
+            "Bash(curl:*github.com*)",
+            "Bash(curl:*api.github.com*)",
+            "Bash(wget:*github.com*)",
+            "Bash(wget:*api.github.com*)",
+            # Same idea for cat-ing credential files in a subshell
+            "Bash(cat:*.git/config*)",
+            "Bash(cat:*.gitconfig*)",
+            "Bash(cat:*.git-credentials*)",
+            # Block reading env vars that might leak secrets
+            "Bash(env:*)",
+            "Bash(printenv:*)",
         ]
 
         # Get role-specific permissions
@@ -607,6 +641,119 @@ class AgentOrchestrator:
             branch_name=task.get("branch_name"),
         )
 
+    def _fire_audit(
+        self,
+        *,
+        event_type: str,
+        agent_slug: str,
+        task_id: str | None = None,
+        details: dict[str, Any] | None = None,
+        severity: str = "info",
+    ) -> None:
+        """Emit an agent-lifecycle audit event without blocking the caller.
+
+        Strong-refs the Task so it isn't garbage-collected before it
+        commits to `audit_log`. Silently skips if there's no running loop
+        (e.g. sync unit tests).
+        """
+        import contextlib as _ctx
+
+        from roboco.services.audit import get_audit_service
+
+        with _ctx.suppress(RuntimeError):
+            bg = asyncio.get_running_loop().create_task(
+                get_audit_service().log_agent_event(
+                    event_type=event_type,
+                    agent_slug=agent_slug,
+                    task_id=task_id,
+                    details=details or {},
+                    severity=severity,
+                )
+            )
+            self._bg_tasks.add(bg)
+            bg.add_done_callback(self._bg_tasks.discard)
+
+    async def _git_context_default_project(self) -> SpawnGitContext | None:
+        """Return git context for the 'default' project when no task is known.
+
+        Used by no-task spawns (idle PM, scanner-only agents). Picks the
+        first active project in the DB — the common case is a single-project
+        deployment, where this resolves to the correct slug; for multi-
+        project deployments the caller should pass task_id to disambiguate.
+        """
+        from sqlalchemy import select
+
+        from roboco.db.base import get_db_context
+        from roboco.db.tables import ProjectTable
+
+        try:
+            async with get_db_context() as db:
+                result = await db.execute(
+                    select(ProjectTable.slug, ProjectTable.default_branch)
+                    .where(ProjectTable.is_active.is_(True))
+                    .order_by(ProjectTable.created_at.asc())
+                    .limit(1)
+                )
+                row = result.first()
+                if row is None:
+                    return None
+                slug, default_branch = row
+                if not slug:
+                    return None
+                return SpawnGitContext(
+                    project_slug=slug,
+                    branch_name=default_branch,
+                )
+        except Exception as e:
+            logger.warning(
+                "Could not derive default project git context",
+                error=str(e),
+            )
+            return None
+
+    async def _git_context_from_task_id(
+        self, task_id: str
+    ) -> SpawnGitContext | None:
+        """Load a task by ID and derive git context for spawning.
+
+        Used by `spawn_agent` when called without an explicit git_context
+        (e.g. the /agents/{slug}/spawn API endpoint). Without this, agents
+        spawned via that endpoint get project_slug="default" and their
+        workspace mount points at a path that doesn't exist.
+        """
+        from sqlalchemy import select
+
+        from roboco.db.base import get_db_context
+        from roboco.db.tables import ProjectTable, TaskTable
+
+        try:
+            async with get_db_context() as db:
+                result = await db.execute(
+                    select(
+                        TaskTable.branch_name, ProjectTable.slug
+                    )
+                    .select_from(TaskTable)
+                    .join(ProjectTable, TaskTable.project_id == ProjectTable.id)
+                    .where(TaskTable.id == task_id)
+                )
+                row = result.first()
+                if row is None:
+                    return None
+                branch_name, project_slug = row
+                if not project_slug:
+                    return None
+                return SpawnGitContext(
+                    project_slug=project_slug,
+                    branch_name=branch_name,
+                )
+        except Exception as e:
+            logger.warning(
+                "Could not derive git context from task_id",
+                task_id=task_id,
+                error=str(e),
+            )
+            return None
+
     async def _safe_spawn(
         self,
         *,
@@ -661,6 +808,23 @@ class AgentOrchestrator:
         Returns:
             AgentInstance handle
         """
+        # Auto-derive git_context when the caller didn't supply one. Two
+        # paths:
+        #   (a) task_id present  → look up the task's project;
+        #   (b) no task_id       → fall back to the sole active project (or
+        #                          the first one if there are multiple).
+        # Without (b), no-task spawns (e.g. idle PM bootstrapping) hit the
+        # "workspace fallback used" path and get mounted at
+        # /data/workspaces/default/... which doesn't exist.
+        if git_context is None or not git_context.project_slug:
+            derived: SpawnGitContext | None = None
+            if task_id:
+                derived = await self._git_context_from_task_id(task_id)
+            if derived is None:
+                derived = await self._git_context_default_project()
+            if derived is not None:
+                git_context = derived
+
         async with self._lock:
             # Check if already running
             if agent_id in self._instances:
@@ -751,6 +915,16 @@ class AgentOrchestrator:
                 task_id=task_id,
             )
 
+            self._fire_audit(
+                event_type="agent.spawned",
+                agent_slug=agent_id,
+                task_id=task_id,
+                details={
+                    "container_id": container_id[:12],
+                    "model": model,
+                },
+            )
+
             return instance
 
         except Exception as e:
@@ -760,6 +934,13 @@ class AgentOrchestrator:
                 "Failed to spawn agent",
                 agent_id=agent_id,
                 error=str(e),
+            )
+            self._fire_audit(
+                event_type="agent.spawn_failed",
+                agent_slug=agent_id,
+                task_id=task_id,
+                details={"error": str(e)},
+                severity="error",
             )
             raise
 
@@ -933,7 +1114,51 @@ class AgentOrchestrator:
         return container_id
 
     async def _remove_container(self, container_name: str) -> None:
-        """Remove a container if it exists."""
+        """Remove a container if it exists, dumping its logs to disk first.
+
+        Docker deletes the container's json-file log when we `docker rm`, so
+        before removal we copy the current log to /data/logs/agents/{slug}/
+        with a timestamp. That gives us persistent history across respawns
+        without needing an entrypoint wrapper inside the agent image.
+        """
+        # Check the container actually exists before trying to dump logs;
+        # _remove_container is routinely called pre-spawn to clear stale
+        # containers, and on first spawn there's nothing to dump.
+        inspect = await asyncio.create_subprocess_exec(
+            "docker",
+            "inspect",
+            "--format={{.Id}}",
+            container_name,
+            stdout=asyncio.subprocess.DEVNULL,
+            stderr=asyncio.subprocess.DEVNULL,
+        )
+        exists = (await inspect.wait()) == 0
+
+        if exists:
+            slug = container_name.removeprefix("roboco-agent-")
+            log_dir = Path("/data/logs/agents") / slug
+            try:
+                log_dir.mkdir(parents=True, exist_ok=True)
+                timestamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
+                log_path = log_dir / f"{timestamp}.log"
+                with log_path.open("wb") as out:
+                    dump_proc = await asyncio.create_subprocess_exec(
+                        "docker",
+                        "logs",
+                        container_name,
+                        stdout=out,
+                        stderr=out,
+                    )
+                    await dump_proc.wait()
+                if log_path.stat().st_size == 0:
+                    log_path.unlink(missing_ok=True)
+            except Exception as e:
+                logger.warning(
+                    "Could not dump container logs before removal",
+                    container=container_name,
+                    error=str(e),
+                )
+
         proc = await asyncio.create_subprocess_exec(
             "docker",
             "rm",
@@ -2402,6 +2627,16 @@ Start now: roboco_task_get("{task_id}")
     # SMART DISPATCHER - MAIN LOOP
     # =========================================================================
 
+    def trigger_dispatch(self) -> None:
+        """Wake the dispatcher up immediately for a single pass.
+
+        Called by API routes right after a task status transition so the
+        orchestrator reacts in milliseconds — e.g. a PM creates a subtask
+        and the assignee spawns within a second instead of after the next
+        30-second poll. Safe to call multiple times; the Event coalesces.
+        """
+        self._dispatch_wake.set()
+
     async def _dispatcher_loop(self) -> None:
         """
         Main dispatcher loop - periodically checks for work and spawns agents.
@@ -2410,10 +2645,25 @@ Start now: roboco_task_get("{task_id}")
         1. Queries for tasks needing work (pending, awaiting_qa, etc.)
         2. Queries for events needing attention (blockers, escalations)
         3. Spawns appropriate agents with task assignments
+
+        Hybrid timing: a poll (dispatcher_interval) guarantees progress even
+        without external signals, while `_dispatch_wake` lets API routes
+        kick the loop for immediate reactions after status transitions.
         """
         while self._running:
             try:
-                await asyncio.sleep(self.dispatcher_interval)
+                # Wait either for an explicit wake signal or the poll timeout,
+                # whichever comes first. asyncio.wait_for re-raises
+                # TimeoutError when the poll window expires, which we treat
+                # as "run dispatch anyway".
+                import contextlib
+
+                with contextlib.suppress(TimeoutError):
+                    await asyncio.wait_for(
+                        self._dispatch_wake.wait(),
+                        timeout=self.dispatcher_interval,
+                    )
+                self._dispatch_wake.clear()
                 await self._dispatch_all_work()
             except asyncio.CancelledError:
                 break
@@ -2735,10 +2985,13 @@ Begin with step 1: roboco_task_get("{task_id}")
         Monitors: assigned pending tasks, needs_revision tasks, orphaned in_progress
         Spawns: Any assigned agent (dev, doc, qa) with appropriate prompt
         """
-        # Get tasks needing attention
-        # Include in_progress to catch unblocked tasks that need agent respawn
+        # Get tasks needing attention. Includes:
+        # - `claimed` — PM-delegated claims where the assignee was never spawned
+        # - `blocked` — but only when another agent can resolve (see below)
+        # `pending`, `needs_revision`, `in_progress` are the classic cases.
         tasks = await self._fetch_tasks(
-            client, ["pending", "needs_revision", "in_progress"]
+            client,
+            ["pending", "claimed", "needs_revision", "in_progress", "blocked"],
         )
 
         for task in tasks:
@@ -2746,12 +2999,33 @@ Begin with step 1: roboco_task_get("{task_id}")
             if team not in ["backend", "frontend", "ux_ui"]:
                 continue
 
-            assigned_to = task.get("assigned_to")
-            # Resolve UUID to slug for agent operations
-            agent_slug = self._resolve_agent_slug(assigned_to) if assigned_to else None
+            # For claimed/blocked tasks, the owner is claimed_by (actual
+            # current holder) — which may differ from the original assignee
+            # (e.g. QA claimed for review, then marked blocked).
+            status = task.get("status")
+            if status in ("claimed", "blocked"):
+                owner_uuid = task.get("claimed_by") or task.get("assigned_to")
+            else:
+                owner_uuid = task.get("assigned_to")
+            agent_slug = (
+                self._resolve_agent_slug(owner_uuid) if owner_uuid else None
+            )
+
+            # Hard stop: blocked tasks waiting on a HUMAN must not respawn
+            # their agent. Dispatcher churn on HITL-blocks is exactly what
+            # burns tokens while you wait to intervene.
+            if status == "blocked":
+                resolver_type = task.get("blocker_resolver_type")
+                if resolver_type == "human":
+                    logger.debug(
+                        "Skipping HITL-blocked task; waiting for human",
+                        task_id=task["id"],
+                    )
+                    continue
+                # else: agent-resolvable (or legacy NULL) → respawn below
 
             # For needs_revision, spawn the assigned dev to fix
-            if task.get("status") == "needs_revision" and agent_slug:
+            if status == "needs_revision" and agent_slug:
                 if not self._is_agent_active(agent_slug):
                     await self.spawn_agent(
                         agent_id=agent_slug,
@@ -2761,14 +3035,15 @@ Begin with step 1: roboco_task_get("{task_id}")
                     )
                 continue
 
-            # For in_progress tasks where agent is NOT active (e.g., after unblock),
-            # respawn them to continue their work
-            if task.get("status") == "in_progress" and agent_slug:
+            # For in_progress / claimed / agent-blocked tasks where the
+            # owning agent has no running container, (re)spawn it.
+            if status in ("in_progress", "claimed", "blocked") and agent_slug:
                 if not self._is_agent_active(agent_slug):
                     logger.info(
-                        "Respawning agent for orphaned in_progress task",
+                        "Respawning agent for orphaned task",
                         task_id=task["id"],
                         agent=agent_slug,
+                        status=status,
                     )
                     await self.spawn_agent(
                         agent_id=agent_slug,
@@ -2864,35 +3139,97 @@ Begin with step 1: roboco_task_get("{task_id}")
 
     async def _dispatch_doc_work(self, client: httpx.AsyncClient) -> None:
         """
-        Dispatch documentation work to documenters.
+        Dispatch documentation + developer work during the parallel
+        awaiting_documentation phase.
+
+        `awaiting_documentation` requires BOTH docs_complete=True AND
+        pr_created=True to advance to awaiting_pm_review. Doc writes the
+        docs; original developer pushes and creates the PR. Whoever
+        finishes last triggers the state transition. Previously this
+        dispatcher only spawned the documenter — if the documenter
+        finished first, the task would sit indefinitely with pr_created=
+        False and nothing would spawn the dev to finish the other half.
 
         Monitors: awaiting_documentation tasks
-        Spawns: be-doc, fe-doc, ux-doc
+        Spawns:
+            - documenter (be-doc, fe-doc, ux-doc) if docs_complete=False
+            - original_developer if pr_created=False (tracked in
+              quick_context as "original_developer:<uuid>")
         """
-        tasks = await self._fetch_tasks(client, "awaiting_documentation")
+        from roboco.services.task import extract_original_developer
+
+        # Fetch both `awaiting_documentation` and `claimed` because the
+        # doc's claim transitions status from awaiting_documentation →
+        # claimed. Without including `claimed` we'd miss tasks where doc
+        # already grabbed it but pr_created is still false (dev hasn't
+        # pushed/created PR yet). The `original_developer:` marker in
+        # quick_context identifies tasks that are actually in the parallel
+        # phase vs unrelated claimed tasks.
+        tasks = await self._fetch_tasks(
+            client, ["awaiting_documentation", "claimed"]
+        )
 
         for task in tasks:
             team = task.get("team")
             if team not in ["backend", "frontend", "ux_ui"]:
                 continue
 
+            quick_context = task.get("quick_context") or ""
+            dev_uuid = extract_original_developer(quick_context)
+            status = task.get("status")
+
+            # Only consider `claimed` tasks that are in the post-QA
+            # parallel phase. `original_developer:` is set when a task
+            # transitions through QA, so its presence marks the task as
+            # being in the doc/PR parallel window.
+            if status == "claimed" and not dev_uuid:
+                continue
+
+            docs_complete = bool(task.get("docs_complete"))
+            pr_created = bool(task.get("pr_created"))
+
+            # --- Developer half: push + create PR --------------------------
+            # If pr_created is still False, bring the original developer
+            # back. dev_uuid lets us find them even after assigned_to was
+            # reassigned to the doc on claim.
+            if not pr_created and dev_uuid:
+                dev_slug = self._resolve_agent_slug(dev_uuid)
+                if dev_slug and not self._is_agent_active(dev_slug):
+                    await self.spawn_agent(
+                        agent_id=dev_slug,
+                        task_id=task["id"],
+                        initial_prompt=self._build_dev_prompt(task),
+                        git_context=self._task_git_context(task),
+                    )
+
+            # --- Documenter half: write docs ------------------------------
+            if docs_complete:
+                # Doc side already done; nothing left for documenter.
+                continue
+
             assigned_to = task.get("assigned_to")
 
-            # If already assigned, check if that agent is running
+            # If already assigned, respawn only if the assignee is a doc.
+            # (Developers were handled by the dev-half block above.)
             if assigned_to:
                 assigned_slug = self._resolve_agent_slug(assigned_to)
                 if self._is_agent_active(assigned_slug):
                     continue
-                # Agent not running - spawn them to continue
-                await self.spawn_agent(
-                    agent_id=assigned_slug,
-                    task_id=task["id"],
-                    initial_prompt=self._build_doc_prompt(task),
-                    git_context=self._task_git_context(task),
-                )
+                if assigned_slug and "doc" in assigned_slug:
+                    await self.spawn_agent(
+                        agent_id=assigned_slug,
+                        task_id=task["id"],
+                        initial_prompt=self._build_doc_prompt(task),
+                        git_context=self._task_git_context(task),
+                    )
                 continue
 
-            # Unassigned task - select documenter for this team
+            # Only auto-assign a documenter when the task is still in
+            # awaiting_documentation (status=claimed means the doc or dev
+            # already owns it — don't over-claim).
+            if status != "awaiting_documentation":
+                continue
+
             agent_id = self._select_agent_for_cell(team, "doc")
             if not agent_id:
                 continue
@@ -2900,7 +3237,6 @@ Begin with step 1: roboco_task_get("{task_id}")
             if self._is_agent_active(agent_id):
                 continue
 
-            # Claim the task for documenter BEFORE spawning
             if not await self._claim_task_for_agent(client, task["id"], agent_id):
                 logger.warning(
                     "Failed to claim awaiting_documentation task for doc",

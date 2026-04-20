@@ -82,6 +82,7 @@ alembic/versions/*.pyc
 /data
 /#recycle
 .OLD/
+logos/
 
 # Panel (Next.js frontend)
 panel/node_modules/

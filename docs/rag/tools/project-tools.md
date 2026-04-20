@@ -26,10 +26,13 @@ Returns: `name`, `git_url`, `assigned_cell`, `default_branch`, `has_git_token`, 
 ## Create Project (PM+ Only)
 
 ```python
+# Example: register a separate frontend-only repo as a project.
+# (The built-in RoboCo control panel lives in this same repo under
+# panel/ and is NOT registered as a separate project.)
 roboco_project_create(
-    name="RoboCo Panel",
-    slug="roboco-panel",
-    git_url="https://github.com/org/roboco-panel.git",
+    name="Customer Portal",
+    slug="customer-portal",
+    git_url="https://github.com/org/customer-portal.git",
     assigned_cell="frontend",
     git_token="ghp_xxxx...",  # GitHub PAT with repo scope
     default_branch="main",

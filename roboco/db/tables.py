@@ -31,6 +31,7 @@ from roboco.models.a2a import A2AConversationStatus, A2AMessageKind
 from roboco.models.base import (
     AgentRole,
     AgentStatus,
+    BlockerResolverType,
     ChannelType,
     Complexity,
     HandoffStatus,
@@ -132,6 +133,13 @@ class TaskTable(Base):
     # Status
     status: Mapped[TaskStatus] = mapped_column(
         Enum(TaskStatus), nullable=False, default=TaskStatus.PENDING, index=True
+    )
+    # Only meaningful when status == BLOCKED. Tells the dispatcher whether
+    # another agent can be respawned to resolve the block (`agent`) or
+    # whether the block is waiting on a human and spawning is wasted work
+    # (`human`). NULL for never-blocked tasks and for pre-existing rows.
+    blocker_resolver_type: Mapped[BlockerResolverType | None] = mapped_column(
+        Enum(BlockerResolverType), nullable=True
     )
     priority: Mapped[int] = mapped_column(Integer, nullable=False, default=2)
 
@@ -267,9 +275,17 @@ class TaskTable(Base):
     project: Mapped["ProjectTable"] = relationship(
         "ProjectTable", foreign_keys=[project_id], lazy="joined"
     )
-    # Session links (many-to-many via SessionTaskTable)
+    # Session links (many-to-many via SessionTaskTable).
+    # passive_deletes=True tells SA to trust the DB's ON DELETE CASCADE and
+    # NOT emit `UPDATE session_tasks SET task_id=NULL` before the delete —
+    # the task_id column is NOT NULL, so that pre-null attempt hits an
+    # IntegrityError and DELETE /tasks/{id} fails with NotNullViolation.
     session_links: Mapped[list["SessionTaskTable"]] = relationship(
-        "SessionTaskTable", back_populates="task", lazy="select"
+        "SessionTaskTable",
+        back_populates="task",
+        lazy="select",
+        cascade="all, delete-orphan",
+        passive_deletes=True,
     )
 
     __table_args__ = (
@@ -653,9 +669,16 @@ class SessionTable(Base):
     messages: Mapped[list["MessageTable"]] = relationship(
         "MessageTable", back_populates="session", lazy="select"
     )
-    # Task links (many-to-many via SessionTaskTable)
+    # Task links (many-to-many via SessionTaskTable).
+    # passive_deletes mirrors the TaskTable side — the DB FK is CASCADE, so
+    # deleting a session should cascade-delete session_tasks rows. Without
+    # passive_deletes, SA tries to NULL task_id first, violating NOT NULL.
     task_links: Mapped[list["SessionTaskTable"]] = relationship(
-        "SessionTaskTable", back_populates="session", lazy="select"
+        "SessionTaskTable",
+        back_populates="session",
+        lazy="select",
+        cascade="all, delete-orphan",
+        passive_deletes=True,
     )
 
     __table_args__ = (

@@ -66,12 +66,12 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None]:
         environment=settings.environment,
     )
 
-    # Startup
-    if settings.environment == "development":
-        # Only auto-create tables in development
-        # Use Alembic migrations in production
-        await init_db()
-        logger.info("Database initialized (development mode)")
+    # Startup: apply Alembic migrations (+ create_all fallback for fresh DBs).
+    # init_db runs on every environment now — migrations are idempotent via
+    # alembic_version, and this is the only way new schema (e.g. enum value
+    # additions like NotificationType.APPROVAL) reaches the running DB.
+    await init_db()
+    logger.info("Database initialized")
 
     # Initialize Phase 2 services
     _AppServices.transcription = TranscriptionService()
