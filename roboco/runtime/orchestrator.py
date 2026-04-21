@@ -18,6 +18,7 @@ import json
 import os
 import shutil
 import tempfile
+from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any, ClassVar
@@ -27,7 +28,12 @@ import structlog
 from fastapi import status as http_status
 
 from roboco.agents.factories._base import compose_prompt
-from roboco.agents_config import ALL_DOCS, get_agent_role, get_agent_team
+from roboco.agents_config import (
+    ALL_DOCS,
+    get_agent_role,
+    get_agent_team,
+    get_escalation_target,
+)
 from roboco.config import settings
 from roboco.models import AgentRole, Team
 from roboco.models.runtime import (
@@ -142,6 +148,35 @@ DATA_HOST_PATH = os.environ.get("ROBOCO_HOST_DATA_DIR", "")
 # =============================================================================
 
 
+@dataclass(frozen=True)
+class _SlaBreach:
+    """Per-(role, state) SLA breach payload for _escalate_sla_breach."""
+
+    task_id: str
+    role: str
+    status: str
+    age_seconds: int
+    sla_seconds: int
+
+
+def _read_project_slug(task: dict[str, Any]) -> str | None:
+    """Extract project slug from a task payload shape-tolerantly."""
+    slug = task.get("project_slug")
+    if slug:
+        return str(slug)
+    project = task.get("project") or {}
+    inner = project.get("slug") if isinstance(project, dict) else None
+    return str(inner) if inner else None
+
+
+class AgentReadinessError(Exception):
+    """Raised when spawn_agent refuses to spawn because the task isn't ready.
+
+    The pre-flight gate auto-blocks the offending task before raising, so the
+    dispatcher doesn't keep retrying. Callers should log and move on.
+    """
+
+
 class AgentOrchestrator:
     """
     Manages Claude Code containers for all agents.
@@ -181,6 +216,10 @@ class AgentOrchestrator:
         self._dispatch_wake: asyncio.Event = asyncio.Event()
         self._running = False
         self._lock = asyncio.Lock()
+        # Per-tick set of task_ids already handled by an earlier
+        # dispatcher. Reset at the start of every _dispatch_all_work.
+        # Consumed via `self._mark_task_handled` / `_is_task_handled`.
+        self._tick_handled_tasks: set[str] = set()
 
     # =========================================================================
     # LIFECYCLE
@@ -605,6 +644,67 @@ class AgentOrchestrator:
                             }
                         ],
                     },
+                    # Per-session budget counter + loop detector. Shared SDK
+                    # state lets this hook emit [Budget]/[Loop]/[Halt]
+                    # reminders that the orchestrator's kill-switch corroborates.
+                    {
+                        "matcher": "*",
+                        "hooks": [
+                            {
+                                "type": "command",
+                                "command": "/app/scripts/post-tool-budget-hook.sh",
+                            }
+                        ],
+                    },
+                ],
+                # Stop guard: refuse silent exits unless a terminal tool was
+                # just called (idle/substitute/escalate/pause/...). Second
+                # attempt auto-substitutes via SDK so the task doesn't rot.
+                "Stop": [
+                    {
+                        "hooks": [
+                            {
+                                "type": "command",
+                                "command": "/app/scripts/stop-hook.sh",
+                            }
+                        ]
+                    }
+                ],
+                # Prompt-injection guard — rejects turns that look like
+                # another agent's content trying to override our rules.
+                "UserPromptSubmit": [
+                    {
+                        "hooks": [
+                            {
+                                "type": "command",
+                                "command": "/app/scripts/user-prompt-hook.sh",
+                            }
+                        ]
+                    }
+                ],
+                # Snapshot budget / terminal state before compact so the
+                # next session resumes with continuity.
+                "PreCompact": [
+                    {
+                        "hooks": [
+                            {
+                                "type": "command",
+                                "command": "/app/scripts/pre-compact-hook.sh",
+                            }
+                        ]
+                    }
+                ],
+                # Post-mortem: write a reflect-journal entry summarising the
+                # session (tools called, halt/loop triggered, last tool).
+                "SessionEnd": [
+                    {
+                        "hooks": [
+                            {
+                                "type": "command",
+                                "command": "/app/scripts/session-end-hook.sh",
+                            }
+                        ]
+                    }
                 ],
             },
         }
@@ -798,6 +898,162 @@ class AgentOrchestrator:
             )
             return None
 
+    async def _resolve_spawn_git_context(
+        self,
+        git_context: SpawnGitContext | None,
+        task_id: str | None,
+    ) -> SpawnGitContext | None:
+        """Auto-derive git context if the caller didn't supply one."""
+        if git_context is not None and git_context.project_slug:
+            return git_context
+        derived: SpawnGitContext | None = None
+        if task_id:
+            derived = await self._git_context_from_task_id(task_id)
+        if derived is None:
+            derived = await self._git_context_default_project()
+        return derived if derived is not None else git_context
+
+    def _existing_running_instance(self, agent_id: str) -> AgentInstance | None:
+        """Return the running instance for agent_id, or None if it can be respawned."""
+        existing = self._instances.get(agent_id)
+        if existing is None:
+            return None
+        if existing.state in (AgentState.OFFLINE, AgentState.WAITING_LONG):
+            return None
+        logger.warning(
+            "Agent already running",
+            agent_id=agent_id,
+            state=existing.state,
+        )
+        return existing
+
+    def _resolve_project_slug(
+        self,
+        git_context: SpawnGitContext | None,
+        agent_id: str,
+        task_id: str | None,
+    ) -> str:
+        """Pull project_slug from context, or fall back to 'default' with a warning."""
+        project_slug = (
+            git_context.project_slug
+            if git_context and git_context.project_slug
+            else None
+        )
+        if not project_slug:
+            logger.warning(
+                "Spawning agent without project_slug; workspace fallback used. "
+                "Agent file tools will be locked to a nonexistent path.",
+                agent_id=agent_id,
+                task_id=task_id,
+            )
+            project_slug = "default"
+        return project_slug
+
+    async def _prepare_agent_spawn(
+        self,
+        agent_id: str,
+        task_id: str | None,
+        model: str | None,
+        git_context: SpawnGitContext | None,
+    ) -> tuple[AgentConfig, AgentInstance, Path | None]:
+        """Build AgentConfig + AgentInstance and surface per-agent settings path."""
+        blueprint_path = self._generate_composed_prompt(agent_id)
+        canonical_role = get_agent_role(agent_id)
+        team = get_agent_team(agent_id)
+
+        if not model:
+            model = ROLE_MODEL_MAP.get(canonical_role, "sonnet")
+
+        project_slug = self._resolve_project_slug(git_context, agent_id, task_id)
+        workspace_path = f"/data/workspaces/{project_slug}/{team}/{agent_id}"
+        cell_workspace_path = f"/data/workspaces/{project_slug}/{team}"
+
+        agent_settings_path = self._generate_agent_settings(
+            agent_id, canonical_role, workspace_path, cell_workspace_path
+        )
+
+        briefing_path = await self._write_agent_briefing(
+            agent_id, task_id, workspace_path
+        )
+
+        await self._ensure_agent_image(agent_id)
+        mcp_config_path = await self._generate_mcp_config(agent_id, git_context)
+
+        config = AgentConfig(
+            agent_id=agent_id,
+            blueprint_path=blueprint_path,
+            model=model,
+            mcp_config_path=mcp_config_path,
+            git_context=git_context,
+            briefing_path=briefing_path,
+        )
+        instance = AgentInstance(
+            agent_id=agent_id,
+            state=AgentState.STARTING,
+            config=config,
+            current_task_id=task_id,
+        )
+        self._instances[agent_id] = instance
+        return config, instance, agent_settings_path
+
+    async def _launch_spawn(
+        self,
+        task_id: str | None,
+        config: AgentConfig,
+        instance: AgentInstance,
+        initial_prompt: str | None,
+        agent_settings_path: Path | None,
+    ) -> AgentInstance:
+        """Launch the container and emit spawn audit events.
+
+        `agent_id` was dropped as a redundant parameter — `config.agent_id`
+        is the same value and was always the caller's source.
+        """
+        agent_slug = config.agent_id
+        try:
+            container_id = await self._spawn_container(
+                config, initial_prompt, agent_settings_path
+            )
+            instance.container_id = container_id
+            instance.state = AgentState.ACTIVE
+            instance.started_at = datetime.now(UTC)
+            instance.last_activity = datetime.now(UTC)
+
+            logger.info(
+                "Agent spawned",
+                agent_id=agent_slug,
+                container_id=container_id[:12],
+                model=config.model,
+                task_id=task_id,
+            )
+
+            self._fire_audit(
+                event_type="agent.spawned",
+                agent_slug=agent_slug,
+                task_id=task_id,
+                details={
+                    "container_id": container_id[:12],
+                    "model": config.model,
+                },
+            )
+            return instance
+        except Exception as e:
+            instance.state = AgentState.OFFLINE
+            instance.error_count += 1
+            logger.error(
+                "Failed to spawn agent",
+                agent_id=agent_slug,
+                error=str(e),
+            )
+            self._fire_audit(
+                event_type="agent.spawn_failed",
+                agent_slug=agent_slug,
+                task_id=task_id,
+                details={"error": str(e)},
+                severity="error",
+            )
+            raise
+
     async def spawn_agent(
         self,
         agent_id: str,
@@ -818,7 +1074,22 @@ class AgentOrchestrator:
 
         Returns:
             AgentInstance handle
+
+        Raises:
+            AgentReadinessError: task is not spawn-ready (missing criteria,
+                missing git token, no branch plan, role mismatch). The task
+                is auto-blocked before we raise so the dispatcher doesn't
+                keep retrying.
         """
+        # Pre-flight: refuse to spawn if the task isn't ready. Auto-block
+        # on refusal so the dispatcher doesn't keep spinning a container
+        # that will immediately fail (wasted image pull + startup tokens).
+        readiness_reason = await self._readiness_gate(agent_id, task_id)
+        if readiness_reason:
+            raise AgentReadinessError(
+                f"spawn refused for {agent_id} (task={task_id}): {readiness_reason}"
+            )
+
         # Auto-derive git_context when the caller didn't supply one. Two
         # paths:
         #   (a) task_id present  → look up the task's project;
@@ -827,133 +1098,201 @@ class AgentOrchestrator:
         # Without (b), no-task spawns (e.g. idle PM bootstrapping) hit the
         # "workspace fallback used" path and get mounted at
         # /data/workspaces/default/... which doesn't exist.
-        if git_context is None or not git_context.project_slug:
-            derived: SpawnGitContext | None = None
-            if task_id:
-                derived = await self._git_context_from_task_id(task_id)
-            if derived is None:
-                derived = await self._git_context_default_project()
-            if derived is not None:
-                git_context = derived
+        git_context = await self._resolve_spawn_git_context(git_context, task_id)
 
         async with self._lock:
-            # Check if already running
-            if agent_id in self._instances:
-                existing = self._instances[agent_id]
-                if existing.state not in (AgentState.OFFLINE, AgentState.WAITING_LONG):
-                    logger.warning(
-                        "Agent already running",
-                        agent_id=agent_id,
-                        state=existing.state,
-                    )
-                    return existing
-
-            # Generate composed prompt (replaces static blueprints)
-            blueprint_path = self._generate_composed_prompt(agent_id)
-
-            # Determine role and team for this agent
-            canonical_role = get_agent_role(agent_id)
-            team = get_agent_team(agent_id)
-
-            # Determine model using canonical role name
-            if not model:
-                model = ROLE_MODEL_MAP.get(canonical_role, "sonnet")
-
-            # Build workspace paths for this agent
-            # Pattern: {workspaces_root}/{project_slug}/{team}/{agent_slug}/
-            project_slug = (
-                git_context.project_slug
-                if git_context and git_context.project_slug
-                else None
+            existing = self._existing_running_instance(agent_id)
+            if existing is not None:
+                return existing
+            config, instance, agent_settings_path = await self._prepare_agent_spawn(
+                agent_id, task_id, model, git_context
             )
-            if not project_slug:
-                logger.warning(
-                    "Spawning agent without project_slug; workspace fallback used. "
-                    "Agent file tools will be locked to a nonexistent path.",
-                    agent_id=agent_id,
-                    task_id=task_id,
-                )
-                project_slug = "default"
-            workspace_path = f"/data/workspaces/{project_slug}/{team}/{agent_id}"
-            # Cell workspace path for QA/Docs to access all cell's dev workspaces
-            cell_workspace_path = f"/data/workspaces/{project_slug}/{team}"
+        # Record the task as handled so later dispatchers in the same
+        # tick don't act on it again. Safe even if _launch_spawn fails
+        # — the next tick starts fresh.
+        self._mark_task_handled(task_id)
+        return await self._launch_spawn(
+            task_id,
+            config,
+            instance,
+            initial_prompt,
+            agent_settings_path,
+        )
 
-            # Generate per-agent Claude settings with role-specific permissions
-            agent_settings_path = self._generate_agent_settings(
-                agent_id, canonical_role, workspace_path, cell_workspace_path
-            )
+    def _resolve_host_paths(
+        self, config: AgentConfig, agent_settings_path: Path | None
+    ) -> dict[str, str | None]:
+        """Compute host mount paths for both containerized and host runtime."""
+        mcp_name = config.mcp_config_path.name if config.mcp_config_path else ""
+        if PROJECT_HOST_PATH:
+            return {
+                "blueprints": f"{PROJECT_HOST_PATH}/agents/blueprints",
+                "docs": f"{PROJECT_HOST_PATH}/docs",
+                "workspaces": f"{DATA_HOST_PATH}/workspaces",
+                "claude": CLAUDE_AUTH_HOST_PATH,
+                "mcp_config": f"{DATA_HOST_PATH}/mcp-configs/{mcp_name}",
+                "prompt": (
+                    f"{DATA_HOST_PATH}/prompts-generated/{config.agent_id}-prompt.md"
+                ),
+                "settings": (
+                    f"{DATA_HOST_PATH}/agent-settings/{config.agent_id}-settings.json"
+                    if agent_settings_path
+                    else None
+                ),
+                "briefing": (
+                    f"{DATA_HOST_PATH}/briefings/{config.agent_id}.md"
+                    if config.briefing_path
+                    else None
+                ),
+            }
+        return {
+            "blueprints": str(self.blueprints_dir.absolute()),
+            "docs": str(self.blueprints_dir.parent / "docs"),
+            "workspaces": str(Path(settings.workspaces_root)),
+            "claude": CLAUDE_AUTH_HOST_PATH,
+            "mcp_config": str(config.mcp_config_path),
+            "prompt": str(
+                Path(tempfile.gettempdir())
+                / "roboco-prompts"
+                / f"{config.agent_id}-prompt.md"
+            ),
+            "settings": str(agent_settings_path) if agent_settings_path else None,
+            "briefing": (str(config.briefing_path) if config.briefing_path else None),
+        }
 
-            # Ensure agent-specific Docker image is built
-            await self._ensure_agent_image(agent_id)
+    @staticmethod
+    def _build_mount_args(
+        container_name: str, config: AgentConfig, hosts: dict[str, str | None]
+    ) -> list[str]:
+        """Compose `docker run -v/-e` mount + env args for the agent."""
+        cmd: list[str] = [
+            "docker",
+            "run",
+            "-d",
+            "--name",
+            container_name,
+            "--network",
+            AGENT_NETWORK,
+            # Mount Claude auth directory (for API keys, etc.)
+            "-v",
+            f"{hosts['claude']}:/home/agent/.claude",
+        ]
 
-            # Generate MCP config with git context if available
-            mcp_config_path = await self._generate_mcp_config(agent_id, git_context)
+        settings_host = hosts.get("settings")
+        if settings_host:
+            cmd.extend(["-v", f"{settings_host}:/home/agent/.claude/settings.json:ro"])
 
-            # Create config
-            config = AgentConfig(
-                agent_id=agent_id,
-                blueprint_path=blueprint_path,
-                model=model,
-                mcp_config_path=mcp_config_path,
-                git_context=git_context,
-            )
+        briefing_host = hosts.get("briefing")
+        if briefing_host:
+            cmd.extend(["-v", f"{briefing_host}:/app/briefing.md:ro"])
 
-            # Create instance
-            instance = AgentInstance(
-                agent_id=agent_id,
-                state=AgentState.STARTING,
-                config=config,
-                current_task_id=task_id,
-            )
+        docs_ro = "" if config.agent_id in ALL_DOCS else ":ro"
+        role = get_agent_role(config.agent_id) or "developer"
+        cmd.extend(
+            [
+                "-v",
+                f"{hosts['prompt']}:/app/system-prompt.md:ro",
+                "-v",
+                f"{hosts['blueprints']}:/app/agents/blueprints:ro",
+                "-v",
+                f"{hosts['docs']}:/app/docs{docs_ro}",
+                "-v",
+                f"{hosts['workspaces']}:/data/workspaces",
+                "-v",
+                f"{hosts['mcp_config']}:/app/mcp-config.json:ro",
+                "-e",
+                f"ROBOCO_AGENT_ID={config.agent_id}",
+                "-e",
+                f"ROBOCO_AGENT_ROLE={role}",
+                "-e",
+                "ROBOCO_API_URL=http://roboco-orchestrator:8000",
+                "-e",
+                "ROBOCO_SDK_PORT=9000",
+                "-e",
+                "ROBOCO_SDK_URL=http://localhost:9000",
+                "-e",
+                f"ROBOCO_AGENT_TOOL_CALL_WARN={settings.agent_tool_call_warn}",
+                "-e",
+                f"ROBOCO_AGENT_TOOL_CALL_HALT={settings.agent_tool_call_halt}",
+                "-e",
+                f"ROBOCO_AGENT_LOOP_THRESHOLD={settings.agent_loop_threshold}",
+                "-e",
+                f"ROBOCO_AGENT_LOOP_WINDOW={settings.agent_loop_window}",
+                "-e",
+                f"ROBOCO_AGENT_STOP_ATTEMPT_ALLOWANCE={settings.agent_stop_attempt_allowance}",
+            ]
+        )
+        return cmd
 
-            self._instances[agent_id] = instance
+    @staticmethod
+    def _append_agent_auth_env(cmd: list[str], config: AgentConfig) -> None:
+        """Append agent HMAC token env var to the docker run cmd."""
+        # Agent HMAC auth token — bound to (agent_id, role, team). The
+        # API middleware refuses requests whose headers don't match the
+        # token, which stops one agent on the Docker network from
+        # spoofing another agent's role. Token is stable per agent as
+        # long as the secret doesn't rotate, so it's fine to compute at
+        # spawn time and inject once.
+        from roboco.agents_config import (
+            get_agent_role as _get_role,
+        )
+        from roboco.agents_config import (
+            get_agent_team as _get_team,
+        )
+        from roboco.agents_config import (
+            issue_agent_token,
+        )
 
-        # Spawn the container with per-agent settings
-        try:
-            container_id = await self._spawn_container(
-                config, initial_prompt, agent_settings_path
-            )
-            instance.container_id = container_id
-            instance.state = AgentState.ACTIVE
-            instance.started_at = datetime.now(UTC)
-            instance.last_activity = datetime.now(UTC)
+        _role = _get_role(config.agent_id)
+        _team = _get_team(config.agent_id) or ""
+        _token = issue_agent_token(config.agent_id, _role, _team)
+        cmd.extend(["-e", f"ROBOCO_AGENT_TOKEN={_token}"])
 
-            logger.info(
-                "Agent spawned",
-                agent_id=agent_id,
-                container_id=container_id[:12],
-                model=model,
-                task_id=task_id,
-            )
+    @staticmethod
+    def _append_git_context_env(cmd: list[str], config: AgentConfig) -> None:
+        """Append git-context env vars to the docker run cmd."""
+        if not config.git_context:
+            return
+        if config.git_context.project_slug:
+            cmd.extend(["-e", f"ROBOCO_PROJECT_SLUG={config.git_context.project_slug}"])
+        if config.git_context.branch_name:
+            cmd.extend(["-e", f"ROBOCO_BRANCH={config.git_context.branch_name}"])
 
-            self._fire_audit(
-                event_type="agent.spawned",
-                agent_slug=agent_id,
-                task_id=task_id,
-                details={
-                    "container_id": container_id[:12],
-                    "model": model,
-                },
-            )
+    @staticmethod
+    def _default_spawn_prompt() -> str:
+        """Fallback prompt when the caller provided none."""
+        return (
+            "You may have been spawned without a specific task assignment. "
+            "Follow your standard workflow:\n\n"
+            "1. Call `roboco_task_scan()` to find work for your role\n"
+            "2. If tasks found, claim with `roboco_task_claim(task_id)` "
+            "and begin: UNDERSTAND -> PLAN -> EXECUTE -> VERIFY -> HANDOFF\n"
+            "3. If no tasks available, call `roboco_agent_idle()` "
+            "to shutdown gracefully\n\n"
+            "Start now by scanning for work."
+        )
 
-            return instance
-
-        except Exception as e:
-            instance.state = AgentState.OFFLINE
-            instance.error_count += 1
-            logger.error(
-                "Failed to spawn agent",
-                agent_id=agent_id,
-                error=str(e),
-            )
-            self._fire_audit(
-                event_type="agent.spawn_failed",
-                agent_slug=agent_id,
-                task_id=task_id,
-                details={"error": str(e)},
-                severity="error",
-            )
-            raise
+    @classmethod
+    def _append_image_and_claude_args(
+        cls, cmd: list[str], config: AgentConfig, initial_prompt: str | None
+    ) -> None:
+        """Append the image + Claude Code CLI args to the docker run cmd."""
+        cmd.extend(
+            [
+                get_agent_image(config.agent_id),
+                "--model",
+                MODEL_MAP.get(config.model, config.model),
+                "--system-prompt-file",
+                "/app/system-prompt.md",
+                "--mcp-config",
+                "/app/mcp-config.json",
+                "--output-format",
+                "stream-json",
+                "--verbose",
+                "-p",
+                initial_prompt or cls._default_spawn_prompt(),
+            ]
+        )
 
     async def _spawn_container(
         self,
@@ -969,147 +1308,16 @@ class AgentOrchestrator:
             agent_settings_path: Path to per-agent Claude settings file
         """
         container_name = f"roboco-agent-{config.agent_id}"
-
-        # Remove existing container if any
         await self._remove_container(container_name)
 
-        # Determine host paths for volume mounts
-        # When running in a container, use PROJECT_HOST_PATH; otherwise use local paths
         if not config.mcp_config_path:
             raise RuntimeError("MCP config path not set")
 
-        if PROJECT_HOST_PATH:
-            # Running inside orchestrator container - use host paths
-            blueprints_host = f"{PROJECT_HOST_PATH}/agents/blueprints"
-            docs_host = f"{PROJECT_HOST_PATH}/docs"
-            workspaces_host = f"{DATA_HOST_PATH}/workspaces"
-            claude_host = CLAUDE_AUTH_HOST_PATH
-            mcp_config_host = (
-                f"{DATA_HOST_PATH}/mcp-configs/{config.mcp_config_path.name}"
-            )
-            # Generated prompts are in /app/prompts-generated inside orchestrator
-            # but need host path for agent container mount
-            prompt_host = (
-                f"{DATA_HOST_PATH}/prompts-generated/{config.agent_id}-prompt.md"
-            )
-            # Per-agent settings host path
-            settings_host = (
-                f"{DATA_HOST_PATH}/agent-settings/{config.agent_id}-settings.json"
-                if agent_settings_path
-                else None
-            )
-        else:
-            # Running directly on host
-            blueprints_host = str(self.blueprints_dir.absolute())
-            docs_host = str(self.blueprints_dir.parent / "docs")
-            workspaces_host = str(Path(settings.workspaces_root))
-            claude_host = CLAUDE_AUTH_HOST_PATH
-            mcp_config_host = str(config.mcp_config_path)
-            # Generated prompts in temp dir
-            prompt_host = str(
-                Path(tempfile.gettempdir())
-                / "roboco-prompts"
-                / f"{config.agent_id}-prompt.md"
-            )
-            # Per-agent settings path
-            settings_host = str(agent_settings_path) if agent_settings_path else None
-
-        # Build docker run command
-        cmd = [
-            "docker",
-            "run",
-            "-d",
-            "--name",
-            container_name,
-            "--network",
-            AGENT_NETWORK,
-            # Mount Claude auth directory (for API keys, etc.)
-            "-v",
-            f"{claude_host}:/home/agent/.claude",
-        ]
-
-        # Mount per-agent settings file (overrides shared settings.json)
-        if settings_host:
-            cmd.extend(
-                [
-                    "-v",
-                    f"{settings_host}:/home/agent/.claude/settings.json:ro",
-                ]
-            )
-
-        cmd.extend(
-            [
-                # Mount generated system prompt (composed from layers at runtime)
-                "-v",
-                f"{prompt_host}:/app/system-prompt.md:ro",
-                # Mount blueprints (legacy, kept for reference)
-                "-v",
-                f"{blueprints_host}:/app/agents/blueprints:ro",
-                # Mount docs directory
-                # - Documenters get write access to create/update docs
-                # - All other roles get read-only access
-                "-v",
-                f"{docs_host}:/app/docs{'' if config.agent_id in ALL_DOCS else ':ro'}",
-                # Mount workspaces directory for git operations
-                "-v",
-                f"{workspaces_host}:/data/workspaces",
-                # Mount MCP config
-                "-v",
-                f"{mcp_config_host}:/app/mcp-config.json:ro",
-                # Environment
-                "-e",
-                f"ROBOCO_AGENT_ID={config.agent_id}",
-                "-e",
-                "ROBOCO_API_URL=http://roboco-orchestrator:8000",
-                # SDK Server environment
-                "-e",
-                "ROBOCO_SDK_PORT=9000",
-                "-e",
-                "ROBOCO_SDK_URL=http://localhost:9000",
-            ]
-        )
-
-        # Add git context environment variables if available
-        if config.git_context:
-            if config.git_context.project_slug:
-                cmd.extend(
-                    ["-e", f"ROBOCO_PROJECT_SLUG={config.git_context.project_slug}"]
-                )
-            if config.git_context.branch_name:
-                cmd.extend(["-e", f"ROBOCO_BRANCH={config.git_context.branch_name}"])
-
-        # Continue building command
-        cmd.extend(
-            [
-                # The image (role-specific)
-                get_agent_image(config.agent_id),
-                # Claude Code arguments
-                "--model",
-                MODEL_MAP.get(config.model, config.model),
-                "--system-prompt-file",
-                "/app/system-prompt.md",
-                "--mcp-config",
-                "/app/mcp-config.json",
-                "--output-format",
-                "stream-json",
-                "--verbose",
-                # Always provide a prompt (required for non-interactive mode)
-                # If no task assignment provided, agent should follow standard workflow:
-                # SCAN for work -> CLAIM if available -> or IDLE if no work
-                "-p",
-                initial_prompt
-                or (
-                    "You may have been spawned without a specific task assignment. "
-                    "Follow your standard workflow:\n\n"
-                    "1. Call `roboco_task_scan()` to find work for your role\n"
-                    "2. If tasks found, claim with `roboco_task_claim(task_id)` "
-                    "and begin: UNDERSTAND -> PLAN -> EXECUTE -> VERIFY -> HANDOFF\n"
-                    "3. If no tasks available, call `roboco_agent_idle()` "
-                    "to shutdown gracefully\n\n"
-                    "Start now by scanning for work."
-                ),
-            ]
-        )
+        hosts = self._resolve_host_paths(config, agent_settings_path)
+        cmd = self._build_mount_args(container_name, config, hosts)
+        self._append_agent_auth_env(cmd, config)
+        self._append_git_context_env(cmd, config)
+        self._append_image_and_claude_args(cmd, config, initial_prompt)
 
         proc = await asyncio.create_subprocess_exec(
             *cmd,
@@ -1121,8 +1329,7 @@ class AgentOrchestrator:
         if proc.returncode != 0:
             raise RuntimeError(f"Failed to start container: {stderr.decode()}")
 
-        container_id = stdout.decode().strip()
-        return container_id
+        return stdout.decode().strip()
 
     async def _remove_container(self, container_name: str) -> None:
         """Remove a container if it exists, dumping its logs to disk first.
@@ -1427,6 +1634,216 @@ class AgentOrchestrator:
 
         return prompt_path
 
+    async def _readiness_gate(self, agent_id: str, task_id: str | None) -> str | None:
+        """Return a reason string if the spawn must be refused, else None.
+
+        Checks run only when a task is being spawned for. No-task spawns
+        (idle PM bootstrap, etc.) are always ready. On any refusal that
+        represents a persistent problem we auto-block the task so the
+        dispatcher stops retrying — the PM sees the block notification.
+        """
+        if not task_id:
+            return None
+
+        try:
+            async with httpx.AsyncClient(timeout=5.0) as client:
+                task_or_reason = await self._readiness_fetch_task(client, task_id)
+                if isinstance(task_or_reason, str):
+                    return task_or_reason
+                task = task_or_reason
+
+                persistent = self._readiness_check_task(agent_id, task)
+                if persistent is not None:
+                    return await self._readiness_block(client, task_id, persistent)
+
+                project_slug = _read_project_slug(task)
+                token_reason = await self._readiness_check_git_token(project_slug)
+                if token_reason is not None:
+                    return await self._readiness_block(client, task_id, token_reason)
+        except httpx.HTTPError as e:
+            # Transient — retry on next dispatch without auto-blocking.
+            return f"readiness check HTTP error: {e}"
+
+        return None
+
+    async def _readiness_fetch_task(
+        self, client: httpx.AsyncClient, task_id: str
+    ) -> dict[str, Any] | str:
+        """Fetch the task or return a reason string.
+
+        404 → "task not found" (caller should auto-block).
+        Other non-200s → transient; caller returns the reason verbatim
+        without auto-blocking so the dispatcher can retry next tick.
+        """
+        resp = await client.get(f"{self._api_url}/tasks/{task_id}")
+        if resp.status_code == http_status.HTTP_404_NOT_FOUND:
+            await self._readiness_block(client, task_id, "task not found")
+            return "task not found"
+        if resp.status_code != http_status.HTTP_200_OK:
+            return f"task-fetch returned {resp.status_code}"
+        task = resp.json()
+        return task if isinstance(task, dict) else "task payload not an object"
+
+    @staticmethod
+    def _readiness_check_task(agent_id: str, task: dict[str, Any]) -> str | None:
+        """Return a persistent blocker reason on the task itself, else None."""
+        status = task.get("status", "")
+        role = get_agent_role(agent_id) or ""
+
+        criteria = task.get("acceptance_criteria") or []
+        if isinstance(criteria, str):
+            criteria = [criteria] if criteria.strip() else []
+        if not criteria:
+            return "missing acceptance_criteria"
+
+        if not _read_project_slug(task):
+            return "task has no project"
+
+        if status in {"claimed", "in_progress", "verifying"} and not task.get(
+            "branch_name"
+        ):
+            return f"state={status} but branch_name is unset"
+
+        role_mismatch: dict[str, str | set[str]] = {
+            "awaiting_qa": "qa",
+            "awaiting_documentation": "documenter",
+            "awaiting_pm_review": {"cell_pm", "main_pm"},
+            "awaiting_ceo_approval": "ceo",
+        }
+        required = role_mismatch.get(status)
+        if required is None:
+            return None
+        ok = role in required if isinstance(required, set) else role == required
+        if ok:
+            return None
+        return (
+            f"state={status} requires role in {required!r} "
+            f"but agent {agent_id} is {role!r}"
+        )
+
+    @staticmethod
+    async def _readiness_check_git_token(project_slug: str | None) -> str | None:
+        """Ensure the project has a decryptable git token, else blocker reason."""
+        if not project_slug:
+            return "task has no project"
+        from roboco.db.base import get_session_factory
+        from roboco.services.project import get_project_service
+
+        session_factory = get_session_factory()
+        async with session_factory() as db:
+            project_svc = get_project_service(db)
+            try:
+                token = await project_svc.get_decrypted_token_by_slug(project_slug)
+            except Exception as e:
+                return f"project '{project_slug}' git-token decrypt failed: {e}"
+        if not token:
+            return f"project '{project_slug}' has no git token configured"
+        return None
+
+    async def _readiness_block(
+        self, client: httpx.AsyncClient, task_id: str, reason: str
+    ) -> str:
+        """Auto-block the task and return the human-readable reason."""
+        await self._auto_block_task(client, task_id, f"readiness: {reason}")
+        return reason
+
+    async def _write_agent_briefing(
+        self,
+        agent_id: str,
+        task_id: str | None,
+        workspace_path: str,
+    ) -> Path | None:
+        """Write a compact task briefing to be read by SessionStart hook.
+
+        The briefing saves the agent from burning its first 2-3 tool calls on
+        `roboco_task_scan` + `roboco_task_get`. If `task_id` is known we fetch
+        the task and include title, status, branch, and acceptance criteria.
+        On fetch failure we still emit the role-level part (role, escalation
+        target, terminal tools, workspace path) — strictly better than nothing.
+        """
+        role = get_agent_role(agent_id) or "agent"
+        team = get_agent_team(agent_id) or "-"
+        escalate_to = get_escalation_target(agent_id) or "main-pm"
+
+        task_block = ""
+        if task_id:
+            try:
+                async with httpx.AsyncClient(timeout=5.0) as client:
+                    resp = await client.get(f"{self._api_url}/tasks/{task_id}")
+                if resp.status_code == http_status.HTTP_200_OK:
+                    task = resp.json()
+                    criteria_list = task.get("acceptance_criteria") or []
+                    if isinstance(criteria_list, str):
+                        criteria_list = [criteria_list]
+                    criteria = (
+                        "\n".join(f"- {c}" for c in criteria_list)
+                        if criteria_list
+                        else "- (none listed — ask PM before proceeding)"
+                    )
+                    branch = task.get("branch_name") or "(to be created)"
+                    task_block = (
+                        "\n## Current task\n"
+                        f"- **ID:** `{task.get('id', task_id)}`\n"
+                        f"- **Title:** {task.get('title', '(untitled)')}\n"
+                        f"- **Status:** {task.get('status', 'unknown')}\n"
+                        f"- **Type:** {task.get('task_type', 'unknown')}\n"
+                        f"- **Branch:** `{branch}`\n"
+                        "\n### Acceptance criteria\n"
+                        f"{criteria}\n"
+                    )
+            except Exception as e:
+                logger.debug(
+                    "Briefing task-fetch failed — falling back to role-only",
+                    agent_id=agent_id,
+                    task_id=task_id,
+                    error=str(e),
+                )
+
+        content = (
+            f"# Session briefing — {agent_id}\n"
+            "\n"
+            "## You are\n"
+            f"- **Agent:** `{agent_id}`\n"
+            f"- **Role:** {role}\n"
+            f"- **Team:** {team}\n"
+            f"- **Escalate to:** `{escalate_to}`\n"
+            f"- **Workspace:** `{workspace_path}`\n"
+            f"{task_block}"
+            "\n## Terminal tools (how to exit cleanly)\n"
+            "- `roboco_agent_idle()` — no work remaining\n"
+            "- `roboco_task_substitute(reason=...)` — release the task\n"
+            "- `roboco_task_escalate(reason=...)` — escalate up the chain\n"
+            "- `roboco_task_pause(checkpoint=...)` — save progress, resume later\n"
+            "- Role handoffs: `roboco_task_submit_qa()`, `_qa_pass/fail()`, "
+            "`_docs_complete()`, `_complete()`\n"
+            "\n"
+            "A Stop without a terminal tool will be rejected; a second Stop\n"
+            "auto-substitutes with `reason='stopped_without_transition'`.\n"
+            "\n"
+            "## Budget\n"
+            f"Soft-warn at {settings.agent_tool_call_warn} tool calls, "
+            f"hard cap at {settings.agent_tool_call_halt}. Loops — same "
+            f"tool+args {settings.agent_loop_threshold}x within "
+            f"{settings.agent_loop_window} calls — are flagged; stop and "
+            "escalate instead of retrying.\n"
+        )
+
+        if PROJECT_HOST_PATH:
+            briefings_dir = Path("/app/briefings")
+        else:
+            briefings_dir = Path(tempfile.gettempdir()) / "roboco-briefings"
+        briefings_dir.mkdir(parents=True, exist_ok=True)
+
+        path = briefings_dir / f"{agent_id}.md"
+        path.write_text(content)
+        logger.debug(
+            "Wrote agent briefing",
+            agent_id=agent_id,
+            path=str(path),
+            has_task=bool(task_block),
+        )
+        return path
+
     def _get_blueprint_path(self, agent_id: str) -> Path:
         """Get blueprint path for an agent.
 
@@ -1521,6 +1938,15 @@ class AgentOrchestrator:
             return UUID_TO_SLUG[agent_id_or_uuid]
         # Already a slug or unknown UUID
         return agent_id_or_uuid
+
+    def _mark_task_handled(self, task_id: str | None) -> None:
+        """Record that `task_id` was acted on earlier in this dispatch tick."""
+        if task_id:
+            self._tick_handled_tasks.add(task_id)
+
+    def _is_task_handled_this_tick(self, task_id: str | None) -> bool:
+        """True if a prior dispatcher already handled this task this tick."""
+        return bool(task_id and task_id in self._tick_handled_tasks)
 
     def _is_parallel_phase_claim(
         self, task: dict[str, Any], dev_uuid: str | None
@@ -1906,6 +2332,57 @@ Start by:
                 await db.rollback()
                 logger.warning("Notification sweep failed", error=str(e))
 
+        # Budget kill-switch — runs every sweep. Any agent whose SDK reports
+        # halt=true has breached its per-session tool-call cap; terminate the
+        # container so the next dispatcher tick doesn't waste tokens on the
+        # same session.
+        await self._sweep_budget_exceeded()
+
+    async def _sweep_budget_exceeded(self) -> None:
+        """Stop agents whose per-session SDK budget reports halt=true.
+
+        Each agent's SDK server is reachable at
+        `http://roboco-agent-{agent_id}:9000/budget/status` on the shared
+        agent network. A budget-exceeded agent gets a forced stop with a
+        `budget_exceeded` reason; the task is already being auto-substituted
+        by the post-tool hook on the agent side.
+        """
+        if not self._instances:
+            return
+        async with httpx.AsyncClient(timeout=3.0) as client:
+            for agent_id, instance in list(self._instances.items()):
+                if instance.state not in (
+                    AgentState.ACTIVE,
+                    AgentState.WAITING_SHORT,
+                ):
+                    continue
+                url = f"http://roboco-agent-{agent_id}:9000/budget/status"
+                try:
+                    resp = await client.get(url)
+                    if resp.status_code != http_status.HTTP_200_OK:
+                        continue
+                    data = resp.json()
+                except Exception:
+                    # SDK unreachable / not yet started / container gone —
+                    # either benign or covered by health loop.
+                    continue
+                if not data.get("halt"):
+                    continue
+                logger.warning(
+                    "Agent budget exceeded; terminating container",
+                    agent_id=agent_id,
+                    total_calls=data.get("total"),
+                    halt_threshold=data.get("halt_threshold"),
+                )
+                try:
+                    await self.stop_agent(agent_id, graceful=True)
+                except Exception as e:
+                    logger.warning(
+                        "Failed to stop budget-exceeded agent",
+                        agent_id=agent_id,
+                        error=str(e),
+                    )
+
     async def _check_health(self) -> None:
         """Check health of all running agents."""
         for agent_id, instance in list(self._instances.items()):
@@ -2107,6 +2584,50 @@ Start by:
             return False
         return self._instances[agent_id].state == AgentState.ACTIVE
 
+    async def _check_parent_branch_ready(
+        self, client: httpx.AsyncClient, task_id: str, parent_id: str
+    ) -> str | None:
+        """Verify the parent task has a branch; auto-block + return msg if not."""
+        parent_resp = await client.get(f"{self._api_url}/tasks/{parent_id}")
+        if not parent_resp.is_success:
+            return None
+        parent = parent_resp.json()
+        if parent.get("branch_name"):
+            return None
+        await self._auto_block_task(
+            client,
+            task_id,
+            "Parent task must be claimed first to create its branch",
+        )
+        return f"Task {task_id} waiting for parent branch"
+
+    async def _check_dev_needs_subtasks(
+        self, client: httpx.AsyncClient, task: dict[str, Any]
+    ) -> str | None:
+        """Block non-trivial root tasks routed to a dev without subtasks."""
+        complexity = task.get("estimated_complexity", "low")
+        parent_task_id = task.get("parent_task_id")
+        if complexity not in ("medium", "high", "critical") or parent_task_id:
+            return None
+        task_id = task.get("id")
+        try:
+            resp = await client.get(f"{self._api_url}/tasks/{task_id}/subtasks")
+            subtasks = resp.json() if resp.is_success else []
+        except Exception:
+            subtasks = []
+        if subtasks:
+            return None
+        await self._auto_block_task(
+            client,
+            str(task_id),
+            f"Task complexity is {complexity} but no subtasks. "
+            "Cell PM must break down work first.",
+        )
+        return (
+            f"Task {task_id} is {complexity} complexity "
+            "without subtasks - Cell PM must break it down"
+        )
+
     async def _validate_task_for_spawn(
         self,
         client: httpx.AsyncClient,
@@ -2119,68 +2640,35 @@ Start by:
         Returns None if valid, or error message if task cannot proceed.
         This prevents spawning agents on tasks that are missing prerequisites.
         """
+        from roboco.agents_config import get_agent_role
+
         task_id = task.get("id")
         if not task_id:
             return "Task missing ID"
         min_description_len = 10
 
-        # VALIDATION 1: Check description is not empty/trivial
         description = (task.get("description") or "").strip()
         if len(description) < min_description_len:
             return (
                 f"Task {task_id} has inadequate description ({len(description)} chars)"
             )
 
-        # VALIDATION 2: Check project + parent branch requirements (all tasks use git)
-        # Must have project (validated at creation, but double-check)
         if not task.get("project_id"):
             await self._auto_block_task(client, task_id, "Task needs project_id")
             return f"Task {task_id} needs project"
 
-        # For subtasks, parent must have branch (for forking)
         parent_id = task.get("parent_task_id")
         if parent_id:
-            parent_resp = await client.get(f"{self._api_url}/tasks/{parent_id}")
-            if parent_resp.is_success:
-                parent = parent_resp.json()
-                if not parent.get("branch_name"):
-                    await self._auto_block_task(
-                        client,
-                        task_id,
-                        "Parent task must be claimed first to create its branch",
-                    )
-                    return f"Task {task_id} waiting for parent branch"
+            err = await self._check_parent_branch_ready(client, task_id, parent_id)
+            if err:
+                return err
 
-        # Root task or parent has branch - branch will auto-create on claim
         logger.info("Task ready for hierarchical branch creation", task_id=task_id)
 
-        # VALIDATION 3: Check complexity vs subtasks for devs
-        from roboco.agents_config import get_agent_role
-
-        agent_role = get_agent_role(agent_slug)
-        if agent_role == "developer":
-            complexity = task.get("estimated_complexity", "low")
-            parent_task_id = task.get("parent_task_id")
-
-            if complexity in ("medium", "high", "critical") and not parent_task_id:
-                # Check if this task has subtasks
-                try:
-                    resp = await client.get(f"{self._api_url}/tasks/{task_id}/subtasks")
-                    subtasks = resp.json() if resp.is_success else []
-                except Exception:
-                    subtasks = []
-
-                if not subtasks:
-                    await self._auto_block_task(
-                        client,
-                        task_id,
-                        f"Task complexity is {complexity} but no subtasks. "
-                        "Cell PM must break down work first.",
-                    )
-                    return (
-                        f"Task {task_id} is {complexity} complexity "
-                        "without subtasks - Cell PM must break it down"
-                    )
+        if get_agent_role(agent_slug) == "developer":
+            err = await self._check_dev_needs_subtasks(client, task)
+            if err:
+                return err
 
         return None  # All validations passed
 
@@ -2395,30 +2883,19 @@ Start by:
         "marketing": "marketing",
     }
 
-    def _classify_task_routing(self, task: dict[str, Any]) -> str:
-        """
-        Classify a task for routing based on task_type, team, complexity, and keywords.
-
-        Returns one of: "board", "main_pm", "cell_pm", "dev", "marketing"
-        """
-        team = task.get("team")
-        task_type = task.get("task_type", "code")
+    @staticmethod
+    def _route_by_task_type(task_type: str, team: str | None) -> str | None:
+        """Route based on task_type field alone; returns None if no match."""
         cell_teams = ("backend", "frontend", "ux_ui")
-        result: str | None = None
-
-        # Task type takes precedence for non-code work
-        # NOTE: All tasks follow git workflow now, but some types route to PM
         if task_type in ("planning", "research", "administrative"):
-            result = "cell_pm" if team in cell_teams else "main_pm"
-        elif task_type == "design" and team not in ("backend", "frontend"):
-            result = "cell_pm"
-        elif team in self._TEAM_ROUTING_MAP:
-            result = self._TEAM_ROUTING_MAP[team]
+            return "cell_pm" if team in cell_teams else "main_pm"
+        if task_type == "design" and team not in ("backend", "frontend"):
+            return "cell_pm"
+        return None
 
-        if result:
-            return result
-
-        # Keyword/complexity analysis for code tasks without explicit routing
+    def _classify_code_task(self, task: dict[str, Any]) -> str:
+        """Classify a generic `code` task via keyword/complexity heuristics."""
+        team = task.get("team")
         title = (task.get("title") or "").lower()
         description = (task.get("description") or "").lower()
         text = f"{title} {description}"
@@ -2427,19 +2904,36 @@ Start by:
         if self._has_board_keywords(text):
             return "board"
 
-        needs_main_pm = (
+        if (
             self._has_cross_cell_keywords(text)
             or complexity in ("high", "critical")
             or not team
             or team == "all"
-        )
-        if needs_main_pm:
+        ):
             return "main_pm"
 
         if self._has_pm_keywords(text) or complexity == "medium":
             return "cell_pm"
 
         return "dev"
+
+    def _classify_task_routing(self, task: dict[str, Any]) -> str:
+        """
+        Classify a task for routing based on task_type, team, complexity, and keywords.
+
+        Returns one of: "board", "main_pm", "cell_pm", "dev", "marketing"
+        """
+        team = task.get("team")
+        task_type = task.get("task_type", "code")
+
+        # Task type takes precedence for non-code work
+        by_type = self._route_by_task_type(task_type, team)
+        if by_type:
+            return by_type
+        if team in self._TEAM_ROUTING_MAP:
+            return self._TEAM_ROUTING_MAP[team]
+
+        return self._classify_code_task(task)
 
     # Team to PM mapping for routing
     _TEAM_PM_MAP: ClassVar[dict[str, str]] = {
@@ -2725,7 +3219,15 @@ Start now: roboco_task_get("{task_id}")
         Each dispatcher is isolated: if one raises (e.g., a transient API
         error), the rest still run in this tick instead of waiting for the
         next one.
+
+        `_tick_handled_tasks` gives downstream dispatchers a way to
+        skip tasks that an earlier dispatcher already acted on this
+        tick. Order-dependent bugs (like the Fix-B scenario where
+        `_dispatch_qa_work` claimed for QA and the next dispatcher
+        re-spawned the dev on the same claimed row) are defanged by
+        early dispatchers marking the task handled.
         """
+        self._tick_handled_tasks = set()
         # Orchestrator uses SYSTEM role for internal API calls
         # Using a well-known UUID for the orchestrator identity
         headers = {
@@ -2763,6 +3265,84 @@ Start now: roboco_task_get("{task_id}")
     # SMART DISPATCHER - TASK-BASED DISPATCHERS
     # =========================================================================
 
+    _PM_AGENTS: ClassVar[frozenset[str]] = frozenset(
+        {
+            "main-pm",
+            "be-pm",
+            "fe-pm",
+            "ux-pm",
+        }
+    )
+
+    async def _handle_pm_assigned_task(
+        self, task: dict[str, Any], assigned_to: str
+    ) -> None:
+        """Spawn an already-assigned PM agent if it isn't running."""
+        agent_slug = self._resolve_agent_slug(assigned_to)
+        if agent_slug not in self._PM_AGENTS or self._is_agent_active(agent_slug):
+            return
+        logger.info(
+            "Spawning assigned PM agent",
+            task_id=task.get("id"),
+            agent_id=agent_slug,
+        )
+        pm_prompt = (
+            self._build_main_pm_triage_prompt(task)
+            if agent_slug == "main-pm"
+            else self._build_pm_triage_prompt(task)
+        )
+        await self.spawn_agent(
+            agent_id=agent_slug,
+            task_id=task["id"],
+            initial_prompt=pm_prompt,
+            git_context=self._task_git_context(task),
+        )
+
+    def _pm_spawn_prompt(
+        self, routing: str, agent_id: str, task: dict[str, Any]
+    ) -> str:
+        """Pick the correct prompt for a classified spawn."""
+        if routing == "dev":
+            return self._build_dev_prompt(task)
+        if routing == "main_pm" or agent_id == "main-pm":
+            return self._build_main_pm_triage_prompt(task)
+        return self._build_pm_triage_prompt(task)
+
+    async def _route_unassigned_pm_task(
+        self, client: httpx.AsyncClient, task: dict[str, Any]
+    ) -> None:
+        """Classify and route an unassigned pending task to its target agent."""
+        routing = self._classify_task_routing(task)
+        agent_id = self._get_routing_target(routing, task)
+
+        if not agent_id:
+            logger.warning(
+                "No routing target found",
+                task_id=task.get("id"),
+                routing=routing,
+            )
+            return
+
+        logger.info(
+            "Routing task",
+            task_id=task.get("id"),
+            routing=routing,
+            agent_id=agent_id,
+        )
+
+        if self._is_agent_active(agent_id):
+            await self._claim_task_for_agent(client, task["id"], agent_id)
+            return
+
+        if await self._claim_task_for_agent(client, task["id"], agent_id):
+            prompt = self._pm_spawn_prompt(routing, agent_id, task)
+            await self.spawn_agent(
+                agent_id=agent_id,
+                task_id=task["id"],
+                initial_prompt=prompt,
+                git_context=self._task_git_context(task),
+            )
+
     async def _dispatch_pm_work(self, client: httpx.AsyncClient) -> None:
         """
         Dispatch PM triage work - routes new tasks to appropriate level.
@@ -2774,85 +3354,72 @@ Start now: roboco_task_get("{task_id}")
         Monitors: pending tasks (both assigned and unassigned)
         Spawns: product-owner, main-pm, be-pm, fe-pm, ux-pm (or devs for simple)
         """
-        # Get pending tasks
         tasks = await self._fetch_tasks(client, "pending")
 
-        # PM-level agents that can have direct assignments
-        # NOTE: Only actual PMs, not board members (product-owner, etc.)
-        # Board members are handled by their dedicated dispatch methods
-        pm_agents = {
-            "main-pm",
-            "be-pm",
-            "fe-pm",
-            "ux-pm",
-        }
-
         for task in tasks:
+            if self._is_task_handled_this_tick(task.get("id")):
+                continue
             assigned_to = task.get("assigned_to")
-
-            # Handle already-assigned tasks for PM agents
             if assigned_to:
-                agent_slug = self._resolve_agent_slug(assigned_to)
-                if agent_slug in pm_agents and not self._is_agent_active(agent_slug):
-                    logger.info(
-                        "Spawning assigned PM agent",
-                        task_id=task.get("id"),
-                        agent_id=agent_slug,
-                    )
-                    # Use Main PM prompt for main-pm, Cell PM prompt for others
-                    pm_prompt = (
-                        self._build_main_pm_triage_prompt(task)
-                        if agent_slug == "main-pm"
-                        else self._build_pm_triage_prompt(task)
-                    )
-                    await self.spawn_agent(
-                        agent_id=agent_slug,
-                        task_id=task["id"],
-                        initial_prompt=pm_prompt,
-                        git_context=self._task_git_context(task),
-                    )
+                await self._handle_pm_assigned_task(task, assigned_to)
                 continue
 
-            # Classify the task
-            routing = self._classify_task_routing(task)
-            agent_id = self._get_routing_target(routing, task)
+            await self._route_unassigned_pm_task(client, task)
 
-            if not agent_id:
-                logger.warning(
-                    "No routing target found",
-                    task_id=task.get("id"),
-                    routing=routing,
-                )
-                continue
+    @staticmethod
+    def _all_descendants_terminal(descendants: list[dict[str, Any]]) -> bool:
+        """Every descendant in a closure-complete state?"""
+        return all(st.get("status") in ("completed", "cancelled") for st in descendants)
 
-            logger.info(
-                "Routing task",
-                task_id=task.get("id"),
-                routing=routing,
-                agent_id=agent_id,
-            )
+    @staticmethod
+    def _already_promoted_for_closure(task: dict[str, Any]) -> bool:
+        """Skip closure respawn when PR+status show task has moved up."""
+        return bool(
+            task.get("pr_number")
+            and task.get("status")
+            in ("awaiting_pm_review", "awaiting_ceo_approval", "completed")
+        )
 
-            # If target agent is already active, claim for them
-            if self._is_agent_active(agent_id):
-                await self._claim_task_for_agent(client, task["id"], agent_id)
-                continue
+    def _closure_pm_for_team(self, team: str | None) -> str:
+        """Pick the PM that owns closure for a given team."""
+        if team in ("backend", "frontend", "ux_ui"):
+            return self._TEAM_PM_MAP.get(team, "be-pm")
+        return "main-pm"
 
-            # Claim and spawn with appropriate prompt
-            if await self._claim_task_for_agent(client, task["id"], agent_id):
-                # Use appropriate prompt based on agent type
-                if routing == "dev":
-                    prompt = self._build_dev_prompt(task)
-                elif routing == "main_pm" or agent_id == "main-pm":
-                    prompt = self._build_main_pm_triage_prompt(task)
-                else:
-                    prompt = self._build_pm_triage_prompt(task)
+    async def _maybe_spawn_pm_closure(
+        self, client: httpx.AsyncClient, task: dict[str, Any]
+    ) -> None:
+        """If this parent task is ready for closure, spawn its PM."""
+        task_id = task.get("id")
+        if not task_id:
+            return
 
-                await self.spawn_agent(
-                    agent_id=agent_id,
-                    task_id=task["id"],
-                    initial_prompt=prompt,
-                    git_context=self._task_git_context(task),
-                )
+        descendants = await self._fetch_all_descendants(client, task_id)
+        if not descendants:
+            return
+        if not self._all_descendants_terminal(descendants):
+            return
+        if self._already_promoted_for_closure(task):
+            return
+
+        pm_id = self._closure_pm_for_team(task.get("team"))
+        if self._is_agent_active(pm_id):
+            return
+
+        logger.info(
+            "Parent task ready for closure",
+            task_id=task_id,
+            descendants_count=len(descendants),
+            pm_id=pm_id,
+        )
+
+        prompt = self._build_pm_closure_prompt(task, descendants)
+        await self.spawn_agent(
+            agent_id=pm_id,
+            task_id=task_id,
+            initial_prompt=prompt,
+            git_context=self._task_git_context(task),
+        )
 
     async def _dispatch_pm_closure_work(self, client: httpx.AsyncClient) -> None:
         """
@@ -2871,62 +3438,8 @@ Start now: roboco_task_get("{task_id}")
 
         for status in parent_statuses:
             tasks = await self._fetch_tasks(client, status)
-
             for task in tasks:
-                task_id = task.get("id")
-                if not task_id:
-                    continue
-
-                # Check if this task has any descendants (children, grandchildren, etc.)
-                descendants = await self._fetch_all_descendants(client, task_id)
-                if not descendants:
-                    continue  # Not a parent task
-
-                # Check if all descendants are in terminal states
-                all_complete = all(
-                    st.get("status") in ("completed", "cancelled") for st in descendants
-                )
-
-                if not all_complete:
-                    continue  # Not ready for closure
-
-                # Already promoted: PM has opened their PR (pr_number set)
-                # AND either submitted the task for review or is already
-                # at/past PM review. No need to respawn — the next level
-                # (parent PM or CEO) owns the task now.
-                task_status = task.get("status")
-                if task.get("pr_number") and task_status in (
-                    "awaiting_pm_review",
-                    "awaiting_ceo_approval",
-                    "completed",
-                ):
-                    continue
-
-                # Parent has all subtasks completed - spawn PM to close
-                team = task.get("team")
-                if team in ["backend", "frontend", "ux_ui"]:
-                    pm_id = self._TEAM_PM_MAP.get(team, "be-pm")
-                else:
-                    # main_pm, board, or no team → Main PM handles closure
-                    pm_id = "main-pm"
-
-                if self._is_agent_active(pm_id):
-                    continue  # PM already working
-
-                logger.info(
-                    "Parent task ready for closure",
-                    task_id=task_id,
-                    descendants_count=len(descendants),
-                    pm_id=pm_id,
-                )
-
-                prompt = self._build_pm_closure_prompt(task, descendants)
-                await self.spawn_agent(
-                    agent_id=pm_id,
-                    task_id=task_id,
-                    initial_prompt=prompt,
-                    git_context=self._task_git_context(task),
-                )
+                await self._maybe_spawn_pm_closure(client, task)
 
     async def _fetch_subtasks(
         self, client: httpx.AsyncClient, parent_id: str
@@ -3061,86 +3574,138 @@ Start with step 1.
         )
 
         for task in tasks:
-            team = task.get("team")
-            if team not in ["backend", "frontend", "ux_ui"]:
+            if self._is_task_handled_this_tick(task.get("id")):
                 continue
+            await self._dev_dispatch_one(client, task)
 
-            # For claimed/blocked tasks, the owner is claimed_by (actual
-            # current holder) — which may differ from the original assignee
-            # (e.g. QA claimed for review, then marked blocked).
-            status = task.get("status")
-            if status in ("claimed", "blocked"):
-                owner_uuid = task.get("claimed_by") or task.get("assigned_to")
-            else:
-                owner_uuid = task.get("assigned_to")
-            agent_slug = self._resolve_agent_slug(owner_uuid) if owner_uuid else None
+    @staticmethod
+    def _resolve_dev_owner_uuid(task: dict[str, Any]) -> str | None:
+        """Pick the right owner UUID for dev dispatch based on status."""
+        status = task.get("status")
+        if status in ("claimed", "blocked"):
+            return task.get("claimed_by") or task.get("assigned_to")
+        return task.get("assigned_to")
 
-            # Hard stop: blocked tasks waiting on a HUMAN must not respawn
-            # their agent. Dispatcher churn on HITL-blocks is exactly what
-            # burns tokens while you wait to intervene.
-            if status == "blocked":
-                resolver_type = task.get("blocker_resolver_type")
-                if resolver_type == "human":
-                    logger.debug(
-                        "Skipping HITL-blocked task; waiting for human",
-                        task_id=task["id"],
-                    )
-                    continue
-                # else: agent-resolvable (or legacy NULL) → respawn below
+    async def _respawn_dev_if_inactive(
+        self, task: dict[str, Any], agent_slug: str
+    ) -> None:
+        """Respawn a dev agent on an existing task when it isn't running."""
+        if self._is_agent_active(agent_slug):
+            return
+        await self.spawn_agent(
+            agent_id=agent_slug,
+            task_id=task["id"],
+            initial_prompt=self._build_dev_prompt(task),
+            git_context=self._task_git_context(task),
+        )
 
-            # For needs_revision, spawn the assigned dev to fix
-            if status == "needs_revision" and agent_slug:
-                if not self._is_agent_active(agent_slug):
-                    await self.spawn_agent(
-                        agent_id=agent_slug,
-                        task_id=task["id"],
-                        initial_prompt=self._build_dev_prompt(task),
-                        git_context=self._task_git_context(task),
-                    )
-                continue
+    async def _spawn_pending_dev(
+        self,
+        client: httpx.AsyncClient,
+        task: dict[str, Any],
+        agent_slug: str,
+    ) -> None:
+        """Validate and spawn a dev agent for a pending, pre-assigned task."""
+        if self._is_agent_active(agent_slug):
+            return
+        validation_issue = await self._validate_task_for_spawn(client, task, agent_slug)
+        if validation_issue:
+            logger.warning(
+                "Skipping spawn due to validation failure",
+                task_id=task["id"],
+                agent=agent_slug,
+                reason=validation_issue,
+            )
+            return
+        await self.spawn_agent(
+            agent_id=agent_slug,
+            task_id=task["id"],
+            initial_prompt=self._get_prompt_for_agent(agent_slug, task),
+            git_context=self._task_git_context(task),
+        )
 
-            # For in_progress / claimed / agent-blocked tasks where the
-            # owning agent has no running container, (re)spawn it.
-            if status in ("in_progress", "claimed", "blocked") and agent_slug:
-                if not self._is_agent_active(agent_slug):
-                    logger.info(
-                        "Respawning agent for orphaned task",
-                        task_id=task["id"],
-                        agent=agent_slug,
-                        status=status,
-                    )
-                    await self.spawn_agent(
-                        agent_id=agent_slug,
-                        task_id=task["id"],
-                        initial_prompt=self._build_dev_prompt(task),
-                        git_context=self._task_git_context(task),
-                    )
-                continue
+    @staticmethod
+    def _is_hitl_blocked(task: dict[str, Any]) -> bool:
+        """HITL-blocked tasks wait for human resolution; skip respawn."""
+        return (
+            task.get("status") == "blocked"
+            and task.get("blocker_resolver_type") == "human"
+        )
 
-            # For pending tasks that ARE already assigned (by PM),
-            # spawn the assigned agent with the appropriate prompt
-            if agent_slug and not self._is_agent_active(agent_slug):
-                # PRE-SPAWN VALIDATION: Check task readiness before spawning
-                # This prevents spawning agents on tasks that can't proceed
-                validation_issue = await self._validate_task_for_spawn(
-                    client, task, agent_slug
-                )
-                if validation_issue:
-                    # Log and skip - don't spawn on invalid tasks
-                    logger.warning(
-                        "Skipping spawn due to validation failure",
-                        task_id=task["id"],
-                        agent=agent_slug,
-                        reason=validation_issue,
-                    )
-                    continue
+    async def _handle_dev_existing_owner(
+        self, task: dict[str, Any], status: str, agent_slug: str
+    ) -> None:
+        """Respawn existing dev for needs_revision / in_progress / claimed / blocked."""
+        if status in (
+            "in_progress",
+            "claimed",
+            "blocked",
+        ) and not self._is_agent_active(agent_slug):
+            logger.info(
+                "Respawning agent for orphaned task",
+                task_id=task["id"],
+                agent=agent_slug,
+                status=status,
+            )
+        await self._respawn_dev_if_inactive(task, agent_slug)
 
-                await self.spawn_agent(
-                    agent_id=agent_slug,
-                    task_id=task["id"],
-                    initial_prompt=self._get_prompt_for_agent(agent_slug, task),
-                    git_context=self._task_git_context(task),
-                )
+    async def _dev_dispatch_one(
+        self, client: httpx.AsyncClient, task: dict[str, Any]
+    ) -> None:
+        """Dispatch a single task from `_dispatch_dev_work`'s fetch set."""
+        team = task.get("team")
+        if team not in ["backend", "frontend", "ux_ui"]:
+            return
+
+        if self._is_hitl_blocked(task):
+            logger.debug(
+                "Skipping HITL-blocked task; waiting for human",
+                task_id=task["id"],
+            )
+            return
+
+        status = task.get("status")
+        owner_uuid = self._resolve_dev_owner_uuid(task)
+        agent_slug = self._resolve_agent_slug(owner_uuid) if owner_uuid else None
+
+        if agent_slug and status in (
+            "needs_revision",
+            "in_progress",
+            "claimed",
+            "blocked",
+        ):
+            await self._handle_dev_existing_owner(task, status, agent_slug)
+            return
+
+        # Pending tasks pre-assigned by PM.
+        if agent_slug:
+            await self._spawn_pending_dev(client, task, agent_slug)
+
+    async def _spawn_assigned_qa(self, task: dict[str, Any], assigned_to: str) -> bool:
+        """If task.assigned_to is a QA slug, spawn/skip-if-running; else False.
+
+        Returns True when the dispatch decision for this task was
+        handled at the assignee level (spawned or already running).
+        Returns False when the assigned_to is NOT a QA agent — caller
+        then falls through to the unassigned-select path.
+        """
+        assigned_slug = self._resolve_agent_slug(assigned_to)
+        if not assigned_slug or "qa" not in assigned_slug:
+            logger.warning(
+                "awaiting_qa task assigned to non-QA slug; reassigning via QA pool",
+                task_id=task["id"],
+                assigned_slug=assigned_slug,
+            )
+            return False
+        if self._is_agent_active(assigned_slug):
+            return True
+        await self.spawn_agent(
+            agent_id=assigned_slug,
+            task_id=task["id"],
+            initial_prompt=self._build_qa_prompt(task),
+            git_context=self._task_git_context(task),
+        )
+        return True
 
     async def _dispatch_qa_work(self, client: httpx.AsyncClient) -> None:
         """
@@ -3152,25 +3717,14 @@ Start with step 1.
         tasks = await self._fetch_tasks(client, "awaiting_qa")
 
         for task in tasks:
+            if self._is_task_handled_this_tick(task.get("id")):
+                continue
             team = task.get("team")
             if team not in ["backend", "frontend", "ux_ui"]:
                 continue
 
             assigned_to = task.get("assigned_to")
-
-            # If already assigned, check if that agent is running
-            if assigned_to:
-                assigned_slug = self._resolve_agent_slug(assigned_to)
-                if self._is_agent_active(assigned_slug):
-                    # Agent is running, they'll handle it
-                    continue
-                # Agent not running - spawn them to continue
-                await self.spawn_agent(
-                    agent_id=assigned_slug,
-                    task_id=task["id"],
-                    initial_prompt=self._build_qa_prompt(task),
-                    git_context=self._task_git_context(task),
-                )
+            if assigned_to and await self._spawn_assigned_qa(task, assigned_to):
                 continue
 
             # Unassigned task - select QA agent for this team
@@ -3230,80 +3784,94 @@ Start with step 1.
         # quick_context identifies tasks that are actually in the parallel
         # phase vs unrelated claimed tasks.
         tasks = await self._fetch_tasks(client, ["awaiting_documentation", "claimed"])
-
         for task in tasks:
-            team = task.get("team")
-            if team not in ["backend", "frontend", "ux_ui"]:
+            if self._is_task_handled_this_tick(task.get("id")):
                 continue
+            await self._doc_dispatch_one(client, task, extract_original_developer)
 
-            quick_context = task.get("quick_context") or ""
-            dev_uuid = extract_original_developer(quick_context)
-            status = task.get("status")
+    async def _auto_assign_doc(
+        self, client: httpx.AsyncClient, task: dict[str, Any], team: str
+    ) -> None:
+        """
+        Auto-select and spawn a documenter for an unassigned awaiting_documentation task
+        """
+        agent_id = self._select_agent_for_cell(team, "doc")
+        if not agent_id or self._is_agent_active(agent_id):
+            return
 
-            # Only consider `claimed` tasks actually in the doc/PR
-            # parallel phase — i.e. claimed BY a documenter. The
-            # `original_developer:` marker alone isn't enough: it's also
-            # set pre-QA (by submit_for_qa), so a QA-claimed task would
-            # otherwise be misread as parallel-phase and trigger a
-            # spurious dev respawn.
-            if status == "claimed" and not self._is_parallel_phase_claim(
-                task, dev_uuid
-            ):
-                continue
-
-            # --- Developer half: push + create PR --------------------------
-            await self._respawn_dev_for_pr_half(task, dev_uuid)
-
-            # --- Documenter half: write docs ------------------------------
-            if task.get("docs_complete"):
-                # Doc side already done; nothing left for documenter.
-                continue
-
-            assigned_to = task.get("assigned_to")
-
-            # If already assigned, respawn only if the assignee is a doc.
-            # (Developers were handled by the dev-half block above.)
-            if assigned_to:
-                assigned_slug = self._resolve_agent_slug(assigned_to)
-                if self._is_agent_active(assigned_slug):
-                    continue
-                if assigned_slug and "doc" in assigned_slug:
-                    await self.spawn_agent(
-                        agent_id=assigned_slug,
-                        task_id=task["id"],
-                        initial_prompt=self._build_doc_prompt(task),
-                        git_context=self._task_git_context(task),
-                    )
-                continue
-
-            # Only auto-assign a documenter when the task is still in
-            # awaiting_documentation (status=claimed means the doc or dev
-            # already owns it — don't over-claim).
-            if status != "awaiting_documentation":
-                continue
-
-            agent_id = self._select_agent_for_cell(team, "doc")
-            if not agent_id:
-                continue
-
-            if self._is_agent_active(agent_id):
-                continue
-
-            if not await self._claim_task_for_agent(client, task["id"], agent_id):
-                logger.warning(
-                    "Failed to claim awaiting_documentation task for doc",
-                    task_id=task["id"],
-                    agent_id=agent_id,
-                )
-                continue
-
-            await self.spawn_agent(
+        if not await self._claim_task_for_agent(client, task["id"], agent_id):
+            logger.warning(
+                "Failed to claim awaiting_documentation task for doc",
+                task_id=task["id"],
                 agent_id=agent_id,
+            )
+            return
+
+        await self.spawn_agent(
+            agent_id=agent_id,
+            task_id=task["id"],
+            initial_prompt=self._build_doc_prompt(task),
+            git_context=self._task_git_context(task),
+        )
+
+    async def _doc_dispatch_one(
+        self,
+        client: httpx.AsyncClient,
+        task: dict[str, Any],
+        extract_original_developer: Any,
+    ) -> None:
+        """Process a single task for `_dispatch_doc_work`."""
+        team = task.get("team")
+        if team not in ["backend", "frontend", "ux_ui"]:
+            return
+
+        quick_context = task.get("quick_context") or ""
+        dev_uuid = extract_original_developer(quick_context)
+        status = task.get("status")
+
+        # Only consider `claimed` tasks actually in the doc/PR parallel
+        # phase. See `_is_parallel_phase_claim` docstring for the why.
+        if status == "claimed" and not self._is_parallel_phase_claim(task, dev_uuid):
+            return
+
+        # Developer half: push + create PR
+        await self._respawn_dev_for_pr_half(task, dev_uuid)
+
+        # Documenter half: write docs
+        if task.get("docs_complete"):
+            return
+
+        if await self._respawn_doc_if_assigned(task):
+            return
+
+        # Auto-assign a documenter only when still in awaiting_documentation.
+        if status != "awaiting_documentation":
+            return
+
+        await self._auto_assign_doc(client, task, team)
+
+    async def _respawn_doc_if_assigned(self, task: dict[str, Any]) -> bool:
+        """If task is assigned to an inactive documenter, respawn them.
+
+        Returns True when the task is already assigned (whether or not a
+        respawn happened) so the caller can stop processing. Returns
+        False when the task is unassigned so the caller can auto-select
+        a documenter for it.
+        """
+        assigned_to = task.get("assigned_to")
+        if not assigned_to:
+            return False
+        assigned_slug = self._resolve_agent_slug(assigned_to)
+        if self._is_agent_active(assigned_slug):
+            return True
+        if assigned_slug and "doc" in assigned_slug:
+            await self.spawn_agent(
+                agent_id=assigned_slug,
                 task_id=task["id"],
                 initial_prompt=self._build_doc_prompt(task),
                 git_context=self._task_git_context(task),
             )
-            break
+        return True
 
     async def _dispatch_pm_review_work(self, client: httpx.AsyncClient) -> None:
         """
@@ -3543,6 +4111,122 @@ Start with step 1.
                     age_minutes=age_mins,
                     issues=issues,
                 )
+
+        # Per-(role, state) SLA check. Independent from the pending-task
+        # sweep above — different states, different action (escalate vs
+        # auto-block).
+        await self._detect_sla_exceeded(client)
+
+    async def _detect_sla_exceeded(self, client: httpx.AsyncClient) -> None:
+        """Auto-escalate tasks that exceeded their per-role SLA.
+
+        Uses ROLE_STATE_SLA_KEYS in enforcement/task_lifecycle.py. Dev tasks
+        stuck in `in_progress`/`verifying`, QA tasks in `claimed`, doc tasks
+        in `claimed`, and cell-PM tasks in `claimed` all get a soft bump so
+        work doesn't silently rot.
+        """
+        from roboco.enforcement.task_lifecycle import (
+            ROLE_STATE_SLA_KEYS,
+            sla_seconds_for,
+        )
+
+        # Fetch each (role, state) combo we care about. One API call per
+        # unique status so we don't fan out pointlessly.
+        statuses = sorted({state for _, state in ROLE_STATE_SLA_KEYS})
+        for status in statuses:
+            try:
+                tasks = await self._fetch_tasks(client, status)
+            except Exception as e:
+                logger.debug(
+                    "SLA sweep fetch failed; skipping status",
+                    status=status,
+                    error=str(e),
+                )
+                continue
+            for task in tasks:
+                assigned = task.get("assigned_to")
+                if not assigned:
+                    continue
+                assigned_slug = self._resolve_agent_slug(assigned)
+                role = get_agent_role(assigned_slug or "")
+                sla = sla_seconds_for(role, status)
+                if sla is None:
+                    continue
+                age = self._time_in_state(task)
+                if age is None or age.total_seconds() < sla:
+                    continue
+                task_id = task.get("id")
+                if not task_id:
+                    continue
+                await self._escalate_sla_breach(
+                    client,
+                    _SlaBreach(
+                        task_id=str(task_id),
+                        role=role or "",
+                        status=status,
+                        age_seconds=int(age.total_seconds()),
+                        sla_seconds=sla,
+                    ),
+                )
+
+    def _time_in_state(self, task: dict[str, Any]) -> timedelta | None:
+        """Approximate time in current state via task.updated_at.
+
+        Not perfect — any field update bumps `updated_at`, not just status
+        changes — but it's the coarse signal we have, and it under-counts
+        (biased toward "agent is working") rather than over-counts, which
+        matches the soft-SLA intent.
+        """
+        updated_at = task.get("updated_at") or task.get("created_at")
+        if not updated_at:
+            return None
+        try:
+            if updated_at.endswith("Z"):
+                updated_at = updated_at[:-1] + "+00:00"
+            parsed = datetime.fromisoformat(updated_at)
+            if parsed.tzinfo is None:
+                parsed = parsed.replace(tzinfo=UTC)
+            return datetime.now(UTC) - parsed
+        except (ValueError, TypeError):
+            return None
+
+    async def _escalate_sla_breach(
+        self, client: httpx.AsyncClient, breach: _SlaBreach
+    ) -> None:
+        """Record SLA breach in dev_notes and nudge state forward.
+
+        We don't force a state transition here — the MCP lifecycle rules are
+        still authoritative. We log, annotate the task, and notify the
+        assignee's escalation target. The agent's next spawn picks up the
+        updated notes and usually self-escalates.
+        """
+        age_mins = breach.age_seconds // 60
+        sla_mins = breach.sla_seconds // 60
+        note = (
+            f"[SLA] role={breach.role} status={breach.status} "
+            f"time_in_state={age_mins}m sla={sla_mins}m. "
+            "Escalating — agent should call roboco_task_escalate "
+            "or roboco_task_substitute."
+        )
+        try:
+            await client.patch(
+                f"{self._api_url}/tasks/{breach.task_id}",
+                json={"dev_notes": note},
+            )
+            logger.warning(
+                "SLA breach noted on task",
+                task_id=breach.task_id,
+                role=breach.role,
+                status=breach.status,
+                age_minutes=age_mins,
+                sla_minutes=sla_mins,
+            )
+        except Exception as e:
+            logger.debug(
+                "SLA breach annotation failed",
+                task_id=breach.task_id,
+                error=str(e),
+            )
 
     def _get_task_age(self, task: dict[str, Any]) -> timedelta | None:
         """Parse task created_at and return age, or None if unparseable."""

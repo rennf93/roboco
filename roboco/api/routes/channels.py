@@ -1,15 +1,14 @@
 """
 Channel Routes
 
-CRUD operations for communication channels.
+CRUD for communication channels. Thin HTTP plumbing — all DB reads/writes
+are delegated to `MessagingService`.
 """
 
 from typing import Annotated
 from uuid import UUID
 
 from fastapi import APIRouter, HTTPException, Query, status
-from sqlalchemy import func, select
-from sqlalchemy.orm import selectinload
 
 from roboco.api.deps import CurrentAgentContext, DbSession, PermissionServiceDep
 from roboco.api.schemas.channels import (
@@ -18,20 +17,15 @@ from roboco.api.schemas.channels import (
     ChannelResponse,
     GroupResponse,
     ListChannelsQuery,
-    apply_channel_updates,
-    get_channel_or_404,
     require_channel_admin,
 )
-from roboco.db.tables import ChannelTable
 from roboco.models import AgentRole, ChannelCreate, ChannelUpdate
+from roboco.models.messaging import ChannelCreateRequest
+from roboco.services.base import NotFoundError
+from roboco.services.messaging import get_messaging_service
 from roboco.utils.converters import require_uuid, to_python_uuid
 
 router = APIRouter()
-
-
-# =============================================================================
-# Routes
-# =============================================================================
 
 
 @router.get(
@@ -46,40 +40,26 @@ async def list_channels(
     permissions: PermissionServiceDep,
     params: Annotated[ListChannelsQuery, Query()],
 ) -> ChannelListResponse:
-    """List channels the agent can access."""
-    # Get accessible channels based on permissions
+    """List channels the agent can access, paginated."""
     accessible_slugs = permissions.get_accessible_channels(agent)
 
-    # If slug filter provided, intersect with accessible slugs
     if params.slug:
         if params.slug not in accessible_slugs:
-            # Return empty response if requested slug isn't accessible
             return ChannelListResponse(
-                items=[], total=0, page=params.page, page_size=params.page_size
+                items=[],
+                total=0,
+                page=params.page,
+                page_size=params.page_size,
             )
         accessible_slugs = [params.slug]
 
-    # Query channels by slug
-    query = select(ChannelTable).where(ChannelTable.slug.in_(accessible_slugs))
-
-    if not params.include_archived:
-        query = query.where(ChannelTable.is_archived.is_(False))
-
-    # Get total count
-    count_query = select(func.count(ChannelTable.id)).where(
-        ChannelTable.slug.in_(accessible_slugs)
+    messaging = get_messaging_service(db)
+    channels, total = await messaging.list_channels_paginated(
+        accessible_slugs=accessible_slugs,
+        include_archived=params.include_archived,
+        page=params.page,
+        page_size=params.page_size,
     )
-    if not params.include_archived:
-        count_query = count_query.where(ChannelTable.is_archived.is_(False))
-    count_result = await db.execute(count_query)
-    total = count_result.scalar() or 0
-
-    # Apply pagination
-    query = query.offset((params.page - 1) * params.page_size).limit(params.page_size)
-    query = query.order_by(ChannelTable.name)
-
-    result = await db.execute(query)
-    channels = result.scalars().all()
 
     items = [
         ChannelResponse(
@@ -98,7 +78,6 @@ async def list_channels(
         )
         for ch in channels
     ]
-
     return ChannelListResponse(
         items=items,
         total=total,
@@ -119,23 +98,13 @@ async def get_channel(
     permissions: PermissionServiceDep,
     channel_id: UUID,
 ) -> ChannelDetailResponse:
-    """Get channel details."""
-    query = (
-        select(ChannelTable)
-        .where(ChannelTable.id == channel_id)
-        .options(selectinload(ChannelTable.groups))
-    )
+    """Get channel details + groups."""
+    messaging = get_messaging_service(db)
+    try:
+        channel = await messaging.get_channel_with_groups_or_raise(channel_id)
+    except NotFoundError as e:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(e)) from e
 
-    result = await db.execute(query)
-    channel = result.scalar_one_or_none()
-
-    if not channel:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Channel not found",
-        )
-
-    # Check access using permission service
     if not permissions.can_read_channel(agent, channel.slug):
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
@@ -152,7 +121,6 @@ async def get_channel(
         }
         for g in channel.groups
     ]
-
     return ChannelDetailResponse(
         id=require_uuid(channel.id),
         name=channel.name,
@@ -183,22 +151,12 @@ async def get_channel_groups(
     channel_id: UUID,
 ) -> list[GroupResponse]:
     """Get all groups in a channel."""
-    query = (
-        select(ChannelTable)
-        .where(ChannelTable.id == channel_id)
-        .options(selectinload(ChannelTable.groups))
-    )
+    messaging = get_messaging_service(db)
+    try:
+        channel = await messaging.get_channel_with_groups_or_raise(channel_id)
+    except NotFoundError as e:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(e)) from e
 
-    result = await db.execute(query)
-    channel = result.scalar_one_or_none()
-
-    if not channel:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Channel not found",
-        )
-
-    # Check access using permission service
     if not permissions.can_read_channel(agent, channel.slug):
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
@@ -232,7 +190,6 @@ async def create_channel(
     data: ChannelCreate,
 ) -> ChannelResponse:
     """Create a new channel."""
-    # Only Board, Main PM can create channels
     allowed_roles = {AgentRole.CEO, AgentRole.PRODUCT_OWNER, AgentRole.MAIN_PM}
     if agent.role not in allowed_roles:
         raise HTTPException(
@@ -240,30 +197,23 @@ async def create_channel(
             detail="Not authorized to create channels",
         )
 
-    # Check if slug already exists
-    existing = await db.execute(
-        select(ChannelTable).where(ChannelTable.slug == data.slug)
-    )
-    if existing.scalar_one_or_none():
-        raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT,
-            detail=f"Channel with slug '{data.slug}' already exists",
+    messaging = get_messaging_service(db)
+    try:
+        channel = await messaging.create_channel(
+            ChannelCreateRequest(
+                name=data.name,
+                slug=data.slug,
+                channel_type=data.type,
+                description=data.description,
+                members=list(data.members),
+                writers=list(data.writers),
+                silent_observers=list(data.silent_observers),
+                is_private=data.is_private,
+            )
         )
-
-    # Create channel
-    channel = ChannelTable(
-        name=data.name,
-        slug=data.slug,
-        type=data.type,
-        description=data.description,
-        members=list(data.members),
-        writers=list(data.writers),
-        silent_observers=list(data.silent_observers),
-        is_private=data.is_private,
-    )
-
-    db.add(channel)
-    await db.flush()
+    except ValueError as e:
+        # Service raises ValueError on duplicate slug — surface as 409.
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(e)) from e
 
     return ChannelResponse(
         id=require_uuid(channel.id),
@@ -294,11 +244,16 @@ async def update_channel(
     channel_id: UUID,
     data: ChannelUpdate,
 ) -> ChannelResponse:
-    """Update channel settings."""
+    """Update channel fields."""
     require_channel_admin(agent)
-    channel = await get_channel_or_404(db, ChannelTable, channel_id)
-    apply_channel_updates(channel, data)
-    await db.flush()
+    messaging = get_messaging_service(db)
+    try:
+        channel = await messaging.update_channel_fields(
+            channel_id=channel_id,
+            fields=data.model_dump(exclude_unset=True),
+        )
+    except NotFoundError as e:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(e)) from e
 
     return ChannelResponse(
         id=require_uuid(channel.id),
@@ -331,17 +286,15 @@ async def add_member(
 ) -> None:
     """Add a member to the channel."""
     require_channel_admin(agent)
-    channel = await get_channel_or_404(db, ChannelTable, channel_id)
-
-    # Add to members if not already present
-    if member_id not in channel.members:
-        channel.members = [*channel.members, member_id]
-
-    # Add to writers if requested
-    if can_write and member_id not in channel.writers:
-        channel.writers = [*channel.writers, member_id]
-
-    await db.flush()
+    messaging = get_messaging_service(db)
+    try:
+        await messaging.add_channel_member_or_raise(
+            channel_id=channel_id,
+            member_id=member_id,
+            can_write=can_write,
+        )
+    except NotFoundError as e:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(e)) from e
 
 
 @router.delete(
@@ -358,10 +311,11 @@ async def remove_member(
 ) -> None:
     """Remove a member from the channel."""
     require_channel_admin(agent)
-    channel = await get_channel_or_404(db, ChannelTable, channel_id)
-
-    # Remove from members and writers
-    channel.members = [m for m in channel.members if m != member_id]
-    channel.writers = [w for w in channel.writers if w != member_id]
-
-    await db.flush()
+    messaging = get_messaging_service(db)
+    try:
+        await messaging.remove_channel_member_or_raise(
+            channel_id=channel_id,
+            member_id=member_id,
+        )
+    except NotFoundError as e:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(e)) from e

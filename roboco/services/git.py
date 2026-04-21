@@ -10,7 +10,7 @@ import base64
 import re
 import subprocess
 from pathlib import Path
-from typing import ClassVar
+from typing import Any, ClassVar, cast
 from uuid import UUID
 
 import httpx
@@ -216,6 +216,43 @@ class GitService(BaseService):
     # STATUS / INFO METHODS
     # =========================================================================
 
+    @staticmethod
+    def _classify_porcelain(
+        lines: list[str],
+    ) -> tuple[list[str], list[str], list[str]]:
+        """Split `git status --porcelain` lines into staged/unstaged/untracked."""
+        staged: list[str] = []
+        unstaged: list[str] = []
+        untracked: list[str] = []
+        for line in lines:
+            if not line:
+                continue
+            status_code = line[:2]
+            file_path = line[3:]
+            if status_code[0] in "MADRC":
+                staged.append(file_path)
+            if status_code[1] in "MADRC":
+                unstaged.append(file_path)
+            if status_code == "??":
+                untracked.append(file_path)
+        return staged, unstaged, untracked
+
+    async def _ahead_behind(self, workspace: Path, branch: str) -> tuple[int, int]:
+        """Return (ahead, behind) vs origin/<branch>; 0,0 on any error."""
+        try:
+            rev_cmd = f"{branch}...origin/{branch}"
+            rev_result = await self._run_git(
+                workspace, ["rev-list", "--left-right", "--count", rev_cmd], check=False
+            )
+            if rev_result.returncode != 0:
+                return 0, 0
+            parts = rev_result.stdout.strip().split()
+            if len(parts) != _REV_LIST_PARTS:
+                return 0, 0
+            return int(parts[0]), int(parts[1])
+        except GitError:
+            return 0, 0
+
     async def get_status(
         self, workspace: Path
     ) -> tuple[str, bool, list[str], list[str], list[str], int, int]:
@@ -230,36 +267,8 @@ class GitService(BaseService):
         status_result = await self._run_git(workspace, ["status", "--porcelain"])
         lines = status_result.stdout.strip().split("\n") if status_result.stdout else []
 
-        staged_files: list[str] = []
-        unstaged_files: list[str] = []
-        untracked_files: list[str] = []
-
-        for line in lines:
-            if not line:
-                continue
-            status_code = line[:2]
-            file_path = line[3:]
-
-            if status_code[0] in "MADRC":
-                staged_files.append(file_path)
-            if status_code[1] in "MADRC":
-                unstaged_files.append(file_path)
-            if status_code == "??":
-                untracked_files.append(file_path)
-
-        ahead, behind = 0, 0
-        try:
-            rev_cmd = f"{current_branch}...origin/{current_branch}"
-            rev_result = await self._run_git(
-                workspace, ["rev-list", "--left-right", "--count", rev_cmd], check=False
-            )
-            if rev_result.returncode == 0:
-                parts = rev_result.stdout.strip().split()
-                if len(parts) == _REV_LIST_PARTS:
-                    ahead, behind = int(parts[0]), int(parts[1])
-        except GitError:
-            pass
-
+        staged_files, unstaged_files, untracked_files = self._classify_porcelain(lines)
+        ahead, behind = await self._ahead_behind(workspace, current_branch)
         has_changes = bool(staged_files or unstaged_files or untracked_files)
         return (
             current_branch,
@@ -295,14 +304,28 @@ class GitService(BaseService):
     # COMMIT METHODS
     # =========================================================================
 
-    def _parse_github_remote(self, workspace: Path) -> tuple[str, str]:
-        """Read the origin remote URL and extract (owner, repo).
+    @staticmethod
+    def _parse_git_url(url: str) -> tuple[str, str]:
+        """Extract (owner, repo) from any accepted GitHub URL form.
 
-        Handles URLs with or without embedded tokens:
+        Handles tokened, plain-https, and SSH forms:
             https://x-access-token:TOKEN@github.com/owner/repo.git
             https://github.com/owner/repo.git
             git@github.com:owner/repo.git
         """
+        path_match = re.search(
+            r"github\.com[:/]+(?P<owner>[^/]+)/(?P<repo>[^/\s]+?)(?:\.git)?$",
+            url,
+        )
+        if not path_match:
+            raise GitError(
+                "Could not parse GitHub owner/repo from remote URL",
+                {"url_host": url.rsplit("@", maxsplit=1)[-1].split("/", maxsplit=1)[0]},
+            )
+        return path_match.group("owner"), path_match.group("repo")
+
+    def _parse_github_remote(self, workspace: Path) -> tuple[str, str]:
+        """Read the origin remote URL from a workspace and parse owner/repo."""
         cfg = workspace / ".git" / "config"
         try:
             text = cfg.read_text()
@@ -322,21 +345,7 @@ class GitService(BaseService):
                 "No remote URL in git config",
                 {"workspace": str(workspace)},
             )
-        url = match.group("url")
-
-        # Strip embedded credentials and protocol to isolate owner/repo.
-        # https://user:token@github.com/owner/repo.git → owner/repo
-        # git@github.com:owner/repo.git               → owner/repo
-        path_match = re.search(
-            r"github\.com[:/]+(?P<owner>[^/]+)/(?P<repo>[^/\s]+?)(?:\.git)?$",
-            url,
-        )
-        if not path_match:
-            raise GitError(
-                "Could not parse GitHub owner/repo from remote URL",
-                {"url_host": url.split("@")[-1].split("/")[0]},
-            )
-        return path_match.group("owner"), path_match.group("repo")
+        return self._parse_git_url(match.group("url"))
 
     def _get_primary_session_id(self, task: TaskTable | None) -> str | None:
         """Get primary session ID from task's session links.
@@ -444,6 +453,70 @@ class GitService(BaseService):
     # BRANCH METHODS
     # =========================================================================
 
+    async def _resolve_base_branch(
+        self,
+        task_id: UUID,
+        parent_branch_override: str | None,
+        project_slug: str,
+        task_service: Any,
+    ) -> str:
+        """Work out which branch the new task branch should be cut from.
+
+        Priority: explicit override → parent task's branch → project default
+        branch → "main".
+        """
+        if parent_branch_override:
+            return parent_branch_override
+        task = await task_service.get(task_id)
+        if task and task.parent_task_id:
+            parent = await task_service.get(UUID(str(task.parent_task_id)))
+            if parent and parent.branch_name:
+                return str(parent.branch_name)
+        return await self._project_default_branch(project_slug)
+
+    async def _project_default_branch(self, project_slug: str) -> str:
+        """Return the project's configured default branch, or 'main'."""
+        project_service = get_project_service(self.session)
+        project = await project_service.get_by_slug(project_slug)
+        return (
+            str(project.default_branch)
+            if project and project.default_branch
+            else "main"
+        )
+
+    async def _checkout_base_with_fallback(
+        self,
+        workspace: Path,
+        base_branch: str,
+        default_branch: str,
+        task_id: UUID,
+    ) -> str:
+        """Checkout `base_branch`, falling back to default if it's missing.
+
+        Returns the branch actually checked out.
+        """
+        result = await self._run_git(workspace, ["checkout", base_branch], check=False)
+        if result.returncode == 0:
+            return base_branch
+        # Local branch missing — try a tracking branch from remote
+        tracking = await self._run_git(
+            workspace,
+            ["checkout", "-b", base_branch, f"origin/{base_branch}"],
+            check=False,
+        )
+        if tracking.returncode == 0:
+            return base_branch
+        # Neither local nor remote has this branch — fall back to default
+        self.log.warning(
+            "Parent branch unavailable locally and on origin; "
+            "falling back to default branch",
+            base_branch=base_branch,
+            default_branch=default_branch,
+            task_id=str(task_id),
+        )
+        await self._run_git(workspace, ["checkout", default_branch])
+        return default_branch
+
     async def create_branch(
         self,
         workspace: Path,
@@ -467,32 +540,10 @@ class GitService(BaseService):
         except BranchNameError as e:
             raise ValidationError(str(e)) from e
 
-        # Get base branch
-        base_branch = request.parent_branch
-        if not base_branch:
-            task = await task_service.get(task_id)
-            if task and task.parent_task_id:
-                parent = await task_service.get(UUID(str(task.parent_task_id)))
-                if parent and parent.branch_name:
-                    base_branch = str(parent.branch_name)
-
-            if not base_branch:
-                project_service = get_project_service(self.session)
-                project = await project_service.get_by_slug(request.project_slug)
-                base_branch = (
-                    str(project.default_branch)
-                    if project and project.default_branch
-                    else "main"
-                )
-
-        # Validate parent branch exists on remote (unless it's the default branch)
-        project_service = get_project_service(self.session)
-        project = await project_service.get_by_slug(request.project_slug)
-        default_branch = (
-            str(project.default_branch)
-            if project and project.default_branch
-            else "main"
+        base_branch = await self._resolve_base_branch(
+            task_id, request.parent_branch, request.project_slug, task_service
         )
+        default_branch = await self._project_default_branch(request.project_slug)
 
         # Token for any remote-touching git command below (fetch, ls-remote,
         # pull, push). Injected into a single `http.extraheader` config for
@@ -525,35 +576,9 @@ class GitService(BaseService):
         # Fetch to ensure we have the latest refs (critical for parent branches)
         await self._run_git(workspace, ["fetch", "origin"], token=project_token)
 
-        # Create and push branch.
-        # Try direct checkout first (works if the local branch already exists).
-        checkout_result = await self._run_git(
-            workspace, ["checkout", base_branch], check=False
+        base_branch = await self._checkout_base_with_fallback(
+            workspace, base_branch, default_branch, task_id
         )
-        if checkout_result.returncode != 0:
-            # Local branch missing — try creating a tracking branch from remote.
-            tracking_result = await self._run_git(
-                workspace,
-                ["checkout", "-b", base_branch, f"origin/{base_branch}"],
-                check=False,
-            )
-            if tracking_result.returncode != 0:
-                # Neither local nor remote has this branch. This can happen
-                # when an ancestor task was claimed but its branch was never
-                # pushed (e.g. claim created branch locally in one workspace
-                # and the claimer paused without pushing). Fall back to the
-                # project's default branch so the new task can still proceed
-                # — it just won't have ancestor commits, which is expected
-                # if the ancestor never did any work.
-                self.log.warning(
-                    "Parent branch unavailable locally and on origin; "
-                    "falling back to default branch",
-                    base_branch=base_branch,
-                    default_branch=default_branch,
-                    task_id=str(task_id),
-                )
-                base_branch = default_branch
-                await self._run_git(workspace, ["checkout", base_branch])
 
         await self._run_git(
             workspace, ["pull", "origin", base_branch], token=project_token
@@ -618,6 +643,41 @@ class GitService(BaseService):
     # PR METHODS
     # =========================================================================
 
+    @staticmethod
+    def _collect_root_commits(
+        root: TaskTable, descendants: list[TaskTable]
+    ) -> list[PRCommitInfo]:
+        """Flatten commits across root + every descendant."""
+        out: list[PRCommitInfo] = []
+        for d in [root, *descendants]:
+            for c in d.commits or []:
+                out.append(
+                    PRCommitInfo(
+                        hash=str(c.get("hash", "")),
+                        message=str(c.get("message", "")),
+                        agent_slug=str(c.get("agent_id", "unknown")),
+                    )
+                )
+        return out
+
+    @staticmethod
+    def _collect_agent_slugs(
+        root: TaskTable, descendants: list[TaskTable]
+    ) -> list[str]:
+        """Unique agent slugs involved in root + descendants."""
+        slugs = [str(d.assigned_to) for d in descendants if d.assigned_to]
+        if root.assigned_to:
+            slugs.append(str(root.assigned_to))
+        return list(set(slugs))
+
+    @staticmethod
+    def _primary_session_id(task: TaskTable) -> str | None:
+        """Session flagged is_primary on the root task's session_links."""
+        for link in task.session_links or []:
+            if link.is_primary:
+                return str(link.session_id)
+        return None
+
     async def _build_root_pr_context(
         self,
         task: TaskTable,
@@ -640,35 +700,11 @@ class GitService(BaseService):
             for d in descendants
         ]
 
-        all_commits: list[PRCommitInfo] = []
-        for d in [task, *descendants]:
-            if d.commits:
-                for c in d.commits:
-                    all_commits.append(
-                        PRCommitInfo(
-                            hash=str(c.get("hash", "")),
-                            message=str(c.get("message", "")),
-                            agent_slug=str(c.get("agent_id", "unknown")),
-                        )
-                    )
-
-        agent_slugs = [str(d.assigned_to) for d in descendants if d.assigned_to]
-        if task.assigned_to:
-            agent_slugs.append(str(task.assigned_to))
-        agent_slugs = list(set(agent_slugs))
-
-        primary_session_id = None
-        if task.session_links:
-            for link in task.session_links:
-                if link.is_primary:
-                    primary_session_id = str(link.session_id)
-                    break
-
-        task_type = "feature"
-        if "/" in source_branch:
-            task_type = source_branch.split("/", maxsplit=1)[0]
-
-        criteria = list(task.acceptance_criteria) if task.acceptance_criteria else []
+        task_type = (
+            source_branch.split("/", maxsplit=1)[0]
+            if "/" in source_branch
+            else "feature"
+        )
 
         return RootPRContext(
             root_task_id=str(task.id),
@@ -677,11 +713,23 @@ class GitService(BaseService):
             root_task_assigned_to=str(task.assigned_to) if task.assigned_to else None,
             root_task_type=task_type,
             subtasks=subtask_infos,
-            commits=all_commits,
-            primary_session_id=primary_session_id,
-            agent_slugs=agent_slugs,
-            acceptance_criteria=criteria,
+            commits=self._collect_root_commits(task, descendants),
+            primary_session_id=self._primary_session_id(task),
+            agent_slugs=self._collect_agent_slugs(task, descendants),
+            acceptance_criteria=list(task.acceptance_criteria)
+            if task.acceptance_criteria
+            else [],
         )
+
+    @staticmethod
+    def _str_or(value: Any, default: str = "") -> str:
+        """Helper: str(value) when truthy, else default."""
+        return str(value) if value else default
+
+    @staticmethod
+    def _str_or_none(value: Any) -> str | None:
+        """Helper: str(value) when truthy, else None."""
+        return str(value) if value else None
 
     async def _build_internal_pr_context(
         self,
@@ -703,145 +751,188 @@ class GitService(BaseService):
             for c in (task.commits or [])
         ]
 
-        qa_statuses = ("awaiting_documentation", "awaiting_pm_review")
-        qa_passed = bool(task.status and str(task.status.value) in qa_statuses)
+        status_value = self._str_or(
+            task.status.value if task.status else None, "unknown"
+        )
+        qa_passed = status_value in ("awaiting_documentation", "awaiting_pm_review")
 
         return InternalPRContext(
             task_id=str(task.id),
             task_title=str(task.title),
-            task_description=str(task.description) if task.description else "",
-            task_status=str(task.status.value) if task.status else "unknown",
-            task_assigned_to=str(task.assigned_to) if task.assigned_to else None,
-            parent_task_id=str(parent_task.id) if parent_task else None,
-            parent_task_title=str(parent_task.title) if parent_task else None,
+            task_description=self._str_or(task.description),
+            task_status=status_value,
+            task_assigned_to=self._str_or_none(task.assigned_to),
+            parent_task_id=self._str_or_none(parent_task.id if parent_task else None),
+            parent_task_title=self._str_or_none(
+                parent_task.title if parent_task else None
+            ),
             source_branch=source_branch,
             target_branch=target_branch,
             commits=task_commits,
             session_id=None,
-            qa_notes=str(task.qa_notes) if task.qa_notes else None,
+            qa_notes=self._str_or_none(task.qa_notes),
             qa_passed=qa_passed,
         )
 
-    async def create_pull_request(  # noqa: PLR0912, PLR0915
-        self, workspace: Path, request: GitCreatePRRequest
-    ) -> tuple[int, str, str, str, str]:
-        """Create a pull request using GitHub CLI.
-
-        Returns: (pr_number, pr_url, title, source_branch, target_branch)
-        """
-        task_id = UUID(request.task_id)
-        task_service = get_task_service(self.session)
-        task = await task_service.get(task_id)
-
-        if not task:
-            raise NotFoundError("Task", str(task_id))
-
-        source_branch = await self.get_current_branch(workspace)
-
-        # Determine target branch and get project token
-        project_service = get_project_service(self.session)
-        project = await project_service.get_by_slug(request.project_slug)
-        default_branch = (
-            str(project.default_branch)
-            if project and project.default_branch
-            else "main"
-        )
-
-        # Get decrypted token from project (required for PR creation).
+    async def _get_project_token_or_raise(self, project_slug: str) -> str:
+        """Fetch + decrypt the project's GitHub PAT, raising GitError on problem."""
         from roboco.utils.crypto import EncryptionError
 
+        project_service = get_project_service(self.session)
         try:
-            git_token = await project_service.get_decrypted_token_by_slug(
-                request.project_slug
-            )
+            git_token = await project_service.get_decrypted_token_by_slug(project_slug)
         except EncryptionError as e:
             raise GitError(
-                f"Failed to decrypt git token for project '{request.project_slug}'. "
+                f"Failed to decrypt git token for project '{project_slug}'. "
                 "The encryption key may have been rotated; re-set the project token."
             ) from e
         if not git_token:
             raise GitError(
-                f"Project '{request.project_slug}' has no git token configured. "
+                f"Project '{project_slug}' has no git token configured. "
                 "Configure a GitHub PAT in the project settings to create PRs."
             )
+        return git_token
 
+    async def _resolve_pr_target_branch(
+        self, request: GitCreatePRRequest, task: Any, default_branch: str
+    ) -> str:
+        """Pick the PR target branch: parent's branch (non-root) or default."""
         if request.is_root_pr:
-            target_branch = default_branch
-        elif task.parent_task_id:
+            return default_branch
+        if task.parent_task_id:
+            task_service = get_task_service(self.session)
             parent = await task_service.get(UUID(str(task.parent_task_id)))
             branch = parent.branch_name if parent else None
-            target_branch = str(branch) if branch else default_branch
-        else:
-            target_branch = default_branch
+            return str(branch) if branch else default_branch
+        return default_branch
 
-        # Auto-generate title/body using templates if not provided
+    async def _generate_pr_title_body(
+        self,
+        request: GitCreatePRRequest,
+        task: Any,
+        source_branch: str,
+        target_branch: str,
+        task_id: UUID,
+    ) -> tuple[str | None, str | None]:
+        """Auto-generate title/body from templates when either is missing."""
         pr_title = request.title
         pr_body = request.body
+        if pr_title and pr_body:
+            return pr_title, pr_body
+        task_service = get_task_service(self.session)
         api_base = settings.internal_api_url
+        if request.is_root_pr:
+            root_ctx = await self._build_root_pr_context(
+                task, task_service, task_id, source_branch
+            )
+            pr_title = pr_title or build_pr_title_root(root_ctx)
+            pr_body = pr_body or build_pr_body_root(root_ctx, api_base)
+        else:
+            internal_ctx = await self._build_internal_pr_context(
+                task, task_service, source_branch, target_branch
+            )
+            pr_title = pr_title or build_pr_title_internal(internal_ctx)
+            pr_body = pr_body or build_pr_body_internal(internal_ctx, api_base)
+        return pr_title, pr_body
 
-        if not pr_title or not pr_body:
-            if request.is_root_pr:
-                root_ctx = await self._build_root_pr_context(
-                    task, task_service, task_id, source_branch
-                )
-                pr_title = pr_title or build_pr_title_root(root_ctx)
-                pr_body = pr_body or build_pr_body_root(root_ctx, api_base)
-            else:
-                internal_ctx = await self._build_internal_pr_context(
-                    task, task_service, source_branch, target_branch
-                )
-                pr_title = pr_title or build_pr_title_internal(internal_ctx)
-                pr_body = pr_body or build_pr_body_internal(internal_ctx, api_base)
+    async def _find_existing_pr(
+        self,
+        owner: str,
+        repo: str,
+        source_branch: str,
+        target_branch: str,
+        git_token: str,
+    ) -> dict[str, Any] | None:
+        """Return the first open PR for head→base, or None."""
+        async with httpx.AsyncClient(timeout=_GIT_TIMEOUT) as client:
+            existing = await client.get(
+                f"https://api.github.com/repos/{owner}/{repo}/pulls",
+                headers={
+                    "Authorization": f"Bearer {git_token}",
+                    "Accept": "application/vnd.github+json",
+                },
+                params={
+                    "head": f"{owner}:{source_branch}",
+                    "base": target_branch,
+                    "state": "open",
+                },
+            )
+        if existing.is_success and existing.json():
+            return cast("dict[str, Any]", existing.json()[0])
+        return None
 
-        # Create PR via GitHub REST API. Earlier versions of this code
-        # shelled out to `gh` — that requires the CLI in every container
-        # running this service AND leaks the PAT into argv / process env
-        # where it can be read by other processes. REST API uses bearer
-        # auth, no subprocess, no CLI dependency.
-        owner, repo = self._parse_github_remote(workspace)
+    async def _post_pr(
+        self,
+        owner: str,
+        repo: str,
+        git_token: str,
+        payload: dict[str, Any],
+    ) -> httpx.Response:
+        """POST the PR payload to GitHub; translate HTTP errors to GitError."""
         try:
             async with httpx.AsyncClient(timeout=_GIT_TIMEOUT) as client:
-                resp = await client.post(
+                return await client.post(
                     f"https://api.github.com/repos/{owner}/{repo}/pulls",
                     headers={
                         "Authorization": f"Bearer {git_token}",
                         "Accept": "application/vnd.github+json",
                         "X-GitHub-Api-Version": "2022-11-28",
                     },
-                    json={
-                        "title": pr_title or "",
-                        "body": pr_body or "",
-                        "head": source_branch,
-                        "base": target_branch,
-                    },
+                    json=payload,
                 )
         except httpx.HTTPError as e:
             raise GitError(
                 f"GitHub API error while creating PR: {e}",
-                {"owner": owner, "repo": repo, "head": source_branch},
+                {"owner": owner, "repo": repo, "head": payload.get("head")},
             ) from e
 
+    async def create_pull_request(
+        self, workspace: Path, request: GitCreatePRRequest
+    ) -> tuple[int, str, str, str, str]:
+        """Create a pull request via the GitHub REST API.
+
+        Returns: (pr_number, pr_url, title, source_branch, target_branch)
+        """
+        task_id = UUID(request.task_id)
+        task_service = get_task_service(self.session)
+        task = await task_service.get(task_id)
+        if not task:
+            raise NotFoundError("Task", str(task_id))
+
+        source_branch = await self.get_current_branch(workspace)
+        default_branch = await self._project_default_branch(request.project_slug)
+        git_token = await self._get_project_token_or_raise(request.project_slug)
+
+        target_branch = await self._resolve_pr_target_branch(
+            request, task, default_branch
+        )
+        pr_title, pr_body = await self._generate_pr_title_body(
+            request, task, source_branch, target_branch, task_id
+        )
+
+        owner, repo = self._parse_github_remote(workspace)
+        resp = await self._post_pr(
+            owner,
+            repo,
+            git_token,
+            {
+                "title": pr_title or "",
+                "body": pr_body or "",
+                "head": source_branch,
+                "base": target_branch,
+            },
+        )
+
+        # Idempotency: PR already exists for this head→base.
         if resp.status_code == _GH_UNPROCESSABLE and "already exists" in resp.text:
-            # Idempotency: PR already exists for this head→base. Fetch it.
-            async with httpx.AsyncClient(timeout=_GIT_TIMEOUT) as client:
-                existing = await client.get(
-                    f"https://api.github.com/repos/{owner}/{repo}/pulls",
-                    headers={
-                        "Authorization": f"Bearer {git_token}",
-                        "Accept": "application/vnd.github+json",
-                    },
-                    params={
-                        "head": f"{owner}:{source_branch}",
-                        "base": target_branch,
-                        "state": "open",
-                    },
-                )
-            if existing.is_success and existing.json():
-                pr_data = existing.json()[0]
+            found = await self._find_existing_pr(
+                owner, repo, source_branch, target_branch, git_token
+            )
+            if found:
                 return (
-                    int(pr_data["number"]),
-                    pr_data["html_url"],
-                    pr_data.get("title", pr_title or ""),
+                    int(found["number"]),
+                    found["html_url"],
+                    found.get("title", pr_title or ""),
                     source_branch,
                     target_branch,
                 )
@@ -854,44 +945,26 @@ class GitService(BaseService):
             )
 
         pr_data = resp.json()
-        pr_number = int(pr_data["number"])
-        pr_url = str(pr_data["html_url"])
-        return pr_number, pr_url, pr_title or "", source_branch, target_branch
+        return (
+            int(pr_data["number"]),
+            str(pr_data["html_url"]),
+            pr_title or "",
+            source_branch,
+            target_branch,
+        )
 
-    async def merge_pull_request(
-        self, workspace: Path, pr_number: int, merge_method: str, project_slug: str
-    ) -> tuple[str, str]:
-        """Merge a PR using GitHub CLI.
-
-        Returns: (target_branch, merge_commit)
-        """
-        # Get project token for gh CLI
-        project_service = get_project_service(self.session)
-        from roboco.utils.crypto import EncryptionError
-
-        try:
-            git_token = await project_service.get_decrypted_token_by_slug(project_slug)
-        except EncryptionError as e:
-            raise GitError(
-                f"Failed to decrypt git token for project '{project_slug}'. "
-                "The encryption key may have been rotated; re-set the project token."
-            ) from e
-        if not git_token:
-            raise GitError(
-                f"Project '{project_slug}' has no git token configured. "
-                "Configure a GitHub PAT in the project settings to merge PRs."
-            )
-
-        # Merge via GitHub REST API (same reasoning as create_pull_request:
-        # no gh CLI dependency, no token in subprocess argv/env).
-        owner, repo = self._parse_github_remote(workspace)
-        valid_methods = {"merge", "squash", "rebase"}
-        if merge_method not in valid_methods:
-            merge_method = "squash"  # safe default
-
+    async def _call_merge_api(
+        self,
+        owner: str,
+        repo: str,
+        pr_number: int,
+        git_token: str,
+        merge_method: str,
+    ) -> httpx.Response:
+        """PUT the merge request to GitHub; HTTP errors → GitError."""
         try:
             async with httpx.AsyncClient(timeout=_GIT_TIMEOUT) as client:
-                resp = await client.put(
+                return await client.put(
                     f"https://api.github.com/repos/{owner}/{repo}/pulls/"
                     f"{pr_number}/merge",
                     headers={
@@ -907,54 +980,116 @@ class GitService(BaseService):
                 {"owner": owner, "repo": repo, "pr": pr_number},
             ) from e
 
+    async def _sync_target_branch(
+        self, workspace: Path, target_branch: str, git_token: str
+    ) -> str:
+        """Checkout + pull the target branch, return the tip commit hash."""
+        await self._run_git(workspace, ["checkout", target_branch])
+        await self._run_git(workspace, ["pull"], token=git_token)
+        log_result = await self._run_git(workspace, ["log", "-1", "--format=%H"])
+        return log_result.stdout.strip()
+
+    async def _delete_remote_branch_best_effort(
+        self, owner: str, repo: str, branch: str, git_token: str
+    ) -> None:
+        """Best-effort: delete a remote branch by name.
+
+        Silently swallows errors — cleanup is not critical. Skips
+        branches that look like project defaults (main / master /
+        develop) as a last-chance safety net against bad input.
+        """
+        if branch in ("main", "master", "develop", ""):
+            return
+        try:
+            async with httpx.AsyncClient(timeout=10.0) as client:
+                await client.delete(
+                    f"https://api.github.com/repos/{owner}/{repo}/git/refs/heads/{branch}",
+                    headers={
+                        "Authorization": f"Bearer {git_token}",
+                        "Accept": "application/vnd.github+json",
+                        "X-GitHub-Api-Version": "2022-11-28",
+                    },
+                )
+        except httpx.HTTPError:
+            return
+
+    async def _delete_pr_branch_best_effort(
+        self, owner: str, repo: str, pr_number: int, git_token: str
+    ) -> None:
+        """Best-effort: delete the PR's source branch on the remote after merge.
+
+        Silently swallows errors — branch cleanup is not critical.
+        """
+        try:
+            async with httpx.AsyncClient(timeout=10.0) as client:
+                pr_resp = await client.get(
+                    f"https://api.github.com/repos/{owner}/{repo}/pulls/{pr_number}",
+                    headers={
+                        "Authorization": f"Bearer {git_token}",
+                        "Accept": "application/vnd.github+json",
+                        "X-GitHub-Api-Version": "2022-11-28",
+                    },
+                )
+                if not pr_resp.is_success:
+                    return
+                branch = (pr_resp.json().get("head") or {}).get("ref")
+                if not branch:
+                    return
+            await self._delete_remote_branch_best_effort(owner, repo, branch, git_token)
+        except httpx.HTTPError:
+            return
+
+    async def delete_task_branch(self, project_slug: str, branch_name: str) -> None:
+        """Delete a remote task branch after cancel/discard. Best-effort.
+
+        Called by `TaskService` on cancellation so abandoned task
+        branches don't accumulate on the remote.
+        """
+        git_token = await self._token_for_project(project_slug)
+        if not git_token:
+            return
+        # Resolve remote from any workspace — branch deletion only needs
+        # the owner/repo, not a checkout. Use a service-root probe path
+        # if no agent workspace is available.
+        try:
+            project_service = get_project_service(self.session)
+            project = await project_service.get_by_slug(project_slug)
+            if not project or not project.git_url:
+                return
+            owner, repo = self._parse_git_url(project.git_url)
+        except Exception:
+            return
+        await self._delete_remote_branch_best_effort(
+            owner, repo, branch_name, git_token
+        )
+
+    async def merge_pull_request(
+        self, workspace: Path, pr_number: int, merge_method: str, project_slug: str
+    ) -> tuple[str, str]:
+        """Merge a PR via the GitHub REST API.
+
+        Returns: (target_branch, merge_commit)
+        """
+        git_token = await self._get_project_token_or_raise(project_slug)
+        owner, repo = self._parse_github_remote(workspace)
+        if merge_method not in {"merge", "squash", "rebase"}:
+            merge_method = "squash"
+
+        resp = await self._call_merge_api(
+            owner, repo, pr_number, git_token, merge_method
+        )
         if not resp.is_success:
             raise GitError(
                 f"GitHub API refused PR merge ({resp.status_code}): {resp.text[:200]}",
                 {"owner": owner, "repo": repo, "pr": pr_number},
             )
 
-        # Best-effort branch delete after merge (mimics --delete-branch from gh).
-        head_ref = resp.json().get("sha")  # noqa: F841 — reserved for future
-        source_branch: str | None = None
-        try:
-            async with httpx.AsyncClient(timeout=_GIT_TIMEOUT) as client:
-                pr_info = await client.get(
-                    f"https://api.github.com/repos/{owner}/{repo}/pulls/{pr_number}",
-                    headers={
-                        "Authorization": f"Bearer {git_token}",
-                        "Accept": "application/vnd.github+json",
-                    },
-                )
-                if pr_info.is_success:
-                    source_branch = pr_info.json().get("head", {}).get("ref")
-            if source_branch:
-                async with httpx.AsyncClient(timeout=_GIT_TIMEOUT) as client:
-                    await client.delete(
-                        f"https://api.github.com/repos/{owner}/{repo}/git/refs/"
-                        f"heads/{source_branch}",
-                        headers={
-                            "Authorization": f"Bearer {git_token}",
-                            "Accept": "application/vnd.github+json",
-                        },
-                    )
-        except httpx.HTTPError:
-            # Branch cleanup is cosmetic; merge already succeeded.
-            pass
+        await self._delete_pr_branch_best_effort(owner, repo, pr_number, git_token)
 
-        # Get target branch
-        project = await project_service.get_by_slug(project_slug)
-        target_branch = (
-            str(project.default_branch)
-            if project and project.default_branch
-            else "main"
+        target_branch = await self._project_default_branch(project_slug)
+        merge_commit = await self._sync_target_branch(
+            workspace, target_branch, git_token
         )
-
-        # Get merge commit
-        await self._run_git(workspace, ["checkout", target_branch])
-        await self._run_git(workspace, ["pull"], token=git_token)
-        log_result = await self._run_git(workspace, ["log", "-1", "--format=%H"])
-        merge_commit = log_result.stdout.strip()
-
         return target_branch, merge_commit
 
 

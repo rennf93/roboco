@@ -62,6 +62,112 @@ class DocsIndexPlugin(BaseIndexPlugin):
         file_path = kwargs.get("file_path", doc_id or "unknown")
         return f"roboco://docs/{file_path}"
 
+    def _expand_source(self, source: str) -> list[Path]:
+        """Expand a source string into a list of candidate files.
+
+        Accepts glob patterns, directory paths, or individual files. Returns
+        an empty list for anything that doesn't resolve. Skips directories
+        listed in SKIP_DIRECTORIES for recursive expansion.
+        """
+        source_path = Path(source)
+        if "*" in source:
+            return list(Path().glob(source))
+        if source_path.is_dir():
+            md_files = [
+                f
+                for f in source_path.rglob("*.md")
+                if not any(skip in f.parts for skip in SKIP_DIRECTORIES)
+            ]
+            txt_files = [
+                f
+                for f in source_path.rglob("*.txt")
+                if not any(skip in f.parts for skip in SKIP_DIRECTORIES)
+            ]
+            return md_files + txt_files
+        if source_path.exists():
+            return [source_path]
+        logger.warning(f"Source not found: {source}")
+        return []
+
+    def _read_file_record(
+        self, file_path: Path, project: str | None
+    ) -> dict[str, Any] | None:
+        """Read one file into a dict the batch pipeline consumes.
+
+        Returns None if the file shouldn't be indexed (wrong type, in a
+        skip dir, unreadable) so callers can just filter None-s out.
+        """
+        if not file_path.is_file():
+            return None
+        if any(skip in file_path.parts for skip in SKIP_DIRECTORIES):
+            return None
+        try:
+            content = file_path.read_text(encoding="utf-8")
+        except Exception as e:
+            logger.warning(
+                "Failed to read documentation file",
+                file=str(file_path),
+                error=str(e),
+            )
+            return None
+        return {
+            "content": content,
+            "file_path": file_path,
+            "doc_type": self._detect_doc_type(file_path),
+            "project": project or "default",
+        }
+
+    def _collect_files(
+        self, sources: list[str], project: str | None
+    ) -> list[dict[str, Any]]:
+        """Walk every source and return the readable file records."""
+        files_data: list[dict[str, Any]] = []
+        for source in sources:
+            files = self._expand_source(source)
+            logger.info(f"Found {len(files)} doc files to index in {source}")
+            for file_path in files:
+                record = self._read_file_record(file_path, project)
+                if record is not None:
+                    files_data.append(record)
+        return files_data
+
+    @staticmethod
+    def _build_documents(
+        files_data: list[dict[str, Any]],
+    ) -> list[tuple[str, str | None, dict[str, Any]]]:
+        """Shape the file records for `ingest_batch`."""
+        return [
+            (
+                str(data["content"]),
+                str(data["file_path"]),
+                {
+                    "file_path": str(data["file_path"]),
+                    "doc_type": data["doc_type"],
+                    "project": data["project"],
+                },
+            )
+            for data in files_data
+        ]
+
+    @staticmethod
+    def _build_indexed_files(
+        files_data: list[dict[str, Any]],
+    ) -> list[dict[str, Any]]:
+        """Shape the file records for the DB-tracking return payload."""
+        return [
+            {
+                "source": str(data["file_path"].absolute()),
+                "title": data["file_path"]
+                .stem.replace("-", " ")
+                .replace("_", " ")
+                .title(),
+                "preview": data["content"][:500] if data["content"] else None,
+                "doc_type": data["doc_type"],
+                "file_path": str(data["file_path"]),
+            }
+            for data in files_data
+        ]
+
     async def index_sources(
         self,
         sources: list[str],
@@ -81,97 +187,14 @@ class DocsIndexPlugin(BaseIndexPlugin):
             Tuple of (count, indexed_files) where indexed_files contains
             metadata for each file indexed (for database tracking)
         """
-        # Step 1: Collect all files and their contents
-        files_data: list[dict[str, Any]] = []
-
-        for source in sources:
-            source_path = Path(source)
-
-            # Expand glob patterns and directories
-            if "*" in source:
-                files = list(Path().glob(source))
-            elif source_path.is_dir():
-                md_files = [
-                    f
-                    for f in source_path.rglob("*.md")
-                    if not any(skip in f.parts for skip in SKIP_DIRECTORIES)
-                ]
-                txt_files = [
-                    f
-                    for f in source_path.rglob("*.txt")
-                    if not any(skip in f.parts for skip in SKIP_DIRECTORIES)
-                ]
-                files = md_files + txt_files
-            elif source_path.exists():
-                files = [source_path]
-            else:
-                logger.warning(f"Source not found: {source}")
-                continue
-
-            logger.info(f"Found {len(files)} doc files to index in {source}")
-
-            for file_path in files:
-                if not file_path.is_file():
-                    continue
-                if any(skip in file_path.parts for skip in SKIP_DIRECTORIES):
-                    continue
-
-                try:
-                    content = file_path.read_text(encoding="utf-8")
-                    doc_type = self._detect_doc_type(file_path)
-
-                    files_data.append(
-                        {
-                            "content": content,
-                            "file_path": file_path,
-                            "doc_type": doc_type,
-                            "project": project or "default",
-                        }
-                    )
-                except Exception as e:
-                    logger.warning(
-                        "Failed to read documentation file",
-                        file=str(file_path),
-                        error=str(e),
-                    )
-
+        files_data = self._collect_files(sources, project)
         if not files_data:
             return 0, []
 
         logger.info(f"Batch processing {len(files_data)} documentation files")
-
-        # Use base class batch ingest for efficient processing
-        documents: list[tuple[str, str | None, dict[str, Any]]] = [
-            (
-                str(data["content"]),  # Ensure str type
-                str(data["file_path"]),
-                {
-                    "file_path": str(data["file_path"]),
-                    "doc_type": data["doc_type"],
-                    "project": data["project"],
-                },
-            )
-            for data in files_data
-        ]
-
-        results = await self.ingest_batch(documents)
+        results = await self.ingest_batch(self._build_documents(files_data))
         count = sum(1 for r in results if r.success)
-
-        # Build indexed_files list for database tracking
-        indexed_files = [
-            {
-                "source": str(data["file_path"].absolute()),
-                "title": data["file_path"]
-                .stem.replace("-", " ")
-                .replace("_", " ")
-                .title(),
-                "preview": data["content"][:500] if data["content"] else None,
-                "doc_type": data["doc_type"],
-                "file_path": str(data["file_path"]),
-            }
-            for data in files_data
-        ]
-
+        indexed_files = self._build_indexed_files(files_data)
         logger.info(f"Batch indexing complete: {count} docs indexed")
         return count, indexed_files
 

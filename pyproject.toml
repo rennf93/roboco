@@ -47,11 +47,15 @@ dependencies = [
 
     # Streaming
     "sse-starlette",  # Server-Sent Events for A2A streaming
-    "einops",
 
-    # Transitive via piragi, listed explicitly so [tool.uv.sources] below
-    # can redirect to the CPU-only PyTorch wheel index (saves ~2.5GB of
-    # unused CUDA libs — our stack uses Ollama over HTTP for all ML work).
+    # Direct imports (promoted from transitive)
+    "cryptography",  # utils/crypto.py — Fernet-encrypted project git tokens
+
+    # Build-time pin (not imported). Verified empirically: removing this
+    # entry causes uv to ignore the [tool.uv.sources.torch] CPU-only
+    # redirect and pull ~2.5GB of unused CUDA wheels. The entry has to
+    # appear in direct deps for the source override to bind. deptry's
+    # DEP002 ignore for `torch` below documents the same reality.
     "torch",
 ]
 
@@ -250,7 +254,7 @@ sort_by_size = true
 # Bandit Configuration
 # =============================================================================
 [tool.bandit]
-skips = ["B101", "B601"]
+skips = []
 exclude_dirs = ["tests", ".venv", "vulture_whitelist.py", "alembic"]
 severity = "medium"
 
@@ -302,6 +306,10 @@ DEP002 = [
     "tiktoken",
     # Retry logic (used in production services)
     "tenacity",
+    # Build-time pin, not imported — see the comment next to the torch
+    # entry in [project.dependencies] for the full rationale. Removing
+    # it from deps caused uv to pull the full CUDA stack.
+    "torch",
     # Dev tools (CLI, not imported)
     "pytest",
     "pytest-asyncio",

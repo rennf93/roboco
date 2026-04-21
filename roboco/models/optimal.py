@@ -5,12 +5,12 @@ Data classes for knowledge base and RAG operations.
 """
 
 from dataclasses import dataclass, field
-from enum import Enum
+from enum import StrEnum
 from typing import Any
 from uuid import UUID
 
 
-class IndexType(str, Enum):
+class IndexType(StrEnum):
     """Types of content indexes in the Optimal Brain."""
 
     # Existing indexes
@@ -218,7 +218,11 @@ class ValidationResult:
     # List of violations: [{rule_id, title, description}]
     violations: list[dict[str, Any]] = field(default_factory=list)
     warnings: list[dict[str, Any]] = field(default_factory=list)
-    relevant_standards: list[Standard] = field(default_factory=list)
+    # Populated with raw SearchResult rows from the knowledge-base
+    # index so the API layer can surface source + score + index_type +
+    # metadata. Previously typed as `Standard` but that dataclass has
+    # no retrieval metadata — the caller passes SearchResult.
+    relevant_standards: list[SearchResult] = field(default_factory=list)
 
 
 @dataclass

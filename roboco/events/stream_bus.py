@@ -234,6 +234,46 @@ class StreamEventBus:
                 logger.error("Error in stream event loop", error=str(e))
                 await asyncio.sleep(1)
 
+    @staticmethod
+    def _decode_event_data(data: dict) -> str | None:
+        """Pull the event payload out of a stream record."""
+        event_data = data.get(b"data") or data.get("data")
+        if isinstance(event_data, bytes):
+            event_data = event_data.decode()
+        if not event_data or not isinstance(event_data, str):
+            return None
+        return event_data
+
+    @staticmethod
+    def _check_handler_results(event: Event, handlers: list, results: list) -> bool:
+        """Log handler errors; return True only when every handler succeeded."""
+        all_succeeded = True
+        for i, result in enumerate(results):
+            if isinstance(result, Exception):
+                all_succeeded = False
+                logger.error(
+                    "Event handler error",
+                    event_type=event.type.value,
+                    handler=handlers[i].__name__,
+                    error=str(result),
+                )
+        return all_succeeded
+
+    async def _dispatch_event(self, event: Event) -> bool:
+        """Run all handlers for an event; return True if all succeeded."""
+        handlers = self._handlers.get(event.type, [])
+        if not handlers:
+            return True
+
+        logger.debug(
+            "Handling event from stream",
+            event_type=event.type.value,
+            handler_count=len(handlers),
+        )
+        tasks = [handler(event) for handler in handlers]
+        results = await asyncio.gather(*tasks, return_exceptions=True)
+        return self._check_handler_results(event, handlers, results)
+
     async def _handle_message(
         self,
         stream: str,
@@ -245,45 +285,14 @@ class StreamEventBus:
             return
 
         try:
-            event_data = data.get(b"data") or data.get("data")
-            if isinstance(event_data, bytes):
-                event_data = event_data.decode()
-
-            if not event_data or not isinstance(event_data, str):
+            event_data = self._decode_event_data(data)
+            if event_data is None:
                 logger.error("Invalid event data", message_id=message_id)
                 await self._redis.xack(stream, self.group_name, message_id)
                 return
 
             event = Event.from_json(event_data)
-
-            handlers = self._handlers.get(event.type, [])
-            if not handlers:
-                # No handlers but still ACK to prevent redelivery
-                await self._redis.xack(stream, self.group_name, message_id)
-                return
-
-            logger.debug(
-                "Handling event from stream",
-                event_type=event.type.value,
-                message_id=message_id,
-                handler_count=len(handlers),
-            )
-
-            # Run all handlers concurrently
-            tasks = [handler(event) for handler in handlers]
-            results = await asyncio.gather(*tasks, return_exceptions=True)
-
-            # Log any errors
-            all_succeeded = True
-            for i, result in enumerate(results):
-                if isinstance(result, Exception):
-                    all_succeeded = False
-                    logger.error(
-                        "Event handler error",
-                        event_type=event.type.value,
-                        handler=handlers[i].__name__,
-                        error=str(result),
-                    )
+            all_succeeded = await self._dispatch_event(event)
 
             # ACK the message if all handlers succeeded
             # If any failed, message stays pending and can be reclaimed later
@@ -303,6 +312,49 @@ class StreamEventBus:
                 message_id=message_id,
             )
 
+    async def _claim_and_handle(
+        self, stream: str, msg_id: str, idle_time_ms: int
+    ) -> int:
+        """Claim a single idle message and process it; return count recovered."""
+        if self._redis is None:
+            raise RuntimeError("Invariant: self._redis must be set — guarded by caller")
+        claimed = await self._redis.xclaim(
+            stream,
+            self.group_name,
+            self.consumer_name,
+            min_idle_time=idle_time_ms,
+            message_ids=[msg_id],
+        )
+        if not claimed:
+            return 0
+        for claim_id, data in claimed:
+            await self._handle_message(stream, claim_id, data)
+        return 1
+
+    async def _recover_stream(self, stream: str, idle_time_ms: int) -> int:
+        """Recover idle pending messages from a single stream."""
+        if self._redis is None:
+            raise RuntimeError("Invariant: self._redis must be set — guarded by caller")
+        pending = await self._redis.xpending(stream, self.group_name)
+        if not pending or pending["pending"] == 0:
+            return 0
+
+        pending_details = await self._redis.xpending_range(
+            stream,
+            self.group_name,
+            min="-",
+            max="+",
+            count=100,
+        )
+
+        recovered = 0
+        for msg in pending_details:
+            if msg["time_since_delivered"] >= idle_time_ms:
+                recovered += await self._claim_and_handle(
+                    stream, msg["message_id"], idle_time_ms
+                )
+        return recovered
+
     async def recover_pending(self, idle_time_ms: int = 60000) -> int:
         """
         Recover pending messages that weren't acknowledged.
@@ -319,43 +371,9 @@ class StreamEventBus:
             return 0
 
         recovered = 0
-        streams = self._get_all_stream_names()
-
-        for stream in streams:
+        for stream in self._get_all_stream_names():
             try:
-                # Claim pending messages from any consumer
-                pending = await self._redis.xpending(stream, self.group_name)
-                if not pending or pending["pending"] == 0:
-                    continue
-
-                # Get pending message details
-                pending_details = await self._redis.xpending_range(
-                    stream,
-                    self.group_name,
-                    min="-",
-                    max="+",
-                    count=100,
-                )
-
-                for msg in pending_details:
-                    msg_id = msg["message_id"]
-                    idle = msg["time_since_delivered"]
-
-                    if idle >= idle_time_ms:
-                        # Claim message for this consumer
-                        claimed = await self._redis.xclaim(
-                            stream,
-                            self.group_name,
-                            self.consumer_name,
-                            min_idle_time=idle_time_ms,
-                            message_ids=[msg_id],
-                        )
-                        if claimed:
-                            recovered += 1
-                            # Process the claimed message
-                            for claim_id, data in claimed:
-                                await self._handle_message(stream, claim_id, data)
-
+                recovered += await self._recover_stream(stream, idle_time_ms)
             except Exception as e:
                 logger.error(
                     "Error recovering pending messages",

@@ -143,7 +143,9 @@ class LearningPropagationService:
         # Generate learning ID
         import hashlib
 
-        content_hash = hashlib.md5(params.content.encode()).hexdigest()[:12]
+        content_hash = hashlib.md5(
+            params.content.encode(), usedforsecurity=False
+        ).hexdigest()[:12]
         learning_id = f"lrn-{content_hash}"
 
         # Create learning object

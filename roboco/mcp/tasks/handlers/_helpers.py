@@ -11,6 +11,27 @@ from roboco.mcp.tasks import get_available_tasks_guidance
 from roboco.mcp.utils import ApiClient, format_error_response, resolve_agent_uuid_cached
 
 
+async def _fetch_tasks_for_pm(
+    client: ApiClient, params: dict[str, str]
+) -> list[dict[str, Any]]:
+    """PMs need both pending and awaiting_pm_review tasks combined."""
+    pending_resp = await client.get("/tasks", params={**params, "status": "pending"})
+    pending = pending_resp.json() if pending_resp.ok else []
+    review_resp = await client.get(
+        "/tasks", params={**params, "status": "awaiting_pm_review"}
+    )
+    review = review_resp.json() if review_resp.ok else []
+    return pending + review
+
+
+async def _fetch_tasks_from_endpoint(
+    client: ApiClient, path: str, params: dict[str, str]
+) -> list[dict[str, Any]]:
+    """GET ``path`` and return json list or empty list on failure."""
+    resp = await client.get(path, params=params)
+    return resp.json() if resp.ok else []
+
+
 async def get_available_tasks_for_role(
     client: ApiClient, agent_role: str, team: str | None
 ) -> list[dict[str, Any]]:
@@ -18,25 +39,17 @@ async def get_available_tasks_for_role(
     params = {"team": team} if team else {}
 
     if agent_role == "qa":
-        resp = await client.get("/tasks/awaiting-qa", params=params)
-        return resp.json() if resp.ok else []
+        return await _fetch_tasks_from_endpoint(client, "/tasks/awaiting-qa", params)
 
     if agent_role == "documenter":
-        resp = await client.get("/tasks/awaiting-docs", params=params)
-        return resp.json() if resp.ok else []
+        return await _fetch_tasks_from_endpoint(client, "/tasks/awaiting-docs", params)
 
     if agent_role in ("cell_pm", "main_pm"):
-        pending_params = {**params, "status": "pending"}
-        pending_resp = await client.get("/tasks", params=pending_params)
-        pending = pending_resp.json() if pending_resp.ok else []
-        review_resp = await client.get(
-            "/tasks", params={**params, "status": "awaiting_pm_review"}
-        )
-        review = review_resp.json() if review_resp.ok else []
-        return pending + review
+        return await _fetch_tasks_for_pm(client, params)
 
-    resp = await client.get("/tasks", params={**params, "status": "pending"})
-    return resp.json() if resp.ok else []
+    return await _fetch_tasks_from_endpoint(
+        client, "/tasks", {**params, "status": "pending"}
+    )
 
 
 def _get_role_pending_task_guidance(
@@ -65,6 +78,22 @@ def _get_role_pending_task_guidance(
     )
 
 
+def _paused_tasks_guidance(paused_tasks: list[dict]) -> str:
+    """Build guidance message when the agent has paused tasks pending."""
+    return (
+        f"You have {len(paused_tasks)} paused task(s). "
+        "Resume your paused work before claiming new tasks."
+    )
+
+
+def _assigned_tasks_guidance(assigned_tasks: list[dict]) -> str:
+    """Build guidance message when the agent has active assignments."""
+    return (
+        f"You have {len(assigned_tasks)} active task(s). "
+        "Continue working on your assigned tasks."
+    )
+
+
 def get_scan_guidance(
     paused_tasks: list[dict],
     assigned_tasks: list[dict],
@@ -73,22 +102,15 @@ def get_scan_guidance(
 ) -> str:
     """Get guidance message based on task scan results."""
     if paused_tasks:
-        return (
-            f"You have {len(paused_tasks)} paused task(s). "
-            "Resume your paused work before claiming new tasks."
-        )
+        return _paused_tasks_guidance(paused_tasks)
 
-    # Special case: QA/Documenter with pending tasks (not their usual queue)
     if agent_role in ("qa", "documenter"):
         pending_guidance = _get_role_pending_task_guidance(assigned_tasks, agent_role)
         if pending_guidance:
             return pending_guidance
 
     if assigned_tasks:
-        return (
-            f"You have {len(assigned_tasks)} active task(s). "
-            "Continue working on your assigned tasks."
-        )
+        return _assigned_tasks_guidance(assigned_tasks)
     if available_tasks:
         return get_available_tasks_guidance(available_tasks, agent_role or "unknown")
     return (
@@ -131,6 +153,61 @@ def check_paused_tasks(active_tasks: list[dict]) -> dict[str, Any] | None:
     return None
 
 
+_CLAIMABLE_STATUSES: dict[str, list[str]] = {
+    # QA: pending (direct QA tasks from PM) or awaiting_qa (normal workflow)
+    "qa": ["pending", "awaiting_qa"],
+    # Documenters: pending (direct docs tasks) or awaiting_documentation (workflow)
+    "documenter": ["pending", "awaiting_documentation"],
+    # Developers: pending or needs_revision (after QA/CEO rejection)
+    "developer": ["pending", "needs_revision"],
+    # PMs: pending or awaiting_pm_review
+    "cell_pm": ["pending", "awaiting_pm_review"],
+    "main_pm": ["pending", "awaiting_pm_review"],
+}
+
+
+def _pm_code_task_hint(agent_role: str) -> str:
+    """Hint text for why a given PM role cannot claim a code task."""
+    if agent_role == "main_pm":
+        return (
+            "Create a subtask for the appropriate Cell PM (be-pm, fe-pm, ux-pm) "
+            "using roboco_task_create(parent_task_id=this_task_id, team='backend', "
+            "assigned_to='be-pm'). Then activate it with roboco_task_activate()."
+        )
+    return (
+        "You cannot claim code tasks. Create a subtask for a developer "
+        "(be-dev-1, be-dev-2, etc.) using roboco_task_create(parent_task_id="
+        "this_task_id, assigned_to='be-dev-1'). Then roboco_task_activate()."
+    )
+
+
+def _guard_pm_from_code_tasks(task: dict, agent_role: str) -> dict[str, Any] | None:
+    """Return error if a PM is attempting to claim a code task."""
+    task_type = task.get("task_type", "code")
+    if agent_role not in ("main_pm", "cell_pm") or task_type != "code":
+        return None
+    return format_error_response(
+        "PM_CANNOT_EXECUTE_CODE",
+        f"{agent_role.replace('_', ' ').title()} cannot claim code tasks. "
+        "PMs coordinate, developers execute.",
+        {"task_type": task_type, "your_role": agent_role},
+        hint=_pm_code_task_hint(agent_role),
+    )
+
+
+async def _is_preassigned_to_agent(
+    task: dict, agent_id: str, client: ApiClient
+) -> bool:
+    """Return True if this pending/needs_revision task is already assigned to caller."""
+    if task.get("status") not in ("pending", "needs_revision"):
+        return False
+    assigned_to = task.get("assigned_to")
+    if not assigned_to:
+        return False
+    agent_uuid = await resolve_agent_uuid_cached(agent_id, client)
+    return bool(agent_uuid and assigned_to == agent_uuid)
+
+
 async def validate_task_claimable(
     task: dict, agent_role: str, agent_id: str, client: ApiClient
 ) -> dict[str, Any] | None:
@@ -139,53 +216,15 @@ async def validate_task_claimable(
     Special case: If an agent is already assigned to a pending task (PM assigned
     it directly to them), they can claim it to transition to 'claimed' status.
     """
-    # ENFORCEMENT: ALL PMs must delegate code tasks, not execute them
-    task_type = task.get("task_type", "code")
-    pm_roles = ("main_pm", "cell_pm")
-    if agent_role in pm_roles and task_type == "code":
-        if agent_role == "main_pm":
-            hint = (
-                "Create a subtask for the appropriate Cell PM (be-pm, fe-pm, ux-pm) "
-                "using roboco_task_create(parent_task_id=this_task_id, team='backend', "
-                "assigned_to='be-pm'). Then activate it with roboco_task_activate()."
-            )
-        else:  # cell_pm
-            hint = (
-                "You cannot claim code tasks. Create a subtask for a developer "
-                "(be-dev-1, be-dev-2, etc.) using roboco_task_create(parent_task_id="
-                "this_task_id, assigned_to='be-dev-1'). Then roboco_task_activate()."
-            )
-        return format_error_response(
-            "PM_CANNOT_EXECUTE_CODE",
-            f"{agent_role.replace('_', ' ').title()} cannot claim code tasks. "
-            "PMs coordinate, developers execute.",
-            {"task_type": task_type, "your_role": agent_role},
-            hint=hint,
-        )
+    if error := _guard_pm_from_code_tasks(task, agent_role):
+        return error
+
+    if await _is_preassigned_to_agent(task, agent_id, client):
+        return None
 
     task_status = task.get("status")
-    claimable_statuses = {
-        # QA: pending (direct QA tasks from PM) or awaiting_qa (normal workflow)
-        "qa": ["pending", "awaiting_qa"],
-        # Documenters: pending (direct docs tasks) or awaiting_documentation (workflow)
-        "documenter": ["pending", "awaiting_documentation"],
-        # Developers: pending or needs_revision (after QA/CEO rejection)
-        "developer": ["pending", "needs_revision"],
-        # PMs: pending or awaiting_pm_review
-        "cell_pm": ["pending", "awaiting_pm_review"],
-        "main_pm": ["pending", "awaiting_pm_review"],
-    }
     # Default for unlisted roles is pending + needs_revision (developer-like behavior)
-    allowed = claimable_statuses.get(agent_role, ["pending", "needs_revision"])
-
-    # Special case: agent can claim tasks already assigned to them
-    # This handles PM directly assigning tasks or needs_revision tasks
-    if task_status in ("pending", "needs_revision"):
-        assigned_to = task.get("assigned_to")
-        if assigned_to:
-            agent_uuid = await resolve_agent_uuid_cached(agent_id, client)
-            if agent_uuid and assigned_to == agent_uuid:
-                return None  # Allow claiming - already assigned to this agent
+    allowed = _CLAIMABLE_STATUSES.get(agent_role, ["pending", "needs_revision"])
 
     if task_status not in allowed:
         return format_error_response(
@@ -289,6 +328,19 @@ def validate_task_status_claimed(task: dict) -> dict[str, Any] | None:
     return None
 
 
+def _normalize_open_question(q: Any) -> dict[str, Any] | None:
+    """Normalize a single open-question entry; returns None to skip unknown inputs."""
+    if isinstance(q, str):
+        return {"question": q, "answered": False}
+    if isinstance(q, dict):
+        return {
+            "question": q.get("question", ""),
+            "answered": q.get("answered", False),
+            "answer": q.get("answer"),
+        }
+    return None
+
+
 def build_plan_data(plan_params: dict[str, Any]) -> dict[str, Any]:
     """Build the plan data structure from params.
 
@@ -297,20 +349,11 @@ def build_plan_data(plan_params: dict[str, Any]) -> dict[str, Any]:
     - List of dicts: [{"question": "Q1", "answered": True}] -> preserves status
     """
     raw_questions = plan_params.get("open_questions") or []
-    open_questions = []
-    for q in raw_questions:
-        if isinstance(q, str):
-            # Simple string format - new unanswered question
-            open_questions.append({"question": q, "answered": False})
-        elif isinstance(q, dict):
-            # Dict format - preserve answered status if provided
-            open_questions.append(
-                {
-                    "question": q.get("question", ""),
-                    "answered": q.get("answered", False),
-                    "answer": q.get("answer"),  # Optional: store the answer text
-                }
-            )
+    open_questions = [
+        normalized
+        for q in raw_questions
+        if (normalized := _normalize_open_question(q)) is not None
+    ]
 
     return {
         "approach": plan_params["approach"],
@@ -326,6 +369,54 @@ def build_plan_data(plan_params: dict[str, Any]) -> dict[str, Any]:
         "risks": [{"description": r} for r in (plan_params.get("risks") or [])],
         "open_questions": open_questions,
     }
+
+
+def _no_plan_error(task_id: str) -> dict[str, Any]:
+    """Return the NO_PLAN error payload for a claimed task without a plan."""
+    return format_error_response(
+        "NO_PLAN",
+        "Cannot start without a plan. Workflow: CLAIM → PLAN → START",
+        {
+            "current_status": "claimed",
+            "next_action": "roboco_task_plan",
+            "workflow": ["claimed", "plan submitted", "start", "in_progress"],
+            "why": (
+                "Planning ensures you understand the task, break it into steps, "
+                "identify risks, and ask questions before writing code."
+            ),
+            "example": {
+                "tool": "roboco_task_plan",
+                "args": {
+                    "task_id": task_id,
+                    "approach": "Describe your high-level implementation strategy",
+                    "sub_tasks": [
+                        {"title": "Step 1", "description": "First action to take"},
+                        {"title": "Step 2", "description": "Second action to take"},
+                    ],
+                    "risks": ["Potential issue that could block progress"],
+                    "open_questions": ["Question to clarify with PM if any"],
+                },
+            },
+        },
+        hint="roboco_kb_search('task plan workflow')",
+    )
+
+
+def _validate_claimed_start(task: dict[str, Any]) -> dict[str, Any] | None:
+    """Extra checks that only apply when starting a 'claimed' task."""
+    if not task.get("plan"):
+        return _no_plan_error(task.get("id", "unknown"))
+
+    plan = task.get("plan", {})
+    unanswered = [q for q in plan.get("open_questions", []) if not q.get("answered")]
+    if unanswered:
+        return format_error_response(
+            "UNANSWERED_QUESTIONS",
+            f"Cannot start with {len(unanswered)} unanswered question(s). "
+            "Get answers first, then update the plan.",
+            {"questions": [q.get("question") for q in unanswered]},
+        )
+    return None
 
 
 async def validate_task_start(
@@ -345,47 +436,7 @@ async def validate_task_start(
             {"current_status": task_status},
         )
 
-    if task_status == "claimed" and not task.get("plan"):
-        task_id = task.get("id", "unknown")
-        return format_error_response(
-            "NO_PLAN",
-            "Cannot start without a plan. Workflow: CLAIM → PLAN → START",
-            {
-                "current_status": "claimed",
-                "next_action": "roboco_task_plan",
-                "workflow": ["claimed", "plan submitted", "start", "in_progress"],
-                "why": (
-                    "Planning ensures you understand the task, break it into steps, "
-                    "identify risks, and ask questions before writing code."
-                ),
-                "example": {
-                    "tool": "roboco_task_plan",
-                    "args": {
-                        "task_id": task_id,
-                        "approach": "Describe your high-level implementation strategy",
-                        "sub_tasks": [
-                            {"title": "Step 1", "description": "First action to take"},
-                            {"title": "Step 2", "description": "Second action to take"},
-                        ],
-                        "risks": ["Potential issue that could block progress"],
-                        "open_questions": ["Question to clarify with PM if any"],
-                    },
-                },
-            },
-            hint="roboco_kb_search('task plan workflow')",
-        )
-
     if task_status == "claimed":
-        plan = task.get("plan", {})
-        unanswered = [
-            q for q in plan.get("open_questions", []) if not q.get("answered")
-        ]
-        if unanswered:
-            return format_error_response(
-                "UNANSWERED_QUESTIONS",
-                f"Cannot start with {len(unanswered)} unanswered question(s). "
-                "Get answers first, then update the plan.",
-                {"questions": [q.get("question") for q in unanswered]},
-            )
+        return _validate_claimed_start(task)
 
     return None

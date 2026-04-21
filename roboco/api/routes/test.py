@@ -8,6 +8,7 @@ Uses multi-agent workspace structure - each agent gets their own
 workspace at: {workspaces_root}/{project_slug}/{team}/{agent_slug}/
 """
 
+import shlex
 import subprocess
 from pathlib import Path
 from uuid import UUID
@@ -46,6 +47,55 @@ _LINT_PARTS_MIN = 4
 _TYPE_ERROR_PARTS_MIN = 3
 
 
+def _resolve_legacy_workspace(project: object, project_slug: str) -> Path:
+    """Resolve workspace using the legacy single-path project config."""
+    workspace_path = getattr(project, "workspace_path", None)
+    if not workspace_path:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Project '{project_slug}' has no workspace configured "
+            "and no agent_id provided for dynamic workspace resolution",
+        )
+    workspace = Path(workspace_path)
+    if not workspace.exists():
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Workspace path does not exist: {workspace}",
+        )
+    return workspace
+
+
+async def _resolve_agent_workspace(
+    db: DbSession, project: object, project_slug: str, agent_id: UUID
+) -> Path:
+    """Resolve workspace via WorkspaceService (ensure/resolve per setting)."""
+    workspace_service = get_workspace_service(db)
+    try:
+        if settings.workspace_auto_clone:
+            return await workspace_service.ensure_workspace(
+                project_slug=project_slug,
+                agent_id=agent_id,
+                git_url=project.git_url,  # type: ignore[attr-defined]
+                default_branch=project.default_branch or "main",  # type: ignore[attr-defined]
+            )
+        workspace = await workspace_service.resolve_workspace(
+            project_slug=project_slug,
+            agent_id=agent_id,
+        )
+        if not workspace.exists():
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"Workspace does not exist: {workspace}. "
+                "Clone the repository first or enable auto_clone.",
+            )
+        return workspace
+    except WorkspaceError as e:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(e),
+        ) from e
+
+
 async def _get_project_and_workspace(
     db: DbSession,
     project_slug: str,
@@ -64,50 +114,10 @@ async def _get_project_and_workspace(
             detail=f"Project '{project_slug}' not found",
         )
 
-    # If no agent_id, fall back to legacy workspace_path
     if agent_id is None:
-        if not project.workspace_path:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail=f"Project '{project_slug}' has no workspace configured "
-                "and no agent_id provided for dynamic workspace resolution",
-            )
-        workspace = Path(project.workspace_path)
-        if not workspace.exists():
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail=f"Workspace path does not exist: {workspace}",
-            )
-        return project, workspace
+        return project, _resolve_legacy_workspace(project, project_slug)
 
-    # Use workspace service for multi-agent workspace resolution
-    workspace_service = get_workspace_service(db)
-
-    try:
-        if settings.workspace_auto_clone:
-            workspace = await workspace_service.ensure_workspace(
-                project_slug=project_slug,
-                agent_id=agent_id,
-                git_url=project.git_url,
-                default_branch=project.default_branch or "main",
-            )
-        else:
-            workspace = await workspace_service.resolve_workspace(
-                project_slug=project_slug,
-                agent_id=agent_id,
-            )
-            if not workspace.exists():
-                raise HTTPException(
-                    status_code=status.HTTP_400_BAD_REQUEST,
-                    detail=f"Workspace does not exist: {workspace}. "
-                    "Clone the repository first or enable auto_clone.",
-                )
-    except WorkspaceError as e:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=str(e),
-        ) from e
-
+    workspace = await _resolve_agent_workspace(db, project, project_slug, agent_id)
     return project, workspace
 
 
@@ -119,11 +129,15 @@ async def _run_command(
     """Run a shell command in the workspace (non-blocking)."""
     import asyncio
 
+    # Tokenize with shlex so we can drop `shell=True` — project-supplied
+    # commands are simple exe + args (pytest, ruff, mypy). Shell-specific
+    # features (pipes, redirects, env expansion) aren't supported here.
+    argv = shlex.split(command)
+
     def _run() -> subprocess.CompletedProcess[str]:
         return subprocess.run(
-            command,
+            argv,
             check=False,
-            shell=True,
             cwd=workspace,
             capture_output=True,
             text=True,
@@ -170,6 +184,23 @@ async def get_test_status(
 # =============================================================================
 
 
+def _parse_pytest_counts(output: str) -> tuple[int, int, int]:
+    """Parse (passed, failed, skipped) counts from pytest-style output."""
+    if "passed" not in output:
+        return 0, 0, 0
+    import re
+
+    def _first_int(pattern: str) -> int:
+        match = re.search(pattern, output)
+        return int(match.group(1)) if match else 0
+
+    return (
+        _first_int(r"(\d+) passed"),
+        _first_int(r"(\d+) failed"),
+        _first_int(r"(\d+) skipped"),
+    )
+
+
 @router.post("/run", response_model=TestRunResponse)
 async def run_tests(
     data: TestRunRequest,
@@ -188,7 +219,6 @@ async def run_tests(
             detail=f"Project '{data.project_slug}' has no test_command configured",
         )
 
-    # Add optional path and verbose flag
     cmd = test_cmd
     if data.test_path:
         cmd = f"{cmd} {data.test_path}"
@@ -196,43 +226,51 @@ async def run_tests(
         cmd = f"{cmd} -v"
 
     result = await _run_command(workspace, cmd)
-
-    # Parse pytest-style output (simplified)
-    passed = result.returncode == 0
     output = result.stdout + result.stderr
-
-    # Try to parse counts from output
-    passed_count, failed_count, skipped_count = 0, 0, 0
-    failures: list[str] = []
-
-    if "passed" in output:
-        # Simple parsing - would be more robust in production
-        import re
-
-        match = re.search(r"(\d+) passed", output)
-        if match:
-            passed_count = int(match.group(1))
-        match = re.search(r"(\d+) failed", output)
-        if match:
-            failed_count = int(match.group(1))
-        match = re.search(r"(\d+) skipped", output)
-        if match:
-            skipped_count = int(match.group(1))
+    passed_count, failed_count, skipped_count = _parse_pytest_counts(output)
 
     return TestRunResponse(
         project_slug=data.project_slug,
-        passed=passed,
+        passed=result.returncode == 0,
         passed_count=passed_count,
         failed_count=failed_count,
         skipped_count=skipped_count,
         output=output[:10000],  # Limit output size
-        failures=failures,
+        failures=[],
     )
 
 
 # =============================================================================
 # LINT ENDPOINT
 # =============================================================================
+
+
+def _parse_lint_line(line: str) -> LintIssue | None:
+    """Parse a single ruff-style lint output line."""
+    if "::" in line or not line.strip():
+        return None
+    parts = line.split(":", 3)
+    if len(parts) < _LINT_PARTS_MIN:
+        return None
+    try:
+        return LintIssue(
+            file=parts[0],
+            line=int(parts[1]),
+            column=int(parts[2]),
+            code=parts[3].split()[0] if parts[3].strip() else "E",
+            message=parts[3].strip(),
+        )
+    except (ValueError, IndexError):
+        return None
+
+
+def _parse_lint_output(output: str) -> list[LintIssue]:
+    """Parse ruff-style lint output into structured issues."""
+    issues: list[LintIssue] = []
+    for line in output.split("\n"):
+        if issue := _parse_lint_line(line):
+            issues.append(issue)
+    return issues
 
 
 @router.post("/lint", response_model=LintResponse)
@@ -253,7 +291,6 @@ async def run_lint(
             detail=f"Project '{data.project_slug}' has no lint_command configured",
         )
 
-    # Add optional fix flag and path
     cmd = lint_cmd
     if data.fix:
         cmd = f"{cmd} --fix"
@@ -261,43 +298,29 @@ async def run_lint(
         cmd = f"{cmd} {data.path}"
 
     result = await _run_command(workspace, cmd)
-
-    passed = result.returncode == 0
     output = result.stdout + result.stderr
-    issues: list[LintIssue] = []
-    fixed_count = 0
-
-    # Parse ruff-style output (simplified)
-    for line in output.split("\n"):
-        if "::" in line or not line.strip():
-            continue
-        # Try to parse "file:line:col: code message"
-        parts = line.split(":", 3)
-        if len(parts) >= _LINT_PARTS_MIN:
-            try:
-                issues.append(
-                    LintIssue(
-                        file=parts[0],
-                        line=int(parts[1]),
-                        column=int(parts[2]),
-                        code=parts[3].split()[0] if parts[3].strip() else "E",
-                        message=parts[3].strip(),
-                    )
-                )
-            except (ValueError, IndexError):
-                continue
 
     return LintResponse(
         project_slug=data.project_slug,
-        passed=passed,
-        issues=issues,
-        fixed_count=fixed_count,
+        passed=result.returncode == 0,
+        issues=_parse_lint_output(output),
+        fixed_count=0,
     )
 
 
 # =============================================================================
 # FORMAT ENDPOINT
 # =============================================================================
+
+
+def _build_format_cmd(base_cmd: str, data: FormatRequest) -> str:
+    """Apply --check and path modifiers to the base format command."""
+    cmd = base_cmd
+    if data.check_only:
+        cmd = f"{cmd} --check"
+    if data.path:
+        cmd = f"{cmd} {data.path}"
+    return cmd
 
 
 @router.post("/format", response_model=FormatResponse)
@@ -318,17 +341,9 @@ async def run_format(
             detail=f"Project '{data.project_slug}' has no format_command configured",
         )
 
-    # Add optional check flag and path
-    cmd = format_cmd
-    if data.check_only:
-        cmd = f"{cmd} --check"
-    if data.path:
-        cmd = f"{cmd} {data.path}"
-
-    result = await _run_command(workspace, cmd)
+    result = await _run_command(workspace, _build_format_cmd(format_cmd, data))
     output = result.stdout + result.stderr
 
-    # Count files modified (simplified parsing)
     files_modified = output.count("reformatted") if not data.check_only else 0
     files_unchanged = output.count("unchanged") or output.count("already formatted")
 
@@ -342,6 +357,32 @@ async def run_format(
 # =============================================================================
 # TYPECHECK ENDPOINT
 # =============================================================================
+
+
+def _parse_typecheck_line(line: str) -> TypecheckError | None:
+    """Parse a single mypy-style type error line."""
+    if ": error:" not in line:
+        return None
+    parts = line.split(":", 2)
+    if len(parts) < _TYPE_ERROR_PARTS_MIN:
+        return None
+    try:
+        return TypecheckError(
+            file=parts[0],
+            line=int(parts[1]),
+            message=parts[2].replace(" error:", "").strip(),
+        )
+    except (ValueError, IndexError):
+        return None
+
+
+def _parse_typecheck_output(output: str) -> list[TypecheckError]:
+    """Parse mypy-style output into structured type errors."""
+    errors: list[TypecheckError] = []
+    for line in output.split("\n"):
+        if err := _parse_typecheck_line(line):
+            errors.append(err)
+    return errors
 
 
 @router.post("/typecheck", response_model=TypecheckResponse)
@@ -362,37 +403,17 @@ async def run_typecheck(
             detail=f"Project '{data.project_slug}' has no typecheck_command configured",
         )
 
-    # Add optional path
     cmd = typecheck_cmd
     if data.path:
         cmd = f"{cmd} {data.path}"
 
     result = await _run_command(workspace, cmd)
-
-    passed = result.returncode == 0
     output = result.stdout + result.stderr
-    errors: list[TypecheckError] = []
-
-    # Parse mypy-style output (simplified)
-    for line in output.split("\n"):
-        if ": error:" in line:
-            parts = line.split(":", 2)
-            if len(parts) >= _TYPE_ERROR_PARTS_MIN:
-                try:
-                    errors.append(
-                        TypecheckError(
-                            file=parts[0],
-                            line=int(parts[1]),
-                            message=parts[2].replace(" error:", "").strip(),
-                        )
-                    )
-                except (ValueError, IndexError):
-                    continue
 
     return TypecheckResponse(
         project_slug=data.project_slug,
-        passed=passed,
-        errors=errors,
+        passed=result.returncode == 0,
+        errors=_parse_typecheck_output(output),
     )
 
 

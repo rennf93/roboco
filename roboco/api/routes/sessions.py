@@ -1,17 +1,14 @@
 """
-Session Routes
+Session API Routes
 
-Session management within groups. Sessions bound messages
-by time, count, or content length.
+Sessions bound messages within a group. Thin HTTP plumbing — all state
+reads/writes live in `MessagingService`.
 """
 
-from datetime import UTC, datetime, timedelta
 from typing import Annotated
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, status
-from sqlalchemy import select
-from sqlalchemy.orm import selectinload
 
 from roboco.api.deps import CurrentAgentId, DbSession
 from roboco.api.schemas.sessions import (
@@ -25,20 +22,18 @@ from roboco.api.schemas.sessions import (
     SessionTaskLinkResponse,
     SessionTaskLinksResponse,
 )
-from roboco.db.tables import (
-    ChannelTable,
-    GroupTable,
-    SessionTable,
-    SessionTaskTable,
-)
-from roboco.models import SessionStatus
+from roboco.db.tables import SessionTaskTable
 from roboco.models.session import (
     SessionForTasksCreate,
     SessionTaskRelationshipType,
 )
 from roboco.services import ConflictError, NotFoundError
-from roboco.services.messaging import get_messaging_service
-from roboco.services.permissions import has_privileged_access, is_pm_role
+from roboco.services.messaging import (
+    ApiSessionCreate,
+    get_messaging_service,
+)
+from roboco.services.permissions import is_pm_role
+from roboco.services.proactive import get_proactive_service
 from roboco.utils.converters import require_uuid
 
 router = APIRouter()
@@ -46,18 +41,16 @@ router = APIRouter()
 logger = __import__("structlog").get_logger(__name__)
 
 
-async def _inject_session_context(
-    session_id: UUID,
-    agent_id: UUID,
-) -> None:
-    """Inject proactive knowledge context when a session starts."""
-    try:
-        from roboco.services.proactive import get_proactive_service
+async def _inject_session_context(session_id: UUID, agent_id: UUID) -> None:
+    """Fire-and-forget proactive-context injection after session start.
 
+    Failure is swallowed — we never let context-injection errors take down
+    a successful session creation.
+    """
+    try:
         proactive = await get_proactive_service()
         context = await proactive.get_context_for_session(
-            session_id=session_id,
-            agent_id=agent_id,
+            session_id=session_id, agent_id=agent_id
         )
         if context and not context.is_empty():
             logger.info(
@@ -66,12 +59,38 @@ async def _inject_session_context(
                 agent_id=str(agent_id),
             )
     except Exception as e:
-        # Don't fail session creation if proactive injection fails
         logger.warning(
             "Failed to inject session context",
             session_id=str(session_id),
             error=str(e),
         )
+
+
+def _session_to_response(session) -> SessionResponse:  # type: ignore[no-untyped-def]
+    """Minimal SessionTable → SessionResponse mapper."""
+    return SessionResponse(
+        id=require_uuid(session.id),
+        group_id=require_uuid(session.group_id),
+        status=session.status,
+        scope=session.scope,
+        message_count=session.message_count,
+        total_content_length=session.total_content_length,
+        started_at=session.started_at,
+        last_activity_at=session.last_activity_at,
+        closed_at=session.closed_at,
+    )
+
+
+def _link_to_response(link: SessionTaskTable) -> SessionTaskLinkResponse:
+    return SessionTaskLinkResponse(
+        id=require_uuid(link.id),
+        session_id=require_uuid(link.session_id),
+        task_id=require_uuid(link.task_id),
+        is_primary=link.is_primary,
+        relationship_type=link.relationship_type,
+        added_at=link.added_at,
+        added_by=require_uuid(link.added_by) if link.added_by else None,
+    )
 
 
 # =============================================================================
@@ -90,83 +109,44 @@ async def list_sessions(
     agent_id: CurrentAgentId,
     params: Annotated[ListSessionsParams, Depends()],
 ) -> SessionListResponse:
-    """List sessions for a group."""
-    # Verify group access
-    group_result = await db.execute(
-        select(GroupTable)
-        .where(GroupTable.id == params.group_id)
-        .options(selectinload(GroupTable.channel))
-    )
-    group = group_result.scalar_one_or_none()
-
-    if not group:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Group not found",
+    """List sessions for a group the agent can access."""
+    messaging = get_messaging_service(db)
+    try:
+        sessions = await messaging.list_group_sessions_for_agent(
+            group_id=params.group_id,
+            agent_id=agent_id,
+            status_filter=params.status_filter,
+            limit=params.limit,
         )
+    except NotFoundError as e:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(e)) from e
+    except PermissionError as e:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(e)) from e
 
-    # Check channel access (privileged roles bypass membership check)
-    channel = group.channel
-    has_access = (
-        agent_id in channel.members
-        or agent_id in channel.silent_observers
-        or await has_privileged_access(db, agent_id)
-    )
-    if not has_access:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="You don't have access to this group",
+    items = [
+        SessionResponse(
+            id=require_uuid(s.id),
+            group_id=require_uuid(s.group_id),
+            status=s.status,
+            scope=s.scope,
+            message_count=s.message_count,
+            total_content_length=s.total_content_length,
+            started_at=s.started_at,
+            last_activity_at=s.last_activity_at,
+            closed_at=s.closed_at,
+            task_links=[
+                SessionTaskInfo(
+                    task_id=require_uuid(link.task_id),
+                    task_title=link.task.title if link.task else None,
+                    is_primary=link.is_primary,
+                    relationship_type=link.relationship_type,
+                )
+                for link in s.task_links
+            ],
         )
-
-    # Query sessions with task links loaded
-    query = (
-        select(SessionTable)
-        .where(SessionTable.group_id == params.group_id)
-        .options(
-            selectinload(SessionTable.task_links).selectinload(SessionTaskTable.task)
-        )
-    )
-
-    if params.status_filter:
-        query = query.where(SessionTable.status == params.status_filter)
-
-    query = query.order_by(SessionTable.started_at.desc()).limit(params.limit)
-
-    result = await db.execute(query)
-    sessions = result.scalars().all()
-
-    items = []
-    for s in sessions:
-        # Build task info list from task_links
-        task_info_list = [
-            SessionTaskInfo(
-                task_id=require_uuid(link.task_id),
-                task_title=link.task.title if link.task else None,
-                is_primary=link.is_primary,
-                relationship_type=link.relationship_type,
-            )
-            for link in s.task_links
-        ]
-
-        items.append(
-            SessionResponse(
-                id=require_uuid(s.id),
-                group_id=require_uuid(s.group_id),
-                status=s.status,
-                scope=s.scope,
-                message_count=s.message_count,
-                total_content_length=s.total_content_length,
-                started_at=s.started_at,
-                last_activity_at=s.last_activity_at,
-                closed_at=s.closed_at,
-                task_links=task_info_list,
-            )
-        )
-
-    return SessionListResponse(
-        items=items,
-        total=len(items),
-    )
+        for s in sessions
+    ]
+    return SessionListResponse(items=items, total=len(items))
 
 
 @router.get(
@@ -180,33 +160,12 @@ async def get_session(
     _agent_id: CurrentAgentId,
     session_id: UUID,
 ) -> SessionResponse:
-    """Get session details."""
-    query = (
-        select(SessionTable)
-        .where(SessionTable.id == session_id)
-        .options(selectinload(SessionTable.group))
-    )
-
-    result = await db.execute(query)
-    session = result.scalar_one_or_none()
-
-    if not session:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Session not found",
-        )
-
-    return SessionResponse(
-        id=require_uuid(session.id),
-        group_id=require_uuid(session.group_id),
-        status=session.status,
-        scope=session.scope,
-        message_count=session.message_count,
-        total_content_length=session.total_content_length,
-        started_at=session.started_at,
-        last_activity_at=session.last_activity_at,
-        closed_at=session.closed_at,
-    )
+    messaging = get_messaging_service(db)
+    try:
+        session_row = await messaging.get_session_or_raise(session_id)
+    except NotFoundError as e:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(e)) from e
+    return _session_to_response(session_row)
 
 
 @router.post(
@@ -221,81 +180,25 @@ async def create_session(
     agent_id: CurrentAgentId,
     data: SessionCreateRequest,
 ) -> SessionResponse:
-    """Create a new session."""
-    # Verify group exists and agent has access
-    group_result = await db.execute(
-        select(GroupTable)
-        .where(GroupTable.id == data.group_id)
-        .options(selectinload(GroupTable.channel))
-    )
-    group = group_result.scalar_one_or_none()
-
-    if not group:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Group not found",
+    messaging = get_messaging_service(db)
+    try:
+        session_row = await messaging.create_session_with_access_check(
+            agent_id=agent_id,
+            request=ApiSessionCreate(
+                group_id=data.group_id,
+                max_time_window_minutes=data.max_time_window_minutes,
+                max_message_count=data.max_message_count,
+                max_content_length=data.max_content_length,
+                timeout_seconds=data.timeout_seconds,
+            ),
         )
+    except NotFoundError as e:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(e)) from e
+    except PermissionError as e:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(e)) from e
 
-    # Check write access to channel (privileged roles bypass membership check)
-    channel = group.channel
-    has_write_access = agent_id in channel.writers or await has_privileged_access(
-        db, agent_id
-    )
-    if not has_write_access:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="You don't have write access to this group",
-        )
-
-    # Close any existing active session
-    active_result = await db.execute(
-        select(SessionTable).where(
-            SessionTable.group_id == data.group_id,
-            SessionTable.status == SessionStatus.ACTIVE,
-        )
-    )
-    active_session = active_result.scalar_one_or_none()
-
-    if active_session:
-        active_session.status = SessionStatus.CLOSED
-        active_session.closed_at = datetime.now(UTC)
-
-    # Create new session
-    session = SessionTable(
-        group_id=data.group_id,
-        max_time_window=(
-            timedelta(minutes=data.max_time_window_minutes)
-            if data.max_time_window_minutes
-            else None
-        ),
-        max_message_count=data.max_message_count,
-        max_content_length=data.max_content_length,
-        timeout_seconds=data.timeout_seconds,
-        status=SessionStatus.ACTIVE,
-    )
-
-    db.add(session)
-
-    # Update group's active session
-    group.active_session_id = session.id
-    group.total_sessions += 1
-
-    await db.flush()
-
-    # Inject proactive context (fire and forget)
-    await _inject_session_context(require_uuid(session.id), agent_id)
-
-    return SessionResponse(
-        id=require_uuid(session.id),
-        group_id=require_uuid(session.group_id),
-        status=session.status,
-        scope=session.scope,
-        message_count=session.message_count,
-        total_content_length=session.total_content_length,
-        started_at=session.started_at,
-        last_activity_at=session.last_activity_at,
-        closed_at=session.closed_at,
-    )
+    await _inject_session_context(require_uuid(session_row.id), agent_id)
+    return _session_to_response(session_row)
 
 
 @router.post(
@@ -309,64 +212,21 @@ async def close_session(
     _agent_id: CurrentAgentId,
     session_id: UUID,
 ) -> SessionResponse:
-    """Close a session."""
-    result = await db.execute(select(SessionTable).where(SessionTable.id == session_id))
-    session = result.scalar_one_or_none()
-
-    if not session:
+    messaging = get_messaging_service(db)
+    try:
+        session_row = await messaging.close_session_or_raise(session_id)
+    except NotFoundError as e:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(e)) from e
+    except ValueError as e:
         raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Session not found",
-        )
-
-    if session.status != SessionStatus.ACTIVE:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Session is not active",
-        )
-
-    session.status = SessionStatus.CLOSED
-    session.closed_at = datetime.now(UTC)
-
-    # Clear group's active session
-    group_result = await db.execute(
-        select(GroupTable).where(GroupTable.id == session.group_id)
-    )
-    group = group_result.scalar_one_or_none()
-    if group and group.active_session_id == session_id:
-        group.active_session_id = None
-
-    await db.flush()
-
-    return SessionResponse(
-        id=require_uuid(session.id),
-        group_id=require_uuid(session.group_id),
-        status=session.status,
-        scope=session.scope,
-        message_count=session.message_count,
-        total_content_length=session.total_content_length,
-        started_at=session.started_at,
-        last_activity_at=session.last_activity_at,
-        closed_at=session.closed_at,
-    )
+            status_code=status.HTTP_400_BAD_REQUEST, detail=str(e)
+        ) from e
+    return _session_to_response(session_row)
 
 
 # =============================================================================
 # SESSION-TASK ROUTES
 # =============================================================================
-
-
-def _link_to_response(link: SessionTaskTable) -> SessionTaskLinkResponse:
-    """Convert SessionTaskTable to response model."""
-    return SessionTaskLinkResponse(
-        id=require_uuid(link.id),
-        session_id=require_uuid(link.session_id),
-        task_id=require_uuid(link.task_id),
-        is_primary=link.is_primary,
-        relationship_type=link.relationship_type,
-        added_at=link.added_at,
-        added_by=require_uuid(link.added_by) if link.added_by else None,
-    )
 
 
 @router.get(
@@ -379,11 +239,6 @@ async def get_sessions_for_task(
     task_id: UUID,
     db: DbSession,
 ) -> list[SessionTaskLinkResponse]:
-    """Get sessions linked to a task.
-
-    Returns session links with session_id, is_primary, and relationship_type.
-    Any agent assigned to the task can access this.
-    """
     messaging = get_messaging_service(db)
     links = await messaging.get_sessions_for_task(task_id)
     return [_link_to_response(link) for link in links]
@@ -402,26 +257,25 @@ async def create_session_for_tasks(
     data: SessionForTasksCreateRequest,
 ) -> SessionTaskLinksResponse:
     """Create a session linked to tasks (PM only)."""
-    # Verify PM permission
     if not await is_pm_role(db, agent_id):
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Only PMs can create task-linked sessions",
         )
 
-    # Verify channel exists
-    channel_result = await db.execute(
-        select(ChannelTable).where(ChannelTable.slug == data.channel_slug)
-    )
-    channel = channel_result.scalar_one_or_none()
-    if not channel:
+    messaging = get_messaging_service(db)
+
+    try:
+        # Channel-existence check lives in the service so routes never touch
+        # ChannelTable directly. Error detail matches the pre-refactor format
+        # ("Channel '<slug>' not found") so clients parsing the message keep
+        # working — NotFoundError's auto-message is "Channel not found: <slug>".
+        await messaging.get_channel_by_slug_or_raise(data.channel_slug)
+    except NotFoundError as e:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail=f"Channel '{data.channel_slug}' not found",
-        )
-
-    # Create session with links using service
-    messaging = get_messaging_service(db)
+        ) from e
 
     try:
         rel_type = SessionTaskRelationshipType(data.relationship_type)
@@ -437,43 +291,18 @@ async def create_session_for_tasks(
     )
 
     try:
-        session, links = await messaging.create_session_for_tasks(req, agent_id)
+        session_row, links = await messaging.create_session_for_tasks(req, agent_id)
     except NotFoundError as e:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=str(e),
-        ) from e
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(e)) from e
     except ConflictError as e:
-        raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT,
-            detail=str(e),
-        ) from e
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(e)) from e
     except ValueError as e:
         raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=str(e),
+            status_code=status.HTTP_400_BAD_REQUEST, detail=str(e)
         ) from e
-    except Exception as e:
-        # Catch-all for debugging - expose actual error
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Session creation failed: {type(e).__name__}: {e}",
-        ) from e
-
-    session_response = SessionResponse(
-        id=require_uuid(session.id),
-        group_id=require_uuid(session.group_id),
-        status=session.status,
-        scope=session.scope,
-        message_count=session.message_count,
-        total_content_length=session.total_content_length,
-        started_at=session.started_at,
-        last_activity_at=session.last_activity_at,
-        closed_at=session.closed_at,
-    )
 
     return SessionTaskLinksResponse(
-        session=session_response,
+        session=_session_to_response(session_row),
         links=[_link_to_response(link) for link in links],
     )
 
@@ -491,7 +320,6 @@ async def link_task_to_session(
     session_id: UUID,
     data: SessionTaskLinkRequest,
 ) -> SessionTaskLinkResponse:
-    """Link a task to a session (PM only)."""
     if not await is_pm_role(db, agent_id):
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
@@ -514,15 +342,9 @@ async def link_task_to_session(
             relationship_type=rel_type,
         )
     except NotFoundError as e:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=str(e),
-        ) from e
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(e)) from e
     except ConflictError as e:
-        raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT,
-            detail=str(e),
-        ) from e
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(e)) from e
 
     return _link_to_response(link)
 
@@ -539,7 +361,6 @@ async def unlink_task_from_session(
     session_id: UUID,
     task_id: UUID,
 ) -> None:
-    """Unlink a task from a session (PM only)."""
     if not await is_pm_role(db, agent_id):
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
@@ -548,7 +369,6 @@ async def unlink_task_from_session(
 
     messaging = get_messaging_service(db)
     removed = await messaging.unlink_session_from_task(session_id, task_id)
-
     if not removed:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
@@ -567,18 +387,10 @@ async def get_tasks_for_session(
     _agent_id: CurrentAgentId,
     session_id: UUID,
 ) -> list[SessionTaskLinkResponse]:
-    """Get all tasks linked to a session."""
-    # Verify session exists
-    session_result = await db.execute(
-        select(SessionTable).where(SessionTable.id == session_id)
-    )
-    if not session_result.scalar_one_or_none():
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Session not found",
-        )
-
     messaging = get_messaging_service(db)
+    try:
+        await messaging.get_session_or_raise(session_id)
+    except NotFoundError as e:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(e)) from e
     links = await messaging.get_tasks_for_session(session_id)
-
     return [_link_to_response(link) for link in links]

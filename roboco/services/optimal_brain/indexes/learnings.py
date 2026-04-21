@@ -90,7 +90,9 @@ class LearningsIndexPlugin(BaseIndexPlugin):
         import hashlib
 
         # Generate learning ID
-        content_hash = hashlib.md5(params.content[:100].encode()).hexdigest()[:12]
+        content_hash = hashlib.md5(
+            params.content[:100].encode(), usedforsecurity=False
+        ).hexdigest()[:12]
         learning_id = f"lrn-{content_hash}"
 
         # Build enriched content

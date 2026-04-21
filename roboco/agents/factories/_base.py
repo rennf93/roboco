@@ -50,6 +50,47 @@ def _load_layer(layer_path: Path) -> str:
     return layer_path.read_text().strip()
 
 
+_ROLE_LAYER_MAP: dict[str, str] = {
+    # Cell members
+    "developer": "developer.md",
+    "qa": "qa.md",
+    "documenter": "documenter.md",
+    # PMs have separate files
+    "main_pm": "main_pm.md",
+    "cell_pm": "cell_pm.md",
+    # Board members use board layer
+    "product_owner": "board.md",
+    "head_marketing": "board.md",
+    "auditor": "board.md",
+}
+
+_TEAM_LAYER_MAP: dict[str, str] = {
+    "backend": "backend.md",
+    "frontend": "frontend.md",
+    "ux_ui": "ux_ui.md",
+}
+
+
+def _role_layer(prompts_path: Path, role: "AgentRole") -> str | None:
+    """Load the role-specific prompt layer, or None if unknown."""
+    role_value = role.value if hasattr(role, "value") else str(role)
+    role_file = _ROLE_LAYER_MAP.get(role_value)
+    if not role_file:
+        return None
+    return _load_layer(prompts_path / "roles" / role_file)
+
+
+def _team_layer(prompts_path: Path, team: "Team | None") -> str | None:
+    """Load the team-specific prompt layer, or None if unset/unknown."""
+    if not team:
+        return None
+    team_value = team.value if hasattr(team, "value") else str(team)
+    team_file = _TEAM_LAYER_MAP.get(team_value)
+    if not team_file:
+        return None
+    return _load_layer(prompts_path / "teams" / team_file)
+
+
 def compose_prompt(
     role: "AgentRole",
     team: "Team | None",
@@ -75,54 +116,16 @@ def compose_prompt(
         Composed system prompt string
     """
     prompts_path = base_path or PROMPTS_BASE_PATH
-
     parts: list[str] = []
 
-    # 1. Base layer (all agents)
-    base = _load_layer(prompts_path / "base.md")
-    if base:
-        parts.append(base)
-
-    # 2. Role layer
-    # Map role enum values to role layer files
-    role_map = {
-        # Cell members
-        "developer": "developer.md",
-        "qa": "qa.md",
-        "documenter": "documenter.md",
-        # PMs have separate files
-        "main_pm": "main_pm.md",
-        "cell_pm": "cell_pm.md",
-        # Board members use board layer
-        "product_owner": "board.md",
-        "head_marketing": "board.md",
-        "auditor": "board.md",
-    }
-    role_value = role.value if hasattr(role, "value") else str(role)
-    role_file = role_map.get(role_value)
-    if role_file:
-        role_content = _load_layer(prompts_path / "roles" / role_file)
-        if role_content:
-            parts.append(role_content)
-
-    # 3. Team layer (if applicable)
-    if team:
-        team_map = {
-            "backend": "backend.md",
-            "frontend": "frontend.md",
-            "ux_ui": "ux_ui.md",
-        }
-        team_value = team.value if hasattr(team, "value") else str(team)
-        team_file = team_map.get(team_value)
-        if team_file:
-            team_content = _load_layer(prompts_path / "teams" / team_file)
-            if team_content:
-                parts.append(team_content)
-
-    # 4. Identity layer
-    identity_content = _load_layer(prompts_path / "identities" / f"{agent_slug}.md")
-    if identity_content:
-        parts.append(identity_content)
+    for layer in (
+        _load_layer(prompts_path / "base.md"),
+        _role_layer(prompts_path, role),
+        _team_layer(prompts_path, team),
+        _load_layer(prompts_path / "identities" / f"{agent_slug}.md"),
+    ):
+        if layer:
+            parts.append(layer)
 
     # Join with separator
     return "\n\n---\n\n".join(parts)

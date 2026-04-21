@@ -218,6 +218,13 @@ services:
       ROBOCO_HOST: 0.0.0.0
       ROBOCO_PORT: 8000
       ROBOCO_ENCRYPTION_KEY: ${ROBOCO_ENCRYPTION_KEY:?ROBOCO_ENCRYPTION_KEY is required}
+      # HMAC secret for agent auth tokens. Orchestrator signs tokens
+      # per-agent at spawn; API middleware verifies them. Generate with:
+      #   python -c 'import secrets; print(secrets.token_hex(32))'
+      ROBOCO_AGENT_AUTH_SECRET: ${ROBOCO_AGENT_AUTH_SECRET:?ROBOCO_AGENT_AUTH_SECRET is required}
+      # Set to "true" to require tokens on every API call (fail-closed).
+      # Leave unset/false during rollout so the panel + curl still work.
+      ROBOCO_AGENT_AUTH_REQUIRED: ${ROBOCO_AGENT_AUTH_REQUIRED:-false}
       # Ollama (use container name)
       ROBOCO_LOCAL_LLM_BASE_URL: http://roboco-ollama:11434/v1
       ROBOCO_LOCAL_LLM_MODEL: glm-5:cloud
@@ -239,6 +246,8 @@ services:
       - ${ROBOCO_DATA_DIR:-./data}/prompts-generated:/app/prompts-generated
       # Per-agent Claude settings (generated at spawn time)
       - ${ROBOCO_DATA_DIR:-./data}/agent-settings:/app/agent-settings
+      # Per-agent SessionStart briefings (pre-rendered task context)
+      - ${ROBOCO_DATA_DIR:-./data}/briefings:/app/briefings
       # Agent workspaces (git clones) - persisted across restarts
       - ${ROBOCO_DATA_DIR:-./data}/workspaces:/data/workspaces
       # Persistent logs — survive `docker compose down/up`. Orchestrator and

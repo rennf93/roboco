@@ -6,6 +6,7 @@ Handles status transitions, assignments, and queries.
 """
 
 import asyncio
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any, ClassVar, cast
 from uuid import UUID
@@ -31,12 +32,86 @@ from roboco.events import Event, EventType, get_event_bus
 from roboco.models.base import AgentRole, BlockerResolverType, TaskStatus, Team
 from roboco.models.task import TaskCreateRequest
 from roboco.models.work_session import WorkSessionStatus
-from roboco.services.base import BaseService
+from roboco.services.base import BaseService, NotFoundError
 from roboco.utils.converters import require_uuid, to_python_uuid
 
 # UUID format constants for validation
 _UUID_LENGTH = 36  # Standard UUID string length
 _UUID_HYPHEN_COUNT = 4  # Number of hyphens in a UUID
+
+
+_ROLE_CLAIM_STATUSES: dict[str, set[TaskStatus]] = {
+    "qa": {TaskStatus.PENDING, TaskStatus.AWAITING_QA},
+    "documenter": {TaskStatus.PENDING, TaskStatus.AWAITING_DOCUMENTATION},
+    "cell_pm": {TaskStatus.PENDING, TaskStatus.AWAITING_PM_REVIEW},
+    "main_pm": {TaskStatus.PENDING, TaskStatus.AWAITING_PM_REVIEW},
+}
+
+
+# Notes fields (dev_notes, qa_notes, quick_context) are append-only —
+# every revision cycle adds more. Cap total size so a task that cycles
+# dozens of times doesn't grow into megabytes. When we exceed the cap,
+# keep the latest entries and prepend a "[...truncated]" marker so the
+# reader can tell something was dropped.
+_MAX_NOTES_CHARS = 8000
+_TRUNCATION_MARKER = "[...earlier notes truncated for size...]\n"
+
+
+def _append_capped(existing: str | None, addition: str) -> str:
+    """Append `addition` to `existing`, capped at _MAX_NOTES_CHARS.
+
+    When the combined size exceeds the cap, drops OLDEST content (not
+    newest — the newest entry is what the current agent/reviewer needs).
+    """
+    base = existing.strip() if existing else ""
+    joined = f"{base}\n\n{addition}" if base else addition
+    if len(joined) <= _MAX_NOTES_CHARS:
+        return joined
+    # Keep the newest, drop enough of the head to fit the marker + content.
+    keep = _MAX_NOTES_CHARS - len(_TRUNCATION_MARKER)
+    return _TRUNCATION_MARKER + joined[-keep:]
+
+
+@dataclass
+class _CompletionSnapshot:
+    """Fields copied off a TaskTable before its session detaches.
+
+    Bundles the inputs to `_collect_completion_learnings` so we stay
+    under PLR0913 without losing the explicit contract.
+    """
+
+    task_title: str | None
+    started_at: Any
+    completed_at: Any
+    estimated_complexity: Any
+    commits: list[Any]
+    dev_notes: str | None
+    qa_notes: str | None
+
+
+@dataclass
+class SoftBlockInfo:
+    """Blocker metadata for `TaskService.soft_block`.
+
+    Bundles the four blocker fields — reason, type, what's needed, and
+    resolver type — so soft_block stays under PLR0913.
+    """
+
+    reason: str
+    blocker_type: str
+    what_needed: str
+    resolver_type: BlockerResolverType | None = None
+
+
+def _default_claim_statuses(role: str | None) -> set[TaskStatus]:
+    """Return the base (non-reassign) claim statuses for a role."""
+    if role is None:
+        return {TaskStatus.PENDING}
+    if role in _ROLE_CLAIM_STATUSES:
+        return set(_ROLE_CLAIM_STATUSES[role])
+    # Developer and other roles
+    # NEEDS_REVISION for when task is reassigned after QA rejection
+    return {TaskStatus.PENDING, TaskStatus.NEEDS_REVISION}
 
 
 def _get_valid_claim_statuses(
@@ -58,46 +133,14 @@ def _get_valid_claim_statuses(
     Returns:
         Set of valid TaskStatus values the agent can claim
     """
-    if not agent or not agent.role:
-        # No role info - default to pending tasks only
-        statuses = {TaskStatus.PENDING}
-        if allow_reassign:
-            statuses.add(TaskStatus.CLAIMED)
-        return statuses
+    role: str | None = None
+    if agent and agent.role:
+        role = agent.role.value if hasattr(agent.role, "value") else str(agent.role)
 
-    role = agent.role.value if hasattr(agent.role, "value") else str(agent.role)
-
-    if role == "qa":
-        # QA can claim:
-        # - PENDING: when PM assigns a QA task directly
-        # - AWAITING_QA: normal workflow after dev verification
-        statuses = {TaskStatus.PENDING, TaskStatus.AWAITING_QA}
-        if allow_reassign:
-            statuses.add(TaskStatus.CLAIMED)
-        return statuses
-    elif role == "documenter":
-        # Documenters can claim:
-        # - PENDING: when PM assigns a docs task directly
-        # - AWAITING_DOCUMENTATION: normal workflow after QA passes
-        statuses = {TaskStatus.PENDING, TaskStatus.AWAITING_DOCUMENTATION}
-        if allow_reassign:
-            statuses.add(TaskStatus.CLAIMED)
-        return statuses
-    elif role in ("cell_pm", "main_pm"):
-        # PMs can claim:
-        # - PENDING: standard task claiming
-        # - AWAITING_PM_REVIEW: tasks submitted for PM approval
-        statuses = {TaskStatus.PENDING, TaskStatus.AWAITING_PM_REVIEW}
-        if allow_reassign:
-            statuses.add(TaskStatus.CLAIMED)
-        return statuses
-    else:
-        # Developer and other roles
-        # NEEDS_REVISION for when task is reassigned after QA rejection
-        statuses = {TaskStatus.PENDING, TaskStatus.NEEDS_REVISION}
-        if allow_reassign:
-            statuses.add(TaskStatus.CLAIMED)
-        return statuses
+    statuses = _default_claim_statuses(role)
+    if allow_reassign:
+        statuses.add(TaskStatus.CLAIMED)
+    return statuses
 
 
 def extract_original_developer(quick_context: str | None) -> str | None:
@@ -208,8 +251,14 @@ class TaskService(BaseService):
             from roboco.api.deps import get_orchestrator
 
             get_orchestrator().trigger_dispatch()
-        except Exception:
-            pass
+        except Exception as e:
+            # Swallow so task creation succeeds even when the
+            # orchestrator singleton isn't wired (e.g. tests, CLI
+            # scripts) — but log so a real regression is visible.
+            self.log.debug(
+                "Dispatch trigger skipped after task create",
+                error=str(e),
+            )
 
         # Fire-and-forget audit write. Critical: we must hold a strong
         # reference to the Task object (via `_background_tasks`) — the event
@@ -514,6 +563,46 @@ class TaskService(BaseService):
 
         return None
 
+    async def _resolve_parent_branch(self, task: TaskTable, project: Any) -> str:
+        """Pick parent branch for a new task branch, fall back to project default."""
+        parent_branch: str | None = None
+        if task.parent_task_id:
+            parent_branch = await self._find_ancestor_branch(task)
+
+        if not parent_branch:
+            default_branch = (
+                str(project.default_branch) if project.default_branch else "main"
+            )
+            self.log.info(
+                "No ancestor branch found, using project default",
+                task_id=str(task.id),
+                default_branch=default_branch,
+            )
+            parent_branch = default_branch
+        return parent_branch
+
+    @staticmethod
+    def _resolve_team_dir(project: Any, task: TaskTable) -> str:
+        """Pick the workspace team directory for a task's branch."""
+        project_cell = (
+            project.assigned_cell.value
+            if project.assigned_cell and hasattr(project.assigned_cell, "value")
+            else str(project.assigned_cell)
+            if project.assigned_cell
+            else None
+        )
+        task_team = (
+            task.team.value if task.team and hasattr(task.team, "value") else None
+        )
+
+        if project_cell == "fullstack":
+            return f"{project.slug}/{task_team or 'cross'}"
+        if project_cell:
+            return project_cell
+        if task_team:
+            return task_team
+        return "cross"
+
     async def _auto_create_branch(
         self,
         task: TaskTable,
@@ -546,45 +635,9 @@ class TaskService(BaseService):
         if not project:
             raise ValueError(f"Project {task.project_id} not found")
 
-        # Resolve parent branch - walk up hierarchy to find nearest ancestor with branch
-        parent_branch: str | None = None
-        if task.parent_task_id:
-            parent_branch = await self._find_ancestor_branch(task)
-
-        # Fallback to project default branch if no ancestor has a branch
-        # This handles cases like: Root planning task (no branch) → Dev subtask
-        if not parent_branch:
-            default_branch = (
-                str(project.default_branch) if project.default_branch else "main"
-            )
-            self.log.info(
-                "No ancestor branch found, using project default",
-                task_id=str(task.id),
-                default_branch=default_branch,
-            )
-            parent_branch = default_branch
-
+        parent_branch = await self._resolve_parent_branch(task, project)
         workspace = await git_service.get_workspace(project.slug, agent_id)
-
-        project_cell = (
-            project.assigned_cell.value
-            if project.assigned_cell and hasattr(project.assigned_cell, "value")
-            else str(project.assigned_cell)
-            if project.assigned_cell
-            else None
-        )
-        task_team = (
-            task.team.value if task.team and hasattr(task.team, "value") else None
-        )
-
-        if project_cell == "fullstack":
-            team = f"{project.slug}/{task_team or 'cross'}"
-        elif project_cell:
-            team = project_cell
-        elif task_team:
-            team = task_team
-        else:
-            team = "cross"
+        team = self._resolve_team_dir(project, task)
 
         request = GitCreateBranchRequest(
             task_id=str(task.id),
@@ -758,6 +811,84 @@ class TaskService(BaseService):
         if task.assigned_to and str(task.assigned_to) != str(agent.id):
             task.quick_context = f"original_developer:{task.assigned_to}"
 
+    _CLAIMABLE_STATUSES: ClassVar[set[TaskStatus]] = {
+        TaskStatus.PENDING,
+        TaskStatus.AWAITING_QA,
+        TaskStatus.AWAITING_DOCUMENTATION,
+        TaskStatus.AWAITING_PM_REVIEW,
+    }
+
+    async def _validate_claim_preconditions(
+        self,
+        task: TaskTable,
+        agent: AgentTable | None,
+        agent_id: UUID,
+        allow_reassign: bool,
+    ) -> bool:
+        """Run all per-claim validators; log + return False on failure."""
+        valid_statuses = _get_valid_claim_statuses(agent, allow_reassign)
+
+        if error := self._validate_claim_status(task, agent, valid_statuses):
+            self.log.warning(f"Cannot claim task - {error}", task_id=str(task.id))
+            return False
+
+        if error := self._validate_claim_team(task, agent):
+            self.log.warning(f"Cannot claim task - {error}", task_id=str(task.id))
+            return False
+
+        # Prevent pre-assigned theft: if the task is already assigned to a
+        # DIFFERENT agent and the claimant is not allowed to reassign, reject.
+        # PMs with allow_reassign=True can still take over (used for handoffs).
+        if (
+            task.assigned_to is not None
+            and str(task.assigned_to) != str(agent_id)
+            and not allow_reassign
+        ):
+            self.log.warning(
+                "Cannot claim task - assigned to another agent",
+                task_id=str(task.id),
+                assigned_to=str(task.assigned_to),
+                requesting_agent=str(agent_id),
+            )
+            return False
+
+        if error := self._validate_not_self_review(task, agent, agent_id):
+            self.log.warning(f"Cannot claim task - {error}", task_id=str(task.id))
+            return False
+        return True
+
+    async def _finalize_claim(
+        self,
+        task: TaskTable,
+        agent: AgentTable | None,
+        agent_id: UUID,
+    ) -> None:
+        """
+        Apply claim-side-effects: status transition, branch + work session + context.
+        """
+        # Set context for QA/Documenter claims (only if not already set)
+        self._set_original_developer_context(task, agent)
+
+        task.assigned_to = cast("Any", agent_id)
+        task.claimed_by = cast("Any", agent_id)
+        task.claimed_at = datetime.now(UTC)
+
+        agent_role = agent.role.value if agent and agent.role else None
+        if task.status in self._CLAIMABLE_STATUSES:
+            self._validate_and_set_status(task, TaskStatus.CLAIMED, agent_role)
+
+        await self.session.flush()
+
+        if not task.branch_name:
+            await self._ensure_branch_for_task(task, agent_id)
+            await self.session.refresh(task)
+
+        await self._create_work_session_if_needed(task, agent_id, agent_role)
+
+        bg_task = asyncio.create_task(self._inject_proactive_context(task, agent_id))
+        self._background_tasks.add(bg_task)
+        bg_task.add_done_callback(self._background_tasks.discard)
+
     async def claim(
         self, task_id: UUID, agent_id: UUID, allow_reassign: bool = False
     ) -> TaskTable | None:
@@ -787,80 +918,17 @@ class TaskService(BaseService):
         if not task:
             return None
 
-        # Get agent for role-based validation
         agent_result = await self.session.execute(
             select(AgentTable).where(AgentTable.id == agent_id)
         )
         agent = agent_result.scalar_one_or_none()
-        valid_statuses = _get_valid_claim_statuses(agent, allow_reassign)
 
-        # Validate status
-        if error := self._validate_claim_status(task, agent, valid_statuses):
-            self.log.warning(f"Cannot claim task - {error}", task_id=str(task_id))
-            return None
-
-        # Validate team
-        if error := self._validate_claim_team(task, agent):
-            self.log.warning(f"Cannot claim task - {error}", task_id=str(task_id))
-            return None
-
-        # Prevent pre-assigned theft: if the task is already assigned to a
-        # DIFFERENT agent and the claimant is not allowed to reassign, reject.
-        # PMs with allow_reassign=True can still take over (used for handoffs).
-        if (
-            task.assigned_to is not None
-            and str(task.assigned_to) != str(agent_id)
-            and not allow_reassign
+        if not await self._validate_claim_preconditions(
+            task, agent, agent_id, allow_reassign
         ):
-            self.log.warning(
-                "Cannot claim task - assigned to another agent",
-                task_id=str(task_id),
-                assigned_to=str(task.assigned_to),
-                requesting_agent=str(agent_id),
-            )
             return None
 
-        # Prevent self-review: QA/Documenter cannot claim tasks they developed
-        if error := self._validate_not_self_review(task, agent, agent_id):
-            self.log.warning(f"Cannot claim task - {error}", task_id=str(task_id))
-            return None
-
-        # Set context for QA/Documenter claims (only if not already set)
-        self._set_original_developer_context(task, agent)
-
-        # Update assignment and claim tracking
-        task.assigned_to = cast("Any", agent_id)
-        task.claimed_by = cast("Any", agent_id)
-        task.claimed_at = datetime.now(UTC)
-
-        # Transition to CLAIMED - validated with role for proper enforcement
-        agent_role = agent.role.value if agent and agent.role else None
-        claimable_statuses = {
-            TaskStatus.PENDING,
-            TaskStatus.AWAITING_QA,
-            TaskStatus.AWAITING_DOCUMENTATION,
-            TaskStatus.AWAITING_PM_REVIEW,
-        }
-        if task.status in claimable_statuses:
-            self._validate_and_set_status(task, TaskStatus.CLAIMED, agent_role)
-
-        await self.session.flush()
-
-        # Auto-create hierarchical branch (mandatory - raises on failure)
-        # Must happen BEFORE work session creation (work session needs branch_name)
-        if not task.branch_name:
-            await self._ensure_branch_for_task(task, agent_id)
-            await self.session.refresh(task)
-
-        # Create work session for tasks claimed by developers
-        # (now branch exists, so work session can be created)
-        await self._create_work_session_if_needed(task, agent_id, agent_role)
-
-        # Trigger proactive knowledge injection (fire-and-forget)
-        bg_task = asyncio.create_task(self._inject_proactive_context(task, agent_id))
-        self._background_tasks.add(bg_task)
-        bg_task.add_done_callback(self._background_tasks.discard)
-
+        await self._finalize_claim(task, agent, agent_id)
         return task
 
     async def unclaim(
@@ -1116,12 +1184,102 @@ class TaskService(BaseService):
     _MIN_COMMITS_GOOD = 5  # Minimum commits for "good granularity" pattern
     _MIN_NOTES_LENGTH = 50  # Minimum notes length to extract learnings
 
+    def _duration_learning(
+        self,
+        task_title: str | None,
+        started_at: Any,
+        completed_at: Any,
+        estimated_complexity: Any,
+    ) -> tuple[str, Any] | None:
+        """Emit an INSIGHT learning when duration diverges from complexity."""
+        from roboco.services.learning import LearningType
+
+        if not (started_at and completed_at):
+            return None
+        duration_hours = (completed_at - started_at).total_seconds() / 3600
+        complexity_hours = {"low": 2.0, "medium": 8.0, "high": 24.0}
+        complexity_val = (
+            estimated_complexity.value
+            if hasattr(estimated_complexity, "value")
+            else str(estimated_complexity)
+        )
+        expected = complexity_hours.get(complexity_val, 8.0)
+        ratio = duration_hours / expected if expected > 0 else 1.0
+
+        if ratio > self._DURATION_OVER_RATIO:
+            msg = (
+                f"Task '{task_title}' ({complexity_val}) took "
+                f"{duration_hours:.1f}h vs expected {expected:.0f}h."
+            )
+            return msg, LearningType.INSIGHT
+        if ratio < self._DURATION_UNDER_RATIO:
+            msg = (
+                f"Task '{task_title}' ({complexity_val}) completed "
+                f"quickly in {duration_hours:.1f}h."
+            )
+            return msg, LearningType.INSIGHT
+        return None
+
+    def _commit_pattern_learning(
+        self, task_title: str | None, commits: list[Any]
+    ) -> tuple[str, Any] | None:
+        """Emit a PATTERN/GOTCHA learning based on commit count."""
+        from roboco.services.learning import LearningType
+
+        if len(commits) >= self._MIN_COMMITS_GOOD:
+            msg = f"Good commit granularity on '{task_title}': {len(commits)}."
+            return msg, LearningType.PATTERN
+        if len(commits) == 1:
+            return (
+                f"Single commit on '{task_title}'. Try smaller increments.",
+                LearningType.GOTCHA,
+            )
+        return None
+
+    def _collect_completion_learnings(
+        self,
+        snapshot: _CompletionSnapshot,
+    ) -> list[tuple[str, Any]]:
+        """Gather all auto-extractable learnings from a completed task."""
+        from roboco.services.learning import LearningType
+
+        learnings: list[tuple[str, Any]] = []
+        duration = self._duration_learning(
+            snapshot.task_title,
+            snapshot.started_at,
+            snapshot.completed_at,
+            snapshot.estimated_complexity,
+        )
+        if duration:
+            learnings.append(duration)
+
+        commit_pattern = self._commit_pattern_learning(
+            snapshot.task_title, snapshot.commits
+        )
+        if commit_pattern:
+            learnings.append(commit_pattern)
+
+        if snapshot.dev_notes and len(snapshot.dev_notes) > self._MIN_NOTES_LENGTH:
+            learnings.append(
+                (
+                    f"[DEV NOTES] {snapshot.task_title}: {snapshot.dev_notes[:500]}",
+                    LearningType.SOLUTION,
+                )
+            )
+        if snapshot.qa_notes and len(snapshot.qa_notes) > self._MIN_NOTES_LENGTH:
+            learnings.append(
+                (
+                    f"[QA FEEDBACK] {snapshot.task_title}: {snapshot.qa_notes[:500]}",
+                    LearningType.REVIEW_FEEDBACK,
+                )
+            )
+        return learnings
+
     async def _extract_completion_learnings(
         self, task: TaskTable, agent_id: UUID | None
     ) -> None:
         """Extract and record learnings from a completed task (fire-and-forget)."""
         from roboco.services.learning import (
-            LearningType,
             RecordLearningParams,
             get_learning_service,
         )
@@ -1140,67 +1298,18 @@ class TaskService(BaseService):
 
         try:
             learning_svc = await get_learning_service()
-            learnings: list[tuple[str, LearningType]] = []
-
-            # Determine scope based on team
             scope = self._determine_learning_scope(task_team)
-
-            # 1. Duration vs estimate insight
-            if started_at and completed_at:
-                duration_hours = (completed_at - started_at).total_seconds() / 3600
-                complexity_hours = {"low": 2.0, "medium": 8.0, "high": 24.0}
-                complexity_val = (
-                    estimated_complexity.value
-                    if hasattr(estimated_complexity, "value")
-                    else str(estimated_complexity)
+            learnings = self._collect_completion_learnings(
+                _CompletionSnapshot(
+                    task_title=task_title,
+                    started_at=started_at,
+                    completed_at=completed_at,
+                    estimated_complexity=estimated_complexity,
+                    commits=commits,
+                    dev_notes=dev_notes,
+                    qa_notes=qa_notes,
                 )
-                expected = complexity_hours.get(complexity_val, 8.0)
-                ratio = duration_hours / expected if expected > 0 else 1.0
-
-                if ratio > self._DURATION_OVER_RATIO:
-                    msg = (
-                        f"Task '{task_title}' ({complexity_val}) took "
-                        f"{duration_hours:.1f}h vs expected {expected:.0f}h."
-                    )
-                    learnings.append((msg, LearningType.INSIGHT))
-                elif ratio < self._DURATION_UNDER_RATIO:
-                    msg = (
-                        f"Task '{task_title}' ({complexity_val}) completed "
-                        f"quickly in {duration_hours:.1f}h."
-                    )
-                    learnings.append((msg, LearningType.INSIGHT))
-
-            # 2. Commit pattern analysis
-            if len(commits) >= self._MIN_COMMITS_GOOD:
-                msg = f"Good commit granularity on '{task_title}': {len(commits)}."
-                learnings.append((msg, LearningType.PATTERN))
-            elif len(commits) == 1:
-                learnings.append(
-                    (
-                        f"Single commit on '{task_title}'. Try smaller increments.",
-                        LearningType.GOTCHA,
-                    )
-                )
-
-            # 3. Extract from dev_notes
-            if dev_notes and len(dev_notes) > self._MIN_NOTES_LENGTH:
-                learnings.append(
-                    (
-                        f"[DEV NOTES] {task_title}: {dev_notes[:500]}",
-                        LearningType.SOLUTION,
-                    )
-                )
-
-            # 4. Extract from qa_notes
-            if qa_notes and len(qa_notes) > self._MIN_NOTES_LENGTH:
-                learnings.append(
-                    (
-                        f"[QA FEEDBACK] {task_title}: {qa_notes[:500]}",
-                        LearningType.REVIEW_FEEDBACK,
-                    )
-                )
-
-            # Record all learnings
+            )
             for content, ltype in learnings:
                 await learning_svc.record_learning(
                     RecordLearningParams(
@@ -1213,7 +1322,6 @@ class TaskService(BaseService):
                         tags=["auto-extracted", task_team or "general"],
                     )
                 )
-
             if learnings:
                 self.log.info(
                     "Extracted completion learnings",
@@ -1707,14 +1815,11 @@ class TaskService(BaseService):
 
         return task
 
-    async def soft_block(  # noqa: PLR0913 — rich signature is intentional
+    async def soft_block(
         self,
         task_id: UUID,
-        reason: str,
-        blocker_type: str,
-        what_needed: str,
+        info: SoftBlockInfo,
         agent_role: str | None = None,
-        resolver_type: BlockerResolverType | None = None,
     ) -> TaskTable | None:
         """
         Block a task due to an external factor (not a task dependency).
@@ -1744,29 +1849,25 @@ class TaskService(BaseService):
 
         # Build blocker note for dev_notes
         blocker_note = (
-            f"[BLOCKED - {blocker_type.upper()}]\n"
-            f"Reason: {reason}\n"
-            f"What's needed: {what_needed}"
+            f"[BLOCKED - {info.blocker_type.upper()}]\n"
+            f"Reason: {info.reason}\n"
+            f"What's needed: {info.what_needed}"
         )
-        existing_notes = task.dev_notes or ""
-        if existing_notes:
-            task.dev_notes = f"{existing_notes}\n\n{blocker_note}"
-        else:
-            task.dev_notes = blocker_note
+        task.dev_notes = _append_capped(task.dev_notes, blocker_note)
 
         # Default resolver is AGENT — preserves pre-existing behavior where
         # the dispatcher would respawn. Caller passes HUMAN to tell the
         # dispatcher to stop churning and wait for HITL.
-        task.blocker_resolver_type = resolver_type or BlockerResolverType.AGENT
+        task.blocker_resolver_type = info.resolver_type or BlockerResolverType.AGENT
         self._validate_and_set_status(task, TaskStatus.BLOCKED, agent_role)
         await self.session.flush()
 
         # Index blocker as error pattern (fire-and-forget)
         blocker_info = {
-            "type": blocker_type,
+            "type": info.blocker_type,
             "title": task.title,
-            "reason": reason,
-            "what_needed": what_needed,
+            "reason": info.reason,
+            "what_needed": info.what_needed,
         }
         bg_task = asyncio.create_task(
             self._index_blocker_background(
@@ -1779,8 +1880,8 @@ class TaskService(BaseService):
         self.log.info(
             "Task soft-blocked",
             task_id=str(task_id),
-            blocker_type=blocker_type,
-            reason=reason,
+            blocker_type=info.blocker_type,
+            reason=info.reason,
         )
         return task
 
@@ -1907,6 +2008,11 @@ class TaskService(BaseService):
         if task.status != TaskStatus.IN_PROGRESS:
             return None
 
+        # self_verified is the dev's attestation that they've reviewed
+        # their own work before handing to QA. Setting it here (rather
+        # than later in submit_for_qa) means the submit-qa route's
+        # NOT_SELF_VERIFIED gate has something to check against.
+        task.self_verified = True
         self._validate_and_set_status(task, TaskStatus.VERIFYING, agent_role)
         await self.session.flush()
 
@@ -2117,22 +2223,47 @@ class TaskService(BaseService):
         if not task:
             return None
 
-        # Accept documenter workflow statuses: awaiting_documentation, claimed,
-        # in_progress (documenter actively working on documentation)
-        valid_statuses = {
-            TaskStatus.AWAITING_DOCUMENTATION,
-            TaskStatus.CLAIMED,
-            TaskStatus.IN_PROGRESS,
-        }
-        if task.status not in valid_statuses:
+        if not self._validate_docs_complete_status(task, task_id):
+            return None
+        if not await self._validate_docs_complete_descendants(task_id):
+            return None
+
+        self._record_doc_notes(task, doc_notes)
+        task.docs_complete = True
+        self._record_documenter_context(task)
+        self._maybe_advance_to_pm_review(task, task_id)
+
+        await self.session.flush()
+
+        # Index documentation artifacts (fire-and-forget)
+        if task.documents:
+            bg_task = asyncio.create_task(
+                self._index_docs_background(require_uuid(task.id), task.documents)
+            )
+            self._background_tasks.add(bg_task)
+            bg_task.add_done_callback(self._background_tasks.discard)
+
+        return task
+
+    _DOCS_COMPLETE_VALID_STATUSES: ClassVar[set[TaskStatus]] = {
+        TaskStatus.AWAITING_DOCUMENTATION,
+        TaskStatus.CLAIMED,
+        TaskStatus.IN_PROGRESS,
+    }
+
+    def _validate_docs_complete_status(self, task: TaskTable, task_id: UUID) -> bool:
+        """Reject docs_complete attempts from wrong task statuses."""
+        if task.status not in self._DOCS_COMPLETE_VALID_STATUSES:
             self.log.warning(
                 "Cannot mark docs complete - invalid status for documenter workflow",
                 task_id=str(task_id),
                 current_status=task.status.value,
             )
-            return None
+            return False
+        return True
 
-        # Check all descendants are in terminal states before escalating
+    async def _validate_docs_complete_descendants(self, task_id: UUID) -> bool:
+        """Refuse docs_complete while any descendant is still live."""
         all_descendants = await self.get_all_descendants(task_id)
         incomplete = [
             d
@@ -2146,47 +2277,45 @@ class TaskService(BaseService):
                 incomplete_count=len(incomplete),
                 incomplete_ids=[str(d.id) for d in incomplete[:5]],
             )
-            return None
+            return False
+        return True
 
-        # Store doc notes in quick_context (no dedicated field for doc_notes)
-        if doc_notes:
-            existing_context = task.quick_context or ""
-            doc_note_entry = f"doc_notes:{doc_notes}"
-            task.quick_context = (
-                f"{existing_context}\n{doc_note_entry}".strip()
-                if existing_context
-                else doc_note_entry
-            )
+    @staticmethod
+    def _record_doc_notes(task: TaskTable, doc_notes: str | None) -> None:
+        """Append doc_notes into quick_context if supplied."""
+        if not doc_notes:
+            return
+        task.quick_context = _append_capped(
+            task.quick_context, f"doc_notes:{doc_notes}"
+        )
 
-        # Mark docs as complete
-        task.docs_complete = True
+    @staticmethod
+    def _record_documenter_context(task: TaskTable) -> None:
+        """Stamp documenter id into quick_context if missing."""
+        if not task.assigned_to:
+            return
+        existing_context = task.quick_context or ""
+        if "documenter:" in existing_context:
+            return
+        doc_context = f"documenter:{task.assigned_to}"
+        task.quick_context = (
+            f"{existing_context}\n{doc_context}".strip()
+            if existing_context
+            else doc_context
+        )
 
-        # Store documenter in quick_context for reference
-        if task.assigned_to:
-            existing_context = task.quick_context or ""
-            if "documenter:" not in existing_context:
-                doc_context = f"documenter:{task.assigned_to}"
-                task.quick_context = (
-                    f"{existing_context}\n{doc_context}".strip()
-                    if existing_context
-                    else doc_context
-                )
-
-        # Check if BOTH docs_complete AND pr_created are true
-        # (Developer works in parallel, creating PR)
+    def _maybe_advance_to_pm_review(self, task: TaskTable, task_id: UUID) -> None:
+        """If doc+PR gates both pass, promote to awaiting_pm_review."""
         from roboco.enforcement.task_lifecycle import check_parallel_completion
 
         ready_for_pm = check_parallel_completion(
-            docs_complete=True,  # We just set this
+            docs_complete=True,
             pr_created=task.pr_created,
         )
-
         if ready_for_pm:
-            # Both conditions met - transition to PM review (validated)
             self._validate_and_set_status(
                 task, TaskStatus.AWAITING_PM_REVIEW, "documenter"
             )
-            # Clear assignment so PM can claim the task for review
             task.assigned_to = None
             self.log.info(
                 "Documentation complete, awaiting PM review",
@@ -2194,26 +2323,12 @@ class TaskService(BaseService):
                 pr_created=task.pr_created,
             )
         else:
-            # Docs done but PR not yet created
-            # Stay in awaiting_documentation, waiting for developer to create PR
             self.log.info(
                 "Documentation complete, waiting for developer to create PR",
                 task_id=str(task_id),
                 docs_complete=True,
                 pr_created=task.pr_created,
             )
-
-        await self.session.flush()
-
-        # Index documentation artifacts (fire-and-forget)
-        if task.documents:
-            bg_task = asyncio.create_task(
-                self._index_docs_background(require_uuid(task.id), task.documents)
-            )
-            self._background_tasks.add(bg_task)
-            bg_task.add_done_callback(self._background_tasks.discard)
-
-        return task
 
     async def mark_pr_created(
         self,
@@ -2313,6 +2428,62 @@ class TaskService(BaseService):
         await self.session.flush()
         return task
 
+    def _validate_submit_review_status(self, task: TaskTable, task_id: UUID) -> bool:
+        """Task must be in_progress with branch + PR; otherwise log + False."""
+        if task.status != TaskStatus.IN_PROGRESS:
+            self.log.warning(
+                "Cannot submit for PM review - task not in progress",
+                task_id=str(task_id),
+                current_status=task.status.value,
+            )
+            return False
+        if not task.branch_name:
+            self.log.warning(
+                "Cannot submit for PM review - no branch (claim task first)",
+                task_id=str(task_id),
+            )
+            return False
+        if not task.pr_created or not task.pr_number:
+            self.log.warning(
+                "Cannot submit for PM review - PR must be created first",
+                task_id=str(task_id),
+                pr_created=task.pr_created,
+                pr_number=task.pr_number,
+            )
+            return False
+        return True
+
+    async def _validate_submit_review_descendants(self, task_id: UUID) -> bool:
+        """Parent tasks can't submit for review while children are live."""
+        all_descendants = await self.get_all_descendants(task_id)
+        incomplete = [
+            d
+            for d in all_descendants
+            if d.status not in (TaskStatus.COMPLETED, TaskStatus.CANCELLED)
+        ]
+        if incomplete:
+            self.log.warning(
+                "Cannot submit for PM review - incomplete descendants",
+                task_id=str(task_id),
+                incomplete_count=len(incomplete),
+                incomplete_ids=[str(d.id) for d in incomplete[:5]],
+            )
+            return False
+        return True
+
+    @staticmethod
+    def _record_completion_notes(task: TaskTable, notes: str | None) -> None:
+        """Append completion_notes entry to quick_context when supplied."""
+        if not notes:
+            return
+        existing_context = task.quick_context or ""
+        note_entry = f"completion_notes:{notes}"
+        task.quick_context = (
+            f"{existing_context}\n{note_entry}".strip()
+            if existing_context
+            else note_entry
+        )
+
     async def submit_for_pm_review(
         self,
         task_id: UUID,
@@ -2342,59 +2513,12 @@ class TaskService(BaseService):
         if not task:
             return None
 
-        # Only allow submission from in_progress status
-        if task.status != TaskStatus.IN_PROGRESS:
-            self.log.warning(
-                "Cannot submit for PM review - task not in progress",
-                task_id=str(task_id),
-                current_status=task.status.value,
-            )
+        if not self._validate_submit_review_status(task, task_id):
+            return None
+        if not await self._validate_submit_review_descendants(task_id):
             return None
 
-        # Validate git workflow requirements (all tasks must have branch and PR)
-        if not task.branch_name:
-            self.log.warning(
-                "Cannot submit for PM review - no branch (claim task first)",
-                task_id=str(task_id),
-            )
-            return None
-
-        if not task.pr_created or not task.pr_number:
-            self.log.warning(
-                "Cannot submit for PM review - PR must be created first",
-                task_id=str(task_id),
-                pr_created=task.pr_created,
-                pr_number=task.pr_number,
-            )
-            return None
-
-        # Check all descendants are in terminal states before escalating
-        all_descendants = await self.get_all_descendants(task_id)
-        incomplete = [
-            d
-            for d in all_descendants
-            if d.status not in (TaskStatus.COMPLETED, TaskStatus.CANCELLED)
-        ]
-        if incomplete:
-            self.log.warning(
-                "Cannot submit for PM review - incomplete descendants",
-                task_id=str(task_id),
-                incomplete_count=len(incomplete),
-                incomplete_ids=[str(d.id) for d in incomplete[:5]],
-            )
-            return None
-
-        # Store notes in quick_context
-        if notes:
-            existing_context = task.quick_context or ""
-            note_entry = f"completion_notes:{notes}"
-            task.quick_context = (
-                f"{existing_context}\n{note_entry}".strip()
-                if existing_context
-                else note_entry
-            )
-
-        # Role-restricted transition (PM/QA/documenter only)
+        self._record_completion_notes(task, notes)
         self._validate_and_set_status(task, TaskStatus.AWAITING_PM_REVIEW, agent_role)
         await self.session.flush()
 
@@ -2512,6 +2636,68 @@ class TaskService(BaseService):
             self._background_tasks.add(decision_task)
             decision_task.add_done_callback(self._background_tasks.discard)
 
+    async def _apply_complete_approval_chain(
+        self,
+        task: TaskTable,
+        task_id: UUID,
+        agent_id: UUID | None,
+        completing_agent_role: str | None,
+        all_descendants: list[TaskTable],
+    ) -> TaskTable | None:
+        """Run the Cell PM → Main PM → CEO chain; return escalated task or None."""
+        if task.status != TaskStatus.AWAITING_PM_REVIEW:
+            return None
+
+        if completing_agent_role == "cell_pm":
+            escalated = await self._handle_cell_pm_escalation(task, task_id, agent_id)
+            if escalated:
+                return escalated
+        is_root_parent = all_descendants and not task.parent_task_id
+        if completing_agent_role == "main_pm" and is_root_parent:
+            self.log.info(
+                "Main PM approved root parent - escalating to CEO",
+                task_id=str(task_id),
+            )
+            return await self.escalate_to_ceo(task_id, "main_pm")
+        return None
+
+    async def _assert_pr_merged_for_complete(self, task: TaskTable) -> bool:
+        """True if the task's PR is merged (or no PR gate applies).
+
+        Non-root tasks must have their PR merged before a PM can mark
+        them completed — mirrors the CEO-approve guard but applies to
+        the PM's own awaiting_pm_review → completed transition.
+        Root parent tasks and tasks without a work_session skip this
+        check (escalation to CEO handles them).
+        """
+        if not task.work_session_id:
+            return True
+        result = await self.session.execute(
+            select(WorkSessionTable).where(WorkSessionTable.id == task.work_session_id)
+        )
+        ws = result.scalar_one_or_none()
+        if ws is None or ws.pr_status == "merged":
+            return True
+        self.log.warning(
+            "Cannot complete - PR must be merged first",
+            task_id=str(task.id),
+            pr_status=ws.pr_status,
+            pr_number=ws.pr_number,
+        )
+        return False
+
+    @staticmethod
+    def _cancelled_force_allowed(
+        all_descendants: list[TaskTable],
+        force_with_cancelled: bool,
+        justification: str | None,
+    ) -> bool:
+        """Return True if any cancelled descendants are acceptable to the PM."""
+        has_cancelled = any(st.status == TaskStatus.CANCELLED for st in all_descendants)
+        if not has_cancelled:
+            return True
+        return force_with_cancelled and bool(justification)
+
     async def complete(
         self,
         task_id: UUID,
@@ -2538,40 +2724,63 @@ class TaskService(BaseService):
         if all_descendants is None:
             return None
 
-        # APPROVAL HIERARCHY: Cell PM → Main PM → CEO
-        if task.status == TaskStatus.AWAITING_PM_REVIEW:
-            if completing_agent_role == "cell_pm":
-                escalated = await self._handle_cell_pm_escalation(
-                    task, task_id, agent_id
-                )
-                if escalated:
-                    return escalated
-            # Only escalate root-level parents to CEO (subtasks complete directly)
-            is_root_parent = all_descendants and not task.parent_task_id
-            if completing_agent_role == "main_pm" and is_root_parent:
-                self.log.info(
-                    "Main PM approved root parent - escalating to CEO",
-                    task_id=str(task_id),
-                )
-                return await self.escalate_to_ceo(task_id, "main_pm")
+        escalated = await self._apply_complete_approval_chain(
+            task, task_id, agent_id, completing_agent_role, all_descendants
+        )
+        if escalated:
+            return escalated
 
-        # Handle cancelled descendants - require force flag and justification
-        cancelled = [st for st in all_descendants if st.status == TaskStatus.CANCELLED]
-        if cancelled and (not force_with_cancelled or not justification):
+        if not self._cancelled_force_allowed(
+            all_descendants, force_with_cancelled, justification
+        ):
             self.log.warning(
                 "Cannot complete - cancelled descendants", task_id=str(task_id)
             )
+            return None
+
+        if not await self._assert_pr_merged_for_complete(task):
             return None
 
         task.completed_at = datetime.now(UTC)
         self._validate_and_set_status(
             task, TaskStatus.COMPLETED, completing_agent_role or "cell_pm"
         )
+        await self._close_work_session_for_task(task, reason="task completed")
         await self.session.flush()
 
         await self._trigger_completion_hooks(task, agent_id)
         await self._unblock_dependents(task_id)
         return task
+
+    async def apply_escalation(
+        self,
+        *,
+        task: TaskTable,
+        target_agent_id: UUID,
+        escalator_slug: str,
+        target_slug: str,
+        reason: str,
+    ) -> None:
+        """Apply the state mutations for a generic chain escalation.
+
+        Sets the task to BLOCKED, reassigns to the escalation target, and
+        appends an [ESCALATED] line to dev_notes. Notification delivery is
+        handled upstream by `NotificationDeliveryService.escalate_and_notify`.
+        """
+        task.assigned_to = cast("Any", target_agent_id)
+        task.status = TaskStatus.BLOCKED
+        existing_notes = task.dev_notes or ""
+        escalation_note = (
+            f"\n\n[ESCALATED] From {escalator_slug} to {target_slug}\nReason: {reason}"
+        )
+        task.dev_notes = existing_notes + escalation_note
+        await self.session.flush()
+        self.log.info(
+            "Task escalated and blocked",
+            task_id=str(task.id),
+            escalator=escalator_slug,
+            target=target_slug,
+        )
 
     # =========================================================================
     # CEO APPROVAL WORKFLOW
@@ -2719,7 +2928,7 @@ class TaskService(BaseService):
         await self.session.flush()
 
         await self._emit_task_event(
-            EventType.TASK_STATUS_CHANGED,
+            EventType.TASK_PM_REJECTED,
             task_id,
             {"new_status": "needs_revision", "by_role": agent_role, "notes": notes},
         )
@@ -2902,13 +3111,74 @@ class TaskService(BaseService):
         ws_service = get_work_session_service(self.session)
         await ws_service.abandon(require_uuid(task.work_session_id), reason=reason)
 
+    async def _delete_task_branch_best_effort(self, task: TaskTable) -> None:
+        """Delete the task's remote branch on cancel. Never raises.
+
+        Skipped for tasks that didn't make it to a branch yet, or whose
+        PR already merged (merge path deletes the source branch).
+        """
+        branch = task.branch_name
+        if not branch:
+            return
+        try:
+            project_result = await self.session.execute(
+                select(ProjectTable.slug).where(ProjectTable.id == task.project_id)
+            )
+            project_slug = project_result.scalar_one_or_none()
+            if not project_slug:
+                return
+            from roboco.services.git import get_git_service
+
+            git_service = get_git_service(self.session)
+            await git_service.delete_task_branch(project_slug, str(branch))
+        except Exception as e:
+            # Cleanup is best-effort — don't fail the cancel if the
+            # remote is unreachable or the branch is already gone.
+            self.log.warning(
+                "Branch cleanup skipped",
+                task_id=str(task.id),
+                branch=str(branch),
+                error=str(e),
+            )
+
+    async def _close_work_session_for_task(self, task: TaskTable, reason: str) -> None:
+        """Close the task's work session on successful completion.
+
+        `abandon()` is for cancellation (work was discarded). `close()` is
+        for successful completion — the PR is merged and we want the
+        session marked completed rather than abandoned so reporting can
+        distinguish the two outcomes.
+        """
+        if not task.work_session_id:
+            return
+        from roboco.services.work_session import get_work_session_service
+
+        ws_service = get_work_session_service(self.session)
+        await ws_service.close(require_uuid(task.work_session_id), reason=reason)
+
     async def cancel(
-        self, task_id: UUID, agent_role: str = "cell_pm"
+        self,
+        task_id: UUID,
+        agent_role: str = "cell_pm",
+        cancellation_note: str | None = None,
     ) -> TaskTable | None:
-        """Cancel a task and all its descendants (PM only)."""
+        """Cancel a task and all its descendants (PM only).
+
+        If `cancellation_note` is supplied it's appended to `dev_notes` so
+        the audit trail captures who cancelled and why — keeps this out of
+        route handlers.
+        """
         task = await self.get(task_id)
         if not task:
             return None
+
+        if cancellation_note:
+            task.dev_notes = (
+                f"{task.dev_notes}\n{cancellation_note}"
+                if task.dev_notes
+                else cancellation_note
+            )
+            await self.session.flush()
 
         # Cancel all descendants first (children, grandchildren, etc.)
         # Skip tasks already in terminal states (completed or cancelled).
@@ -2938,6 +3208,7 @@ class TaskService(BaseService):
             await self._abandon_work_session_for_task(
                 descendant, reason="parent task cancelled"
             )
+            await self._delete_task_branch_best_effort(descendant)
 
         if cancelled_count > 0:
             self.log.info(
@@ -2949,6 +3220,7 @@ class TaskService(BaseService):
         # Validate transition with PM role requirement
         self._validate_and_set_status(task, TaskStatus.CANCELLED, agent_role)
         await self._abandon_work_session_for_task(task, reason="task cancelled")
+        await self._delete_task_branch_best_effort(task)
         await self.session.flush()
 
         # Index lifecycle event (fire-and-forget)
@@ -3346,6 +3618,63 @@ class TaskService(BaseService):
             )
         )
         return result.scalar() or 0
+
+    async def resolve_agent_id(self, agent_id_str: str) -> UUID:
+        """Resolve a UUID-string-or-slug into an agent UUID.
+
+        Used by claim-style endpoints where callers may pass either form.
+        Raises NotFoundError if the slug doesn't exist. Exists on the service
+        so route modules never issue raw AgentTable queries.
+        """
+        try:
+            return UUID(agent_id_str)
+        except ValueError:
+            pass
+
+        result = await self.session.execute(
+            select(AgentTable.id).where(AgentTable.slug == agent_id_str)
+        )
+        agent_uuid = result.scalar_one_or_none()
+        if not agent_uuid:
+            raise NotFoundError(resource_type="Agent", resource_id=agent_id_str)
+        return UUID(str(agent_uuid))
+
+    async def build_substitute_update(
+        self,
+        *,
+        agent_id: UUID,
+        task: TaskTable,
+        new_status: TaskStatus,
+        reason: str,
+        details: str,
+    ) -> tuple[dict[str, Any], str | None]:
+        """Assemble the update payload + pm_slug for a substitute operation.
+
+        Resolves the submitting agent's slug (for PM-chain lookup) internally
+        so routes pass only the agent UUID + primitive strings (no API
+        schema types leak down into the service layer). Returns the patch
+        dict and the PM slug to notify (None if no handoff).
+        """
+        result = await self.session.execute(
+            select(AgentTable).where(AgentTable.id == agent_id)
+        )
+        agent_record = result.scalar_one_or_none()
+        agent_slug = agent_record.slug if agent_record else None
+
+        update_data: dict[str, Any] = {
+            "status": new_status.value,
+            "dev_notes": f"[SUBSTITUTE] Reason: {reason}\n{details}",
+            "assigned_to": None,
+        }
+
+        target_pm_slug: str | None = None
+        if new_status == TaskStatus.AWAITING_PM_REVIEW:
+            target_pm_slug, pm_uuid = await resolve_pm_for_substitute(
+                self.session, agent_slug, task.team
+            )
+            if pm_uuid:
+                update_data["assigned_to"] = pm_uuid
+        return update_data, target_pm_slug
 
 
 # =============================================================================

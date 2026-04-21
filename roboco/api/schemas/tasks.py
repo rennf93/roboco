@@ -125,9 +125,15 @@ class SubTaskInput(BaseModel):
 
 
 class TaskPlanInput(BaseModel):
-    """Input for creating/updating a task plan."""
+    """Input for creating/updating a task plan.
 
-    approach: str
+    `approach` must be substantive (>=30 chars) — the whole point of the
+    plan is to force the agent to think before starting work, and a
+    one-line or empty approach defeats that. sub_tasks can be empty
+    for small tasks; risks/considerations/open_questions are optional.
+    """
+
+    approach: str = Field(..., min_length=30)
     sub_tasks: list[SubTaskInput] = []
     technical_considerations: list[str] = []
     risks: list[dict[str, Any]] = []
@@ -313,9 +319,14 @@ class TaskSummaryResponse(BaseModel):
 
 
 class ProgressRequest(BaseModel):
-    """Request to add progress update."""
+    """Request to add progress update.
 
-    message: str
+    `message` must be substantive (>=10 chars) — a one-char progress
+    update satisfies the existence gate but tells no-one anything. The
+    percentage is bounded [0, 100] by pydantic Field.
+    """
+
+    message: str = Field(..., min_length=10)
     percentage: int | None = Field(default=None, ge=0, le=100)
 
 

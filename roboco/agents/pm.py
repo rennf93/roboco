@@ -532,6 +532,80 @@ medium,TASK-abc123,P1,backend-dev-1
                 await self._assign_task(assignment)
                 self._cell_status.available_devs -= 1
 
+    async def _resolve_blocked_tasks(self) -> None:
+        """Attempt to unblock any blocked tasks whose blocker has been resolved."""
+        blocked_tasks = await self._get_blocked_tasks()
+        for task_id in blocked_tasks:
+            resolved = await self._check_blocker_resolved(task_id)
+            if not resolved:
+                continue
+            success = await self._unblock_task(task_id)
+            if not success:
+                continue
+            _, session_id = await self._get_task_info(task_id)
+            await self.send_message(
+                session_id,
+                f"TASK-{str(task_id)[:8]} unblocked - blocker resolved",
+                message_type="action",
+                task_id=task_id,
+            )
+
+    def _build_question_prompt(self, question_content: str) -> str:
+        """Build the think() prompt for a cell-member question."""
+        question_context = self.format_context_labeled(
+            "Cell Question",
+            {"question": question_content, "cell": self.cell_name},
+        )
+        return f"""A cell member needs help:
+
+{question_context}
+
+As the Cell PM, provide:
+1. Answer if you can
+2. Or route to appropriate person
+3. Or escalate if needed
+
+Be helpful and unblock the team.
+"""
+
+    @staticmethod
+    def _parse_task_id(task_id_raw: Any) -> UUID | None:
+        """Parse a raw task_id (str or UUID or None) into a UUID or None."""
+        if not task_id_raw:
+            return None
+        if isinstance(task_id_raw, str):
+            return UUID(task_id_raw)
+        return task_id_raw  # type: ignore[no-any-return]
+
+    async def _answer_cell_question(self, question_data: dict[str, Any]) -> None:
+        """Process a single pending cell-member question and respond."""
+        question_content = question_data.get("content", "")
+        task_id_raw = question_data.get("task_id")
+        session_id = question_data.get("session_id")
+
+        prompt = self._build_question_prompt(question_content)
+        response = await self.think(prompt)
+
+        if session_id:
+            parsed_task_id = self._parse_task_id(task_id_raw)
+            await self.send_message(
+                UUID(session_id) if isinstance(session_id, str) else session_id,
+                response,
+                message_type="answer",
+                task_id=parsed_task_id,
+            )
+            self.log.info(
+                "PM responded to question",
+                task_id=str(task_id_raw) if task_id_raw else None,
+                response_preview=response[:100],
+            )
+        else:
+            self.log.info(
+                "PM response (no session - using channel)",
+                task_id=str(task_id_raw) if task_id_raw else None,
+                response_preview=response[:100],
+            )
+
     async def _phase_facilitate(self) -> None:
         """
         FACILITATE phase: Help cell members.
@@ -543,76 +617,11 @@ medium,TASK-abc123,P1,backend-dev-1
         """
         self.log.debug("FACILITATE phase")
 
-        # Check for blocked tasks that may be resolvable
-        blocked_tasks = await self._get_blocked_tasks()
-        for task_id in blocked_tasks:
-            resolved = await self._check_blocker_resolved(task_id)
-            if resolved:
-                success = await self._unblock_task(task_id)
-                if success:
-                    # Get session from task
-                    _, session_id = await self._get_task_info(task_id)
-                    await self.send_message(
-                        session_id,
-                        f"TASK-{str(task_id)[:8]} unblocked - blocker resolved",
-                        message_type="action",
-                        task_id=task_id,
-                    )
+        await self._resolve_blocked_tasks()
 
-        # Check for pending questions in channel
         questions = await self._get_pending_questions()
-
         for question_data in questions:
-            question_content = question_data.get("content", "")
-            task_id_raw = question_data.get("task_id")
-            session_id = question_data.get("session_id")
-
-            # Use TOON for token-efficient context encoding
-            question_context = self.format_context_labeled(
-                "Cell Question",
-                {"question": question_content, "cell": self.cell_name},
-            )
-
-            prompt = f"""A cell member needs help:
-
-{question_context}
-
-As the Cell PM, provide:
-1. Answer if you can
-2. Or route to appropriate person
-3. Or escalate if needed
-
-Be helpful and unblock the team.
-"""
-            response = await self.think(prompt)
-
-            # Send response with task_id for proper routing
-            if session_id:
-                # Parse task_id if it's a string
-                parsed_task_id: UUID | None = None
-                if task_id_raw:
-                    parsed_task_id = (
-                        UUID(task_id_raw)
-                        if isinstance(task_id_raw, str)
-                        else task_id_raw
-                    )
-                await self.send_message(
-                    UUID(session_id) if isinstance(session_id, str) else session_id,
-                    response,
-                    message_type="answer",
-                    task_id=parsed_task_id,
-                )
-                self.log.info(
-                    "PM responded to question",
-                    task_id=str(task_id_raw) if task_id_raw else None,
-                    response_preview=response[:100],
-                )
-            else:
-                self.log.info(
-                    "PM response (no session - using channel)",
-                    task_id=str(task_id_raw) if task_id_raw else None,
-                    response_preview=response[:100],
-                )
+            await self._answer_cell_question(question_data)
 
     async def _phase_escalate(self) -> None:
         """

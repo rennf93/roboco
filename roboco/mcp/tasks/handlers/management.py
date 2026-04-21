@@ -77,6 +77,56 @@ def validate_assignee_can_work_on_team(
     return None
 
 
+_STATUS_ROLE_MAP: dict[str, str | tuple[str, ...]] = {
+    "awaiting_qa": "qa",
+    "awaiting_documentation": "documenter",
+    "awaiting_pm_review": ("cell_pm", "main_pm"),
+}
+
+_QA_TITLE_KEYWORDS = ("qa", "test", "validation", "quality", "review")
+_DOC_TITLE_KEYWORDS = ("doc", "documentation", "readme", "guide", "reference")
+
+
+def _status_role_mismatch(
+    task_status: str | None, assignee_role: str | None
+) -> str | None:
+    """Return a mismatch warning based on status, or None."""
+    if task_status not in _STATUS_ROLE_MAP:
+        return None
+    expected = _STATUS_ROLE_MAP[task_status]
+    if isinstance(expected, tuple):
+        if assignee_role in expected:
+            return None
+        return (
+            f"Task is {task_status} - typically assigned to "
+            f"{' or '.join(expected)}, not {assignee_role}."
+        )
+    if assignee_role == expected:
+        return None
+    return (
+        f"Task is {task_status} - typically assigned to "
+        f"{expected}, not {assignee_role}."
+    )
+
+
+def _title_role_mismatch(task_title: str, assignee_role: str | None) -> str | None:
+    """Return a mismatch warning based on title keywords, or None."""
+    if any(kw in task_title for kw in _QA_TITLE_KEYWORDS) and assignee_role != "qa":
+        return (
+            f"Task title suggests QA work but assignee is {assignee_role}. "
+            "Consider assigning to a QA agent."
+        )
+    if (
+        any(kw in task_title for kw in _DOC_TITLE_KEYWORDS)
+        and assignee_role != "documenter"
+    ):
+        return (
+            f"Task title suggests documentation but assignee is {assignee_role}. "
+            "Consider assigning to a documenter."
+        )
+    return None
+
+
 def get_role_mismatch_warning(task: dict[str, Any], assignee: str) -> str | None:
     """Check if assignee role matches the task type and return warning if mismatch.
 
@@ -87,46 +137,11 @@ def get_role_mismatch_warning(task: dict[str, Any], assignee: str) -> str | None
     task_status = task.get("status")
     task_title = task.get("title", "").lower()
 
-    # Role suggestions based on task status
-    status_role_map = {
-        "awaiting_qa": "qa",
-        "awaiting_documentation": "documenter",
-        "awaiting_pm_review": ("cell_pm", "main_pm"),
-    }
+    if warning := _status_role_mismatch(task_status, assignee_role):
+        return warning
 
-    # Check status-based role matching
-    if task_status in status_role_map:
-        expected = status_role_map[task_status]
-        if isinstance(expected, tuple):
-            if assignee_role not in expected:
-                return (
-                    f"Task is {task_status} - typically assigned to "
-                    f"{' or '.join(expected)}, not {assignee_role}."
-                )
-        elif assignee_role != expected:
-            return (
-                f"Task is {task_status} - typically assigned to "
-                f"{expected}, not {assignee_role}."
-            )
-
-    # Check title-based hints for pending tasks
     if task_status == "pending":
-        # QA-related keywords in title
-        qa_keywords = ["qa", "test", "validation", "quality", "review"]
-        if any(kw in task_title for kw in qa_keywords) and assignee_role != "qa":
-            return (
-                f"Task title suggests QA work but assignee is {assignee_role}. "
-                "Consider assigning to a QA agent."
-            )
-
-        # Docs-related keywords in title
-        doc_keywords = ["doc", "documentation", "readme", "guide", "reference"]
-        is_doc_task = any(kw in task_title for kw in doc_keywords)
-        if is_doc_task and assignee_role != "documenter":
-            return (
-                f"Task title suggests documentation but assignee is {assignee_role}. "
-                "Consider assigning to a documenter."
-            )
+        return _title_role_mismatch(task_title, assignee_role)
 
     return None
 
@@ -569,6 +584,103 @@ async def handle_task_create(
     return format_task_response(task, "CREATED", guidance)
 
 
+_MANAGEMENT_ROLES = frozenset(
+    {"cell_pm", "main_pm", "product_owner", "head_marketing", "ceo"}
+)
+_COMPLEX_COMPLEXITIES = frozenset({"medium", "high", "critical"})
+
+
+def _guard_self_reassign(
+    task: dict[str, Any], caller_role: str, caller_uuid: str | None
+) -> dict[str, Any] | None:
+    """Non-management roles cannot reassign a task assigned to themselves."""
+    task_assigned_to = task.get("assigned_to")
+    task_assigned_str = str(task_assigned_to).lower() if task_assigned_to else None
+    caller_uuid_str = str(caller_uuid).lower() if caller_uuid else None
+    if not (task_assigned_str and caller_uuid_str):
+        return None
+    if task_assigned_str != caller_uuid_str:
+        return None
+    if caller_role in _MANAGEMENT_ROLES:
+        return None
+
+    task_id = task.get("id")
+    return format_error_response(
+        "CANNOT_REASSIGN_OWN_TASK",
+        "You cannot reassign a task that was assigned to you. "
+        "Create subtasks to delegate work.",
+        {
+            "task_id": task_id,
+            "assigned_to": task_assigned_to,
+            "your_id": caller_uuid,
+        },
+        hint=(
+            f"Use roboco_task_create(parent_task_id='{task_id}', "
+            "assigned_to='be-dev-1', ...) to create a subtask."
+        ),
+    )
+
+
+async def _guard_complex_direct_dev_assignment(
+    client: ApiClient,
+    task: dict[str, Any],
+    caller_role: str,
+    assignee_role: str | None,
+) -> dict[str, Any] | None:
+    """Block Cell PM from directly assigning devs on complex tasks with no breakdown."""
+    if caller_role != "cell_pm" or assignee_role != "developer":
+        return None
+    complexity = task.get("estimated_complexity", "low")
+    if complexity not in _COMPLEX_COMPLEXITIES:
+        return None
+
+    task_id = task.get("id")
+    try:
+        subtasks_resp = await client.get(f"/tasks/{task_id}/subtasks")
+        subtasks = subtasks_resp.json() if subtasks_resp.ok else []
+    except Exception:
+        subtasks = []
+
+    is_subtask = task.get("parent_task_id") is not None
+    if subtasks or is_subtask:
+        return None
+
+    return format_error_response(
+        "SUBTASK_REQUIRED",
+        f"Cannot assign {complexity} complexity task directly to dev. "
+        "Cell PM must break down the work into subtasks first.",
+        {
+            "task_id": task_id,
+            "complexity": complexity,
+            "guidance": (
+                f"Create subtasks with: roboco_task_create("
+                f"parent_task_id='{task_id}', ...) "
+                "Then assign each subtask to developers."
+            ),
+        },
+    )
+
+
+def _guard_dev_needs_branch(
+    task: dict[str, Any], assignee_role: str | None
+) -> dict[str, Any] | None:
+    """Tasks need a branch before assigning to developers."""
+    if task.get("branch_name") or assignee_role != "developer":
+        return None
+    return format_error_response(
+        "NO_BRANCH_FOR_TASK",
+        "Task must have a branch before assigning to developer.",
+        {
+            "task_id": task.get("id"),
+            "has_branch": False,
+        },
+        hint=(
+            "Either claim the task first (creates branch), "
+            "or create subtasks for developers."
+        ),
+    )
+
+
 async def _check_assignment_guardrails(
     client: ApiClient,
     task: dict[str, Any],
@@ -584,87 +696,25 @@ async def _check_assignment_guardrails(
         caller_uuid: UUID of the caller for ownership check
     """
     caller_role, assignee_role = roles
-    task_id = task.get("id")
 
-    # ENFORCEMENT: You cannot reassign a task assigned TO YOU.
-    # If you need to delegate, create subtasks instead.
-    task_assigned_to = task.get("assigned_to")
-    # Normalize to string for comparison (handles UUID objects vs strings)
-    task_assigned_str = str(task_assigned_to).lower() if task_assigned_to else None
-    caller_uuid_str = str(caller_uuid).lower() if caller_uuid else None
-    if task_assigned_str and caller_uuid_str and task_assigned_str == caller_uuid_str:
-        return format_error_response(
-            "CANNOT_REASSIGN_OWN_TASK",
-            "You cannot reassign a task that was assigned to you. "
-            "Create subtasks to delegate work.",
-            {
-                "task_id": task_id,
-                "assigned_to": task_assigned_to,
-                "your_id": caller_uuid,
-            },
-            hint=(
-                f"Use roboco_task_create(parent_task_id='{task_id}', "
-                "assigned_to='be-dev-1', ...) to create a subtask."
-            ),
-        )
+    if error := _guard_self_reassign(task, caller_role, caller_uuid):
+        return error
 
-    # ENFORCEMENT: Block Cell PM from directly assigning devs on complex tasks
-    if caller_role == "cell_pm" and assignee_role == "developer":
-        complexity = task.get("estimated_complexity", "low")
-        if complexity in ("medium", "high", "critical"):
-            # Check if task already has subtasks
-            try:
-                subtasks_resp = await client.get(f"/tasks/{task_id}/subtasks")
-                subtasks = subtasks_resp.json() if subtasks_resp.ok else []
-            except Exception:
-                subtasks = []
+    if error := await _guard_complex_direct_dev_assignment(
+        client, task, caller_role, assignee_role
+    ):
+        return error
 
-            # Also allow if this task IS a subtask (has parent)
-            is_subtask = task.get("parent_task_id") is not None
-
-            if not subtasks and not is_subtask:
-                return format_error_response(
-                    "SUBTASK_REQUIRED",
-                    f"Cannot assign {complexity} complexity task directly to dev. "
-                    "Cell PM must break down the work into subtasks first.",
-                    {
-                        "task_id": task_id,
-                        "complexity": complexity,
-                        "guidance": (
-                            f"Create subtasks with: roboco_task_create("
-                            f"parent_task_id='{task_id}', ...) "
-                            "Then assign each subtask to developers."
-                        ),
-                    },
-                )
-
-    # GUARDRAIL: Tasks need branch before assigning to developers
-    if not task.get("branch_name") and assignee_role == "developer":
-        return format_error_response(
-            "NO_BRANCH_FOR_TASK",
-            "Task must have a branch before assigning to developer.",
-            {
-                "task_id": task_id,
-                "has_branch": False,
-            },
-            hint=(
-                "Either claim the task first (creates branch), "
-                "or create subtasks for developers."
-            ),
-        )
-
-    return None
+    return _guard_dev_needs_branch(task, assignee_role)
 
 
-async def handle_task_assign(
+async def _validate_and_fetch_task_for_assign(
     client: ApiClient, input_data: TaskAssignInput, agent_id: str
-) -> dict[str, Any]:
-    """Handle task assignment by PM."""
-    agent_team = get_agent_team(agent_id)
+) -> tuple[dict[str, Any] | None, dict[str, Any] | None]:
+    """Run permission + cell PM checks and fetch the task. Returns (task, error)."""
     role = get_agent_role(agent_id)
-
     if not can_assign_tasks(agent_id):
-        return format_error_response(
+        return None, format_error_response(
             "PERMISSION_DENIED",
             "Only PMs and management can assign tasks",
             {"role": role},
@@ -672,19 +722,50 @@ async def handle_task_assign(
 
     task, error = await fetch_task_for_assignment(client, input_data.task_id)
     if error or task is None:
-        return error or format_error_response("FETCH_FAILED", "No task returned")
+        return None, error or format_error_response("FETCH_FAILED", "No task returned")
 
+    agent_team = get_agent_team(agent_id)
     validation_error = validate_cell_pm_assignment(
         role, agent_team, task, input_data.assignee
     )
     if validation_error:
-        return validation_error
+        return None, validation_error
+    return task, None
 
-    # Resolve caller UUID for ownership check
+
+def _build_assign_guidance(task: dict[str, Any], assignee: str) -> str:
+    """Build response guidance text for a successful assignment."""
+    guidance = (
+        f"Task assigned to {assignee} and set to pending. "
+        "Orchestrator will spawn them to claim and work on it."
+    )
+    role_warning = get_role_mismatch_warning(task, assignee)
+    if role_warning:
+        guidance += f"\n\n⚠️ ROLE WARNING: {role_warning}"
+    if task.get("status") == "claimed" and task.get("claimed_by"):
+        guidance += (
+            "\n\n⚠️ Note: This task was already claimed. If you're delegating work, "
+            "consider using roboco_task_create(parent_task_id=...) to create a subtask "
+            "for better tracking and branch hierarchy management."
+        )
+    return guidance
+
+
+async def handle_task_assign(
+    client: ApiClient, input_data: TaskAssignInput, agent_id: str
+) -> dict[str, Any]:
+    """Handle task assignment by PM."""
+    task, error = await _validate_and_fetch_task_for_assign(
+        client, input_data, agent_id
+    )
+    if error or task is None:
+        return error or format_error_response("FETCH_FAILED", "No task returned")
+
     caller_uuid = await resolve_agent_uuid_cached(agent_id, client)
     assignee_role = get_agent_role(input_data.assignee)
+    caller_role = get_agent_role(agent_id)
     guardrail_error = await _check_assignment_guardrails(
-        client, task, (role, assignee_role), caller_uuid
+        client, task, (caller_role, assignee_role), caller_uuid
     )
     if guardrail_error:
         return guardrail_error
@@ -695,28 +776,7 @@ async def handle_task_assign(
     if assign_error or assigned_task is None:
         return assign_error or format_error_response("ASSIGN_FAILED", "No task")
 
-    # Warning if reassigning a claimed task (not an error, just informational)
-    reassign_warning = ""
-    if task.get("status") == "claimed" and task.get("claimed_by"):
-        reassign_warning = (
-            "\n\n⚠️ Note: This task was already claimed. If you're delegating work, "
-            "consider using roboco_task_create(parent_task_id=...) to create a subtask "
-            "for better tracking and branch hierarchy management."
-        )
-
-    guidance = (
-        f"Task assigned to {input_data.assignee} and set to pending. "
-        "Orchestrator will spawn them to claim and work on it."
-    )
-
-    # Check for role mismatch and add warning if found
-    role_warning = get_role_mismatch_warning(task, input_data.assignee)
-    if role_warning:
-        guidance += f"\n\n⚠️ ROLE WARNING: {role_warning}"
-
-    # Add reassign warning if applicable
-    guidance += reassign_warning
-
+    guidance = _build_assign_guidance(task, input_data.assignee)
     return format_task_response(assigned_task, "ASSIGNED", guidance)
 
 

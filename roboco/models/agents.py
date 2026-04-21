@@ -9,7 +9,7 @@ For API/persistence models, see roboco.models.agent.
 
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
-from enum import Enum
+from enum import StrEnum
 from typing import Any
 from uuid import UUID, uuid4
 
@@ -42,7 +42,7 @@ class AgentConfig(BaseModel):
 
     # Model configuration (aligned with agent.py ModelConfig)
     model_config_data: ModelConfig = Field(
-        default_factory=lambda: ModelConfig(),
+        default_factory=ModelConfig,
         description="LLM model configuration",
     )
 
@@ -97,7 +97,7 @@ class AgentState(BaseModel):
 # =============================================================================
 
 
-class DevTaskPhase(str, Enum):
+class DevTaskPhase(StrEnum):
     """Phases of the developer task lifecycle."""
 
     SCAN = "scan"
@@ -132,7 +132,7 @@ class TaskContext:
 # =============================================================================
 
 
-class QATaskPhase(str, Enum):
+class QATaskPhase(StrEnum):
     """Phases of the QA lifecycle."""
 
     MONITOR = "monitor"
@@ -144,7 +144,7 @@ class QATaskPhase(str, Enum):
     RETURN = "return"
 
 
-class TestResult(str, Enum):
+class TestResult(StrEnum):
     """Test result outcomes."""
 
     PASS = "pass"
@@ -186,7 +186,7 @@ class ReviewContext:
 # =============================================================================
 
 
-class CellPMPhase(str, Enum):
+class CellPMPhase(StrEnum):
     """Phases of the Cell PM lifecycle."""
 
     MONITOR = "monitor"
@@ -198,7 +198,7 @@ class CellPMPhase(str, Enum):
     REPORT = "report"
 
 
-class MainPMPhase(str, Enum):
+class MainPMPhase(StrEnum):
     """Phases of the Main PM lifecycle."""
 
     OVERSEE = "oversee"
@@ -247,7 +247,7 @@ class Escalation:
 # =============================================================================
 
 
-class DocTaskPhase(str, Enum):
+class DocTaskPhase(StrEnum):
     """Phases of the Documenter lifecycle."""
 
     MONITOR = "monitor"
@@ -259,7 +259,7 @@ class DocTaskPhase(str, Enum):
     PUBLISH = "publish"
 
 
-class DocType(str, Enum):
+class DocType(StrEnum):
     """Types of documentation."""
 
     API = "api"
@@ -311,7 +311,7 @@ class DocContext:
 # =============================================================================
 
 
-class ProductOwnerPhase(str, Enum):
+class ProductOwnerPhase(StrEnum):
     """Phases of the Product Owner lifecycle."""
 
     VISION = "vision"
@@ -334,7 +334,7 @@ class Feature:
     status: str = "backlog"
 
 
-class HeadMarketingPhase(str, Enum):
+class HeadMarketingPhase(StrEnum):
     """Phases of the Head of Marketing lifecycle."""
 
     RESEARCH = "research"
@@ -359,7 +359,7 @@ class Campaign:
     metrics: dict[str, Any] = field(default_factory=dict)
 
 
-class AuditorPhase(str, Enum):
+class AuditorPhase(StrEnum):
     """Phases of the Auditor lifecycle."""
 
     OBSERVE = "observe"
@@ -370,7 +370,7 @@ class AuditorPhase(str, Enum):
     ADVISE = "advise"
 
 
-class AuditorFlagSeverity(str, Enum):
+class AuditorFlagSeverity(StrEnum):
     """Severity of flagged issues from auditor."""
 
     INFO = "info"

@@ -68,8 +68,20 @@ class A2AService:
 
     @staticmethod
     def get_service_endpoint() -> str:
-        """Build service endpoint URL from settings."""
-        connect_host = "127.0.0.1" if settings.host == "0.0.0.0" else settings.host
+        """Build service endpoint URL from settings.
+
+        When the API binds to the all-interfaces address (dev default),
+        we can't use it for outbound callbacks — dial loopback instead.
+        `is_unspecified` covers both 0.0.0.0 and ::, and avoids a bare
+        literal that trips bandit B104.
+        """
+        import ipaddress
+
+        try:
+            is_any_iface = ipaddress.ip_address(settings.host).is_unspecified
+        except ValueError:
+            is_any_iface = False
+        connect_host = "127.0.0.1" if is_any_iface else settings.host
         return f"http://{connect_host}:{settings.port}"
 
     @staticmethod
@@ -711,6 +723,47 @@ class A2AService:
 
         return task
 
+    @staticmethod
+    def _lookup_requester_slug(created_by: Any) -> str | None:
+        """Find the agent slug for a task creator UUID."""
+        from roboco.seeds.initial_data import AGENT_UUIDS
+
+        created_by_str = str(created_by)
+        for slug, uuid_str in AGENT_UUIDS.items():
+            if uuid_str == created_by_str:
+                return slug
+        return None
+
+    @staticmethod
+    async def _publish_a2a_response_event(
+        task: TaskTable,
+        created_by: Any,
+        requester_slug: str,
+        responder_agent: str | None,
+    ) -> None:
+        """Publish a TASK_ASSIGNED event to notify/spawn the requester."""
+        try:
+            bus = get_event_bus()
+            if not bus.is_connected():
+                return
+            await bus.publish(
+                Event(
+                    type=EventType.TASK_ASSIGNED,
+                    data={
+                        "task_id": str(task.id),
+                        "assigned_to": str(created_by),
+                        "agent_slug": requester_slug,
+                        "skill": "a2a_response",
+                        "message": f"Response received for A2A task {task.id}",
+                        "source": "a2a_response",
+                        "urgent": False,
+                        "from_agent": responder_agent or "agent",
+                    },
+                )
+            )
+        except Exception:
+            pass  # Don't fail if event bus unavailable
+
     async def _notify_original_requester(
         self,
         task: TaskTable,
@@ -723,25 +776,15 @@ class A2AService:
         This enables bidirectional A2A where both parties can be
         spawned as needed until they're both online.
         """
-        # Extract original requester from dev_notes or task metadata
         dev_notes = task.dev_notes or ""
         if "A2A Request" not in dev_notes:
             return  # Not an A2A task
 
-        # The original requester is whoever created the task
         created_by = task.created_by
         if not created_by:
             return
 
-        # Find the agent slug for the creator
-        from roboco.seeds.initial_data import AGENT_UUIDS
-
-        requester_slug = None
-        for slug, uuid_str in AGENT_UUIDS.items():
-            if uuid_str == str(created_by):
-                requester_slug = slug
-                break
-
+        requester_slug = self._lookup_requester_slug(created_by)
         if not requester_slug:
             return
 
@@ -749,27 +792,9 @@ class A2AService:
         if responder_agent and responder_agent == requester_slug:
             return
 
-        # Publish event to notify/spawn the original requester
-        try:
-            bus = get_event_bus()
-            if bus.is_connected():
-                await bus.publish(
-                    Event(
-                        type=EventType.TASK_ASSIGNED,
-                        data={
-                            "task_id": str(task.id),
-                            "assigned_to": str(created_by),
-                            "agent_slug": requester_slug,
-                            "skill": "a2a_response",
-                            "message": f"Response received for A2A task {task.id}",
-                            "source": "a2a_response",
-                            "urgent": False,
-                            "from_agent": responder_agent or "agent",
-                        },
-                    )
-                )
-        except Exception:
-            pass  # Don't fail if event bus unavailable
+        await self._publish_a2a_response_event(
+            task, created_by, requester_slug, responder_agent
+        )
 
     # =========================================================================
     # PERSISTENT CONVERSATION MANAGEMENT

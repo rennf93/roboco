@@ -387,6 +387,34 @@ class OllamaEmbedder:
 
         raise last_error or OllamaEmbedderError("Max retries exceeded")
 
+    def _partition_cached_documents(
+        self, documents: list[str]
+    ) -> tuple[list[list[float] | None], list[int], list[str]]:
+        """Split documents into (pre-filled slots, uncached indices, uncached texts)."""
+        result_embeddings: list[list[float] | None] = [None] * len(documents)
+        uncached_indices: list[int] = []
+        uncached_docs: list[str] = []
+
+        for i, doc in enumerate(documents):
+            cached = self._cache.get(doc)
+            if cached is not None:
+                result_embeddings[i] = cached
+            else:
+                uncached_indices.append(i)
+                uncached_docs.append(doc)
+        return result_embeddings, uncached_indices, uncached_docs
+
+    @staticmethod
+    def _merge_embeddings(
+        result_embeddings: list[list[float] | None],
+        uncached_indices: list[int],
+        new_embeddings: list[list[float]],
+    ) -> list[list[float]]:
+        """Merge freshly-computed embeddings into preallocated result list."""
+        for idx, emb in zip(uncached_indices, new_embeddings, strict=True):
+            result_embeddings[idx] = emb
+        return [e for e in result_embeddings if e is not None]
+
     def embed_documents(
         self,
         documents: list[str],
@@ -399,18 +427,11 @@ class OllamaEmbedder:
         if not documents:
             return []
 
-        # Check cache for all documents
-        result_embeddings: list[list[float] | None] = [None] * len(documents)
-        uncached_indices: list[int] = []
-        uncached_docs: list[str] = []
-
-        for i, doc in enumerate(documents):
-            cached = self._cache.get(doc)
-            if cached is not None:
-                result_embeddings[i] = cached
-            else:
-                uncached_indices.append(i)
-                uncached_docs.append(doc)
+        (
+            result_embeddings,
+            uncached_indices,
+            uncached_docs,
+        ) = self._partition_cached_documents(documents)
 
         if uncached_indices:
             logger.info(
@@ -423,7 +444,6 @@ class OllamaEmbedder:
         if not uncached_docs:
             return [e for e in result_embeddings if e is not None]
 
-        # Embed uncached documents in batches
         client = self._get_sync_client()
         new_embeddings: list[list[float]] = []
 
@@ -431,15 +451,12 @@ class OllamaEmbedder:
             batch = uncached_docs[i : i + batch_size]
             embeddings = self._embed_batch_sync(client, batch, batch_index=i)
             new_embeddings.extend(embeddings)
-            # Cache new embeddings
             for doc, emb in zip(batch, embeddings, strict=True):
                 self._cache.put(doc, emb)
 
-        # Merge cached and new embeddings
-        for idx, emb in zip(uncached_indices, new_embeddings, strict=True):
-            result_embeddings[idx] = emb
-
-        return [e for e in result_embeddings if e is not None]
+        return self._merge_embeddings(
+            result_embeddings, uncached_indices, new_embeddings
+        )
 
     async def _embed_batch_async(
         self,
@@ -491,6 +508,30 @@ class OllamaEmbedder:
 
             raise last_error or OllamaEmbedderError("Max retries exceeded")
 
+    async def _run_parallel_batches(
+        self, batches: list[list[str]]
+    ) -> list[list[list[float]]]:
+        """Execute all batches concurrently via a shared async client."""
+        async with self._create_async_client() as client:
+            tasks = [
+                self._embed_batch_async(client, batch, i)
+                for i, batch in enumerate(batches)
+            ]
+            return await asyncio.gather(*tasks)
+
+    def _collect_and_cache(
+        self,
+        batches: list[list[str]],
+        batch_results: list[list[list[float]]],
+    ) -> list[list[float]]:
+        """Flatten batch results and populate the embedding cache."""
+        new_embeddings: list[list[float]] = []
+        for batch, embeddings in zip(batches, batch_results, strict=True):
+            for doc, emb in zip(batch, embeddings, strict=True):
+                new_embeddings.append(emb)
+                self._cache.put(doc, emb)
+        return new_embeddings
+
     async def aembed_documents_parallel(
         self,
         documents: list[str],
@@ -505,18 +546,11 @@ class OllamaEmbedder:
         if not documents:
             return []
 
-        # Check cache for all documents
-        result_embeddings: list[list[float] | None] = [None] * len(documents)
-        uncached_indices: list[int] = []
-        uncached_docs: list[str] = []
-
-        for i, doc in enumerate(documents):
-            cached = self._cache.get(doc)
-            if cached is not None:
-                result_embeddings[i] = cached
-            else:
-                uncached_indices.append(i)
-                uncached_docs.append(doc)
+        (
+            result_embeddings,
+            uncached_indices,
+            uncached_docs,
+        ) = self._partition_cached_documents(documents)
 
         cache_hits = len(documents) - len(uncached_indices)
         if cache_hits > 0:
@@ -531,10 +565,10 @@ class OllamaEmbedder:
         if not uncached_docs:
             return [e for e in result_embeddings if e is not None]
 
-        # Split uncached docs into batches
-        batches: list[list[str]] = []
-        for i in range(0, len(uncached_docs), batch_size):
-            batches.append(uncached_docs[i : i + batch_size])
+        batches: list[list[str]] = [
+            uncached_docs[i : i + batch_size]
+            for i in range(0, len(uncached_docs), batch_size)
+        ]
 
         logger.info(
             "Parallel embedding starting",
@@ -545,24 +579,8 @@ class OllamaEmbedder:
         )
 
         start_time = time.time()
-
-        # Create one client for all batches (connection pooling)
-        async with self._create_async_client() as client:
-            # Process all batches in parallel (semaphore limits concurrency)
-            tasks = [
-                self._embed_batch_async(client, batch, i)
-                for i, batch in enumerate(batches)
-            ]
-            batch_results = await asyncio.gather(*tasks)
-
-        # Flatten results and cache
-        new_embeddings: list[list[float]] = []
-        doc_idx = 0
-        for batch, embeddings in zip(batches, batch_results, strict=True):
-            for doc, emb in zip(batch, embeddings, strict=True):
-                new_embeddings.append(emb)
-                self._cache.put(doc, emb)
-            doc_idx += len(batch)
+        batch_results = await self._run_parallel_batches(batches)
+        new_embeddings = self._collect_and_cache(batches, batch_results)
 
         elapsed = time.time() - start_time
         docs_per_sec = len(uncached_docs) / elapsed if elapsed > 0 else 0
@@ -574,11 +592,9 @@ class OllamaEmbedder:
             docs_per_sec=f"{docs_per_sec:.1f}",
         )
 
-        # Merge cached and new embeddings
-        for idx, emb in zip(uncached_indices, new_embeddings, strict=True):
-            result_embeddings[idx] = emb
-
-        return [e for e in result_embeddings if e is not None]
+        return self._merge_embeddings(
+            result_embeddings, uncached_indices, new_embeddings
+        )
 
     def embed_chunks(
         self,

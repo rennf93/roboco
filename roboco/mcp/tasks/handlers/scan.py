@@ -16,6 +16,34 @@ from roboco.mcp.tasks.handlers._helpers import (
 )
 from roboco.mcp.utils import ApiClient, format_error_response
 
+_ACTIVE_SCAN_STATUSES: frozenset[str] = frozenset(
+    {"pending", "claimed", "in_progress", "verifying", "needs_revision"}
+)
+
+_PM_SCAN_ROLES: frozenset[str] = frozenset(
+    {"cell_pm", "main_pm", "product_owner", "auditor", "ceo"}
+)
+
+
+async def _scan_assigned_active(client: ApiClient) -> list[dict[str, Any]]:
+    """Return this agent's assigned tasks that are still active."""
+    assigned_resp = await client.get("/tasks/my")
+    assigned_data = assigned_resp.json() if assigned_resp.ok else []
+    return [t for t in assigned_data if t.get("status") in _ACTIVE_SCAN_STATUSES]
+
+
+async def _scan_blocked_for_pm(
+    client: ApiClient, agent_role: str | None, team: str | None
+) -> list[dict[str, Any]]:
+    """Return blocked tasks for PMs/board; empty list for other roles."""
+    if agent_role not in _PM_SCAN_ROLES:
+        return []
+    params: dict[str, str] = {}
+    if team:
+        params["team"] = team
+    blocked_resp = await client.get("/tasks/blocked", params=params)
+    return blocked_resp.json() if blocked_resp.ok else []
+
 
 async def handle_task_scan(
     client: ApiClient, team: str | None, agent_id: str
@@ -24,16 +52,7 @@ async def handle_task_scan(
     paused_resp = await client.get("/tasks/my", params={"status": "paused"})
     paused_tasks = paused_resp.json() if paused_resp.ok else []
 
-    assigned_resp = await client.get("/tasks/my")
-    assigned_data = assigned_resp.json() if assigned_resp.ok else []
-    active_statuses = {
-        "pending",
-        "claimed",
-        "in_progress",
-        "verifying",
-        "needs_revision",
-    }
-    assigned_tasks = [t for t in assigned_data if t.get("status") in active_statuses]
+    assigned_tasks = await _scan_assigned_active(client)
 
     agent_role = get_agent_role(agent_id)
     available_tasks = await get_available_tasks_for_role(client, agent_role, team)
@@ -41,15 +60,7 @@ async def handle_task_scan(
     assigned_ids = {t.get("id") for t in assigned_tasks}
     available_tasks = [t for t in available_tasks if t.get("id") not in assigned_ids]
 
-    # For PMs: fetch blocked tasks in their team that need unblocking
-    blocked_tasks: list[dict[str, Any]] = []
-    if agent_role in ("cell_pm", "main_pm", "product_owner", "auditor", "ceo"):
-        params: dict[str, str] = {}
-        if team:
-            params["team"] = team
-        blocked_resp = await client.get("/tasks/blocked", params=params)
-        if blocked_resp.ok:
-            blocked_tasks = blocked_resp.json()
+    blocked_tasks = await _scan_blocked_for_pm(client, agent_role, team)
 
     result: dict[str, Any] = {
         "paused_tasks": paused_tasks,
@@ -60,7 +71,6 @@ async def handle_task_scan(
         ),
     }
 
-    # Add blocked tasks with explicit action required for PMs
     if blocked_tasks:
         result["blocked_tasks"] = blocked_tasks
         result["blocked_action_required"] = (

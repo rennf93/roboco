@@ -15,6 +15,7 @@ See validate_git_requirements() for enforcement.
 
 from dataclasses import dataclass
 
+from roboco.config import settings
 from roboco.exceptions import TaskLifecycleError
 
 # Re-export from exceptions for backward compatibility
@@ -154,6 +155,37 @@ ROLE_RESTRICTED_TRANSITIONS: dict[tuple[str, str], list[str]] = {
     ("awaiting_documentation", "cancelled"): _CANCEL_ROLES,
     ("awaiting_pm_review", "cancelled"): _CANCEL_ROLES,
 }
+
+
+# =============================================================================
+# TIME-IN-STATE SLAs (soft guardrail for stuck-task sweep)
+# =============================================================================
+#
+# Keys are (role, status) tuples. Values are seconds. The orchestrator's
+# stuck-task sweep reads this table and auto-escalates / auto-releases tasks
+# that exceed the SLA for their current owner's role. Absence from the table
+# means "no per-role SLA; only the generic 10-minute pending-task sweep
+# applies." Defaults live in roboco.config.Settings so they're overridable
+# per environment without a code change.
+
+ROLE_STATE_SLA_KEYS: dict[tuple[str, str], str] = {
+    ("developer", "in_progress"): "agent_sla_developer_in_progress",
+    ("developer", "verifying"): "agent_sla_developer_verifying",
+    ("qa", "claimed"): "agent_sla_qa_claimed",
+    ("documenter", "claimed"): "agent_sla_documenter_claimed",
+    ("cell_pm", "claimed"): "agent_sla_cell_pm_claimed",
+}
+
+
+def sla_seconds_for(role: str | None, status: str) -> int | None:
+    """Return the configured SLA for (role, status), or None if none applies."""
+    if not role:
+        return None
+    key = ROLE_STATE_SLA_KEYS.get((role, status))
+    if key is None:
+        return None
+    value = getattr(settings, key, None)
+    return int(value) if isinstance(value, int) else None
 
 
 def validate_task_transition(

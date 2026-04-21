@@ -5,14 +5,14 @@ Request/response models for auditor and CEO dashboards.
 """
 
 from datetime import datetime
-from enum import Enum
+from enum import StrEnum
 from typing import Any
 from uuid import UUID
 
 from pydantic import BaseModel, Field
 
 
-class FlagSeverity(str, Enum):
+class FlagSeverity(StrEnum):
     """Severity levels for auditor flags."""
 
     INFO = "info"

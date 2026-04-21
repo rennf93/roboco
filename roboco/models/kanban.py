@@ -6,7 +6,7 @@ cards, and swimlanes for different roles.
 """
 
 from datetime import datetime
-from enum import Enum
+from enum import StrEnum
 from uuid import UUID
 
 from pydantic import Field
@@ -14,7 +14,7 @@ from pydantic import Field
 from roboco.models.base import Complexity, RobocoBase, TaskStatus, Team
 
 
-class KanbanBoardType(str, Enum):
+class KanbanBoardType(StrEnum):
     """Types of kanban boards available."""
 
     DEV = "dev"

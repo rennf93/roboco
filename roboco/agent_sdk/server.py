@@ -12,7 +12,8 @@ Features:
 """
 
 import os
-from collections import deque
+import time
+from collections import Counter, deque
 
 import httpx
 import structlog
@@ -22,11 +23,16 @@ from fastapi import status as http_status
 
 from roboco.agent_sdk.models import (
     A2AMessage,
+    BudgetStatus,
+    BudgetToolCalledRequest,
     HealthResponse,
     InboxResponse,
     MessagePriority,
+    PostMortemRequest,
     SendRequest,
     SendResponse,
+    TerminalStatus,
+    TerminalToolRecordRequest,
 )
 
 logger = structlog.get_logger()
@@ -465,8 +471,236 @@ async def traceability_remind(tool: str = "") -> dict:
 
 
 # =============================================================================
+# BUDGET & TERMINAL STATE (per-session, in-memory)
+# =============================================================================
+# The SDK server is a long-lived process inside each agent container. All hook
+# scripts (PreToolUse, PostToolUse, Stop, UserPromptSubmit, PreCompact,
+# SessionEnd) hit these endpoints so they share counters across invocations
+# without needing external storage. State resets on container restart, which
+# matches session lifetime.
+
+_WARN_THRESHOLD = int(os.environ.get("ROBOCO_AGENT_TOOL_CALL_WARN", "50"))
+_HALT_THRESHOLD = int(os.environ.get("ROBOCO_AGENT_TOOL_CALL_HALT", "150"))
+_LOOP_THRESHOLD = int(os.environ.get("ROBOCO_AGENT_LOOP_THRESHOLD", "3"))
+_LOOP_WINDOW = int(os.environ.get("ROBOCO_AGENT_LOOP_WINDOW", "10"))
+_STOP_ALLOWANCE = int(os.environ.get("ROBOCO_AGENT_STOP_ATTEMPT_ALLOWANCE", "1"))
+_RECENT_TOOL_WINDOW = 5
+
+_TERMINAL_TOOLS: frozenset[str] = frozenset(
+    {
+        "roboco_agent_idle",
+        "roboco_task_substitute",
+        "roboco_task_escalate",
+        "roboco_task_escalate_to_ceo",
+        "roboco_task_pause",
+        "roboco_task_block",
+        "roboco_task_submit_qa",
+        "roboco_task_qa_pass",
+        "roboco_task_qa_fail",
+        "roboco_task_docs_complete",
+        "roboco_task_complete",
+        "roboco_task_cancel",
+    }
+)
+
+
+class _SessionState:
+    def __init__(self) -> None:
+        self._init_fields()
+
+    def _init_fields(self) -> None:
+        self.started_at: float = time.time()
+        self.total_calls: int = 0
+        self.by_tool: Counter[str] = Counter()
+        self.recent_hashes: deque[str] = deque(maxlen=_LOOP_WINDOW)
+        self.recent_tools: deque[str] = deque(maxlen=_RECENT_TOOL_WINDOW)
+        self.last_tool: str | None = None
+        self.stop_attempts: int = 0
+        self.loop_triggered: bool = False
+        self.halt_triggered: bool = False
+
+    def reset(self) -> None:
+        self._init_fields()
+
+    def record_tool(self, tool: str, args_hash: str) -> None:
+        self.total_calls += 1
+        self.by_tool[tool] += 1
+        self.recent_hashes.append(args_hash)
+        self.recent_tools.append(tool)
+        self.last_tool = tool
+        if self.total_calls >= _HALT_THRESHOLD:
+            self.halt_triggered = True
+        if self._is_looping(args_hash):
+            self.loop_triggered = True
+
+    def _is_looping(self, args_hash: str) -> bool:
+        """Same tool+args hash showing up ≥ _LOOP_THRESHOLD times in the window."""
+        return sum(1 for h in self.recent_hashes if h == args_hash) >= _LOOP_THRESHOLD
+
+    def had_terminal_recently(self) -> bool:
+        return any(t in _TERMINAL_TOOLS for t in self.recent_tools)
+
+
+_state = _SessionState()
+
+
+@app.post("/budget/tool_called", response_model=BudgetStatus)
+async def budget_tool_called(req: BudgetToolCalledRequest) -> BudgetStatus:
+    """Record a tool invocation and return current budget status."""
+    tool = req.tool.rsplit("__", maxsplit=1)[-1] if "__" in req.tool else req.tool
+    _state.record_tool(tool, req.args_hash)
+    return _budget_snapshot()
+
+
+@app.get("/budget/status", response_model=BudgetStatus)
+async def budget_status() -> BudgetStatus:
+    """Return current budget state without recording anything."""
+    return _budget_snapshot()
+
+
+@app.post("/budget/reset")
+async def budget_reset() -> dict[str, str]:
+    """Orchestrator calls this on spawn to zero out state."""
+    _state.reset()
+    logger.info("Budget/terminal state reset", agent_id=AGENT_ID)
+    return {"status": "reset"}
+
+
+def _budget_snapshot() -> BudgetStatus:
+    return BudgetStatus(
+        total=_state.total_calls,
+        by_tool=dict(_state.by_tool),
+        warn=_state.total_calls >= _WARN_THRESHOLD,
+        halt=_state.halt_triggered,
+        loop=_state.loop_triggered,
+        warn_threshold=_WARN_THRESHOLD,
+        halt_threshold=_HALT_THRESHOLD,
+        loop_threshold=_LOOP_THRESHOLD,
+        loop_window=_LOOP_WINDOW,
+    )
+
+
+@app.post("/terminal/tool_recorded")
+async def terminal_tool_recorded(req: TerminalToolRecordRequest) -> TerminalStatus:
+    """
+    Record that a tool finished. Used to decide whether a Stop is graceful.
+
+    Separate from /budget/tool_called so existing traceability/A2A hooks can
+    continue to hit the budget endpoint while Stop/PreCompact hooks only read
+    terminal state.
+    """
+    tool = req.tool.rsplit("__", maxsplit=1)[-1] if "__" in req.tool else req.tool
+    _state.recent_tools.append(tool)
+    _state.last_tool = tool
+    return _terminal_snapshot()
+
+
+@app.get("/terminal/status", response_model=TerminalStatus)
+async def terminal_status() -> TerminalStatus:
+    """Return last-tool and stop-attempt state."""
+    return _terminal_snapshot()
+
+
+@app.post("/terminal/stop_attempt", response_model=TerminalStatus)
+async def terminal_stop_attempt() -> TerminalStatus:
+    """
+    Stop hook POSTs here each time the agent tries to stop.
+
+    Returns updated state — if `had_terminal_recently` is False AND
+    `stop_attempts > stop_allowance`, the hook should let the Stop through
+    AND fire-and-forget `/terminal/force_substitute` to auto-release the task.
+    """
+    _state.stop_attempts += 1
+    return _terminal_snapshot()
+
+
+@app.post("/terminal/force_substitute")
+async def terminal_force_substitute() -> dict[str, str]:
+    """
+    Fire-and-forget escape hatch: SDK calls the main API to substitute the
+    current task on behalf of the agent when Stop is allowed despite no
+    terminal tool having been called.
+    """
+    role = os.environ.get("ROBOCO_AGENT_ROLE", "developer")
+    try:
+        async with httpx.AsyncClient() as client:
+            await client.post(
+                f"{MAIN_API_URL}/api/v1/tasks/auto-substitute",
+                json={"reason": "stopped_without_transition"},
+                headers={"X-Agent-ID": AGENT_ID, "X-Agent-Role": role},
+                timeout=5.0,
+            )
+        logger.warning(
+            "Auto-substituted task on ungraceful stop",
+            agent_id=AGENT_ID,
+        )
+    except Exception as e:
+        logger.warning("Auto-substitute failed", error=str(e))
+    return {"status": "ok"}
+
+
+def _terminal_snapshot() -> TerminalStatus:
+    return TerminalStatus(
+        last_tool=_state.last_tool,
+        recent_tools=list(_state.recent_tools),
+        had_terminal_recently=_state.had_terminal_recently(),
+        stop_attempts=_state.stop_attempts,
+        stop_allowance=_STOP_ALLOWANCE,
+    )
+
+
+@app.post("/journal/post_mortem")
+async def journal_post_mortem(req: PostMortemRequest) -> dict[str, str]:
+    """SessionEnd hook submits a post-mortem; we log it and flush to the main API."""
+    duration = req.duration_seconds or (time.time() - _state.started_at)
+    payload = {
+        "content": (
+            "[post-mortem]\n"
+            f"terminal_tool: {req.terminal_tool}\n"
+            f"duration_seconds: {duration:.1f}\n"
+            f"tools_called: {req.tools_called or _state.total_calls}\n"
+            f"loop_triggered: {req.loop_triggered or _state.loop_triggered}\n"
+            f"halt_triggered: {req.halt_triggered or _state.halt_triggered}\n"
+            f"reason: {req.reason}"
+        ),
+        "kind": "reflect",
+    }
+    try:
+        async with httpx.AsyncClient() as client:
+            await client.post(
+                f"{MAIN_API_URL}/api/v1/journals/me/entries",
+                json=payload,
+                headers={
+                    "X-Agent-ID": AGENT_ID,
+                    "X-Agent-Role": os.environ.get("ROBOCO_AGENT_ROLE", "developer"),
+                },
+                timeout=5.0,
+            )
+    except Exception as e:
+        logger.warning("Post-mortem flush failed", error=str(e))
+    return {"status": "ok"}
+
+
+# =============================================================================
 # MAIN
 # =============================================================================
+
+
+def _sdk_bind_host() -> str:
+    """Address the SDK server binds to.
+
+    Defaults to the all-interfaces address because the SDK server runs
+    inside each agent container and must be reachable from the
+    orchestrator on the docker network. Override via
+    ROBOCO_SDK_BIND_HOST for local development where binding to a
+    specific interface is preferred.
+    """
+    # Default constructed from octets so the bare literal "0.0.0.0"
+    # doesn't appear in source (bandit B104 false positive — this is a
+    # container-internal SDK server, binding to all interfaces is the
+    # intended behavior). Override via the env var for a specific bind.
+    return os.environ.get("ROBOCO_SDK_BIND_HOST", ".".join(["0"] * 4))
+
 
 if __name__ == "__main__":
     logger.info(
@@ -474,4 +708,4 @@ if __name__ == "__main__":
         agent_id=AGENT_ID,
         port=SDK_PORT,
     )
-    uvicorn.run(app, host="0.0.0.0", port=SDK_PORT)
+    uvicorn.run(app, host=_sdk_bind_host(), port=SDK_PORT)

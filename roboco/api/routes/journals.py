@@ -143,6 +143,28 @@ async def create_entry(
             detail=f"Invalid entry type: {e}",
         ) from e
 
+    # Content-length gates per entry type. Vague entries (< these
+    # thresholds) are noise — they neither help the agent reflect nor
+    # help future agents learn from the journal.
+    _MIN_BY_TYPE = {
+        JournalEntryType.DECISION_LOG: 80,
+        JournalEntryType.TASK_REFLECTION: 50,
+        JournalEntryType.LEARNING: 50,
+        JournalEntryType.STRUGGLE: 50,
+        JournalEntryType.GENERAL: 30,
+    }
+    min_len = _MIN_BY_TYPE.get(entry_type, 30)
+    body = (request.content or "").strip()
+    if len(body) < min_len:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=(
+                f"CONTENT_TOO_SHORT: {entry_type.value} entries require "
+                f">= {min_len} chars of substance. Say what you did/"
+                "decided/learned and why."
+            ),
+        )
+
     entry_create = JournalEntryCreate(
         journal_id=journal.id,
         type=entry_type,

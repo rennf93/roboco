@@ -5,7 +5,7 @@ Contains all enumeration types and the base Pydantic model configuration.
 """
 
 from datetime import UTC, datetime
-from enum import Enum
+from enum import StrEnum
 from typing import Annotated
 from uuid import UUID
 
@@ -16,7 +16,7 @@ from pydantic import BaseModel, ConfigDict, Field
 # =============================================================================
 
 
-class TaskStatus(str, Enum):
+class TaskStatus(StrEnum):
     """Task lifecycle states."""
 
     BACKLOG = "backlog"  # PM setup phase - session must be created before activation
@@ -36,7 +36,7 @@ class TaskStatus(str, Enum):
     QUARANTINED = "quarantined"  # Special state for problematic tasks
 
 
-class BlockerResolverType(str, Enum):
+class BlockerResolverType(StrEnum):
     """Who is expected to resolve a BLOCKED task.
 
     Distinguishes blocks that an agent can work through vs blocks that
@@ -48,7 +48,7 @@ class BlockerResolverType(str, Enum):
     HUMAN = "human"  # HITL/CEO only — dispatcher must NOT respawn
 
 
-class TaskType(str, Enum):
+class TaskType(StrEnum):
     """Task classification. ALL types follow git workflow."""
 
     CODE = "code"  # Source code changes
@@ -59,14 +59,14 @@ class TaskType(str, Enum):
     ADMINISTRATIVE = "administrative"  # Process docs committed
 
 
-class TaskNature(str, Enum):
+class TaskNature(StrEnum):
     """Task nature classification - technical vs non-technical work."""
 
     TECHNICAL = "technical"
     NON_TECHNICAL = "non_technical"
 
 
-class Complexity(str, Enum):
+class Complexity(StrEnum):
     """Task complexity levels."""
 
     LOW = "low"
@@ -74,7 +74,7 @@ class Complexity(str, Enum):
     HIGH = "high"
 
 
-class Team(str, Enum):
+class Team(StrEnum):
     """Organizational teams/cells."""
 
     BACKEND = "backend"
@@ -86,7 +86,7 @@ class Team(str, Enum):
     MARKETING = "marketing"
 
 
-class AgentRole(str, Enum):
+class AgentRole(StrEnum):
     """Agent roles in the organization."""
 
     # System (internal orchestrator operations)
@@ -110,7 +110,7 @@ class AgentRole(str, Enum):
     DOCUMENTER = "documenter"
 
 
-class AgentStatus(str, Enum):
+class AgentStatus(StrEnum):
     """Agent operational states."""
 
     ACTIVE = "active"
@@ -118,7 +118,7 @@ class AgentStatus(str, Enum):
     OFFLINE = "offline"
 
 
-class SubstituteReason(str, Enum):
+class SubstituteReason(StrEnum):
     """Reasons for agent substitution request.
 
     Used when an agent needs to release a task and allow another agent to take over.
@@ -133,7 +133,7 @@ class SubstituteReason(str, Enum):
     BLOCKED_EXTERNAL = "blocked_external"  # Need skills outside agent's capabilities
 
 
-class SessionStatus(str, Enum):
+class SessionStatus(StrEnum):
     """Session states."""
 
     ACTIVE = "active"
@@ -141,7 +141,7 @@ class SessionStatus(str, Enum):
     TIMED_OUT = "timed_out"
 
 
-class MessageType(str, Enum):
+class MessageType(StrEnum):
     """Types of extracted messages from agent streams."""
 
     REASONING = "reasoning"
@@ -152,7 +152,7 @@ class MessageType(str, Enum):
     TECHNICAL = "technical"
 
 
-class NotificationType(str, Enum):
+class NotificationType(StrEnum):
     """Formal notification types."""
 
     TASK_ASSIGNMENT = "task_assignment"
@@ -168,7 +168,7 @@ class NotificationType(str, Enum):
     A2A_REQUEST = "a2a_request"  # Agent-to-agent direct request
 
 
-class NotificationPriority(str, Enum):
+class NotificationPriority(StrEnum):
     """Notification priority levels."""
 
     NORMAL = "normal"
@@ -176,7 +176,7 @@ class NotificationPriority(str, Enum):
     URGENT = "urgent"
 
 
-class ChannelType(str, Enum):
+class ChannelType(StrEnum):
     """Channel types for communication."""
 
     CELL = "cell"  # Internal team
@@ -185,7 +185,7 @@ class ChannelType(str, Enum):
     SPECIAL = "special"  # Announcements, all-hands
 
 
-class JournalEntryType(str, Enum):
+class JournalEntryType(StrEnum):
     """Types of journal entries."""
 
     TASK_REFLECTION = "task_reflection"
@@ -195,7 +195,7 @@ class JournalEntryType(str, Enum):
     GENERAL = "general"
 
 
-class HandoffStatus(str, Enum):
+class HandoffStatus(StrEnum):
     """
     Documenter handoff states.
 
@@ -210,7 +210,7 @@ class HandoffStatus(str, Enum):
     COMPLETED = "completed"
 
 
-class ModelProvider(str, Enum):
+class ModelProvider(StrEnum):
     """LLM provider options."""
 
     ANTHROPIC = "anthropic"

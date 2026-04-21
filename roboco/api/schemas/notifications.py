@@ -5,11 +5,10 @@ Request/response models for the notification system.
 """
 
 from datetime import datetime
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING
 from uuid import UUID
 
 from pydantic import BaseModel, Field
-from sqlalchemy import select
 
 from roboco.models import NotificationPriority, NotificationType
 from roboco.utils.converters import require_uuid, to_python_uuid, to_python_uuid_list
@@ -69,29 +68,8 @@ class NotificationCreateRequest(BaseModel):
 
 
 # =============================================================================
-# CONVERTERS AND QUERY BUILDERS
+# RESPONSE CONVERTERS
 # =============================================================================
-
-
-def build_notification_query(
-    notification_table: type["NotificationTable"],
-    agent_id: UUID,
-    params: ListNotificationsParams,
-) -> Any:
-    """Build the notification query with filters."""
-    query = select(notification_table).where(
-        notification_table.to_agents.contains([agent_id])
-    )
-    if params.unread_only:
-        query = query.where(~notification_table.read_by.contains([agent_id]))
-    if params.pending_ack_only:
-        query = query.where(
-            notification_table.requires_ack.is_(True),
-            ~notification_table.acked_by.contains([agent_id]),
-        )
-    if params.type_filter:
-        query = query.where(notification_table.type == params.type_filter)
-    return query.order_by(notification_table.timestamp.desc()).limit(params.limit)
 
 
 def notification_to_response(

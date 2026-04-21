@@ -24,6 +24,7 @@ import re
 import shutil
 import subprocess
 from pathlib import Path
+from typing import Any, cast
 from uuid import UUID
 
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -41,6 +42,36 @@ logger = get_logger(__name__)
 # with a different id.
 _AGENT_UID = int(os.environ.get("ROBOCO_AGENT_UID", "1000"))
 _AGENT_GID = int(os.environ.get("ROBOCO_AGENT_GID", "1000"))
+
+
+def _chown_entry(entry: str) -> bool:
+    """Chown a single entry; return True on success (or already correct)."""
+    try:
+        st = Path(entry).stat()
+        if st.st_uid != _AGENT_UID or st.st_gid != _AGENT_GID:
+            os.chown(entry, _AGENT_UID, _AGENT_GID)
+    except OSError:
+        return False
+    return True
+
+
+def _group_writable(entry: str) -> None:
+    """Best-effort chmod g+w (+x for dirs) on a single entry."""
+    import stat as _stat
+
+    try:
+        st = Path(entry).stat()
+        # Add group read + write (and execute for dirs). chmod
+        # always respects the caller's capabilities — if chown
+        # failed because we're not root, we still can't chmod
+        # files we don't own.
+        new_mode = st.st_mode | _stat.S_IRGRP | _stat.S_IWGRP
+        if _stat.S_ISDIR(st.st_mode):
+            new_mode |= _stat.S_IXGRP
+        if new_mode != st.st_mode:
+            Path(entry).chmod(new_mode)
+    except OSError:
+        pass
 
 
 def _ensure_agent_owned(workspace: Path) -> None:
@@ -67,34 +98,17 @@ def _ensure_agent_owned(workspace: Path) -> None:
     not get repaired, which is exactly how README.md ends up root:root
     even after ensure_workspace runs.
     """
-    import stat as _stat
-
     failed_chowns = 0
     for root, dirs, files in os.walk(workspace):
-        for entry in (
+        entries = (
             root,
             *[str(Path(root) / d) for d in dirs],
             *[str(Path(root) / f) for f in files],
-        ):
-            try:
-                st = Path(entry).stat()
-                if st.st_uid != _AGENT_UID or st.st_gid != _AGENT_GID:
-                    os.chown(entry, _AGENT_UID, _AGENT_GID)
-            except OSError:
+        )
+        for entry in entries:
+            if not _chown_entry(entry):
                 failed_chowns += 1
-            try:
-                st = Path(entry).stat()
-                # Add group read + write (and execute for dirs). chmod
-                # always respects the caller's capabilities — if chown
-                # failed because we're not root, we still can't chmod
-                # files we don't own.
-                new_mode = st.st_mode | _stat.S_IRGRP | _stat.S_IWGRP
-                if _stat.S_ISDIR(st.st_mode):
-                    new_mode |= _stat.S_IXGRP
-                if new_mode != st.st_mode:
-                    Path(entry).chmod(new_mode)
-            except OSError:
-                pass
+            _group_writable(entry)
 
     if failed_chowns:
         logger.warning(
@@ -242,6 +256,57 @@ class WorkspaceService:
         team = agent.team if agent.team else Team.BACKEND
         return self.get_workspace_path(project_slug, team, agent.slug)
 
+    async def _lookup_agent_or_raise(self, agent_id: UUID | str) -> AgentTable:
+        """Find an agent by UUID or slug; raise WorkspaceError if missing."""
+        from sqlalchemy import select
+
+        agent_id_str = str(agent_id)
+        query = select(AgentTable)
+        try:
+            agent_uuid = UUID(agent_id_str)
+            query = query.where(AgentTable.id == agent_uuid)
+        except ValueError:
+            query = query.where(AgentTable.slug == agent_id_str)
+
+        result = await self.session.execute(query)
+        agent = result.scalar_one_or_none()
+        if not agent:
+            raise WorkspaceError(f"Agent not found: {agent_id}")
+        return agent
+
+    @staticmethod
+    def _is_workspace_healthy(workspace: Path) -> bool:
+        """`.git` exists and has HEAD + objects (not a stub clone)."""
+        git_dir = workspace / ".git"
+        return (
+            git_dir.exists()
+            and (git_dir / "HEAD").exists()
+            and (git_dir / "objects").exists()
+        )
+
+    @staticmethod
+    async def _resolve_git_token(
+        project_service: Any, project_slug: str, git_url: str
+    ) -> str | None:
+        """Decrypt the project's git token; raise WorkspaceError on failure."""
+        from roboco.utils.crypto import EncryptionError
+
+        try:
+            git_token = await project_service.get_decrypted_token_by_slug(project_slug)
+        except EncryptionError as e:
+            raise WorkspaceError(
+                f"Failed to decrypt git token for project '{project_slug}'. "
+                "The ROBOCO_ENCRYPTION_KEY may have been rotated or the "
+                "stored token is corrupted. Re-set the project token."
+            ) from e
+
+        if git_url.startswith("https://") and not git_token:
+            raise WorkspaceError(
+                f"Project '{project_slug}' requires a git token for HTTPS clone. "
+                "Configure a GitHub PAT in the project settings."
+            )
+        return cast("str | None", git_token)
+
     async def ensure_workspace(
         self,
         project_slug: str,
@@ -271,25 +336,9 @@ class WorkspaceService:
         Raises:
             WorkspaceError: If workspace creation fails
         """
-        from sqlalchemy import select
-
         from roboco.services.project import get_project_service
 
-        # Look up agent for workspace path and git identity
-        agent_id_str = str(agent_id)
-        query = select(AgentTable)
-        try:
-            agent_uuid = UUID(agent_id_str)
-            query = query.where(AgentTable.id == agent_uuid)
-        except ValueError:
-            query = query.where(AgentTable.slug == agent_id_str)
-
-        result = await self.session.execute(query)
-        agent = result.scalar_one_or_none()
-        if not agent:
-            raise WorkspaceError(f"Agent not found: {agent_id}")
-
-        # Compute workspace path
+        agent = await self._lookup_agent_or_raise(agent_id)
         team = agent.team if agent.team else Team.BACKEND
         workspace = self.get_workspace_path(project_slug, team, agent.slug)
 
@@ -305,12 +354,7 @@ class WorkspaceService:
             # no HEAD/objects, which looks "healthy" to a naive check but
             # breaks every subsequent fetch/checkout ("origin/<branch> is
             # not a commit"). Require HEAD + objects/ as the real signal.
-            git_dir = workspace / ".git"
-            if (
-                git_dir.exists()
-                and (git_dir / "HEAD").exists()
-                and (git_dir / "objects").exists()
-            ):
+            if self._is_workspace_healthy(workspace):
                 await asyncio.to_thread(_ensure_agent_owned, workspace)
                 logger.debug(
                     "Workspace already exists",
@@ -328,11 +372,10 @@ class WorkspaceService:
                     "Removing partial/stub workspace before re-clone",
                     workspace=str(workspace),
                     project=project_slug,
-                    had_git_dir=git_dir.exists(),
+                    had_git_dir=(workspace / ".git").exists(),
                 )
                 shutil.rmtree(workspace)
 
-            # Get git URL and token from project
             project_service = get_project_service(self.session)
             project = await project_service.get_by_slug(project_slug)
             if not project:
@@ -342,30 +385,10 @@ class WorkspaceService:
                 git_url = project.git_url
                 default_branch = project.default_branch or default_branch
 
-            # Get decrypted token from project (per-project token, no global fallback).
-            # Convert cryptographic failures into a clear WorkspaceError — callers
-            # would otherwise see an opaque 500.
-            from roboco.utils.crypto import EncryptionError
+            git_token = await self._resolve_git_token(
+                project_service, project_slug, git_url
+            )
 
-            try:
-                git_token = await project_service.get_decrypted_token_by_slug(
-                    project_slug
-                )
-            except EncryptionError as e:
-                raise WorkspaceError(
-                    f"Failed to decrypt git token for project '{project_slug}'. "
-                    "The ROBOCO_ENCRYPTION_KEY may have been rotated or the "
-                    "stored token is corrupted. Re-set the project token."
-                ) from e
-
-            # Validate token is set for HTTPS URLs (no global fallback)
-            if git_url.startswith("https://") and not git_token:
-                raise WorkspaceError(
-                    f"Project '{project_slug}' requires a git token for HTTPS clone. "
-                    "Configure a GitHub PAT in the project settings."
-                )
-
-            # Clone the repository with agent identity
             await self._clone_repo(
                 workspace,
                 git_url,
@@ -476,9 +499,46 @@ class WorkspaceService:
                     capture_output=True,
                 )
 
+        def _assert_no_pat_leak() -> None:
+            """Fail-fast if a PAT ended up anywhere under .git/ on disk.
+
+            Belt-and-suspenders: if the scrub above ever regresses (e.g. a
+            refactor skips `remote set-url`, or git starts writing the auth
+            URL to a new file), this catches it before the agent container
+            gets mounted on the workspace. The whole workspace is removed
+            on failure — a leaked workspace is unrecoverable.
+            """
+            git_dir = workspace / ".git"
+            if not git_dir.exists():
+                return
+            leaked_in: list[Path] = []
+            for path in git_dir.rglob("*"):
+                if not path.is_file():
+                    continue
+                try:
+                    data = path.read_bytes()
+                except OSError:
+                    continue
+                # Token shapes: classic (ghp_…), fine-grained (github_pat_…),
+                # x-access-token URL pattern. Checking bytes avoids UTF-8
+                # decode errors on pack files / binary blobs.
+                if (
+                    b"ghp_" in data
+                    or b"github_pat_" in data
+                    or b"x-access-token:" in data
+                ):
+                    leaked_in.append(path.relative_to(workspace))
+            if leaked_in:
+                shutil.rmtree(workspace, ignore_errors=True)
+                raise WorkspaceError(
+                    f"PAT leak detected under .git/ after clone: {leaked_in}. "
+                    "Workspace destroyed. Check _configure_git() scrub step."
+                )
+
         try:
             await asyncio.to_thread(_do_clone)
             await asyncio.to_thread(_configure_git)
+            await asyncio.to_thread(_assert_no_pat_leak)
             # Transfer ownership to the agent user so the agent can write
             # into .git/ and the working tree from inside its container.
             await asyncio.to_thread(_ensure_agent_owned, workspace)

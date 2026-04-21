@@ -26,7 +26,8 @@ logger = structlog.get_logger()
 LLM_TIMEOUT_SECONDS = 60.0
 
 # System prompt for LLM-based validation
-VALIDATION_SYSTEM_PROMPT = """You are a code standards validator. Your job is to check if code or actions violate organizational standards.
+VALIDATION_SYSTEM_PROMPT = """You are a code standards validator. \
+Your job is to check if code or actions violate organizational standards.
 
 You will be given:
 1. An action type (what the agent is trying to do)

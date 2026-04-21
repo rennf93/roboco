@@ -1,16 +1,15 @@
 """
 Notification Routes
 
-Formal notification system for PMs, Board, and Auditor.
-Enforces permission rules: only PMs, Board, and Auditor can send notifications.
+Formal notification system for PMs, Board, and Auditor. Routes are thin:
+validate HTTP input, call NotificationDeliveryService, convert service
+exceptions to HTTP status codes. All DB access lives in the service.
 """
 
-from datetime import UTC, datetime
-from typing import Annotated, Any
+from typing import Annotated
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, status
-from sqlalchemy import select
 
 from roboco.api.deps import CurrentAgentContext, CurrentAgentId, DbSession
 from roboco.api.schemas.notifications import (
@@ -18,24 +17,49 @@ from roboco.api.schemas.notifications import (
     NotificationCreateRequest,
     NotificationListResponse,
     NotificationResponse,
-    build_notification_query,
     notification_to_response,
 )
-from roboco.api.utils import get_or_404, require_recipient
-from roboco.db.tables import AgentTable, NotificationTable
-from roboco.enforcement import (
-    NotificationPermissionError,
-    validate_notification_permission,
+from roboco.enforcement import NotificationPermissionError
+from roboco.services.base import NotFoundError
+from roboco.services.notification_delivery import (
+    ApiNotificationCreate,
+    get_notification_delivery_service,
 )
-from roboco.services.notification_delivery import get_notification_delivery_service
-from roboco.utils.converters import require_uuid
 
 router = APIRouter()
 
+_MIN_SUBJECT_CHARS = 5
+_MIN_BODY_CHARS = 10
+_MAX_RECIPIENTS = 50
 
-# =============================================================================
-# Routes
-# =============================================================================
+
+def _assert_notification_content(data: NotificationCreateRequest) -> None:
+    """Validate subject/body/recipients gates for send_notification."""
+    if not data.subject or len(data.subject.strip()) < _MIN_SUBJECT_CHARS:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=(
+                f"SUBJECT_REQUIRED: Notification subject must be >= "
+                f"{_MIN_SUBJECT_CHARS} chars."
+            ),
+        )
+    if not data.body or len(data.body.strip()) < _MIN_BODY_CHARS:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=(
+                f"BODY_REQUIRED: Notification body must be >= "
+                f"{_MIN_BODY_CHARS} chars. Say what to do next."
+            ),
+        )
+    if len(data.to_agents) > _MAX_RECIPIENTS:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=(
+                f"TOO_MANY_RECIPIENTS: {len(data.to_agents)} recipients "
+                f"exceeds {_MAX_RECIPIENTS}. Post in a broadcast channel "
+                "instead of spraying notifications."
+            ),
+        )
 
 
 @router.get(
@@ -51,53 +75,32 @@ async def list_notifications(
 ) -> NotificationListResponse:
     """List notifications for the agent.
 
-    System role (orchestrator) can see ALL notifications by type.
-    Regular agents only see notifications where they are a target.
+    System role (orchestrator) sees everything by type; regular agents
+    only see notifications where they are a target.
     """
+    service = get_notification_delivery_service(db)
     agent_id = agent.agent_id
 
-    # System role (orchestrator) bypasses to_agents filter
-    # This allows the dispatcher to query all pending escalations/a2a/etc.
     if agent.role and agent.role.value == "system":
-        # Build query without to_agents filter
-        query = select(NotificationTable)
-        if params.pending_ack_only:
-            # For system, "pending" means has at least one target not yet acked
-            # We can't easily express "not fully acked" in SQL, so we filter
-            # after fetching. But we can at least require requires_ack=True.
-            query = query.where(NotificationTable.requires_ack.is_(True))
-        if params.type_filter:
-            query = query.where(NotificationTable.type == params.type_filter)
-        query = query.order_by(NotificationTable.timestamp.desc()).limit(params.limit)
-
-        # Execute and filter out fully acknowledged
-        result_all: Any = await db.execute(query)
-        all_notifications = result_all.scalars().all()
-        if params.pending_ack_only:
-            # Filter to only notifications not fully acknowledged
-            notifications = [
-                n
-                for n in all_notifications
-                if not all(t in n.acked_by for t in n.to_agents)
-            ]
-        else:
-            notifications = list(all_notifications)
+        notifications = await service.list_system_notifications(
+            pending_ack_only=params.pending_ack_only,
+            type_filter=params.type_filter,
+            limit=params.limit,
+        )
     else:
-        # Normal query - filter by to_agents
-        query = build_notification_query(NotificationTable, agent_id, params)
-        result: Any = await db.execute(query)
-        notifications = list(result.scalars().all())
+        notifications = await service.list_for_agent(
+            agent_id=agent_id,
+            unread_only=params.unread_only,
+            pending_ack_only=params.pending_ack_only,
+            type_filter=params.type_filter,
+            limit=params.limit,
+        )
 
-    # For system role, use a dummy agent_id for response formatting
-    response_agent_id = agent_id
-
-    unread_count = sum(1 for n in notifications if response_agent_id not in n.read_by)
+    unread_count = sum(1 for n in notifications if agent_id not in n.read_by)
     pending_ack_count = sum(
-        1
-        for n in notifications
-        if n.requires_ack and response_agent_id not in n.acked_by
+        1 for n in notifications if n.requires_ack and agent_id not in n.acked_by
     )
-    items = [notification_to_response(n, response_agent_id) for n in notifications]
+    items = [notification_to_response(n, agent_id) for n in notifications]
 
     return NotificationListResponse(
         items=items,
@@ -118,17 +121,16 @@ async def get_notification(
     agent_id: CurrentAgentId,
     notification_id: UUID,
 ) -> NotificationResponse:
-    """Get a notification."""
-    notification = await get_or_404(
-        db, NotificationTable, notification_id, "Notification"
-    )
-    require_recipient(notification.to_agents, agent_id, "view notification")
-
-    # Mark as read
-    if agent_id not in notification.read_by:
-        notification.read_by = [*notification.read_by, agent_id]
-        await db.flush()
-
+    """Get a notification and auto-mark it read for this recipient."""
+    service = get_notification_delivery_service(db)
+    try:
+        notification = await service.get_for_recipient_and_mark_read(
+            notification_id=notification_id, agent_id=agent_id
+        )
+    except NotFoundError as e:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(e)) from e
+    except PermissionError as e:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(e)) from e
     return notification_to_response(notification, agent_id)
 
 
@@ -144,64 +146,30 @@ async def send_notification(
     agent_id: CurrentAgentId,
     data: NotificationCreateRequest,
 ) -> NotificationResponse:
-    """
-    Send a notification.
+    """Send a notification; delegates recipient lookup + permission check."""
+    _assert_notification_content(data)
 
-    Enforces permission rules:
-    - Only PMs, Board members, and Auditor can send notifications
-    - Cell PMs can notify their cell members, Main PM, or other Cell PMs
-    - Main PM, Auditor, and CEO can notify anyone
-    """
-    # Look up the sending agent to get their agent_id string
-    agent_result = await db.execute(select(AgentTable).where(AgentTable.id == agent_id))
-    agent = agent_result.scalar_one_or_none()
-
-    if not agent:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Agent not found",
-        )
-
-    # Look up recipient slugs for permission checking
-    recipient_slugs = []
-    for recipient_uuid in data.to_agents:
-        recipient_result = await db.execute(
-            select(AgentTable).where(AgentTable.id == recipient_uuid)
-        )
-        recipient = recipient_result.scalar_one_or_none()
-        if recipient:
-            recipient_slugs.append(recipient.slug)
-
-    # Validate notification permissions using enforcement layer
+    service = get_notification_delivery_service(db)
     try:
-        validate_notification_permission(
-            sender_id=agent.slug,
-            recipients=recipient_slugs,
+        notification = await service.send_from_api(
+            sender_agent_id=agent_id,
+            data=ApiNotificationCreate(
+                type=data.type,
+                priority=data.priority,
+                to_agents=list(data.to_agents),
+                subject=data.subject,
+                body=data.body,
+                requires_ack=data.requires_ack,
+                related_task_id=data.related_task_id,
+                expires_at=data.expires_at,
+            ),
         )
+    except NotFoundError as e:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(e)) from e
     except NotificationPermissionError as e:
         raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail=e.message,
+            status_code=status.HTTP_403_FORBIDDEN, detail=e.message
         ) from e
-
-    notification = NotificationTable(
-        type=data.type,
-        priority=data.priority,
-        from_agent=agent_id,
-        to_agents=data.to_agents,
-        subject=data.subject,
-        body=data.body,
-        requires_ack=data.requires_ack,
-        related_task_id=data.related_task_id,
-        expires_at=data.expires_at,
-    )
-
-    db.add(notification)
-    await db.flush()
-
-    # Deliver notification via Redis Streams for real-time push
-    delivery_service = get_notification_delivery_service(db)
-    await delivery_service.deliver(require_uuid(notification.id))
 
     return notification_to_response(notification, agent_id)
 
@@ -217,31 +185,20 @@ async def acknowledge_notification(
     agent_id: CurrentAgentId,
     notification_id: UUID,
 ) -> NotificationResponse:
-    """Acknowledge a notification."""
-    notification = await get_or_404(
-        db, NotificationTable, notification_id, "Notification"
-    )
-    require_recipient(notification.to_agents, agent_id, "acknowledge notification")
-
-    if not notification.requires_ack:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="This notification does not require acknowledgment",
+    """Acknowledge a notification that requires it."""
+    service = get_notification_delivery_service(db)
+    try:
+        notification = await service.acknowledge_for_recipient(
+            notification_id=notification_id, agent_id=agent_id
         )
-
-    # Add acknowledgment
-    if agent_id not in notification.acked_by:
-        notification.acked_by = [*notification.acked_by, agent_id]
-        notification.acked_at = {
-            **notification.acked_at,
-            str(agent_id): datetime.now(UTC).isoformat(),
-        }
-
-    # Also mark as read
-    if agent_id not in notification.read_by:
-        notification.read_by = [*notification.read_by, agent_id]
-
-    await db.flush()
+    except NotFoundError as e:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(e)) from e
+    except PermissionError as e:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(e)) from e
+    except ValueError as e:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST, detail=str(e)
+        ) from e
     return notification_to_response(notification, agent_id)
 
 
@@ -256,15 +213,16 @@ async def mark_as_read(
     agent_id: CurrentAgentId,
     notification_id: UUID,
 ) -> None:
-    """Mark a notification as read."""
-    notification = await get_or_404(
-        db, NotificationTable, notification_id, "Notification"
-    )
-    require_recipient(notification.to_agents, agent_id, "mark notification read")
-
-    if agent_id not in notification.read_by:
-        notification.read_by = [*notification.read_by, agent_id]
-        await db.flush()
+    """Mark a notification as read (idempotent)."""
+    service = get_notification_delivery_service(db)
+    try:
+        await service.mark_read_for_recipient(
+            notification_id=notification_id, agent_id=agent_id
+        )
+    except NotFoundError as e:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(e)) from e
+    except PermissionError as e:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(e)) from e
 
 
 @router.get(
@@ -281,41 +239,29 @@ async def check_pending_a2a(
     """
     Check if there's already a pending A2A notification.
 
-    Prevents duplicate messages - one message per task until response.
+    Prevents duplicate messages — one message per task until response. The
+    route resolves slugs → UUIDs (pure lookup against AGENT_UUIDS config)
+    then hands the check to the service.
     """
-    from roboco.models.base import NotificationType
     from roboco.seeds.initial_data import AGENT_UUIDS
 
     from_uuid = AGENT_UUIDS.get(from_agent)
     to_uuid = AGENT_UUIDS.get(to_agent)
-
     if not from_uuid or not to_uuid:
         return {"has_pending": False}
 
-    # Validate task_id is a valid UUID
     try:
         task_uuid = UUID(task_id)
     except ValueError:
         return {"has_pending": False}
 
-    # Check for unacked A2A_REQUEST from this agent to target about this task
-    result = await db.execute(
-        select(NotificationTable).where(
-            NotificationTable.type == NotificationType.A2A_REQUEST,
-            NotificationTable.from_agent == UUID(from_uuid),
-            NotificationTable.related_task_id == task_uuid,
-            NotificationTable.to_agents.contains([UUID(to_uuid)]),
-        )
+    service = get_notification_delivery_service(db)
+    has_pending = await service.has_pending_a2a(
+        from_agent_id=UUID(from_uuid),
+        to_agent_id=UUID(to_uuid),
+        task_id=task_uuid,
     )
-    notifications = result.scalars().all()
-
-    # Check if any are unacked by the target
-    to_uuid_obj = UUID(to_uuid)
-    for notif in notifications:
-        if to_uuid_obj not in notif.acked_by:
-            return {"has_pending": True}
-
-    return {"has_pending": False}
+    return {"has_pending": has_pending}
 
 
 @router.post(
@@ -328,54 +274,22 @@ async def ack_a2a_notifications(
     db: DbSession,
     data: dict[str, str],
 ) -> None:
-    """
-    Auto-acknowledge A2A notifications when responding.
-
-    When agent B responds to agent A about a task, this acks any pending
-    A2A_REQUEST notifications from A to B about that task.
-
-    Body: {from_agent, to_agent, task_id}
-    """
-    from roboco.models.base import NotificationType
+    """Auto-ack A2A_REQUEST notifications when agent B responds to agent A."""
     from roboco.seeds.initial_data import AGENT_UUIDS
 
-    from_agent_slug = data.get("from_agent", "")
-    to_agent_slug = data.get("to_agent", "")
+    from_uuid = AGENT_UUIDS.get(data.get("from_agent", ""))
+    to_uuid = AGENT_UUIDS.get(data.get("to_agent", ""))
     task_id_str = data.get("task_id", "")
-
-    # Get UUIDs from slugs
-    from_agent_uuid = AGENT_UUIDS.get(from_agent_slug)
-    to_agent_uuid = AGENT_UUIDS.get(to_agent_slug)
-
-    if not from_agent_uuid or not to_agent_uuid or not task_id_str:
-        return  # Silently ignore invalid data
-
-    # Validate task_id is a valid UUID
+    if not from_uuid or not to_uuid or not task_id_str:
+        return
     try:
         task_uuid = UUID(task_id_str)
     except ValueError:
-        return  # Invalid task ID
+        return
 
-    # Find matching A2A_REQUEST notifications
-    result = await db.execute(
-        select(NotificationTable).where(
-            NotificationTable.type == NotificationType.A2A_REQUEST,
-            NotificationTable.from_agent == UUID(from_agent_uuid),
-            NotificationTable.related_task_id == task_uuid,
-            NotificationTable.to_agents.contains([UUID(to_agent_uuid)]),
-        )
+    service = get_notification_delivery_service(db)
+    await service.auto_ack_a2a(
+        from_agent_id=UUID(from_uuid),
+        to_agent_id=UUID(to_uuid),
+        task_id=task_uuid,
     )
-    notifications = result.scalars().all()
-
-    # Acknowledge each matching notification
-    to_uuid = UUID(to_agent_uuid)
-    now = datetime.now(UTC).isoformat()
-
-    for notif in notifications:
-        if to_uuid not in notif.acked_by:
-            notif.acked_by = [*notif.acked_by, to_uuid]
-            notif.acked_at = {**notif.acked_at, str(to_uuid): now}
-        if to_uuid not in notif.read_by:
-            notif.read_by = [*notif.read_by, to_uuid]
-
-    await db.flush()

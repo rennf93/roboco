@@ -7,7 +7,7 @@ Domain types for the event bus system.
 import json
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
-from enum import Enum
+from enum import StrEnum
 from typing import TYPE_CHECKING, Any, Protocol
 from uuid import UUID, uuid4
 
@@ -15,7 +15,7 @@ if TYPE_CHECKING:
     from roboco.runtime.orchestrator import WaitingRecord
 
 
-class EventType(str, Enum):
+class EventType(StrEnum):
     """Types of events in the system."""
 
     # Task lifecycle events
@@ -38,6 +38,7 @@ class EventType(str, Enum):
     TASK_AWAITING_CEO_APPROVAL = "task.awaiting_ceo_approval"  # Escalated to CEO
     TASK_CEO_APPROVED = "task.ceo_approved"  # CEO approved
     TASK_CEO_REJECTED = "task.ceo_rejected"  # CEO rejected, needs revision
+    TASK_PM_REJECTED = "task.pm_rejected"  # PM sent back to dev for rework
     TASK_COMPLETED = "task.completed"
     TASK_CANCELLED = "task.cancelled"
 

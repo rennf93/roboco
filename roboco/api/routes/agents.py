@@ -1,21 +1,36 @@
 """
 Agent Routes
 
-Provides agent lookup and information endpoints.
+Thin HTTP plumbing over `AgentService`: validate inputs, convert
+`NotFoundError` to 404, shape responses. No DB access in this module.
 """
 
-from typing import cast
-from uuid import UUID
+from typing import TYPE_CHECKING, cast
 
 from fastapi import APIRouter, HTTPException, Query, status
-from sqlalchemy import select
 
 from roboco.api.deps import DbSession
 from roboco.api.schemas.agents import AgentResponse
-from roboco.db.tables import AgentTable
 from roboco.models import AgentRole, Team
+from roboco.services.agent import get_agent_service
+from roboco.services.base import NotFoundError
+
+if TYPE_CHECKING:
+    from uuid import UUID
+
+    from roboco.db.tables import AgentTable
 
 router = APIRouter()
+
+
+def _to_response(agent: "AgentTable") -> AgentResponse:
+    return AgentResponse(
+        id=cast("UUID", agent.id),
+        name=agent.name,
+        slug=agent.slug,
+        role=agent.role,
+        team=agent.team,
+    )
 
 
 @router.get("")
@@ -25,47 +40,30 @@ async def list_agents(
     role: str | None = Query(None, description="Filter by role"),
     team: str | None = Query(None, description="Filter by team"),
 ) -> list[AgentResponse]:
-    """
-    List agents with optional filters.
-
-    Supports filtering by slug, role, or team.
-    """
-    query = select(AgentTable)
-
-    if slug:
-        query = query.where(AgentTable.slug == slug)
+    """List agents with optional slug / role / team filters."""
+    role_enum: AgentRole | None = None
     if role:
         try:
             role_enum = AgentRole(role.lower())
-            query = query.where(AgentTable.role == role_enum)
-        except ValueError:
+        except ValueError as e:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail=f"Invalid role: {role}",
-            ) from None
+            ) from e
+
+    team_enum: Team | None = None
     if team:
         try:
             team_enum = Team(team.lower())
-            query = query.where(AgentTable.team == team_enum)
-        except ValueError:
+        except ValueError as e:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail=f"Invalid team: {team}",
-            ) from None
+            ) from e
 
-    result = await db.execute(query)
-    agents = result.scalars().all()
-
-    return [
-        AgentResponse(
-            id=cast("UUID", agent.id),
-            name=agent.name,
-            slug=agent.slug,
-            role=agent.role,
-            team=agent.team,
-        )
-        for agent in agents
-    ]
+    service = get_agent_service(db)
+    agents = await service.list_agents(slug=slug, role=role_enum, team=team_enum)
+    return [_to_response(a) for a in agents]
 
 
 @router.get("/{agent_id}")
@@ -73,31 +71,10 @@ async def get_agent(
     agent_id: str,
     db: DbSession,
 ) -> AgentResponse:
-    """
-    Get agent by ID (UUID or slug).
-
-    Accepts either a UUID string or agent slug (e.g., "be-dev-1").
-    """
-    # Try to parse as UUID first
+    """Get an agent by UUID or slug."""
+    service = get_agent_service(db)
     try:
-        uuid = UUID(agent_id)
-        result = await db.execute(select(AgentTable).where(AgentTable.id == uuid))
-    except ValueError:
-        # Not a UUID, try slug lookup
-        result = await db.execute(select(AgentTable).where(AgentTable.slug == agent_id))
-
-    agent = result.scalar_one_or_none()
-
-    if agent is None:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"Agent not found: {agent_id}",
-        )
-
-    return AgentResponse(
-        id=cast("UUID", agent.id),
-        name=agent.name,
-        slug=agent.slug,
-        role=agent.role,
-        team=agent.team,
-    )
+        agent = await service.get_by_uuid_or_slug_or_raise(agent_id)
+    except NotFoundError as e:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(e)) from e
+    return _to_response(agent)

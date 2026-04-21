@@ -15,15 +15,48 @@ from roboco.mcp.tasks.handlers._helpers import validate_task_ownership
 from roboco.mcp.utils import ApiClient, format_error_response
 
 
+async def _fetch_task_for_state_change(
+    client: ApiClient, task_id: str
+) -> tuple[dict[str, Any] | None, dict[str, Any] | None]:
+    """GET /tasks/{id} and return (task, error)."""
+    task_resp = await client.get(f"/tasks/{task_id}")
+    if task_resp.is_status(status.HTTP_404_NOT_FOUND):
+        return None, format_error_response("NOT_FOUND", f"Task {task_id} not found")
+    return task_resp.json(), None
+
+
+def _block_success_response(
+    block_json: dict[str, Any], data: TaskBlockInput, agent_id: str
+) -> dict[str, Any]:
+    """Build the success response for a successful block."""
+    team_prefix = agent_id[:2] if agent_id else "be"
+    pm_agent = f"{team_prefix}-pm"
+    return format_task_response(
+        block_json,
+        "RESOLVE_BLOCKER",
+        f"Task blocked: {data.reason}\n\n"
+        "✅ Your PM has been AUTOMATICALLY NOTIFIED with action required.\n"
+        "   They must call roboco_task_unblock() when resolved.\n\n"
+        "Your options:\n"
+        "1. WAIT - PM will resolve and unblock\n"
+        "2. SWITCH - Call roboco_task_scan for other work\n"
+        "3. ESCALATE - Use roboco_task_escalate() if PM is unresponsive\n\n"
+        "You'll be notified when the task is unblocked.",
+        a2a_suggestion=(
+            f"Need immediate PM attention? Use A2A:\n"
+            f"roboco_agent_request('{pm_agent}', 'coordination', "
+            f"'Blocked: {data.reason}', options={{'urgent': True}})"
+        ),
+    )
+
+
 async def handle_task_block(
     client: ApiClient, data: TaskBlockInput, agent_id: str
 ) -> dict[str, Any]:
     """Handle task blocking via the soft-block endpoint."""
-    task_resp = await client.get(f"/tasks/{data.task_id}")
-    if task_resp.is_status(status.HTTP_404_NOT_FOUND):
-        return format_error_response("NOT_FOUND", f"Task {data.task_id} not found")
-
-    task = task_resp.json()
+    task, error = await _fetch_task_for_state_change(client, data.task_id)
+    if error or task is None:
+        return error or format_error_response("NOT_FOUND", "No task returned")
 
     if error := await validate_task_ownership(task, agent_id, client):
         return error
@@ -49,27 +82,7 @@ async def handle_task_block(
             {"status_code": block_resp.status_code, "detail": block_resp.text},
         )
 
-    # Determine PM agent based on agent's team
-    team_prefix = agent_id[:2] if agent_id else "be"
-    pm_agent = f"{team_prefix}-pm"
-
-    return format_task_response(
-        block_resp.json(),
-        "RESOLVE_BLOCKER",
-        f"Task blocked: {data.reason}\n\n"
-        "✅ Your PM has been AUTOMATICALLY NOTIFIED with action required.\n"
-        "   They must call roboco_task_unblock() when resolved.\n\n"
-        "Your options:\n"
-        "1. WAIT - PM will resolve and unblock\n"
-        "2. SWITCH - Call roboco_task_scan for other work\n"
-        "3. ESCALATE - Use roboco_task_escalate() if PM is unresponsive\n\n"
-        "You'll be notified when the task is unblocked.",
-        a2a_suggestion=(
-            f"Need immediate PM attention? Use A2A:\n"
-            f"roboco_agent_request('{pm_agent}', 'coordination', "
-            f"'Blocked: {data.reason}', options={{'urgent': True}})"
-        ),
-    )
+    return _block_success_response(block_resp.json(), data, agent_id)
 
 
 def _can_unblock_task(agent_id: str, task: dict) -> tuple[bool, str]:
@@ -89,37 +102,28 @@ def _can_unblock_task(agent_id: str, task: dict) -> tuple[bool, str]:
     return False, "Only PMs can unblock tasks"
 
 
-async def handle_task_unblock(
-    client: ApiClient, task_id: str, agent_id: str
-) -> dict[str, Any]:
-    """Handle task unblocking."""
-    task_resp = await client.get(f"/tasks/{task_id}")
-    if task_resp.is_status(status.HTTP_404_NOT_FOUND):
-        return format_error_response("NOT_FOUND", f"Task {task_id} not found")
-
-    task = task_resp.json()
-
-    if task.get("status") != "blocked":
-        return format_error_response("INVALID_STATE", "Task is not blocked")
-
-    # Check PM permissions or task ownership
+async def _authorize_unblock(
+    client: ApiClient, task: dict[str, Any], agent_id: str
+) -> dict[str, Any] | None:
+    """Return an error if the caller is neither a PM-with-authority nor assignee."""
     can_unblock, _ = _can_unblock_task(agent_id, task)
-    if not can_unblock and await validate_task_ownership(task, agent_id, client):
+    if can_unblock:
+        return None
+    if await validate_task_ownership(task, agent_id, client):
         return format_error_response(
             "NOT_AUTHORIZED",
             "You cannot unblock this task. Must be assigned or a PM.",
         )
+    return None
 
-    unblock_resp = await client.post(f"/tasks/{task_id}/unblock")
 
-    if not unblock_resp.ok:
-        return format_error_response("UNBLOCK_FAILED", "Failed to unblock task")
-
-    # Get the assigned developer to notify
+def _unblock_success_response(
+    unblock_json: dict[str, Any], task: dict[str, Any], task_id: str
+) -> dict[str, Any]:
+    """Build response for a successful unblock, including A2A suggestion."""
     assigned_slug = task.get("assigned_to_slug")
-
     return format_task_response(
-        unblock_resp.json(),
+        unblock_json,
         "CONTINUE",
         "Task unblocked. Resume from last checkpoint.",
         a2a_suggestion=(
@@ -132,15 +136,34 @@ async def handle_task_unblock(
     )
 
 
+async def handle_task_unblock(
+    client: ApiClient, task_id: str, agent_id: str
+) -> dict[str, Any]:
+    """Handle task unblocking."""
+    task, error = await _fetch_task_for_state_change(client, task_id)
+    if error or task is None:
+        return error or format_error_response("NOT_FOUND", "No task returned")
+
+    if task.get("status") != "blocked":
+        return format_error_response("INVALID_STATE", "Task is not blocked")
+
+    if error := await _authorize_unblock(client, task, agent_id):
+        return error
+
+    unblock_resp = await client.post(f"/tasks/{task_id}/unblock")
+    if not unblock_resp.ok:
+        return format_error_response("UNBLOCK_FAILED", "Failed to unblock task")
+
+    return _unblock_success_response(unblock_resp.json(), task, task_id)
+
+
 async def handle_task_pause(
     client: ApiClient, data: TaskPauseInput, agent_id: str
 ) -> dict[str, Any]:
     """Handle task pausing."""
-    task_resp = await client.get(f"/tasks/{data.task_id}")
-    if task_resp.is_status(status.HTTP_404_NOT_FOUND):
-        return format_error_response("NOT_FOUND", f"Task {data.task_id} not found")
-
-    task = task_resp.json()
+    task, error = await _fetch_task_for_state_change(client, data.task_id)
+    if error or task is None:
+        return error or format_error_response("NOT_FOUND", "No task returned")
 
     if error := await validate_task_ownership(task, agent_id, client):
         return error

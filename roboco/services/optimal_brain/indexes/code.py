@@ -14,6 +14,7 @@ Features:
 import hashlib
 import json
 import re
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -24,6 +25,15 @@ from roboco.models.optimal import IndexType
 from roboco.services.optimal_brain.indexes.base import BaseIndexPlugin, IngestResult
 
 logger = structlog.get_logger()
+
+
+@dataclass(frozen=True)
+class _ChunkConfig:
+    """Parameters controlling a chunking pass over code."""
+
+    source: str
+    chunk_overlap: int
+    min_chunk: int
 
 
 class FileHashRegistry:
@@ -150,6 +160,68 @@ def _calc_overlap(lines: list[str], max_overlap: int) -> list[str]:
     return overlap_lines
 
 
+def _try_flush_chunk(
+    chunks: list[Chunk],
+    current_lines: list[str],
+    line: str,
+    config: _ChunkConfig,
+) -> tuple[list[str], int]:
+    """Attempt to flush a completed chunk, returning (new_current_lines, new_size).
+
+    When the best candidate break is too small, keep accumulating (return
+    the buffer unchanged).
+    """
+    best_break = _find_best_break(current_lines, line)
+    break_lines = current_lines[:best_break]
+    break_size = sum(len(ln) + 1 for ln in break_lines)
+
+    if break_size < config.min_chunk:
+        current_size = sum(len(ln) + 1 for ln in current_lines)
+        return current_lines, current_size
+
+    chunks.append(
+        Chunk(
+            text="\n".join(break_lines),
+            source=config.source,
+            chunk_index=len(chunks),
+            metadata={},
+        )
+    )
+    remaining = current_lines[best_break:]
+    overlap = _calc_overlap(break_lines, config.chunk_overlap)
+    new_current = overlap + remaining
+    new_size = sum(len(ln) + 1 for ln in new_current)
+    return new_current, new_size
+
+
+def _finalize_trailing_chunk(
+    chunks: list[Chunk],
+    current_lines: list[str],
+    config: _ChunkConfig,
+) -> None:
+    """Append or merge any remaining content into the chunk list."""
+    if not current_lines:
+        return
+    chunk_text = "\n".join(current_lines)
+    if len(chunk_text.strip()) >= config.min_chunk or not chunks:
+        chunks.append(
+            Chunk(
+                text=chunk_text,
+                source=config.source,
+                chunk_index=len(chunks),
+                metadata={},
+            )
+        )
+    elif chunks:
+        last = chunks[-1]
+        chunks[-1] = Chunk(
+            text=last.text + "\n" + chunk_text,
+            source=config.source,
+            chunk_index=last.chunk_index,
+            metadata=last.metadata,
+        )
+
+
 def chunk_code(
     content: str,
     source: str,
@@ -178,58 +250,19 @@ def chunk_code(
     chunks: list[Chunk] = []
     current_lines: list[str] = []
     current_size = 0
-    min_chunk = 300  # Minimum chunk size
+    config = _ChunkConfig(source=source, chunk_overlap=chunk_overlap, min_chunk=300)
 
     for line in lines:
         line_size = len(line) + 1
-
-        # Check if we need to break
-        should_break = current_size + line_size > chunk_size and current_lines
-
-        if should_break:
-            best_break = _find_best_break(current_lines, line)
-            break_lines = current_lines[:best_break]
-            break_size = sum(len(ln) + 1 for ln in break_lines)
-
-            if break_size >= min_chunk:
-                chunks.append(
-                    Chunk(
-                        text="\n".join(break_lines),
-                        source=source,
-                        chunk_index=len(chunks),
-                        metadata={},
-                    )
-                )
-                remaining = current_lines[best_break:]
-                overlap = _calc_overlap(break_lines, chunk_overlap)
-                current_lines = overlap + remaining
-                current_size = sum(len(ln) + 1 for ln in current_lines)
+        if current_size + line_size > chunk_size and current_lines:
+            current_lines, current_size = _try_flush_chunk(
+                chunks, current_lines, line, config
+            )
 
         current_lines.append(line)
         current_size += line_size
 
-    # Handle remaining content
-    if current_lines:
-        chunk_text = "\n".join(current_lines)
-        if len(chunk_text.strip()) >= min_chunk or not chunks:
-            chunks.append(
-                Chunk(
-                    text=chunk_text,
-                    source=source,
-                    chunk_index=len(chunks),
-                    metadata={},
-                )
-            )
-        elif chunks:
-            # Merge small trailing content into last chunk
-            last = chunks[-1]
-            chunks[-1] = Chunk(
-                text=last.text + "\n" + chunk_text,
-                source=source,
-                chunk_index=last.chunk_index,
-                metadata=last.metadata,
-            )
-
+    _finalize_trailing_chunk(chunks, current_lines, config)
     return chunks
 
 
@@ -405,25 +438,66 @@ class CodeIndexPlugin(BaseIndexPlugin):
             Tuple of (count, indexed_files) where indexed_files contains
             metadata for each file indexed (for database tracking)
         """
-        # Step 1: Collect all files
-        all_files: list[Path] = []
-        for source in sources:
-            all_files.extend(self._collect_files_from_source(source))
-
+        all_files = self._discover_and_prioritize_files(sources, max_files)
         if not all_files:
             return 0, []
 
-        # Step 2: Sort by priority (models, services, api, etc. first)
-        def priority_key(path: Path) -> tuple[int, str]:
-            parts = path.parts
-            for idx, priority_dir in enumerate(PRIORITY_DIRECTORIES):
-                if priority_dir in parts:
-                    return (idx, str(path))
-            return (len(PRIORITY_DIRECTORIES), str(path))
+        files_data, skipped_count = self._filter_changed_files(
+            all_files, project, force_reindex
+        )
 
-        all_files.sort(key=priority_key)
+        if skipped_count > 0:
+            logger.info(
+                f"Incremental indexing: {skipped_count} unchanged files skipped, "
+                f"{len(files_data)} files to embed"
+            )
 
-        # Step 3: Apply file limit if specified
+        if not files_data:
+            logger.info("No files need re-indexing (all unchanged)")
+            return 0, []
+
+        logger.info(f"Batch processing {len(files_data)} changed code files")
+
+        results = await self._ingest_code_batch(files_data)
+        count = sum(1 for r in results if r.success)
+
+        if count > 0:
+            hash_registry = self._get_hash_registry()
+            indexed_hashes: list[tuple[str, str]] = [
+                (str(data["file_path"].absolute()), data["content"])
+                for data, result in zip(files_data, results, strict=True)
+                if result.success
+            ]
+            hash_registry.update_batch(indexed_hashes)
+
+        indexed_files = self._build_indexed_files(files_data)
+        logger.info(
+            f"Batch indexing complete: {count} files indexed, "
+            f"{skipped_count} unchanged files skipped"
+        )
+        return count, indexed_files
+
+    @staticmethod
+    def _priority_key(path: Path) -> tuple[int, str]:
+        """Sort key: priority dirs first, then by path string."""
+        parts = path.parts
+        for idx, priority_dir in enumerate(PRIORITY_DIRECTORIES):
+            if priority_dir in parts:
+                return (idx, str(path))
+        return (len(PRIORITY_DIRECTORIES), str(path))
+
+    def _discover_and_prioritize_files(
+        self, sources: list[str], max_files: int | None
+    ) -> list[Path]:
+        """Collect candidate files from sources, sort by priority, apply limit."""
+        all_files: list[Path] = []
+        for source in sources:
+            all_files.extend(self._collect_files_from_source(source))
+        if not all_files:
+            return all_files
+
+        all_files.sort(key=self._priority_key)
+
         if max_files and len(all_files) > max_files:
             logger.info(
                 f"Limiting to {max_files} files (found {len(all_files)})",
@@ -432,8 +506,15 @@ class CodeIndexPlugin(BaseIndexPlugin):
             all_files = all_files[:max_files]
 
         logger.info(f"Found {len(all_files)} code files to check")
+        return all_files
 
-        # Step 4: Read file contents and filter by hash (incremental indexing)
+    def _filter_changed_files(
+        self,
+        all_files: list[Path],
+        project: str | None,
+        force_reindex: bool,
+    ) -> tuple[list[dict[str, Any]], int]:
+        """Read files and filter out unchanged ones. Returns (files_data, skipped)."""
         hash_registry = self._get_hash_registry()
         files_data: list[dict[str, Any]] = []
         skipped_count = 0
@@ -443,7 +524,6 @@ class CodeIndexPlugin(BaseIndexPlugin):
                 content = file_path.read_text(encoding="utf-8")
                 file_key = str(file_path.absolute())
 
-                # Skip unchanged files unless force_reindex is True
                 file_changed = hash_registry.has_changed(file_key, content)
                 if not force_reindex and not file_changed:
                     skipped_count += 1
@@ -465,32 +545,12 @@ class CodeIndexPlugin(BaseIndexPlugin):
                     error=str(e),
                 )
 
-        if skipped_count > 0:
-            logger.info(
-                f"Incremental indexing: {skipped_count} unchanged files skipped, "
-                f"{len(files_data)} files to embed"
-            )
+        return files_data, skipped_count
 
-        if not files_data:
-            logger.info("No files need re-indexing (all unchanged)")
-            return 0, []
-
-        logger.info(f"Batch processing {len(files_data)} changed code files")
-
-        results = await self._ingest_code_batch(files_data)
-        count = sum(1 for r in results if r.success)
-
-        # Update hashes for successfully indexed files
-        if count > 0:
-            indexed_hashes: list[tuple[str, str]] = [
-                (str(data["file_path"].absolute()), data["content"])
-                for data, result in zip(files_data, results, strict=True)
-                if result.success
-            ]
-            hash_registry.update_batch(indexed_hashes)
-
-        # Build indexed_files list for database tracking
-        indexed_files = [
+    @staticmethod
+    def _build_indexed_files(files_data: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        """Produce DB-tracking metadata entries for each file processed."""
+        return [
             {
                 "source": str(data["file_path"].absolute()),
                 "title": data["file_path"].name,
@@ -500,12 +560,6 @@ class CodeIndexPlugin(BaseIndexPlugin):
             }
             for data in files_data
         ]
-
-        logger.info(
-            f"Batch indexing complete: {count} files indexed, "
-            f"{skipped_count} unchanged files skipped"
-        )
-        return count, indexed_files
 
     async def _ingest_code_batch(
         self,

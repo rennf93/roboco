@@ -12,7 +12,7 @@ This module defines the data structures for:
 """
 
 from datetime import UTC, datetime
-from enum import Enum
+from enum import StrEnum
 from typing import Annotated, Any, Literal
 from uuid import uuid4
 
@@ -25,7 +25,7 @@ from roboco.models.base import RobocoBase
 # =============================================================================
 
 
-class A2ATaskState(str, Enum):
+class A2ATaskState(StrEnum):
     """
     A2A Task lifecycle states.
 
@@ -42,7 +42,7 @@ class A2ATaskState(str, Enum):
     AUTH_REQUIRED = "auth_required"  # Needs client authentication
 
 
-class A2APartType(str, Enum):
+class A2APartType(StrEnum):
     """Types of content parts in a message."""
 
     TEXT = "text"
@@ -456,7 +456,7 @@ def a2a_state_to_task_status(a2a_state: A2ATaskState) -> str:
 # stored in the database to maintain conversation history across agent spawns.
 
 
-class A2AConversationStatus(str, Enum):
+class A2AConversationStatus(StrEnum):
     """A2A conversation states."""
 
     ACTIVE = "active"
@@ -464,7 +464,7 @@ class A2AConversationStatus(str, Enum):
     CLOSED = "closed"
 
 
-class A2AMessageKind(str, Enum):
+class A2AMessageKind(StrEnum):
     """Types of persistent A2A messages."""
 
     MESSAGE = "message"  # Regular message

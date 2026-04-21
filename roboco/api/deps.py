@@ -7,6 +7,7 @@ Shared dependencies for FastAPI routes.
 from __future__ import annotations
 
 import contextlib
+import os
 from typing import TYPE_CHECKING, Annotated, Any
 from uuid import UUID
 
@@ -14,6 +15,7 @@ from fastapi import Depends, Header, HTTPException, status
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from roboco.agents_config import verify_agent_token
 from roboco.api.schemas.optimal import PaginationParams
 from roboco.db.base import get_db
 from roboco.db.tables import AgentTable
@@ -175,60 +177,73 @@ async def get_optional_agent_id(
 OptionalAgentId = Annotated[UUID | None, Depends(get_optional_agent_id)]
 
 
-async def get_agent_context(
-    db: DbSession,
-    x_agent_id: Annotated[str | None, Header()] = None,
-    x_agent_role: Annotated[str | None, Header()] = None,
-    x_agent_team: Annotated[str | None, Header()] = None,
-) -> AgentContext:
-    """
-    Get the current agent context from request headers.
+def _auth_required() -> bool:
+    """True when agent HMAC auth is mandatory (prod-ish) vs opt-in (dev)."""
+    val = os.environ.get("ROBOCO_AGENT_AUTH_REQUIRED", "").strip().lower()
+    return val in ("1", "true", "yes")
 
-    In production, this would be extracted from a JWT token.
-    For development, we use headers.
 
-    Required headers:
-        X-Agent-ID: UUID or slug of the agent (e.g., "be-dev-1")
-        X-Agent-Role: Role (e.g., 'developer', 'cell_pm')
-
-    Optional headers:
-        X-Agent-Team: Team (e.g., 'backend', 'frontend')
-    """
-    if not x_agent_id:
+def _check_agent_auth_token(
+    x_agent_id: str,
+    x_agent_role: str,
+    x_agent_team: str | None,
+    x_agent_token: str | None,
+) -> None:
+    """Enforce HMAC token when required; reject invalid tokens even in dev."""
+    # Token verification: stops an agent on the Docker network from
+    # spoofing another agent's role by setting headers directly. When
+    # ROBOCO_AGENT_AUTH_REQUIRED is true, every request must carry a
+    # token matching HMAC(id:role:team, secret). In dev it's optional
+    # (so the panel / curl-for-debugging keep working), but any token
+    # that IS presented is still verified — you can't bypass by
+    # supplying an invalid token.
+    if _auth_required() and not x_agent_token:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Missing X-Agent-ID header",
+            detail="Missing X-Agent-Token header (auth required)",
         )
-
-    if not x_agent_role:
+    if x_agent_token and not verify_agent_token(
+        x_agent_token,
+        x_agent_id,
+        x_agent_role,
+        x_agent_team or "",
+    ):
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Missing X-Agent-Role header",
+            detail=(
+                "Invalid X-Agent-Token — signature mismatch. Header "
+                "values do not match the token issued for this agent."
+            ),
         )
 
-    # Special case: system role (orchestrator) uses well-known UUID
-    # that doesn't exist in the database - bypass DB lookup
+
+async def _resolve_agent_identity(
+    db: DbSession, x_agent_id: str, x_agent_role: str
+) -> tuple[UUID, str]:
+    """Return (agent_id, slug), handling the special `system` role."""
     if x_agent_role.lower() == "system":
         try:
-            agent_id = UUID(x_agent_id)
-            slug = "system"
+            return UUID(x_agent_id), "system"
         except ValueError as e:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail=f"Invalid system agent UUID: {x_agent_id}",
             ) from e
-    else:
-        # Resolve agent ID and slug from database
-        identity = await resolve_agent_identity(db, x_agent_id)
-        if identity is None:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail=f"Agent not found: {x_agent_id}",
-            )
-        agent_id, slug = identity
+    identity = await resolve_agent_identity(db, x_agent_id)
+    if identity is None:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Agent not found: {x_agent_id}",
+        )
+    return identity
 
+
+async def _coerce_agent_role(
+    db: DbSession, x_agent_role: str, agent_id: UUID, x_agent_id: str
+) -> AgentRole:
+    """Parse the role header; fall back to the DB role if it's a slug."""
     try:
-        role = AgentRole(x_agent_role.lower())
+        return AgentRole(x_agent_role.lower())
     except ValueError:
         # Panel/clients sometimes pass the agent slug (e.g. "main-pm") instead
         # of the role value ("main_pm"). If the header isn't a valid enum
@@ -246,12 +261,52 @@ async def get_agent_context(
                     f"record for agent {x_agent_id}"
                 ),
             ) from None
-        role = db_role
+        return db_role
 
-    team: Team | None = None
-    if x_agent_team:
-        with contextlib.suppress(ValueError):
-            team = Team(x_agent_team.lower())
+
+def _coerce_agent_team(x_agent_team: str | None) -> Team | None:
+    """Parse the team header; return None for empty/invalid values."""
+    if not x_agent_team:
+        return None
+    with contextlib.suppress(ValueError):
+        return Team(x_agent_team.lower())
+    return None
+
+
+async def get_agent_context(
+    db: DbSession,
+    x_agent_id: Annotated[str | None, Header()] = None,
+    x_agent_role: Annotated[str | None, Header()] = None,
+    x_agent_team: Annotated[str | None, Header()] = None,
+    x_agent_token: Annotated[str | None, Header()] = None,
+) -> AgentContext:
+    """
+    Get the current agent context from request headers.
+
+    Headers:
+        X-Agent-ID: UUID or slug of the agent (e.g., "be-dev-1")
+        X-Agent-Role: Role (e.g., 'developer', 'cell_pm')
+        X-Agent-Team: (optional) Team (e.g., 'backend', 'frontend')
+        X-Agent-Token: (required when ROBOCO_AGENT_AUTH_REQUIRED=true)
+            HMAC of "agent_id:role:team" signed with
+            ROBOCO_AGENT_AUTH_SECRET. Orchestrator issues this at spawn.
+    """
+    if not x_agent_id:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Missing X-Agent-ID header",
+        )
+    if not x_agent_role:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Missing X-Agent-Role header",
+        )
+
+    _check_agent_auth_token(x_agent_id, x_agent_role, x_agent_team, x_agent_token)
+
+    agent_id, slug = await _resolve_agent_identity(db, x_agent_id, x_agent_role)
+    role = await _coerce_agent_role(db, x_agent_role, agent_id, x_agent_id)
+    team = _coerce_agent_team(x_agent_team)
 
     return AgentContext(
         agent_id=agent_id,

@@ -131,7 +131,12 @@ class GitCommitRequest(BaseModel):
     task_id: str
     agent_id: str
     # Commit message fields
-    message: str = Field(..., description="Short description of changes")
+    message: str = Field(
+        ...,
+        min_length=10,
+        max_length=200,
+        description="Short description of changes (10-200 chars)",
+    )
     commit_type: str = Field(
         ...,
         pattern=r"^(feat|fix|chore|docs|refactor|test|style|perf|ci|build)$",

@@ -65,6 +65,11 @@ COPY docker/scripts/sdk-startup-hook.sh /app/scripts/sdk-startup-hook.sh
 COPY docker/scripts/a2a-check-hook.sh /app/scripts/a2a-check-hook.sh
 COPY docker/scripts/traceability-hook.sh /app/scripts/traceability-hook.sh
 COPY docker/scripts/bash-guard-hook.sh /app/scripts/bash-guard-hook.sh
+COPY docker/scripts/post-tool-budget-hook.sh /app/scripts/post-tool-budget-hook.sh
+COPY docker/scripts/stop-hook.sh /app/scripts/stop-hook.sh
+COPY docker/scripts/user-prompt-hook.sh /app/scripts/user-prompt-hook.sh
+COPY docker/scripts/pre-compact-hook.sh /app/scripts/pre-compact-hook.sh
+COPY docker/scripts/session-end-hook.sh /app/scripts/session-end-hook.sh
 RUN chmod 0755 /app/scripts/*.sh
 
 USER agent

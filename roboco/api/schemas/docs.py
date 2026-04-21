@@ -4,7 +4,7 @@ Documentation API Schemas
 Request/response models for documentation file management endpoints.
 """
 
-from enum import Enum
+from enum import StrEnum
 from uuid import UUID
 
 from pydantic import BaseModel, Field
@@ -14,7 +14,7 @@ from pydantic import BaseModel, Field
 # =============================================================================
 
 
-class DocType(str, Enum):
+class DocType(StrEnum):
     """Documentation file types determining folder placement."""
 
     API = "api"  # /docs/{team}/api/

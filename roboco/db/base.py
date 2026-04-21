@@ -2,10 +2,14 @@
 Database base configuration and session management.
 """
 
+import asyncio
 from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
+from pathlib import Path
 
 import structlog
+from alembic import command
+from alembic.config import Config
 from sqlalchemy import MetaData, text
 from sqlalchemy.ext.asyncio import (
     AsyncConnection,
@@ -144,14 +148,6 @@ async def run_migrations() -> None:
 
     Runs in a worker thread — Alembic's command.upgrade uses the sync SA API.
     """
-    import asyncio
-    from pathlib import Path
-
-    from alembic import command
-    from alembic.config import Config
-
-    from roboco.config import settings
-
     # First: decide if we need to stamp. Done with the async engine so we
     # don't need a second sync-DB round-trip inside the worker thread.
     engine = get_engine()

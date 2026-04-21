@@ -116,7 +116,8 @@ class ReviewsIndexPlugin(BaseIndexPlugin):
 
         # Generate review ID
         review_hash = hashlib.md5(
-            f"{params.file_path}{params.comment[:50]}".encode()
+            f"{params.file_path}{params.comment[:50]}".encode(),
+            usedforsecurity=False,
         ).hexdigest()[:12]
         review_id = f"rev-{review_hash}"
 

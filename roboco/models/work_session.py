@@ -6,7 +6,7 @@ commits, and PR tracking. Created when a developer claims a task.
 """
 
 from datetime import UTC, datetime
-from enum import Enum
+from enum import StrEnum
 from uuid import UUID, uuid4
 
 from pydantic import Field
@@ -14,7 +14,7 @@ from pydantic import Field
 from roboco.models.base import RobocoBase, TimestampMixin
 
 
-class WorkSessionStatus(str, Enum):
+class WorkSessionStatus(StrEnum):
     """Work session lifecycle states."""
 
     ACTIVE = "active"  # Agent is working

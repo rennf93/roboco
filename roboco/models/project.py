@@ -7,7 +7,7 @@ cell assignments.
 """
 
 from datetime import datetime
-from enum import Enum
+from enum import StrEnum
 from uuid import UUID, uuid4
 
 from pydantic import Field
@@ -15,7 +15,7 @@ from pydantic import Field
 from roboco.models.base import RobocoBase, Team, TimestampMixin
 
 
-class BranchReason(str, Enum):
+class BranchReason(StrEnum):
     """Reason/type prefix for branch naming."""
 
     FEATURE = "feature"

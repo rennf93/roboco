@@ -76,7 +76,9 @@ class ErrorsIndexPlugin(BaseIndexPlugin):
         import hashlib
 
         # Generate a unique ID from error message
-        error_hash = hashlib.md5(params.error_message.encode()).hexdigest()[:12]
+        error_hash = hashlib.md5(
+            params.error_message.encode(), usedforsecurity=False
+        ).hexdigest()[:12]
         error_id = f"err-{error_hash}"
 
         content = self._build_content(params)

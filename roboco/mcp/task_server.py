@@ -487,18 +487,33 @@ def _register_developer_submit_tools(
         """
         Submit task for QA review (developer only).
 
-        ENFORCEMENT:
-        - Only developers can use this tool
-        - Task must be in 'verifying' status
-        - Dev notes and handoff summary required
+        ENFORCEMENT (server-side — violating any gate returns 400):
+        - Only developers can use this tool.
+        - Task must be in `verifying` status.
+        - `self_verified=true` — call `roboco_task_submit_verification`
+          FIRST (it transitions `in_progress → verifying` AND flips the
+          flag).
+        - At least one commit on the task's branch
+          (`roboco_git_commit`).
+        - **PR open on GitHub** — run `roboco_git_push` then
+          `roboco_git_create_pr(is_root_pr=False)` BEFORE this call.
+          QA reviews the PR diff on GitHub; without a PR there is
+          nothing to review.
+        - At least one `roboco_task_progress` entry during execution.
+        - Non-empty dev_notes and handoff_summary.
+
+        Sequence from `in_progress`:
+          commit → push → create_pr → progress → submit_verification →
+          submit_qa.
 
         Args:
-            task_id: The task UUID
-            dev_notes: Journey notes from development
-            handoff_summary: Summary for QA reviewer
+            task_id: The task UUID.
+            dev_notes: Journey notes from development (why, how, gotchas).
+            handoff_summary: What QA should verify, per acceptance
+                criterion. Vague summaries waste the QA cycle.
 
         Returns:
-            Task submitted for QA
+            Task submitted for QA.
         """
         return await handle_task_submit_qa(
             client, task_id, dev_notes, handoff_summary, agent_id

@@ -25,10 +25,69 @@ different purposes. MCP is coarse-grained (tool-level), API is fine-grained
 (action + team context).
 """
 
+import hashlib
+import hmac
+import os
 from typing import Final
 
 from roboco.models.base import NotificationPriority, NotificationType
 from roboco.seeds.initial_data import AGENT_UUIDS
+
+# Env var containing the HMAC secret used to sign agent auth tokens.
+# Must be set in orchestrator + API container environments; if missing,
+# token verification refuses every token (fail-closed). Generate with:
+#   python -c 'import secrets; print(secrets.token_hex(32))'
+_AUTH_SECRET_ENV: Final[str] = "ROBOCO_AGENT_AUTH_SECRET"
+
+
+def _auth_secret() -> bytes | None:
+    """Return the HMAC secret bytes, or None when unset."""
+    v = os.environ.get(_AUTH_SECRET_ENV, "")
+    return v.encode("utf-8") if v else None
+
+
+def _signing_payload(agent_id: str, role: str, team: str) -> bytes:
+    """Canonical message for HMAC — all inputs lower-cased and stripped."""
+    parts = (
+        (agent_id or "").strip().lower(),
+        (role or "").strip().lower(),
+        (team or "").strip().lower(),
+    )
+    return ":".join(parts).encode("utf-8")
+
+
+def issue_agent_token(agent_id: str, role: str, team: str = "") -> str:
+    """Mint an auth token the orchestrator injects into an agent's env.
+
+    The token is a hex HMAC-SHA256 of `agent_id:role:team` signed with
+    ROBOCO_AGENT_AUTH_SECRET. It binds the agent's identity to the role
+    and team headers — if the agent later lies about its role, the
+    server-side HMAC won't match.
+    """
+    secret = _auth_secret()
+    if not secret:
+        # Unset secret ⇒ tokens are meaningless; return a sentinel the
+        # verifier will reject. Caller should detect and log this.
+        return "UNSIGNED"
+    return hmac.new(
+        secret, _signing_payload(agent_id, role, team), hashlib.sha256
+    ).hexdigest()
+
+
+def verify_agent_token(token: str, agent_id: str, role: str, team: str = "") -> bool:
+    """Return True iff `token` is a valid HMAC for (agent_id, role, team).
+
+    Fails closed when the secret is unset or the token is the UNSIGNED
+    sentinel.
+    """
+    secret = _auth_secret()
+    if not secret or not token or token == "UNSIGNED":
+        return False
+    expected = hmac.new(
+        secret, _signing_payload(agent_id, role, team), hashlib.sha256
+    ).hexdigest()
+    return hmac.compare_digest(expected, token)
+
 
 # Reverse mapping: UUID -> slug (computed from seeds)
 _UUID_TO_SLUG: Final[dict[str, str]] = {

@@ -330,6 +330,32 @@ class MentorService:
             context_parts.append(f"{role.upper()}: {content}")
         return "\n".join(context_parts)
 
+    @staticmethod
+    def _add_source_type_followups(
+        followups: list[str], sources: list[SearchResult], max_followups: int
+    ) -> None:
+        """Append source-type-driven follow-up suggestions up to ``max_followups``."""
+        source_types = {s.index_type for s in sources}
+        suggestions = [
+            (IndexType.STANDARDS, "What are the exceptions to this rule?"),
+            (IndexType.DECISIONS, "What alternatives were considered?"),
+            (IndexType.JOURNALS, "What problems did others encounter?"),
+        ]
+        for index_type, suggestion in suggestions:
+            if len(followups) >= max_followups:
+                return
+            if index_type in source_types:
+                followups.append(suggestion)
+
+    @staticmethod
+    def _fill_default_followups(followups: list[str], max_followups: int) -> None:
+        """Fill ``followups`` with defaults until ``max_followups`` is reached."""
+        for default in DEFAULT_FOLLOWUPS:
+            if len(followups) >= max_followups:
+                return
+            if default not in followups:
+                followups.append(default)
+
     def _generate_followups(
         self,
         _question: str,
@@ -341,99 +367,46 @@ class MentorService:
         followups: list[str] = []
         max_followups = 3
 
-        # Get role-specific suggestions first
         if agent_role and agent_role in ROLE_FOLLOWUPS:
-            role_suggestions = ROLE_FOLLOWUPS[agent_role]
-            # Pick suggestions that seem relevant to the topic
-            for suggestion in role_suggestions:
+            for suggestion in ROLE_FOLLOWUPS[agent_role]:
                 if len(followups) >= max_followups:
                     break
                 followups.append(suggestion)
 
-        # Add source-type based suggestions
-        source_types = {s.index_type for s in sources}
-        if len(followups) < max_followups and IndexType.STANDARDS in source_types:
-            followups.append("What are the exceptions to this rule?")
-        if len(followups) < max_followups and IndexType.DECISIONS in source_types:
-            followups.append("What alternatives were considered?")
-        if len(followups) < max_followups and IndexType.JOURNALS in source_types:
-            followups.append("What problems did others encounter?")
-
-        # Fill with defaults if needed
-        for default in DEFAULT_FOLLOWUPS:
-            if len(followups) >= max_followups:
-                break
-            if default not in followups:
-                followups.append(default)
+        self._add_source_type_followups(followups, sources, max_followups)
+        self._fill_default_followups(followups, max_followups)
 
         return followups[:max_followups]
 
-    async def ask(
+    async def _load_or_create_conversation(
         self,
-        question: str,
+        conversation_id: str | None,
         agent_id: str,
-        conversation_id: str | None = None,
-        domain: str | None = None,
-        top_k: int = 5,
-    ) -> MentorResponse:
-        """
-        Ask the mentor a question with personalized, agent-aware response.
-
-        Unlike /rag/query, this:
-        1. Fetches the agent's profile (role, team)
-        2. Searches the agent's own journals for related context
-        3. Builds a role-specific prompt
-        4. Generates personalized follow-ups
-        """
-        if not self._optimal_service:
-            raise RuntimeError("MentorService not initialized")
-
-        # Fetch agent profile for personalization
-        agent_profile = await self._get_agent_profile(agent_id)
-        agent_role = agent_profile.role if agent_profile else None
-
-        logger.info(
-            "Mentor ask starting",
-            question=question[:50],
-            agent_id=agent_id,
-            agent_role=agent_role.value if agent_role else "unknown",
-        )
-
-        # Search agent's own journals for related past experiences
-        journal_context = await self._get_agent_journal_context(agent_id, question)
-        if journal_context:
-            logger.info(
-                "Found agent journal context",
-                entries=len(journal_context),
-            )
-
-        # Load or create conversation
-        conversation: MentorConversation | None = None
+        domain: str | None,
+    ) -> MentorConversation:
+        """Load an existing conversation or start a fresh one."""
         if conversation_id:
             conversation = await self._load_conversation(conversation_id)
+            if conversation is not None:
+                return conversation
 
-        if conversation is None:
-            conversation = MentorConversation(
-                conversation_id=str(uuid.uuid4()),
-                agent_id=uuid.UUID(agent_id) if agent_id else uuid.uuid4(),
-                turns=[],
-                domain=domain,
-                created_at=datetime.now(UTC).isoformat(),
-                updated_at=datetime.now(UTC).isoformat(),
-            )
+        now_iso = datetime.now(UTC).isoformat()
+        return MentorConversation(
+            conversation_id=str(uuid.uuid4()),
+            agent_id=uuid.UUID(agent_id) if agent_id else uuid.uuid4(),
+            turns=[],
+            domain=domain,
+            created_at=now_iso,
+            updated_at=now_iso,
+        )
 
-        # Build search query with conversation context
-        context_str = self._build_context_from_turns(conversation.turns)
-        enhanced_query = question
-        if context_str:
-            enhanced_query = (
-                f"Previous context:\n{context_str}\n\nCurrent question: {question}"
-            )
-
-        # Determine which indexes to search based on domain
-        index_types = self._get_indexes_for_domain(domain)
-
-        # Search across relevant indexes
+    async def _search_all_indexes(
+        self,
+        index_types: list[IndexType],
+        enhanced_query: str,
+        top_k: int,
+    ) -> tuple[list[SearchResult], dict[str, int], dict[str, str]]:
+        """Search each index, aggregating results, stats, and errors."""
         all_results: list[SearchResult] = []
         search_stats: dict[str, int] = {}
         search_errors: dict[str, str] = {}
@@ -456,8 +429,13 @@ class MentorService:
             total_results=len(all_results),
             by_index=search_stats,
         )
+        return all_results, search_stats, search_errors
 
-        # Sort by relevance and deduplicate
+    @staticmethod
+    def _deduplicate_top_results(
+        all_results: list[SearchResult], top_k: int
+    ) -> list[SearchResult]:
+        """Sort results by score and return unique-by-source top slice."""
         all_results.sort(key=lambda r: r.score, reverse=True)
         seen_sources: set[str] = set()
         deduplicated: list[SearchResult] = []
@@ -465,28 +443,19 @@ class MentorService:
             if r.source not in seen_sources:
                 seen_sources.add(r.source)
                 deduplicated.append(r)
-        top_results = deduplicated[: top_k * 2]
+        return deduplicated[: top_k * 2]
 
-        # Generate personalized answer
-        answer = await self._synthesize_answer(
-            question=question,
-            sources=top_results,
-            conversation_context=context_str,
-            agent_profile=agent_profile,
-            journal_context=journal_context,
-        )
-
-        # Generate role-specific follow-ups
-        followups = self._generate_followups(question, answer, top_results, agent_role)
-
-        # Record this turn
+    @staticmethod
+    def _append_turns(
+        conversation: MentorConversation,
+        question: str,
+        answer: str,
+        top_results: list[SearchResult],
+    ) -> None:
+        """Record the user question and mentor answer on the conversation."""
         now = datetime.now(UTC).isoformat()
         conversation.turns.append(
-            {
-                "role": "user",
-                "content": question,
-                "timestamp": now,
-            }
+            {"role": "user", "content": question, "timestamp": now}
         )
         conversation.turns.append(
             {
@@ -498,7 +467,69 @@ class MentorService:
         )
         conversation.updated_at = now
 
-        # Save conversation
+    def _build_enhanced_query(self, question: str, context_str: str) -> str:
+        """Combine prior context (if any) with the current question."""
+        if context_str:
+            return f"Previous context:\n{context_str}\n\nCurrent question: {question}"
+        return question
+
+    async def ask(
+        self,
+        question: str,
+        agent_id: str,
+        conversation_id: str | None = None,
+        domain: str | None = None,
+        top_k: int = 5,
+    ) -> MentorResponse:
+        """
+        Ask the mentor a question with personalized, agent-aware response.
+
+        Unlike /rag/query, this:
+        1. Fetches the agent's profile (role, team)
+        2. Searches the agent's own journals for related context
+        3. Builds a role-specific prompt
+        4. Generates personalized follow-ups
+        """
+        if not self._optimal_service:
+            raise RuntimeError("MentorService not initialized")
+
+        agent_profile = await self._get_agent_profile(agent_id)
+        agent_role = agent_profile.role if agent_profile else None
+
+        logger.info(
+            "Mentor ask starting",
+            question=question[:50],
+            agent_id=agent_id,
+            agent_role=agent_role.value if agent_role else "unknown",
+        )
+
+        journal_context = await self._get_agent_journal_context(agent_id, question)
+        if journal_context:
+            logger.info("Found agent journal context", entries=len(journal_context))
+
+        conversation = await self._load_or_create_conversation(
+            conversation_id, agent_id, domain
+        )
+
+        context_str = self._build_context_from_turns(conversation.turns)
+        enhanced_query = self._build_enhanced_query(question, context_str)
+
+        all_results, search_stats, search_errors = await self._search_all_indexes(
+            self._get_indexes_for_domain(domain), enhanced_query, top_k
+        )
+        top_results = self._deduplicate_top_results(all_results, top_k)
+
+        answer = await self._synthesize_answer(
+            question=question,
+            sources=top_results,
+            conversation_context=context_str,
+            agent_profile=agent_profile,
+            journal_context=journal_context,
+        )
+
+        followups = self._generate_followups(question, answer, top_results, agent_role)
+
+        self._append_turns(conversation, question, answer, top_results)
         await self._save_conversation(conversation)
 
         return MentorResponse(
@@ -508,7 +539,6 @@ class MentorService:
             suggested_followups=followups,
             search_stats=search_stats,
             search_errors=search_errors,
-            # Personalization context
             agent_role=agent_profile.role.value if agent_profile else None,
             agent_team=agent_profile.team if agent_profile else None,
             journal_entries_used=len(journal_context),

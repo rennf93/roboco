@@ -5,15 +5,15 @@ Business logic for auditor and CEO dashboards.
 Manages flags, reports, and aggregated metrics.
 """
 
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import Any, ClassVar
 from uuid import UUID, uuid4
 
 from sqlalchemy import and_, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from roboco.db.tables import ChannelTable, TaskTable
-from roboco.models.base import TaskStatus, Team
+from roboco.db.tables import AgentTable, ChannelTable, MessageTable, TaskTable
+from roboco.models.base import AgentStatus, TaskStatus, Team
 from roboco.models.dashboard import (
     AuditQueueItem,
     ChannelFeedData,
@@ -361,6 +361,89 @@ class DashboardService(BaseService):
             "active_blockers": blockers.active_blockers,
             "communication_volume": comm["total_messages"],
         }
+
+    async def get_all_agent_status(self, team: Team | None = None) -> dict[str, Any]:
+        """Return agent-status summary (counts + per-agent snapshot)."""
+        query = select(AgentTable)
+        if team:
+            query = query.where(AgentTable.team == team)
+        result = await self.session.execute(query)
+        agents = result.scalars().all()
+
+        status_counts = {s.value: 0 for s in AgentStatus}
+        agent_list: list[dict[str, Any]] = []
+        for agent in agents:
+            agent_status = agent.status or AgentStatus.IDLE
+            status_counts[agent_status.value] = (
+                status_counts.get(agent_status.value, 0) + 1
+            )
+            agent_list.append(
+                {
+                    "id": str(agent.id),
+                    "name": agent.name,
+                    "role": agent.role.value,
+                    "team": agent.team.value if agent.team else None,
+                    "status": agent_status.value,
+                    "current_task_id": (
+                        str(agent.current_task_id) if agent.current_task_id else None
+                    ),
+                }
+            )
+        return {
+            "total": len(agents),
+            "by_status": status_counts,
+            "agents": agent_list,
+        }
+
+    async def get_recent_activity(self, *, hours: int, limit: int) -> dict[str, Any]:
+        """Return recent messages + task updates for the dashboard feed."""
+        since = datetime.now(UTC) - timedelta(hours=hours)
+
+        message_result = await self.session.execute(
+            select(MessageTable)
+            .where(MessageTable.timestamp >= since)
+            .order_by(MessageTable.timestamp.desc())
+            .limit(limit)
+        )
+        messages = message_result.scalars().all()
+
+        task_result = await self.session.execute(
+            select(TaskTable)
+            .where(TaskTable.updated_at >= since)
+            .order_by(TaskTable.updated_at.desc())
+            .limit(limit)
+        )
+        tasks = task_result.scalars().all()
+
+        feed: list[dict[str, Any]] = []
+        for msg in messages:
+            feed.append(
+                {
+                    "type": "message",
+                    "timestamp": msg.timestamp.isoformat(),
+                    "agent_id": str(msg.agent_id),
+                    "channel_id": str(msg.channel_id),
+                    "content_preview": (msg.content[:100] if msg.content else ""),
+                    "message_type": msg.type.value,
+                }
+            )
+        for task in tasks:
+            feed.append(
+                {
+                    "type": "task_update",
+                    "timestamp": (
+                        task.updated_at.isoformat()
+                        if task.updated_at
+                        else task.created_at.isoformat()
+                    ),
+                    "task_id": str(task.id),
+                    "title": task.title,
+                    "status": task.status.value,
+                    "team": task.team.value if task.team else "",
+                }
+            )
+        feed.sort(key=lambda x: x["timestamp"], reverse=True)
+        return {"period_hours": hours, "activity": feed[:limit]}
 
 
 # =============================================================================

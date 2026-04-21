@@ -92,7 +92,9 @@ class DecisionsIndexPlugin(BaseIndexPlugin):
         import hashlib
 
         # Generate decision ID from topic
-        topic_hash = hashlib.md5(params.topic.encode()).hexdigest()[:12]
+        topic_hash = hashlib.md5(
+            params.topic.encode(), usedforsecurity=False
+        ).hexdigest()[:12]
         decision_id = f"dec-{topic_hash}"
 
         content = self._build_content(params)

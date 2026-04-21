@@ -100,6 +100,15 @@ class IndexingReport:
 
 
 @dataclass
+class _QueryAggregationBuffer:
+    """Accumulator for citations/stats/errors across multiple index searches."""
+
+    citations: list[SearchResult] = field(default_factory=list)
+    stats: dict[str, int] = field(default_factory=dict)
+    errors: dict[str, str] = field(default_factory=dict)
+
+
+@dataclass
 class AutoIndexReport:
     """Combined report for auto-indexing on startup."""
 
@@ -479,16 +488,12 @@ class OptimalService:
                 return path
         return None
 
-    async def _check_for_updates(self) -> None:
-        """Scan for new or modified files and index them."""
-        docs_root = self._resolve_docs_root()
-        if docs_root is None:
-            return
+    def _scan_for_file_changes(self, rag_dir: Path) -> tuple[list[Path], list[Path]]:
+        """Scan ``rag_dir`` for new or modified .md files.
 
-        rag_dir = docs_root / "rag"
-        if not rag_dir.exists():
-            return
-
+        Updates ``self._file_mtimes`` in place as a side effect.
+        Returns (new_files, modified_files).
+        """
         new_files: list[Path] = []
         modified_files: list[Path] = []
 
@@ -506,16 +511,10 @@ class OptimalService:
                 modified_files.append(md_file)
                 self._file_mtimes[file_path] = current_mtime
 
-        files_to_index = new_files + modified_files
-        if not files_to_index:
-            return
+        return new_files, modified_files
 
-        logger.info(
-            "Detected file changes, re-indexing",
-            new_count=len(new_files),
-            modified_count=len(modified_files),
-        )
-
+    async def _reindex_files(self, files_to_index: list[Path]) -> int:
+        """Re-index the given files and return the count that succeeded."""
         indexed = 0
         for md_file in files_to_index:
             try:
@@ -528,7 +527,30 @@ class OptimalService:
                     file=str(md_file),
                     error=str(e),
                 )
+        return indexed
 
+    async def _check_for_updates(self) -> None:
+        """Scan for new or modified files and index them."""
+        docs_root = self._resolve_docs_root()
+        if docs_root is None:
+            return
+
+        rag_dir = docs_root / "rag"
+        if not rag_dir.exists():
+            return
+
+        new_files, modified_files = self._scan_for_file_changes(rag_dir)
+        files_to_index = new_files + modified_files
+        if not files_to_index:
+            return
+
+        logger.info(
+            "Detected file changes, re-indexing",
+            new_count=len(new_files),
+            modified_count=len(modified_files),
+        )
+
+        indexed = await self._reindex_files(files_to_index)
         if indexed > 0:
             logger.info(
                 "Periodic update complete",
@@ -662,6 +684,65 @@ class OptimalService:
             repo = IndexedDocumentRepository(db)
             await repo.upsert_batch(index_type.value, documents)
 
+    async def list_indexed_documents(
+        self, *, index_type: IndexType, offset: int, limit: int
+    ) -> tuple[list[dict[str, Any]], int]:
+        """Return (docs, total) for an index's tracked documents.
+
+        Shape-maps each row into a primitive dict so the API route
+        renders without touching the ORM type directly.
+        """
+        from sqlalchemy import func, select
+
+        from roboco.db import get_db_context
+        from roboco.db.tables import IndexedDocumentTable
+
+        async with get_db_context() as db:
+            count_result = await db.execute(
+                select(func.count())
+                .select_from(IndexedDocumentTable)
+                .where(IndexedDocumentTable.index_type == index_type.value)
+            )
+            total = count_result.scalar() or 0
+
+            rows_result = await db.execute(
+                select(IndexedDocumentTable)
+                .where(IndexedDocumentTable.index_type == index_type.value)
+                .order_by(IndexedDocumentTable.indexed_at.desc())
+                .offset(offset)
+                .limit(limit)
+            )
+            docs = [
+                {
+                    "id": str(doc.id),
+                    "source": doc.source,
+                    "indexed_at": (
+                        doc.indexed_at.isoformat() if doc.indexed_at else ""
+                    ),
+                    "title": doc.title,
+                    "preview": doc.preview,
+                    "chunk_count": doc.chunk_count,
+                    "extra_data": doc.extra_data or {},
+                }
+                for doc in rows_result.scalars().all()
+            ]
+        return docs, total
+
+    async def get_indexed_sources_for(self, index_type: str) -> list[str]:
+        """Return the unique `source` values tracked for an index."""
+        from sqlalchemy import select
+
+        from roboco.db import get_db_context
+        from roboco.db.tables import IndexedDocumentTable
+
+        async with get_db_context() as db:
+            rows = await db.execute(
+                select(IndexedDocumentTable.source).where(
+                    IndexedDocumentTable.index_type == index_type
+                )
+            )
+            return [r[0] for r in rows.all() if r[0]]
+
     async def index_conversation(self, params: IndexConversationParams) -> None:
         """Index a conversation message."""
         plugin = self._get_plugin(IndexType.CONVERSATIONS)
@@ -734,7 +815,9 @@ class OptimalService:
         # Track in database
         import hashlib
 
-        error_hash = hashlib.md5(params.error_message.encode()).hexdigest()[:12]
+        error_hash = hashlib.md5(
+            params.error_message.encode(), usedforsecurity=False
+        ).hexdigest()[:12]
         source = f"roboco://errors/err-{error_hash}"
         await self._track_indexed_document(
             IndexType.ERRORS,
@@ -778,7 +861,9 @@ class OptimalService:
         # Track in database
         import hashlib
 
-        topic_hash = hashlib.md5(params.topic.encode()).hexdigest()[:12]
+        topic_hash = hashlib.md5(
+            params.topic.encode(), usedforsecurity=False
+        ).hexdigest()[:12]
         source = f"roboco://decisions/dec-{topic_hash}"
         await self._track_indexed_document(
             IndexType.DECISIONS,
@@ -838,7 +923,9 @@ class OptimalService:
         # Track in database
         import hashlib
 
-        content_hash = hashlib.md5(params.content.encode()).hexdigest()[:12]
+        content_hash = hashlib.md5(
+            params.content.encode(), usedforsecurity=False
+        ).hexdigest()[:12]
         source = f"roboco://learnings/learn-{content_hash}"
         await self._track_indexed_document(
             IndexType.LEARNINGS,
@@ -924,6 +1011,53 @@ class OptimalService:
         results.sort(key=lambda r: r.score, reverse=True)
         return results[: top_k * len(index_types)]
 
+    async def _search_single_index(
+        self,
+        index_type: IndexType,
+        query: str,
+        top_k: int,
+        buf: _QueryAggregationBuffer,
+    ) -> None:
+        """Search one index and update aggregate buffers in place."""
+        plugin = self._plugins.get(index_type)
+        if not plugin:
+            return
+
+        count = await plugin.count()
+        if count == 0:
+            logger.debug("Skipping empty index", index_type=index_type.value)
+            return
+
+        outcome = await plugin.search(query=query, top_k=top_k)
+        if outcome.success:
+            buf.stats[index_type.value] = len(outcome.results)
+            buf.citations.extend(outcome.results)
+        else:
+            buf.stats[index_type.value] = -1  # -1 indicates error
+            buf.errors[index_type.value] = outcome.error_message or "Unknown"
+            logger.warning(
+                "RAG search failed for index",
+                index_type=index_type.value,
+                error=outcome.error_message,
+            )
+
+    async def _aggregate_citations(
+        self, index_types: list[IndexType], query: str, top_k: int
+    ) -> tuple[list[SearchResult], dict[str, int], dict[str, str]]:
+        """Run search across the requested indexes and aggregate citations."""
+        buf = _QueryAggregationBuffer()
+
+        for index_type in index_types:
+            await self._search_single_index(index_type, query, top_k, buf)
+
+        logger.info(
+            "RAG search complete",
+            total_citations=len(buf.citations),
+            by_index=buf.stats,
+            errors=buf.errors if buf.errors else None,
+        )
+        return buf.citations, buf.stats, buf.errors
+
     async def query(
         self,
         query: str,
@@ -948,51 +1082,13 @@ class OptimalService:
             "RAG query starting", query=query[:50], num_indexes=len(index_types)
         )
 
-        # Aggregate citations from all non-empty indexes (search only, no LLM)
-        all_citations: list[SearchResult] = []
-        search_stats: dict[str, int] = {}
-        search_errors: dict[str, str] = {}
-
-        for index_type in index_types:
-            plugin = self._plugins.get(index_type)
-            if not plugin:
-                continue
-
-            # Skip empty indexes
-            count = await plugin.count()
-            if count == 0:
-                logger.debug(
-                    "Skipping empty index",
-                    index_type=index_type.value,
-                )
-                continue
-
-            # Use search() directly instead of ask() to avoid multiple LLM calls
-            outcome = await plugin.search(query=query, top_k=top_k)
-            if outcome.success:
-                search_stats[index_type.value] = len(outcome.results)
-                all_citations.extend(outcome.results)
-            else:
-                search_stats[index_type.value] = -1  # -1 indicates error
-                search_errors[index_type.value] = outcome.error_message or "Unknown"
-                logger.warning(
-                    "RAG search failed for index",
-                    index_type=index_type.value,
-                    error=outcome.error_message,
-                )
-
-        logger.info(
-            "RAG search complete",
-            total_citations=len(all_citations),
-            by_index=search_stats,
-            errors=search_errors if search_errors else None,
+        all_citations, search_stats, search_errors = await self._aggregate_citations(
+            index_types, query, top_k
         )
 
-        # Sort all citations by score and take top results
         all_citations.sort(key=lambda r: r.score, reverse=True)
         top_citations = all_citations[: top_k * 2]
 
-        # Synthesize a single answer from the best aggregated citations
         if top_citations:
             logger.info(
                 "Synthesizing answer from aggregated citations",
@@ -1052,6 +1148,70 @@ class OptimalService:
         )
         return "\n".join(parts)
 
+    @staticmethod
+    def _build_synthesis_context(citations: list[SearchResult]) -> str:
+        """Build the context block injected into the synthesis prompt."""
+        context_parts: list[str] = []
+        for citation in citations[:8]:
+            idx_type = citation.index_type
+            source_type = idx_type.value if idx_type else "unknown"
+            content = (
+                citation.content[:MAX_CONTENT_CHARS] + "..."
+                if len(citation.content) > MAX_CONTENT_CHARS
+                else citation.content
+            )
+            context_parts.append(f"[{source_type}] {content}")
+        return "\n\n---\n\n".join(context_parts)
+
+    @staticmethod
+    def _build_synthesis_prompt(query: str, context: str) -> str:
+        """Build the full LLM prompt for citation synthesis."""
+        return (
+            "You are a senior technical advisor helping AI agents. "
+            "Based on the knowledge base context below, provide a thorough answer.\n\n"
+            "Your response MUST include:\n"
+            "- Clear explanation of the concept or solution\n"
+            "- Specific steps or code examples when relevant\n"
+            "- References to standards, decisions, or learnings from context\n"
+            "- Warnings about common pitfalls if applicable\n\n"
+            "Do NOT give vague or generic advice. Be specific and actionable.\n"
+            "Do NOT use <think> tags.\n\n"
+            f"Context:\n{context}\n\n"
+            f"Question: {query}\n\n"
+            "Provide a detailed, helpful response:"
+        )
+
+    async def _handle_synthesis_response(
+        self,
+        resp: Any,
+        attempt: int,
+    ) -> tuple[str | None, bool]:
+        """Interpret an LLM response; returns (answer, should_retry).
+
+        - answer is the synthesized text if available, else None.
+        - should_retry is False for terminal errors, True if retry may help.
+        """
+        import httpx
+
+        if resp.is_success:
+            data = resp.json()
+            answer = self._strip_think_tags(data["choices"][0]["message"]["content"])
+            if answer:
+                return answer, False
+            logger.warning("LLM response was all thinking tags")
+            return None, False
+
+        if resp.status_code >= httpx.codes.INTERNAL_SERVER_ERROR:
+            logger.warning(
+                "Synthesis LLM server error",
+                status=resp.status_code,
+                attempt=attempt + 1,
+            )
+            return None, True
+
+        logger.warning("Synthesis LLM failed", status=resp.status_code)
+        return None, False
+
     async def _synthesize_from_citations(
         self,
         query: str,
@@ -1073,34 +1233,8 @@ class OptimalService:
         if not citations:
             return ""
 
-        # Build context from citations
-        context_parts: list[str] = []
-        for citation in citations[:8]:
-            idx_type = citation.index_type
-            source_type = idx_type.value if idx_type else "unknown"
-            content = (
-                citation.content[:MAX_CONTENT_CHARS] + "..."
-                if len(citation.content) > MAX_CONTENT_CHARS
-                else citation.content
-            )
-            context_parts.append(f"[{source_type}] {content}")
-
-        context = "\n\n---\n\n".join(context_parts)
-
-        prompt = (
-            "You are a senior technical advisor helping AI agents. "
-            "Based on the knowledge base context below, provide a thorough answer.\n\n"
-            "Your response MUST include:\n"
-            "- Clear explanation of the concept or solution\n"
-            "- Specific steps or code examples when relevant\n"
-            "- References to standards, decisions, or learnings from context\n"
-            "- Warnings about common pitfalls if applicable\n\n"
-            "Do NOT give vague or generic advice. Be specific and actionable.\n"
-            "Do NOT use <think> tags.\n\n"
-            f"Context:\n{context}\n\n"
-            f"Question: {query}\n\n"
-            "Provide a detailed, helpful response:"
-        )
+        context = self._build_synthesis_context(citations)
+        prompt = self._build_synthesis_prompt(query, context)
 
         max_retries = 3
         retry_delay_base = 0.5
@@ -1117,26 +1251,13 @@ class OptimalService:
                             "options": {"num_ctx": 8192},
                         },
                     )
-                    if resp.is_success:
-                        data = resp.json()
-                        answer = self._strip_think_tags(
-                            data["choices"][0]["message"]["content"]
-                        )
-                        if answer:
-                            return answer
-                        logger.warning("LLM response was all thinking tags")
+                    answer, should_retry = await self._handle_synthesis_response(
+                        resp, attempt
+                    )
+                    if answer:
+                        return answer
+                    if not should_retry:
                         break
-
-                    if resp.status_code >= httpx.codes.INTERNAL_SERVER_ERROR:
-                        logger.warning(
-                            "Synthesis LLM server error",
-                            status=resp.status_code,
-                            attempt=attempt + 1,
-                        )
-                    else:
-                        logger.warning("Synthesis LLM failed", status=resp.status_code)
-                        break
-
                 except (httpx.TimeoutException, httpx.ConnectError) as e:
                     logger.warning("Synthesis LLM error", attempt=attempt + 1, error=e)
                 except Exception as e:
@@ -1334,6 +1455,90 @@ class OptimalService:
 
             return stats
 
+    @staticmethod
+    def _collect_stale_source_files(
+        indexed_sources: list[str], last_indexed: Any
+    ) -> list[str]:
+        """Return source paths whose mtime is newer than ``last_indexed``."""
+        from datetime import UTC, datetime
+
+        stale_files: list[str] = []
+        for source in indexed_sources[:100]:  # Limit check to 100 files
+            source_path = Path(source)
+            if not source_path.exists():
+                continue
+            try:
+                mtime = datetime.fromtimestamp(source_path.stat().st_mtime, tz=UTC)
+                if mtime > last_indexed:
+                    stale_files.append(source)
+            except OSError:
+                pass  # Skip files we can't stat
+        return stale_files
+
+    @staticmethod
+    async def _fetch_index_last_indexed(session: Any, idx_type: IndexType) -> Any:
+        """Return the max(indexed_at) for a given index type, or None."""
+        from sqlalchemy import func, select
+
+        from roboco.db.tables import IndexedDocumentTable
+
+        last_indexed_query = (
+            select(func.max(IndexedDocumentTable.indexed_at))
+            .select_from(IndexedDocumentTable)
+            .where(IndexedDocumentTable.index_type == idx_type.value)
+        )
+        last_indexed_result = await session.execute(last_indexed_query)
+        return last_indexed_result.scalar()
+
+    @staticmethod
+    async def _fetch_indexed_sources(session: Any, idx_type: IndexType) -> list[str]:
+        """Return distinct indexed source paths for a given index type."""
+        from sqlalchemy import select
+
+        from roboco.db.tables import IndexedDocumentTable
+
+        sources_query = (
+            select(IndexedDocumentTable.source)
+            .where(IndexedDocumentTable.index_type == idx_type.value)
+            .distinct()
+        )
+        sources_result = await session.execute(sources_query)
+        return [row[0] for row in sources_result.fetchall()]
+
+    async def _check_single_index_staleness(
+        self, session: Any, idx_type: IndexType, result: dict[str, Any]
+    ) -> None:
+        """Update ``result`` with staleness info for a single index."""
+        last_indexed = await self._fetch_index_last_indexed(session, idx_type)
+
+        if last_indexed is None:
+            result["stale_indexes"].append(idx_type.value)
+            result["details"][idx_type.value] = {
+                "status": "never_indexed",
+                "last_indexed": None,
+                "recommendation": "Run /kb/reindex to index this content",
+            }
+            return
+
+        indexed_sources = await self._fetch_indexed_sources(session, idx_type)
+        stale_files = self._collect_stale_source_files(indexed_sources, last_indexed)
+
+        if stale_files:
+            result["stale_indexes"].append(idx_type.value)
+            result["details"][idx_type.value] = {
+                "status": "stale",
+                "last_indexed": last_indexed.isoformat(),
+                "stale_file_count": len(stale_files),
+                "stale_files_sample": stale_files[:5],
+                "recommendation": "Run /kb/reindex?force=true to update",
+            }
+        else:
+            result["details"][idx_type.value] = {
+                "status": "current",
+                "last_indexed": last_indexed.isoformat(),
+                "indexed_sources_count": len(indexed_sources),
+            }
+
     async def check_index_staleness(
         self,
         index_type: IndexType | None = None,
@@ -1349,12 +1554,7 @@ class OptimalService:
         Returns:
             Dict with staleness info per index type
         """
-        from datetime import UTC, datetime
-
-        from sqlalchemy import func, select
-
         from roboco.db import get_db_context
-        from roboco.db.tables import IndexedDocumentTable
 
         result: dict[str, Any] = {"stale_indexes": [], "details": {}}
 
@@ -1365,64 +1565,7 @@ class OptimalService:
             for idx_type in indexes_to_check:
                 if idx_type not in self._plugins:
                     continue
-
-                # Get last indexed time
-                last_indexed_query = (
-                    select(func.max(IndexedDocumentTable.indexed_at))
-                    .select_from(IndexedDocumentTable)
-                    .where(IndexedDocumentTable.index_type == idx_type.value)
-                )
-                last_indexed_result = await session.execute(last_indexed_query)
-                last_indexed = last_indexed_result.scalar()
-
-                if last_indexed is None:
-                    # Never indexed
-                    result["stale_indexes"].append(idx_type.value)
-                    result["details"][idx_type.value] = {
-                        "status": "never_indexed",
-                        "last_indexed": None,
-                        "recommendation": "Run /kb/reindex to index this content",
-                    }
-                    continue
-
-                # Get indexed source paths
-                sources_query = (
-                    select(IndexedDocumentTable.source)
-                    .where(IndexedDocumentTable.index_type == idx_type.value)
-                    .distinct()
-                )
-                sources_result = await session.execute(sources_query)
-                indexed_sources = [row[0] for row in sources_result.fetchall()]
-
-                # Check if any source files are newer than last_indexed
-                stale_files: list[str] = []
-                for source in indexed_sources[:100]:  # Limit check to 100 files
-                    source_path = Path(source)
-                    if source_path.exists():
-                        try:
-                            mtime = datetime.fromtimestamp(
-                                source_path.stat().st_mtime, tz=UTC
-                            )
-                            if mtime > last_indexed:
-                                stale_files.append(source)
-                        except OSError:
-                            pass  # Skip files we can't stat
-
-                if stale_files:
-                    result["stale_indexes"].append(idx_type.value)
-                    result["details"][idx_type.value] = {
-                        "status": "stale",
-                        "last_indexed": last_indexed.isoformat(),
-                        "stale_file_count": len(stale_files),
-                        "stale_files_sample": stale_files[:5],
-                        "recommendation": "Run /kb/reindex?force=true to update",
-                    }
-                else:
-                    result["details"][idx_type.value] = {
-                        "status": "current",
-                        "last_indexed": last_indexed.isoformat(),
-                        "indexed_sources_count": len(indexed_sources),
-                    }
+                await self._check_single_index_staleness(session, idx_type, result)
 
         result["needs_reindex"] = len(result["stale_indexes"]) > 0
         return result

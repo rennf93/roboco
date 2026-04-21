@@ -510,6 +510,96 @@ class BaseIndexPlugin(ABC):
                 error=str(e),
             )
 
+    def _prepare_docs_for_batch(
+        self,
+        documents: list[tuple[str, str | None, dict[str, Any]]],
+        results: list[IngestResult],
+    ) -> list[tuple[Document, str | None, dict[str, Any]]]:
+        """Validate input documents and return the list to process.
+
+        Appends failure IngestResults to ``results`` in place for invalid docs.
+        """
+        docs_to_process: list[tuple[Document, str | None, dict[str, Any]]] = []
+        for content, doc_id, kwargs in documents:
+            is_valid, error = self.validate_content(content, **kwargs)
+            if not is_valid:
+                results.append(
+                    IngestResult(
+                        doc_id=doc_id or "unknown",
+                        chunk_count=0,
+                        success=False,
+                        error=error,
+                    )
+                )
+                continue
+
+            metadata = self.prepare_metadata(content, **kwargs)
+            source = self.build_source_uri(doc_id, **kwargs)
+            doc = Document(content=content, source=source, metadata=metadata)
+            docs_to_process.append((doc, doc_id, kwargs))
+        return docs_to_process
+
+    @staticmethod
+    def _filter_good_chunks(raw_chunks: list[Any], doc: Document) -> list[Any]:
+        """Drop tiny / formatting-only chunks and merge doc metadata in."""
+        MIN_CHUNK_LENGTH = 200  # Minimum meaningful content
+        good_chunks: list[Any] = []
+        for chunk in raw_chunks:
+            text = chunk.text.strip()
+            if len(text) < MIN_CHUNK_LENGTH:
+                continue
+            non_formatting = (
+                text.replace("```", "").replace("---", "").replace("#", "").strip()
+            )
+            if len(non_formatting) < MIN_CHUNK_LENGTH // 2:
+                continue
+            chunk.metadata = {**chunk.metadata, **doc.metadata}
+            good_chunks.append(chunk)
+        return good_chunks
+
+    def _run_batch_process(
+        self,
+        docs_to_process: list[tuple[Document, str | None, dict[str, Any]]],
+        chunk_counts: dict[int, int],
+    ) -> None:
+        """Chunk, embed, and store all documents in a single transaction."""
+        ragi_sync = self.ragi._sync
+        all_chunks: list[Any] = []
+        total_filtered = 0
+
+        for idx, (doc, _, _) in enumerate(docs_to_process):
+            raw_chunks = ragi_sync.chunker.chunk_document(doc)
+            good_chunks = self._filter_good_chunks(raw_chunks, doc)
+            all_chunks.extend(good_chunks)
+            chunk_counts[idx] = len(good_chunks)
+            total_filtered += len(raw_chunks) - len(good_chunks)
+
+        logger.info(
+            f"Batch: {len(all_chunks)} chunks from {len(docs_to_process)} docs "
+            f"(filtered {total_filtered} garbage chunks)"
+        )
+
+        if all_chunks:
+            chunks_with_embeddings = ragi_sync.embedder.embed_chunks(all_chunks)
+            ragi_sync.store.add_chunks(chunks_with_embeddings)
+
+    @staticmethod
+    def _mark_batch_failed(
+        results: list[IngestResult],
+        docs_to_process: list[tuple[Document, str | None, dict[str, Any]]],
+        error: str,
+    ) -> None:
+        """Append failure IngestResults for every document in the batch."""
+        for _doc, doc_id, _ in docs_to_process:
+            results.append(
+                IngestResult(
+                    doc_id=doc_id or "unknown",
+                    chunk_count=0,
+                    success=False,
+                    error=error,
+                )
+            )
+
     async def ingest_batch(
         self,
         documents: list[tuple[str, str | None, dict[str, Any]]],
@@ -535,82 +625,18 @@ class BaseIndexPlugin(ABC):
         if not documents:
             return []
 
-        # Validate and prepare all documents
-        docs_to_process: list[tuple[Document, str | None, dict[str, Any]]] = []
         results: list[IngestResult] = []
-
-        for content, doc_id, kwargs in documents:
-            is_valid, error = self.validate_content(content, **kwargs)
-            if not is_valid:
-                results.append(
-                    IngestResult(
-                        doc_id=doc_id or "unknown",
-                        chunk_count=0,
-                        success=False,
-                        error=error,
-                    )
-                )
-                continue
-
-            metadata = self.prepare_metadata(content, **kwargs)
-            source = self.build_source_uri(doc_id, **kwargs)
-            doc = Document(content=content, source=source, metadata=metadata)
-            docs_to_process.append((doc, doc_id, kwargs))
-
+        docs_to_process = self._prepare_docs_for_batch(documents, results)
         if not docs_to_process:
             return results
 
-        # Process all valid documents in batch
-        ragi_sync = self.ragi._sync
         chunk_counts: dict[int, int] = {}
 
-        def _batch_process() -> None:
-            # Chunk ALL documents with quality filtering
-            MIN_CHUNK_LENGTH = 200  # Minimum meaningful content
-            all_chunks = []
-            total_raw = 0
-            total_filtered = 0
-
-            for idx, (doc, _, _) in enumerate(docs_to_process):
-                raw_chunks = ragi_sync.chunker.chunk_document(doc)
-                total_raw += len(raw_chunks)
-
-                # Filter garbage chunks at index time
-                good_chunks = []
-                for chunk in raw_chunks:
-                    text = chunk.text.strip()
-                    if len(text) < MIN_CHUNK_LENGTH:
-                        continue
-                    non_formatting = (
-                        text.replace("```", "")
-                        .replace("---", "")
-                        .replace("#", "")
-                        .strip()
-                    )
-                    if len(non_formatting) < MIN_CHUNK_LENGTH // 2:
-                        continue
-                    chunk.metadata = {**chunk.metadata, **doc.metadata}
-                    good_chunks.append(chunk)
-
-                all_chunks.extend(good_chunks)
-                chunk_counts[idx] = len(good_chunks)
-                total_filtered += len(raw_chunks) - len(good_chunks)
-
-            logger.info(
-                f"Batch: {len(all_chunks)} chunks from {len(docs_to_process)} docs "
-                f"(filtered {total_filtered} garbage chunks)"
+        try:
+            await asyncio.to_thread(
+                self._run_batch_process, docs_to_process, chunk_counts
             )
 
-            if all_chunks:
-                # Embed ALL chunks (piragi batches internally at 32)
-                chunks_with_embeddings = ragi_sync.embedder.embed_chunks(all_chunks)
-                # Store ALL in single transaction
-                ragi_sync.store.add_chunks(chunks_with_embeddings)
-
-        try:
-            await asyncio.to_thread(_batch_process)
-
-            # Build success results
             for idx, (doc, doc_id, _) in enumerate(docs_to_process):
                 results.append(
                     IngestResult(
@@ -632,16 +658,7 @@ class BaseIndexPlugin(ABC):
                 index_type=self.index_type.value,
                 error=str(e),
             )
-            # Mark all as failed
-            for _doc, doc_id, _ in docs_to_process:
-                results.append(
-                    IngestResult(
-                        doc_id=doc_id or "unknown",
-                        chunk_count=0,
-                        success=False,
-                        error=str(e),
-                    )
-                )
+            self._mark_batch_failed(results, docs_to_process, str(e))
 
         return results
 
@@ -716,6 +733,77 @@ class BaseIndexPlugin(ABC):
 
         return preprocessed
 
+    async def _compute_query_embedding(self, query: str) -> list[float]:
+        """Preprocess the query and embed it using the configured embedder."""
+        import asyncio
+
+        ragi_sync = self.ragi._sync
+        embedder = ragi_sync.embedder
+
+        processed_query = self._preprocess_query(query)
+        if processed_query != query:
+            logger.debug(
+                "Query preprocessed",
+                original=query[:50],
+                processed=processed_query[:50],
+                index_type=self.index_type.value,
+            )
+
+        if hasattr(embedder, "aembed_query"):
+            result: list[float] = await embedder.aembed_query(processed_query)
+            return result
+        return await asyncio.to_thread(embedder.embed_query, processed_query)
+
+    async def _fetch_citations(
+        self,
+        query_embedding: list[float],
+        top_k: int,
+        has_filters: bool,
+    ) -> list[Citation]:
+        """Fetch citations from the vector store in a worker thread."""
+        import asyncio
+
+        ragi_sync = self.ragi._sync
+        fetch_k = top_k * 3 if has_filters else top_k
+
+        def _do_search() -> list[Citation]:
+            results: list[Citation] = ragi_sync.store.search(
+                query_embedding,
+                top_k=fetch_k,
+                min_chunk_length=100,
+            )
+            return results
+
+        return await asyncio.to_thread(_do_search)
+
+    def _citations_to_results(
+        self,
+        chunks: list[Citation],
+        top_k: int,
+        filters: dict[str, Any] | None,
+    ) -> list[SearchResult]:
+        """Apply metadata filters and map to SearchResult up to ``top_k``."""
+        results: list[SearchResult] = []
+        for chunk in chunks:
+            if filters:
+                chunk_meta = chunk.metadata or {}
+                if not all(chunk_meta.get(k) == v for k, v in filters.items()):
+                    continue
+
+            results.append(
+                SearchResult(
+                    content=chunk.chunk,
+                    source=chunk.source,
+                    score=chunk.score,
+                    index_type=self.index_type,
+                    metadata=chunk.metadata or {},
+                )
+            )
+
+            if len(results) >= top_k:
+                break
+        return results
+
     async def search(
         self,
         query: str,
@@ -733,71 +821,16 @@ class BaseIndexPlugin(ABC):
         Returns:
             SearchOutcome with results and success status
         """
-        import asyncio
         import time
 
         start_time = time.time()
 
         try:
-            ragi_sync = self.ragi._sync
-            embedder = ragi_sync.embedder
-
-            # Preprocess query for better semantic matching
-            processed_query = self._preprocess_query(query)
-            if processed_query != query:
-                logger.debug(
-                    "Query preprocessed",
-                    original=query[:50],
-                    processed=processed_query[:50],
-                    index_type=self.index_type.value,
-                )
-
-            # Use async embedding if available (OllamaEmbedder has aembed_query)
-            if hasattr(embedder, "aembed_query"):
-                query_embedding = await embedder.aembed_query(processed_query)
-            else:
-                # Fallback to sync in thread for SentenceTransformers
-                query_embedding = await asyncio.to_thread(
-                    embedder.embed_query, processed_query
-                )
-
-            # Over-fetch when filters are provided to account for post-filtering
-            # This ensures we have enough results after filtering
-            fetch_k = top_k * 3 if filters else top_k
-
-            # Store search is sync - run in thread
-            # min_chunk_length=100 filters out tiny header-only chunks
-            def _do_search() -> list[Citation]:
-                results: list[Citation] = ragi_sync.store.search(
-                    query_embedding,
-                    top_k=fetch_k,
-                    min_chunk_length=100,
-                )
-                return results
-
-            chunks = await asyncio.to_thread(_do_search)
-
-            results: list[SearchResult] = []
-            for chunk in chunks:
-                # Apply filters if provided
-                if filters:
-                    chunk_meta = chunk.metadata or {}
-                    if not all(chunk_meta.get(k) == v for k, v in filters.items()):
-                        continue
-
-                results.append(
-                    SearchResult(
-                        content=chunk.chunk,
-                        source=chunk.source,
-                        score=chunk.score,
-                        index_type=self.index_type,
-                        metadata=chunk.metadata or {},
-                    )
-                )
-
-                # Truncate to original top_k after filtering
-                if len(results) >= top_k:
-                    break
+            query_embedding = await self._compute_query_embedding(query)
+            chunks = await self._fetch_citations(
+                query_embedding, top_k, has_filters=bool(filters)
+            )
+            results = self._citations_to_results(chunks, top_k, filters)
 
             elapsed_ms = (time.time() - start_time) * 1000
             return SearchOutcome(

@@ -60,7 +60,8 @@ async def _validate_verification_submission(
     task, error = await fetch_task_or_error(client, task_id)
     if error:
         return None, error
-    assert task is not None
+    if task is None:
+        raise RuntimeError("Invariant: task must be set")
 
     if error := await validate_task_ownership(task, agent_id, client):
         return None, error
@@ -87,7 +88,8 @@ async def handle_task_submit_verification(
     task, error = await _validate_verification_submission(client, task_id, agent_id)
     if error:
         return error
-    assert task is not None
+    if task is None:
+        raise RuntimeError("Invariant: task must be set")
 
     verify_resp = await client.post(f"/tasks/{task_id}/verify")
     if not verify_resp.ok:
@@ -123,7 +125,8 @@ async def _validate_qa_submission(
     task, error = await fetch_task_or_error(client, task_id)
     if error:
         return None, error
-    assert task is not None
+    if task is None:
+        raise RuntimeError("Invariant: task must be set")
 
     if error := await validate_task_ownership(task, agent_id, client):
         return None, error
@@ -258,7 +261,8 @@ async def handle_task_qa_pass(
     task, error = await fetch_task_or_error(client, task_id)
     if error:
         return error
-    assert task is not None
+    if task is None:
+        raise RuntimeError("Invariant: task must be set")
 
     if error := validate_task_status_in(task, QA_WORKFLOW_STATUSES, "pass QA on"):
         return error
@@ -314,7 +318,8 @@ async def _validate_qa_fail_request(
     task, error = await fetch_task_or_error(client, task_id)
     if error:
         return None, error
-    assert task is not None
+    if task is None:
+        raise RuntimeError("Invariant: task must be set")
 
     if error := validate_task_status_in(task, QA_WORKFLOW_STATUSES, "fail QA on"):
         return None, error
@@ -337,7 +342,8 @@ async def handle_task_qa_fail(
     task, error = await _validate_qa_fail_request(client, task_id, issues, agent_id)
     if error:
         return error
-    assert task is not None
+    if task is None:
+        raise RuntimeError("Invariant: task must be set")
 
     full_notes = f"{qa_notes}\n\nIssues:\n" + "\n".join(f"- {i}" for i in issues)
     fail_resp = await client.post(

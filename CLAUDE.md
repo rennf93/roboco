@@ -4,8 +4,13 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## IGNORING THESE WILL FORCE A COMPLETE SHUTDOWN OF CLAUDE CODE
 
+**A GOOD FUNCTION NAME IS SELF-EXPLANATORY. IF THE FUNCTION ONLY TAKES CARE OF A SINGLE THINGS, THEN EVEN BETTER BECAUSE THE NAME IS GOING TO BE THE ONLY DOCUMENTATION YOU NEED.**
+**DOING THINGS WRONGLY COST TWICE. DO THINGS RIGHT AT FIRST, AND YOU DON'T PAY THE PRICE**
+**ASK QUESTIONS BEFORE YOU DO ANYTHING**
+**YOU ARE NOT ALLOWED TO MAKE ASSUMPTIONS**
 **IGNORING != FIXING**
 **`# noqa` & `# type: ignore` != FIXING**
+**PRE-EXISTING ERRORS ARE STILL EXISTING ERRORS. I DON'T CARE IF THEY ARE PRE-EXISTING, THEY SHOULDN'T EXIST**
 **`uv run mypy ... --ignore-missing-imports` | ANY IGNORING AT ALL != GOOD PRACTICES**
 **`http://192.168.50.111:8000/docs` IS THE API DOCS**
 ** You need `X-Agent-Id` and `X-Agent-Role` headers to be set as 'ceo' for all API calls **
@@ -209,9 +214,9 @@ backlog -> pending -> claimed -> in_progress -> [blocked|paused] -> verifying
 | `paused` | Temporarily stopped (can resume) |
 | `verifying` | Self-verification by developer |
 | `needs_revision` | QA or CEO requested changes |
-| `awaiting_qa` | Submitted for QA review |
-| `awaiting_documentation` | Parallel phase: Documenter + Developer PR creation |
-| `awaiting_pm_review` | Docs complete + PR created, PM reviews |
+| `awaiting_qa` | Submitted for QA review — PR must already exist |
+| `awaiting_documentation` | Documentation phase — PR already open from pre-QA; doc writes docs |
+| `awaiting_pm_review` | Docs complete, PM reviews + merges |
 | `awaiting_ceo_approval` | Major tasks escalated for CEO final approval |
 | `completed` | Terminal state - work done and merged |
 | `cancelled` | Terminal state - work cancelled |
@@ -238,10 +243,19 @@ All status transitions are validated through the enforcement layer. Key restrict
 
 ### Git Integration Requirements
 
-All tasks follow git workflow:
+All tasks follow git workflow. PR is created BEFORE QA review (not after)
+so QA can review the real PR diff on GitHub and downstream PM/CEO approval
+chain off a PR that already exists:
+
 1. **claimed -> in_progress**: `branch_name` is auto-set on claim (hierarchical branches)
-2. **awaiting_documentation -> awaiting_pm_review**: Requires BOTH `docs_complete=True` AND `pr_created=True`
-3. **awaiting_pm_review -> awaiting_ceo_approval**: Must have `pr_number` set
+2. **verifying -> awaiting_qa** (submit-qa): Requires `self_verified`, `commits`,
+   `pr_number` (PR open), and at least one `progress_updates` entry
+3. **awaiting_qa -> awaiting_documentation** (pass-qa): Requires `pr_number` and
+   substantive QA notes
+4. **awaiting_documentation -> awaiting_pm_review**: Requires `docs_complete=True`
+   (PR already exists from step 2 above)
+5. **awaiting_pm_review -> awaiting_ceo_approval**: Must have `pr_number` set
+   and all subtasks in a terminal state
 
 ### CEO Approval Workflow
 

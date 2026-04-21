@@ -4,17 +4,11 @@ Task API Routes
 Full CRUD operations and lifecycle management for tasks.
 """
 
-from typing import Annotated, Any, cast
+from typing import Annotated, Any, NoReturn, cast
 from uuid import UUID
 
 from fastapi import APIRouter, Body, HTTPException, Query, status
-from sqlalchemy import select
 
-from roboco.agents_config import (
-    get_escalation_target,
-    get_pm_for_agent,
-    get_pm_for_team,
-)
 from roboco.api.deps import (
     CurrentAgentContext,
     DbSession,
@@ -47,19 +41,26 @@ from roboco.api.schemas.tasks import (
     task_to_response,
     transform_update_data,
 )
-from roboco.db.tables import AgentTable, NotificationTable
+from roboco.db.tables import TaskTable
 from roboco.exceptions import TaskLifecycleError
 from roboco.models.base import AgentRole, SubstituteReason, TaskStatus, Team
 from roboco.models.task import TaskCreate
 from roboco.services.audit import get_audit_service
+from roboco.services.base import NotFoundError
 from roboco.services.messaging import get_messaging_service
-from roboco.services.permissions import TaskAction
+from roboco.services.notification_delivery import (
+    BlockerDetails,
+    EscalationError,
+    PMRejectDetails,
+    get_notification_delivery_service,
+)
+from roboco.services.permissions import AgentContext, PermissionService, TaskAction
 from roboco.services.task import (
+    SoftBlockInfo,
     TaskCreateRequest,
     extract_original_developer,
     get_task_service,
     notify_pm_for_substitute,
-    resolve_pm_for_substitute,
 )
 from roboco.utils.converters import require_uuid
 
@@ -113,6 +114,25 @@ async def create_task(
                     "code": "PROJECT_REQUIRED",
                     "message": "All tasks require project_id",
                     "hint": "Specify project_id for the git repository",
+                }
+            },
+        )
+
+    # Acceptance criteria required — without them, QA has nothing to
+    # verify and the task is structurally unclosable.
+    if not data.acceptance_criteria or not any(
+        (c or "").strip() for c in data.acceptance_criteria
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail={
+                "error": {
+                    "code": "ACCEPTANCE_CRITERIA_REQUIRED",
+                    "message": (
+                        "Tasks must include at least one non-empty "
+                        "acceptance criterion — it's what QA verifies."
+                    ),
+                    "hint": "Pass acceptance_criteria=['...', '...'].",
                 }
             },
         )
@@ -510,23 +530,57 @@ async def get_descendants(
 # =============================================================================
 
 
-async def _resolve_claim_agent_id(db: DbSession, agent_id_str: str) -> UUID:
-    """Resolve agent ID from UUID string or slug."""
-    try:
-        return UUID(agent_id_str)
-    except ValueError:
-        pass
-
-    result = await db.execute(
-        select(AgentTable.id).where(AgentTable.slug == agent_id_str)
-    )
-    agent_uuid = result.scalar_one_or_none()
-    if not agent_uuid:
+def _assert_claim_permission(
+    permissions: PermissionService, agent: AgentContext, task: TaskTable
+) -> None:
+    """Block claims from agents that don't hold the CLAIM permission."""
+    if not permissions.can_perform_task_action(agent, TaskAction.CLAIM, task.team):
         raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"Agent not found: {agent_id_str}",
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Not authorized to claim tasks",
         )
-    return UUID(str(agent_uuid))
+
+
+def _assert_no_self_review(agent: AgentContext, task: TaskTable) -> None:
+    """QA/Documenter can't claim tasks they authored."""
+    # Block at claim time so the task isn't grabbed and then stuck (the
+    # outcome endpoints also block self-review, but blocking here keeps
+    # the task in the queue for a different reviewer/documenter).
+    if agent.role not in (AgentRole.QA, AgentRole.DOCUMENTER):
+        return
+    original_dev = extract_original_developer(task.quick_context)
+    if original_dev and str(agent.agent_id) == original_dev:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=(
+                "SELF_REVIEW: Cannot claim a task that you developed. "
+                "Leave it for another "
+                f"{agent.role.value}."
+            ),
+        )
+
+
+async def _resolve_claim_target(
+    service: Any,
+    permissions: PermissionService,
+    agent: AgentContext,
+    task: TaskTable,
+    data: ClaimRequest | None,
+) -> tuple[UUID, bool]:
+    """Pick the final claim target + whether reassignment is allowed."""
+    can_assign = permissions.can_perform_task_action(
+        agent, TaskAction.ASSIGN, task.team
+    )
+    claim_agent_id = agent.agent_id
+    if data and data.agent_id and can_assign:
+        try:
+            claim_agent_id = await service.resolve_agent_id(data.agent_id)
+        except NotFoundError as e:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND, detail=str(e)
+            ) from e
+    allow_reassign = bool(can_assign and data and data.agent_id is not None)
+    return claim_agent_id, allow_reassign
 
 
 @router.post("/{task_id}/claim", response_model=TaskResponse)
@@ -550,41 +604,12 @@ async def claim_task(
             status_code=status.HTTP_404_NOT_FOUND, detail="Task not found"
         )
 
-    # Check claim permission
-    if not permissions.can_perform_task_action(agent, TaskAction.CLAIM, task.team):
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="Not authorized to claim tasks",
-        )
+    _assert_claim_permission(permissions, agent, task)
+    _assert_no_self_review(agent, task)
 
-    # Self-review prevention for QA + documenter:
-    # - QA cannot review their own dev work
-    # - Documenter cannot document their own code
-    # Block at claim time so the task isn't grabbed and then stuck (the
-    # outcome endpoints also block self-review, but blocking here keeps
-    # the task in the queue for a different reviewer/documenter).
-    if agent.role in (AgentRole.QA, AgentRole.DOCUMENTER):
-        original_dev = extract_original_developer(task.quick_context)
-        if original_dev and str(agent.agent_id) == original_dev:
-            raise HTTPException(
-                status_code=status.HTTP_403_FORBIDDEN,
-                detail=(
-                    "SELF_REVIEW: Cannot claim a task that you developed. "
-                    "Leave it for another "
-                    f"{agent.role.value}."
-                ),
-            )
-
-    # Determine the agent to claim for
-    can_assign = permissions.can_perform_task_action(
-        agent, TaskAction.ASSIGN, task.team
+    claim_agent_id, allow_reassign = await _resolve_claim_target(
+        service, permissions, agent, task, data
     )
-    claim_agent_id = agent.agent_id
-    if data and data.agent_id and can_assign:
-        claim_agent_id = await _resolve_claim_agent_id(db, data.agent_id)
-
-    # Allow reassignment if PM is assigning on behalf of another agent
-    allow_reassign = bool(can_assign and data and data.agent_id is not None)
     task = await service.claim(task_id, claim_agent_id, allow_reassign=allow_reassign)
     if not task:
         status_msg = "not pending or claimed" if allow_reassign else "not pending"
@@ -626,7 +651,12 @@ async def unclaim_task(
     # Optionally hand off to a specific agent
     return_to: UUID | None = None
     if data and data.agent_id:
-        return_to = await _resolve_claim_agent_id(db, data.agent_id)
+        try:
+            return_to = await service.resolve_agent_id(data.agent_id)
+        except NotFoundError as e:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND, detail=str(e)
+            ) from e
 
     task = await service.unclaim(
         task_id,
@@ -736,6 +766,16 @@ async def block_task(
     return task_to_response(task)
 
 
+def _parse_resolver_type(raw: str) -> Any:
+    """Parse resolver type; fall back to AGENT on bad input."""
+    from roboco.models.base import BlockerResolverType
+
+    try:
+        return BlockerResolverType(raw)
+    except ValueError:
+        return BlockerResolverType.AGENT
+
+
 @router.post("/{task_id}/soft-block", response_model=TaskResponse)
 async def soft_block_task(
     task_id: UUID,
@@ -769,22 +809,17 @@ async def soft_block_task(
             detail="Not authorized to block this task",
         )
 
-    # Parse resolver_type (validated: only "agent" or "human"); fall back to
-    # "agent" on anything else so a bad client string never blocks the call.
-    from roboco.models.base import BlockerResolverType
-
-    try:
-        resolver_type = BlockerResolverType(data.resolver_type)
-    except ValueError:
-        resolver_type = BlockerResolverType.AGENT
+    resolver_type = _parse_resolver_type(data.resolver_type)
 
     task = await service.soft_block(
         task_id,
-        data.reason,
-        data.blocker_type,
-        data.what_needed,
+        SoftBlockInfo(
+            reason=data.reason,
+            blocker_type=data.blocker_type,
+            what_needed=data.what_needed,
+            resolver_type=resolver_type,
+        ),
         agent.role,
-        resolver_type=resolver_type,
     )
     if not task:
         raise HTTPException(
@@ -792,57 +827,17 @@ async def soft_block_task(
             detail="Cannot block task - must be in_progress",
         )
 
-    # Notify the PM that a task is blocked - they MUST call roboco_task_unblock()
-    pm_slug = get_pm_for_team(task.team.value) if task.team else None
-    if pm_slug:
-        # Look up PM agent ID
-        pm_query = select(AgentTable).where(AgentTable.slug == pm_slug)
-        pm_result = await db.execute(pm_query)
-        pm_agent = pm_result.scalar_one_or_none()
-
-        if pm_agent:
-            # Get the blocking agent's slug for the message
-            blocking_agent_query = select(AgentTable).where(
-                AgentTable.id == agent.agent_id
-            )
-            blocking_result = await db.execute(blocking_agent_query)
-            blocking_agent = blocking_result.scalar_one_or_none()
-            blocker_name = blocking_agent.slug if blocking_agent else "Unknown agent"
-
-            task_title = task.title or "Untitled"
-            notification = NotificationTable(
-                type="blocker_escalation",
-                priority="high",
-                from_agent=agent.agent_id,
-                to_agents=[pm_agent.id],
-                subject=f"🚫 ACTION REQUIRED: Blocked - {task_title[:40]}",
-                body=(
-                    f"Task {task_id} has been BLOCKED by {blocker_name}.\n\n"
-                    f"Type: {data.blocker_type}\n"
-                    f"Reason: {data.reason}\n"
-                    f"What's needed: {data.what_needed}\n\n"
-                    "⚠️ ACTION REQUIRED:\n"
-                    "When resolved, you MUST call:\n"
-                    f"  roboco_task_unblock('{task_id}')\n\n"
-                    "Verbal resolution in chat is NOT enough - "
-                    "the task will remain blocked until you call the tool."
-                ),
-                related_task_id=task_id,
-                requires_ack=True,
-                read_by=[],
-                acked_by=[],
-            )
-            db.add(notification)
-            await db.flush()
-
-            # Deliver notification via Redis Streams
-            from roboco.services.notification_delivery import (
-                get_notification_delivery_service,
-            )
-
-            delivery_service = get_notification_delivery_service(db)
-            await delivery_service.deliver(require_uuid(notification.id))
-
+    delivery = get_notification_delivery_service(db)
+    await delivery.notify_pm_of_block(
+        task=task,
+        task_id=task_id,
+        blocker_agent_id=agent.agent_id,
+        details=BlockerDetails(
+            blocker_type=data.blocker_type,
+            reason=data.reason,
+            what_needed=data.what_needed,
+        ),
+    )
     await db.commit()
     return task_to_response(task)
 
@@ -883,29 +878,13 @@ async def unblock_task(
 
     # Notify the assigned agent that the task is unblocked
     if assigned_agent_id and assigned_agent_id != agent.agent_id:
-        notification = NotificationTable(
-            type="task_assignment",
-            priority="high",
-            from_agent=agent.agent_id,
-            to_agents=[assigned_agent_id],
-            subject=f"Task unblocked: {task.title or 'Unknown task'}",
-            body=(
-                f"Task {task_id} has been unblocked and is ready to resume.\n\n"
-                "Use roboco_task_get to review the task and continue work."
-            ),
-            related_task_id=task_id,
-            requires_ack=False,
+        delivery = get_notification_delivery_service(db)
+        await delivery.notify_assignee_of_unblock(
+            task=task,
+            task_id=task_id,
+            from_agent_id=agent.agent_id,
+            assignee_agent_id=require_uuid(assigned_agent_id),
         )
-        db.add(notification)
-        await db.flush()
-
-        # Deliver notification via Redis Streams
-        from roboco.services.notification_delivery import (
-            get_notification_delivery_service,
-        )
-
-        delivery_service = get_notification_delivery_service(db)
-        await delivery_service.deliver(require_uuid(notification.id))
 
     await db.commit()
     return task_to_response(task)
@@ -1025,10 +1004,13 @@ async def submit_for_qa(
             detail="Only the assigned agent can submit for QA",
         )
 
-    # Field-level gates: dev must have committed, pushed (PR created),
-    # reported progress, and self-verified before QA review can be
-    # requested. Prevents QA from reviewing work that isn't actually
-    # reviewable (no PR, no commits, no observable progress).
+    # Field-level gates: dev must have committed, pushed, opened a PR,
+    # reported progress, and self-verified before QA can review. PR is
+    # REQUIRED at this stage — QA reviews on GitHub, not in a raw
+    # workspace diff. Without the pre-QA PR gate, the system falls into
+    # needless QA-fail → dev-creates-PR-in-revision cycles (pure token
+    # burn). A legitimate QA-fail (actual defect) is fine; a PR-missing
+    # fail is always avoidable.
     if not task.self_verified:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
@@ -1124,11 +1106,10 @@ async def pass_qa(
             detail="Cannot QA review your own task",
         )
 
-    # Field-level gate: PR must exist before QA can pass. Defense in
-    # depth — submit-qa also blocks the no-PR case, but this catches
-    # anything that bypassed that route (e.g. legacy task that reached
-    # awaiting_qa earlier). If the PR disappeared since submit-qa, the
-    # right action is fail-qa with an explanation.
+    # Defense-in-depth PR gate (submit_for_qa already blocks the no-PR
+    # case). If a task reaches awaiting_qa without a PR for any reason
+    # (legacy task, direct status manipulation), fail-qa with the note
+    # below is the right move — don't silently pass.
     if task.pr_number is None:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
@@ -1138,6 +1119,7 @@ async def pass_qa(
                 "dev must push and open PR') so the dev fixes it."
             ),
         )
+
     # QA pass requires notes summarizing what was verified; without
     # these, the dev can't learn from the review and the audit trail is
     # empty.
@@ -1205,26 +1187,10 @@ async def fail_qa(
     return task_to_response(task)
 
 
-@router.post("/{task_id}/docs-complete", response_model=TaskResponse)
-async def docs_complete(
-    task_id: UUID,
-    db: DbSession,
-    agent: CurrentAgentContext,
-    data: QANotes | None = None,
-) -> TaskResponse:
-    """Mark documentation as complete (documenter only).
-
-    Transitions task from awaiting_documentation to awaiting_pm_review.
-    The Cell PM will then review and complete the task.
-    """
-    service = get_task_service(db)
-    task = await service.get(task_id)
-    if not task:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND, detail="Task not found"
-        )
-
-    # Only documenter role can mark docs complete
+async def _assert_docs_complete_allowed(
+    agent: AgentContext, task: TaskTable, task_id: UUID, data: QANotes | None
+) -> str:
+    """Verify docs_complete preconditions; return the notes payload."""
     if agent.role != AgentRole.DOCUMENTER:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
@@ -1258,8 +1224,30 @@ async def docs_complete(
                 "Use roboco_task_docs_complete(notes='...')."
             ),
         )
+    return data.notes
 
-    doc_notes = data.notes
+
+@router.post("/{task_id}/docs-complete", response_model=TaskResponse)
+async def docs_complete(
+    task_id: UUID,
+    db: DbSession,
+    agent: CurrentAgentContext,
+    data: QANotes | None = None,
+) -> TaskResponse:
+    """Mark documentation as complete (documenter only).
+
+    Transitions task from awaiting_documentation to awaiting_pm_review.
+    The Cell PM will then review and complete the task.
+    """
+    service = get_task_service(db)
+    task = await service.get(task_id)
+    if not task:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="Task not found"
+        )
+
+    doc_notes = await _assert_docs_complete_allowed(agent, task, task_id, data)
+
     task = await service.docs_complete(task_id, doc_notes)
     if not task:
         raise HTTPException(
@@ -1267,51 +1255,10 @@ async def docs_complete(
             detail="Cannot mark docs complete - invalid status for documenter workflow",
         )
 
-    # Assign to cell PM and notify
-    agent_record = await db.execute(
-        select(AgentTable).where(AgentTable.id == agent.agent_id)
+    delivery = get_notification_delivery_service(db)
+    await delivery.notify_pm_of_docs_complete(
+        task=task, task_id=task_id, submitter_agent_id=agent.agent_id
     )
-    agent_row = agent_record.scalar_one_or_none()
-    agent_slug = agent_row.slug if agent_row else None
-
-    target_pm_slug = None
-    if agent_slug:
-        target_pm_slug = get_pm_for_agent(agent_slug)
-    if not target_pm_slug and task.team:
-        target_pm_slug = get_pm_for_team(task.team.value)
-
-    if target_pm_slug:
-        pm_result = await db.execute(
-            select(AgentTable).where(AgentTable.slug == target_pm_slug)
-        )
-        pm_agent = pm_result.scalar_one_or_none()
-        if pm_agent:
-            task.assigned_to = pm_agent.id
-
-            # Notify PM
-            notification = NotificationTable(
-                type="task_assignment",
-                priority="normal",
-                from_agent=agent.agent_id,
-                to_agents=[pm_agent.id],
-                subject=f"Documentation complete: {task.title or 'Unknown task'}",
-                body=(
-                    f"Task {task_id} documentation is complete and ready "
-                    "for final review.\n\nPlease review and complete the task."
-                ),
-                related_task_id=task_id,
-                requires_ack=False,
-            )
-            db.add(notification)
-            await db.flush()
-
-            from roboco.services.notification_delivery import (
-                get_notification_delivery_service,
-            )
-
-            delivery_service = get_notification_delivery_service(db)
-            await delivery_service.deliver(require_uuid(notification.id))
-
     await db.commit()
     return task_to_response(task)
 
@@ -1352,54 +1299,102 @@ async def submit_for_pm_review(
             detail="Cannot submit for PM review - task not in progress",
         )
 
-    # Assign to cell PM and notify
-    agent_record = await db.execute(
-        select(AgentTable).where(AgentTable.id == agent.agent_id)
+    delivery = get_notification_delivery_service(db)
+    await delivery.notify_pm_of_review_submission(
+        task=task,
+        task_id=task_id,
+        submitter_agent_id=agent.agent_id,
+        notes=notes,
     )
-    agent_row = agent_record.scalar_one_or_none()
-    agent_slug = agent_row.slug if agent_row else None
-
-    target_pm_slug = None
-    if agent_slug:
-        target_pm_slug = get_pm_for_agent(agent_slug)
-    if not target_pm_slug and task.team:
-        target_pm_slug = get_pm_for_team(task.team.value)
-
-    if target_pm_slug:
-        pm_result = await db.execute(
-            select(AgentTable).where(AgentTable.slug == target_pm_slug)
-        )
-        pm_agent = pm_result.scalar_one_or_none()
-        if pm_agent:
-            task.assigned_to = pm_agent.id
-
-            # Notify PM
-            notification = NotificationTable(
-                type="task_assignment",
-                priority="normal",
-                from_agent=agent.agent_id,
-                to_agents=[pm_agent.id],
-                subject=f"Task ready for review: {task.title or 'Unknown task'}",
-                body=(
-                    f"Task {task_id} has been submitted for PM review.\n\n"
-                    f"Notes: {notes or 'None'}\n\n"
-                    "Please review and complete the task."
-                ),
-                related_task_id=task_id,
-                requires_ack=False,
-            )
-            db.add(notification)
-            await db.flush()
-
-            from roboco.services.notification_delivery import (
-                get_notification_delivery_service,
-            )
-
-            delivery_service = get_notification_delivery_service(db)
-            await delivery_service.deliver(require_uuid(notification.id))
-
     await db.commit()
     return task_to_response(task)
+
+
+def _assert_can_complete(
+    permissions: PermissionService, agent: AgentContext, task: TaskTable
+) -> None:
+    """Only PM roles (or CEO) may transition tasks to completed."""
+    can_close = permissions.can_perform_task_action(agent, TaskAction.CLOSE, task.team)
+    if not can_close:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Only PMs can complete tasks",
+        )
+
+    # PM self-approval block: the PM who created the task (kicked it
+    # off) cannot also sign off on its completion at the awaiting_pm_review
+    # stage — that defeats the review gate. CEO is exempt (final
+    # authority); a PM completing their OWN in_progress task is fine
+    # (solo PM work, no review required).
+    if (
+        task.status.value == "awaiting_pm_review"
+        and task.created_by == agent.agent_id
+        and agent.role != AgentRole.CEO
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=(
+                "SELF_APPROVAL: You created this task; a different PM "
+                "must complete it from awaiting_pm_review. Escalate or "
+                "hand off to another PM."
+            ),
+        )
+
+
+def _assert_force_complete_allowed(
+    agent: AgentContext, force_complete: bool, justification: str | None
+) -> None:
+    """`force_with_cancelled` is CEO-only and requires a justification."""
+    if not force_complete:
+        return
+    if agent.role != AgentRole.CEO:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="force_with_cancelled requires CEO approval. "
+            "Only CEO can complete tasks when subtasks are not all completed.",
+        )
+    if not justification:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="force_with_cancelled requires justification",
+        )
+
+
+async def _raise_complete_failure(
+    service: Any, task_id: UUID, original_status: str
+) -> NoReturn:
+    """Explain why a completion attempt failed (never returns)."""
+    refetch = await service.get(task_id)
+    if refetch:
+        descendants = await service.get_all_descendants(task_id)
+        incomplete = [
+            str(d.id)[:8]
+            for d in descendants
+            if d.status.value not in ("completed", "cancelled")
+        ]
+        if incomplete:
+            shown = ", ".join(incomplete[:_MAX_ERR_IDS])
+            extra = (
+                f" (+{len(incomplete) - _MAX_ERR_IDS} more)"
+                if len(incomplete) > _MAX_ERR_IDS
+                else ""
+            )
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"Cannot complete task - {len(incomplete)} subtask(s) "
+                f"still in progress: {shown}{extra}. "
+                "Monitor and help unblock stuck tasks.",
+            )
+        if original_status not in ("awaiting_pm_review", "in_progress"):
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"Cannot complete - status is '{original_status}'. "
+                "Must be 'awaiting_pm_review' or 'in_progress'.",
+            )
+    raise HTTPException(
+        status_code=status.HTTP_400_BAD_REQUEST,
+        detail="Cannot complete task - check task status and subtasks.",
+    )
 
 
 @router.post("/{task_id}/complete", response_model=TaskResponse)
@@ -1427,52 +1422,12 @@ async def complete_task(
             status_code=status.HTTP_404_NOT_FOUND, detail="Task not found"
         )
 
-    # Permission check - only PMs can complete tasks
-    can_close = permissions.can_perform_task_action(agent, TaskAction.CLOSE, task.team)
-    if not can_close:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="Only PMs can complete tasks",
-        )
+    _assert_can_complete(permissions, agent, task)
 
-    # PM self-approval block: the PM who created the task (kicked it
-    # off) cannot also sign off on its completion at the awaiting_pm_review
-    # stage — that defeats the review gate. CEO is exempt (final
-    # authority); a PM completing their OWN in_progress task is fine
-    # (solo PM work, no review required).
-    if (
-        task.status.value == "awaiting_pm_review"
-        and task.created_by == agent.agent_id
-        and agent.role != AgentRole.CEO
-    ):
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail=(
-                "SELF_APPROVAL: You created this task; a different PM "
-                "must complete it from awaiting_pm_review. Escalate or "
-                "hand off to another PM."
-            ),
-        )
-
-    # Extract request data
     force_complete = data.force_with_cancelled if data else False
     justification = data.justification if data else None
+    _assert_force_complete_allowed(agent, force_complete, justification)
 
-    # force_with_cancelled requires CEO role
-    if force_complete:
-        if agent.role != AgentRole.CEO:
-            raise HTTPException(
-                status_code=status.HTTP_403_FORBIDDEN,
-                detail="force_with_cancelled requires CEO approval. "
-                "Only CEO can complete tasks when subtasks are not all completed.",
-            )
-        if not justification:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail="force_with_cancelled requires justification",
-            )
-
-    # Store original task info for error reporting
     original_status = task.status.value if task.status else "unknown"
 
     task = await service.complete(
@@ -1482,42 +1437,7 @@ async def complete_task(
         justification=justification,
     )
     if not task:
-        # Provide specific error based on what blocked completion
-        refetch = await service.get(task_id)
-        if refetch:
-            # Check for incomplete descendants
-            descendants = await service.get_all_descendants(task_id)
-            incomplete = [
-                str(d.id)[:8]
-                for d in descendants
-                if d.status.value not in ("completed", "cancelled")
-            ]
-            max_shown = 5
-            if incomplete:
-                shown = ", ".join(incomplete[:max_shown])
-                extra = (
-                    f" (+{len(incomplete) - max_shown} more)"
-                    if len(incomplete) > max_shown
-                    else ""
-                )
-                raise HTTPException(
-                    status_code=status.HTTP_400_BAD_REQUEST,
-                    detail=f"Cannot complete task - {len(incomplete)} subtask(s) "
-                    f"still in progress: {shown}{extra}. "
-                    "Monitor and help unblock stuck tasks.",
-                )
-            # Check for status issue
-            if original_status not in ("awaiting_pm_review", "in_progress"):
-                raise HTTPException(
-                    status_code=status.HTTP_400_BAD_REQUEST,
-                    detail=f"Cannot complete - status is '{original_status}'. "
-                    "Must be 'awaiting_pm_review' or 'in_progress'.",
-                )
-        # Fallback generic error
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Cannot complete task - check task status and subtasks.",
-        )
+        await _raise_complete_failure(service, task_id, original_status)
     await db.commit()
     return task_to_response(task)
 
@@ -1548,13 +1468,11 @@ async def cancel_task(
             detail="Not authorized to cancel tasks",
         )
 
-    # Append cancellation reason to dev_notes so the audit trail is
-    # durable (the `cancel` service call itself only flips status).
-    stamp = f"[CANCELLED by {agent.role.value}] {data.reason}"
-    task.dev_notes = f"{task.dev_notes}\n{stamp}" if task.dev_notes else stamp
-    await db.flush()
-
-    task = await service.cancel(task_id, agent_role=agent.role.value)
+    task = await service.cancel(
+        task_id,
+        agent_role=agent.role.value,
+        cancellation_note=f"[CANCELLED by {agent.role.value}] {data.reason}",
+    )
     if not task:
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
@@ -1614,6 +1532,75 @@ async def get_awaiting_ceo_approval_tasks(
     return task_list_to_response(tasks)
 
 
+def _assert_escalation_permission(
+    permissions: PermissionService, agent: AgentContext, task: TaskTable
+) -> None:
+    """Only PMs/higher can escalate to CEO."""
+    if not permissions.can_perform_task_action(agent, TaskAction.CLOSE, task.team):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Only PMs can escalate tasks to CEO",
+        )
+
+
+def _assert_escalation_pr_gates(task: TaskTable) -> None:
+    """PR must exist + be confirmed before CEO escalation."""
+    if task.pr_number is None:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=(
+                "NO_PR: Cannot escalate to CEO without an open PR. "
+                "Ensure the PR exists and pr_number is set on the task."
+            ),
+        )
+    if not task.pr_created:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=(
+                "PR_NOT_CONFIRMED: pr_created flag is false. The PR "
+                "handler must confirm the PR exists before escalation."
+            ),
+        )
+
+
+async def _assert_escalation_subtasks_done(service: Any, task_id: UUID) -> None:
+    """Parent task can't escalate while any descendant is still live."""
+    descendants = await service.get_all_descendants(task_id)
+    active_descendants = [
+        d for d in descendants if d.status.value not in ("completed", "cancelled")
+    ]
+    if not active_descendants:
+        return
+    ids_shown = ", ".join(str(d.id)[:8] for d in active_descendants[:_MAX_ERR_IDS])
+    extra = (
+        f" (+{len(active_descendants) - _MAX_ERR_IDS} more)"
+        if len(active_descendants) > _MAX_ERR_IDS
+        else ""
+    )
+    raise HTTPException(
+        status_code=status.HTTP_400_BAD_REQUEST,
+        detail=(
+            f"ACTIVE_SUBTASKS: Cannot escalate while "
+            f"{len(active_descendants)} subtask(s) remain active: "
+            f"{ids_shown}{extra}."
+        ),
+    )
+
+
+def _assert_escalation_notes(data: QANotes | None) -> str:
+    """Escalation notes are mandatory (>= _MIN_NOTES_CHARS)."""
+    if not data or not data.notes or len(data.notes.strip()) < _MIN_NOTES_CHARS:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=(
+                "ESCALATION_NOTES_REQUIRED: Escalation to CEO must "
+                "include notes (>=20 chars) explaining why CEO review "
+                "is needed (scope, risk, breaking-change, etc)."
+            ),
+        )
+    return data.notes
+
+
 @router.post("/{task_id}/escalate-to-ceo", response_model=TaskResponse)
 async def escalate_to_ceo(
     task_id: UUID,
@@ -1636,69 +1623,16 @@ async def escalate_to_ceo(
             status_code=status.HTTP_404_NOT_FOUND, detail="Task not found"
         )
 
-    # Only PM or higher can escalate to CEO
-    can_close = permissions.can_perform_task_action(agent, TaskAction.CLOSE, task.team)
-    if not can_close:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="Only PMs can escalate tasks to CEO",
-        )
-
+    _assert_escalation_permission(permissions, agent, task)
     # PM cannot escalate a task they created to themselves — CEO
     # approval exists as an independent review.  If the creator IS the
     # escalating PM, that's fine (they're asking CEO to review, not
     # approving themselves); the self-approval block lives on the
     # CEO-approve path.  Field gates we DO enforce here:
-    if task.pr_number is None:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=(
-                "NO_PR: Cannot escalate to CEO without an open PR. "
-                "Ensure the PR exists and pr_number is set on the task."
-            ),
-        )
-    if not task.pr_created:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=(
-                "PR_NOT_CONFIRMED: pr_created flag is false. The PR "
-                "handler must confirm the PR exists before escalation."
-            ),
-        )
-    # All descendants must be in a terminal state — you can't escalate
-    # a parent task while its subtasks are still live.
-    descendants = await service.get_all_descendants(task_id)
-    active_descendants = [
-        d for d in descendants if d.status.value not in ("completed", "cancelled")
-    ]
-    if active_descendants:
-        ids_shown = ", ".join(str(d.id)[:8] for d in active_descendants[:_MAX_ERR_IDS])
-        extra = (
-            f" (+{len(active_descendants) - _MAX_ERR_IDS} more)"
-            if len(active_descendants) > _MAX_ERR_IDS
-            else ""
-        )
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=(
-                f"ACTIVE_SUBTASKS: Cannot escalate while "
-                f"{len(active_descendants)} subtask(s) remain active: "
-                f"{ids_shown}{extra}."
-            ),
-        )
-    # Escalation notes are required — CEO needs context on why this
-    # task needs their attention.
-    if not data or not data.notes or len(data.notes.strip()) < _MIN_NOTES_CHARS:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=(
-                "ESCALATION_NOTES_REQUIRED: Escalation to CEO must "
-                "include notes (>=20 chars) explaining why CEO review "
-                "is needed (scope, risk, breaking-change, etc)."
-            ),
-        )
+    _assert_escalation_pr_gates(task)
+    await _assert_escalation_subtasks_done(service, task_id)
+    notes = _assert_escalation_notes(data)
 
-    notes = data.notes
     task = await service.escalate_to_ceo(task_id, agent.role.value, notes)
     if not task:
         raise HTTPException(
@@ -1706,37 +1640,14 @@ async def escalate_to_ceo(
             detail="Cannot escalate to CEO - task must be in awaiting_pm_review status",
         )
 
-    # Notify CEO
-    ceo_result = await db.execute(
-        select(AgentTable).where(AgentTable.role == AgentRole.CEO)
+    delivery = get_notification_delivery_service(db)
+    await delivery.notify_ceo_of_escalation(
+        task=task,
+        task_id=task_id,
+        escalator_agent_id=agent.agent_id,
+        escalator_role=agent.role.value,
+        notes=notes,
     )
-    ceo_agent = ceo_result.scalar_one_or_none()
-    if ceo_agent:
-        notification = NotificationTable(
-            type="task_assignment",
-            priority="high",
-            from_agent=agent.agent_id,
-            to_agents=[ceo_agent.id],
-            subject=f"CEO Approval Required: {task.title or 'Unknown task'}",
-            body=(
-                f"Task {task_id} requires CEO approval for completion.\n\n"
-                f"Escalated by: {agent.role.value}\n"
-                f"Notes: {notes or 'None'}\n\n"
-                "Use /ceo-approve or /ceo-reject to respond."
-            ),
-            related_task_id=task_id,
-            requires_ack=True,
-        )
-        db.add(notification)
-        await db.flush()
-
-        from roboco.services.notification_delivery import (
-            get_notification_delivery_service,
-        )
-
-        delivery_service = get_notification_delivery_service(db)
-        await delivery_service.deliver(require_uuid(notification.id))
-
     await db.commit()
     return task_to_response(task)
 
@@ -1778,32 +1689,19 @@ async def pm_reject(
         )
 
     # Notify the original developer so they pick it back up quickly
-    from roboco.services.task import extract_original_developer
-
     dev_uuid = extract_original_developer(task.quick_context)
     if dev_uuid:
-        notification = NotificationTable(
-            type="task_assignment",
-            priority="high",
-            from_agent=agent.agent_id,
-            to_agents=[UUID(dev_uuid)],
-            subject=f"Rework needed: {task.title or 'Unknown task'}",
-            body=(
-                f"Task {task_id} sent back for rework by {agent.role.value}.\n\n"
-                f"Notes: {notes or 'see pm_reject_notes in task quick_context'}"
+        delivery = get_notification_delivery_service(db)
+        await delivery.notify_developer_of_pm_reject(
+            task=task,
+            task_id=task_id,
+            from_agent_id=agent.agent_id,
+            details=PMRejectDetails(
+                from_role=agent.role.value,
+                developer_agent_id=UUID(dev_uuid),
+                notes=notes,
             ),
-            related_task_id=task_id,
-            requires_ack=True,
         )
-        db.add(notification)
-        await db.flush()
-
-        from roboco.services.notification_delivery import (
-            get_notification_delivery_service,
-        )
-
-        delivery_service = get_notification_delivery_service(db)
-        await delivery_service.deliver(require_uuid(notification.id))
 
     await db.commit()
     return task_to_response(task)
@@ -1880,29 +1778,14 @@ async def ceo_reject_task(
 
     # Notify original developer if reassigned
     if task.assigned_to:
-        notification = NotificationTable(
-            type="task_assignment",
-            priority="high",
-            from_agent=agent.agent_id,
-            to_agents=[task.assigned_to],
-            subject=f"CEO Revision Required: {task.title or 'Unknown task'}",
-            body=(
-                f"Task {task_id} was rejected by CEO and requires revision.\n\n"
-                f"Reason: {data.notes}\n\n"
-                "Please address the feedback and resubmit."
-            ),
-            related_task_id=task_id,
-            requires_ack=True,
+        delivery = get_notification_delivery_service(db)
+        await delivery.notify_assignee_of_ceo_rejection(
+            task=task,
+            task_id=task_id,
+            from_agent_id=agent.agent_id,
+            assignee_agent_id=require_uuid(task.assigned_to),
+            notes=data.notes,
         )
-        db.add(notification)
-        await db.flush()
-
-        from roboco.services.notification_delivery import (
-            get_notification_delivery_service,
-        )
-
-        delivery_service = get_notification_delivery_service(db)
-        await delivery_service.deliver(require_uuid(notification.id))
 
     await db.commit()
     return task_to_response(task)
@@ -1943,100 +1826,51 @@ async def escalate_task(
             status_code=status.HTTP_404_NOT_FOUND, detail="Task not found"
         )
 
-    # Get the agent's slug for escalation chain lookup
-    agent_result = await db.execute(
-        select(AgentTable).where(AgentTable.id == agent.agent_id)
-    )
-    agent_record = agent_result.scalar_one_or_none()
-    if not agent_record:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND, detail="Agent not found"
+    delivery = get_notification_delivery_service(db)
+    try:
+        outcome = await delivery.escalate_and_notify(
+            task=task,
+            task_id=task_id,
+            escalator_agent_id=agent.agent_id,
+            reason=data.reason,
+            explicit_target_slug=data.escalate_to,
         )
+    except EscalationError as e:
+        # Preserve the pre-refactor status-code mapping exactly:
+        #   - missing escalator agent   -> 404 (agent lookup failure)
+        #   - override rejected         -> 403 (chain violation)
+        #   - no chain / target missing -> 400 (validation / config)
+        detail = str(e)
+        if detail.startswith("escalator agent"):
+            http_code = status.HTTP_404_NOT_FOUND
+        elif "Cannot escalate to" in detail:
+            http_code = status.HTTP_403_FORBIDDEN
+        else:
+            http_code = status.HTTP_400_BAD_REQUEST
+        raise HTTPException(status_code=http_code, detail=detail) from e
 
-    # Determine escalation target - MUST follow the escalation chain
-    default_target = get_escalation_target(agent_record.slug)
-    if not default_target:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=f"No escalation target configured for {agent_record.slug}",
-        )
-
-    # If escalate_to is provided, validate it matches the chain target
-    # This prevents bypassing the escalation chain (e.g., dev → CEO)
-    if data.escalate_to and data.escalate_to != default_target:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail=(
-                f"Cannot escalate to {data.escalate_to}. "
-                f"Your escalation target is {default_target}."
-            ),
-        )
-
-    target_slug = default_target
-
-    # Resolve target agent UUID
-    target_result = await db.execute(
-        select(AgentTable).where(AgentTable.slug == target_slug)
+    # BLOCKED (not PENDING) prevents the orchestrator from respawning the
+    # original dev until the PM unblocks. Task state mutations live in
+    # TaskService.apply_escalation — routes never touch task fields directly.
+    await service.apply_escalation(
+        task=task,
+        target_agent_id=outcome.target_agent_id,
+        escalator_slug=outcome.escalator_slug,
+        target_slug=outcome.target_slug,
+        reason=data.reason,
     )
-    target_agent = target_result.scalar_one_or_none()
-    if not target_agent:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=f"Escalation target not found: {target_slug}",
-        )
-
-    # Create escalation notification directly
-    # NOTE: Permission is enforced via get_escalation_target() which constrains
-    # the escalation chain (devs→PM, PM→MainPM, etc.) per agents_config
-    body = f"Task {task_id} escalated by {agent_record.slug}.\n\nReason: {data.reason}"
-    notification = NotificationTable(
-        type="blocker_escalation",
-        priority="high",
-        from_agent=agent.agent_id,
-        to_agents=[target_agent.id],
-        subject=f"Escalation: {task.title or 'Unknown task'}",
-        body=body,
-        related_task_id=task_id,
-        requires_ack=True,
-        read_by=[],
-        acked_by=[],
-    )
-    db.add(notification)
-    await db.flush()
-
-    # Deliver via Redis Streams for real-time notification
-    from roboco.services.notification_delivery import get_notification_delivery_service
-
-    delivery_service = get_notification_delivery_service(db)
-    await delivery_service.deliver(require_uuid(notification.id))
-
-    # CRITICAL FIX: Set task to BLOCKED to stop orchestrator from respawning dev
-    # Previously used PENDING which could still cause respawn loops.
-    # BLOCKED ensures task is truly paused until PM unblocks it.
-    task.assigned_to = target_agent.id
-    task.status = TaskStatus.BLOCKED  # Blocked until PM addresses it
-
-    # Add escalation note for context
-    existing_notes = task.dev_notes or ""
-    escalation_note = (
-        f"\n\n[ESCALATED] From {agent_record.slug} to {target_slug}\n"
-        f"Reason: {data.reason}"
-    )
-    task.dev_notes = existing_notes + escalation_note
-
-    await db.flush()
 
     await db.commit()
 
     msg = (
-        f"Task escalated to {target_slug} and set to BLOCKED. "
+        f"Task escalated to {outcome.target_slug} and set to BLOCKED. "
         f"PM will receive notification and must call roboco_task_unblock() "
         "to provide guidance or reassign."
     )
     return EscalateResponse(
         status="escalated",
         task_id=task_id,
-        escalated_to=target_slug,
+        escalated_to=outcome.target_slug,
         reason=data.reason,
         message=msg,
     )
@@ -2055,6 +1889,31 @@ _REASON_TO_STATUS: dict[SubstituteReason, TaskStatus] = {
     SubstituteReason.MAX_RETRIES: TaskStatus.PENDING,
     SubstituteReason.BLOCKED_EXTERNAL: TaskStatus.BLOCKED,
 }
+
+
+def _parse_substitute_reason(raw: str) -> SubstituteReason:
+    """Validate reason string or raise 400 with the allowed values."""
+    try:
+        return SubstituteReason(raw)
+    except ValueError as e:
+        valid_reasons = [r.value for r in SubstituteReason]
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Invalid reason: {raw}. Valid: {valid_reasons}",
+        ) from e
+
+
+def _substitute_target_status(
+    reason: SubstituteReason, agent: AgentContext
+) -> TaskStatus:
+    """QA/doc `task_complete` routes to PM review; otherwise use the map."""
+    new_status = _REASON_TO_STATUS.get(reason, TaskStatus.PENDING)
+    if reason == SubstituteReason.TASK_COMPLETE and agent.role in (
+        "qa",
+        "documenter",
+    ):
+        new_status = TaskStatus.AWAITING_PM_REVIEW
+    return new_status
 
 
 @router.post("/{task_id}/substitute", response_model=TaskResponse)
@@ -2078,17 +1937,8 @@ async def substitute_task(
     - max_retries: Exceeded retry limit, need fresh perspective
     - blocked_external: Need skills outside your capabilities
     """
-    # Validate reason
-    try:
-        reason = SubstituteReason(data.reason)
-    except ValueError as e:
-        valid_reasons = [r.value for r in SubstituteReason]
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=f"Invalid reason: {data.reason}. Valid: {valid_reasons}",
-        ) from e
+    reason = _parse_substitute_reason(data.reason)
 
-    # Get and validate task
     service = get_task_service(db)
     task = await service.get(task_id)
     if not task:
@@ -2100,40 +1950,19 @@ async def substitute_task(
             detail="You can only substitute out of tasks you own",
         )
 
-    # Determine new status
-    new_status = _REASON_TO_STATUS.get(reason, TaskStatus.PENDING)
-    if reason == SubstituteReason.TASK_COMPLETE and agent.role in ("qa", "documenter"):
-        new_status = TaskStatus.AWAITING_PM_REVIEW
-
-    # Get agent slug for PM lookup
-    agent_result = await db.execute(
-        select(AgentTable).where(AgentTable.id == agent.agent_id)
+    new_status = _substitute_target_status(reason, agent)
+    update_data, target_pm_slug = await service.build_substitute_update(
+        agent_id=agent.agent_id,
+        task=task,
+        new_status=new_status,
+        reason=data.reason,
+        details=data.details,
     )
-    agent_record = agent_result.scalar_one_or_none()
-    agent_slug = agent_record.slug if agent_record else None
 
-    # Build update data
-    update_data: dict[str, Any] = {
-        "status": new_status.value,
-        "dev_notes": f"[SUBSTITUTE] Reason: {reason.value}\n{data.details}",
-        "assigned_to": None,
-    }
-
-    # Handle PM review assignment
-    target_pm_slug = None
-    if new_status == TaskStatus.AWAITING_PM_REVIEW:
-        target_pm_slug, pm_uuid = await resolve_pm_for_substitute(
-            db, agent_slug, task.team
-        )
-        if pm_uuid:
-            update_data["assigned_to"] = pm_uuid
-
-    # Update task
     task = await service.update(task_id, **update_data)
     if not task:
         raise HTTPException(status.HTTP_500_INTERNAL_SERVER_ERROR, "Update failed")
 
-    # Notify PM if needed
     if new_status == TaskStatus.AWAITING_PM_REVIEW and target_pm_slug:
         await notify_pm_for_substitute(
             db,

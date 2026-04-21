@@ -6,13 +6,13 @@ Domain types for the agent orchestrator system.
 
 from dataclasses import dataclass, field
 from datetime import datetime
-from enum import Enum
+from enum import StrEnum
 from pathlib import Path
 from typing import Any
 from uuid import UUID, uuid4
 
 
-class OrchestratorAgentState(str, Enum):
+class OrchestratorAgentState(StrEnum):
     """Agent lifecycle states in the orchestrator."""
 
     OFFLINE = "offline"
@@ -43,6 +43,8 @@ class OrchestratorAgentConfig:
     working_directory: Path | None = None
     # Git context for tasks requiring git workflow
     git_context: SpawnGitContext | None = None
+    # Pre-rendered SessionStart briefing mounted as /app/briefing.md
+    briefing_path: Path | None = None
 
 
 @dataclass
@@ -79,7 +81,7 @@ class WaitingRecord:
 
 # Model mapping for cost optimization
 MODEL_MAP: dict[str, str] = {
-    "opus": "claude-opus-4-7",
+    "opus": "claude-opus-4-6",
     "sonnet": "claude-sonnet-4-6",
     "haiku": "claude-haiku-4-5-20251001",
 }
@@ -91,8 +93,8 @@ ROLE_MODEL_MAP: dict[str, str] = {
     "qa": "sonnet",
     "documenter": "haiku",
     "cell_pm": "sonnet",
-    "main_pm": "sonnet",
-    "auditor": "sonnet",
+    "main_pm": "opus",
+    "auditor": "opus",
     "product_owner": "opus",
     "head_marketing": "opus",
     "ceo": "opus",

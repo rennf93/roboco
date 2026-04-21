@@ -5,12 +5,10 @@ Auditor dashboard and CEO overview endpoints.
 Provides aggregated views, alerts, and reporting.
 """
 
-from datetime import UTC, datetime, timedelta
 from typing import Any
 from uuid import UUID
 
 from fastapi import APIRouter, HTTPException, Query, status
-from sqlalchemy import select
 
 from roboco.api.deps import DbSession
 from roboco.api.schemas.dashboard import (
@@ -24,8 +22,7 @@ from roboco.api.schemas.dashboard import (
     FlagSeverity,
     TeamHealth,
 )
-from roboco.db.tables import AgentTable, MessageTable, TaskTable
-from roboco.models.base import AgentStatus, Team
+from roboco.models.base import Team
 from roboco.models.dashboard import CreateFlagParams
 from roboco.services.dashboard import get_dashboard_service
 from roboco.services.kanban import get_kanban_service
@@ -382,43 +379,9 @@ async def get_all_agent_status(
     db: DbSession,
     team: Team | None = None,
 ) -> dict[str, Any]:
-    """
-    Get status of all agents.
-
-    Returns agent status summary including active, idle, and offline counts.
-    """
-    query = select(AgentTable)
-    if team:
-        query = query.where(AgentTable.team == team)
-
-    result = await db.execute(query)
-    agents = result.scalars().all()
-
-    # Group by status
-    status_counts = {agent_status.value: 0 for agent_status in AgentStatus}
-    agent_list = []
-
-    for agent in agents:
-        agent_status = agent.status or AgentStatus.IDLE
-        status_counts[agent_status.value] = status_counts.get(agent_status.value, 0) + 1
-        agent_list.append(
-            {
-                "id": str(agent.id),
-                "name": agent.name,
-                "role": agent.role.value,
-                "team": agent.team.value if agent.team else None,
-                "status": agent_status.value,
-                "current_task_id": str(agent.current_task_id)
-                if agent.current_task_id
-                else None,
-            }
-        )
-
-    return {
-        "total": len(agents),
-        "by_status": status_counts,
-        "agents": agent_list,
-    }
+    """Return agent-status summary (counts + per-agent snapshot)."""
+    dashboard = get_dashboard_service(db)
+    return await dashboard.get_all_agent_status(team)
 
 
 # =============================================================================
@@ -432,68 +395,9 @@ async def get_recent_activity(
     hours: int = Query(default=24, ge=1, le=168),
     limit: int = Query(default=50, ge=1, le=200),
 ) -> dict[str, Any]:
-    """
-    Get recent activity across channels.
-
-    Returns recent messages and task updates for dashboard feed.
-    """
-    since = datetime.now(UTC) - timedelta(hours=hours)
-
-    # Get recent messages
-    message_result = await db.execute(
-        select(MessageTable)
-        .where(MessageTable.timestamp >= since)
-        .order_by(MessageTable.timestamp.desc())
-        .limit(limit)
-    )
-    messages = message_result.scalars().all()
-
-    # Get recent task updates
-    task_result = await db.execute(
-        select(TaskTable)
-        .where(TaskTable.updated_at >= since)
-        .order_by(TaskTable.updated_at.desc())
-        .limit(limit)
-    )
-    tasks = task_result.scalars().all()
-
-    activity_feed = []
-
-    # Add messages to feed
-    for msg in messages:
-        activity_feed.append(
-            {
-                "type": "message",
-                "timestamp": msg.timestamp.isoformat(),
-                "agent_id": str(msg.agent_id),
-                "channel_id": str(msg.channel_id),
-                "content_preview": msg.content[:100] if msg.content else "",
-                "message_type": msg.type.value,
-            }
-        )
-
-    # Add task updates to feed
-    for task in tasks:
-        activity_feed.append(
-            {
-                "type": "task_update",
-                "timestamp": task.updated_at.isoformat()
-                if task.updated_at
-                else task.created_at.isoformat(),
-                "task_id": str(task.id),
-                "title": task.title,
-                "status": task.status.value,
-                "team": task.team.value if task.team else "",
-            }
-        )
-
-    # Sort by timestamp
-    activity_feed.sort(key=lambda x: x["timestamp"], reverse=True)
-
-    return {
-        "period_hours": hours,
-        "activity": activity_feed[:limit],
-    }
+    """Return recent messages + task updates for the dashboard feed."""
+    dashboard = get_dashboard_service(db)
+    return await dashboard.get_recent_activity(hours=hours, limit=limit)
 
 
 @router.get("/ceo/blockers")

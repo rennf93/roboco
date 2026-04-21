@@ -11,7 +11,8 @@ Implements the communication model.
 """
 
 import asyncio
-from datetime import UTC, datetime
+from dataclasses import dataclass
+from datetime import UTC, datetime, timedelta
 from typing import Any, ClassVar, cast
 from uuid import UUID
 
@@ -47,6 +48,26 @@ from roboco.models.session import (
 )
 from roboco.services.base import BaseService, ConflictError, NotFoundError
 from roboco.utils.converters import require_uuid, to_python_uuid
+
+
+@dataclass(frozen=True)
+class ApiSessionCreate:
+    """Service-side view of the API's session-create request.
+
+    Keeps api/schemas types from leaking into the service layer; routes
+    translate their pydantic model into this dataclass at the boundary.
+    """
+
+    group_id: UUID
+    max_time_window_minutes: int | None
+    max_message_count: int | None
+    max_content_length: int | None
+    timeout_seconds: int | None
+
+
+def _minutes_to_timedelta(value: int | None) -> timedelta | None:
+    return timedelta(minutes=value) if value is not None else None
+
 
 # =============================================================================
 # MESSAGING SERVICE
@@ -128,6 +149,118 @@ class MessagingService(BaseService):
             select(ChannelTable).where(ChannelTable.id == channel_id)
         )
         return result.scalar_one_or_none()
+
+    async def list_channels_paginated(
+        self,
+        *,
+        accessible_slugs: list[str],
+        include_archived: bool,
+        page: int,
+        page_size: int,
+    ) -> tuple[list[ChannelTable], int]:
+        """Return (channels, total) for channels filtered to `accessible_slugs`.
+
+        Two queries so the route can expose an accurate total even when
+        pagination clips the window. Route passes the slug set it computed
+        from `PermissionService`; the DB work stays here.
+        """
+        base = select(ChannelTable).where(ChannelTable.slug.in_(accessible_slugs))
+        if not include_archived:
+            base = base.where(ChannelTable.is_archived.is_(False))
+
+        from sqlalchemy import func
+
+        count_query = select(func.count(ChannelTable.id)).where(
+            ChannelTable.slug.in_(accessible_slugs)
+        )
+        if not include_archived:
+            count_query = count_query.where(ChannelTable.is_archived.is_(False))
+        count_result = await self.session.execute(count_query)
+        total = count_result.scalar() or 0
+
+        offset = (page - 1) * page_size
+        base = base.order_by(ChannelTable.name).offset(offset).limit(page_size)
+        result = await self.session.execute(base)
+        return list(result.scalars().all()), total
+
+    async def get_channel_with_groups_or_raise(self, channel_id: UUID) -> ChannelTable:
+        """Return a channel with its groups eager-loaded; raise if missing."""
+        result = await self.session.execute(
+            select(ChannelTable)
+            .where(ChannelTable.id == channel_id)
+            .options(selectinload(ChannelTable.groups))
+        )
+        channel = result.scalar_one_or_none()
+        if not channel:
+            raise NotFoundError(resource_type="Channel", resource_id=str(channel_id))
+        return channel
+
+    async def get_channel_or_raise(self, channel_id: UUID) -> ChannelTable:
+        """Return a channel by id or raise NotFoundError."""
+        channel = await self.get_channel(channel_id)
+        if not channel:
+            raise NotFoundError(resource_type="Channel", resource_id=str(channel_id))
+        return channel
+
+    async def update_channel_fields(
+        self,
+        *,
+        channel_id: UUID,
+        fields: dict[str, Any],
+    ) -> ChannelTable:
+        """Apply a subset of fields to a channel.
+
+        Keeps the setattr loop out of the route module. `fields` is a plain
+        dict of column → new value; unknown keys are ignored to keep the
+        service tolerant of incidental extras on the API side.
+        """
+        channel = await self.get_channel_or_raise(channel_id)
+        # Mirrors the pre-refactor CHANNEL_UPDATE_FIELDS allowlist. Membership
+        # (members/writers/silent_observers) is mutated via the dedicated
+        # add/remove endpoints, not via PATCH.
+        allowed = {
+            "name",
+            "description",
+            "topic",
+            "is_archived",
+            "allow_threads",
+            "allow_reactions",
+            "message_retention_days",
+            "max_message_length",
+        }
+        for key, value in fields.items():
+            if value is None or key not in allowed:
+                continue
+            setattr(channel, key, value)
+        await self.session.flush()
+        return channel
+
+    async def add_channel_member_or_raise(
+        self,
+        *,
+        channel_id: UUID,
+        member_id: UUID,
+        can_write: bool,
+    ) -> None:
+        """Add a member (and optionally writer) to a channel; 404 if missing."""
+        channel = await self.get_channel_or_raise(channel_id)
+        if member_id not in channel.members:
+            channel.members = [*channel.members, member_id]
+        if can_write and member_id not in channel.writers:
+            channel.writers = [*channel.writers, member_id]
+        await self.session.flush()
+
+    async def remove_channel_member_or_raise(
+        self,
+        *,
+        channel_id: UUID,
+        member_id: UUID,
+    ) -> None:
+        """Remove a member (and any writer entry) from a channel; 404 if missing."""
+        channel = await self.get_channel_or_raise(channel_id)
+        channel.members = [m for m in channel.members if m != member_id]
+        channel.writers = [w for w in channel.writers if w != member_id]
+        await self.session.flush()
 
     async def get_channel_by_slug(self, slug: str) -> ChannelTable | None:
         """Get a channel by slug."""
@@ -468,6 +601,154 @@ class MessagingService(BaseService):
         )
         return session
 
+    async def list_group_sessions_for_agent(
+        self,
+        *,
+        group_id: UUID,
+        agent_id: UUID,
+        status_filter: SessionStatus | None,
+        limit: int,
+    ) -> list[SessionTable]:
+        """Return sessions visible to `agent_id` within `group_id`.
+
+        Auth: agent must be a group-channel member/observer, or hold a
+        privileged role. Raises NotFoundError if the group doesn't exist
+        and PermissionError if the agent can't read it. Task-links are
+        eager-loaded so the route can render them without extra queries.
+        """
+        from roboco.services.permissions import has_privileged_access
+
+        group_result = await self.session.execute(
+            select(GroupTable)
+            .where(GroupTable.id == group_id)
+            .options(selectinload(GroupTable.channel))
+        )
+        group = group_result.scalar_one_or_none()
+        if not group:
+            raise NotFoundError(resource_type="Group", resource_id=str(group_id))
+
+        channel = group.channel
+        allowed = (
+            agent_id in channel.members
+            or agent_id in channel.silent_observers
+            or await has_privileged_access(self.session, agent_id)
+        )
+        if not allowed:
+            raise PermissionError("You don't have access to this group")
+
+        query = (
+            select(SessionTable)
+            .where(SessionTable.group_id == group_id)
+            .options(
+                selectinload(SessionTable.task_links).selectinload(
+                    SessionTaskTable.task
+                )
+            )
+        )
+        if status_filter is not None:
+            query = query.where(SessionTable.status == status_filter)
+        query = query.order_by(SessionTable.started_at.desc()).limit(limit)
+
+        result = await self.session.execute(query)
+        return list(result.scalars().all())
+
+    async def create_session_with_access_check(
+        self,
+        *,
+        agent_id: UUID,
+        request: "ApiSessionCreate",
+    ) -> SessionTable:
+        """Create a session after verifying the agent may write to the group's channel.
+
+        Mirrors the old route-inline logic: fetches the group + channel,
+        rejects if the agent isn't in `channel.writers` (unless privileged),
+        closes any existing ACTIVE session, then creates the new one. Uses
+        primitive fields (wrapped in `ApiSessionCreate`) so api/schemas types
+        never leak into service signatures.
+        """
+        from roboco.services.permissions import has_privileged_access
+
+        group_result = await self.session.execute(
+            select(GroupTable)
+            .where(GroupTable.id == request.group_id)
+            .options(selectinload(GroupTable.channel))
+        )
+        group = group_result.scalar_one_or_none()
+        if not group:
+            raise NotFoundError(
+                resource_type="Group", resource_id=str(request.group_id)
+            )
+
+        channel = group.channel
+        may_write = agent_id in channel.writers or await has_privileged_access(
+            self.session, agent_id
+        )
+        if not may_write:
+            raise PermissionError("You don't have write access to this group")
+
+        active_result = await self.session.execute(
+            select(SessionTable).where(
+                SessionTable.group_id == request.group_id,
+                SessionTable.status == SessionStatus.ACTIVE,
+            )
+        )
+        active = active_result.scalar_one_or_none()
+        if active:
+            active.status = SessionStatus.CLOSED
+            active.closed_at = datetime.now(UTC)
+
+        new_session = SessionTable(
+            group_id=request.group_id,
+            max_time_window=(_minutes_to_timedelta(request.max_time_window_minutes)),
+            max_message_count=request.max_message_count,
+            max_content_length=request.max_content_length,
+            timeout_seconds=request.timeout_seconds,
+            status=SessionStatus.ACTIVE,
+        )
+        self.session.add(new_session)
+        group.active_session_id = new_session.id
+        group.total_sessions += 1
+        await self.session.flush()
+        return new_session
+
+    async def close_session_or_raise(self, session_id: UUID) -> SessionTable:
+        """Close an active session; raise if missing or already closed.
+
+        Routes call this instead of reading/mutating session state directly.
+        """
+        session_row = await self.get_session(session_id)
+        if not session_row:
+            raise NotFoundError(resource_type="Session", resource_id=str(session_id))
+        if session_row.status != SessionStatus.ACTIVE:
+            raise ValueError("Session is not active")
+
+        session_row.status = SessionStatus.CLOSED
+        session_row.closed_at = datetime.now(UTC)
+
+        group = await self.get_group(cast("UUID", session_row.group_id))
+        if group and group.active_session_id == session_id:
+            group.active_session_id = None
+
+        await self.session.flush()
+        return session_row
+
+    async def get_session_or_raise(self, session_id: UUID) -> SessionTable:
+        """Return a session or raise NotFoundError.
+
+        Keeps `None`-handling out of route modules.
+        """
+        session_row = await self.get_session(session_id)
+        if not session_row:
+            raise NotFoundError(resource_type="Session", resource_id=str(session_id))
+        return session_row
+
+    async def get_channel_by_slug_or_raise(self, slug: str) -> ChannelTable:
+        """Return a channel by slug or raise NotFoundError."""
+        channel = await self.get_channel_by_slug(slug)
+        if not channel:
+            raise NotFoundError(resource_type="Channel", resource_id=slug)
+        return channel
+
     async def get_or_create_active_session(
         self,
         group_id: UUID,
@@ -733,6 +1014,72 @@ class MessagingService(BaseService):
 
         return None
 
+    async def _resolve_group_for_session(
+        self,
+        req: SessionForTasksCreate,
+        channel: ChannelTable,
+    ) -> GroupTable:
+        """Resolve the group for a new session: explicit > inherited > first."""
+        if req.group_id:
+            group_result = await self.session.execute(
+                select(GroupTable).where(GroupTable.id == req.group_id)
+            )
+            group = group_result.scalar_one_or_none()
+            if not group:
+                raise NotFoundError(f"Group '{req.group_id}' not found")
+            return group
+
+        group = await self._resolve_group_from_parent_tasks(req.task_ids)
+        if group:
+            return group
+
+        groups = await self.list_groups_in_channel(cast("UUID", channel.id))
+        if not groups:
+            raise ValueError(
+                f"No groups found in channel '{req.channel_slug}'. "
+                "Create a group first or specify group_id."
+            )
+        fallback_group = groups[0]
+        self.log.warning(
+            "Session created without explicit group, using first group",
+            channel_slug=req.channel_slug,
+            group_name=fallback_group.name,
+            task_ids=[str(t) for t in req.task_ids],
+        )
+        return fallback_group
+
+    @staticmethod
+    def _build_session_request(
+        req: SessionForTasksCreate, group: GroupTable
+    ) -> SessionCreateRequest:
+        """Build a SessionCreateRequest from tasks-create input."""
+        return SessionCreateRequest(
+            group_id=cast("UUID", group.id),
+            max_message_count=(req.config.max_message_count if req.config else None),
+            max_content_length=(req.config.max_content_length if req.config else None),
+            timeout_seconds=(req.config.timeout_seconds if req.config else 300),
+            scope=req.scope,
+        )
+
+    async def _link_tasks_to_session(
+        self,
+        session: SessionTable,
+        req: SessionForTasksCreate,
+        pm_agent_id: UUID,
+    ) -> list[SessionTaskTable]:
+        """Attach each task in ``req`` to the newly-created session."""
+        links: list[SessionTaskTable] = []
+        for i, task_id in enumerate(req.task_ids):
+            link = await self.link_session_to_task(
+                session_id=cast("UUID", session.id),
+                task_id=task_id,
+                added_by=pm_agent_id,
+                is_primary=i == 0,
+                relationship_type=req.relationship_type,
+            )
+            links.append(link)
+        return links
+
     async def create_session_for_tasks(
         self,
         req: SessionForTasksCreate,
@@ -754,65 +1101,13 @@ class MessagingService(BaseService):
             NotFoundError: If channel not found
             ValueError: If no groups found in channel
         """
-        # Get channel
         channel = await self.get_channel_by_slug(req.channel_slug)
         if not channel:
             raise NotFoundError(f"Channel '{req.channel_slug}' not found")
 
-        # Resolve group: explicit > inherited from parent > fallback to first
-        group: GroupTable | None = None
-
-        if req.group_id:
-            # Explicit group_id provided
-            group_result = await self.session.execute(
-                select(GroupTable).where(GroupTable.id == req.group_id)
-            )
-            group = group_result.scalar_one_or_none()
-            if not group:
-                raise NotFoundError(f"Group '{req.group_id}' not found")
-        else:
-            # Try to inherit group from parent task's session
-            group = await self._resolve_group_from_parent_tasks(req.task_ids)
-
-            if not group:
-                # Fall back to first group in channel (last resort)
-                groups = await self.list_groups_in_channel(cast("UUID", channel.id))
-                if not groups:
-                    raise ValueError(
-                        f"No groups found in channel '{req.channel_slug}'. "
-                        "Create a group first or specify group_id."
-                    )
-                group = groups[0]
-                self.log.warning(
-                    "Session created without explicit group, using first group",
-                    channel_slug=req.channel_slug,
-                    group_name=group.name,
-                    task_ids=[str(t) for t in req.task_ids],
-                )
-
-        # Create session with config and scope
-        session_req = SessionCreateRequest(
-            group_id=cast("UUID", group.id),
-            max_message_count=(req.config.max_message_count if req.config else None),
-            max_content_length=(req.config.max_content_length if req.config else None),
-            timeout_seconds=(req.config.timeout_seconds if req.config else 300),
-            scope=req.scope,
-        )
-        session = await self.create_session(session_req)
-
-        # Link all tasks
-        links: list[SessionTaskTable] = []
-        for i, task_id in enumerate(req.task_ids):
-            # First task is primary
-            is_primary = i == 0
-            link = await self.link_session_to_task(
-                session_id=cast("UUID", session.id),
-                task_id=task_id,
-                added_by=pm_agent_id,
-                is_primary=is_primary,
-                relationship_type=req.relationship_type,
-            )
-            links.append(link)
+        group = await self._resolve_group_for_session(req, channel)
+        session = await self.create_session(self._build_session_request(req, group))
+        links = await self._link_tasks_to_session(session, req, pm_agent_id)
 
         self.log.info(
             "Session created for tasks",
@@ -1046,6 +1341,104 @@ class MessagingService(BaseService):
             type=req.message_type.value,
         )
         return message
+
+    async def get_message_or_raise(self, message_id: UUID) -> MessageTable:
+        """Return a message or raise NotFoundError."""
+        message = await self.get_message(message_id)
+        if not message:
+            raise NotFoundError(resource_type="Message", resource_id=str(message_id))
+        return message
+
+    async def list_messages_for_session(
+        self,
+        *,
+        session_id: UUID,
+        before: datetime | None,
+        after: datetime | None,
+        message_type: MessageType | None,
+        limit: int,
+    ) -> tuple[list[MessageTable], bool]:
+        """Session-scoped message list, verifying the session exists first.
+
+        Existing `get_messages` skips the session-existence check — this
+        variant raises NotFoundError when the session is missing so routes
+        can return a clean 404 without issuing their own query.
+        """
+        await self.get_session_or_raise(session_id)
+        return await self.get_messages(
+            session_id,
+            before=before,
+            after=after,
+            message_type=message_type,
+            limit=limit,
+        )
+
+    async def edit_message_or_raise(
+        self,
+        *,
+        message_id: UUID,
+        agent_id: UUID,
+        new_content: str,
+        edit_reason: str | None,
+    ) -> MessageTable:
+        """Edit a message; raise NotFoundError / PermissionError on miss."""
+        message = await self.get_message(message_id)
+        if not message:
+            raise NotFoundError(resource_type="Message", resource_id=str(message_id))
+        if message.agent_id != agent_id:
+            raise PermissionError("Only the author can edit this message")
+
+        edit_entry = {
+            "edited_at": datetime.now(UTC).isoformat(),
+            "previous_content": message.content,
+            "edit_reason": edit_reason,
+        }
+        message.edit_history = [*message.edit_history, edit_entry]
+
+        old_length = message.content_length
+        new_length = len(new_content)
+        delta = new_length - old_length
+        message.content = new_content
+        message.content_length = new_length
+        message.edited_at = datetime.now(UTC)
+
+        session_row = await self.get_session(cast("UUID", message.session_id))
+        if session_row:
+            session_row.total_content_length += delta
+
+        await self.session.flush()
+        self.log.info(
+            "Message edited",
+            message_id=str(message_id),
+            agent_id=str(agent_id),
+        )
+        return message
+
+    async def delete_message_or_raise(
+        self,
+        *,
+        message_id: UUID,
+        agent_id: UUID,
+    ) -> None:
+        """Hard-delete a message; adjust session counters accordingly.
+
+        The soft-delete variant (`delete_message`) is kept for callers that
+        want tombstoned content; this method is the hard-delete path the
+        API exposes.
+        """
+        message = await self.get_message(message_id)
+        if not message:
+            raise NotFoundError(resource_type="Message", resource_id=str(message_id))
+        if message.agent_id != agent_id:
+            raise PermissionError("Only the author can delete this message")
+
+        session_row = await self.get_session(cast("UUID", message.session_id))
+        if session_row:
+            session_row.message_count -= 1
+            session_row.total_content_length -= message.content_length
+
+        await self.session.delete(message)
+        await self.session.flush()
 
     async def get_message(self, message_id: UUID) -> MessageTable | None:
         """Get a message by ID."""

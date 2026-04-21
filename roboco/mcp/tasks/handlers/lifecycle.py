@@ -46,6 +46,26 @@ def _validate_pm_role(agent_id: str, action: str) -> dict[str, Any] | None:
     return None
 
 
+async def _post_docs_complete(
+    client: ApiClient, task_id: str, doc_notes: str | None
+) -> tuple[dict[str, Any] | None, dict[str, Any] | None]:
+    """Send the docs-complete POST and return (response_json, error)."""
+    if doc_notes:
+        docs_resp = await client.post(
+            f"/tasks/{task_id}/docs-complete", json={"notes": doc_notes}
+        )
+    else:
+        docs_resp = await client.post(f"/tasks/{task_id}/docs-complete")
+
+    if not docs_resp.ok:
+        return None, format_error_response(
+            "DOCS_COMPLETE_FAILED",
+            "Failed to mark documentation complete",
+            {"status_code": docs_resp.status_code, "api_error": docs_resp.text},
+        )
+    return docs_resp.json(), None
+
+
 async def handle_docs_complete(
     client: ApiClient, task_id: str, agent_id: str, doc_notes: str | None = None
 ) -> dict[str, Any]:
@@ -56,34 +76,23 @@ async def handle_docs_complete(
     task, error = await fetch_task_or_error(client, task_id)
     if error:
         return error
-    assert task is not None
+    if task is None:
+        raise RuntimeError("Invariant: task must be set")
 
     if error := validate_task_status_in(
         task, DOCUMENTER_WORKFLOW_STATUSES, "mark as docs complete"
     ):
         return error
 
-    # Only send payload if doc_notes provided (QANotes.notes is required)
-    if doc_notes:
-        docs_resp = await client.post(
-            f"/tasks/{task_id}/docs-complete", json={"notes": doc_notes}
-        )
-    else:
-        docs_resp = await client.post(f"/tasks/{task_id}/docs-complete")
+    docs_json, error = await _post_docs_complete(client, task_id, doc_notes)
+    if error or docs_json is None:
+        return error or format_error_response("DOCS_COMPLETE_FAILED", "No response")
 
-    if not docs_resp.ok:
-        return format_error_response(
-            "DOCS_COMPLETE_FAILED",
-            "Failed to mark documentation complete",
-            {"status_code": docs_resp.status_code, "api_error": docs_resp.text},
-        )
-
-    # Determine PM agent based on documenter's team
     team_prefix = agent_id[:2] if agent_id else "be"
     pm_agent = f"{team_prefix}-pm"
 
     return format_task_response(
-        docs_resp.json(),
+        docs_json,
         "AWAITING_PM",
         "Documentation complete! Task is now awaiting PM review.\n"
         "The Cell PM will review and complete the task.\n\n"
@@ -108,6 +117,21 @@ def _is_pm_own_task(task: dict[str, Any], agent_id: str) -> bool:
     )
 
 
+def _collect_incomplete_descendants(
+    descendants: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """Return a summarized list of descendants not yet in a terminal state."""
+    return [
+        {
+            "id": str(task.get("id", "unknown")),
+            "title": task.get("title", "Untitled"),
+            "status": task.get("status") or "unknown",
+        }
+        for task in descendants
+        if task.get("status") not in ("completed", "cancelled")
+    ]
+
+
 async def _check_descendants_completed(
     client: ApiClient, task_id: str
 ) -> dict[str, Any] | None:
@@ -124,32 +148,21 @@ async def _check_descendants_completed(
         if not descendants:
             return None
 
-        # Check for incomplete (not completed, not cancelled)
-        incomplete = [
+        incomplete = _collect_incomplete_descendants(descendants)
+        if not incomplete:
+            return None
+
+        return format_error_response(
+            "INCOMPLETE_DESCENDANTS",
+            f"Cannot complete: {len(incomplete)} descendant(s) still in progress.",
             {
-                "id": str(task.get("id", "unknown")),
-                "title": task.get("title", "Untitled"),
-                "status": task.get("status") or "unknown",
-            }
-            for task in descendants
-            if task.get("status") not in ("completed", "cancelled")
-        ]
-
-        if incomplete:
-            return format_error_response(
-                "INCOMPLETE_DESCENDANTS",
-                f"Cannot complete: {len(incomplete)} descendant(s) still in progress.",
-                {
-                    "incomplete_descendants": incomplete[:10],  # Limit to 10
-                    "guidance": (
-                        "ALL descendants (subtasks, sub-subtasks, etc.) must be "
-                        "COMPLETED or CANCELLED before completing parent."
-                    ),
-                },
-            )
-
-        # All descendants in terminal states (completed/cancelled) - allow completion
-        return None
+                "incomplete_descendants": incomplete[:10],  # Limit to 10
+                "guidance": (
+                    "ALL descendants (subtasks, sub-subtasks, etc.) must be "
+                    "COMPLETED or CANCELLED before completing parent."
+                ),
+            },
+        )
     except Exception:
         return None
 
@@ -189,6 +202,32 @@ def _validate_completion_status(
     )
 
 
+async def _submit_task_completion(
+    client: ApiClient,
+    task_id: str,
+    force_with_cancelled: bool,
+    justification: str | None,
+) -> dict[str, Any]:
+    """POST /tasks/{id}/complete and format success/error response."""
+    payload: dict[str, Any] = {}
+    if force_with_cancelled:
+        payload = {"force_with_cancelled": True, "justification": justification}
+
+    complete_resp = await client.post(f"/tasks/{task_id}/complete", json=payload)
+    if not complete_resp.ok:
+        return format_error_response(
+            "COMPLETE_FAILED",
+            "Failed to complete task",
+            {"status_code": complete_resp.status_code, "api_error": complete_resp.text},
+        )
+
+    return format_task_response(
+        complete_resp.json(),
+        "DONE",
+        "Task completed successfully!\nCall roboco_task_scan for more work.",
+    )
+
+
 async def handle_task_complete(
     client: ApiClient,
     task_id: str,
@@ -212,7 +251,8 @@ async def handle_task_complete(
     task, error = await fetch_task_or_error(client, task_id)
     if error:
         return error
-    assert task is not None
+    if task is None:
+        raise RuntimeError("Invariant: task must be set")
 
     if error := _validate_completion_status(task, agent_id):
         return error
@@ -222,22 +262,8 @@ async def handle_task_complete(
     ):
         return error
 
-    payload: dict[str, Any] = {}
-    if force_with_cancelled:
-        payload = {"force_with_cancelled": True, "justification": justification}
-
-    complete_resp = await client.post(f"/tasks/{task_id}/complete", json=payload)
-    if not complete_resp.ok:
-        return format_error_response(
-            "COMPLETE_FAILED",
-            "Failed to complete task",
-            {"status_code": complete_resp.status_code, "api_error": complete_resp.text},
-        )
-
-    return format_task_response(
-        complete_resp.json(),
-        "DONE",
-        "Task completed successfully!\nCall roboco_task_scan for more work.",
+    return await _submit_task_completion(
+        client, task_id, force_with_cancelled, justification
     )
 
 
@@ -256,6 +282,36 @@ def _validate_ceo_role(agent_id: str) -> dict[str, Any] | None:
             {"your_role": agent_role},
         )
     return None
+
+
+def _require_task_status(
+    task: dict[str, Any], expected: str, action: str
+) -> dict[str, Any] | None:
+    """Return an INVALID_STATE error if the task is not in ``expected`` status."""
+    current_status = task.get("status")
+    if current_status == expected:
+        return None
+    return format_error_response(
+        "INVALID_STATE",
+        f"Cannot {action} - task is '{current_status}', expected '{expected}'.",
+        {"current_status": current_status},
+    )
+
+
+def _reject_if_subtask(task: dict[str, Any], task_id: str) -> dict[str, Any] | None:
+    """Return an error if the task has a parent (cannot escalate subtasks)."""
+    if not task.get("parent_task_id"):
+        return None
+    return format_error_response(
+        "IS_SUBTASK",
+        "Cannot escalate subtask to CEO - only parent tasks allowed.",
+        {
+            "task_id": task_id,
+            "parent_task_id": task.get("parent_task_id"),
+            "guidance": "Escalate the parent task instead.",
+        },
+        hint="roboco_kb_search('parent task escalation')",
+    )
 
 
 async def handle_escalate_to_ceo(
@@ -277,29 +333,14 @@ async def handle_escalate_to_ceo(
     task, error = await fetch_task_or_error(client, task_id)
     if error:
         return error
-    assert task is not None
+    if task is None:
+        raise RuntimeError("Invariant: task must be set")
 
-    current_status = task.get("status")
-    if current_status != "awaiting_pm_review":
-        return format_error_response(
-            "INVALID_STATE",
-            f"Cannot escalate to CEO - task is '{current_status}', "
-            "expected 'awaiting_pm_review'.",
-            {"current_status": current_status},
-        )
+    if error := _require_task_status(task, "awaiting_pm_review", "escalate to CEO"):
+        return error
 
-    # Only parent tasks can be escalated to CEO (not subtasks)
-    if task.get("parent_task_id"):
-        return format_error_response(
-            "IS_SUBTASK",
-            "Cannot escalate subtask to CEO - only parent tasks allowed.",
-            {
-                "task_id": task_id,
-                "parent_task_id": task.get("parent_task_id"),
-                "guidance": "Escalate the parent task instead.",
-            },
-            hint="roboco_kb_search('parent task escalation')",
-        )
+    if error := _reject_if_subtask(task, task_id):
+        return error
 
     payload = {}
     if notes:
@@ -339,16 +380,11 @@ async def handle_pm_reject(
     task, error = await fetch_task_or_error(client, task_id)
     if error:
         return error
-    assert task is not None
+    if task is None:
+        raise RuntimeError("Invariant: task must be set")
 
-    current_status = task.get("status")
-    if current_status != "awaiting_pm_review":
-        return format_error_response(
-            "INVALID_STATE",
-            f"Cannot pm_reject - task is '{current_status}', "
-            "expected 'awaiting_pm_review'.",
-            {"current_status": current_status},
-        )
+    if error := _require_task_status(task, "awaiting_pm_review", "pm_reject"):
+        return error
 
     payload: dict[str, Any] = {}
     if notes:
@@ -386,16 +422,11 @@ async def handle_ceo_approve(
     task, error = await fetch_task_or_error(client, task_id)
     if error:
         return error
-    assert task is not None
+    if task is None:
+        raise RuntimeError("Invariant: task must be set")
 
-    current_status = task.get("status")
-    if current_status != "awaiting_ceo_approval":
-        return format_error_response(
-            "INVALID_STATE",
-            f"Cannot approve - task is '{current_status}', "
-            "expected 'awaiting_ceo_approval'.",
-            {"current_status": current_status},
-        )
+    if error := _require_task_status(task, "awaiting_ceo_approval", "approve"):
+        return error
 
     payload = {}
     if notes:
@@ -439,16 +470,11 @@ async def handle_ceo_reject(
     task, error = await fetch_task_or_error(client, task_id)
     if error:
         return error
-    assert task is not None
+    if task is None:
+        raise RuntimeError("Invariant: task must be set")
 
-    current_status = task.get("status")
-    if current_status != "awaiting_ceo_approval":
-        return format_error_response(
-            "INVALID_STATE",
-            f"Cannot reject - task is '{current_status}', "
-            "expected 'awaiting_ceo_approval'.",
-            {"current_status": current_status},
-        )
+    if error := _require_task_status(task, "awaiting_ceo_approval", "reject"):
+        return error
 
     resp = await client.post(f"/tasks/{task_id}/ceo-reject", json={"notes": reason})
     if not resp.ok:
@@ -458,24 +484,23 @@ async def handle_ceo_reject(
             {"status_code": resp.status_code, "api_error": resp.text},
         )
 
-    # Get the original developer from quick_context to suggest A2A notification
-    quick_context = task.get("quick_context", "")
     from roboco.services.task import extract_original_developer
 
-    original_dev = extract_original_developer(quick_context)
+    original_dev = extract_original_developer(task.get("quick_context", ""))
+    a2a_suggestion = (
+        f"Notify developer immediately (urgent):\n"
+        f"roboco_agent_request('{original_dev}', 'revision', "
+        f"'CEO rejected: {reason[:50]}...', options={{'urgent': True}})"
+        if original_dev
+        else None
+    )
 
     return format_task_response(
         resp.json(),
         "NEEDS_REVISION",
         f"Task rejected and returned for revision.\nReason: {reason}\n"
         "The developer will address feedback and resubmit.",
-        a2a_suggestion=(
-            f"Notify developer immediately (urgent):\n"
-            f"roboco_agent_request('{original_dev}', 'revision', "
-            f"'CEO rejected: {reason[:50]}...', options={{'urgent': True}})"
-        )
-        if original_dev
-        else None,
+        a2a_suggestion=a2a_suggestion,
     )
 
 
@@ -517,23 +542,15 @@ async def handle_submit_pm_review(
     task, error = await fetch_task_or_error(client, task_id)
     if error:
         return error
-    assert task is not None
+    if task is None:
+        raise RuntimeError("Invariant: task must be set")
 
-    # QA agents reviewing dev work must use qa_pass/qa_fail
     if error := _validate_not_qa_on_dev_work(task, agent_id):
         return error
 
-    # Must be in_progress to submit for PM review
-    current_status = task.get("status")
-    if current_status != "in_progress":
-        return format_error_response(
-            "INVALID_STATE",
-            f"Cannot submit for PM review - task is '{current_status}', "
-            "expected 'in_progress'.",
-            {"current_status": current_status},
-        )
+    if error := _require_task_status(task, "in_progress", "submit for PM review"):
+        return error
 
-    # Submit to API
     payload = {}
     if notes:
         payload["notes"] = notes
@@ -606,6 +623,24 @@ def _validate_cancel_reason(reason: str | None) -> dict[str, Any] | None:
     return None
 
 
+_ACTIVE_WORK_STATES = frozenset(
+    {
+        "in_progress",
+        "verifying",
+        "awaiting_qa",
+        "awaiting_documentation",
+        "awaiting_pm_review",
+    }
+)
+
+
+def _is_own_task(assigned_to: Any, agent_id: str) -> bool:
+    """True if ``agent_id`` is the task's assignee (slug or UUID substring)."""
+    if assigned_to == agent_id:
+        return True
+    return isinstance(assigned_to, str) and agent_id in assigned_to
+
+
 def _validate_not_active_work(
     task: dict[str, Any], agent_id: str
 ) -> dict[str, Any] | None:
@@ -617,41 +652,29 @@ def _validate_not_active_work(
     current_status = task.get("status")
     assigned_to = task.get("assigned_to")
 
-    # Allow cancellation of pending/claimed tasks freely (with reason)
     if current_status in ("pending", "claimed"):
         return None
 
-    # If task is in active work states and assigned to someone else,
-    # require the work to be paused/blocked first
-    active_states = {
-        "in_progress",
-        "verifying",
-        "awaiting_qa",
-        "awaiting_documentation",
-        "awaiting_pm_review",
-    }
+    if current_status not in _ACTIVE_WORK_STATES or not assigned_to:
+        return None
 
-    if current_status in active_states and assigned_to:
-        # Check if canceller is NOT the assignee
-        is_own_task = assigned_to == agent_id or (
-            isinstance(assigned_to, str) and agent_id in assigned_to
-        )
-        if not is_own_task:
-            return format_error_response(
-                "ACTIVE_WORK_PROTECTED",
-                f"Cannot cancel task in '{current_status}' - someone is working on it. "
-                "Ask the assignee to pause/block the task first, or use escalation.",
-                {
-                    "assigned_to": assigned_to,
-                    "current_status": current_status,
-                    "alternatives": [
-                        "Ask assignee to roboco_task_pause() or roboco_task_block()",
-                        "Use roboco_task_escalate() to involve higher management",
-                        "Wait for task to be paused/blocked, then cancel",
-                    ],
-                },
-            )
-    return None
+    if _is_own_task(assigned_to, agent_id):
+        return None
+
+    return format_error_response(
+        "ACTIVE_WORK_PROTECTED",
+        f"Cannot cancel task in '{current_status}' - someone is working on it. "
+        "Ask the assignee to pause/block the task first, or use escalation.",
+        {
+            "assigned_to": assigned_to,
+            "current_status": current_status,
+            "alternatives": [
+                "Ask assignee to roboco_task_pause() or roboco_task_block()",
+                "Use roboco_task_escalate() to involve higher management",
+                "Wait for task to be paused/blocked, then cancel",
+            ],
+        },
+    )
 
 
 async def _validate_cancel_request(
@@ -669,7 +692,8 @@ async def _validate_cancel_request(
     task, error = await fetch_task_or_error(client, task_id)
     if error:
         return None, error
-    assert task is not None
+    if task is None:
+        raise RuntimeError("Invariant: task must be set")
 
     if error := _validate_task_cancellable(task):
         return None, error

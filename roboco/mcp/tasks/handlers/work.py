@@ -50,7 +50,8 @@ async def handle_task_plan(
     task, error = await fetch_task_or_error(client, task_id)
     if error:
         return error
-    assert task is not None
+    if task is None:
+        raise RuntimeError("Invariant: task must be set")
 
     if error := await validate_task_ownership(task, agent_id, client):
         return error
@@ -134,7 +135,8 @@ async def handle_task_start(
     task, error = await fetch_task_or_error(client, task_id)
     if error:
         return error
-    assert task is not None
+    if task is None:
+        raise RuntimeError("Invariant: task must be set")
 
     if error := await validate_task_start(task, agent_id, client):
         return error
@@ -209,7 +211,8 @@ async def handle_task_progress(
     task, error = await fetch_task_or_error(client, task_id)
     if error:
         return error
-    assert task is not None
+    if task is None:
+        raise RuntimeError("Invariant: task must be set")
 
     if error := await validate_task_ownership(task, agent_id, client):
         return error

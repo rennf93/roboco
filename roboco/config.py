@@ -239,6 +239,47 @@ class Settings(BaseSettings):
         description="Timeout in seconds for git clone operations",
     )
 
+    # ==========================================================================
+    # Agent Guardrails (per-session budgets, loop detection, SLAs)
+    # ==========================================================================
+    agent_tool_call_warn: int = Field(
+        default=50,
+        ge=1,
+        description="Soft warning threshold for per-session tool calls",
+    )
+    agent_tool_call_halt: int = Field(
+        default=150,
+        ge=1,
+        description="Hard cap for per-session tool calls; orchestrator stops container",
+    )
+    agent_loop_threshold: int = Field(
+        default=3,
+        ge=2,
+        description="Identical tool+args repeats in the window that flag a loop",
+    )
+    agent_loop_window: int = Field(
+        default=10,
+        ge=2,
+        description="How many recent tool calls to inspect for loop detection",
+    )
+    agent_budget_sweep_interval_seconds: int = Field(
+        default=60,
+        ge=5,
+        description="Kill-switch sweep interval for budget-exceeded containers",
+    )
+    agent_stop_attempt_allowance: int = Field(
+        default=1,
+        ge=1,
+        description="Stop-without-terminal attempts before auto-substitute",
+    )
+
+    # Per-(role, state) SLAs for stuck-task sweep; seconds.
+    agent_sla_developer_in_progress: int = Field(default=2 * 3600, ge=60)
+    agent_sla_developer_verifying: int = Field(default=30 * 60, ge=60)
+    agent_sla_qa_claimed: int = Field(default=30 * 60, ge=60)
+    agent_sla_documenter_claimed: int = Field(default=60 * 60, ge=60)
+    agent_sla_cell_pm_claimed: int = Field(default=4 * 3600, ge=60)
+
 
 @lru_cache
 def get_settings() -> Settings:

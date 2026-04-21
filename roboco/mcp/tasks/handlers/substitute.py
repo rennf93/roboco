@@ -158,7 +158,8 @@ async def handle_task_substitute(
     task, error = await fetch_task_or_error(client, task_id)
     if error:
         return error
-    assert task is not None
+    if task is None:
+        raise RuntimeError("Invariant: task must be set")
 
     # Validate request
     if error := await _validate_substitute_request(task, agent_id, reason, client):
@@ -179,7 +180,8 @@ async def handle_task_substitute(
     result, error = await _execute_substitute(client, req)
     if error:
         return error
-    assert result is not None
+    if result is None:
+        raise RuntimeError("Invariant: result must be set")
 
     # Determine next action message
     if substitute_reason == SubstituteReason.TASK_COMPLETE:

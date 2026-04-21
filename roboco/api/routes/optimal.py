@@ -13,7 +13,6 @@ from fastapi import APIRouter, HTTPException, status
 
 from roboco.api.deps import (
     CurrentAgentContext,
-    DbSession,
     PaginationDep,
     PermissionServiceDep,
 )
@@ -630,24 +629,14 @@ async def list_documents(
     index_type: str,
     agent: CurrentAgentContext,
     permissions: PermissionServiceDep,
-    db: DbSession,
     pagination: PaginationDep,
 ) -> DocumentListResponse:
-    """
-    List documents in a specific index.
-
-    Returns indexed documents with their metadata for browsing.
-    """
-    from sqlalchemy import func, select
-
-    from roboco.db.tables import IndexedDocumentTable
-
+    """List documents in a specific index (paginated)."""
     if not permissions.can_perform_kb_action(agent, KBAction.VIEW_STATS):
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Not authorized to view index documents",
         )
-
     try:
         idx_type = IndexType(index_type)
     except ValueError as e:
@@ -656,40 +645,26 @@ async def list_documents(
             detail=f"Invalid index type: {e}",
         ) from e
 
-    # Query the indexed documents table
-    query = (
-        select(IndexedDocumentTable)
-        .where(IndexedDocumentTable.index_type == idx_type.value)
-        .order_by(IndexedDocumentTable.indexed_at.desc())
-        .offset(pagination.offset)
-        .limit(pagination.limit)
+    service = await get_optimal_service()
+    docs, total = await service.list_indexed_documents(
+        index_type=idx_type,
+        offset=pagination.offset,
+        limit=pagination.limit,
     )
-    result = await db.execute(query)
-    docs = result.scalars().all()
-
-    # Get total count
-    count_query = (
-        select(func.count())
-        .select_from(IndexedDocumentTable)
-        .where(IndexedDocumentTable.index_type == idx_type.value)
-    )
-    count_result = await db.execute(count_query)
-    total = count_result.scalar() or 0
-
     return DocumentListResponse(
         documents=[
             DocumentListItem(
-                id=str(doc.id),
-                source=doc.source,
-                indexed_at=doc.indexed_at.isoformat() if doc.indexed_at else "",
+                id=d["id"],
+                source=d["source"],
+                indexed_at=d["indexed_at"],
                 metadata={
-                    "title": doc.title,
-                    "preview": doc.preview,
-                    "chunk_count": doc.chunk_count,
-                    **(doc.extra_data or {}),
+                    "title": d["title"],
+                    "preview": d["preview"],
+                    "chunk_count": d["chunk_count"],
+                    **d["extra_data"],
                 },
             )
-            for doc in docs
+            for d in docs
         ],
         total=total,
         index_type=index_type,
@@ -724,22 +699,11 @@ async def refresh_index(
     service = await get_optimal_service()
 
     # Empty sources = "refresh everything currently registered in this
-    # index". Look up the source list from indexed_documents so the UI's
-    # "Refresh All" button doesn't have to enumerate them client-side.
-    sources = request.sources
-    if not sources:
-        from sqlalchemy import select
-
-        from roboco.db.base import get_db_context
-        from roboco.db.tables import IndexedDocumentTable
-
-        async with get_db_context() as db:
-            rows = await db.execute(
-                select(IndexedDocumentTable.source).where(
-                    IndexedDocumentTable.index_type == request.index_type
-                )
-            )
-            sources = [r[0] for r in rows.all() if r[0]]
+    # index". The service knows how to enumerate them so the UI's
+    # "Refresh All" button doesn't have to list them client-side.
+    sources = request.sources or await service.get_indexed_sources_for(
+        request.index_type
+    )
 
     await service.refresh_index(idx_type, sources)
 
@@ -977,7 +941,9 @@ async def record_error(
     await service.index_error(params)
 
     # Generate error ID from hash
-    error_hash = hashlib.md5(request.error_message.encode()).hexdigest()[:12]
+    error_hash = hashlib.md5(
+        request.error_message.encode(), usedforsecurity=False
+    ).hexdigest()[:12]
 
     return ErrorRecordResponse(
         error_id=f"err-{error_hash}",
@@ -1054,7 +1020,9 @@ async def record_decision(
     await service.index_decision(params)
 
     # Generate decision ID from hash
-    topic_hash = hashlib.md5(request.topic.encode()).hexdigest()[:12]
+    topic_hash = hashlib.md5(request.topic.encode(), usedforsecurity=False).hexdigest()[
+        :12
+    ]
 
     return DecisionRecordResponse(
         decision_id=f"dec-{topic_hash}",

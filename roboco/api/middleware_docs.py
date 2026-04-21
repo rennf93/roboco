@@ -133,6 +133,16 @@ DOCS_PERMISSIONS: Final[dict[str, dict[str, list[str]]]] = {
 # =============================================================================
 
 
+def _strip_path_prefixes(path: str) -> str:
+    """Strip leading slashes and ``app/`` / ``docs/`` prefixes."""
+    path = path.lstrip("/")
+    if path.startswith("app/"):
+        path = path[4:]
+    if path.startswith("docs/"):
+        path = path[5:]
+    return path
+
+
 def _normalize_path(path: str) -> str:
     """Normalize docs path for permission checking.
 
@@ -141,18 +151,10 @@ def _normalize_path(path: str) -> str:
     - docs/standards/coding/python.md -> standards
     - /docs/features/shared/foo.md -> features/shared
     """
-    # Remove leading slashes and /app prefix
-    path = path.lstrip("/")
-    if path.startswith("app/"):
-        path = path[4:]
-    if path.startswith("docs/"):
-        path = path[5:]
-
-    # Return empty string if path is empty
+    path = _strip_path_prefixes(path)
     if not path:
         return ""
 
-    # Get the first 2 components for features/bugs subdirs
     parts = path.split("/")
     if len(parts) >= MIN_NESTED_PATH_PARTS and parts[0] in ("features", "bugs"):
         return f"{parts[0]}/{parts[1]}"
@@ -198,6 +200,25 @@ def _agent_matches_permission(
     return False
 
 
+def _fast_path_access_decision(
+    role: str | None, path_prefix: str, action: str
+) -> bool | None:
+    """Apply fast-path rules before the per-path permission lookup.
+
+    Returns a definitive True/False when the decision is trivial, else None
+    so the caller falls through to per-rule matching.
+    """
+    if not role:
+        return False
+    if role in FULL_ACCESS_ROLES:
+        return True
+    if not path_prefix or path_prefix == "internal":
+        return False
+    if role in READ_ALL_ROLES and action == "read":
+        return True
+    return None
+
+
 def check_docs_access(agent_id: str, path: str, action: str) -> bool:
     """
     Check if an agent can access a docs path.
@@ -210,36 +231,24 @@ def check_docs_access(agent_id: str, path: str, action: str) -> bool:
     Returns:
         True if access is allowed, False otherwise
     """
-    # Resolve to slug and get agent info
     slug = _resolve_to_slug(agent_id)
     role = AGENT_ROLE_MAP.get(slug)
     team = AGENT_TEAM_MAP.get(slug)
 
-    # Unknown agent - deny access
     if not role:
         logger.warning("Unknown agent for docs access check", agent_id=agent_id)
         return False
 
-    # Full access roles bypass all checks
-    if role in FULL_ACCESS_ROLES:
-        return True
-
-    # Normalize and validate path
     path_prefix = _normalize_path(path)
-    if not path_prefix or path_prefix == "internal":
-        return False  # Empty path or internal (CEO only)
+    fast = _fast_path_access_decision(role, path_prefix, action)
+    if fast is not None:
+        return fast
 
-    # Read-all roles can read everything except internal
-    if role in READ_ALL_ROLES and action == "read":
-        return True
-
-    # Get permission rule for this path
     rule = _get_permission_rule(path_prefix)
     if not rule:
         logger.warning("No permission rule for path", path=path, prefix=path_prefix)
         return False
 
-    # Check if agent matches any allowed permission
     return _check_permission_match(slug, role, team, rule.get(action, []))
 
 
@@ -277,6 +286,20 @@ def require_docs_access(agent_id: str, path: str, action: str) -> None:
         )
 
 
+def _path_allowed_for_agent(
+    rule: dict[str, list[str]],
+    slug: str,
+    role: str,
+    team: str | None,
+    action: str,
+) -> bool:
+    """Return True if ``action`` is permitted on a single path rule."""
+    if role in READ_ALL_ROLES and action == "read":
+        return True
+    perms = rule.get(action, [])
+    return any(_agent_matches_permission(slug, role, team, perm) for perm in perms)
+
+
 def get_allowed_docs_paths(agent_id: str, action: str = "read") -> list[str]:
     """
     Get list of docs paths an agent can access.
@@ -295,28 +318,12 @@ def get_allowed_docs_paths(agent_id: str, action: str = "read") -> list[str]:
     if not role:
         return []
 
-    # Full access
     if role in FULL_ACCESS_ROLES:
         return list(DOCS_PERMISSIONS.keys())
 
-    # Build list of allowed paths
-    allowed = []
-    for path_prefix, rule in DOCS_PERMISSIONS.items():
-        # Skip internal for non-CEO
-        if path_prefix == "internal":
-            continue
-
-        # Read-all roles can read everything
-        if role in READ_ALL_ROLES and action == "read":
-            allowed.append(path_prefix)
-            continue
-
-        # Check permission
-        perms = rule.get(action, [])
-        if isinstance(perms, list):
-            for perm in perms:
-                if _agent_matches_permission(slug, role, team, perm):
-                    allowed.append(path_prefix)
-                    break
-
-    return allowed
+    return [
+        path_prefix
+        for path_prefix, rule in DOCS_PERMISSIONS.items()
+        if path_prefix != "internal"
+        and _path_allowed_for_agent(rule, slug, role, team, action)
+    ]

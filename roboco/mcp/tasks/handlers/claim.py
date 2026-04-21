@@ -210,7 +210,8 @@ async def handle_task_claim(
     task, error = await fetch_task_or_error(client, task_id)
     if error:
         return error
-    assert task is not None
+    if task is None:
+        raise RuntimeError("Invariant: task must be set")
 
     # Run all validations
     if error := await _run_claim_validations(client, task, task_id, agent_id):
@@ -220,7 +221,8 @@ async def handle_task_claim(
     claimed_task, error = await _execute_claim(client, task_id, agent_id)
     if error:
         return error
-    assert claimed_task is not None
+    if claimed_task is None:
+        raise RuntimeError("Invariant: claimed_task must be set")
 
     project = None
     if claimed_task.get("project_id"):
@@ -238,62 +240,63 @@ async def handle_task_claim(
     )
 
 
-def _build_claim_guidance(claimed_task: dict, original_task: dict) -> str:
-    """Build context-aware guidance based on task's previous state."""
-    original_status = original_task.get("status", "pending")
-    has_plan = claimed_task.get("plan")
-    qa_notes = claimed_task.get("qa_notes")
-    dev_notes = claimed_task.get("dev_notes")
-    checkpoints = claimed_task.get("checkpoints", [])
-    progress_updates = claimed_task.get("progress_updates", [])
+def _plan_progress_fragment(plan: dict) -> str:
+    """Return 'N/M steps completed' summary from a plan dict."""
+    plan_steps = plan.get("steps", [])
+    completed = sum(1 for s in plan_steps if s.get("completed"))
+    return f"{completed}/{len(plan_steps)}"
 
-    # NEEDS_REVISION: Task was rejected by QA or CEO - READ FEEDBACK FIRST
-    if original_status == "needs_revision":
-        parts = [
-            "⚠️ REVISION REQUIRED - READ EXISTING CONTEXT FIRST!\n",
-            "This task was REJECTED and needs fixes. Before doing anything:\n",
-        ]
-        if qa_notes:
-            parts.append(f"1. READ QA FEEDBACK: {qa_notes[:200]}...\n")
-        if has_plan:
-            plan_steps = has_plan.get("steps", [])
-            completed = sum(1 for s in plan_steps if s.get("completed"))
-            parts.append(
-                f"2. REVIEW EXISTING PLAN: {completed}/{len(plan_steps)} "
-                "steps completed\n"
-            )
-        if dev_notes:
-            parts.append("3. CHECK DEV NOTES for previous work context\n")
-        parts.append(
-            "\nFix the specific issues mentioned, don't restart from scratch.\n"
-            "Call roboco_task_start() to resume work."
-        )
-        return "".join(parts)
 
-    # Task with existing plan (resumed/paused/etc)
+def _revision_guidance(
+    qa_notes: str | None, has_plan: dict | None, dev_notes: str | None
+) -> str:
+    """Guidance for a task resumed after being rejected by QA or CEO."""
+    parts = [
+        "⚠️ REVISION REQUIRED - READ EXISTING CONTEXT FIRST!\n",
+        "This task was REJECTED and needs fixes. Before doing anything:\n",
+    ]
+    if qa_notes:
+        parts.append(f"1. READ QA FEEDBACK: {qa_notes[:200]}...\n")
     if has_plan:
-        plan_steps = has_plan.get("steps", [])
-        completed = sum(1 for s in plan_steps if s.get("completed"))
-        parts = [
-            "📋 EXISTING PLAN FOUND - REVIEW BEFORE CONTINUING!\n",
-            f"Plan progress: {completed}/{len(plan_steps)} steps completed\n",
-        ]
-        if checkpoints:
-            latest_cp = checkpoints[-1]
-            parts.append(f"Last checkpoint: {latest_cp.get('state_summary', 'N/A')}\n")
-        if progress_updates:
-            latest_prog = progress_updates[-1]
-            parts.append(
-                f"Last progress: {latest_prog.get('percentage', 0)}% - "
-                f"{latest_prog.get('message', 'N/A')}\n"
-            )
         parts.append(
-            "\nREVIEW the plan and continue from where work stopped.\n"
-            "Call roboco_task_start() to resume work."
+            f"2. REVIEW EXISTING PLAN: {_plan_progress_fragment(has_plan)} "
+            "steps completed\n"
         )
-        return "".join(parts)
+    if dev_notes:
+        parts.append("3. CHECK DEV NOTES for previous work context\n")
+    parts.append(
+        "\nFix the specific issues mentioned, don't restart from scratch.\n"
+        "Call roboco_task_start() to resume work."
+    )
+    return "".join(parts)
 
-    # Fresh task - no plan yet
+
+def _existing_plan_guidance(
+    plan: dict, checkpoints: list[dict], progress_updates: list[dict]
+) -> str:
+    """Guidance for a resumed task that already has a plan."""
+    parts = [
+        "📋 EXISTING PLAN FOUND - REVIEW BEFORE CONTINUING!\n",
+        f"Plan progress: {_plan_progress_fragment(plan)} steps completed\n",
+    ]
+    if checkpoints:
+        latest_cp = checkpoints[-1]
+        parts.append(f"Last checkpoint: {latest_cp.get('state_summary', 'N/A')}\n")
+    if progress_updates:
+        latest_prog = progress_updates[-1]
+        parts.append(
+            f"Last progress: {latest_prog.get('percentage', 0)}% - "
+            f"{latest_prog.get('message', 'N/A')}\n"
+        )
+    parts.append(
+        "\nREVIEW the plan and continue from where work stopped.\n"
+        "Call roboco_task_start() to resume work."
+    )
+    return "".join(parts)
+
+
+def _fresh_claim_guidance() -> str:
+    """Guidance for a freshly claimed task that has no plan yet."""
     return (
         "Task claimed. NEXT: Call roboco_task_plan() before you can start.\n"
         "1. Read the description and acceptance criteria\n"
@@ -301,6 +304,28 @@ def _build_claim_guidance(claimed_task: dict, original_task: dict) -> str:
         "3. Call roboco_task_plan(task_id, approach, steps)\n"
         "4. Then call roboco_task_start(task_id)"
     )
+
+
+def _build_claim_guidance(claimed_task: dict, original_task: dict) -> str:
+    """Build context-aware guidance based on task's previous state."""
+    original_status = original_task.get("status", "pending")
+    has_plan = claimed_task.get("plan")
+
+    if original_status == "needs_revision":
+        return _revision_guidance(
+            qa_notes=claimed_task.get("qa_notes"),
+            has_plan=has_plan,
+            dev_notes=claimed_task.get("dev_notes"),
+        )
+
+    if has_plan:
+        return _existing_plan_guidance(
+            plan=has_plan,
+            checkpoints=claimed_task.get("checkpoints", []),
+            progress_updates=claimed_task.get("progress_updates", []),
+        )
+
+    return _fresh_claim_guidance()
 
 
 async def handle_task_unclaim(
@@ -321,7 +346,8 @@ async def handle_task_unclaim(
     task, error = await fetch_task_or_error(client, task_id)
     if error:
         return error
-    assert task is not None
+    if task is None:
+        raise RuntimeError("Invariant: task must be set")
 
     # Validate ownership
     if error := await validate_task_ownership(task, agent_id, client):

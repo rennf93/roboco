@@ -71,7 +71,9 @@ class StandardsIndexPlugin(BaseIndexPlugin):
         import hashlib
 
         # Generate rule ID from title if not provided
-        title_hash = hashlib.md5(params.title.encode()).hexdigest()[:8]
+        title_hash = hashlib.md5(
+            params.title.encode(), usedforsecurity=False
+        ).hexdigest()[:8]
         rule_id = f"{params.domain[:3]}-{title_hash}"
 
         # Build searchable content (language/tags in metadata, not text)

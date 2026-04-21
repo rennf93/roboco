@@ -1,16 +1,14 @@
 """
 Message Routes
 
-CRUD operations for messages within sessions.
+CRUD for messages within sessions. Thin HTTP plumbing — all DB state lives
+in `MessagingService`.
 """
 
-from datetime import UTC, datetime
 from typing import Annotated
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, status
-from sqlalchemy import select
-from sqlalchemy.orm import selectinload
 
 from roboco.api.deps import CurrentAgentId, DbSession
 from roboco.api.schemas.messages import (
@@ -22,7 +20,7 @@ from roboco.api.schemas.messages import (
     message_list_to_response,
     message_to_response,
 )
-from roboco.db.tables import MessageTable, SessionTable
+from roboco.services.base import NotFoundError
 from roboco.services.messaging import (
     MessageCreateRequest as ServiceMessageRequest,
 )
@@ -32,10 +30,25 @@ from roboco.services.messaging import (
 
 router = APIRouter()
 
+_MAX_MSG_CHARS = 10_000
 
-# =============================================================================
-# Routes
-# =============================================================================
+
+def _assert_send_content(raw: str | None) -> None:
+    """Validate request content before delegating to the service."""
+    trimmed = (raw or "").strip()
+    if not trimmed:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="EMPTY_MESSAGE: message content cannot be blank.",
+        )
+    if len(raw or "") > _MAX_MSG_CHARS:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=(
+                f"MESSAGE_TOO_LONG: {len(raw or '')} chars exceeds "
+                f"{_MAX_MSG_CHARS}. Split the message or link a doc."
+            ),
+        )
 
 
 @router.get(
@@ -49,49 +62,21 @@ async def list_messages(
     _agent_id: CurrentAgentId,
     params: Annotated[ListMessagesParams, Depends()],
 ) -> MessageListResponse:
-    """List messages in a session."""
-    # Verify session exists
-    session_result = await db.execute(
-        select(SessionTable)
-        .where(SessionTable.id == params.session_id)
-        .options(selectinload(SessionTable.group))
-    )
-    session = session_result.scalar_one_or_none()
-
-    if not session:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Session not found",
+    """List messages in a session (session existence is checked in the service)."""
+    messaging = get_messaging_service(db)
+    try:
+        messages, has_more = await messaging.list_messages_for_session(
+            session_id=params.session_id,
+            before=params.before,
+            after=params.after,
+            message_type=params.type_filter,
+            limit=params.limit,
         )
-
-    # Build query
-    query = select(MessageTable).where(MessageTable.session_id == params.session_id)
-
-    if params.before:
-        query = query.where(MessageTable.timestamp < params.before)
-    if params.after:
-        query = query.where(MessageTable.timestamp > params.after)
-    if params.type_filter:
-        query = query.where(MessageTable.type == params.type_filter)
-
-    # Order by timestamp descending (newest first) and limit
-    query = query.order_by(MessageTable.timestamp.desc()).limit(params.limit + 1)
-
-    result = await db.execute(query)
-    messages = result.scalars().all()
-
-    # Check if there are more messages
-    has_more = len(messages) > params.limit
-    if has_more:
-        messages = messages[: params.limit]
+    except NotFoundError as e:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(e)) from e
 
     items = message_list_to_response(list(messages))
-
-    return MessageListResponse(
-        items=items,
-        total=len(items),
-        has_more=has_more,
-    )
+    return MessageListResponse(items=items, total=len(items), has_more=has_more)
 
 
 @router.get(
@@ -106,15 +91,11 @@ async def get_message(
     message_id: UUID,
 ) -> MessageResponse:
     """Get a message by ID."""
-    result = await db.execute(select(MessageTable).where(MessageTable.id == message_id))
-    message = result.scalar_one_or_none()
-
-    if not message:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Message not found",
-        )
-
+    messaging = get_messaging_service(db)
+    try:
+        message = await messaging.get_message_or_raise(message_id)
+    except NotFoundError as e:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(e)) from e
     return message_to_response(message)
 
 
@@ -130,10 +111,10 @@ async def send_message(
     agent_id: CurrentAgentId,
     data: MessageCreateRequest,
 ) -> MessageResponse:
-    """Send a message to a session using MessagingService."""
-    service = get_messaging_service(db)
+    """Send a message via MessagingService."""
+    _assert_send_content(data.content)
+    messaging = get_messaging_service(db)
 
-    # Convert route request to service request
     service_request = ServiceMessageRequest(
         agent_id=agent_id,
         session_id=data.session_id,
@@ -144,15 +125,12 @@ async def send_message(
         task_id=data.task_id,
         commit_ref=data.commit_ref,
     )
-
     try:
-        message = await service.send_message(service_request)
+        message = await messaging.send_message(service_request)
     except ValueError as e:
         raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=str(e),
+            status_code=status.HTTP_400_BAD_REQUEST, detail=str(e)
         ) from e
-
     return message_to_response(message)
 
 
@@ -168,47 +146,19 @@ async def edit_message(
     message_id: UUID,
     data: MessageEditRequest,
 ) -> MessageResponse:
-    """Edit a message."""
-    result = await db.execute(select(MessageTable).where(MessageTable.id == message_id))
-    message = result.scalar_one_or_none()
-
-    if not message:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Message not found",
+    """Edit a message (author-only)."""
+    messaging = get_messaging_service(db)
+    try:
+        message = await messaging.edit_message_or_raise(
+            message_id=message_id,
+            agent_id=agent_id,
+            new_content=data.content,
+            edit_reason=data.reason,
         )
-
-    # Only author can edit
-    if message.agent_id != agent_id:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="You can only edit your own messages",
-        )
-
-    # Save to edit history
-    edit_record = {
-        "edited_at": datetime.now(UTC).isoformat(),
-        "previous_content": message.content,
-        "edit_reason": data.reason,
-    }
-    message.edit_history = [*message.edit_history, edit_record]
-
-    # Update content
-    old_length = message.content_length
-    message.content = data.content
-    message.content_length = len(data.content)
-    message.edited_at = datetime.now(UTC)
-
-    # Update session content length
-    session_result = await db.execute(
-        select(SessionTable).where(SessionTable.id == message.session_id)
-    )
-    session = session_result.scalar_one_or_none()
-    if session:
-        session.total_content_length += message.content_length - old_length
-
-    await db.flush()
-
+    except NotFoundError as e:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(e)) from e
+    except PermissionError as e:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(e)) from e
     return message_to_response(message, was_edited=True)
 
 
@@ -223,32 +173,13 @@ async def delete_message(
     agent_id: CurrentAgentId,
     message_id: UUID,
 ) -> None:
-    """Delete a message."""
-    result = await db.execute(select(MessageTable).where(MessageTable.id == message_id))
-    message = result.scalar_one_or_none()
-
-    if not message:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Message not found",
+    """Delete a message (author-only)."""
+    messaging = get_messaging_service(db)
+    try:
+        await messaging.delete_message_or_raise(
+            message_id=message_id, agent_id=agent_id
         )
-
-    # Only author can delete
-    if message.agent_id != agent_id:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="You can only delete your own messages",
-        )
-
-    # Update session stats
-    session_result = await db.execute(
-        select(SessionTable).where(SessionTable.id == message.session_id)
-    )
-    session = session_result.scalar_one_or_none()
-    if session:
-        session.message_count -= 1
-        session.total_content_length -= message.content_length
-
-    # Delete
-    await db.delete(message)
-    await db.flush()
+    except NotFoundError as e:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(e)) from e
+    except PermissionError as e:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(e)) from e

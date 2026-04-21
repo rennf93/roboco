@@ -591,6 +591,39 @@ class WorkSessionService(BaseService):
         )
         return work_session
 
+    async def close(
+        self,
+        session_id: UUID,
+        reason: str | None = None,
+    ) -> WorkSessionTable | None:
+        """Close the work session on successful task completion.
+
+        Sets status=COMPLETED so reporting can distinguish merged-
+        successfully work from abandoned work. Idempotent: if the
+        session is already COMPLETED or ABANDONED, returns without
+        changing state.
+        """
+        work_session = await self.get(session_id)
+        if not work_session:
+            return None
+
+        if work_session.status != WorkSessionStatus.ACTIVE:
+            # Already terminal — nothing to do. Not a warning because the
+            # caller may legitimately double-call on retry/idempotency.
+            return work_session
+
+        work_session.status = WorkSessionStatus.COMPLETED
+        work_session.ended_at = datetime.now(UTC)
+        await self.session.flush()
+
+        self.log.info(
+            "Work session closed",
+            session_id=str(session_id),
+            branch=work_session.branch_name,
+            reason=reason,
+        )
+        return work_session
+
 
 # =============================================================================
 # SERVICE FACTORY

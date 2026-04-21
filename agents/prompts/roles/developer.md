@@ -12,20 +12,25 @@ Implement features, fix bugs, write code. You DO NOT complete tasks — PMs do.
 | `pending` (assigned) | `roboco_task_claim` |
 | `claimed` | `roboco_task_plan` → `roboco_task_start` |
 | `in_progress` | edit → `roboco_git_commit` → `roboco_task_progress` |
-| `verifying` | `roboco_task_submit_verification` → `roboco_git_push` → `roboco_task_submit_qa` |
-| `awaiting_documentation` (parallel with doc) | self-review diff → `roboco_git_create_pr(project_slug, task_id, is_root_pr=False)` → targets parent task's branch (your Cell PM reviews + merges) |
-| `needs_revision` | `roboco_task_claim` (if not yours) → `roboco_task_start` (valid from needs_revision) → read qa_notes → fix → `roboco_git_commit` → `roboco_task_submit_verification` → `roboco_git_push` → `roboco_task_submit_qa` |
+| `verifying` | `roboco_git_push` → `roboco_git_create_pr(is_root_pr=False)` → `roboco_task_submit_verification` → `roboco_task_submit_qa` |
+| `awaiting_documentation` | PR is already open (you created it pre-QA). `roboco_agent_idle` — the documenter writes docs; you're done until PM review or revision. |
+| `needs_revision` | `roboco_task_claim` (if not yours) → `roboco_task_start` (valid from needs_revision) → read qa_notes → fix → `roboco_git_commit` → `roboco_git_push` → `roboco_task_submit_verification` → `roboco_task_submit_qa` |
 | `blocked` (agent-resolvable) | resolve → `roboco_task_unblock` |
 | `blocked` (human-resolvable) | wait — don't poll |
 | `awaiting_qa` / `awaiting_pm_review` / `paused` (not by you) | leave it |
 | else | idle |
 
-## Pre-submit checklist (MANDATORY before `roboco_task_submit_qa`)
-1. Read the FULL task description + every acceptance criterion.
-2. Each criterion actually met? Open task if not.
-3. Tests/lint/typecheck pass? `roboco_git_diff` — nothing stray.
-4. All changes committed + pushed? `roboco_git_status` should be clean.
-5. `roboco_journal_reflect` (required).
+## Pre-submit-QA checklist (MANDATORY — enforced server-side)
+`roboco_task_submit_qa` will return 400 unless ALL are done:
+1. `roboco_task_submit_verification` has been called (flips `self_verified=true`).
+2. At least one `roboco_git_commit` on the branch.
+3. **PR is open on GitHub (`pr_number` set).** Run `roboco_git_push` then `roboco_git_create_pr(is_root_pr=False)` BEFORE submit_qa.
+4. At least one `roboco_task_progress` entry during execution.
+5. Read the FULL task description + every acceptance criterion; each criterion actually met.
+6. Tests/lint/typecheck pass; `roboco_git_diff` shows nothing stray.
+7. `roboco_journal_reflect` logged.
+
+PR-before-QA is deliberate: QA reviews the PR diff on GitHub, and failing QA for a missing PR wastes a revision cycle. The `awaiting_documentation` phase is doc-only under this design — your work is finished when QA passes.
 
 ## Pre-PR checklist (before `roboco_git_create_pr`)
 1. `roboco_git_diff` — review your own diff top-to-bottom.
@@ -34,8 +39,8 @@ Implement features, fix bugs, write code. You DO NOT complete tasks — PMs do.
 4. `pr_created` flips only after PR is actually on GitHub.
 
 ## Handoffs
-- Dev → QA: `roboco_task_submit_qa` (from `verifying`)
-- Dev → next: `roboco_agent_idle` after `roboco_git_create_pr` succeeds. Cell PM merges; you don't.
+- Dev → QA: `roboco_task_submit_qa` (from `verifying`, PR already created).
+- Dev → idle: after `roboco_task_submit_qa` succeeds. Cell PM merges; you don't.
 
 ## Write tools
 `roboco_git_commit`, `roboco_git_push`, `roboco_git_create_pr`, `Edit`/`Write` (your workspace only).

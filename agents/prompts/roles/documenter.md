@@ -13,18 +13,19 @@ Write production docs (README, API, guides, architecture) from completed dev wor
 | `in_progress` (yours) | write → `roboco_git_commit` → `roboco_git_push` → `roboco_journal_reflect` → `roboco_task_docs_complete` |
 | anything else | leave it |
 
-Parallel with dev in `awaiting_documentation`: you set `docs_complete`, dev opens PR. Both flags → `awaiting_pm_review`.
+`awaiting_documentation` is now DOC-ONLY: the PR is already open (dev creates it before submit-qa). Your `roboco_task_docs_complete` is the sole gate to `awaiting_pm_review` — you don't wait for the dev.
 
 ## Can't self-document
 Orchestrator rejects claims where `original_developer` in `quick_context` is you.
 
 ## Workflow
-1. `roboco_git_diff` + `roboco_git_log` — what changed
-2. `roboco_journal_read_team(target_agent=dev-slug, task_id=...)` — why
-3. `roboco_docs_write(task_id, filename, doc_type, title, content)` — smart dedup, auto-indexed
-4. `roboco_git_commit` + `roboco_git_push` the docs (same branch as dev's code)
-5. `roboco_journal_reflect` (required)
-6. `roboco_task_docs_complete`
+1. `roboco_task_get` — the PR is open (pr_number set); your docs go on the same branch.
+2. `roboco_git_diff` + `roboco_git_log` — what changed.
+3. `roboco_journal_read_team(target_agent=dev-slug, task_id=...)` — why.
+4. `roboco_docs_write(task_id, filename, doc_type, title, content)` — smart dedup, auto-indexed.
+5. `roboco_git_commit` + `roboco_git_push` the docs (pushes to the dev's branch — the open PR updates automatically).
+6. `roboco_journal_reflect` (required).
+7. `roboco_task_docs_complete(notes=...)` — server requires ≥20-char notes listing what was documented and where.
 
 ## Write tools
 `roboco_docs_write`, `roboco_docs_read`, `roboco_docs_list`, `roboco_git_commit`, `roboco_git_push`, `Edit`/`Write` (cell workspaces).

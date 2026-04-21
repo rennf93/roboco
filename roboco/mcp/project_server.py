@@ -92,19 +92,20 @@ def can_list_workspaces(agent_id: str, project_cell: str | None) -> tuple[bool, 
     return False, "Only PMs can list workspaces"
 
 
+def _is_privileged_role(agent_id: str) -> bool:
+    """Return True when the agent has project-wide visibility."""
+    return is_ceo(agent_id) or get_agent_role(agent_id) in PRIVILEGED_ROLES
+
+
 def filter_projects_by_access(
     agent_id: str, projects: list[dict[str, Any]], cell_filter: str | None
 ) -> list[dict[str, Any]]:
     """Filter projects based on agent access level."""
-    role = get_agent_role(agent_id)
-
-    # Privileged roles see all projects
-    if is_ceo(agent_id) or role in PRIVILEGED_ROLES:
+    if _is_privileged_role(agent_id):
         if cell_filter:
             return [p for p in projects if p.get("assigned_cell") == cell_filter]
         return projects
 
-    # Others see only their cell's projects
     agent_team = get_agent_team(agent_id)
     return [p for p in projects if p.get("assigned_cell") == agent_team]
 
@@ -176,10 +177,10 @@ async def _handle_project_get(client: ApiClient, slug: str) -> dict[str, Any]:
     }
 
 
-async def _handle_project_create(
-    client: ApiClient, agent_id: str, data: ProjectCreateInput
-) -> dict[str, Any]:
-    """Handle project creation."""
+def _validate_project_create_inputs(
+    agent_id: str, data: ProjectCreateInput
+) -> dict[str, Any] | None:
+    """Permission + cell validation for project creation. Returns error or None."""
     if not can_create_projects(agent_id):
         return format_error_response(
             "PERMISSION_DENIED",
@@ -187,7 +188,6 @@ async def _handle_project_create(
             {"role": get_agent_role(agent_id)},
         )
 
-    # Validate cell
     try:
         Team(data.assigned_cell)
     except ValueError:
@@ -195,8 +195,12 @@ async def _handle_project_create(
             "INVALID_CELL",
             f"Invalid cell: {data.assigned_cell}. Must be backend, frontend, ux_ui.",
         )
+    return None
 
-    payload = {
+
+def _build_project_create_payload(data: ProjectCreateInput) -> dict[str, Any]:
+    """Build the /projects POST body from the input model."""
+    return {
         "name": data.name,
         "slug": data.slug,
         "git_url": data.git_url,
@@ -210,8 +214,16 @@ async def _handle_project_create(
         "build_command": data.build_command,
     }
 
+
+async def _handle_project_create(
+    client: ApiClient, agent_id: str, data: ProjectCreateInput
+) -> dict[str, Any]:
+    """Handle project creation."""
+    if error := _validate_project_create_inputs(agent_id, data):
+        return error
+
     try:
-        resp = await client.post("/projects", json=payload)
+        resp = await client.post("/projects", json=_build_project_create_payload(data))
     except Exception as e:
         return format_error_response(
             "CONNECTION_ERROR", f"Failed to connect: {type(e).__name__}"
@@ -265,19 +277,10 @@ async def _fetch_project_for_update(
     return project, None
 
 
-async def _handle_project_update(
-    client: ApiClient, agent_id: str, slug: str, data: ProjectUpdateInput
+async def _send_project_patch(
+    client: ApiClient, slug: str, payload: dict[str, Any]
 ) -> dict[str, Any]:
-    """Handle project update."""
-    _, error = await _fetch_project_for_update(client, agent_id, slug)
-    if error:
-        return error
-
-    # Build update payload (only non-None fields)
-    payload = {k: v for k, v in data.model_dump().items() if v is not None}
-    if not payload:
-        return format_error_response("NO_CHANGES", "No fields to update provided")
-
+    """PATCH /projects/{slug} and format the response."""
     try:
         resp = await client.patch(f"/projects/{slug}", json=payload)
     except Exception as e:
@@ -292,19 +295,32 @@ async def _handle_project_update(
             {"status": resp.status_code, "detail": resp.text},
         )
 
-    updated = resp.json()
     return {
         "status": "updated",
-        "data": updated,
+        "data": resp.json(),
         "guidance": f"Project '{slug}' updated successfully.",
     }
 
 
-async def _handle_workspace_ensure(
-    client: ApiClient, project_slug: str, agent_id: str
+async def _handle_project_update(
+    client: ApiClient, agent_id: str, slug: str, data: ProjectUpdateInput
 ) -> dict[str, Any]:
-    """Handle workspace ensure request."""
-    # First check project exists
+    """Handle project update."""
+    _, error = await _fetch_project_for_update(client, agent_id, slug)
+    if error:
+        return error
+
+    payload = {k: v for k, v in data.model_dump().items() if v is not None}
+    if not payload:
+        return format_error_response("NO_CHANGES", "No fields to update provided")
+
+    return await _send_project_patch(client, slug, payload)
+
+
+async def _verify_project_exists(
+    client: ApiClient, project_slug: str
+) -> dict[str, Any] | None:
+    """Return an error dict if the project cannot be fetched, else None."""
     try:
         project_resp = await client.get(f"/projects/{project_slug}")
     except Exception as e:
@@ -321,27 +337,42 @@ async def _handle_workspace_ensure(
 
     if not project_resp.ok:
         return format_error_response("GET_FAILED", "Failed to get project")
+    return None
 
-    # Try a git status call which will auto-create workspace if needed
+
+async def _fetch_git_status(
+    client: ApiClient, project_slug: str
+) -> tuple[dict[str, Any] | None, dict[str, Any] | None]:
+    """Return (git_status_json, error) from GET /git/status."""
     try:
         git_resp = await client.get(f"/git/status?project_slug={project_slug}")
     except Exception as e:
-        return format_error_response(
+        return None, format_error_response(
             "CONNECTION_ERROR", f"Failed to connect: {type(e).__name__}"
         )
 
     if not git_resp.ok:
-        return format_error_response(
+        return None, format_error_response(
             "WORKSPACE_FAILED",
             "Failed to ensure workspace",
             {"status": git_resp.status_code, "detail": git_resp.text},
         )
+    return git_resp.json(), None
 
-    # Compute full workspace path for agent
+
+async def _handle_workspace_ensure(
+    client: ApiClient, project_slug: str, agent_id: str
+) -> dict[str, Any]:
+    """Handle workspace ensure request."""
+    if error := await _verify_project_exists(client, project_slug):
+        return error
+
+    git_status, error = await _fetch_git_status(client, project_slug)
+    if error or git_status is None:
+        return error or format_error_response("WORKSPACE_FAILED", "No git status")
+
     agent_team = get_agent_team(agent_id)
     workspace_path = f"/data/workspaces/{project_slug}/{agent_team}/{agent_id}"
-
-    git_status = git_resp.json()
     guidance = (
         f"Workspace ready at {workspace_path}. "
         "Use roboco_git_* MCP tools for git operations."
@@ -452,22 +483,25 @@ async def _handle_workspace_list(
 # =============================================================================
 
 
-def create_project_mcp_server(agent_id: str) -> FastMCP:
-    """
-    Create a Project MCP server for a specific agent.
+_PROJECT_UPDATE_ROLES = frozenset(
+    {"main_pm", "cell_pm", "product_owner", "head_marketing", "auditor"}
+)
 
-    Args:
-        agent_id: The agent identifier (e.g., "be-pm")
 
-    Returns:
-        Configured FastMCP server
-    """
-    mcp = FastMCP(f"roboco-project-{agent_id}", json_response=True)
-    client = ApiClient(agent_id)
+def _can_update_project_tool(agent_id: str) -> bool:
+    """Return True if the agent may register a project_update tool."""
+    return is_ceo(agent_id) or get_agent_role(agent_id) in _PROJECT_UPDATE_ROLES
 
-    # -------------------------------------------------------------------------
-    # Tools available to ALL agents
-    # -------------------------------------------------------------------------
+
+def _can_list_workspaces_tool(agent_id: str) -> bool:
+    """Return True if the agent may register a workspace_list tool."""
+    return is_ceo(agent_id) or get_agent_role(agent_id) in WORKSPACE_LIST_ROLES
+
+
+def _register_common_project_tools(
+    mcp: FastMCP, client: ApiClient, agent_id: str
+) -> None:
+    """Register tools available to all agents on the project server."""
 
     @mcp.tool()
     async def roboco_project_list(
@@ -534,10 +568,11 @@ def create_project_mcp_server(agent_id: str) -> FastMCP:
         """
         return await _handle_workspace_status(client, project_slug, agent_id)
 
-    # -------------------------------------------------------------------------
-    # Tools available ONLY to PM/Board/CEO
-    # -------------------------------------------------------------------------
 
+def _register_privileged_project_tools(
+    mcp: FastMCP, client: ApiClient, agent_id: str
+) -> None:
+    """Register privileged project tools gated by role."""
     if can_create_projects(agent_id):
 
         @mcp.tool()
@@ -556,16 +591,7 @@ def create_project_mcp_server(agent_id: str) -> FastMCP:
             """
             return await _handle_project_create(client, agent_id, data)
 
-    role = get_agent_role(agent_id)
-
-    # Update is available to more roles (including Cell PM for their cell)
-    if is_ceo(agent_id) or role in {
-        "main_pm",
-        "cell_pm",
-        "product_owner",
-        "head_marketing",
-        "auditor",
-    }:
+    if _can_update_project_tool(agent_id):
 
         @mcp.tool()
         async def roboco_project_update(
@@ -586,8 +612,7 @@ def create_project_mcp_server(agent_id: str) -> FastMCP:
             """
             return await _handle_project_update(client, agent_id, slug, data)
 
-    # Workspace list is PM only
-    if is_ceo(agent_id) or role in WORKSPACE_LIST_ROLES:
+    if _can_list_workspaces_tool(agent_id):
 
         @mcp.tool()
         async def roboco_workspace_list(project_slug: str) -> dict[str, Any]:
@@ -604,6 +629,23 @@ def create_project_mcp_server(agent_id: str) -> FastMCP:
                 List of workspaces with team, agent, and status
             """
             return await _handle_workspace_list(client, agent_id, project_slug)
+
+
+def create_project_mcp_server(agent_id: str) -> FastMCP:
+    """
+    Create a Project MCP server for a specific agent.
+
+    Args:
+        agent_id: The agent identifier (e.g., "be-pm")
+
+    Returns:
+        Configured FastMCP server
+    """
+    mcp = FastMCP(f"roboco-project-{agent_id}", json_response=True)
+    client = ApiClient(agent_id)
+
+    _register_common_project_tools(mcp, client, agent_id)
+    _register_privileged_project_tools(mcp, client, agent_id)
 
     return mcp
 

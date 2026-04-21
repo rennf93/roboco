@@ -10,6 +10,7 @@ Contains common functions for:
 - Shared caches for cross-server data
 """
 
+import os
 from typing import Any
 
 import httpx
@@ -46,7 +47,9 @@ def get_agent_headers(agent_id: str) -> dict[str, str]:
         agent_id: The agent's identifier (slug or UUID)
 
     Returns:
-        Headers dict with X-Agent-ID, X-Agent-Role, and optionally X-Agent-Team
+        Headers dict with X-Agent-ID, X-Agent-Role, optionally X-Agent-Team,
+        and X-Agent-Token when ROBOCO_AGENT_TOKEN is set in the
+        environment (injected by the orchestrator at spawn time).
     """
     headers = {
         "X-Agent-ID": agent_id,
@@ -55,6 +58,13 @@ def get_agent_headers(agent_id: str) -> dict[str, str]:
     team = get_agent_team(agent_id)
     if team:
         headers["X-Agent-Team"] = team
+    # Auth token — orchestrator sets this per-agent in the container env.
+    # The API middleware verifies token == HMAC(agent_id:role:team,
+    # ROBOCO_AGENT_AUTH_SECRET), which stops an agent on the Docker
+    # network from spoofing another agent's role via header.
+    token = os.environ.get("ROBOCO_AGENT_TOKEN")
+    if token:
+        headers["X-Agent-Token"] = token
     return headers
 
 

@@ -43,43 +43,74 @@ API_URL = os.environ.get("ROBOCO_API_URL", "http://localhost:8000")
 # =============================================================================
 
 
+@dataclass(frozen=True)
+class _AgentInfo:
+    """Lookup bundle for a single agent used during discovery."""
+
+    slug: str
+    role: str | None
+    team: str | None
+    skills: list[dict[str, Any]]
+
+
+@dataclass(frozen=True)
+class _DiscoverFilters:
+    """Filter criteria supplied to roboco_agent_discover."""
+
+    role: str | None
+    team: str | None
+    skill: str | None
+
+
+def _skill_matches(agent_skills: list[dict[str, Any]], skill: str) -> bool:
+    """Return True if any skill id or tag matches the requested skill."""
+    skill_ids = [s.get("id", "") for s in agent_skills]
+    if skill in skill_ids:
+        return True
+    return any(skill in s.get("tags", []) for s in agent_skills)
+
+
+def _agent_matches_filters(info: _AgentInfo, filters: _DiscoverFilters) -> bool:
+    """Return True if an agent matches all provided (non-None) filters."""
+    if filters.role and info.role != filters.role:
+        return False
+    if filters.team and info.team != filters.team:
+        return False
+    return not (filters.skill and not _skill_matches(info.skills, filters.skill))
+
+
+def _build_discover_entry(info: _AgentInfo) -> dict[str, Any]:
+    """Build a discovery response entry for a single agent."""
+    return {
+        "slug": info.slug,
+        "role": info.role,
+        "team": info.team,
+        "skills": [
+            {"id": s["id"], "name": s["name"], "description": s["description"]}
+            for s in info.skills
+        ],
+    }
+
+
 async def _handle_discover(
     role: str | None = None,
     team: str | None = None,
     skill: str | None = None,
 ) -> dict[str, Any]:
     """Discover agents by criteria (local lookup, no API call)."""
+    filters = _DiscoverFilters(role=role, team=team, skill=skill)
     agents = []
 
     for agent_slug in ALL_AGENTS:
-        agent_role = get_agent_role(agent_slug)
-        agent_team = get_agent_team(agent_slug)
-        agent_skills = get_agent_skills(agent_slug)
-
-        # Apply filters
-        if role and agent_role != role:
-            continue
-        if team and agent_team != team:
-            continue
-        if skill:
-            skill_ids = [s.get("id", "") for s in agent_skills]
-            skill_tags = []
-            for s in agent_skills:
-                skill_tags.extend(s.get("tags", []))
-            if skill not in skill_ids and skill not in skill_tags:
-                continue
-
-        agents.append(
-            {
-                "slug": agent_slug,
-                "role": agent_role,
-                "team": agent_team,
-                "skills": [
-                    {"id": s["id"], "name": s["name"], "description": s["description"]}
-                    for s in agent_skills
-                ],
-            }
+        info = _AgentInfo(
+            slug=agent_slug,
+            role=get_agent_role(agent_slug),
+            team=get_agent_team(agent_slug),
+            skills=get_agent_skills(agent_slug),
         )
+        if not _agent_matches_filters(info, filters):
+            continue
+        agents.append(_build_discover_entry(info))
 
     return {
         "agents": agents,
