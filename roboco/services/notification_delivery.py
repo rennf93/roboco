@@ -74,6 +74,14 @@ class NotificationDeliveryService(BaseService):
         try:
             bus = get_event_bus()
             if bus.is_connected():
+                # SQLAlchemy normally hydrates Enum columns back to enum
+                # members, but a handful of code paths feed raw strings in
+                # (e.g. direct dict construction in bulk-insert helpers) and
+                # those round-trip as plain str on read. Coerce defensively:
+                # an enum has `.value`, a str is its own value.
+                def _enum_value(v: object) -> object:
+                    return v.value if hasattr(v, "value") else v
+
                 for recipient_id in notification.to_agents:
                     await bus.publish(
                         Event(
@@ -81,8 +89,8 @@ class NotificationDeliveryService(BaseService):
                             data={
                                 "notification_id": str(notification_id),
                                 "recipient_id": str(recipient_id),
-                                "type": notification.type.value,
-                                "priority": notification.priority.value,
+                                "type": _enum_value(notification.type),
+                                "priority": _enum_value(notification.priority),
                                 "subject": notification.subject,
                             },
                         )
@@ -133,8 +141,10 @@ class NotificationDeliveryService(BaseService):
         unacked = [
             n
             for n in stale
-            if any(str(r) not in {str(a) for a in (n.acked_by or [])}
-                   for r in (n.to_agents or []))
+            if any(
+                str(r) not in {str(a) for a in (n.acked_by or [])}
+                for r in (n.to_agents or [])
+            )
         ]
 
         for n in unacked:

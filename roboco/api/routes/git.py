@@ -159,9 +159,7 @@ async def get_git_log(
                 branch=branch,
                 stderr=log_result.stderr[:200] if log_result.stderr else "",
             )
-            return GitLogResponse(
-                project_slug=project_slug, branch=branch, commits=[]
-            )
+            return GitLogResponse(project_slug=project_slug, branch=branch, commits=[])
     except ServiceError as e:
         raise _translate_error(e) from e
 
@@ -530,10 +528,7 @@ async def _auto_complete_on_merge(
         and agent.role == AgentRole.CEO
     ):
         await task_service.ceo_approve(task_uuid)
-    elif (
-        status_value == TaskStatus.AWAITING_PM_REVIEW.value
-        and agent.role in pm_roles
-    ):
+    elif status_value == TaskStatus.AWAITING_PM_REVIEW.value and agent.role in pm_roles:
         await task_service.complete(task_uuid, agent.agent_id)
 
 

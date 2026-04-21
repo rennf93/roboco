@@ -225,9 +225,7 @@ class ProjectService(BaseService):
         for ws in active_sessions.scalars().all():
             from roboco.utils.converters import require_uuid
 
-            await ws_service.abandon(
-                require_uuid(ws.id), reason="project deleted"
-            )
+            await ws_service.abandon(require_uuid(ws.id), reason="project deleted")
             abandoned += 1
         if abandoned:
             self.log.info(

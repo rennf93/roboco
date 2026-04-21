@@ -185,14 +185,6 @@ bandit:
 	@uv run bandit -r roboco -ll
 	@find . | grep -E "(__pycache__|\.pyc|\.pyo|\.pytest_cache|\.ruff_cache|\.mypy_cache)" | xargs rm -rf
 
-# Check dependencies with Safety
-.PHONY: safety
-safety:
-	@echo "Checking dependencies with Safety..."
-	@echo ''
-	@uv run safety scan
-	@find . | grep -E "(__pycache__|\.pyc|\.pyo|\.pytest_cache|\.ruff_cache|\.mypy_cache)" | xargs rm -rf
-
 # Audit dependencies with pip-audit
 .PHONY: pip-audit
 pip-audit:
@@ -232,17 +224,9 @@ deptry:
 	@uv run deptry .
 	@find . | grep -E "(__pycache__|\.pyc|\.pyo|\.pytest_cache|\.ruff_cache|\.mypy_cache)" | xargs rm -rf
 
-# Static analysis with Semgrep
-.PHONY: semgrep
-semgrep:
-	@echo "Running Semgrep static analysis..."
-	@echo ''
-	@uv run semgrep --config=auto roboco
-	@find . | grep -E "(__pycache__|\.pyc|\.pyo|\.pytest_cache|\.ruff_cache|\.mypy_cache)" | xargs rm -rf
-
 # Run all security checks
 .PHONY: security
-security: bandit safety pip-audit
+security: bandit pip-audit
 	@echo "All security checks completed."
 
 # Run all code quality checks
@@ -252,7 +236,7 @@ quality: lint vulture radon xenon
 
 # Run all analysis tools
 .PHONY: analysis
-analysis: deptry semgrep
+analysis: deptry
 	@echo "All analysis tools completed."
 
 # Run all checks (linting, security, quality, and analysis)

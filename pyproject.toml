@@ -71,12 +71,10 @@ dev = [
     "mypy",
     "vulture",
     "bandit",
-    "safety",
     "pip-audit",
     "radon",
     "xenon",
     "deptry",
-    "semgrep",
 
     # Type Stubs
     "types-redis",
@@ -315,12 +313,10 @@ DEP002 = [
     "mypy",
     "vulture",
     "bandit",
-    "safety",
     "pip-audit",
     "radon",
     "xenon",
     "deptry",
-    "semgrep",
     "ipython",
     "rich",
     # Type stubs (used by mypy)

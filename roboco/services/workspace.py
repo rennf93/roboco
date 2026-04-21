@@ -71,8 +71,11 @@ def _ensure_agent_owned(workspace: Path) -> None:
 
     failed_chowns = 0
     for root, dirs, files in os.walk(workspace):
-        for entry in (root, *[str(Path(root) / d) for d in dirs],
-                      *[str(Path(root) / f) for f in files]):
+        for entry in (
+            root,
+            *[str(Path(root) / d) for d in dirs],
+            *[str(Path(root) / f) for f in files],
+        ):
             try:
                 st = Path(entry).stat()
                 if st.st_uid != _AGENT_UID or st.st_gid != _AGENT_GID:
@@ -101,6 +104,7 @@ def _ensure_agent_owned(workspace: Path) -> None:
             workspace=str(workspace),
             failures=failed_chowns,
         )
+
 
 # Per (project_slug, agent_slug) async lock to serialize concurrent
 # ensure_workspace calls in the same orchestrator process. Prevents two

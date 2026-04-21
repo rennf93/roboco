@@ -64,6 +64,7 @@ COPY --from=builder --chown=agent:agent /app /app
 COPY docker/scripts/sdk-startup-hook.sh /app/scripts/sdk-startup-hook.sh
 COPY docker/scripts/a2a-check-hook.sh /app/scripts/a2a-check-hook.sh
 COPY docker/scripts/traceability-hook.sh /app/scripts/traceability-hook.sh
+COPY docker/scripts/bash-guard-hook.sh /app/scripts/bash-guard-hook.sh
 RUN chmod 0755 /app/scripts/*.sh
 
 USER agent

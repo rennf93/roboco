@@ -103,6 +103,13 @@ DEFAULT_CHANNELS = [
 
 # Static agent UUIDs - NEVER change these after initial deployment
 AGENT_UUIDS = {
+    # System sentinel — used as `from_agent` for orchestrator-generated
+    # notifications (blocker escalations, QA-fail notices, doc-ready,
+    # handoff, etc.). The notifications.from_agent column is NOT NULL +
+    # FK to agents.id, so these system-originated notifications need a
+    # real agent row or the INSERT fails. Keep the UUID as all-zeros as
+    # a clear "this is not a person" sentinel.
+    "system": "00000000-0000-0000-0000-000000000000",
     # CEO (Human)
     "ceo": "00000000-0000-0000-0000-000000000001",
     # Backend Cell
@@ -131,6 +138,15 @@ AGENT_UUIDS = {
 }
 
 DEFAULT_AGENTS: list[dict[str, Any]] = [
+    # System sentinel (not a spawnable agent; used as sender for
+    # orchestrator-generated notifications and audit events).
+    {
+        "id": AGENT_UUIDS["system"],
+        "slug": "system",
+        "name": "System",
+        "role": "system",
+        "team": None,
+    },
     # Backend Cell
     {
         "id": AGENT_UUIDS["be-dev-1"],
@@ -326,9 +342,10 @@ CHANNEL_MEMBERSHIPS = {
         "ceo",
     ],
     "board-private": ["product-owner", "head-marketing", "auditor", "ceo"],
-    # Broadcast channels - everyone (CEO included via DEFAULT_AGENTS)
-    "announcements": [a["slug"] for a in DEFAULT_AGENTS],
-    "all-hands": [a["slug"] for a in DEFAULT_AGENTS],
+    # Broadcast channels - everyone human-or-agent (system sentinel
+    # excluded — it's a from_agent placeholder, not a participant).
+    "announcements": [a["slug"] for a in DEFAULT_AGENTS if a["slug"] != "system"],
+    "all-hands": [a["slug"] for a in DEFAULT_AGENTS if a["slug"] != "system"],
 }
 
 # Auditor has silent read access to cell/role channels

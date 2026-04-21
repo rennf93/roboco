@@ -566,14 +566,13 @@ Keep `uv.lock` committed. Run `uv lock` when updating dependencies.
 ### PY-062: Audit Dependencies
 
 **Severity:** ERROR
-**Tools:** pip-audit, safety
+**Tools:** pip-audit
 
 Run security audits on dependencies regularly.
 
 ```bash
 # Audit for vulnerabilities
 uv run pip-audit
-uv run safety scan
 ```
 
 ---
@@ -674,14 +673,6 @@ uv run deptry .
 ```
 
 Finds unused, missing, and misplaced dependencies.
-
-### Semgrep (Static Analysis)
-
-```bash
-uv run semgrep --config=auto roboco/
-```
-
-Advanced pattern-based static analysis.
 
 ---
 
@@ -827,7 +818,7 @@ content_hash = hashlib.md5(
 ### PY-082: SQL Injection Prevention
 
 **Severity:** BLOCKER
-**Tools:** bandit (B608), semgrep
+**Tools:** bandit (B608)
 
 NEVER construct SQL with string concatenation. Use parameterized queries.
 

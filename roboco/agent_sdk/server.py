@@ -422,7 +422,7 @@ async def traceability_remind(tool: str = "") -> dict:
     """
     # Normalize tool name (strip MCP prefix if present)
     # Example: "mcp__roboco-task__roboco_task_claim" -> "roboco_task_claim"
-    tool_name = tool.split("__")[-1] if "__" in tool else tool
+    tool_name = tool.rsplit("__", maxsplit=1)[-1] if "__" in tool else tool
 
     # Get suggestion based on tool
     if tool_name not in TRACEABILITY_REMINDERS:

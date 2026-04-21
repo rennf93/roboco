@@ -405,8 +405,7 @@ class MessagingService(BaseService):
             idle = (now - last_active).total_seconds()
 
             timeout_exceeded = (
-                session.timeout_seconds is not None
-                and idle >= session.timeout_seconds
+                session.timeout_seconds is not None and idle >= session.timeout_seconds
             )
             window_exceeded = (
                 session.max_time_window is not None

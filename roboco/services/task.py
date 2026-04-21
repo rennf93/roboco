@@ -228,9 +228,7 @@ class TaskService(BaseService):
                     event_type=f"task.{target}",
                     task_id=str(task.id),
                     agent_id=(
-                        str(task.claimed_by)
-                        if task.claimed_by is not None
-                        else None
+                        str(task.claimed_by) if task.claimed_by is not None else None
                     ),
                     details={
                         "from_status": current,
@@ -2245,10 +2243,21 @@ class TaskService(BaseService):
         if not task:
             return None
 
-        # Only allow in awaiting_documentation (parallel execution phase)
-        if task.status != TaskStatus.AWAITING_DOCUMENTATION:
+        # Accept statuses valid for the parallel phase. awaiting_documentation
+        # is the "pool"; claimed/in_progress happen when doc or dev claims+
+        # starts their own task during the parallel phase (status shifts
+        # out of awaiting_documentation but the PR-creation side is still
+        # the dev's responsibility). Without accepting these, the flag
+        # setter refuses and the task stays stuck with pr_created=false
+        # forever — the dispatcher then respawns the dev in a loop.
+        allowed_statuses = {
+            TaskStatus.AWAITING_DOCUMENTATION,
+            TaskStatus.CLAIMED,
+            TaskStatus.IN_PROGRESS,
+        }
+        if task.status not in allowed_statuses:
             self.log.warning(
-                "Cannot mark PR created - task not in awaiting_documentation",
+                "Cannot mark PR created - task status outside parallel phase",
                 task_id=str(task_id),
                 current_status=task.status.value,
             )
@@ -2648,6 +2657,77 @@ class TaskService(BaseService):
             "Task escalated to CEO for approval",
             task_id=str(task_id),
             escalated_by_role=agent_role,
+        )
+        return task
+
+    async def pm_reject(
+        self,
+        task_id: UUID,
+        agent_role: str = "cell_pm",
+        notes: str | None = None,
+    ) -> TaskTable | None:
+        """
+        PM sends a task back to the original developer for rework.
+
+        Transitions `awaiting_pm_review → needs_revision`. Role-gated to
+        the PM roles. The original developer will pick the task back up
+        on their next scan — `quick_context.original_developer` is
+        unchanged so claim-assignment continues to work.
+
+        Use this instead of cancel-and-recreate when the PR content is
+        close but needs changes (missing criterion, lint issue, bad
+        commit message, etc). For structural problems → escalate or
+        cancel.
+
+        Args:
+            task_id: The task to send back.
+            agent_role: Role of the rejecting agent (must be a PM role).
+            notes: Why it's being rejected — becomes the dev's worklist.
+        """
+        task = await self.get(task_id)
+        if not task:
+            return None
+
+        if task.status != TaskStatus.AWAITING_PM_REVIEW:
+            self.log.warning(
+                "Cannot pm_reject - task not in awaiting_pm_review",
+                task_id=str(task_id),
+                current_status=task.status.value,
+            )
+            return None
+
+        if notes:
+            existing_context = task.quick_context or ""
+            entry = f"pm_reject_notes:{notes}"
+            task.quick_context = (
+                f"{existing_context}\n{entry}".strip() if existing_context else entry
+            )
+
+        # Clear PM-side flags so the parallel-phase advance gate sees a
+        # fresh pass the next time the dev submits (they'll re-do the QA
+        # loop). `docs_complete` stays true — docs are still valid unless
+        # the dev's rework materially changes them; if so, the dev should
+        # ask the documenter directly.
+        task.pr_created = False
+        # Keep pr_number + pr_url around so the dev can amend the same PR
+        # instead of opening a new one. The dev's next `roboco_git_push`
+        # updates the existing PR; `mark_pr_created` resets pr_created on
+        # the retry.
+        task.qa_verified = None
+
+        self._validate_and_set_status(task, TaskStatus.NEEDS_REVISION, agent_role)
+        await self.session.flush()
+
+        await self._emit_task_event(
+            EventType.TASK_STATUS_CHANGED,
+            task_id,
+            {"new_status": "needs_revision", "by_role": agent_role, "notes": notes},
+        )
+
+        self.log.info(
+            "PM rejected task back to dev",
+            task_id=str(task_id),
+            by_role=agent_role,
         )
         return task
 

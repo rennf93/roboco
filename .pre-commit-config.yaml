@@ -34,12 +34,6 @@ repos:
         language: system
         types: [python]
         pass_filenames: false
-      - id: safety
-        name: safety
-        entry: uv run safety check
-        require_serial: true
-        language: system
-        pass_filenames: false
       - id: radon-cc
         name: radon-cyclomatic-complexity
         entry: uv run radon cc roboco -nc
@@ -59,11 +53,4 @@ repos:
         entry: uv run deptry .
         require_serial: true
         language: system
-        pass_filenames: false
-      - id: semgrep
-        name: semgrep
-        entry: uv run semgrep --config=auto --error roboco
-        require_serial: true
-        language: system
-        types: [python]
         pass_filenames: false

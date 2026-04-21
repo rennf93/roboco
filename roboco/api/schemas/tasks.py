@@ -350,6 +350,19 @@ class QANotes(BaseModel):
     notes: str
 
 
+class CancelTaskRequest(BaseModel):
+    """Request to cancel a task. Reason is required for audit trail."""
+
+    reason: str = Field(
+        ...,
+        min_length=10,
+        description=(
+            "Why the task is being cancelled. Appended to dev_notes so the "
+            "cancellation has an audit trail. Minimum 10 chars."
+        ),
+    )
+
+
 class CompleteTaskRequest(BaseModel):
     """Request to complete a task with optional force flag."""
 
@@ -550,8 +563,7 @@ def task_to_response(task: "TaskTable") -> TaskResponse:
         # MissingGreenlet. Omit the slug rather than force an async round-trip.
         project_slug=(
             task.project.slug
-            if "project" not in sa_inspect(task).unloaded
-            and task.project is not None
+            if "project" not in sa_inspect(task).unloaded and task.project is not None
             else None
         ),
         docs_complete=task.docs_complete,

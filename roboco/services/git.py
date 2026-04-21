@@ -109,9 +109,7 @@ class GitService(BaseService):
             # "could not read Username for 'https://github.com'".
             # Bearer is only correct for the REST API (PR create/merge,
             # via httpx) — keep them separate.
-            basic = base64.b64encode(
-                f"x-access-token:{token}".encode()
-            ).decode()
+            basic = base64.b64encode(f"x-access-token:{token}".encode()).decode()
             prefix = [
                 "-c",
                 f"http.extraheader=Authorization: Basic {basic}",
@@ -160,9 +158,9 @@ class GitService(BaseService):
         Returns None if it can't be derived or the project has no token.
         """
         try:
-            parts = workspace.resolve().relative_to(
-                Path(settings.workspaces_root)
-            ).parts
+            parts = (
+                workspace.resolve().relative_to(Path(settings.workspaces_root)).parts
+            )
         except (ValueError, OSError):
             return None
         if not parts:
@@ -911,8 +909,7 @@ class GitService(BaseService):
 
         if not resp.is_success:
             raise GitError(
-                f"GitHub API refused PR merge ({resp.status_code}): "
-                f"{resp.text[:200]}",
+                f"GitHub API refused PR merge ({resp.status_code}): {resp.text[:200]}",
                 {"owner": owner, "repo": repo, "pr": pr_number},
             )
 

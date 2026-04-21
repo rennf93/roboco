@@ -341,9 +341,7 @@ class ValidatorService:
         """Test if LLM is available for validation."""
         try:
             async with httpx.AsyncClient(timeout=10.0) as client:
-                response = await client.get(
-                    f"{settings.local_llm_base_url}/models"
-                )
+                response = await client.get(f"{settings.local_llm_base_url}/models")
                 self._llm_available = response.is_success
         except Exception as e:
             logger.warning("LLM not available for validation", error=str(e))
@@ -542,7 +540,7 @@ Return your analysis as JSON."""
                         )
                         raise RuntimeError(f"LLM call failed: {response.status_code}")
 
-        except (TimeoutError, asyncio.TimeoutError):
+        except TimeoutError:
             logger.warning("LLM validation timed out")
             raise
         except httpx.TimeoutException:

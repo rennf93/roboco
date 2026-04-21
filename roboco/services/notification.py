@@ -6,12 +6,11 @@ Sends notifications through the API with proper enforcement.
 
 from __future__ import annotations
 
-from typing import Any
+from typing import TYPE_CHECKING, Any
 from uuid import UUID
 
 import structlog
 from sqlalchemy import select
-from sqlalchemy.ext.asyncio import AsyncSession
 
 from roboco.db.base import get_db_context
 from roboco.db.tables import AgentTable, NotificationTable
@@ -19,19 +18,28 @@ from roboco.models import NotificationPriority, NotificationType
 from roboco.models.notification import CreateNotificationParams
 from roboco.utils.converters import require_uuid
 
+if TYPE_CHECKING:
+    from sqlalchemy.ext.asyncio import AsyncSession
+
 logger = structlog.get_logger()
 
 
-async def _resolve_agent_uuid(db: AsyncSession, value: str | UUID | None) -> UUID | None:
+async def _resolve_agent_uuid(
+    db: AsyncSession, value: str | UUID | None
+) -> UUID | None:
     """Turn an agent slug or UUID (any case / any form) into a real UUID.
 
-    `notifications.from_agent` is UUID-typed in the DB, but callers across
-    the codebase (MCP handlers, A2A fallback route, etc.) pass slugs like
-    "be-doc" because that's what agents use internally. Without this
-    resolver, slug-valued from_agent blows up the INSERT with "invalid
-    UUID 'be-doc': length must be between 32..36 characters".
+    `notifications.from_agent` is UUID-typed in the DB + FK to agents.id.
+    Callers across the codebase pass slugs ("be-doc", "system", etc.) —
+    this resolver does the slug→UUID translation. "system" resolves to
+    the seeded system agent (stable UUID) so orchestrator-generated
+    notifications always have a valid sender.
+
+    Returns None only for truly absent values (None, empty string, or a
+    slug we can't find). The caller in `_create_notification` logs +
+    skips in that case rather than crashing on FK violation.
     """
-    if value is None or value == "" or value == "unknown":
+    if value is None or value == "":
         return None
     if isinstance(value, UUID):
         return value
@@ -249,6 +257,22 @@ class NotificationService:
         """Create a notification via the database and deliver it."""
         async with get_db_context() as db:
             from_agent_uuid = await _resolve_agent_uuid(db, params.from_agent)
+            if from_agent_uuid is None:
+                # Caller passed "system" / "unknown" / an unknown slug.
+                # notifications.from_agent is NOT NULL + FK to agents.id,
+                # so we cannot insert. Skip-with-warn rather than crash
+                # the upstream request — the notification would be
+                # orphaned anyway (no sender the recipient could reply to).
+                logger.warning(
+                    "Skipping notification: from_agent could not be resolved to an agent UUID",  # noqa: E501
+                    from_agent_input=str(params.from_agent),
+                    type=params.notification_type.value
+                    if hasattr(params.notification_type, "value")
+                    else str(params.notification_type),
+                    subject=params.subject[:80],
+                    to_agents=[str(a) for a in params.to_agents],
+                )
+                return
             notification = NotificationTable(
                 type=params.notification_type,
                 priority=params.priority,

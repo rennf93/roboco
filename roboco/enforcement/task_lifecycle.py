@@ -80,6 +80,7 @@ VALID_TRANSITIONS: dict[str, list[str]] = {
         "claimed",
         "awaiting_ceo_approval",  # Escalate to CEO for final approval
         "completed",  # PM can complete non-escalated tasks
+        "needs_revision",  # PM sends back to dev for rework (pm_reject)
         "cancelled",
     ],
     # Awaiting CEO approval - CEO makes final decision on major tasks
@@ -116,6 +117,10 @@ ROLE_RESTRICTED_TRANSITIONS: dict[tuple[str, str], list[str]] = {
     # QA direct assignment: QA can pass/fail from in_progress when directly assigned
     ("in_progress", "awaiting_documentation"): ["qa"],  # QA pass
     ("in_progress", "needs_revision"): ["qa"],  # QA fail
+    # Developer cannot self-fail out of verifying (would create a dead-end
+    # where a dev skips QA and routes themselves back to revision). Only
+    # QA or PM roles can send a verifying task to revision.
+    ("verifying", "needs_revision"): ["qa", *_CANCEL_ROLES],
     # Only documenter can claim docs tasks
     ("awaiting_documentation", "claimed"): ["documenter"],
     # Parallel completion: either documenter or developer can trigger transition
@@ -130,6 +135,8 @@ ROLE_RESTRICTED_TRANSITIONS: dict[tuple[str, str], list[str]] = {
     ("in_progress", "awaiting_pm_review"): [*_CANCEL_ROLES, "qa", "documenter"],
     # Only PM can escalate to CEO approval
     ("awaiting_pm_review", "awaiting_ceo_approval"): _CANCEL_ROLES,
+    # PM rejects back to dev for rework (needs_revision).
+    ("awaiting_pm_review", "needs_revision"): _CANCEL_ROLES,
     # CEO approval transitions - only CEO can act
     ("awaiting_ceo_approval", "completed"): _CEO_ROLE,  # CEO approves and merges
     ("awaiting_ceo_approval", "needs_revision"): _CEO_ROLE,  # CEO requests changes

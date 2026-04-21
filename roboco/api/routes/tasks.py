@@ -4,7 +4,7 @@ Task API Routes
 Full CRUD operations and lifecycle management for tasks.
 """
 
-from typing import Annotated, Any
+from typing import Annotated, Any, cast
 from uuid import UUID
 
 from fastapi import APIRouter, Body, HTTPException, Query, status
@@ -26,6 +26,7 @@ from roboco.api.schemas.sessions import (
     TaskSessionsResponse,
 )
 from roboco.api.schemas.tasks import (
+    CancelTaskRequest,
     CheckpointRequest,
     ClaimRequest,
     CommitRequest,
@@ -63,6 +64,15 @@ from roboco.services.task import (
 from roboco.utils.converters import require_uuid
 
 router = APIRouter()
+
+# Minimum character count for notes fields that must be substantive
+# (QA pass notes, doc-complete notes, escalation notes). Below this the
+# note is useless for the next reader, so the transition is refused.
+_MIN_NOTES_CHARS = 20
+
+# Max descendant IDs shown inline in an error before truncating to a
+# "+N more" tail.
+_MAX_ERR_IDS = 5
 
 
 # =============================================================================
@@ -127,14 +137,13 @@ async def create_task(
                         "error": {
                             "code": "ASSIGNEE_NOT_FOUND",
                             "message": (
-                                f"No agent with slug or UUID "
-                                f"'{data.assigned_to}'"
+                                f"No agent with slug or UUID '{data.assigned_to}'"
                             ),
                             "hint": "Use an agent slug (e.g. 'main-pm') or UUID",
                         }
                     },
                 ) from None
-            assigned_to_uuid = agent_row.id
+            assigned_to_uuid = cast("UUID", agent_row.id)
 
     service = get_task_service(db)
     req = TaskCreateRequest(
@@ -548,6 +557,24 @@ async def claim_task(
             detail="Not authorized to claim tasks",
         )
 
+    # Self-review prevention for QA + documenter:
+    # - QA cannot review their own dev work
+    # - Documenter cannot document their own code
+    # Block at claim time so the task isn't grabbed and then stuck (the
+    # outcome endpoints also block self-review, but blocking here keeps
+    # the task in the queue for a different reviewer/documenter).
+    if agent.role in (AgentRole.QA, AgentRole.DOCUMENTER):
+        original_dev = extract_original_developer(task.quick_context)
+        if original_dev and str(agent.agent_id) == original_dev:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail=(
+                    "SELF_REVIEW: Cannot claim a task that you developed. "
+                    "Leave it for another "
+                    f"{agent.role.value}."
+                ),
+            )
+
     # Determine the agent to claim for
     can_assign = permissions.can_perform_task_action(
         agent, TaskAction.ASSIGN, task.team
@@ -637,12 +664,38 @@ async def start_task(
             detail="Only the assigned agent can start this task",
         )
 
+    # Field-level gates: must have a branch and (if claimed-first-time) a
+    # plan. The service checks plan internally but returns a generic None
+    # on failure; surface the specific cause here so the agent knows
+    # what to call next.
+    if not task.branch_name:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=(
+                "NO_BRANCH: Task has no branch assigned. Unclaim and "
+                "reclaim to regenerate the hierarchical branch, then "
+                "start."
+            ),
+        )
+    if task.status.value == "claimed" and not task.plan:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=(
+                "NO_PLAN: Cannot start a claimed task without a plan. "
+                "Call roboco_task_plan() with approach + sub_tasks + "
+                "risks before roboco_task_start()."
+            ),
+        )
+
     # Pass agent_id and role for defense-in-depth validation in service layer
     task = await service.start(task_id, agent_id=agent.agent_id, agent_role=agent.role)
     if not task:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Cannot start task - invalid status",
+            detail=(
+                "Cannot start task - invalid status (must be claimed, "
+                "paused, or needs_revision)."
+            ),
         )
     await db.commit()
     return task_to_response(task)
@@ -972,6 +1025,47 @@ async def submit_for_qa(
             detail="Only the assigned agent can submit for QA",
         )
 
+    # Field-level gates: dev must have committed, pushed (PR created),
+    # reported progress, and self-verified before QA review can be
+    # requested. Prevents QA from reviewing work that isn't actually
+    # reviewable (no PR, no commits, no observable progress).
+    if not task.self_verified:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=(
+                "NOT_SELF_VERIFIED: Cannot submit for QA without a prior "
+                "self-verification step. Call "
+                "roboco_task_submit_verification() first, then submit_qa."
+            ),
+        )
+    if not task.commits:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=(
+                "NO_COMMITS: Cannot submit for QA without at least one "
+                "commit on this task. Use roboco_git_commit() before "
+                "roboco_task_submit_qa()."
+            ),
+        )
+    if task.pr_number is None:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=(
+                "NO_PR: Cannot submit for QA without a PR. Run "
+                "roboco_git_push() then roboco_git_create_pr() so QA can "
+                "review the diff on GitHub."
+            ),
+        )
+    if not task.progress_updates:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=(
+                "NO_PROGRESS: Cannot submit for QA without any "
+                "progress updates. Call roboco_task_progress() at least "
+                "once during execution before submitting."
+            ),
+        )
+
     task = await service.submit_for_qa(task_id, agent.role)
     if not task:
         raise HTTPException(
@@ -1030,7 +1124,35 @@ async def pass_qa(
             detail="Cannot QA review your own task",
         )
 
-    notes = data.notes if data else None
+    # Field-level gate: PR must exist before QA can pass. Defense in
+    # depth — submit-qa also blocks the no-PR case, but this catches
+    # anything that bypassed that route (e.g. legacy task that reached
+    # awaiting_qa earlier). If the PR disappeared since submit-qa, the
+    # right action is fail-qa with an explanation.
+    if task.pr_number is None:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=(
+                "NO_PR_ATTACHED: Cannot pass QA without a PR on this "
+                "task. Use roboco_task_qa_fail(notes='PR not created - "
+                "dev must push and open PR') so the dev fixes it."
+            ),
+        )
+    # QA pass requires notes summarizing what was verified; without
+    # these, the dev can't learn from the review and the audit trail is
+    # empty.
+    if not data or not data.notes or len(data.notes.strip()) < _MIN_NOTES_CHARS:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=(
+                "QA_NOTES_REQUIRED: QA pass must include notes (>=20 "
+                "chars) summarizing what was verified against the "
+                "acceptance criteria. Use roboco_task_qa_pass("
+                "notes='...')."
+            ),
+        )
+
+    notes = data.notes
     task = await service.pass_qa(task_id, notes, agent.role)
     if not task:
         raise HTTPException(
@@ -1125,7 +1247,19 @@ async def docs_complete(
             detail="Cannot document your own task",
         )
 
-    doc_notes = data.notes if data else None
+    # Doc completion notes are required so PM + future maintainers can
+    # see what was documented / where. Vague notes are a false signal.
+    if not data or not data.notes or len(data.notes.strip()) < _MIN_NOTES_CHARS:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=(
+                "DOC_NOTES_REQUIRED: docs_complete must include notes "
+                "(>=20 chars) listing what was documented and where. "
+                "Use roboco_task_docs_complete(notes='...')."
+            ),
+        )
+
+    doc_notes = data.notes
     task = await service.docs_complete(task_id, doc_notes)
     if not task:
         raise HTTPException(
@@ -1301,6 +1435,25 @@ async def complete_task(
             detail="Only PMs can complete tasks",
         )
 
+    # PM self-approval block: the PM who created the task (kicked it
+    # off) cannot also sign off on its completion at the awaiting_pm_review
+    # stage — that defeats the review gate. CEO is exempt (final
+    # authority); a PM completing their OWN in_progress task is fine
+    # (solo PM work, no review required).
+    if (
+        task.status.value == "awaiting_pm_review"
+        and task.created_by == agent.agent_id
+        and agent.role != AgentRole.CEO
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=(
+                "SELF_APPROVAL: You created this task; a different PM "
+                "must complete it from awaiting_pm_review. Escalate or "
+                "hand off to another PM."
+            ),
+        )
+
     # Extract request data
     force_complete = data.force_with_cancelled if data else False
     justification = data.justification if data else None
@@ -1372,11 +1525,12 @@ async def complete_task(
 @router.post("/{task_id}/cancel", response_model=TaskResponse)
 async def cancel_task(
     task_id: UUID,
+    data: CancelTaskRequest,
     db: DbSession,
     agent: CurrentAgentContext,
     permissions: PermissionServiceDep,
 ) -> TaskResponse:
-    """Cancel a task."""
+    """Cancel a task. Reason is required for audit trail."""
     service = get_task_service(db)
     task = await service.get(task_id)
     if not task:
@@ -1394,7 +1548,13 @@ async def cancel_task(
             detail="Not authorized to cancel tasks",
         )
 
-    task = await service.cancel(task_id)
+    # Append cancellation reason to dev_notes so the audit trail is
+    # durable (the `cancel` service call itself only flips status).
+    stamp = f"[CANCELLED by {agent.role.value}] {data.reason}"
+    task.dev_notes = f"{task.dev_notes}\n{stamp}" if task.dev_notes else stamp
+    await db.flush()
+
+    task = await service.cancel(task_id, agent_role=agent.role.value)
     if not task:
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
@@ -1484,7 +1644,61 @@ async def escalate_to_ceo(
             detail="Only PMs can escalate tasks to CEO",
         )
 
-    notes = data.notes if data else None
+    # PM cannot escalate a task they created to themselves — CEO
+    # approval exists as an independent review.  If the creator IS the
+    # escalating PM, that's fine (they're asking CEO to review, not
+    # approving themselves); the self-approval block lives on the
+    # CEO-approve path.  Field gates we DO enforce here:
+    if task.pr_number is None:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=(
+                "NO_PR: Cannot escalate to CEO without an open PR. "
+                "Ensure the PR exists and pr_number is set on the task."
+            ),
+        )
+    if not task.pr_created:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=(
+                "PR_NOT_CONFIRMED: pr_created flag is false. The PR "
+                "handler must confirm the PR exists before escalation."
+            ),
+        )
+    # All descendants must be in a terminal state — you can't escalate
+    # a parent task while its subtasks are still live.
+    descendants = await service.get_all_descendants(task_id)
+    active_descendants = [
+        d for d in descendants if d.status.value not in ("completed", "cancelled")
+    ]
+    if active_descendants:
+        ids_shown = ", ".join(str(d.id)[:8] for d in active_descendants[:_MAX_ERR_IDS])
+        extra = (
+            f" (+{len(active_descendants) - _MAX_ERR_IDS} more)"
+            if len(active_descendants) > _MAX_ERR_IDS
+            else ""
+        )
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=(
+                f"ACTIVE_SUBTASKS: Cannot escalate while "
+                f"{len(active_descendants)} subtask(s) remain active: "
+                f"{ids_shown}{extra}."
+            ),
+        )
+    # Escalation notes are required — CEO needs context on why this
+    # task needs their attention.
+    if not data or not data.notes or len(data.notes.strip()) < _MIN_NOTES_CHARS:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=(
+                "ESCALATION_NOTES_REQUIRED: Escalation to CEO must "
+                "include notes (>=20 chars) explaining why CEO review "
+                "is needed (scope, risk, breaking-change, etc)."
+            ),
+        )
+
+    notes = data.notes
     task = await service.escalate_to_ceo(task_id, agent.role.value, notes)
     if not task:
         raise HTTPException(
@@ -1509,6 +1723,74 @@ async def escalate_to_ceo(
                 f"Escalated by: {agent.role.value}\n"
                 f"Notes: {notes or 'None'}\n\n"
                 "Use /ceo-approve or /ceo-reject to respond."
+            ),
+            related_task_id=task_id,
+            requires_ack=True,
+        )
+        db.add(notification)
+        await db.flush()
+
+        from roboco.services.notification_delivery import (
+            get_notification_delivery_service,
+        )
+
+        delivery_service = get_notification_delivery_service(db)
+        await delivery_service.deliver(require_uuid(notification.id))
+
+    await db.commit()
+    return task_to_response(task)
+
+
+@router.post("/{task_id}/pm-reject", response_model=TaskResponse)
+async def pm_reject(
+    task_id: UUID,
+    db: DbSession,
+    agent: CurrentAgentContext,
+    permissions: PermissionServiceDep,
+    data: QANotes | None = None,
+) -> TaskResponse:
+    """PM sends a task back to the developer for rework.
+
+    Transitions `awaiting_pm_review → needs_revision`. Use when the PR is
+    close but needs changes; for structural problems prefer cancel or
+    escalate. The original developer re-claims from `needs_revision`.
+    """
+    service = get_task_service(db)
+    task = await service.get(task_id)
+    if not task:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="Task not found"
+        )
+
+    can_close = permissions.can_perform_task_action(agent, TaskAction.CLOSE, task.team)
+    if not can_close:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Only PMs can reject tasks back to dev",
+        )
+
+    notes = data.notes if data else None
+    task = await service.pm_reject(task_id, agent.role.value, notes)
+    if not task:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=("Cannot pm_reject - task must be in awaiting_pm_review status"),
+        )
+
+    # Notify the original developer so they pick it back up quickly
+    from roboco.services.task import extract_original_developer
+
+    dev_uuid = extract_original_developer(task.quick_context)
+    if dev_uuid:
+        notification = NotificationTable(
+            type="task_assignment",
+            priority="high",
+            from_agent=agent.agent_id,
+            to_agents=[UUID(dev_uuid)],
+            subject=f"Rework needed: {task.title or 'Unknown task'}",
+            body=(
+                f"Task {task_id} sent back for rework by {agent.role.value}.\n\n"
+                f"Notes: {notes or 'see pm_reject_notes in task quick_context'}"
             ),
             related_task_id=task_id,
             requires_ack=True,
@@ -1845,8 +2127,6 @@ async def substitute_task(
         )
         if pm_uuid:
             update_data["assigned_to"] = pm_uuid
-    elif new_status == TaskStatus.AWAITING_QA and task.assigned_to:
-        update_data["quick_context"] = f"original_developer:{task.assigned_to}"
 
     # Update task
     task = await service.update(task_id, **update_data)

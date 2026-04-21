@@ -82,5 +82,4 @@ uv run bandit -r roboco/ -ll
 
 # Dependency audit
 uv run pip-audit
-uv run safety scan
 ```

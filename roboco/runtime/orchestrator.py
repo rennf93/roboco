@@ -569,6 +569,21 @@ class AgentOrchestrator:
                         ]
                     }
                 ],
+                # Guard Bash: block shell-level git/curl/wget/env patterns
+                # that the matcher-based `permissions.deny` can't catch
+                # (e.g. `cd X && git fetch`). Redirects agents to the MCP
+                # equivalents instead of bloating prompts with rules.
+                "PreToolUse": [
+                    {
+                        "matcher": "Bash",
+                        "hooks": [
+                            {
+                                "type": "command",
+                                "command": "/app/scripts/bash-guard-hook.sh",
+                            }
+                        ],
+                    },
+                ],
                 "PostToolUse": [
                     # Traceability reminders (context-aware, runs on specific tools)
                     {
@@ -711,9 +726,7 @@ class AgentOrchestrator:
             )
             return None
 
-    async def _git_context_from_task_id(
-        self, task_id: str
-    ) -> SpawnGitContext | None:
+    async def _git_context_from_task_id(self, task_id: str) -> SpawnGitContext | None:
         """Load a task by ID and derive git context for spawning.
 
         Used by `spawn_agent` when called without an explicit git_context
@@ -729,9 +742,7 @@ class AgentOrchestrator:
         try:
             async with get_db_context() as db:
                 result = await db.execute(
-                    select(
-                        TaskTable.branch_name, ProjectTable.slug
-                    )
+                    select(TaskTable.branch_name, ProjectTable.slug)
                     .select_from(TaskTable)
                     .join(ProjectTable, TaskTable.project_id == ProjectTable.id)
                     .where(TaskTable.id == task_id)
@@ -1511,6 +1522,48 @@ class AgentOrchestrator:
         # Already a slug or unknown UUID
         return agent_id_or_uuid
 
+    def _is_parallel_phase_claim(
+        self, task: dict[str, Any], dev_uuid: str | None
+    ) -> bool:
+        """True if a `claimed` task is actually in the doc/PR parallel phase.
+
+        The `original_developer:` quick_context marker is set pre-QA by
+        `submit_for_qa`, so it alone cannot distinguish a QA-claimed
+        awaiting_qa task (wrong) from a doc-claimed awaiting_documentation
+        task (right). Require the claimant to be a documenter.
+        """
+        if not dev_uuid:
+            return False
+        claimed_by = task.get("claimed_by")
+        if not claimed_by:
+            return False
+        claimed_slug = self._resolve_agent_slug(claimed_by)
+        return bool(claimed_slug) and "doc" in claimed_slug
+
+    async def _respawn_dev_for_pr_half(
+        self, task: dict[str, Any], dev_uuid: str | None
+    ) -> None:
+        """Respawn the original developer if they still owe the PR half.
+
+        `pr_number` is set by the PR-create handler as soon as GitHub
+        confirms the PR, even if the status-gated `pr_created` flag never
+        flips — without that second check we'd respawn the dev forever
+        after they've already created the PR (the handler refuses to set
+        pr_created=True when the doc's claim moved status out of
+        awaiting_documentation).
+        """
+        if not dev_uuid or task.get("pr_created") or task.get("pr_number"):
+            return
+        dev_slug = self._resolve_agent_slug(dev_uuid)
+        if not dev_slug or self._is_agent_active(dev_slug):
+            return
+        await self.spawn_agent(
+            agent_id=dev_slug,
+            task_id=task["id"],
+            initial_prompt=self._build_dev_prompt(task),
+            git_context=self._task_git_context(task),
+        )
+
     # =========================================================================
     # AGENT STOPPING
     # =========================================================================
@@ -1723,9 +1776,7 @@ class AgentOrchestrator:
         # Preserve the original git_context from the prior instance so the
         # respawned agent keeps the same workspace mount path.
         prior = self._instances.get(agent_id)
-        prior_git_context = (
-            prior.config.git_context if prior and prior.config else None
-        )
+        prior_git_context = prior.config.git_context if prior and prior.config else None
 
         # Respawn
         return await self.spawn_agent(
@@ -1898,9 +1949,7 @@ Start by:
                         agent_id=agent_id,
                         task_id=instance.current_task_id,
                         git_context=(
-                            instance.config.git_context
-                            if instance.config
-                            else None
+                            instance.config.git_context if instance.config else None
                         ),
                     )
                 elif instance.error_count == max_retries:
@@ -2841,6 +2890,18 @@ Start now: roboco_task_get("{task_id}")
                 if not all_complete:
                     continue  # Not ready for closure
 
+                # Already promoted: PM has opened their PR (pr_number set)
+                # AND either submitted the task for review or is already
+                # at/past PM review. No need to respawn — the next level
+                # (parent PM or CEO) owns the task now.
+                task_status = task.get("status")
+                if task.get("pr_number") and task_status in (
+                    "awaiting_pm_review",
+                    "awaiting_ceo_approval",
+                    "completed",
+                ):
+                    continue
+
                 # Parent has all subtasks completed - spawn PM to close
                 team = task.get("team")
                 if team in ["backend", "frontend", "ux_ui"]:
@@ -2916,49 +2977,54 @@ Start now: roboco_task_get("{task_id}")
             for st in subtasks
         )
 
-        channel = f"{team}-cell" if team != "ux_ui" else "uxui-cell"
+        is_root = not task.get("parent_task_id")
+        project_slug = task.get("project_slug", "")
+        pr_target = (
+            "master (root PR — CEO merges)" if is_root else "your parent task's branch"
+        )
+        submit_call = (
+            "roboco_task_escalate_to_ceo" if is_root else "roboco_task_submit_pm_review"
+        )
+        is_root_arg = "True" if is_root else "False"
 
-        return f"""You are reviewing a parent task for closure.
+        return f"""You are closing a parent task. All subtasks are terminal — your job is to promote the merged work one level up the hierarchy.
 
 TASK: {task_id}
 TITLE: {title}
 TEAM: {team}
+PROJECT: {project_slug}
+ROOT TASK: {"yes" if is_root else "no"}
 
-ALL SUBTASKS COMPLETED:
+SUBTASK SUMMARY:
 {subtask_summary}
 
-== YOUR PM CLOSURE WORKFLOW ==
+== PM CLOSURE WORKFLOW ==
 
-1. REVIEW
-   Call roboco_task_get("{task_id}") to review the parent task.
-   Check: Were all acceptance criteria met by the subtasks?
+1. REVIEW AGGREGATE
+   - roboco_task_get("{task_id}") — confirm every acceptance criterion.
+   - roboco_git_diff("{project_slug}") — review YOUR branch's aggregate diff (all merged subtask work).
+   - If any subtask PR is still open, review + merge it now:
+     roboco_git_merge_pr("{project_slug}", <pr_number>, "<subtask_id>", "squash")
+     then roboco_task_complete("<subtask_id>").
+   - Needs rework on a subtask: roboco_task_pm_reject("<subtask_id>", notes="specific feedback").
 
-2. ASSESS SUBTASKS
-   Review each subtask's completion notes and outcomes.
-   Were there any issues, learnings, or concerns?
+2. OPEN YOUR PR → {pr_target}
+   - roboco_git_create_pr("{project_slug}", "{task_id}", is_root_pr={is_root_arg})
+   - This sets pr_created on your task. For non-root, targets the parent task's branch automatically.
 
-3. JOURNAL (log closure decision)
-   Call roboco_journal_decision(data) with:
-   - title: "Task closure: {title}"
-   - context: Summary of what was accomplished
-   - options: Close vs Needs refinement
-   - chosen: Your decision
-   - rationale: Why
-   - task_id: "{task_id}"
+3. JOURNAL
+   - roboco_journal_decision: title "Closure: {title}", chosen, rationale, task_id="{task_id}".
 
-4. COMMUNICATE
-   Call roboco_message_send(data) to #{channel}:
-   - Announce task completion or any follow-up needed
+4. SUBMIT UP
+   - {submit_call}("{task_id}")
+   - Non-root: your parent PM reviews + merges, then handles their level.
+   - Root: CEO (human) reviews + merges master — you do NOT merge to master.
 
-5. CLOSE OR REFINE
-   - If all criteria met: Call roboco_task_complete("{task_id}")
-   - If needs more work: Create new subtasks with parent_task_id
+5. IDLE
+   - roboco_agent_idle()
 
-6. FINISH
-   Call roboco_agent_idle()
-
-Begin with step 1: roboco_task_get("{task_id}")
-"""
+Start with step 1.
+"""  # noqa: E501
 
     def _get_prompt_for_agent(self, agent_slug: str, task: dict[str, Any]) -> str:
         """Get the appropriate prompt based on agent role."""
@@ -3007,9 +3073,7 @@ Begin with step 1: roboco_task_get("{task_id}")
                 owner_uuid = task.get("claimed_by") or task.get("assigned_to")
             else:
                 owner_uuid = task.get("assigned_to")
-            agent_slug = (
-                self._resolve_agent_slug(owner_uuid) if owner_uuid else None
-            )
+            agent_slug = self._resolve_agent_slug(owner_uuid) if owner_uuid else None
 
             # Hard stop: blocked tasks waiting on a HUMAN must not respawn
             # their agent. Dispatcher churn on HITL-blocks is exactly what
@@ -3165,9 +3229,7 @@ Begin with step 1: roboco_task_get("{task_id}")
         # pushed/created PR yet). The `original_developer:` marker in
         # quick_context identifies tasks that are actually in the parallel
         # phase vs unrelated claimed tasks.
-        tasks = await self._fetch_tasks(
-            client, ["awaiting_documentation", "claimed"]
-        )
+        tasks = await self._fetch_tasks(client, ["awaiting_documentation", "claimed"])
 
         for task in tasks:
             team = task.get("team")
@@ -3178,32 +3240,22 @@ Begin with step 1: roboco_task_get("{task_id}")
             dev_uuid = extract_original_developer(quick_context)
             status = task.get("status")
 
-            # Only consider `claimed` tasks that are in the post-QA
-            # parallel phase. `original_developer:` is set when a task
-            # transitions through QA, so its presence marks the task as
-            # being in the doc/PR parallel window.
-            if status == "claimed" and not dev_uuid:
+            # Only consider `claimed` tasks actually in the doc/PR
+            # parallel phase — i.e. claimed BY a documenter. The
+            # `original_developer:` marker alone isn't enough: it's also
+            # set pre-QA (by submit_for_qa), so a QA-claimed task would
+            # otherwise be misread as parallel-phase and trigger a
+            # spurious dev respawn.
+            if status == "claimed" and not self._is_parallel_phase_claim(
+                task, dev_uuid
+            ):
                 continue
 
-            docs_complete = bool(task.get("docs_complete"))
-            pr_created = bool(task.get("pr_created"))
-
             # --- Developer half: push + create PR --------------------------
-            # If pr_created is still False, bring the original developer
-            # back. dev_uuid lets us find them even after assigned_to was
-            # reassigned to the doc on claim.
-            if not pr_created and dev_uuid:
-                dev_slug = self._resolve_agent_slug(dev_uuid)
-                if dev_slug and not self._is_agent_active(dev_slug):
-                    await self.spawn_agent(
-                        agent_id=dev_slug,
-                        task_id=task["id"],
-                        initial_prompt=self._build_dev_prompt(task),
-                        git_context=self._task_git_context(task),
-                    )
+            await self._respawn_dev_for_pr_half(task, dev_uuid)
 
             # --- Documenter half: write docs ------------------------------
-            if docs_complete:
+            if task.get("docs_complete"):
                 # Doc side already done; nothing left for documenter.
                 continue
 
@@ -3650,12 +3702,20 @@ Then proceed to execute your sub_tasks using roboco_git_* tools.
 """,
             "EXECUTING": """## IN PROGRESS
 
-Continue development:
-1. Make changes in your workspace
-2. roboco_git_commit() for each logical change
-3. roboco_task_progress() to update status (0-100%)
-4. roboco_journal_* to log decisions/learnings
-5. roboco_task_submit_verification() when complete
+Continue development. REQUIRED GATES before you can submit for QA
+(enforced server-side - ignoring them returns 400):
+1. roboco_git_commit() - at least one commit on this task
+2. roboco_git_push() - push the branch
+3. roboco_git_create_pr() - open the PR; task.pr_number MUST be set
+4. roboco_task_progress() - at least one progress update (percent + note)
+
+In addition:
+- roboco_journal_* to log decisions/learnings as you work
+- When all acceptance criteria are met AND steps 1-4 are done:
+  roboco_task_submit_verification() then roboco_task_submit_qa().
+
+QA will REJECT the task if pr_number is not set - don't ask QA to
+review unpushed or un-PR'd work.
 """,
             "REVISION_REQUIRED": f"""## REVISION REQUESTED
 
@@ -3670,6 +3730,8 @@ QA or PM requested changes:
 Run quality checks and verify against acceptance criteria:
 1. Run tests, lint, type checks
 2. Review changes with roboco_git_diff()
+3. Confirm the PR is OPEN on GitHub (roboco_task_get → pr_number not null)
+4. Confirm you have at least one roboco_task_progress() update
 3. If all good: roboco_task_submit_qa()
 4. If issues found: fix and commit
 """,

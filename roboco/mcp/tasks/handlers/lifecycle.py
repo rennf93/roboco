@@ -321,6 +321,55 @@ async def handle_escalate_to_ceo(
     return format_task_response(resp.json(), "AWAITING_CEO_APPROVAL", guidance)
 
 
+async def handle_pm_reject(
+    client: ApiClient,
+    task_id: str,
+    agent_id: str,
+    notes: str | None = None,
+) -> dict[str, Any]:
+    """PM sends a task back to the developer for rework.
+
+    Transitions `awaiting_pm_review → needs_revision`. The original dev
+    (tracked via `quick_context.original_developer`) gets a high-priority
+    notification and will pick the task back up on their next scan.
+    """
+    if error := _validate_pm_role(agent_id, "pm_reject"):
+        return error
+
+    task, error = await fetch_task_or_error(client, task_id)
+    if error:
+        return error
+    assert task is not None
+
+    current_status = task.get("status")
+    if current_status != "awaiting_pm_review":
+        return format_error_response(
+            "INVALID_STATE",
+            f"Cannot pm_reject - task is '{current_status}', "
+            "expected 'awaiting_pm_review'.",
+            {"current_status": current_status},
+        )
+
+    payload: dict[str, Any] = {}
+    if notes:
+        payload["notes"] = notes
+
+    resp = await client.post(f"/tasks/{task_id}/pm-reject", json=payload)
+    if not resp.ok:
+        return format_error_response(
+            "PM_REJECT_FAILED",
+            "Failed to reject task back to dev",
+            {"status_code": resp.status_code, "api_error": resp.text},
+        )
+
+    guidance = (
+        "Task sent back to the developer as needs_revision. They will "
+        "reclaim on their next scan and address your notes. Continue "
+        "with other work via roboco_task_scan."
+    )
+    return format_task_response(resp.json(), "NEEDS_REVISION", guidance)
+
+
 async def handle_ceo_approve(
     client: ApiClient,
     task_id: str,

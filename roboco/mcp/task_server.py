@@ -68,6 +68,7 @@ from roboco.mcp.tasks.handlers import (
     handle_docs_complete,
     handle_escalate_to_ceo,
     handle_group_create,
+    handle_pm_reject,
     handle_session_create_for_tasks,
     handle_session_get_for_task,
     handle_session_link_task,
@@ -644,6 +645,40 @@ def _register_pm_completion_tools(
             Task in awaiting_ceo_approval status
         """
         return await handle_escalate_to_ceo(client, task_id, agent_id, notes)
+
+    @mcp.tool()
+    async def roboco_task_pm_reject(
+        task_id: str, notes: str | None = None
+    ) -> dict[str, Any]:
+        """
+        PM sends a task back to the original developer for rework.
+
+        Transitions `awaiting_pm_review → needs_revision`. Use this when
+        the PR is close but needs changes (missing acceptance criterion,
+        commit message format, lint issue, wrong target, etc.). Prefer
+        `roboco_task_cancel` for structural problems and
+        `roboco_task_escalate_to_ceo` for anything that needs CEO
+        judgement.
+
+        The original developer (tracked in quick_context) is notified
+        and will re-claim the task on their next scan. The existing PR
+        is kept — the dev pushes amended commits to the same branch.
+
+        ENFORCEMENT:
+        - Only PMs / Board (cell_pm, main_pm, product_owner, head_marketing)
+        - Task must be in `awaiting_pm_review`
+
+        Args:
+            task_id: The task UUID being sent back.
+            notes: Specific, actionable feedback for the developer — what
+                   criterion failed, what file/line to revisit, what
+                   behavior is expected. Vague notes waste the dev's next
+                   cycle.
+
+        Returns:
+            Task in `needs_revision` status.
+        """
+        return await handle_pm_reject(client, task_id, agent_id, notes)
 
 
 def _register_pm_tools(mcp: FastMCP, client: ApiClient, agent_id: str) -> None:
