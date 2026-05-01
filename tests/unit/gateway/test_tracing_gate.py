@@ -5,18 +5,22 @@ from __future__ import annotations
 from unittest.mock import MagicMock
 from uuid import uuid4
 
-import pytest
-
 from roboco.services.gateway.tracing_gate import (
-    GateResult,
     Requirement,
     check_requirements,
 )
 
 
-def _task(*, plan=None, progress_updates=None, acceptance_criteria=None,
-          acceptance_criteria_status=None, qa_notes=None, qa_evidence_inspected=False,
-          self_verified=False):
+def _task(
+    *,
+    plan=None,
+    progress_updates=None,
+    acceptance_criteria=None,
+    acceptance_criteria_status=None,
+    qa_notes=None,
+    qa_evidence_inspected=False,
+    self_verified=False,
+):
     t = MagicMock()
     t.id = uuid4()
     t.plan = plan
@@ -32,12 +36,16 @@ def _task(*, plan=None, progress_updates=None, acceptance_criteria=None,
 class TestCheckRequirements:
     def test_plan_present(self) -> None:
         t = _task(plan={"steps": ["a", "b"]})
-        result = check_requirements(t, [Requirement.PLAN], journal_reflect_present=False)
+        result = check_requirements(
+            t, [Requirement.PLAN], journal_reflect_present=False
+        )
         assert result.passed is True
 
     def test_plan_missing(self) -> None:
         t = _task(plan=None)
-        result = check_requirements(t, [Requirement.PLAN], journal_reflect_present=False)
+        result = check_requirements(
+            t, [Requirement.PLAN], journal_reflect_present=False
+        )
         assert result.passed is False
         assert "plan" in result.missing[0].lower()
 

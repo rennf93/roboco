@@ -162,6 +162,8 @@ select = [
 "roboco/services/*.py" = ["PLC0415"]
 "roboco/api/routes/*.py" = ["PLC0415"]
 "roboco/runtime/*.py" = ["PLC0415"]
+"roboco/services/gateway/*.py" = ["PLR0913", "PLR0912", "SIM102"]
+"tests/unit/gateway/*.py" = ["PLR0913"]
 
 # =============================================================================
 # MyPy Configuration
