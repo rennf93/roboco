@@ -172,6 +172,24 @@ def _read_project_slug(task: dict[str, Any]) -> str | None:
     return str(inner) if inner else None
 
 
+def _resolve_agent_cli_model(provider_type: str, model: str) -> str:
+    """Translate an agent model name to the string Claude Code expects.
+
+    For the Anthropic provider, short names (``opus|sonnet|haiku``) are
+    translated through ``MODEL_MAP`` as they always were.  For non-Anthropic
+    providers (currently Ollama Cloud) the model identifier is passed verbatim
+    so raw tags like ``kimi-k2.6:cloud`` reach the Ollama-side integration
+    intact.
+
+    Extracted as a module-level function so both the ``--model`` CLI arg
+    builder and the ``CLAUDE_CODE_SUBAGENT_MODEL`` env-var injector can call
+    the same logic without referencing the class by name inside a staticmethod.
+    """
+    if provider_type == "anthropic":
+        return MODEL_MAP.get(model, model)
+    return model
+
+
 # =============================================================================
 # GATEWAY PRE-SPAWN CHECK (gated behind settings.gateway_enabled)
 # =============================================================================
@@ -1459,6 +1477,15 @@ class AgentOrchestrator:
             cmd.extend(["-e", f"ANTHROPIC_BASE_URL={config.provider_base_url}"])
         if config.provider_auth_token:
             cmd.extend(["-e", f"ANTHROPIC_AUTH_TOKEN={config.provider_auth_token}"])
+        # Subagent model override: Claude Code's Task (Agent) tool defaults to
+        # claude-haiku-4-5-20251001 regardless of the parent's --model flag.
+        # When the parent runs on a non-Anthropic provider (e.g. Ollama Cloud),
+        # that default model is unreachable and subagent dispatch fails.
+        # CLAUDE_CODE_SUBAGENT_MODEL is a Claude Code env var (verified in
+        # v2.1.123 binary) that short-circuits the default selection so the
+        # spawned sub-task uses the same model as the parent agent.
+        subagent_model = _resolve_agent_cli_model(config.provider_type, config.model)
+        cmd.extend(["-e", f"CLAUDE_CODE_SUBAGENT_MODEL={subagent_model}"])
         return cmd
 
     @staticmethod
@@ -1552,17 +1579,8 @@ class AgentOrchestrator:
 
     @staticmethod
     def _resolve_cli_model(config: AgentConfig) -> str:
-        """Return the string to pass to `claude --model`.
-
-        For the Anthropic provider, short names (`opus|sonnet|haiku`) are
-        translated through `MODEL_MAP` as they always were. For non-
-        Anthropic providers (currently Ollama Cloud) the model identifier
-        is passed verbatim so raw tags like `kimi-k2.6:cloud` reach the
-        Ollama-side Claude Code integration intact.
-        """
-        if config.provider_type == "anthropic":
-            return MODEL_MAP.get(config.model, config.model)
-        return config.model
+        """Return the string to pass to `claude --model`."""
+        return _resolve_agent_cli_model(config.provider_type, config.model)
 
     async def _spawn_container(
         self,
