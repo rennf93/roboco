@@ -280,6 +280,68 @@ class Settings(BaseSettings):
     agent_sla_documenter_claimed: int = Field(default=60 * 60, ge=60)
     agent_sla_cell_pm_claimed: int = Field(default=4 * 3600, ge=60)
 
+    # ==========================================================================
+    # Agent Gateway (Phase 0 introduces; Phase 1+ activates)
+    # ==========================================================================
+    gateway_enabled: bool = Field(
+        default=False,
+        description="Enable Agent Gateway feature (Phase 0 flag)",
+    )
+    public_base_url: str = Field(
+        default="http://127.0.0.1:8000",
+        description="Public base URL for commit-trailer links",
+    )
+
+    # Gateway coordination thresholds
+    claim_stale_seconds: int = Field(
+        default=180,
+        ge=60,
+        description="Claim heartbeat staleness threshold (seconds)",
+    )
+    spawn_cooldown_seconds: int = Field(
+        default=60,
+        ge=1,
+        description="Per-task spawn rate cooldown (seconds)",
+    )
+    role_spawn_rate_per_minute: int = Field(
+        default=6,
+        ge=1,
+        description="Per-role spawn rate limit (per minute)",
+    )
+
+    # Tracing-gate thresholds
+    qa_notes_min_chars: int = Field(
+        default=80,
+        ge=1,
+        description="Minimum characters for QA notes",
+    )
+    docs_notes_min_chars: int = Field(
+        default=20,
+        ge=1,
+        description="Minimum characters for docs notes",
+    )
+
+    # Commit-validator thresholds
+    commit_subject_min_chars: int = Field(
+        default=20,
+        ge=1,
+        description="Minimum characters for commit subject",
+    )
+    commit_banned_words: tuple[str, ...] = Field(
+        default=(
+            "wip",
+            "tmp",
+            "asdf",
+            "oops",
+            "fix",
+            "update",
+            "change",
+            "stuff",
+            "things",
+        ),
+        description="Banned words in commit messages",
+    )
+
 
 @lru_cache
 def get_settings() -> Settings:
