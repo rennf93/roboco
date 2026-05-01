@@ -471,7 +471,9 @@ class GitService(BaseService):
             description=request.message,
             body=request.body,
         )
-        full_message = build_commit_message(commit_ctx, settings.internal_api_url)
+        full_message = build_commit_message(
+            commit_ctx, settings.public_base_url.rstrip("/") + "/api/v1"
+        )
 
         # Create commit with agent attribution
         author = f"{agent_id} <{agent_id}@roboco.ai>"
