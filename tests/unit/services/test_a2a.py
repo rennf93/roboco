@@ -1,9 +1,14 @@
 """Unit tests for A2A conversation_id guards.
 
-Covers:
-- send_chat_message service rejects the nil UUID before touching the DB
-- _handle_send_chat_message MCP helper rejects empty/blank conversation_id
-  before building the URL (which would produce ``/conversations//messages``)
+Covers the service-layer nil-UUID guard: ``send_chat_message`` must
+reject the nil UUID before touching the DB so callers cannot generate
+``/conversations//messages`` traffic from a placeholder ID.
+
+The MCP-layer URL-builder test that used to live here was tied to
+``roboco.mcp.a2a_server._handle_send_chat_message`` — that module was
+deleted as part of the gateway cutover, so the test was dropped along
+with it. Agent A2A traffic now flows through ``mcp__roboco-do__*`` and
+is exercised by the gateway-tool integration tests.
 """
 
 from __future__ import annotations
@@ -12,11 +17,9 @@ from unittest.mock import AsyncMock, MagicMock
 from uuid import UUID
 
 import pytest
-from roboco.mcp.a2a_server import _handle_send_chat_message
 from roboco.services.a2a import A2AService
 
 NIL_UUID = UUID("00000000-0000-0000-0000-000000000000")
-REAL_UUID = UUID("12345678-1234-5678-1234-567812345678")
 
 
 # ---------------------------------------------------------------------------
@@ -67,67 +70,3 @@ class TestSendChatMessageServiceGuard:
             )
 
         assert not executed, "Database must not be queried for nil conversation_id"
-
-
-# ---------------------------------------------------------------------------
-# MCP layer — _handle_send_chat_message URL-builder guard
-# ---------------------------------------------------------------------------
-
-
-class TestHandleSendChatMessageUrlGuard:
-    """_handle_send_chat_message returns an error dict — no URL is built — when
-    conversation_id is empty or whitespace-only."""
-
-    @pytest.mark.asyncio
-    async def test_empty_string_returns_error(self) -> None:
-        """Empty string produces a structured error, not a 404 from //messages.
-
-        format_error_response wraps as {"error": {"code": ..., "message": ...}}.
-        """
-        result = await _handle_send_chat_message(
-            agent_id="be-dev-1",
-            conversation_id="",
-            message="hello",
-        )
-        assert "error" in result
-        assert result["error"]["code"] == "INVALID_CONVERSATION_ID"
-
-    @pytest.mark.asyncio
-    async def test_whitespace_string_returns_error(self) -> None:
-        """Whitespace-only string is treated as empty."""
-        result = await _handle_send_chat_message(
-            agent_id="be-dev-1",
-            conversation_id="   ",
-            message="hello",
-        )
-        assert "error" in result
-        assert result["error"]["code"] == "INVALID_CONVERSATION_ID"
-
-    @pytest.mark.asyncio
-    async def test_error_message_mentions_start(self) -> None:
-        """Error hint guides agent to call roboco_a2a_start() first."""
-        result = await _handle_send_chat_message(
-            agent_id="be-dev-1",
-            conversation_id="",
-            message="hello",
-        )
-        assert "roboco_a2a_start" in result["error"]["message"]
-
-    @pytest.mark.asyncio
-    async def test_valid_uuid_string_proceeds_to_http(self) -> None:
-        """A real (non-empty) conversation_id is NOT short-circuited by the guard.
-
-        We don't mock httpx here — the function will attempt a real connection
-        and raise ConnectError. That proves the guard was passed and the URL
-        was attempted (httpx.ConnectError → format_error_response with
-        API_UNAVAILABLE, not INVALID_CONVERSATION_ID).
-        """
-        result = await _handle_send_chat_message(
-            agent_id="be-dev-1",
-            conversation_id=str(REAL_UUID),
-            message="hello",
-        )
-        # The request hit the network path (no real server → API_UNAVAILABLE)
-        # rather than being short-circuited by the empty-ID guard.
-        error_block = result.get("error") or {}
-        assert error_block.get("code") != "INVALID_CONVERSATION_ID"
