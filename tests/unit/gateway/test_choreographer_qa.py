@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 from uuid import uuid4
 
@@ -9,7 +10,7 @@ import pytest
 from roboco.services.gateway.choreographer import Choreographer, ChoreographerDeps
 
 
-def _make_deps(**overrides):
+def _make_deps(**overrides: Any) -> ChoreographerDeps:
     base = {
         "task": AsyncMock(),
         "work_session": AsyncMock(),
@@ -39,7 +40,7 @@ _EXPECTED_PR_URL = "https://github.com/x/y/pull/8"
 
 
 @pytest.mark.asyncio
-async def test_claim_review_returns_evidence_inline():
+async def test_claim_review_returns_evidence_inline() -> None:
     qa_id = uuid4()
     task_id = uuid4()
     t_initial = MagicMock(
@@ -82,7 +83,7 @@ async def test_claim_review_returns_evidence_inline():
 
 
 @pytest.mark.asyncio
-async def test_claim_review_blocks_if_task_not_awaiting_qa():
+async def test_claim_review_blocks_if_task_not_awaiting_qa() -> None:
     qa_id = uuid4()
     task_id = uuid4()
     t = MagicMock(id=task_id, status="in_progress")
@@ -98,7 +99,7 @@ async def test_claim_review_blocks_if_task_not_awaiting_qa():
 
 
 @pytest.mark.asyncio
-async def test_claim_review_marks_evidence_inspected():
+async def test_claim_review_marks_evidence_inspected() -> None:
     qa_id = uuid4()
     task_id = uuid4()
     t = MagicMock(
@@ -129,7 +130,7 @@ async def test_claim_review_marks_evidence_inspected():
 
 
 @pytest.mark.asyncio
-async def test_claim_review_task_not_found_returns_not_found():
+async def test_claim_review_task_not_found_returns_not_found() -> None:
     qa_id = uuid4()
     task_id = uuid4()
     task_svc = AsyncMock()
@@ -143,7 +144,7 @@ async def test_claim_review_task_not_found_returns_not_found():
 
 
 @pytest.mark.asyncio
-async def test_pass_review_requires_qa_notes_min_chars():
+async def test_pass_review_requires_qa_notes_min_chars() -> None:
     qa_id = uuid4()
     task_id = uuid4()
     t = MagicMock(
@@ -166,7 +167,7 @@ async def test_pass_review_requires_qa_notes_min_chars():
 
 
 @pytest.mark.asyncio
-async def test_pass_review_requires_journal_learning():
+async def test_pass_review_requires_journal_learning() -> None:
     qa_id = uuid4()
     task_id = uuid4()
     t = MagicMock(
@@ -190,7 +191,7 @@ async def test_pass_review_requires_journal_learning():
 
 
 @pytest.mark.asyncio
-async def test_pass_review_requires_evidence_inspected():
+async def test_pass_review_requires_evidence_inspected() -> None:
     qa_id = uuid4()
     task_id = uuid4()
     t = MagicMock(
@@ -214,7 +215,7 @@ async def test_pass_review_requires_evidence_inspected():
 
 
 @pytest.mark.asyncio
-async def test_pass_review_succeeds_and_transitions():
+async def test_pass_review_succeeds_and_transitions() -> None:
     qa_id = uuid4()
     task_id = uuid4()
     t = MagicMock(
@@ -253,7 +254,7 @@ async def test_pass_review_succeeds_and_transitions():
 
 
 @pytest.mark.asyncio
-async def test_pass_review_not_assigned_returns_not_authorized():
+async def test_pass_review_not_assigned_returns_not_authorized() -> None:
     qa_id = uuid4()
     other = uuid4()
     task_id = uuid4()
@@ -271,7 +272,7 @@ async def test_pass_review_not_assigned_returns_not_authorized():
 
 
 @pytest.mark.asyncio
-async def test_fail_review_succeeds():
+async def test_fail_review_succeeds() -> None:
     qa_id = uuid4()
     task_id = uuid4()
     dev_id = uuid4()
@@ -305,7 +306,7 @@ async def test_fail_review_succeeds():
 
 
 @pytest.mark.asyncio
-async def test_fail_review_requires_at_least_one_issue():
+async def test_fail_review_requires_at_least_one_issue() -> None:
     qa_id = uuid4()
     task_id = uuid4()
     t = MagicMock(
@@ -328,7 +329,7 @@ async def test_fail_review_requires_at_least_one_issue():
 
 
 @pytest.mark.asyncio
-async def test_fail_review_not_assigned_returns_not_authorized():
+async def test_fail_review_not_assigned_returns_not_authorized() -> None:
     qa_id = uuid4()
     other = uuid4()
     task_id = uuid4()
@@ -346,7 +347,7 @@ async def test_fail_review_not_assigned_returns_not_authorized():
 
 
 @pytest.mark.asyncio
-async def test_fail_review_blocks_when_journal_learning_missing():
+async def test_fail_review_blocks_when_journal_learning_missing() -> None:
     qa_id = uuid4()
     task_id = uuid4()
     t = MagicMock(

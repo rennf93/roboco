@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
 from unittest.mock import MagicMock
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 from roboco.services.gateway.claimant_lock import (
     ClaimDecision,
@@ -13,7 +13,10 @@ from roboco.services.gateway.claimant_lock import (
 )
 
 
-def _task(active_claimant_id=None, last_heartbeat_at=None):
+def _task(
+    active_claimant_id: UUID | None = None,
+    last_heartbeat_at: datetime | None = None,
+) -> MagicMock:
     t = MagicMock()
     t.id = uuid4()
     t.active_claimant_id = active_claimant_id

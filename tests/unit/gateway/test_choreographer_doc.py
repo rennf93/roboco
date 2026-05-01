@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 from uuid import uuid4
 
@@ -9,7 +10,7 @@ import pytest
 from roboco.services.gateway.choreographer import Choreographer, ChoreographerDeps
 
 
-def _make_deps(**overrides):
+def _make_deps(**overrides: Any) -> ChoreographerDeps:
     base = {
         "task": AsyncMock(),
         "work_session": AsyncMock(),
@@ -35,7 +36,7 @@ def _make_deps(**overrides):
 
 
 @pytest.mark.asyncio
-async def test_claim_doc_task_returns_evidence():
+async def test_claim_doc_task_returns_evidence() -> None:
     doc_id = uuid4()
     task_id = uuid4()
     t = MagicMock(
@@ -72,7 +73,7 @@ async def test_claim_doc_task_returns_evidence():
 
 
 @pytest.mark.asyncio
-async def test_claim_doc_task_blocks_wrong_state():
+async def test_claim_doc_task_blocks_wrong_state() -> None:
     doc_id = uuid4()
     task_id = uuid4()
     t = MagicMock(id=task_id, status="in_progress")
@@ -87,7 +88,7 @@ async def test_claim_doc_task_blocks_wrong_state():
 
 
 @pytest.mark.asyncio
-async def test_claim_doc_task_not_found():
+async def test_claim_doc_task_not_found() -> None:
     doc_id = uuid4()
     task_id = uuid4()
     task_svc = AsyncMock()
@@ -100,7 +101,7 @@ async def test_claim_doc_task_not_found():
 
 
 @pytest.mark.asyncio
-async def test_i_documented_requires_min_notes():
+async def test_i_documented_requires_min_notes() -> None:
     doc_id = uuid4()
     task_id = uuid4()
     t = MagicMock(id=task_id, status="claimed", assigned_to=doc_id)
@@ -116,7 +117,7 @@ async def test_i_documented_requires_min_notes():
 
 
 @pytest.mark.asyncio
-async def test_i_documented_requires_files():
+async def test_i_documented_requires_files() -> None:
     doc_id = uuid4()
     task_id = uuid4()
     t = MagicMock(id=task_id, status="claimed", assigned_to=doc_id)
@@ -133,7 +134,7 @@ async def test_i_documented_requires_files():
 
 
 @pytest.mark.asyncio
-async def test_i_documented_succeeds_and_transitions():
+async def test_i_documented_succeeds_and_transitions() -> None:
     doc_id = uuid4()
     task_id = uuid4()
     t = MagicMock(id=task_id, status="claimed", assigned_to=doc_id, team="backend")
@@ -156,7 +157,7 @@ async def test_i_documented_succeeds_and_transitions():
 
 
 @pytest.mark.asyncio
-async def test_i_documented_not_assigned_returns_not_authorized():
+async def test_i_documented_not_assigned_returns_not_authorized() -> None:
     doc_id = uuid4()
     other = uuid4()
     task_id = uuid4()

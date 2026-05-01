@@ -5,6 +5,7 @@ Covers: triage, triage_all, unblock, complete, escalate_up.
 
 from __future__ import annotations
 
+from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 from uuid import uuid4
 
@@ -12,7 +13,7 @@ import pytest
 from roboco.services.gateway.choreographer import Choreographer, ChoreographerDeps
 
 
-def _make_deps(**overrides):
+def _make_deps(**overrides: Any) -> ChoreographerDeps:
     base = {
         "task": AsyncMock(),
         "work_session": AsyncMock(),
@@ -38,7 +39,7 @@ def _make_deps(**overrides):
 
 
 @pytest.mark.asyncio
-async def test_cell_pm_triage_returns_blocked_first():
+async def test_cell_pm_triage_returns_blocked_first() -> None:
     pm_id = uuid4()
     blocked_task = MagicMock(id=uuid4(), status="blocked", title="b", team="backend")
     pending_task = MagicMock(
@@ -58,7 +59,7 @@ async def test_cell_pm_triage_returns_blocked_first():
 
 
 @pytest.mark.asyncio
-async def test_cell_pm_triage_returns_awaiting_review_when_no_blocked():
+async def test_cell_pm_triage_returns_awaiting_review_when_no_blocked() -> None:
     pm_id = uuid4()
     pending_task = MagicMock(id=uuid4(), status="awaiting_pm_review", team="backend")
     task_svc = AsyncMock()
@@ -75,7 +76,7 @@ async def test_cell_pm_triage_returns_awaiting_review_when_no_blocked():
 
 
 @pytest.mark.asyncio
-async def test_cell_pm_triage_returns_idle_when_no_work():
+async def test_cell_pm_triage_returns_idle_when_no_work() -> None:
     pm_id = uuid4()
     task_svc = AsyncMock()
     task_svc.agent_for.return_value = MagicMock(role="cell_pm", team="backend")
@@ -90,7 +91,7 @@ async def test_cell_pm_triage_returns_idle_when_no_work():
 
 
 @pytest.mark.asyncio
-async def test_main_pm_triage_all_includes_cross_team():
+async def test_main_pm_triage_all_includes_cross_team() -> None:
     pm_id = uuid4()
     blocked = MagicMock(id=uuid4(), status="blocked", team="backend", title="x")
     task_svc = AsyncMock()
@@ -106,7 +107,7 @@ async def test_main_pm_triage_all_includes_cross_team():
 
 
 @pytest.mark.asyncio
-async def test_main_pm_triage_all_returns_idle():
+async def test_main_pm_triage_all_returns_idle() -> None:
     pm_id = uuid4()
     task_svc = AsyncMock()
     task_svc.list_blocked_all_teams.return_value = []
@@ -119,7 +120,7 @@ async def test_main_pm_triage_all_returns_idle():
 
 
 @pytest.mark.asyncio
-async def test_unblock_restores_pre_block_state():
+async def test_unblock_restores_pre_block_state() -> None:
     pm_id = uuid4()
     task_id = uuid4()
     t = MagicMock(
@@ -151,7 +152,7 @@ async def test_unblock_restores_pre_block_state():
 
 
 @pytest.mark.asyncio
-async def test_unblock_default_restores():
+async def test_unblock_default_restores() -> None:
     pm_id = uuid4()
     task_id = uuid4()
     t = MagicMock(
@@ -176,7 +177,7 @@ async def test_unblock_default_restores():
 
 
 @pytest.mark.asyncio
-async def test_unblock_blocks_without_journal_decision():
+async def test_unblock_blocks_without_journal_decision() -> None:
     pm_id = uuid4()
     task_id = uuid4()
     t = MagicMock(id=task_id, status="blocked")
@@ -194,7 +195,7 @@ async def test_unblock_blocks_without_journal_decision():
 
 
 @pytest.mark.asyncio
-async def test_unblock_wrong_state_returns_invalid_state():
+async def test_unblock_wrong_state_returns_invalid_state() -> None:
     pm_id = uuid4()
     task_id = uuid4()
     t = MagicMock(id=task_id, status="in_progress")
@@ -209,7 +210,7 @@ async def test_unblock_wrong_state_returns_invalid_state():
 
 
 @pytest.mark.asyncio
-async def test_unblock_restore_false_returns_legacy_message():
+async def test_unblock_restore_false_returns_legacy_message() -> None:
     pm_id = uuid4()
     task_id = uuid4()
     t = MagicMock(
@@ -235,7 +236,7 @@ async def test_unblock_restore_false_returns_legacy_message():
 
 
 @pytest.mark.asyncio
-async def test_cell_pm_complete_merges_then_completes():
+async def test_cell_pm_complete_merges_then_completes() -> None:
     pm_id = uuid4()
     task_id = uuid4()
     t = MagicMock(
@@ -266,7 +267,7 @@ async def test_cell_pm_complete_merges_then_completes():
 
 
 @pytest.mark.asyncio
-async def test_cell_pm_complete_blocks_if_subtasks_unfinished():
+async def test_cell_pm_complete_blocks_if_subtasks_unfinished() -> None:
     pm_id = uuid4()
     task_id = uuid4()
     t = MagicMock(
@@ -290,7 +291,7 @@ async def test_cell_pm_complete_blocks_if_subtasks_unfinished():
 
 
 @pytest.mark.asyncio
-async def test_cell_pm_complete_requires_journal_decision():
+async def test_cell_pm_complete_requires_journal_decision() -> None:
     pm_id = uuid4()
     task_id = uuid4()
     t = MagicMock(
@@ -314,7 +315,7 @@ async def test_cell_pm_complete_requires_journal_decision():
 
 
 @pytest.mark.asyncio
-async def test_cell_pm_complete_no_pr_returns_invalid_state():
+async def test_cell_pm_complete_no_pr_returns_invalid_state() -> None:
     pm_id = uuid4()
     task_id = uuid4()
     t = MagicMock(
@@ -338,7 +339,7 @@ async def test_cell_pm_complete_no_pr_returns_invalid_state():
 
 
 @pytest.mark.asyncio
-async def test_cell_pm_complete_not_assigned_returns_not_authorized():
+async def test_cell_pm_complete_not_assigned_returns_not_authorized() -> None:
     pm_id = uuid4()
     other = uuid4()
     task_id = uuid4()
@@ -353,7 +354,7 @@ async def test_cell_pm_complete_not_assigned_returns_not_authorized():
 
 
 @pytest.mark.asyncio
-async def test_main_pm_complete_opens_master_pr_and_escalates():
+async def test_main_pm_complete_opens_master_pr_and_escalates() -> None:
     main_pm_id = uuid4()
     root_task_id = uuid4()
     t = MagicMock(
@@ -389,7 +390,7 @@ async def test_main_pm_complete_opens_master_pr_and_escalates():
 
 
 @pytest.mark.asyncio
-async def test_main_pm_complete_skips_pr_creation_if_already_master_targeted():
+async def test_main_pm_complete_skips_pr_creation_if_already_master_targeted() -> None:
     main_pm_id = uuid4()
     root_task_id = uuid4()
     t = MagicMock(
@@ -419,7 +420,7 @@ async def test_main_pm_complete_skips_pr_creation_if_already_master_targeted():
 
 
 @pytest.mark.asyncio
-async def test_main_pm_complete_rejects_non_root_task():
+async def test_main_pm_complete_rejects_non_root_task() -> None:
     main_pm_id = uuid4()
     task_id = uuid4()
     t = MagicMock(
@@ -440,7 +441,7 @@ async def test_main_pm_complete_rejects_non_root_task():
 
 
 @pytest.mark.asyncio
-async def test_main_pm_complete_blocks_unfinished_subtasks():
+async def test_main_pm_complete_blocks_unfinished_subtasks() -> None:
     main_pm_id = uuid4()
     root_task_id = uuid4()
     t = MagicMock(
@@ -464,7 +465,7 @@ async def test_main_pm_complete_blocks_unfinished_subtasks():
 
 
 @pytest.mark.asyncio
-async def test_complete_dispatches_cell_pm():
+async def test_complete_dispatches_cell_pm() -> None:
     pm_id = uuid4()
     task_id = uuid4()
     t = MagicMock(
@@ -495,7 +496,7 @@ async def test_complete_dispatches_cell_pm():
 
 
 @pytest.mark.asyncio
-async def test_complete_dispatches_main_pm():
+async def test_complete_dispatches_main_pm() -> None:
     main_pm_id = uuid4()
     root_task_id = uuid4()
     t = MagicMock(
@@ -526,7 +527,7 @@ async def test_complete_dispatches_main_pm():
 
 
 @pytest.mark.asyncio
-async def test_complete_rejects_non_pm_role():
+async def test_complete_rejects_non_pm_role() -> None:
     dev_id = uuid4()
     task_id = uuid4()
     task_svc = AsyncMock()
@@ -541,7 +542,7 @@ async def test_complete_rejects_non_pm_role():
 
 
 @pytest.mark.asyncio
-async def test_escalate_up_routes_by_escalation_target():
+async def test_escalate_up_routes_by_escalation_target() -> None:
     pm_id = uuid4()
     task_id = uuid4()
     t = MagicMock(id=task_id, status="blocked", assigned_to=pm_id, team="backend")
@@ -569,7 +570,7 @@ async def test_escalate_up_routes_by_escalation_target():
 
 
 @pytest.mark.asyncio
-async def test_escalate_up_blocks_without_journal_decision():
+async def test_escalate_up_blocks_without_journal_decision() -> None:
     pm_id = uuid4()
     task_id = uuid4()
     t = MagicMock(id=task_id, status="blocked")
@@ -587,7 +588,7 @@ async def test_escalate_up_blocks_without_journal_decision():
 
 
 @pytest.mark.asyncio
-async def test_escalate_up_no_target_returns_invalid_state():
+async def test_escalate_up_no_target_returns_invalid_state() -> None:
     pm_id = uuid4()
     task_id = uuid4()
     t = MagicMock(id=task_id, status="blocked")
@@ -608,7 +609,7 @@ async def test_escalate_up_no_target_returns_invalid_state():
 
 
 @pytest.mark.asyncio
-async def test_escalate_up_task_not_found():
+async def test_escalate_up_task_not_found() -> None:
     pm_id = uuid4()
     task_id = uuid4()
     task_svc = AsyncMock()

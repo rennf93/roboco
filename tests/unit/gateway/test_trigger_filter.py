@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
 from unittest.mock import MagicMock
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 from roboco.services.gateway.trigger_filter import (
     SpawnConfig,
@@ -21,7 +21,11 @@ _DEFAULT_CONFIG = SpawnConfig(
 )
 
 
-def _task(status: str, active_claimant_id=None, last_heartbeat_at=None):
+def _task(
+    status: str,
+    active_claimant_id: UUID | None = None,
+    last_heartbeat_at: datetime | None = None,
+) -> MagicMock:
     t = MagicMock()
     t.id = uuid4()
     t.status = status

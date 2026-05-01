@@ -6,6 +6,7 @@ state gate (awaiting_pm_review only), and journal:decision tracing gate.
 
 from __future__ import annotations
 
+from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 from uuid import uuid4
 
@@ -13,7 +14,7 @@ import pytest
 from roboco.services.gateway.choreographer import Choreographer, ChoreographerDeps
 
 
-def _make_deps(**overrides):
+def _make_deps(**overrides: Any) -> ChoreographerDeps:
     base = {
         "task": AsyncMock(),
         "work_session": AsyncMock(),
@@ -39,7 +40,7 @@ def _make_deps(**overrides):
 
 
 @pytest.mark.asyncio
-async def test_board_escalate_to_ceo_succeeds_for_product_owner():
+async def test_board_escalate_to_ceo_succeeds_for_product_owner() -> None:
     agent_id = uuid4()
     task_id = uuid4()
     t = MagicMock(
@@ -68,7 +69,7 @@ async def test_board_escalate_to_ceo_succeeds_for_product_owner():
 
 
 @pytest.mark.asyncio
-async def test_board_escalate_to_ceo_succeeds_for_head_marketing():
+async def test_board_escalate_to_ceo_succeeds_for_head_marketing() -> None:
     agent_id = uuid4()
     task_id = uuid4()
     t = MagicMock(
@@ -97,7 +98,7 @@ async def test_board_escalate_to_ceo_succeeds_for_head_marketing():
 
 
 @pytest.mark.asyncio
-async def test_board_escalate_to_ceo_blocks_wrong_state():
+async def test_board_escalate_to_ceo_blocks_wrong_state() -> None:
     agent_id = uuid4()
     task_id = uuid4()
     t = MagicMock(id=task_id, status="in_progress", team="backend")
@@ -115,7 +116,7 @@ async def test_board_escalate_to_ceo_blocks_wrong_state():
 
 
 @pytest.mark.asyncio
-async def test_board_escalate_to_ceo_blocks_disallowed_role():
+async def test_board_escalate_to_ceo_blocks_disallowed_role() -> None:
     agent_id = uuid4()
     task_id = uuid4()
     t = MagicMock(id=task_id, status="awaiting_pm_review", team="backend")
@@ -133,7 +134,7 @@ async def test_board_escalate_to_ceo_blocks_disallowed_role():
 
 
 @pytest.mark.asyncio
-async def test_board_escalate_to_ceo_requires_journal_decision():
+async def test_board_escalate_to_ceo_requires_journal_decision() -> None:
     agent_id = uuid4()
     task_id = uuid4()
     t = MagicMock(id=task_id, status="awaiting_pm_review", team="backend")
@@ -153,7 +154,7 @@ async def test_board_escalate_to_ceo_requires_journal_decision():
 
 
 @pytest.mark.asyncio
-async def test_board_escalate_to_ceo_returns_not_found_when_task_missing():
+async def test_board_escalate_to_ceo_returns_not_found_when_task_missing() -> None:
     agent_id = uuid4()
     task_id = uuid4()
     task_svc = AsyncMock()
@@ -168,7 +169,7 @@ async def test_board_escalate_to_ceo_returns_not_found_when_task_missing():
 
 
 @pytest.mark.asyncio
-async def test_board_escalate_to_ceo_succeeds_for_main_pm():
+async def test_board_escalate_to_ceo_succeeds_for_main_pm() -> None:
     agent_id = uuid4()
     task_id = uuid4()
     t = MagicMock(
@@ -197,7 +198,7 @@ async def test_board_escalate_to_ceo_succeeds_for_main_pm():
 
 
 @pytest.mark.asyncio
-async def test_board_triage_returns_strategic_first():
+async def test_board_triage_returns_strategic_first() -> None:
     po_id = uuid4()
     strategic = MagicMock(
         id=uuid4(),
@@ -219,7 +220,7 @@ async def test_board_triage_returns_strategic_first():
 
 
 @pytest.mark.asyncio
-async def test_board_triage_returns_idle_when_nothing_strategic():
+async def test_board_triage_returns_idle_when_nothing_strategic() -> None:
     po_id = uuid4()
     task_svc = AsyncMock()
     task_svc.agent_for.return_value = MagicMock(role="product_owner", team="board")
@@ -234,7 +235,7 @@ async def test_board_triage_returns_idle_when_nothing_strategic():
 
 
 @pytest.mark.asyncio
-async def test_board_triage_works_for_head_marketing():
+async def test_board_triage_works_for_head_marketing() -> None:
     """Verb is role-agnostic among board members — head_marketing also gets results."""
     hm_id = uuid4()
     strategic = MagicMock(
