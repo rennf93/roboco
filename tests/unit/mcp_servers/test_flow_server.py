@@ -134,3 +134,64 @@ def test_i_am_idle_posts_empty_body(flow_module) -> None:  # type: ignore[no-unt
     _, kwargs = fake_client.post.call_args
     assert kwargs["json"] == {}
     assert "/api/v2/flow/developer/i_am_idle" in fake_client.post.call_args[0][0]
+
+
+def test_claim_review_posts_to_qa_path(monkeypatch: pytest.MonkeyPatch) -> None:  # type: ignore[no-untyped-def]
+    """When AGENT_ROLE=qa, claim_review forwards to /api/v2/flow/qa/claim_review."""
+    monkeypatch.setenv("ROBOCO_AGENT_ID", "00000000-0000-0000-0000-000000000002")
+    monkeypatch.setenv("ROBOCO_AGENT_ROLE", "qa")
+    monkeypatch.setenv("ROBOCO_ORCHESTRATOR_URL", "http://test-orchestrator:8000")
+
+    import roboco.mcp.flow_server as srv
+
+    importlib.reload(srv)
+
+    fake_client = _make_fake_client({"status": "claimed", "evidence": {}})
+
+    with patch("httpx.Client", return_value=fake_client):
+        result = srv.claim_review("task-uuid")
+
+    assert result["status"] == "claimed"
+    args, kwargs = fake_client.post.call_args
+    assert "/api/v2/flow/qa/claim_review" in args[0]
+    assert kwargs["json"] == {"task_id": "task-uuid"}
+
+
+def test_pass_review_passes_notes(monkeypatch: pytest.MonkeyPatch) -> None:  # type: ignore[no-untyped-def]
+    monkeypatch.setenv("ROBOCO_AGENT_ID", "00000000-0000-0000-0000-000000000002")
+    monkeypatch.setenv("ROBOCO_AGENT_ROLE", "qa")
+    monkeypatch.setenv("ROBOCO_ORCHESTRATOR_URL", "http://test-orchestrator:8000")
+
+    import roboco.mcp.flow_server as srv
+
+    importlib.reload(srv)
+
+    fake_client = _make_fake_client({"status": "awaiting_documentation"})
+
+    notes = "x" * 100
+    with patch("httpx.Client", return_value=fake_client):
+        srv.pass_review("task-uuid", notes)
+
+    args, kwargs = fake_client.post.call_args
+    assert "/api/v2/flow/qa/pass" in args[0]
+    assert kwargs["json"] == {"task_id": "task-uuid", "notes": notes}
+
+
+def test_fail_review_passes_issues_list(monkeypatch: pytest.MonkeyPatch) -> None:  # type: ignore[no-untyped-def]
+    monkeypatch.setenv("ROBOCO_AGENT_ID", "00000000-0000-0000-0000-000000000002")
+    monkeypatch.setenv("ROBOCO_AGENT_ROLE", "qa")
+    monkeypatch.setenv("ROBOCO_ORCHESTRATOR_URL", "http://test-orchestrator:8000")
+
+    import roboco.mcp.flow_server as srv
+
+    importlib.reload(srv)
+
+    fake_client = _make_fake_client({"status": "needs_revision"})
+
+    issues = ["Missing test for /healthz", "Lint errors"]
+    with patch("httpx.Client", return_value=fake_client):
+        srv.fail_review("task-uuid", issues)
+
+    args, kwargs = fake_client.post.call_args
+    assert "/api/v2/flow/qa/fail" in args[0]
+    assert kwargs["json"] == {"task_id": "task-uuid", "issues": issues}

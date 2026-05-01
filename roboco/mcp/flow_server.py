@@ -84,8 +84,28 @@ def i_am_idle() -> dict[str, Any]:
     return _post(_role_path("i_am_idle"), {})
 
 
+# ---------- QA verbs (Phase 2) ----------
+
+
+@mcp.tool()
+def claim_review(task_id: str) -> dict[str, Any]:
+    """QA: claim a task for review. Returns PR diff + evidence inline."""
+    return _post(_role_path("claim_review"), {"task_id": task_id})
+
+
+@mcp.tool(name="pass")
+def pass_review(task_id: str, notes: str) -> dict[str, Any]:
+    """QA: accept the work. notes >= 80 chars; journal:learning required."""
+    return _post(_role_path("pass"), {"task_id": task_id, "notes": notes})
+
+
+@mcp.tool(name="fail")
+def fail_review(task_id: str, issues: list[str]) -> dict[str, Any]:
+    """QA: reject the work with issues. Each issue should be concrete and actionable."""
+    return _post(_role_path("fail"), {"task_id": task_id, "issues": issues})
+
+
 # ---------- Future-phase verbs are NOT registered here ----------
-# Phase 2 will add claim_review, pass, fail.
 # Phase 3 will add claim_doc_task, i_documented, triage, unblock, complete, escalate_up.
 # Phase 4 will add escalate_to_ceo.
 
@@ -121,6 +141,9 @@ def _validate_role_compatibility() -> None:
         "i_am_done",
         "i_am_blocked",
         "i_am_idle",
+        "claim_review",
+        "pass",
+        "fail",  # Phase 2
     }
     missing = flow_tools - implemented
     if missing:
