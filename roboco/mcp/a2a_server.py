@@ -452,6 +452,13 @@ async def _handle_send_chat_message(
     requires_response: bool = False,
 ) -> dict[str, Any]:
     """Send message in existing conversation."""
+    if not conversation_id or not conversation_id.strip():
+        return format_error_response(
+            "INVALID_CONVERSATION_ID",
+            "conversation_id is required and must not be empty. "
+            "Use roboco_a2a_start() to create a conversation first, "
+            "then pass the returned conversation_id here.",
+        )
     async with httpx.AsyncClient() as client:
         try:
             resp = await client.post(
