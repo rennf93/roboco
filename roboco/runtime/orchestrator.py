@@ -194,10 +194,18 @@ def _resolve_agent_cli_model(provider_type: str, model: str) -> str:
 # SPAWN MANIFEST — per-developer tool manifest mounting (Phase 1)
 # =============================================================================
 
-# Phase 3: developer, qa, documenter, cell_pm, main_pm get gateway manifests.
-# Board roles (product_owner, auditor) remain excluded.
+# Phase 4: every role gets a gateway manifest. The legacy briefing path is gone.
 GATEWAY_ENABLED_ROLES: frozenset[str] = frozenset(
-    {"developer", "qa", "documenter", "cell_pm", "main_pm"}
+    {
+        "developer",
+        "qa",
+        "documenter",
+        "cell_pm",
+        "main_pm",
+        "product_owner",
+        "head_marketing",
+        "auditor",
+    }
 )
 
 

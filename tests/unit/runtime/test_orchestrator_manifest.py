@@ -14,18 +14,19 @@ if TYPE_CHECKING:
 
 
 class TestGatewayEnabledRoles:
-    def test_phase3_roles_enabled(self) -> None:
-        """Phase 3: developer + qa + documenter + cell_pm + main_pm get the flag."""
+    def test_all_roles_enabled(self) -> None:
+        """Phase 4: every role gets the gateway manifest."""
         assert "developer" in GATEWAY_ENABLED_ROLES
         assert "qa" in GATEWAY_ENABLED_ROLES
         assert "documenter" in GATEWAY_ENABLED_ROLES
         assert "cell_pm" in GATEWAY_ENABLED_ROLES
         assert "main_pm" in GATEWAY_ENABLED_ROLES
 
-    def test_board_roles_excluded_in_phase3(self) -> None:
-        """Board roles still excluded in Phase 3."""
-        assert "product_owner" not in GATEWAY_ENABLED_ROLES
-        assert "auditor" not in GATEWAY_ENABLED_ROLES
+    def test_board_roles_enabled_in_phase4(self) -> None:
+        """Phase 4: board roles included."""
+        assert "product_owner" in GATEWAY_ENABLED_ROLES
+        assert "head_marketing" in GATEWAY_ENABLED_ROLES
+        assert "auditor" in GATEWAY_ENABLED_ROLES
 
 
 class TestBuildManifestForAgent:
