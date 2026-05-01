@@ -194,9 +194,9 @@ def _resolve_agent_cli_model(provider_type: str, model: str) -> str:
 # SPAWN MANIFEST — per-developer tool manifest mounting (Phase 1)
 # =============================================================================
 
-# Only developer-role agents receive a gateway manifest in Phase 1.
-# Phases 2-4 will extend this set to qa, documenter, etc.
-GATEWAY_ENABLED_ROLES: frozenset[str] = frozenset({"developer"})
+# Developer and QA agents receive a gateway manifest (Phase 2).
+# Phases 3-4 will extend this set to documenter, etc.
+GATEWAY_ENABLED_ROLES: frozenset[str] = frozenset({"developer", "qa"})
 
 
 def _build_manifest_for_agent(agent_id: str, model: str) -> Path | None:

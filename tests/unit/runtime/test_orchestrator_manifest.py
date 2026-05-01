@@ -14,12 +14,10 @@ if TYPE_CHECKING:
 
 
 class TestGatewayEnabledRoles:
-    def test_developer_in_set(self) -> None:
-        """GATEWAY_ENABLED_ROLES must contain developer in Phase 1."""
+    def test_developer_and_qa_in_set(self) -> None:
+        """Phase 2: developer and qa both get gateway manifests."""
         assert "developer" in GATEWAY_ENABLED_ROLES
-
-    def test_qa_not_in_set(self) -> None:
-        assert "qa" not in GATEWAY_ENABLED_ROLES
+        assert "qa" in GATEWAY_ENABLED_ROLES
 
     def test_cell_pm_not_in_set(self) -> None:
         assert "cell_pm" not in GATEWAY_ENABLED_ROLES
@@ -95,16 +93,20 @@ class TestBuildManifestForAgent:
         data = json.loads(result.read_text())
         assert data["agent_id"] == AGENT_UUIDS["be-dev-1"]
 
-    def test_qa_returns_none(self, tmp_path: Path) -> None:
-        """QA role is outside GATEWAY_ENABLED_ROLES — returns None, no file written."""
+    def test_qa_writes_file(self, tmp_path: Path) -> None:
+        """Phase 2: QA role now produces a manifest JSON file (same as developer)."""
         with patch("roboco.runtime.orchestrator.settings") as mock_settings:
             mock_settings.manifest_host_dir = str(tmp_path)
             mock_settings.workspaces_root = str(tmp_path / "workspaces")
 
             result = _build_manifest_for_agent("be-qa", "claude-sonnet-4-6")
 
-        assert result is None
-        assert not list(tmp_path.glob("*.json"))
+        assert result is not None
+        assert result.exists()
+        assert result.name == "be-qa.json"
+        data = json.loads(result.read_text())
+        assert data["role"] == "qa"
+        assert data["team"] == "backend"
 
     def test_cell_pm_returns_none(self, tmp_path: Path) -> None:
         """Cell PM role is outside GATEWAY_ENABLED_ROLES — returns None."""
