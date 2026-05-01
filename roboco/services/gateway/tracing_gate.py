@@ -1,14 +1,15 @@
 """Precondition checks for tracing completeness.
 
-Pure functions over a Task model + ambient context (`journal_reflect_present`,
-`qa_notes_min_chars`). The choreographer queries journal/qa state and passes
-booleans/scalars in; this module decides pass/fail and returns the missing
+Pure functions over a Task model + a GateContext (ambient flags + thresholds).
+The choreographer queries journal/qa state, builds a GateContext, and calls
+check_requirements; this module decides pass/fail and returns the missing
 requirements with concrete error keys.
 """
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from collections.abc import Callable
+from dataclasses import dataclass, field
 from enum import StrEnum
 from typing import Any
 
@@ -26,52 +27,87 @@ class Requirement(StrEnum):
 
 
 @dataclass(frozen=True)
+class GateContext:
+    """Ambient inputs the checker needs that don't live on the Task model."""
+
+    journal_reflect_present: bool = False
+    journal_decision_present: bool = False
+    journal_learning_present: bool = False
+    qa_notes_min_chars: int = 80
+
+
+@dataclass(frozen=True)
 class GateResult:
     passed: bool
-    missing: list[str]
+    missing: list[str] = field(default_factory=list)
+
+
+# A Checker takes (task, ctx) and returns the missing key(s) — empty list when
+# the requirement is satisfied.
+Checker = Callable[[Any, GateContext], list[str]]
+
+
+def _check_plan(task: Any, _ctx: GateContext) -> list[str]:
+    return [] if task.plan else ["plan"]
+
+
+def _check_progress(task: Any, _ctx: GateContext) -> list[str]:
+    has_progress = bool(task.progress_updates) and len(task.progress_updates) >= 1
+    return [] if has_progress else ["progress>=1"]
+
+
+def _check_journal_reflect(_task: Any, ctx: GateContext) -> list[str]:
+    return [] if ctx.journal_reflect_present else ["journal:reflect"]
+
+
+def _check_journal_decision(_task: Any, ctx: GateContext) -> list[str]:
+    return [] if ctx.journal_decision_present else ["journal:decision"]
+
+
+def _check_journal_learning(_task: Any, ctx: GateContext) -> list[str]:
+    return [] if ctx.journal_learning_present else ["journal:learning"]
+
+
+def _check_acceptance_criteria(task: Any, _ctx: GateContext) -> list[str]:
+    return [f"acceptance_criterion:{c}" for c in _unaddressed_criteria(task)]
+
+
+def _check_qa_notes_min_chars(task: Any, ctx: GateContext) -> list[str]:
+    notes = task.qa_notes or ""
+    return [] if len(notes) >= ctx.qa_notes_min_chars else ["qa_notes>=min"]
+
+
+def _check_qa_evidence_inspected(task: Any, _ctx: GateContext) -> list[str]:
+    return [] if task.qa_evidence_inspected else ["qa_evidence_inspected"]
+
+
+def _check_self_verified(task: Any, _ctx: GateContext) -> list[str]:
+    return [] if task.self_verified else ["self_verified"]
+
+
+_CHECKERS: dict[Requirement, Checker] = {
+    Requirement.PLAN: _check_plan,
+    Requirement.PROGRESS_AT_LEAST_ONE: _check_progress,
+    Requirement.JOURNAL_REFLECT: _check_journal_reflect,
+    Requirement.JOURNAL_DECISION: _check_journal_decision,
+    Requirement.JOURNAL_LEARNING: _check_journal_learning,
+    Requirement.ACCEPTANCE_CRITERIA_ADDRESSED: _check_acceptance_criteria,
+    Requirement.QA_NOTES_MIN_CHARS: _check_qa_notes_min_chars,
+    Requirement.QA_EVIDENCE_INSPECTED: _check_qa_evidence_inspected,
+    Requirement.SELF_VERIFIED: _check_self_verified,
+}
 
 
 def check_requirements(
     task: Any,
     requirements: list[Requirement],
-    *,
-    journal_reflect_present: bool = False,
-    journal_decision_present: bool = False,
-    journal_learning_present: bool = False,
-    qa_notes_min_chars: int = 80,
+    ctx: GateContext | None = None,
 ) -> GateResult:
     """Check that every requirement is met. Returns pass + list of missing keys."""
+    context = ctx or GateContext()
     missing: list[str] = []
     for req in requirements:
-        if req is Requirement.PLAN:
-            if not task.plan:
-                missing.append("plan")
-        elif req is Requirement.PROGRESS_AT_LEAST_ONE:
-            if not task.progress_updates or len(task.progress_updates) < 1:
-                missing.append("progress>=1")
-        elif req is Requirement.JOURNAL_REFLECT:
-            if not journal_reflect_present:
-                missing.append("journal:reflect")
-        elif req is Requirement.JOURNAL_DECISION:
-            if not journal_decision_present:
-                missing.append("journal:decision")
-        elif req is Requirement.JOURNAL_LEARNING:
-            if not journal_learning_present:
-                missing.append("journal:learning")
-        elif req is Requirement.ACCEPTANCE_CRITERIA_ADDRESSED:
-            unaddressed = _unaddressed_criteria(task)
-            if unaddressed:
-                for c in unaddressed:
-                    missing.append(f"acceptance_criterion:{c}")
-        elif req is Requirement.QA_NOTES_MIN_CHARS:
-            if not task.qa_notes or len(task.qa_notes) < qa_notes_min_chars:
-                missing.append("qa_notes>=min")
-        elif req is Requirement.QA_EVIDENCE_INSPECTED:
-            if not task.qa_evidence_inspected:
-                missing.append("qa_evidence_inspected")
-        elif req is Requirement.SELF_VERIFIED:
-            if not task.self_verified:
-                missing.append("self_verified")
+        missing.extend(_CHECKERS[req](task, context))
     return GateResult(passed=len(missing) == 0, missing=missing)
 
 

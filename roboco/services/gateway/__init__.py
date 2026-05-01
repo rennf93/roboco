@@ -11,14 +11,14 @@ full design rationale.
 from __future__ import annotations
 
 __all__ = [
-    "envelope",
-    "remediation",
-    "role_config",
+    "choreographer",
     "claimant_lock",
-    "trigger_filter",
-    "tracing_gate",
+    "commit_validator",
+    "envelope",
     "evidence_builder",
     "merge_chain",
-    "commit_validator",
-    "choreographer",
+    "remediation",
+    "role_config",
+    "tracing_gate",
+    "trigger_filter",
 ]

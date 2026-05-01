@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import pytest
-
-from roboco.services.gateway.role_config import ROLE_CONFIGS, RoleConfig, get_role_config
+from roboco.services.gateway.role_config import (
+    ROLE_CONFIGS,
+    get_role_config,
+)
 
 
 class TestRoleConfigCatalog:
@@ -56,6 +58,6 @@ class TestRoleConfigCatalog:
 
     def test_no_role_has_toolsearch(self) -> None:
         # ToolSearch is removed entirely — no manifest should include it
-        for role, cfg in ROLE_CONFIGS.items():
+        for cfg in ROLE_CONFIGS.values():
             assert "ToolSearch" not in cfg.flow_tools
             assert "ToolSearch" not in cfg.do_tools
