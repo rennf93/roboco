@@ -165,9 +165,7 @@ def escalate_up(task_id: str, reason: str) -> dict[str, Any]:
 @mcp.tool()
 def escalate_to_ceo(task_id: str, reason: str) -> dict[str, Any]:
     """Board / Main PM: escalate a strategic task to CEO for final approval."""
-    return _post(
-        _role_path("escalate_to_ceo"), {"task_id": task_id, "reason": reason}
-    )
+    return _post(_role_path("escalate_to_ceo"), {"task_id": task_id, "reason": reason})
 
 
 def _validate_role_compatibility() -> None:
