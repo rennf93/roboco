@@ -945,9 +945,17 @@ class Choreographer:
         )
 
     async def complete(self, agent_id: UUID, task_id: UUID, notes: str) -> Envelope:
-        """Phase 3: PM agent_id completes task_id with notes."""
-        del agent_id, task_id, notes
-        raise NotImplementedError("Phase 3")
+        """Dispatch to cell_pm_complete or main_pm_complete based on agent role."""
+        agent = await self.task.agent_for(agent_id)
+        if agent.role == "cell_pm":
+            return await self.cell_pm_complete(agent_id, task_id, notes)
+        if agent.role == "main_pm":
+            return await self.main_pm_complete(agent_id, task_id, notes)
+        return Envelope.not_authorized(
+            message=f"role {agent.role} cannot complete tasks via this verb",
+            remediate="only cell_pm and main_pm can call complete",
+            context_briefing=await self._briefing_for(agent_id, task_id),
+        )
 
     async def escalate_up(self, agent_id: UUID, task_id: UUID, reason: str) -> Envelope:
         """Phase 3: PM agent_id escalates task_id up with reason."""

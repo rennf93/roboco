@@ -461,3 +461,72 @@ async def test_main_pm_complete_blocks_unfinished_subtasks():
     env = await c.main_pm_complete(main_pm_id, root_task_id, notes="x")
     body = env.as_dict()
     assert body["error"] == "tracing_gap"
+
+
+@pytest.mark.asyncio
+async def test_complete_dispatches_cell_pm():
+    pm_id = uuid4()
+    task_id = uuid4()
+    t = MagicMock(
+        id=task_id, status="awaiting_pm_review", assigned_to=pm_id,
+        parent_task_id=uuid4(), pr_number=8,
+        branch_name="feature/backend/abc--def", team="backend",
+    )
+    after = MagicMock(**{**t.__dict__, "status": "completed"})
+    task_svc = AsyncMock()
+    task_svc.get.return_value = t
+    task_svc.agent_for.return_value = MagicMock(role="cell_pm")
+    task_svc.all_subtasks_terminal.return_value = True
+    task_svc.cell_pm_complete.return_value = after
+    git_svc = AsyncMock()
+    git_svc.pr_merge.return_value = {"merged": True, "merge_commit_sha": "x"}
+    journal_svc = AsyncMock()
+    journal_svc.has_decision_for_task.return_value = True
+    deps = _make_deps(task=task_svc, git=git_svc, journal=journal_svc)
+    c = Choreographer(deps)
+
+    env = await c.complete(pm_id, task_id, notes="ok")
+    assert env.status == "completed"
+    task_svc.cell_pm_complete.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_complete_dispatches_main_pm():
+    main_pm_id = uuid4()
+    root_task_id = uuid4()
+    t = MagicMock(
+        id=root_task_id, status="awaiting_pm_review", assigned_to=main_pm_id,
+        pr_number=None, branch_name="feature/backend/root123",
+        parent_task_id=None, team="backend",
+    )
+    after = MagicMock(**{**t.__dict__, "status": "awaiting_ceo_approval"})
+    task_svc = AsyncMock()
+    task_svc.get.return_value = t
+    task_svc.agent_for.return_value = MagicMock(role="main_pm")
+    task_svc.all_subtasks_terminal.return_value = True
+    task_svc.escalate_to_ceo.return_value = after
+    git_svc = AsyncMock()
+    git_svc.create_pr.return_value = {"pr_number": 99, "pr_url": "x"}
+    journal_svc = AsyncMock()
+    journal_svc.has_decision_for_task.return_value = True
+    deps = _make_deps(task=task_svc, git=git_svc, journal=journal_svc)
+    c = Choreographer(deps)
+
+    env = await c.complete(main_pm_id, root_task_id, notes="ready")
+    assert env.status == "awaiting_ceo_approval"
+    task_svc.escalate_to_ceo.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_complete_rejects_non_pm_role():
+    dev_id = uuid4()
+    task_id = uuid4()
+    task_svc = AsyncMock()
+    task_svc.agent_for.return_value = MagicMock(role="developer")
+    deps = _make_deps(task=task_svc)
+    c = Choreographer(deps)
+
+    env = await c.complete(dev_id, task_id, notes="x")
+    body = env.as_dict()
+    assert body["error"] == "not_authorized"
+    assert "cell_pm" in body["remediate"] and "main_pm" in body["remediate"]
