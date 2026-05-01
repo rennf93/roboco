@@ -22,8 +22,10 @@ Workspace Structure:
 """
 
 from datetime import datetime
+from uuid import UUID
 
 from fastapi import APIRouter, HTTPException, Query, status
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from roboco.api.deps import CurrentAgentContext, DbSession
 from roboco.api.schemas.git import (
@@ -55,6 +57,7 @@ from roboco.services.base import (
     ValidationError,
 )
 from roboco.services.git import get_git_service
+from roboco.services.project import get_project_service
 
 logger = get_logger(__name__)
 
@@ -85,6 +88,30 @@ def _translate_error(e: ServiceError) -> HTTPException:
     )
 
 
+async def _resolve_project_slug(identifier: str, db: AsyncSession) -> str:
+    """Resolve a project identifier (UUID string or slug) to its slug.
+
+    Callers pass whatever string they have — a human-readable slug like
+    "roboco" or a UUID like "3fa85f64-5717-4562-b3fc-2c963f66afa6".
+    We try UUID first; if the string is not a valid UUID we treat it as
+    a slug directly.  In both cases we verify the project exists and
+    return the canonical slug so downstream git-service calls work.
+    """
+    service = get_project_service(db)
+    try:
+        uuid = UUID(identifier)
+        project = await service.get(uuid)
+    except ValueError:
+        project = await service.get_by_slug(identifier)
+
+    if not project:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Project not found: {identifier}",
+        )
+    return str(project.slug)
+
+
 # =============================================================================
 # READ-ONLY ENDPOINTS
 # =============================================================================
@@ -98,6 +125,7 @@ async def get_git_status(
     _task_id: str | None = Query(default=None),
 ) -> GitStatusResponse:
     """Get git status for a project."""
+    project_slug = await _resolve_project_slug(project_slug, db)
     git_service = get_git_service(db)
 
     try:
@@ -135,6 +163,7 @@ async def get_git_log(
     branch: str | None = Query(default=None),
 ) -> GitLogResponse:
     """Get git log for a project."""
+    project_slug = await _resolve_project_slug(project_slug, db)
     git_service = get_git_service(db)
 
     try:
@@ -195,6 +224,7 @@ async def list_branches(
     include_remote: bool = Query(default=False),
 ) -> GitBranchListResponse:
     """List git branches for a project."""
+    project_slug = await _resolve_project_slug(project_slug, db)
     git_service = get_git_service(db)
 
     try:
@@ -247,6 +277,7 @@ async def get_git_diff(
     file_path: str | None = Query(default=None),
 ) -> GitDiffResponse:
     """Get git diff for a project."""
+    project_slug = await _resolve_project_slug(project_slug, db)
     git_service = get_git_service(db)
 
     try:
