@@ -157,6 +157,19 @@ def escalate_up(task_id: str, reason: str) -> dict[str, Any]:
     return _post(_role_path("escalate_up"), {"task_id": task_id, "reason": reason})
 
 
+# ---------- Board + Auditor verbs (Phase 4) ----------
+# Board (PO + Head Marketing) + Main PM share: escalate_to_ceo
+# Auditor uses triage (already registered above) for read-only anomaly surfacing.
+
+
+@mcp.tool()
+def escalate_to_ceo(task_id: str, reason: str) -> dict[str, Any]:
+    """Board / Main PM: escalate a strategic task to CEO for final approval."""
+    return _post(
+        _role_path("escalate_to_ceo"), {"task_id": task_id, "reason": reason}
+    )
+
+
 def _validate_role_compatibility() -> None:
     """Warn if the manifest references verbs we haven't implemented yet."""
     import json
@@ -202,6 +215,8 @@ def _validate_role_compatibility() -> None:
         "unblock",
         "complete",
         "escalate_up",
+        # board + auditor (Phase 4)
+        "escalate_to_ceo",
     }
     missing = flow_tools - implemented
     if missing:

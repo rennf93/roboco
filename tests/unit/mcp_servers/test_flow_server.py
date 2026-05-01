@@ -36,16 +36,16 @@ def _make_fake_client(return_value: dict[str, Any]) -> MagicMock:
     return fake_client
 
 
-def test_role_path_uses_agent_role(flow_module) -> None:  # type: ignore[no-untyped-def]
+def test_role_path_uses_agent_role(flow_module: types.ModuleType) -> None:
     expected = "/api/v2/flow/developer/give_me_work"
     assert flow_module._role_path("give_me_work") == expected
 
 
-def test_role_path_includes_verb(flow_module) -> None:  # type: ignore[no-untyped-def]
+def test_role_path_includes_verb(flow_module: types.ModuleType) -> None:
     assert flow_module._role_path("i_am_done") == "/api/v2/flow/developer/i_am_done"
 
 
-def test_give_me_work_posts_to_orchestrator(flow_module) -> None:  # type: ignore[no-untyped-def]
+def test_give_me_work_posts_to_orchestrator(flow_module: types.ModuleType) -> None:
     fake_client = _make_fake_client({"status": "idle", "task_id": None})
 
     with patch("httpx.Client", return_value=fake_client):
@@ -59,7 +59,7 @@ def test_give_me_work_posts_to_orchestrator(flow_module) -> None:  # type: ignor
     assert kwargs["headers"]["X-Agent-Role"] == "developer"
 
 
-def test_i_will_work_on_passes_plan(flow_module) -> None:  # type: ignore[no-untyped-def]
+def test_i_will_work_on_passes_plan(flow_module: types.ModuleType) -> None:
     fake_client = _make_fake_client({"status": "in_progress"})
 
     with patch("httpx.Client", return_value=fake_client):
@@ -70,7 +70,7 @@ def test_i_will_work_on_passes_plan(flow_module) -> None:  # type: ignore[no-unt
     assert "/api/v2/flow/developer/i_will_work_on" in args[0]
 
 
-def test_i_will_work_on_plan_defaults_to_none(flow_module) -> None:  # type: ignore[no-untyped-def]
+def test_i_will_work_on_plan_defaults_to_none(flow_module: types.ModuleType) -> None:
     fake_client = _make_fake_client({"status": "in_progress"})
 
     with patch("httpx.Client", return_value=fake_client):
@@ -80,7 +80,7 @@ def test_i_will_work_on_plan_defaults_to_none(flow_module) -> None:  # type: ign
     assert kwargs["json"] == {"task_id": "task-uuid", "plan": None}
 
 
-def test_i_have_committed_sends_message(flow_module) -> None:  # type: ignore[no-untyped-def]
+def test_i_have_committed_sends_message(flow_module: types.ModuleType) -> None:
     fake_client = _make_fake_client({"status": "recorded"})
 
     with patch("httpx.Client", return_value=fake_client):
@@ -91,7 +91,7 @@ def test_i_have_committed_sends_message(flow_module) -> None:  # type: ignore[no
     assert kwargs["json"] == {"message": "fix: typo in handler"}
 
 
-def test_i_am_done_sends_task_id_and_notes(flow_module) -> None:  # type: ignore[no-untyped-def]
+def test_i_am_done_sends_task_id_and_notes(flow_module: types.ModuleType) -> None:
     fake_client = _make_fake_client({"status": "awaiting_qa"})
 
     with patch("httpx.Client", return_value=fake_client):
@@ -103,7 +103,7 @@ def test_i_am_done_sends_task_id_and_notes(flow_module) -> None:  # type: ignore
     assert kwargs["json"] == {"task_id": "task-abc", "notes": "all tests green"}
 
 
-def test_i_am_done_notes_defaults_to_empty(flow_module) -> None:  # type: ignore[no-untyped-def]
+def test_i_am_done_notes_defaults_to_empty(flow_module: types.ModuleType) -> None:
     fake_client = _make_fake_client({"status": "awaiting_qa"})
 
     with patch("httpx.Client", return_value=fake_client):
@@ -113,7 +113,7 @@ def test_i_am_done_notes_defaults_to_empty(flow_module) -> None:  # type: ignore
     assert kwargs["json"]["notes"] == ""
 
 
-def test_i_am_blocked_sends_reason(flow_module) -> None:  # type: ignore[no-untyped-def]
+def test_i_am_blocked_sends_reason(flow_module: types.ModuleType) -> None:
     fake_client = _make_fake_client({"status": "blocked"})
 
     with patch("httpx.Client", return_value=fake_client):
@@ -124,7 +124,7 @@ def test_i_am_blocked_sends_reason(flow_module) -> None:  # type: ignore[no-unty
     assert kwargs["json"] == {"task_id": "task-xyz", "reason": "waiting for env var"}
 
 
-def test_i_am_idle_posts_empty_body(flow_module) -> None:  # type: ignore[no-untyped-def]
+def test_i_am_idle_posts_empty_body(flow_module: types.ModuleType) -> None:
     fake_client = _make_fake_client({"status": "idle"})
 
     with patch("httpx.Client", return_value=fake_client):
@@ -136,7 +136,7 @@ def test_i_am_idle_posts_empty_body(flow_module) -> None:  # type: ignore[no-unt
     assert "/api/v2/flow/developer/i_am_idle" in fake_client.post.call_args[0][0]
 
 
-def test_claim_review_posts_to_qa_path(monkeypatch: pytest.MonkeyPatch) -> None:  # type: ignore[no-untyped-def]
+def test_claim_review_posts_to_qa_path(monkeypatch: pytest.MonkeyPatch) -> None:
     """When AGENT_ROLE=qa, claim_review forwards to /api/v2/flow/qa/claim_review."""
     monkeypatch.setenv("ROBOCO_AGENT_ID", "00000000-0000-0000-0000-000000000002")
     monkeypatch.setenv("ROBOCO_AGENT_ROLE", "qa")
@@ -157,7 +157,7 @@ def test_claim_review_posts_to_qa_path(monkeypatch: pytest.MonkeyPatch) -> None:
     assert kwargs["json"] == {"task_id": "task-uuid"}
 
 
-def test_pass_review_passes_notes(monkeypatch: pytest.MonkeyPatch) -> None:  # type: ignore[no-untyped-def]
+def test_pass_review_passes_notes(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("ROBOCO_AGENT_ID", "00000000-0000-0000-0000-000000000002")
     monkeypatch.setenv("ROBOCO_AGENT_ROLE", "qa")
     monkeypatch.setenv("ROBOCO_ORCHESTRATOR_URL", "http://test-orchestrator:8000")
@@ -177,7 +177,7 @@ def test_pass_review_passes_notes(monkeypatch: pytest.MonkeyPatch) -> None:  # t
     assert kwargs["json"] == {"task_id": "task-uuid", "notes": notes}
 
 
-def test_fail_review_passes_issues_list(monkeypatch: pytest.MonkeyPatch) -> None:  # type: ignore[no-untyped-def]
+def test_fail_review_passes_issues_list(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("ROBOCO_AGENT_ID", "00000000-0000-0000-0000-000000000002")
     monkeypatch.setenv("ROBOCO_AGENT_ROLE", "qa")
     monkeypatch.setenv("ROBOCO_ORCHESTRATOR_URL", "http://test-orchestrator:8000")
@@ -197,7 +197,7 @@ def test_fail_review_passes_issues_list(monkeypatch: pytest.MonkeyPatch) -> None
     assert kwargs["json"] == {"task_id": "task-uuid", "issues": issues}
 
 
-def test_claim_doc_task_posts_to_documenter_path(  # type: ignore[no-untyped-def]
+def test_claim_doc_task_posts_to_documenter_path(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """When AGENT_ROLE=documenter, claim_doc_task forwards to documenter flow."""
@@ -220,7 +220,7 @@ def test_claim_doc_task_posts_to_documenter_path(  # type: ignore[no-untyped-def
     assert kwargs["json"] == {"task_id": "task-uuid"}
 
 
-def test_i_documented_passes_notes_and_files(monkeypatch: pytest.MonkeyPatch) -> None:  # type: ignore[no-untyped-def]
+def test_i_documented_passes_notes_and_files(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("ROBOCO_AGENT_ID", "00000000-0000-0000-0000-000000000003")
     monkeypatch.setenv("ROBOCO_AGENT_ROLE", "documenter")
     monkeypatch.setenv("ROBOCO_ORCHESTRATOR_URL", "http://test-orchestrator:8000")
@@ -244,7 +244,7 @@ def test_i_documented_passes_notes_and_files(monkeypatch: pytest.MonkeyPatch) ->
     }
 
 
-def test_triage_uses_role_path(monkeypatch: pytest.MonkeyPatch) -> None:  # type: ignore[no-untyped-def]
+def test_triage_uses_role_path(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("ROBOCO_AGENT_ID", "00000000-0000-0000-0000-000000000004")
     monkeypatch.setenv("ROBOCO_AGENT_ROLE", "cell_pm")
     monkeypatch.setenv("ROBOCO_ORCHESTRATOR_URL", "http://test-orchestrator:8000")
@@ -264,7 +264,7 @@ def test_triage_uses_role_path(monkeypatch: pytest.MonkeyPatch) -> None:  # type
     assert kwargs["json"] == {}
 
 
-def test_triage_all_uses_role_path(monkeypatch: pytest.MonkeyPatch) -> None:  # type: ignore[no-untyped-def]
+def test_triage_all_uses_role_path(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("ROBOCO_AGENT_ID", "00000000-0000-0000-0000-000000000005")
     monkeypatch.setenv("ROBOCO_AGENT_ROLE", "main_pm")
     monkeypatch.setenv("ROBOCO_ORCHESTRATOR_URL", "http://test-orchestrator:8000")
@@ -284,7 +284,7 @@ def test_triage_all_uses_role_path(monkeypatch: pytest.MonkeyPatch) -> None:  # 
     assert kwargs["json"] == {}
 
 
-def test_unblock_with_restore_true(monkeypatch: pytest.MonkeyPatch) -> None:  # type: ignore[no-untyped-def]
+def test_unblock_with_restore_true(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("ROBOCO_AGENT_ID", "00000000-0000-0000-0000-000000000004")
     monkeypatch.setenv("ROBOCO_AGENT_ROLE", "cell_pm")
     monkeypatch.setenv("ROBOCO_ORCHESTRATOR_URL", "http://test-orchestrator:8000")
@@ -304,7 +304,7 @@ def test_unblock_with_restore_true(monkeypatch: pytest.MonkeyPatch) -> None:  # 
     assert kwargs["json"] == {"task_id": "task-uuid", "restore": True}
 
 
-def test_unblock_with_restore_false(monkeypatch: pytest.MonkeyPatch) -> None:  # type: ignore[no-untyped-def]
+def test_unblock_with_restore_false(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("ROBOCO_AGENT_ID", "00000000-0000-0000-0000-000000000004")
     monkeypatch.setenv("ROBOCO_AGENT_ROLE", "cell_pm")
     monkeypatch.setenv("ROBOCO_ORCHESTRATOR_URL", "http://test-orchestrator:8000")
@@ -323,7 +323,7 @@ def test_unblock_with_restore_false(monkeypatch: pytest.MonkeyPatch) -> None:  #
     assert kwargs["json"] == {"task_id": "task-uuid", "restore": False}
 
 
-def test_complete_passes_notes(monkeypatch: pytest.MonkeyPatch) -> None:  # type: ignore[no-untyped-def]
+def test_complete_passes_notes(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("ROBOCO_AGENT_ID", "00000000-0000-0000-0000-000000000004")
     monkeypatch.setenv("ROBOCO_AGENT_ROLE", "cell_pm")
     monkeypatch.setenv("ROBOCO_ORCHESTRATOR_URL", "http://test-orchestrator:8000")
@@ -343,7 +343,7 @@ def test_complete_passes_notes(monkeypatch: pytest.MonkeyPatch) -> None:  # type
     assert kwargs["json"] == {"task_id": "task-uuid", "notes": "approved"}
 
 
-def test_escalate_up_passes_reason(monkeypatch: pytest.MonkeyPatch) -> None:  # type: ignore[no-untyped-def]
+def test_escalate_up_passes_reason(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("ROBOCO_AGENT_ID", "00000000-0000-0000-0000-000000000004")
     monkeypatch.setenv("ROBOCO_AGENT_ROLE", "cell_pm")
     monkeypatch.setenv("ROBOCO_ORCHESTRATOR_URL", "http://test-orchestrator:8000")
@@ -363,4 +363,28 @@ def test_escalate_up_passes_reason(monkeypatch: pytest.MonkeyPatch) -> None:  # 
     assert kwargs["json"] == {
         "task_id": "task-uuid",
         "reason": "cross-cell help needed",
+    }
+
+
+def test_escalate_to_ceo_passes_reason(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Board / Main PM verb forwards to /api/v2/flow/<role>/escalate_to_ceo."""
+    monkeypatch.setenv("ROBOCO_AGENT_ID", "00000000-0000-0000-0000-000000000005")
+    monkeypatch.setenv("ROBOCO_AGENT_ROLE", "product_owner")
+    monkeypatch.setenv("ROBOCO_ORCHESTRATOR_URL", "http://test-orchestrator:8000")
+
+    import roboco.mcp.flow_server as srv
+
+    importlib.reload(srv)
+
+    fake_client = _make_fake_client({"status": "awaiting_ceo_approval"})
+
+    with patch("httpx.Client", return_value=fake_client):
+        result = srv.escalate_to_ceo("task-uuid", reason="strategic decision needed")
+
+    assert result["status"] == "awaiting_ceo_approval"
+    args, kwargs = fake_client.post.call_args
+    assert "/api/v2/flow/product_owner/escalate_to_ceo" in args[0]
+    assert kwargs["json"] == {
+        "task_id": "task-uuid",
+        "reason": "strategic decision needed",
     }
