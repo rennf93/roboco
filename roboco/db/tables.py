@@ -1604,3 +1604,41 @@ class ModelAssignmentTable(Base):
         ),
         Index("ix_model_assignments_provider", "provider_config_id"),
     )
+
+
+# =============================================================================
+# GATEWAY TRIGGER TABLE
+# =============================================================================
+
+
+class GatewayTriggerTable(Base):
+    """Records every dispatcher spawn-decision (spawn / queue / drop) for
+    observability and gateway-tuning.  Written only when
+    ``settings.gateway_enabled`` is True; the legacy spawn path never touches
+    this table.
+    """
+
+    __tablename__ = "gateway_triggers"
+
+    id: Mapped[UUID] = mapped_column(
+        UUID(as_uuid=True), primary_key=True, default=uuid4
+    )
+    trigger_kind: Mapped[str] = mapped_column(String(40), nullable=False)
+    trigger_id: Mapped[str | None] = mapped_column(String(80), nullable=True)
+    task_id: Mapped[UUID | None] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("tasks.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    target_role: Mapped[str] = mapped_column(String(40), nullable=False)
+    decision: Mapped[str] = mapped_column(String(20), nullable=False)
+    decision_reason: Mapped[str] = mapped_column(String(200), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=lambda: datetime.now(UTC), nullable=False
+    )
+
+    __table_args__ = (
+        Index("ix_gateway_triggers_task_id", "task_id"),
+        Index("ix_gateway_triggers_created_at", "created_at"),
+        Index("ix_gateway_triggers_kind_decision", "trigger_kind", "decision"),
+    )
