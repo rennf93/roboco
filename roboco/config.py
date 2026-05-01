@@ -287,6 +287,13 @@ class Settings(BaseSettings):
         default=False,
         description="Enable Agent Gateway feature (Phase 0 flag)",
     )
+    manifest_host_dir: str = Field(
+        default="/var/lib/roboco/manifests",
+        description=(
+            "Host-side directory where per-agent tool manifests are written before "
+            "being bind-mounted into developer containers as /app/tool-manifest.json"
+        ),
+    )
     public_base_url: str = Field(
         default="http://127.0.0.1:8000",
         description="Public base URL for commit-trailer links",

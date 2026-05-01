@@ -191,6 +191,65 @@ def _resolve_agent_cli_model(provider_type: str, model: str) -> str:
 
 
 # =============================================================================
+# SPAWN MANIFEST — per-developer tool manifest mounting (Phase 1)
+# =============================================================================
+
+# Only developer-role agents receive a gateway manifest in Phase 1.
+# Phases 2-4 will extend this set to qa, documenter, etc.
+GATEWAY_ENABLED_ROLES: frozenset[str] = frozenset({"developer"})
+
+
+def _build_manifest_for_agent(agent_id: str, model: str) -> Path | None:
+    """Write a SpawnManifest for developer-role agents; return the host path.
+
+    Returns ``None`` for roles outside ``GATEWAY_ENABLED_ROLES`` so callers
+    can skip the manifest mount entirely without extra branching.
+
+    Args:
+        agent_id: Agent slug (e.g. ``be-dev-1``).
+        model:    Resolved model name passed to ``SpawnInputs.agent_model``.
+
+    Returns:
+        Absolute host path to the written JSON file, or ``None``.
+    """
+    from uuid import UUID
+
+    from roboco.runtime.spawn_manifest import (
+        SpawnInputs,
+        build_for_role,
+        write_manifest,
+    )
+
+    role = get_agent_role(agent_id) or "developer"
+    if role not in GATEWAY_ENABLED_ROLES:
+        return None
+
+    team = get_agent_team(agent_id) or "backend"
+    # UUID for the agent comes from the seeded AGENT_UUIDS map (slug -> UUID
+    # string).  Fall back to uuid4 for unknown agents so the function stays
+    # callable in tests without seeded data.
+    raw_uuid = AGENT_UUIDS.get(agent_id)
+    agent_uuid = UUID(raw_uuid) if raw_uuid else __import__("uuid").uuid4()
+
+    workspace_path = Path(settings.workspaces_root) / "roboco" / team / agent_id
+
+    manifest = build_for_role(
+        SpawnInputs(
+            agent_id=agent_uuid,
+            role=role,
+            team=team,
+            workspace_path=workspace_path,
+            agent_model=model,
+        )
+    )
+
+    host_dir = Path(settings.manifest_host_dir)
+    host_path = host_dir / f"{agent_id}.json"
+    write_manifest(manifest, host_path)
+    return host_path
+
+
+# =============================================================================
 # GATEWAY PRE-SPAWN CHECK (gated behind settings.gateway_enabled)
 # =============================================================================
 
@@ -1486,6 +1545,23 @@ class AgentOrchestrator:
         # spawned sub-task uses the same model as the parent agent.
         subagent_model = _resolve_agent_cli_model(config.provider_type, config.model)
         cmd.extend(["-e", f"CLAUDE_CODE_SUBAGENT_MODEL={subagent_model}"])
+        # Spawn manifest + gateway flag — developer role only in Phase 1.
+        # _build_manifest_for_agent writes the JSON file to the host and
+        # returns the path; other roles get None and the gateway flag stays off.
+        manifest_host_path = _build_manifest_for_agent(config.agent_id, subagent_model)
+        if manifest_host_path:
+            cmd.extend(
+                [
+                    "-v",
+                    f"{manifest_host_path}:/app/tool-manifest.json:ro",
+                    "-e",
+                    "ROBOCO_GATEWAY_ENABLED=true",
+                    "-e",
+                    "ROBOCO_TOOL_MANIFEST_PATH=/app/tool-manifest.json",
+                ]
+            )
+        else:
+            cmd.extend(["-e", "ROBOCO_GATEWAY_ENABLED=false"])
         return cmd
 
     @staticmethod
