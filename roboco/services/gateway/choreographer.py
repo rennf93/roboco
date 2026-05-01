@@ -535,11 +535,53 @@ class Choreographer:
         )
 
     async def fail_review(
-        self, agent_id: UUID, task_id: UUID, issues: list[str]
+        self, qa_agent_id: UUID, task_id: UUID, issues: list[str]
     ) -> Envelope:
-        """Phase 2: QA agent_id fails task_id with issues."""
-        del agent_id, task_id, issues
-        raise NotImplementedError("Phase 2")
+        """QA fails the task with concrete issues; transitions to needs_revision."""
+        t = await self.task.get(task_id)
+        if t is None:
+            return Envelope.not_found(message=f"task {task_id} not found")
+        if t.assigned_to != qa_agent_id:
+            return Envelope.not_authorized(
+                message="not assigned to you",
+                remediate="claim it via claim_review(task_id) first",
+                context_briefing=await self._briefing_for(qa_agent_id, task_id),
+            )
+        if not issues:
+            return Envelope.invalid_state(
+                message="fail_review requires at least one issue",
+                remediate="pass issues=['<concrete actionable issue>', ...]",
+                context_briefing=await self._briefing_for(qa_agent_id, task_id),
+            )
+
+        has_learning = await self.journal.has_learning_for_task(qa_agent_id, task_id)
+        notes = "Issues:\n" + "\n".join(f"- {issue}" for issue in issues)
+        missing = self._check_qa_pass_gates(
+            notes=notes,
+            has_learning=has_learning,
+            evidence_inspected=t.qa_evidence_inspected,
+        )
+        if missing:
+            return self._qa_tracing_gap(
+                missing, task_id, await self._briefing_for(qa_agent_id, task_id)
+            )
+
+        t = await self.task.qa_fail(qa_agent_id, task_id, notes, issues)
+        # A2A back to original developer (now reassigned)
+        if t.assigned_to is not None:
+            await self.a2a.send(
+                from_agent=qa_agent_id,
+                to_agent=t.assigned_to,
+                skill="code_review",
+                task_id=task_id,
+                body=f"QA needs changes. Issues:\n{notes}",
+            )
+        return Envelope.ok(
+            status=str(t.status),
+            task_id=str(task_id),
+            next="idle — dev will revise and re-submit",
+            context_briefing=await self._briefing_for(qa_agent_id, task_id),
+        )
 
     # --- Phase 3 (documenter + PM) verbs ---
 

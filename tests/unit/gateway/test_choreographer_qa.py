@@ -268,3 +268,101 @@ async def test_pass_review_not_assigned_returns_not_authorized():
     env = await c.pass_review(qa_id, task_id, notes="x")
     body = env.as_dict()
     assert body["error"] == "not_authorized"
+
+
+@pytest.mark.asyncio
+async def test_fail_review_succeeds():
+    qa_id = uuid4()
+    task_id = uuid4()
+    dev_id = uuid4()
+    t = MagicMock(
+        id=task_id,
+        status="claimed",
+        assigned_to=qa_id,
+        qa_evidence_inspected=True,
+    )
+    after = MagicMock(
+        **{**t.__dict__, "status": "needs_revision", "assigned_to": dev_id},
+    )
+    task_svc = AsyncMock()
+    task_svc.get.return_value = t
+    task_svc.qa_fail.return_value = after
+    journal_svc = AsyncMock()
+    journal_svc.has_learning_for_task.return_value = True
+    a2a_svc = AsyncMock()
+    deps = _make_deps(task=task_svc, journal=journal_svc, a2a=a2a_svc)
+    c = Choreographer(deps)
+
+    issues = [
+        "Missing unit test coverage for /healthz endpoint — add at least one assertion",
+        "Lint errors in /api/foo.py: unused import and missing return type annotation",
+    ]
+    env = await c.fail_review(qa_id, task_id, issues)
+    assert env.error is None
+    assert env.status == "needs_revision"
+    task_svc.qa_fail.assert_awaited_once()
+    a2a_svc.send.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_fail_review_requires_at_least_one_issue():
+    qa_id = uuid4()
+    task_id = uuid4()
+    t = MagicMock(
+        id=task_id,
+        status="claimed",
+        assigned_to=qa_id,
+        qa_evidence_inspected=True,
+    )
+    task_svc = AsyncMock()
+    task_svc.get.return_value = t
+    journal_svc = AsyncMock()
+    journal_svc.has_learning_for_task.return_value = True
+    deps = _make_deps(task=task_svc, journal=journal_svc)
+    c = Choreographer(deps)
+
+    env = await c.fail_review(qa_id, task_id, issues=[])
+    body = env.as_dict()
+    assert body["error"] == "invalid_state"
+    assert "issue" in body["message"].lower()
+
+
+@pytest.mark.asyncio
+async def test_fail_review_not_assigned_returns_not_authorized():
+    qa_id = uuid4()
+    other = uuid4()
+    task_id = uuid4()
+    t = MagicMock(
+        id=task_id, status="claimed", assigned_to=other, qa_evidence_inspected=True
+    )
+    task_svc = AsyncMock()
+    task_svc.get.return_value = t
+    deps = _make_deps(task=task_svc)
+    c = Choreographer(deps)
+
+    env = await c.fail_review(qa_id, task_id, issues=["x"])
+    body = env.as_dict()
+    assert body["error"] == "not_authorized"
+
+
+@pytest.mark.asyncio
+async def test_fail_review_blocks_when_journal_learning_missing():
+    qa_id = uuid4()
+    task_id = uuid4()
+    t = MagicMock(
+        id=task_id,
+        status="claimed",
+        assigned_to=qa_id,
+        qa_evidence_inspected=True,
+    )
+    task_svc = AsyncMock()
+    task_svc.get.return_value = t
+    journal_svc = AsyncMock()
+    journal_svc.has_learning_for_task.return_value = False  # no learning
+    deps = _make_deps(task=task_svc, journal=journal_svc)
+    c = Choreographer(deps)
+
+    env = await c.fail_review(qa_id, task_id, issues=["x" * 20])
+    body = env.as_dict()
+    assert body["error"] == "tracing_gap"
+    assert "journal:learning" in body["missing"]
