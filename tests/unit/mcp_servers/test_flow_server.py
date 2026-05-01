@@ -195,3 +195,172 @@ def test_fail_review_passes_issues_list(monkeypatch: pytest.MonkeyPatch) -> None
     args, kwargs = fake_client.post.call_args
     assert "/api/v2/flow/qa/fail" in args[0]
     assert kwargs["json"] == {"task_id": "task-uuid", "issues": issues}
+
+
+def test_claim_doc_task_posts_to_documenter_path(  # type: ignore[no-untyped-def]
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """When AGENT_ROLE=documenter, claim_doc_task forwards to documenter flow."""
+    monkeypatch.setenv("ROBOCO_AGENT_ID", "00000000-0000-0000-0000-000000000003")
+    monkeypatch.setenv("ROBOCO_AGENT_ROLE", "documenter")
+    monkeypatch.setenv("ROBOCO_ORCHESTRATOR_URL", "http://test-orchestrator:8000")
+
+    import roboco.mcp.flow_server as srv
+
+    importlib.reload(srv)
+
+    fake_client = _make_fake_client({"status": "claimed"})
+
+    with patch("httpx.Client", return_value=fake_client):
+        result = srv.claim_doc_task("task-uuid")
+
+    assert result["status"] == "claimed"
+    args, kwargs = fake_client.post.call_args
+    assert "/api/v2/flow/documenter/claim_doc_task" in args[0]
+    assert kwargs["json"] == {"task_id": "task-uuid"}
+
+
+def test_i_documented_passes_notes_and_files(monkeypatch: pytest.MonkeyPatch) -> None:  # type: ignore[no-untyped-def]
+    monkeypatch.setenv("ROBOCO_AGENT_ID", "00000000-0000-0000-0000-000000000003")
+    monkeypatch.setenv("ROBOCO_AGENT_ROLE", "documenter")
+    monkeypatch.setenv("ROBOCO_ORCHESTRATOR_URL", "http://test-orchestrator:8000")
+
+    import roboco.mcp.flow_server as srv
+
+    importlib.reload(srv)
+
+    fake_client = _make_fake_client({"status": "awaiting_pm_review"})
+
+    with patch("httpx.Client", return_value=fake_client):
+        result = srv.i_documented("task-uuid", "wrote docs/foo.md", ["docs/foo.md"])
+
+    assert result["status"] == "awaiting_pm_review"
+    args, kwargs = fake_client.post.call_args
+    assert "/api/v2/flow/documenter/i_documented" in args[0]
+    assert kwargs["json"] == {
+        "task_id": "task-uuid",
+        "notes": "wrote docs/foo.md",
+        "files": ["docs/foo.md"],
+    }
+
+
+def test_triage_uses_role_path(monkeypatch: pytest.MonkeyPatch) -> None:  # type: ignore[no-untyped-def]
+    monkeypatch.setenv("ROBOCO_AGENT_ID", "00000000-0000-0000-0000-000000000004")
+    monkeypatch.setenv("ROBOCO_AGENT_ROLE", "cell_pm")
+    monkeypatch.setenv("ROBOCO_ORCHESTRATOR_URL", "http://test-orchestrator:8000")
+
+    import roboco.mcp.flow_server as srv
+
+    importlib.reload(srv)
+
+    fake_client = _make_fake_client({"status": "blocked"})
+
+    with patch("httpx.Client", return_value=fake_client):
+        result = srv.triage()
+
+    assert result["status"] == "blocked"
+    args, kwargs = fake_client.post.call_args
+    assert "/api/v2/flow/cell_pm/triage" in args[0]
+    assert kwargs["json"] == {}
+
+
+def test_triage_all_uses_role_path(monkeypatch: pytest.MonkeyPatch) -> None:  # type: ignore[no-untyped-def]
+    monkeypatch.setenv("ROBOCO_AGENT_ID", "00000000-0000-0000-0000-000000000005")
+    monkeypatch.setenv("ROBOCO_AGENT_ROLE", "main_pm")
+    monkeypatch.setenv("ROBOCO_ORCHESTRATOR_URL", "http://test-orchestrator:8000")
+
+    import roboco.mcp.flow_server as srv
+
+    importlib.reload(srv)
+
+    fake_client = _make_fake_client({"status": "idle"})
+
+    with patch("httpx.Client", return_value=fake_client):
+        result = srv.triage_all()
+
+    assert result["status"] == "idle"
+    args, kwargs = fake_client.post.call_args
+    assert "/api/v2/flow/main_pm/triage_all" in args[0]
+    assert kwargs["json"] == {}
+
+
+def test_unblock_with_restore_true(monkeypatch: pytest.MonkeyPatch) -> None:  # type: ignore[no-untyped-def]
+    monkeypatch.setenv("ROBOCO_AGENT_ID", "00000000-0000-0000-0000-000000000004")
+    monkeypatch.setenv("ROBOCO_AGENT_ROLE", "cell_pm")
+    monkeypatch.setenv("ROBOCO_ORCHESTRATOR_URL", "http://test-orchestrator:8000")
+
+    import roboco.mcp.flow_server as srv
+
+    importlib.reload(srv)
+
+    fake_client = _make_fake_client({"status": "in_progress"})
+
+    with patch("httpx.Client", return_value=fake_client):
+        result = srv.unblock("task-uuid")
+
+    assert result["status"] == "in_progress"
+    args, kwargs = fake_client.post.call_args
+    assert "/api/v2/flow/cell_pm/unblock" in args[0]
+    assert kwargs["json"] == {"task_id": "task-uuid", "restore": True}
+
+
+def test_unblock_with_restore_false(monkeypatch: pytest.MonkeyPatch) -> None:  # type: ignore[no-untyped-def]
+    monkeypatch.setenv("ROBOCO_AGENT_ID", "00000000-0000-0000-0000-000000000004")
+    monkeypatch.setenv("ROBOCO_AGENT_ROLE", "cell_pm")
+    monkeypatch.setenv("ROBOCO_ORCHESTRATOR_URL", "http://test-orchestrator:8000")
+
+    import roboco.mcp.flow_server as srv
+
+    importlib.reload(srv)
+
+    fake_client = _make_fake_client({"status": "in_progress"})
+
+    with patch("httpx.Client", return_value=fake_client):
+        result = srv.unblock("task-uuid", restore=False)
+
+    assert result["status"] == "in_progress"
+    args, kwargs = fake_client.post.call_args
+    assert kwargs["json"] == {"task_id": "task-uuid", "restore": False}
+
+
+def test_complete_passes_notes(monkeypatch: pytest.MonkeyPatch) -> None:  # type: ignore[no-untyped-def]
+    monkeypatch.setenv("ROBOCO_AGENT_ID", "00000000-0000-0000-0000-000000000004")
+    monkeypatch.setenv("ROBOCO_AGENT_ROLE", "cell_pm")
+    monkeypatch.setenv("ROBOCO_ORCHESTRATOR_URL", "http://test-orchestrator:8000")
+
+    import roboco.mcp.flow_server as srv
+
+    importlib.reload(srv)
+
+    fake_client = _make_fake_client({"status": "completed"})
+
+    with patch("httpx.Client", return_value=fake_client):
+        result = srv.complete("task-uuid", notes="approved")
+
+    assert result["status"] == "completed"
+    args, kwargs = fake_client.post.call_args
+    assert "/api/v2/flow/cell_pm/complete" in args[0]
+    assert kwargs["json"] == {"task_id": "task-uuid", "notes": "approved"}
+
+
+def test_escalate_up_passes_reason(monkeypatch: pytest.MonkeyPatch) -> None:  # type: ignore[no-untyped-def]
+    monkeypatch.setenv("ROBOCO_AGENT_ID", "00000000-0000-0000-0000-000000000004")
+    monkeypatch.setenv("ROBOCO_AGENT_ROLE", "cell_pm")
+    monkeypatch.setenv("ROBOCO_ORCHESTRATOR_URL", "http://test-orchestrator:8000")
+
+    import roboco.mcp.flow_server as srv
+
+    importlib.reload(srv)
+
+    fake_client = _make_fake_client({"status": "blocked"})
+
+    with patch("httpx.Client", return_value=fake_client):
+        result = srv.escalate_up("task-uuid", reason="cross-cell help needed")
+
+    assert result["status"] == "blocked"
+    args, kwargs = fake_client.post.call_args
+    assert "/api/v2/flow/cell_pm/escalate_up" in args[0]
+    assert kwargs["json"] == {
+        "task_id": "task-uuid",
+        "reason": "cross-cell help needed",
+    }

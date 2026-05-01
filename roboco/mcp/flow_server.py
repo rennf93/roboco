@@ -105,9 +105,56 @@ def fail_review(task_id: str, issues: list[str]) -> dict[str, Any]:
     return _post(_role_path("fail"), {"task_id": task_id, "issues": issues})
 
 
-# ---------- Future-phase verbs are NOT registered here ----------
-# Phase 3 will add claim_doc_task, i_documented, triage, unblock, complete, escalate_up.
-# Phase 4 will add escalate_to_ceo.
+# ---------- Doc verbs (Phase 3) ----------
+
+
+@mcp.tool()
+def claim_doc_task(task_id: str) -> dict[str, Any]:
+    """Doc: claim a task in awaiting_documentation state."""
+    return _post(_role_path("claim_doc_task"), {"task_id": task_id})
+
+
+@mcp.tool()
+def i_documented(task_id: str, notes: str, files: list[str]) -> dict[str, Any]:
+    """Doc: mark documentation complete. files=['<doc-path>', ...]."""
+    return _post(
+        _role_path("i_documented"),
+        {"task_id": task_id, "notes": notes, "files": files},
+    )
+
+
+# ---------- PM verbs (Phase 3) ----------
+# Cell PM + Main PM share: triage, unblock, complete, escalate_up
+
+
+@mcp.tool()
+def triage() -> dict[str, Any]:
+    """PM: get the most important task to act on next."""
+    return _post(_role_path("triage"), {})
+
+
+@mcp.tool()
+def triage_all() -> dict[str, Any]:
+    """Main PM: triage across all teams."""
+    return _post(_role_path("triage_all"), {})
+
+
+@mcp.tool()
+def unblock(task_id: str, restore: bool = True) -> dict[str, Any]:
+    """PM: unblock a task. restore=True (default) restores pre_block_state."""
+    return _post(_role_path("unblock"), {"task_id": task_id, "restore": restore})
+
+
+@mcp.tool()
+def complete(task_id: str, notes: str) -> dict[str, Any]:
+    """PM: complete a task. Cell PM auto-merges PR; Main PM opens PR + escalates."""
+    return _post(_role_path("complete"), {"task_id": task_id, "notes": notes})
+
+
+@mcp.tool()
+def escalate_up(task_id: str, reason: str) -> dict[str, Any]:
+    """PM/Doc/Dev: escalate to your role's escalation target."""
+    return _post(_role_path("escalate_up"), {"task_id": task_id, "reason": reason})
 
 
 def _validate_role_compatibility() -> None:
@@ -135,15 +182,26 @@ def _validate_role_compatibility() -> None:
     role = manifest.get("role", AGENT_ROLE)
     flow_tools = set(manifest.get("flow_tools", []))
     implemented = {
+        # dev (Phase 1)
         "give_me_work",
         "i_will_work_on",
         "i_have_committed",
         "i_am_done",
         "i_am_blocked",
         "i_am_idle",
+        # qa (Phase 2)
         "claim_review",
         "pass",
-        "fail",  # Phase 2
+        "fail",
+        # doc (Phase 3)
+        "claim_doc_task",
+        "i_documented",
+        # pm (Phase 3)
+        "triage",
+        "triage_all",
+        "unblock",
+        "complete",
+        "escalate_up",
     }
     missing = flow_tools - implemented
     if missing:
