@@ -24,13 +24,16 @@ from roboco.runtime import AgentOrchestrator
 from roboco.services.a2a import A2AService
 from roboco.services.audit import get_audit_service
 from roboco.services.gateway.choreographer import Choreographer, ChoreographerDeps
+from roboco.services.gateway.content_actions import ContentActions, ContentActionsDeps
 from roboco.services.gateway.evidence_repo import EvidenceRepo
 from roboco.services.git import GitService
 from roboco.services.journal import JournalService
+from roboco.services.messaging import MessagingService
 from roboco.services.permissions import AgentContext, PermissionService
 from roboco.services.repositories import resolve_agent_identity, resolve_agent_uuid
 from roboco.services.task import TaskService
 from roboco.services.work_session import WorkSessionService
+from roboco.services.workspace import WorkspaceService
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Coroutine
@@ -503,6 +506,22 @@ async def get_choreographer(
             journal=JournalService(db_session),
             audit=get_audit_service(),
             evidence_repo=EvidenceRepo(db_session),
+        )
+    )
+
+
+async def get_content_actions(
+    db_session: DbSession,
+) -> ContentActions:
+    """Build a ContentActions with all 6 service dependencies wired up."""
+    return ContentActions(
+        ContentActionsDeps(
+            task=TaskService(db_session),
+            git=GitService(db_session),
+            messaging=MessagingService(db_session),
+            a2a=A2AService(db_session),
+            journal=JournalService(db_session),
+            workspace=WorkspaceService(db_session),
         )
     )
 
