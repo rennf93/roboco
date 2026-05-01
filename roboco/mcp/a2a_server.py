@@ -28,8 +28,9 @@ from roboco.agents_config import (
 )
 from roboco.mcp.utils import format_error_response
 
-# Current agent ID from environment (set by orchestrator)
+# Current agent ID and role from environment (set by orchestrator)
 AGENT_ID = os.environ.get("ROBOCO_AGENT_ID", "unknown")
+AGENT_ROLE = os.environ.get("ROBOCO_AGENT_ROLE", "developer")
 
 # SDK Server configuration
 SDK_URL = os.environ.get("ROBOCO_SDK_URL", "http://localhost:9000")
@@ -172,6 +173,7 @@ async def _auto_ack_a2a_notifications(
                     "to_agent": from_agent,  # Us (the responder)
                     "task_id": task_id,
                 },
+                headers={"X-Agent-ID": AGENT_ID, "X-Agent-Role": AGENT_ROLE},
                 timeout=5.0,
             )
 
@@ -192,6 +194,7 @@ async def _check_pending_a2a(
                     "to_agent": target_agent,
                     "task_id": task_id,
                 },
+                headers={"X-Agent-ID": AGENT_ID, "X-Agent-Role": AGENT_ROLE},
                 timeout=5.0,
             )
             resp.raise_for_status()
