@@ -363,7 +363,7 @@ async def test_i_am_done_full_catch_up() -> None:
     env = await c.i_am_done(agent_id, task_id, "all done")
     assert env.error is None
     assert env.status == "awaiting_qa"
-    git_svc.push.assert_awaited_once_with(branch)
+    git_svc.push_branch.assert_awaited_once_with(branch)
     git_svc.create_pr.assert_awaited_once()
     a2a_svc.send.assert_awaited_once()
     body = env.as_dict()
