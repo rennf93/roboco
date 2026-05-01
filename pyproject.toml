@@ -343,3 +343,11 @@ DEP003 = ["starlette"]
 dev = [
     "types-aiofiles",
 ]
+
+# =============================================================================
+# Roboco Commit Validator
+# =============================================================================
+[tool.roboco.commits]
+subject_min_chars = 20
+banned_words = ["wip", "tmp", "asdf", "oops", "fix", "update", "change", "stuff", "things"]
+prefer_conventional = true
