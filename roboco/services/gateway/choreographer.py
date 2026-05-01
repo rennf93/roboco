@@ -11,60 +11,12 @@ injection so later phases just fill in the bodies.
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Protocol
+from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
     from uuid import UUID
 
     from roboco.services.gateway.envelope import Envelope
-
-
-class TaskServiceProto(Protocol):
-    """Protocol for task service dependency."""
-
-    async def get(self, task_id: UUID) -> object: ...
-
-
-class WorkSessionServiceProto(Protocol):
-    """Protocol for work session service dependency."""
-
-    async def has_unpushed_commits(self, work_session_id: UUID | None) -> bool: ...
-
-
-class GitServiceProto(Protocol):
-    """Protocol for git service dependency."""
-
-    async def push(self, branch_name: str) -> None: ...
-
-    async def create_pr(
-        self, branch_name: str, *, parent: str, is_root_pr: bool
-    ) -> dict: ...
-
-    async def pr_merge(self, pr_number: int, *, target: str) -> dict: ...
-
-
-class A2AServiceProto(Protocol):
-    """Protocol for agent-to-agent service dependency."""
-
-    async def send(
-        self,
-        *,
-        from_agent: UUID,
-        to_agent: UUID,
-        skill: str,
-        task_id: UUID,
-        body: str,
-    ) -> dict: ...
-
-
-class JournalServiceProto(Protocol):
-    """Protocol for journal service dependency."""
-
-    async def has_reflect_for_task(self, agent_id: UUID, task_id: UUID) -> bool: ...
-
-    async def has_decision_for_task(self, agent_id: UUID, task_id: UUID) -> bool: ...
-
-    async def has_learning_for_task(self, agent_id: UUID, task_id: UUID) -> bool: ...
 
 
 class Choreographer:
@@ -73,16 +25,20 @@ class Choreographer:
     Constructor takes already-instantiated services (DI). Verb methods are
     async. Each returns a standardized Envelope. Implementations land
     progressively: see __init__ docstring.
+
+    The five service deps are typed as ``Any`` in Phase 0 — Phase 1+ will
+    introduce per-service Protocol typing alongside the actual verb
+    implementations that exercise the methods.
     """
 
     def __init__(
         self,
         *,
-        task: TaskServiceProto,
-        work_session: WorkSessionServiceProto,
-        git: GitServiceProto,
-        a2a: A2AServiceProto,
-        journal: JournalServiceProto,
+        task: Any,
+        work_session: Any,
+        git: Any,
+        a2a: Any,
+        journal: Any,
     ) -> None:
         """Initialize Choreographer with service dependencies.
 
@@ -123,6 +79,7 @@ class Choreographer:
         self, agent_id: UUID, task_id: UUID, reason: str
     ) -> Envelope:
         """Phase 1: block task_id for agent_id with reason."""
+        del agent_id, task_id, reason
         raise NotImplementedError("Phase 1")
 
     async def i_am_idle(self, agent_id: UUID) -> Envelope:
@@ -143,6 +100,7 @@ class Choreographer:
         self, agent_id: UUID, task_id: UUID, issues: list[str]
     ) -> Envelope:
         """Phase 2: QA agent_id fails task_id with issues."""
+        del agent_id, task_id, issues
         raise NotImplementedError("Phase 2")
 
     # --- Phase 3 (documenter + PM) verbs ---
@@ -159,6 +117,7 @@ class Choreographer:
         files: list[str],
     ) -> Envelope:
         """Phase 3: documenter completes docs with notes and files."""
+        del agent_id, task_id, notes, files
         raise NotImplementedError("Phase 3")
 
     async def triage(self, agent_id: UUID) -> Envelope:
@@ -172,7 +131,10 @@ class Choreographer:
     async def unblock(
         self, agent_id: UUID, task_id: UUID, *, restore: bool = True
     ) -> Envelope:
-        """Phase 3: PM agent_id unblocks task_id, optionally restoring to pending."""
+        """Phase 3: PM agent_id unblocks task_id; restore=True (default) returns
+        task to its pre_block_state. restore=False legacy: dumps to in_progress.
+        """
+        del agent_id, task_id, restore  # Phase 3 implementation will use these
         raise NotImplementedError("Phase 3")
 
     async def complete(self, agent_id: UUID, task_id: UUID, notes: str) -> Envelope:
@@ -181,6 +143,7 @@ class Choreographer:
 
     async def escalate_up(self, agent_id: UUID, task_id: UUID, reason: str) -> Envelope:
         """Phase 3: PM agent_id escalates task_id up with reason."""
+        del agent_id, task_id, reason
         raise NotImplementedError("Phase 3")
 
     # --- Phase 4 (board) verbs ---
@@ -189,4 +152,5 @@ class Choreographer:
         self, agent_id: UUID, task_id: UUID, reason: str
     ) -> Envelope:
         """Phase 4: board agent_id escalates task_id to CEO with reason."""
+        del agent_id, task_id, reason
         raise NotImplementedError("Phase 4")
