@@ -683,15 +683,63 @@ class Choreographer:
             context_briefing=await self._briefing_for(doc_agent_id, task_id),
         )
 
-    async def triage(self, agent_id: UUID) -> Envelope:
-        """Phase 3: PM agent_id triages next task in queue."""
-        del agent_id
-        raise NotImplementedError("Phase 3")
+    async def triage(self, pm_agent_id: UUID) -> Envelope:
+        """Cell PM triage: blocked > awaiting_pm_review > idle."""
+        pm = await self.task.agent_for(pm_agent_id)
+        blocked = await self.task.list_blocked_for_team(pm.team)
+        if blocked:
+            t = blocked[0]
+            return Envelope.ok(
+                status=str(t.status),
+                task_id=str(t.id),
+                next=f"investigate the block, then unblock(task_id='{t.id}')",
+                context_briefing=await self._briefing_for(pm_agent_id, t.id),
+            )
+        awaiting = await self.task.list_awaiting_pm_review_for_team(pm.team)
+        if awaiting:
+            t = awaiting[0]
+            return Envelope.ok(
+                status=str(t.status),
+                task_id=str(t.id),
+                next=f"review and complete(task_id='{t.id}')",
+                context_briefing=await self._briefing_for(pm_agent_id, t.id),
+            )
+        return Envelope.ok(
+            status="idle",
+            task_id=None,
+            next="no PM work — call i_am_idle",
+            context_briefing=await self._briefing_for(pm_agent_id, None),
+        )
 
-    async def triage_all(self, agent_id: UUID) -> Envelope:
-        """Phase 3: PM agent_id triages all waiting tasks."""
-        del agent_id
-        raise NotImplementedError("Phase 3")
+    async def triage_all(self, pm_agent_id: UUID) -> Envelope:
+        """Main PM triage: across all teams. blocked > awaiting_pm_review > idle."""
+        blocked = await self.task.list_blocked_all_teams()
+        if blocked:
+            t = blocked[0]
+            return Envelope.ok(
+                status=str(t.status),
+                task_id=str(t.id),
+                next=(
+                    f"escalation/cross-cell help required: investigate, then "
+                    f"unblock(task_id='{t.id}') or escalate_up()"
+                ),
+                context_briefing=await self._briefing_for(pm_agent_id, t.id),
+            )
+        awaiting = await self.task.list_awaiting_main_pm_all()
+        if awaiting:
+            t = awaiting[0]
+            return Envelope.ok(
+                status=str(t.status),
+                task_id=str(t.id),
+                next=f"complete(task_id='{t.id}') opens master PR + escalates to CEO",
+                context_briefing=await self._briefing_for(pm_agent_id, t.id),
+            )
+        return Envelope.ok(
+            status="idle",
+            task_id=None,
+            next="no Main PM work",
+            context_briefing=await self._briefing_for(pm_agent_id, None),
+        )
 
     async def unblock(
         self, agent_id: UUID, task_id: UUID, *, restore: bool = True
