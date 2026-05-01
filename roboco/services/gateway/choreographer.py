@@ -782,6 +782,81 @@ class Choreographer:
             context_briefing=await self._briefing_for(pm_agent_id, task_id),
         )
 
+    async def _cell_pm_complete_guard(
+        self, pm_agent_id: UUID, task_id: UUID, t: Any
+    ) -> Envelope | None:
+        """Return a rejection Envelope if pre-merge guards fail; else None."""
+        if t.assigned_to != pm_agent_id:
+            return Envelope.not_authorized(
+                message="not assigned to you",
+                remediate="claim the task or wait for it to be assigned",
+                context_briefing=await self._briefing_for(pm_agent_id, task_id),
+            )
+        if str(t.status) != "awaiting_pm_review":
+            return Envelope.invalid_state(
+                message=(
+                    f"task {task_id} is in {t.status}, expected awaiting_pm_review"
+                ),
+                remediate="this task is not ready for completion",
+                context_briefing=await self._briefing_for(pm_agent_id, task_id),
+            )
+        has_decision = await self.journal.has_decision_for_task(pm_agent_id, task_id)
+        if not has_decision:
+            from roboco.services.gateway.remediation import (
+                hint_for_missing_journal_decision,
+            )
+
+            return Envelope.tracing_gap(
+                missing=["journal:decision"],
+                remediate=hint_for_missing_journal_decision(),
+                context_briefing=await self._briefing_for(pm_agent_id, task_id),
+            )
+        all_terminal = await self.task.all_subtasks_terminal(task_id)
+        if not all_terminal:
+            return Envelope.tracing_gap(
+                missing=["subtasks not all terminal"],
+                remediate=(
+                    "all subtasks must be in completed/cancelled before"
+                    " completing parent. Call triage() to find pending subtasks."
+                ),
+                context_briefing=await self._briefing_for(pm_agent_id, task_id),
+            )
+        if t.pr_number is None:
+            return Envelope.invalid_state(
+                message="task has no PR; cannot merge",
+                remediate=(
+                    "this state should not occur post-Phase-1;"
+                    " investigate dev's i_am_done path"
+                ),
+                context_briefing=await self._briefing_for(pm_agent_id, task_id),
+            )
+        return None
+
+    async def cell_pm_complete(
+        self, pm_agent_id: UUID, task_id: UUID, notes: str
+    ) -> Envelope:
+        """Cell PM completes a task — auto-merges leaf PR into parent branch."""
+        t = await self.task.get(task_id)
+        if t is None:
+            return Envelope.not_found(message=f"task {task_id} not found")
+        guard = await self._cell_pm_complete_guard(pm_agent_id, task_id, t)
+        if guard is not None:
+            return guard
+        target = parent_branch_for(t.branch_name)
+        merge_result = await self.git.pr_merge(t.pr_number, target=target)
+        t = await self.task.cell_pm_complete(
+            pm_agent_id,
+            task_id,
+            notes,
+            merge_commit=merge_result.get("merge_commit_sha"),
+        )
+        return Envelope.ok(
+            status=str(t.status),
+            task_id=str(task_id),
+            next=f"merged into {target}; triage() for next item",
+            context_briefing=await self._briefing_for(pm_agent_id, task_id),
+        )
+
     async def complete(self, agent_id: UUID, task_id: UUID, notes: str) -> Envelope:
         """Phase 3: PM agent_id completes task_id with notes."""
         del agent_id, task_id, notes

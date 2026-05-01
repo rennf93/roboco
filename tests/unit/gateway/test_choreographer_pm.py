@@ -232,3 +232,121 @@ async def test_unblock_restore_false_returns_legacy_message():
     body = env.as_dict()
     assert body["status"] == "in_progress"
     assert "re-engage" in body["next"].lower()
+
+
+@pytest.mark.asyncio
+async def test_cell_pm_complete_merges_then_completes():
+    pm_id = uuid4()
+    task_id = uuid4()
+    t = MagicMock(
+        id=task_id,
+        status="awaiting_pm_review",
+        assigned_to=pm_id,
+        pr_number=8,
+        branch_name="feature/backend/abc--def",
+        parent_task_id=uuid4(),
+        team="backend",
+    )
+    after = MagicMock(**{**t.__dict__, "status": "completed"})
+    task_svc = AsyncMock()
+    task_svc.get.return_value = t
+    task_svc.all_subtasks_terminal.return_value = True
+    task_svc.cell_pm_complete.return_value = after
+    git_svc = AsyncMock()
+    git_svc.pr_merge.return_value = {"merged": True, "merge_commit_sha": "merge-abc"}
+    journal_svc = AsyncMock()
+    journal_svc.has_decision_for_task.return_value = True
+    deps = _make_deps(task=task_svc, git=git_svc, journal=journal_svc)
+    c = Choreographer(deps)
+
+    env = await c.cell_pm_complete(pm_id, task_id, notes="reviewed and approved")
+    assert env.error is None
+    assert env.status == "completed"
+    git_svc.pr_merge.assert_awaited_once_with(8, target="feature/backend/abc")
+
+
+@pytest.mark.asyncio
+async def test_cell_pm_complete_blocks_if_subtasks_unfinished():
+    pm_id = uuid4()
+    task_id = uuid4()
+    t = MagicMock(
+        id=task_id,
+        status="awaiting_pm_review",
+        assigned_to=pm_id,
+        parent_task_id=uuid4(),
+    )
+    task_svc = AsyncMock()
+    task_svc.get.return_value = t
+    task_svc.all_subtasks_terminal.return_value = False
+    journal_svc = AsyncMock()
+    journal_svc.has_decision_for_task.return_value = True
+    deps = _make_deps(task=task_svc, journal=journal_svc)
+    c = Choreographer(deps)
+
+    env = await c.cell_pm_complete(pm_id, task_id, notes="x")
+    body = env.as_dict()
+    assert body["error"] == "tracing_gap"
+    assert "subtasks" in str(body["missing"]).lower()
+
+
+@pytest.mark.asyncio
+async def test_cell_pm_complete_requires_journal_decision():
+    pm_id = uuid4()
+    task_id = uuid4()
+    t = MagicMock(
+        id=task_id,
+        status="awaiting_pm_review",
+        assigned_to=pm_id,
+        parent_task_id=uuid4(),
+    )
+    task_svc = AsyncMock()
+    task_svc.get.return_value = t
+    task_svc.all_subtasks_terminal.return_value = True
+    journal_svc = AsyncMock()
+    journal_svc.has_decision_for_task.return_value = False
+    deps = _make_deps(task=task_svc, journal=journal_svc)
+    c = Choreographer(deps)
+
+    env = await c.cell_pm_complete(pm_id, task_id, notes="x")
+    body = env.as_dict()
+    assert body["error"] == "tracing_gap"
+    assert "journal:decision" in body["missing"]
+
+
+@pytest.mark.asyncio
+async def test_cell_pm_complete_no_pr_returns_invalid_state():
+    pm_id = uuid4()
+    task_id = uuid4()
+    t = MagicMock(
+        id=task_id,
+        status="awaiting_pm_review",
+        assigned_to=pm_id,
+        pr_number=None,
+        branch_name="feature/backend/abc--def",
+        parent_task_id=uuid4(),
+    )
+    task_svc = AsyncMock()
+    task_svc.get.return_value = t
+    task_svc.all_subtasks_terminal.return_value = True
+    journal_svc = AsyncMock()
+    journal_svc.has_decision_for_task.return_value = True
+    deps = _make_deps(task=task_svc, journal=journal_svc)
+    c = Choreographer(deps)
+
+    env = await c.cell_pm_complete(pm_id, task_id, notes="x")
+    assert env.as_dict()["error"] == "invalid_state"
+
+
+@pytest.mark.asyncio
+async def test_cell_pm_complete_not_assigned_returns_not_authorized():
+    pm_id = uuid4()
+    other = uuid4()
+    task_id = uuid4()
+    t = MagicMock(id=task_id, status="awaiting_pm_review", assigned_to=other)
+    task_svc = AsyncMock()
+    task_svc.get.return_value = t
+    deps = _make_deps(task=task_svc)
+    c = Choreographer(deps)
+
+    env = await c.cell_pm_complete(pm_id, task_id, notes="x")
+    assert env.as_dict()["error"] == "not_authorized"
