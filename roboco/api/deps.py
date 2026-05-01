@@ -21,8 +21,16 @@ from roboco.db.base import get_db
 from roboco.db.tables import AgentTable
 from roboco.models import AgentRole, Team
 from roboco.runtime import AgentOrchestrator
+from roboco.services.a2a import A2AService
+from roboco.services.audit import get_audit_service
+from roboco.services.gateway.choreographer import Choreographer, ChoreographerDeps
+from roboco.services.gateway.evidence_repo import EvidenceRepo
+from roboco.services.git import GitService
+from roboco.services.journal import JournalService
 from roboco.services.permissions import AgentContext, PermissionService
 from roboco.services.repositories import resolve_agent_identity, resolve_agent_uuid
+from roboco.services.task import TaskService
+from roboco.services.work_session import WorkSessionService
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Coroutine
@@ -475,6 +483,28 @@ def require_task_action(
             )
 
     return check_permission
+
+
+# =============================================================================
+# GATEWAY / CHOREOGRAPHER DEPENDENCIES
+# =============================================================================
+
+
+async def get_choreographer(
+    db_session: DbSession,
+) -> Choreographer:
+    """Build a Choreographer with all 7 service dependencies wired up."""
+    return Choreographer(
+        ChoreographerDeps(
+            task=TaskService(db_session),
+            work_session=WorkSessionService(db_session),
+            git=GitService(db_session),
+            a2a=A2AService(db_session),
+            journal=JournalService(db_session),
+            audit=get_audit_service(),
+            evidence_repo=EvidenceRepo(db_session),
+        )
+    )
 
 
 # =============================================================================

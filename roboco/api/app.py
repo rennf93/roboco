@@ -33,6 +33,7 @@ from roboco.api.routes.sessions import router as sessions_router
 from roboco.api.routes.stream import router as stream_router
 from roboco.api.routes.tasks import router as tasks_router
 from roboco.api.routes.test import router as test_router
+from roboco.api.routes.v2 import flow_dev as flow_dev_module
 from roboco.api.routes.work_session import router as work_session_router
 from roboco.api.websocket import router as ws_router
 from roboco.config import settings
@@ -293,6 +294,9 @@ def create_app() -> FastAPI:
         prefix=f"{api_prefix}/docs",
         tags=["Documentation"],
     )
+
+    # API v2 — intent-verb flow endpoints
+    app.include_router(flow_dev_module.router)
 
     # ==========================================================================
     # WebSocket
