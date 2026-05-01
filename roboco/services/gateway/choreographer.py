@@ -14,6 +14,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
+from roboco.config import settings
 from roboco.services.gateway.envelope import Envelope
 from roboco.services.gateway.evidence_builder import (
     BriefingInputs,
@@ -448,10 +449,90 @@ class Choreographer:
             context_briefing=await self._briefing_for(qa_agent_id, task_id),
         )
 
-    async def pass_review(self, agent_id: UUID, task_id: UUID, notes: str) -> Envelope:
-        """Phase 2: QA agent_id passes task_id with notes."""
-        del agent_id, task_id, notes
-        raise NotImplementedError("Phase 2")
+    async def pass_review(
+        self, qa_agent_id: UUID, task_id: UUID, notes: str
+    ) -> Envelope:
+        """QA passes the task; transitions awaiting_qa → awaiting_documentation.
+
+        Gated on tracing requirements: qa_notes >= settings.qa_notes_min_chars,
+        journal:learning entry exists for this task, and qa_evidence_inspected
+        is True (auto-set by claim_review).
+        """
+        t = await self.task.get(task_id)
+        if t is None:
+            return Envelope.not_found(message=f"task {task_id} not found")
+        if t.assigned_to != qa_agent_id:
+            return Envelope.not_authorized(
+                message="not assigned to you",
+                remediate="claim it via claim_review(task_id) first",
+                context_briefing=await self._briefing_for(qa_agent_id, task_id),
+            )
+
+        has_learning = await self.journal.has_learning_for_task(qa_agent_id, task_id)
+        missing = self._check_qa_pass_gates(
+            notes=notes,
+            has_learning=has_learning,
+            evidence_inspected=t.qa_evidence_inspected,
+        )
+        if missing:
+            return self._qa_tracing_gap(
+                missing, task_id, await self._briefing_for(qa_agent_id, task_id)
+            )
+
+        t = await self.task.qa_pass(qa_agent_id, task_id, notes)
+
+        doc_agent = await self.task.documenter_for_team(t.team)
+        if doc_agent is not None:
+            await self.a2a.send(
+                from_agent=qa_agent_id,
+                to_agent=doc_agent.id,
+                skill="documentation",
+                task_id=task_id,
+                body=f"QA passed task {t.id}. PR: {t.pr_url}. Please document.",
+            )
+        return Envelope.ok(
+            status=str(t.status),
+            task_id=str(task_id),
+            next="idle until next QA work arrives",
+            context_briefing=await self._briefing_for(qa_agent_id, task_id),
+        )
+
+    def _check_qa_pass_gates(
+        self, *, notes: str, has_learning: bool, evidence_inspected: bool
+    ) -> list[str]:
+        """Return list of missing gate keys; empty list if all pass."""
+        missing: list[str] = []
+        if not notes or len(notes) < settings.qa_notes_min_chars:
+            missing.append("qa_notes>=min")
+        if not has_learning:
+            missing.append("journal:learning")
+        if not evidence_inspected:
+            missing.append("qa_evidence_inspected")
+        return missing
+
+    def _qa_tracing_gap(
+        self, missing: list[str], task_id: UUID, briefing: dict[str, Any]
+    ) -> Envelope:
+        """Build a tracing_gap envelope with role-appropriate hints."""
+        from roboco.services.gateway.remediation import (
+            hint_for_evidence_not_inspected,
+            hint_for_missing_journal_learning,
+            hint_for_missing_qa_notes,
+        )
+
+        hint_map = {
+            "qa_notes>=min": hint_for_missing_qa_notes(),
+            "journal:learning": hint_for_missing_journal_learning(),
+            "qa_evidence_inspected": hint_for_evidence_not_inspected(
+                task_id=str(task_id)
+            ),
+        }
+        hints = [hint_map[m] for m in missing if m in hint_map]
+        return Envelope.tracing_gap(
+            missing=missing,
+            remediate=" ; ".join(hints),
+            context_briefing=briefing,
+        )
 
     async def fail_review(
         self, agent_id: UUID, task_id: UUID, issues: list[str]

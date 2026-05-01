@@ -140,3 +140,131 @@ async def test_claim_review_task_not_found_returns_not_found():
     env = await c.claim_review(qa_id, task_id)
     body = env.as_dict()
     assert body["error"] == "not_found"
+
+
+@pytest.mark.asyncio
+async def test_pass_review_requires_qa_notes_min_chars():
+    qa_id = uuid4()
+    task_id = uuid4()
+    t = MagicMock(
+        id=task_id,
+        status="claimed",
+        assigned_to=qa_id,
+        qa_evidence_inspected=True,
+    )
+    task_svc = AsyncMock()
+    task_svc.get.return_value = t
+    journal_svc = AsyncMock()
+    journal_svc.has_learning_for_task.return_value = True
+    deps = _make_deps(task=task_svc, journal=journal_svc)
+    c = Choreographer(deps)
+
+    env = await c.pass_review(qa_id, task_id, notes="too short")
+    body = env.as_dict()
+    assert body["error"] == "tracing_gap"
+    assert "qa_notes>=min" in body["missing"]
+
+
+@pytest.mark.asyncio
+async def test_pass_review_requires_journal_learning():
+    qa_id = uuid4()
+    task_id = uuid4()
+    t = MagicMock(
+        id=task_id,
+        status="claimed",
+        assigned_to=qa_id,
+        qa_evidence_inspected=True,
+    )
+    task_svc = AsyncMock()
+    task_svc.get.return_value = t
+    journal_svc = AsyncMock()
+    journal_svc.has_learning_for_task.return_value = False
+    deps = _make_deps(task=task_svc, journal=journal_svc)
+    c = Choreographer(deps)
+
+    notes = "x" * 100  # long enough
+    env = await c.pass_review(qa_id, task_id, notes=notes)
+    body = env.as_dict()
+    assert body["error"] == "tracing_gap"
+    assert "journal:learning" in body["missing"]
+
+
+@pytest.mark.asyncio
+async def test_pass_review_requires_evidence_inspected():
+    qa_id = uuid4()
+    task_id = uuid4()
+    t = MagicMock(
+        id=task_id,
+        status="claimed",
+        assigned_to=qa_id,
+        qa_evidence_inspected=False,
+    )
+    task_svc = AsyncMock()
+    task_svc.get.return_value = t
+    journal_svc = AsyncMock()
+    journal_svc.has_learning_for_task.return_value = True
+    deps = _make_deps(task=task_svc, journal=journal_svc)
+    c = Choreographer(deps)
+
+    notes = "x" * 100
+    env = await c.pass_review(qa_id, task_id, notes=notes)
+    body = env.as_dict()
+    assert body["error"] == "tracing_gap"
+    assert "qa_evidence_inspected" in body["missing"]
+
+
+@pytest.mark.asyncio
+async def test_pass_review_succeeds_and_transitions():
+    qa_id = uuid4()
+    task_id = uuid4()
+    t = MagicMock(
+        id=task_id,
+        status="claimed",
+        assigned_to=qa_id,
+        qa_evidence_inspected=True,
+    )
+    after = MagicMock(
+        **{
+            **t.__dict__,
+            "status": "awaiting_documentation",
+            "team": "backend",
+            "pr_url": "https://x/pr/8",
+        },
+    )
+    task_svc = AsyncMock()
+    task_svc.get.return_value = t
+    task_svc.qa_pass.return_value = after
+    task_svc.documenter_for_team.return_value = MagicMock(id=uuid4())
+    journal_svc = AsyncMock()
+    journal_svc.has_learning_for_task.return_value = True
+    a2a_svc = AsyncMock()
+    deps = _make_deps(task=task_svc, journal=journal_svc, a2a=a2a_svc)
+    c = Choreographer(deps)
+
+    notes = (
+        "Reviewed PR carefully. Branch convention correct. Commit prefix "
+        "verified. README diff matches spec. All acceptance criteria met."
+    )
+    env = await c.pass_review(qa_id, task_id, notes=notes)
+    assert env.error is None
+    assert env.status == "awaiting_documentation"
+    task_svc.qa_pass.assert_awaited_once()
+    a2a_svc.send.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_pass_review_not_assigned_returns_not_authorized():
+    qa_id = uuid4()
+    other = uuid4()
+    task_id = uuid4()
+    t = MagicMock(
+        id=task_id, status="claimed", assigned_to=other, qa_evidence_inspected=True
+    )
+    task_svc = AsyncMock()
+    task_svc.get.return_value = t
+    deps = _make_deps(task=task_svc)
+    c = Choreographer(deps)
+
+    env = await c.pass_review(qa_id, task_id, notes="x")
+    body = env.as_dict()
+    assert body["error"] == "not_authorized"
