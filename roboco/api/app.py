@@ -34,6 +34,8 @@ from roboco.api.routes.stream import router as stream_router
 from roboco.api.routes.tasks import router as tasks_router
 from roboco.api.routes.test import router as test_router
 from roboco.api.routes.v2 import do as do_module
+from roboco.api.routes.v2 import flow_auditor as flow_auditor_module
+from roboco.api.routes.v2 import flow_board as flow_board_module
 from roboco.api.routes.v2 import flow_cell_pm as flow_cell_pm_module
 from roboco.api.routes.v2 import flow_dev as flow_dev_module
 from roboco.api.routes.v2 import flow_doc as flow_doc_module
@@ -314,6 +316,12 @@ def create_app() -> FastAPI:
 
     # API v2 — intent-verb main PM flow endpoints
     app.include_router(flow_main_pm_module.router)
+
+    # API v2 — intent-verb board flow endpoints
+    app.include_router(flow_board_module.router)
+
+    # API v2 — intent-verb auditor flow endpoints
+    app.include_router(flow_auditor_module.router)
 
     # API v2 — content-tool endpoints
     app.include_router(do_module.router)

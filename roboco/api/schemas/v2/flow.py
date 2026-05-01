@@ -73,3 +73,8 @@ class CompleteRequest(BaseModel):
 class EscalateUpRequest(BaseModel):
     task_id: UUID
     reason: str = Field(..., min_length=1)
+
+
+class EscalateToCeoRequest(BaseModel):
+    task_id: UUID
+    reason: str = Field(..., min_length=1)
