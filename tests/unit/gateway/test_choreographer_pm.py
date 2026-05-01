@@ -468,9 +468,13 @@ async def test_complete_dispatches_cell_pm():
     pm_id = uuid4()
     task_id = uuid4()
     t = MagicMock(
-        id=task_id, status="awaiting_pm_review", assigned_to=pm_id,
-        parent_task_id=uuid4(), pr_number=8,
-        branch_name="feature/backend/abc--def", team="backend",
+        id=task_id,
+        status="awaiting_pm_review",
+        assigned_to=pm_id,
+        parent_task_id=uuid4(),
+        pr_number=8,
+        branch_name="feature/backend/abc--def",
+        team="backend",
     )
     after = MagicMock(**{**t.__dict__, "status": "completed"})
     task_svc = AsyncMock()
@@ -495,9 +499,13 @@ async def test_complete_dispatches_main_pm():
     main_pm_id = uuid4()
     root_task_id = uuid4()
     t = MagicMock(
-        id=root_task_id, status="awaiting_pm_review", assigned_to=main_pm_id,
-        pr_number=None, branch_name="feature/backend/root123",
-        parent_task_id=None, team="backend",
+        id=root_task_id,
+        status="awaiting_pm_review",
+        assigned_to=main_pm_id,
+        pr_number=None,
+        branch_name="feature/backend/root123",
+        parent_task_id=None,
+        team="backend",
     )
     after = MagicMock(**{**t.__dict__, "status": "awaiting_ceo_approval"})
     task_svc = AsyncMock()
@@ -530,3 +538,83 @@ async def test_complete_rejects_non_pm_role():
     body = env.as_dict()
     assert body["error"] == "not_authorized"
     assert "cell_pm" in body["remediate"] and "main_pm" in body["remediate"]
+
+
+@pytest.mark.asyncio
+async def test_escalate_up_routes_by_escalation_target():
+    pm_id = uuid4()
+    task_id = uuid4()
+    t = MagicMock(id=task_id, status="blocked", assigned_to=pm_id, team="backend")
+    after = MagicMock(**{**t.__dict__, "assigned_to": uuid4()})
+    task_svc = AsyncMock()
+    task_svc.get.return_value = t
+    task_svc.agent_for.return_value = MagicMock(
+        role="cell_pm",
+        escalation_target="main_pm",
+    )
+    task_svc.escalate_up_to_role.return_value = after
+    journal_svc = AsyncMock()
+    journal_svc.has_decision_for_task.return_value = True
+    deps = _make_deps(task=task_svc, journal=journal_svc)
+    c = Choreographer(deps)
+
+    env = await c.escalate_up(pm_id, task_id, reason="cross-cell coordination needed")
+    assert env.error is None
+    task_svc.escalate_up_to_role.assert_awaited_once_with(
+        pm_id,
+        task_id,
+        "main_pm",
+        "cross-cell coordination needed",
+    )
+
+
+@pytest.mark.asyncio
+async def test_escalate_up_blocks_without_journal_decision():
+    pm_id = uuid4()
+    task_id = uuid4()
+    t = MagicMock(id=task_id, status="blocked")
+    task_svc = AsyncMock()
+    task_svc.get.return_value = t
+    journal_svc = AsyncMock()
+    journal_svc.has_decision_for_task.return_value = False
+    deps = _make_deps(task=task_svc, journal=journal_svc)
+    c = Choreographer(deps)
+
+    env = await c.escalate_up(pm_id, task_id, reason="x")
+    body = env.as_dict()
+    assert body["error"] == "tracing_gap"
+    assert "journal:decision" in body["missing"]
+
+
+@pytest.mark.asyncio
+async def test_escalate_up_no_target_returns_invalid_state():
+    pm_id = uuid4()
+    task_id = uuid4()
+    t = MagicMock(id=task_id, status="blocked")
+    task_svc = AsyncMock()
+    task_svc.get.return_value = t
+    task_svc.agent_for.return_value = MagicMock(
+        role="auditor",
+        escalation_target=None,
+    )
+    journal_svc = AsyncMock()
+    journal_svc.has_decision_for_task.return_value = True
+    deps = _make_deps(task=task_svc, journal=journal_svc)
+    c = Choreographer(deps)
+
+    env = await c.escalate_up(pm_id, task_id, reason="x")
+    body = env.as_dict()
+    assert body["error"] == "invalid_state"
+
+
+@pytest.mark.asyncio
+async def test_escalate_up_task_not_found():
+    pm_id = uuid4()
+    task_id = uuid4()
+    task_svc = AsyncMock()
+    task_svc.get.return_value = None
+    deps = _make_deps(task=task_svc)
+    c = Choreographer(deps)
+
+    env = await c.escalate_up(pm_id, task_id, reason="x")
+    assert env.as_dict()["error"] == "not_found"

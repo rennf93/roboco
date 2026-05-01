@@ -957,10 +957,44 @@ class Choreographer:
             context_briefing=await self._briefing_for(agent_id, task_id),
         )
 
-    async def escalate_up(self, agent_id: UUID, task_id: UUID, reason: str) -> Envelope:
-        """Phase 3: PM agent_id escalates task_id up with reason."""
-        del agent_id, task_id, reason
-        raise NotImplementedError("Phase 3")
+    async def escalate_up(
+        self, pm_agent_id: UUID, task_id: UUID, reason: str
+    ) -> Envelope:
+        """Escalate a task to the agent's escalation_target role."""
+        t = await self.task.get(task_id)
+        if t is None:
+            return Envelope.not_found(message=f"task {task_id} not found")
+
+        has_decision = await self.journal.has_decision_for_task(pm_agent_id, task_id)
+        if not has_decision:
+            from roboco.services.gateway.remediation import (
+                hint_for_missing_journal_decision,
+            )
+
+            return Envelope.tracing_gap(
+                missing=["journal:decision"],
+                remediate=hint_for_missing_journal_decision(),
+                context_briefing=await self._briefing_for(pm_agent_id, task_id),
+            )
+
+        me = await self.task.agent_for(pm_agent_id)
+        target_role = me.escalation_target
+        if not target_role:
+            return Envelope.invalid_state(
+                message="no escalation target configured for your role",
+                remediate="check agents_config.py for your role's escalation_target",
+                context_briefing=await self._briefing_for(pm_agent_id, task_id),
+            )
+
+        t = await self.task.escalate_up_to_role(
+            pm_agent_id, task_id, target_role, reason
+        )
+        return Envelope.ok(
+            status=str(t.status),
+            task_id=str(task_id),
+            next=f"escalated to {target_role}; idle until they respond",
+            context_briefing=await self._briefing_for(pm_agent_id, task_id),
+        )
 
     # --- Phase 4 (board) verbs ---
 
