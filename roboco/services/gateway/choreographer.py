@@ -857,6 +857,93 @@ class Choreographer:
             context_briefing=await self._briefing_for(pm_agent_id, task_id),
         )
 
+    async def _main_pm_complete_guard(
+        self, main_pm_agent_id: UUID, root_task_id: UUID, t: Any
+    ) -> Envelope | None:
+        """Return a rejection Envelope if pre-escalation guards fail; else None."""
+        if t.assigned_to != main_pm_agent_id:
+            return Envelope.not_authorized(
+                message="not assigned to you",
+                remediate="wait for assignment or claim",
+                context_briefing=await self._briefing_for(
+                    main_pm_agent_id, root_task_id
+                ),
+            )
+        if str(t.status) != "awaiting_pm_review":
+            return Envelope.invalid_state(
+                message=(
+                    f"task {root_task_id} is in {t.status}, expected awaiting_pm_review"
+                ),
+                remediate="this task is not ready for main-PM completion",
+                context_briefing=await self._briefing_for(
+                    main_pm_agent_id, root_task_id
+                ),
+            )
+        if t.parent_task_id is not None:
+            return Envelope.invalid_state(
+                message=(
+                    "main_pm complete only operates on root tasks (no parent_task_id)"
+                ),
+                remediate=(
+                    "cell PM should complete this task;"
+                    " main PM only completes root tasks"
+                ),
+                context_briefing=await self._briefing_for(
+                    main_pm_agent_id, root_task_id
+                ),
+            )
+        has_decision = await self.journal.has_decision_for_task(
+            main_pm_agent_id, root_task_id
+        )
+        if not has_decision:
+            from roboco.services.gateway.remediation import (
+                hint_for_missing_journal_decision,
+            )
+
+            return Envelope.tracing_gap(
+                missing=["journal:decision"],
+                remediate=hint_for_missing_journal_decision(),
+                context_briefing=await self._briefing_for(
+                    main_pm_agent_id, root_task_id
+                ),
+            )
+        all_terminal = await self.task.all_subtasks_terminal(root_task_id)
+        if not all_terminal:
+            return Envelope.tracing_gap(
+                missing=["subtasks not all terminal"],
+                remediate="all subtasks must be in completed/cancelled state",
+                context_briefing=await self._briefing_for(
+                    main_pm_agent_id, root_task_id
+                ),
+            )
+        return None
+
+    async def main_pm_complete(
+        self, main_pm_agent_id: UUID, root_task_id: UUID, notes: str
+    ) -> Envelope:
+        """Main PM completes a root task; opens master PR + escalates to CEO."""
+        t = await self.task.get(root_task_id)
+        if t is None:
+            return Envelope.not_found(message=f"task {root_task_id} not found")
+        guard = await self._main_pm_complete_guard(main_pm_agent_id, root_task_id, t)
+        if guard is not None:
+            return guard
+
+        needs_pr = t.pr_number is None
+        if not needs_pr:
+            current_target = await self.git.pr_target(t.pr_number)
+            needs_pr = current_target != "master"
+        if needs_pr:
+            await self.git.create_pr(t.branch_name, parent="master", is_root_pr=True)
+
+        t = await self.task.escalate_to_ceo(main_pm_agent_id, root_task_id, notes)
+        return Envelope.ok(
+            status=str(t.status),
+            task_id=str(root_task_id),
+            next="idle until CEO approves (or rejects) via UI",
+            context_briefing=await self._briefing_for(main_pm_agent_id, root_task_id),
+        )
+
     async def complete(self, agent_id: UUID, task_id: UUID, notes: str) -> Envelope:
         """Phase 3: PM agent_id completes task_id with notes."""
         del agent_id, task_id, notes

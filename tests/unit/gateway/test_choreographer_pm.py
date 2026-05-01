@@ -350,3 +350,114 @@ async def test_cell_pm_complete_not_assigned_returns_not_authorized():
 
     env = await c.cell_pm_complete(pm_id, task_id, notes="x")
     assert env.as_dict()["error"] == "not_authorized"
+
+
+@pytest.mark.asyncio
+async def test_main_pm_complete_opens_master_pr_and_escalates():
+    main_pm_id = uuid4()
+    root_task_id = uuid4()
+    t = MagicMock(
+        id=root_task_id,
+        status="awaiting_pm_review",
+        assigned_to=main_pm_id,
+        pr_number=None,
+        branch_name="feature/backend/root123",
+        parent_task_id=None,
+        team="backend",
+    )
+    after = MagicMock(**{**t.__dict__, "status": "awaiting_ceo_approval"})
+    task_svc = AsyncMock()
+    task_svc.get.return_value = t
+    task_svc.escalate_to_ceo.return_value = after
+    task_svc.all_subtasks_terminal.return_value = True
+    git_svc = AsyncMock()
+    git_svc.create_pr.return_value = {"pr_number": 99, "pr_url": "https://x/y/pull/99"}
+    journal_svc = AsyncMock()
+    journal_svc.has_decision_for_task.return_value = True
+    deps = _make_deps(task=task_svc, git=git_svc, journal=journal_svc)
+    c = Choreographer(deps)
+
+    env = await c.main_pm_complete(main_pm_id, root_task_id, notes="ready for prod")
+    assert env.error is None
+    assert env.status == "awaiting_ceo_approval"
+    git_svc.create_pr.assert_awaited_once_with(
+        "feature/backend/root123",
+        parent="master",
+        is_root_pr=True,
+    )
+    task_svc.escalate_to_ceo.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_main_pm_complete_skips_pr_creation_if_already_master_targeted():
+    main_pm_id = uuid4()
+    root_task_id = uuid4()
+    t = MagicMock(
+        id=root_task_id,
+        status="awaiting_pm_review",
+        assigned_to=main_pm_id,
+        pr_number=42,
+        branch_name="feature/backend/root123",
+        parent_task_id=None,
+        team="backend",
+    )
+    after = MagicMock(**{**t.__dict__, "status": "awaiting_ceo_approval"})
+    task_svc = AsyncMock()
+    task_svc.get.return_value = t
+    task_svc.escalate_to_ceo.return_value = after
+    task_svc.all_subtasks_terminal.return_value = True
+    git_svc = AsyncMock()
+    git_svc.pr_target.return_value = "master"
+    journal_svc = AsyncMock()
+    journal_svc.has_decision_for_task.return_value = True
+    deps = _make_deps(task=task_svc, git=git_svc, journal=journal_svc)
+    c = Choreographer(deps)
+
+    await c.main_pm_complete(main_pm_id, root_task_id, notes="ready")
+    git_svc.create_pr.assert_not_awaited()
+    task_svc.escalate_to_ceo.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_main_pm_complete_rejects_non_root_task():
+    main_pm_id = uuid4()
+    task_id = uuid4()
+    t = MagicMock(
+        id=task_id,
+        status="awaiting_pm_review",
+        assigned_to=main_pm_id,
+        parent_task_id=uuid4(),  # has parent -> not a root task
+    )
+    task_svc = AsyncMock()
+    task_svc.get.return_value = t
+    deps = _make_deps(task=task_svc)
+    c = Choreographer(deps)
+
+    env = await c.main_pm_complete(main_pm_id, task_id, notes="x")
+    body = env.as_dict()
+    assert body["error"] == "invalid_state"
+    assert "root tasks" in body["message"]
+
+
+@pytest.mark.asyncio
+async def test_main_pm_complete_blocks_unfinished_subtasks():
+    main_pm_id = uuid4()
+    root_task_id = uuid4()
+    t = MagicMock(
+        id=root_task_id,
+        status="awaiting_pm_review",
+        assigned_to=main_pm_id,
+        parent_task_id=None,
+        team="backend",
+    )
+    task_svc = AsyncMock()
+    task_svc.get.return_value = t
+    task_svc.all_subtasks_terminal.return_value = False
+    journal_svc = AsyncMock()
+    journal_svc.has_decision_for_task.return_value = True
+    deps = _make_deps(task=task_svc, journal=journal_svc)
+    c = Choreographer(deps)
+
+    env = await c.main_pm_complete(main_pm_id, root_task_id, notes="x")
+    body = env.as_dict()
+    assert body["error"] == "tracing_gap"
