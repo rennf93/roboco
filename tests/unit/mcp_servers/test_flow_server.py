@@ -319,7 +319,7 @@ def test_unblock_with_restore_false(monkeypatch: pytest.MonkeyPatch) -> None:  #
         result = srv.unblock("task-uuid", restore=False)
 
     assert result["status"] == "in_progress"
-    args, kwargs = fake_client.post.call_args
+    _args, kwargs = fake_client.post.call_args
     assert kwargs["json"] == {"task_id": "task-uuid", "restore": False}
 
 
