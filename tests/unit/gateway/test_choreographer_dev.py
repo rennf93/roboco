@@ -474,3 +474,79 @@ async def test_i_am_done_skill_resolution_picks_existing_skill() -> None:
     qa_with_neither = MagicMock(id=uuid4(), skills=[{"id": "other_skill"}])
     skill3 = c._resolve_skill(qa_with_neither, ["code_review", "qa_review"])
     assert skill3 == "code_review"  # fallback to first
+
+
+@pytest.mark.asyncio
+async def test_i_am_blocked_escalates_and_journals() -> None:
+    agent_id = uuid4()
+    task_id = uuid4()
+    t = MagicMock(
+        id=task_id, status="in_progress", assigned_to=agent_id, pre_block_state=None
+    )
+    after = MagicMock(id=task_id, status="blocked")
+    task_svc = AsyncMock()
+    task_svc.get.return_value = t
+    task_svc.escalate.return_value = after
+    journal_svc = AsyncMock()
+    deps = _make_deps(task=task_svc, journal=journal_svc)
+    c = Choreographer(deps)
+
+    env = await c.i_am_blocked(agent_id, task_id, "external API down")
+    assert env.error is None
+    assert env.status == "blocked"
+    journal_svc.write_struggle.assert_awaited_once()
+    task_svc.escalate.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_i_am_blocked_task_not_found_returns_not_found() -> None:
+    agent_id = uuid4()
+    task_id = uuid4()
+    task_svc = AsyncMock()
+    task_svc.get.return_value = None
+    deps = _make_deps(task=task_svc)
+    c = Choreographer(deps)
+
+    env = await c.i_am_blocked(agent_id, task_id, "x")
+    body = env.as_dict()
+    assert body["error"] == "not_found"
+
+
+@pytest.mark.asyncio
+async def test_i_am_idle_with_unread_a2a_soft_blocks() -> None:
+    agent_id = uuid4()
+    deps = _make_deps()
+    deps.evidence_repo.list_unread_a2a.return_value = [{"from": "x", "task_id": "t1"}]
+    c = Choreographer(deps)
+
+    env = await c.i_am_idle(agent_id)
+    body = env.as_dict()
+    assert body["status"] == "idle_with_unread"
+    assert "address" in body["next"].lower()
+
+
+@pytest.mark.asyncio
+async def test_i_am_idle_with_unread_mentions_soft_blocks() -> None:
+    agent_id = uuid4()
+    deps = _make_deps()
+    deps.evidence_repo.list_unread_mentions.return_value = [
+        {"channel": "#x", "from": "y"}
+    ]
+    c = Choreographer(deps)
+
+    env = await c.i_am_idle(agent_id)
+    body = env.as_dict()
+    assert body["status"] == "idle_with_unread"
+
+
+@pytest.mark.asyncio
+async def test_i_am_idle_clean_returns_idle() -> None:
+    agent_id = uuid4()
+    task_svc = AsyncMock()
+    deps = _make_deps(task=task_svc)
+    # All evidence_repo lists are already empty per _make_deps default
+    c = Choreographer(deps)
+
+    env = await c.i_am_idle(agent_id)
+    assert env.status == "idle"
+    task_svc.mark_agent_idle.assert_awaited_once_with(agent_id)

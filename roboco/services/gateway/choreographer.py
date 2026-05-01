@@ -361,14 +361,41 @@ class Choreographer:
     async def i_am_blocked(
         self, agent_id: UUID, task_id: UUID, reason: str
     ) -> Envelope:
-        """Phase 1: block task_id for agent_id with reason."""
-        del agent_id, task_id, reason
-        raise NotImplementedError("Phase 1")
+        """Escalate task_id and write a struggle journal entry; idle the agent."""
+        t = await self.task.get(task_id)
+        if t is None:
+            return Envelope.not_found(message=f"task {task_id} not found")
+        await self.journal.write_struggle(
+            agent_id=agent_id, task_id=task_id, content=reason
+        )
+        t = await self.task.escalate(agent_id, task_id, reason)
+        return Envelope.ok(
+            status=str(t.status),
+            task_id=str(task_id),
+            next="idle — PM will resolve and notify",
+            context_briefing=await self._briefing_for(agent_id, task_id),
+        )
 
     async def i_am_idle(self, agent_id: UUID) -> Envelope:
-        """Phase 1: report idle state for agent_id."""
-        del agent_id
-        raise NotImplementedError("Phase 1")
+        """Report no more work. Soft-block if there are unread A2As or @mentions."""
+        briefing = await self._briefing_for(agent_id, None)
+        if briefing.get("unread_a2a") or briefing.get("unread_mentions"):
+            return Envelope.ok(
+                status="idle_with_unread",
+                task_id=None,
+                next=(
+                    "address unread A2A and @mentions in context_briefing"
+                    " before going idle"
+                ),
+                context_briefing=briefing,
+            )
+        await self.task.mark_agent_idle(agent_id)
+        return Envelope.ok(
+            status="idle",
+            task_id=None,
+            next="container will shut down",
+            context_briefing=briefing,
+        )
 
     # --- Phase 2 (QA) verbs ---
 
