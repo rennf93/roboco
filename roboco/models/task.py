@@ -259,6 +259,39 @@ class Task(TimestampMixin):
         description="RAG context: similar tasks, learnings, patterns, standards",
     )
 
+    # Gateway coordination (added in migration 006_gateway_columns).
+    active_claimant_id: UUID | None = Field(
+        default=None,
+        description="Single-claimant lock; only one agent holds a task.",
+    )
+    last_heartbeat_at: datetime | None = Field(
+        default=None,
+        description="Last claim heartbeat; older than threshold = stale.",
+    )
+    pre_block_state: str | None = Field(
+        default=None,
+        description="Status snapshot at the moment of block.",
+    )
+    pre_block_assignee: UUID | None = Field(
+        default=None,
+        description="Assignee snapshot at the moment of block.",
+    )
+    pre_block_metadata: dict | None = Field(
+        default=None,
+        description="Snapshot used by unblock(restore=True).",
+    )
+    acceptance_criteria_status: list[dict] = Field(
+        default_factory=list,
+        description=(
+            "Per-criterion records: "
+            "{criterion, referencing_artifact_id}."
+        ),
+    )
+    qa_evidence_inspected: bool = Field(
+        default=False,
+        description="True after QA inspects inline diff via claim_review.",
+    )
+
     # NOTE: Task state mutations should be performed through TaskService,
     # not directly on the model. See roboco/services/task.py for:
     # - claim(), start(), block(), pause(), resume()

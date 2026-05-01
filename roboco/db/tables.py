@@ -274,6 +274,44 @@ class TaskTable(Base):
         JSON, nullable=True
     )
 
+    # Gateway coordination (added in migration 006_gateway_columns).
+    # active_claimant_id + last_heartbeat_at implement the single-claimant
+    # invariant: only one agent holds a task at a time and they prove
+    # liveness via periodic heartbeats. Stale claims are cleaned up by the
+    # trigger filter.
+    active_claimant_id: Mapped[UUID | None] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("agents.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    last_heartbeat_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    # pre_block_* snapshot the task's state at the moment it was blocked so
+    # `unblock(restore=True)` can return it to its prior status/assignee/
+    # metadata instead of dumping the agent into pending.
+    pre_block_state: Mapped[str | None] = mapped_column(String(40), nullable=True)
+    pre_block_assignee: Mapped[UUID | None] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("agents.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    pre_block_metadata: Mapped[dict[str, Any] | None] = mapped_column(
+        JSON, nullable=True
+    )
+    # acceptance_criteria_status: per-criterion records of the form
+    # {"criterion": "<text>", "referencing_artifact_id": "<commit-sha|note-id>"}.
+    # The tracing gate refuses transitions until every criterion has one.
+    acceptance_criteria_status: Mapped[list[dict[str, Any]]] = mapped_column(
+        JSON, nullable=False, default=list
+    )
+    # qa_evidence_inspected: set true by claim_review when the QA agent
+    # inspects the inline diff/commits. The pass-review gate refuses the
+    # pass transition unless this is true.
+    qa_evidence_inspected: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False
+    )
+
     # Relationships
     creator: Mapped["AgentTable"] = relationship(
         "AgentTable", foreign_keys=[created_by], lazy="joined"
