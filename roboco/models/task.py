@@ -282,10 +282,7 @@ class Task(TimestampMixin):
     )
     acceptance_criteria_status: list[dict] = Field(
         default_factory=list,
-        description=(
-            "Per-criterion records: "
-            "{criterion, referencing_artifact_id}."
-        ),
+        description=("Per-criterion records: {criterion, referencing_artifact_id}."),
     )
     qa_evidence_inspected: bool = Field(
         default=False,

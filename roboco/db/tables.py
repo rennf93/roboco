@@ -50,6 +50,17 @@ from roboco.models.base import (
 from roboco.models.session import SessionScope
 from roboco.models.work_session import WorkSessionStatus
 
+
+def _str_enum(enum_cls: type) -> Enum:
+    """SQLAlchemy Enum that serializes by `.value` (lowercase) for StrEnum types.
+
+    Matches the lowercase values declared in alembic/versions/001_initial_schema.py.
+    Without values_callable, SQLAlchemy uses `.name` (uppercase) which does not
+    match the alembic-declared enum members.
+    """
+    return Enum(enum_cls, values_callable=lambda obj: [m.value for m in obj])
+
+
 # =============================================================================
 # AGENT TABLE
 # =============================================================================
@@ -70,12 +81,12 @@ class AgentTable(Base):
     )
 
     # Role & Team
-    role: Mapped[AgentRole] = mapped_column(Enum(AgentRole), nullable=False)
-    team: Mapped[Team | None] = mapped_column(Enum(Team), nullable=True)
+    role: Mapped[AgentRole] = mapped_column(_str_enum(AgentRole), nullable=False)
+    team: Mapped[Team | None] = mapped_column(_str_enum(Team), nullable=True)
 
     # Status
     status: Mapped[AgentStatus] = mapped_column(
-        Enum(AgentStatus), nullable=False, default=AgentStatus.OFFLINE
+        _str_enum(AgentStatus), nullable=False, default=AgentStatus.OFFLINE
     )
     current_task_id: Mapped[UUID | None] = mapped_column(
         UUID(as_uuid=True), ForeignKey("tasks.id", ondelete="SET NULL"), nullable=True
@@ -134,14 +145,14 @@ class TaskTable(Base):
 
     # Status
     status: Mapped[TaskStatus] = mapped_column(
-        Enum(TaskStatus), nullable=False, default=TaskStatus.PENDING, index=True
+        _str_enum(TaskStatus), nullable=False, default=TaskStatus.PENDING, index=True
     )
     # Only meaningful when status == BLOCKED. Tells the dispatcher whether
     # another agent can be respawned to resolve the block (`agent`) or
     # whether the block is waiting on a human and spawning is wasted work
     # (`human`). NULL for never-blocked tasks and for pre-existing rows.
     blocker_resolver_type: Mapped[BlockerResolverType | None] = mapped_column(
-        Enum(BlockerResolverType), nullable=True
+        _str_enum(BlockerResolverType), nullable=True
     )
     # Agent who raised the current block/escalation. Escalate reassigns the
     # task to the resolver (PM) so they can work the fix, which loses the
@@ -157,10 +168,10 @@ class TaskTable(Base):
 
     # Task Type & Git Configuration (all tasks follow git workflow)
     task_type: Mapped[TaskType] = mapped_column(
-        Enum(TaskType), nullable=False, default=TaskType.CODE
+        _str_enum(TaskType), nullable=False, default=TaskType.CODE
     )
     nature: Mapped[TaskNature] = mapped_column(
-        Enum(TaskNature), nullable=False, default=TaskNature.TECHNICAL
+        _str_enum(TaskNature), nullable=False, default=TaskNature.TECHNICAL
     )
 
     # Project & Branch (branch auto-created on claim)
@@ -198,7 +209,7 @@ class TaskTable(Base):
         nullable=True,
         index=True,
     )
-    team: Mapped[Team] = mapped_column(Enum(Team), nullable=False, index=True)
+    team: Mapped[Team] = mapped_column(_str_enum(Team), nullable=False, index=True)
 
     # Relationships
     parent_task_id: Mapped[UUID | None] = mapped_column(
@@ -244,7 +255,7 @@ class TaskTable(Base):
     # Planning (stored as JSON)
     plan: Mapped[dict[str, Any] | None] = mapped_column(JSON, nullable=True)
     estimated_complexity: Mapped[Complexity] = mapped_column(
-        Enum(Complexity), nullable=False, default=Complexity.MEDIUM
+        _str_enum(Complexity), nullable=False, default=Complexity.MEDIUM
     )
 
     # Execution (stored as JSON)
@@ -386,7 +397,7 @@ class ProjectTable(Base):
     build_command: Mapped[str | None] = mapped_column(String(500), nullable=True)
 
     # Access Control
-    assigned_cell: Mapped[Team] = mapped_column(Enum(Team), nullable=False)
+    assigned_cell: Mapped[Team] = mapped_column(_str_enum(Team), nullable=False)
     allowed_agents: Mapped[list[PyUUID] | None] = mapped_column(
         ARRAY(UUID(as_uuid=True)), nullable=True
     )
@@ -467,7 +478,7 @@ class WorkSessionTable(Base):
         DateTime(timezone=True), nullable=True
     )
     status: Mapped[WorkSessionStatus] = mapped_column(
-        Enum(WorkSessionStatus),
+        _str_enum(WorkSessionStatus),
         nullable=False,
         default=WorkSessionStatus.ACTIVE,
         index=True,
@@ -537,7 +548,7 @@ class ChannelTable(Base):
     slug: Mapped[str] = mapped_column(
         String(50), unique=True, nullable=False, index=True
     )
-    type: Mapped[ChannelType] = mapped_column(Enum(ChannelType), nullable=False)
+    type: Mapped[ChannelType] = mapped_column(_str_enum(ChannelType), nullable=False)
 
     # Description
     description: Mapped[str | None] = mapped_column(Text, nullable=True)
@@ -686,12 +697,15 @@ class SessionTable(Base):
 
     # State
     status: Mapped[SessionStatus] = mapped_column(
-        Enum(SessionStatus), nullable=False, default=SessionStatus.ACTIVE, index=True
+        _str_enum(SessionStatus),
+        nullable=False,
+        default=SessionStatus.ACTIVE,
+        index=True,
     )
 
     # Scope (for smart context loading)
     scope: Mapped[SessionScope] = mapped_column(
-        Enum(SessionScope), nullable=False, default=SessionScope.TASK, index=True
+        _str_enum(SessionScope), nullable=False, default=SessionScope.TASK, index=True
     )
 
     # Timestamps
@@ -857,7 +871,7 @@ class MessageTable(Base):
 
     # Content
     type: Mapped[MessageType] = mapped_column(
-        Enum(MessageType), nullable=False, index=True
+        _str_enum(MessageType), nullable=False, index=True
     )
     content: Mapped[str] = mapped_column(Text, nullable=False)
     content_length: Mapped[int] = mapped_column(Integer, nullable=False)
@@ -939,10 +953,12 @@ class NotificationTable(Base):
         UUID(as_uuid=True), primary_key=True, default=uuid4
     )
     type: Mapped[NotificationType] = mapped_column(
-        Enum(NotificationType), nullable=False, index=True
+        _str_enum(NotificationType), nullable=False, index=True
     )
     priority: Mapped[NotificationPriority] = mapped_column(
-        Enum(NotificationPriority), nullable=False, default=NotificationPriority.NORMAL
+        _str_enum(NotificationPriority),
+        nullable=False,
+        default=NotificationPriority.NORMAL,
     )
 
     # Routing
@@ -1079,7 +1095,7 @@ class JournalEntryTable(Base):
 
     # Content
     type: Mapped[JournalEntryType] = mapped_column(
-        Enum(JournalEntryType), nullable=False, index=True
+        _str_enum(JournalEntryType), nullable=False, index=True
     )
     title: Mapped[str] = mapped_column(String(200), nullable=False)
     content: Mapped[str] = mapped_column(Text, nullable=False)
@@ -1216,7 +1232,10 @@ class HandoffTable(Base):
 
     # Status
     status: Mapped[HandoffStatus] = mapped_column(
-        Enum(HandoffStatus), nullable=False, default=HandoffStatus.PENDING, index=True
+        _str_enum(HandoffStatus),
+        nullable=False,
+        default=HandoffStatus.PENDING,
+        index=True,
     )
     assigned_to: Mapped[UUID | None] = mapped_column(
         UUID(as_uuid=True), ForeignKey("agents.id", ondelete="SET NULL"), nullable=True
@@ -1343,7 +1362,7 @@ class A2AConversationTable(Base):
 
     # Status
     status: Mapped[A2AConversationStatus] = mapped_column(
-        Enum(A2AConversationStatus),
+        _str_enum(A2AConversationStatus),
         nullable=False,
         default=A2AConversationStatus.ACTIVE,
         index=True,
@@ -1417,7 +1436,7 @@ class A2AMessageTable(Base):
     # Content
     content: Mapped[str] = mapped_column(Text, nullable=False)
     message_kind: Mapped[A2AMessageKind] = mapped_column(
-        Enum(A2AMessageKind),
+        _str_enum(A2AMessageKind),
         nullable=False,
         default=A2AMessageKind.MESSAGE,
     )
@@ -1570,7 +1589,7 @@ class ProviderConfigTable(Base):
         String(100), unique=True, nullable=False, index=True
     )
     type: Mapped[ModelProvider] = mapped_column(
-        Enum(ModelProvider, name="modelprovider"), nullable=False
+        _str_enum(ModelProvider), nullable=False
     )
     # `base_url = NULL` → Anthropic-default path: no ANTHROPIC_BASE_URL
     # injection, Claude Code inside the container uses its mounted
@@ -1605,7 +1624,7 @@ class ModelAssignmentTable(Base):
         UUID(as_uuid=True), primary_key=True, default=uuid4
     )
     scope: Mapped[AssignmentScope] = mapped_column(
-        Enum(AssignmentScope, name="assignmentscope"), nullable=False
+        _str_enum(AssignmentScope), nullable=False
     )
     # NULL when scope = 'global'; role name for 'role'; agent slug for 'agent_slug'.
     scope_value: Mapped[str | None] = mapped_column(String(100), nullable=True)
