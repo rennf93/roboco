@@ -14,19 +14,18 @@ if TYPE_CHECKING:
 
 
 class TestGatewayEnabledRoles:
-    def test_developer_and_qa_in_set(self) -> None:
-        """Phase 2: developer and qa both get gateway manifests."""
+    def test_phase3_roles_enabled(self) -> None:
+        """Phase 3: developer + qa + documenter + cell_pm + main_pm get the flag."""
         assert "developer" in GATEWAY_ENABLED_ROLES
         assert "qa" in GATEWAY_ENABLED_ROLES
+        assert "documenter" in GATEWAY_ENABLED_ROLES
+        assert "cell_pm" in GATEWAY_ENABLED_ROLES
+        assert "main_pm" in GATEWAY_ENABLED_ROLES
 
-    def test_cell_pm_not_in_set(self) -> None:
-        assert "cell_pm" not in GATEWAY_ENABLED_ROLES
-
-    def test_documenter_not_in_set(self) -> None:
-        assert "documenter" not in GATEWAY_ENABLED_ROLES
-
-    def test_main_pm_not_in_set(self) -> None:
-        assert "main_pm" not in GATEWAY_ENABLED_ROLES
+    def test_board_roles_excluded_in_phase3(self) -> None:
+        """Board roles still excluded in Phase 3."""
+        assert "product_owner" not in GATEWAY_ENABLED_ROLES
+        assert "auditor" not in GATEWAY_ENABLED_ROLES
 
 
 class TestBuildManifestForAgent:
@@ -108,25 +107,49 @@ class TestBuildManifestForAgent:
         assert data["role"] == "qa"
         assert data["team"] == "backend"
 
-    def test_cell_pm_returns_none(self, tmp_path: Path) -> None:
-        """Cell PM role is outside GATEWAY_ENABLED_ROLES — returns None."""
-        with patch("roboco.runtime.orchestrator.settings") as mock_settings:
-            mock_settings.manifest_host_dir = str(tmp_path)
-            mock_settings.workspaces_root = str(tmp_path / "workspaces")
-
-            result = _build_manifest_for_agent("be-pm", "claude-sonnet-4-6")
-
-        assert result is None
-
-    def test_documenter_returns_none(self, tmp_path: Path) -> None:
-        """Documenter role is outside GATEWAY_ENABLED_ROLES — returns None."""
+    def test_documenter_writes_file(self, tmp_path: Path) -> None:
+        """Phase 3: Documenter role produces a manifest JSON file."""
         with patch("roboco.runtime.orchestrator.settings") as mock_settings:
             mock_settings.manifest_host_dir = str(tmp_path)
             mock_settings.workspaces_root = str(tmp_path / "workspaces")
 
             result = _build_manifest_for_agent("be-doc", "claude-haiku-4-5-20251001")
 
-        assert result is None
+        assert result is not None
+        assert result.exists()
+        assert result.name == "be-doc.json"
+        data = json.loads(result.read_text())
+        assert data["role"] == "documenter"
+        assert data["team"] == "backend"
+
+    def test_cell_pm_writes_file(self, tmp_path: Path) -> None:
+        """Phase 3: Cell PM role produces a manifest JSON file."""
+        with patch("roboco.runtime.orchestrator.settings") as mock_settings:
+            mock_settings.manifest_host_dir = str(tmp_path)
+            mock_settings.workspaces_root = str(tmp_path / "workspaces")
+
+            result = _build_manifest_for_agent("be-pm", "claude-sonnet-4-6")
+
+        assert result is not None
+        assert result.exists()
+        assert result.name == "be-pm.json"
+        data = json.loads(result.read_text())
+        assert data["role"] == "cell_pm"
+        assert data["team"] == "backend"
+
+    def test_main_pm_writes_file(self, tmp_path: Path) -> None:
+        """Phase 3: Main PM role produces a manifest JSON file."""
+        with patch("roboco.runtime.orchestrator.settings") as mock_settings:
+            mock_settings.manifest_host_dir = str(tmp_path)
+            mock_settings.workspaces_root = str(tmp_path / "workspaces")
+
+            result = _build_manifest_for_agent("main-pm", "claude-sonnet-4-6")
+
+        assert result is not None
+        assert result.exists()
+        assert result.name == "main-pm.json"
+        data = json.loads(result.read_text())
+        assert data["role"] == "main_pm"
 
     def test_manifest_dir_created_if_absent(self, tmp_path: Path) -> None:
         """manifest_host_dir is created automatically when it doesn't exist."""
