@@ -229,10 +229,44 @@ deptry:
 security: bandit pip-audit
 	@echo "All security checks completed."
 
-# Run all code quality checks
+# =============================================================================
+# QUALITY GATES
+# =============================================================================
+
+# Run every quality gate. Fails on any red. Use this as the merge gate.
 .PHONY: quality
-quality: lint vulture radon xenon
-	@echo "All code quality checks completed."
+quality:
+	@echo "==> ruff format --check"
+	@uv run ruff format --check .
+	@echo "==> ruff check"
+	@uv run ruff check .
+	@echo "==> mypy"
+	@uv run mypy roboco/
+	@echo "==> pytest with coverage"
+	@uv run pytest -q --cov=roboco --cov-report=term-missing --cov-fail-under=80
+	@echo "==> xenon (cyclomatic complexity)"
+	@uv run xenon --max-absolute B --max-modules A --max-average A roboco/
+	@echo "==> radon mi (maintainability index)"
+	@uv run radon mi roboco/ -nc -s
+	@echo "==> vulture (dead code)"
+	@uv run vulture roboco/ tests/ vulture_whitelist.py --min-confidence 100
+	@echo "==> bandit (security)"
+	@uv run bandit -r roboco/ -ll
+	@echo "==> pip-audit (deps vulnerabilities)"
+	@uv run pip-audit
+	@echo "==> deptry (dependency hygiene)"
+	@uv run deptry roboco/
+	@echo "==> alembic upgrade --sql (migrations parse)"
+	@uv run alembic upgrade head --sql > /dev/null
+	@echo ""
+	@echo "All quality gates passed."
+
+.PHONY: quality-fast
+quality-fast:
+	@uv run ruff format --check .
+	@uv run ruff check .
+	@uv run mypy roboco/
+	@uv run pytest -q -x --no-cov
 
 # Run all analysis tools
 .PHONY: analysis
