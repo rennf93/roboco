@@ -258,6 +258,8 @@ quality:
 	@uv run deptry roboco/
 	@echo "==> alembic upgrade --sql (migrations parse)"
 	@uv run alembic upgrade head --sql > /dev/null
+	@echo "==> import-linter (architectural boundaries)"
+	@uv run lint-imports
 	@echo ""
 	@echo "All quality gates passed."
 

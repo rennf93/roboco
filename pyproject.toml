@@ -79,6 +79,7 @@ dev = [
     "radon",
     "xenon",
     "deptry",
+    "import-linter",
 
     # Type Stubs
     "types-redis",
@@ -343,6 +344,24 @@ DEP003 = ["starlette"]
 dev = [
     "types-aiofiles",
 ]
+
+# =============================================================================
+# Import Linter (architectural boundaries)
+# =============================================================================
+[tool.importlinter]
+root_package = "roboco"
+
+[[tool.importlinter.contracts]]
+name = "Gateway layer must not import from API routes or MCP servers"
+type = "forbidden"
+source_modules = ["roboco.services.gateway"]
+forbidden_modules = ["roboco.api.routes", "roboco.mcp"]
+
+[[tool.importlinter.contracts]]
+name = "Services must not import from API routes"
+type = "forbidden"
+source_modules = ["roboco.services"]
+forbidden_modules = ["roboco.api.routes"]
 
 # =============================================================================
 # Roboco Commit Validator
