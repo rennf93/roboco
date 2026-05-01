@@ -30,3 +30,17 @@ class IAmBlockedRequest(BaseModel):
 
 class IAmIdleRequest(BaseModel):
     """Empty request body."""
+
+
+class ClaimReviewRequest(BaseModel):
+    task_id: UUID
+
+
+class PassReviewRequest(BaseModel):
+    task_id: UUID
+    notes: str = Field(..., min_length=1)
+
+
+class FailReviewRequest(BaseModel):
+    task_id: UUID
+    issues: list[str] = Field(..., min_length=1)

@@ -35,6 +35,7 @@ from roboco.api.routes.tasks import router as tasks_router
 from roboco.api.routes.test import router as test_router
 from roboco.api.routes.v2 import do as do_module
 from roboco.api.routes.v2 import flow_dev as flow_dev_module
+from roboco.api.routes.v2 import flow_qa as flow_qa_module
 from roboco.api.routes.work_session import router as work_session_router
 from roboco.api.websocket import router as ws_router
 from roboco.config import settings
@@ -298,6 +299,9 @@ def create_app() -> FastAPI:
 
     # API v2 — intent-verb flow endpoints
     app.include_router(flow_dev_module.router)
+
+    # API v2 — intent-verb QA flow endpoints
+    app.include_router(flow_qa_module.router)
 
     # API v2 — content-tool endpoints
     app.include_router(do_module.router)
