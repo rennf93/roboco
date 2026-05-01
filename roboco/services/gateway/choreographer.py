@@ -11,68 +11,148 @@ injection so later phases just fill in the bodies.
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
+
+from roboco.services.gateway.envelope import Envelope
+from roboco.services.gateway.evidence_builder import (
+    BriefingInputs,
+    build_context_briefing,
+)
 
 if TYPE_CHECKING:
     from uuid import UUID
 
-    from roboco.services.gateway.envelope import Envelope
+
+@dataclass(frozen=True)
+class ChoreographerDeps:
+    """All service dependencies bundled for Choreographer.
+
+    Frozen dataclass to avoid PLR0913 (too many arguments) and to make
+    dependency injection explicit. Each field is typed as Any in Phase 1 —
+    per-service Protocol typing lands alongside verb implementations that
+    actually exercise the methods.
+    """
+
+    task: Any
+    work_session: Any
+    git: Any
+    a2a: Any
+    journal: Any
+    audit: Any
+    evidence_repo: Any
 
 
 class Choreographer:
     """Composes existing services into intent-verb sequences.
 
-    Constructor takes already-instantiated services (DI). Verb methods are
+    Constructor takes a ``ChoreographerDeps`` bundle (DI). Verb methods are
     async. Each returns a standardized Envelope. Implementations land
     progressively: see __init__ docstring.
 
-    The five service deps are typed as ``Any`` in Phase 0 — Phase 1+ will
-    introduce per-service Protocol typing alongside the actual verb
-    implementations that exercise the methods.
+    Service deps are typed as ``Any`` in Phase 1 — per-service Protocol typing
+    lands alongside the verb implementations that exercise the methods.
     """
 
-    def __init__(
-        self,
-        *,
-        task: Any,
-        work_session: Any,
-        git: Any,
-        a2a: Any,
-        journal: Any,
-    ) -> None:
-        """Initialize Choreographer with service dependencies.
+    def __init__(self, deps: ChoreographerDeps) -> None:
+        """Initialize Choreographer with bundled service dependencies.
 
         Args:
-            task: Service for task operations.
-            work_session: Service for work session operations.
-            git: Service for git operations.
-            a2a: Service for agent-to-agent communication.
-            journal: Service for agent journal operations.
+            deps: Frozen dataclass holding all 7 service dependencies.
         """
-        self.task = task
-        self.work_session = work_session
-        self.git = git
-        self.a2a = a2a
-        self.journal = journal
+        self._deps = deps
+
+    # --- Convenience properties so call-sites stay readable ---
+
+    @property
+    def task(self) -> Any:
+        return self._deps.task
+
+    @property
+    def work_session(self) -> Any:
+        return self._deps.work_session
+
+    @property
+    def git(self) -> Any:
+        return self._deps.git
+
+    @property
+    def a2a(self) -> Any:
+        return self._deps.a2a
+
+    @property
+    def journal(self) -> Any:
+        return self._deps.journal
+
+    @property
+    def audit(self) -> Any:
+        return self._deps.audit
+
+    @property
+    def evidence_repo(self) -> Any:
+        return self._deps.evidence_repo
 
     # --- Phase 1 (developer) verbs ---
 
     async def give_me_work(self, agent_id: UUID) -> Envelope:
-        """Phase 1: get next work item for agent_id."""
-        raise NotImplementedError("Phase 1")
+        """Return the agent's most-actionable task or signal idle."""
+        assigned = await self._deps.task.list_assigned_for_agent(agent_id)
+        if assigned:
+            t = assigned[0]
+            return Envelope.ok(
+                status=str(t.status),
+                task_id=str(t.id),
+                next=f"call i_will_work_on(task_id='{t.id}', plan='<plan>') to start",
+                context_briefing=await self._briefing_for(agent_id, t.id),
+            )
+        paused = await self._deps.task.list_paused_for_agent(agent_id)
+        if paused:
+            t = paused[0]
+            return Envelope.ok(
+                status=str(t.status),
+                task_id=str(t.id),
+                next=f"call i_will_work_on(task_id='{t.id}') to resume",
+                context_briefing=await self._briefing_for(agent_id, t.id),
+            )
+        return Envelope.ok(
+            status="idle",
+            task_id=None,
+            next="call i_am_idle() — no work available",
+            context_briefing=await self._briefing_for(agent_id, None),
+        )
+
+    async def _briefing_for(
+        self, agent_id: UUID, task_id: UUID | None
+    ) -> dict[str, Any]:
+        """Assemble context_briefing for agent_id, optionally scoped to task_id."""
+        repo = self._deps.evidence_repo
+        inputs = BriefingInputs(
+            unread_a2a=await repo.list_unread_a2a(agent_id),
+            unread_mentions=await repo.list_unread_mentions(agent_id),
+            pending_notifications=await repo.list_pending_notifications(agent_id),
+            task_metadata_gaps=(
+                await repo.task_metadata_gaps(task_id) if task_id else []
+            ),
+            recent_team_activity=await repo.recent_team_activity(agent_id),
+            blockers_in_my_lane=await repo.blockers_in_lane(agent_id),
+        )
+        return build_context_briefing(inputs)
 
     async def i_will_work_on(
         self, agent_id: UUID, task_id: UUID, plan: str | None = None
     ) -> Envelope:
         """Phase 1: claim task_id for agent_id with optional plan."""
+        del agent_id, task_id, plan
         raise NotImplementedError("Phase 1")
 
     async def i_have_committed(self, agent_id: UUID, message: str) -> Envelope:
         """Phase 1: record commit message for agent_id."""
+        del agent_id, message
         raise NotImplementedError("Phase 1")
 
     async def i_am_done(self, agent_id: UUID, task_id: UUID, notes: str) -> Envelope:
         """Phase 1: mark task_id complete for agent_id with notes."""
+        del agent_id, task_id, notes
         raise NotImplementedError("Phase 1")
 
     async def i_am_blocked(
@@ -84,16 +164,19 @@ class Choreographer:
 
     async def i_am_idle(self, agent_id: UUID) -> Envelope:
         """Phase 1: report idle state for agent_id."""
+        del agent_id
         raise NotImplementedError("Phase 1")
 
     # --- Phase 2 (QA) verbs ---
 
     async def claim_review(self, agent_id: UUID, task_id: UUID) -> Envelope:
         """Phase 2: QA agent_id claims review of task_id."""
+        del agent_id, task_id
         raise NotImplementedError("Phase 2")
 
     async def pass_review(self, agent_id: UUID, task_id: UUID, notes: str) -> Envelope:
         """Phase 2: QA agent_id passes task_id with notes."""
+        del agent_id, task_id, notes
         raise NotImplementedError("Phase 2")
 
     async def fail_review(
@@ -107,6 +190,7 @@ class Choreographer:
 
     async def claim_doc_task(self, agent_id: UUID, task_id: UUID) -> Envelope:
         """Phase 3: documenter agent_id claims documentation for task_id."""
+        del agent_id, task_id
         raise NotImplementedError("Phase 3")
 
     async def i_documented(
@@ -122,10 +206,12 @@ class Choreographer:
 
     async def triage(self, agent_id: UUID) -> Envelope:
         """Phase 3: PM agent_id triages next task in queue."""
+        del agent_id
         raise NotImplementedError("Phase 3")
 
     async def triage_all(self, agent_id: UUID) -> Envelope:
         """Phase 3: PM agent_id triages all waiting tasks."""
+        del agent_id
         raise NotImplementedError("Phase 3")
 
     async def unblock(
@@ -139,6 +225,7 @@ class Choreographer:
 
     async def complete(self, agent_id: UUID, task_id: UUID, notes: str) -> Envelope:
         """Phase 3: PM agent_id completes task_id with notes."""
+        del agent_id, task_id, notes
         raise NotImplementedError("Phase 3")
 
     async def escalate_up(self, agent_id: UUID, task_id: UUID, reason: str) -> Envelope:
