@@ -399,10 +399,54 @@ class Choreographer:
 
     # --- Phase 2 (QA) verbs ---
 
-    async def claim_review(self, agent_id: UUID, task_id: UUID) -> Envelope:
-        """Phase 2: QA agent_id claims review of task_id."""
-        del agent_id, task_id
-        raise NotImplementedError("Phase 2")
+    async def claim_review(self, qa_agent_id: UUID, task_id: UUID) -> Envelope:
+        """QA agent claims task in awaiting_qa for review.
+
+        The response includes evidence (pr_url, pr_number, commits, files_changed,
+        journal_highlights, acceptance_criteria_status) INLINE so the QA agent
+        cannot miss the PR data. Marks `qa_evidence_inspected=true` automatically.
+        """
+        t = await self.task.get(task_id)
+        if t is None:
+            return Envelope.not_found(message=f"task {task_id} not found")
+        if str(t.status) != "awaiting_qa":
+            return Envelope.invalid_state(
+                message=(
+                    f"task {task_id} is in {t.status}, expected awaiting_qa for review"
+                ),
+                remediate="call give_me_work() to find an actionable QA task",
+                context_briefing=await self._briefing_for(qa_agent_id, task_id),
+            )
+        t = await self.task.qa_claim(qa_agent_id, task_id)
+
+        # Auto-mark evidence as inspected — we surface it inline in this response
+        await self.task.mark_evidence_inspected(task_id)
+
+        files_changed: list[str] = []
+        if t.work_session_id:
+            files_changed = await self.work_session.files_changed(t.work_session_id)
+        diff_summary = ""
+        if t.branch_name:
+            diff_summary = await self.git.diff(branch_name=t.branch_name)
+        journal_highlights = await self.evidence_repo.journal_highlights_for_task(
+            task_id
+        )
+        ev = build_evidence_for_task(
+            t,
+            journal_highlights=journal_highlights,
+            files_changed=files_changed,
+            pr_diff_summary=diff_summary,
+        )
+        return Envelope.ok(
+            status=str(t.status),
+            task_id=str(task_id),
+            next=(
+                "review the diff. Then call pass(notes) to accept or "
+                "fail(issues) to request changes."
+            ),
+            evidence=ev.as_dict(),
+            context_briefing=await self._briefing_for(qa_agent_id, task_id),
+        )
 
     async def pass_review(self, agent_id: UUID, task_id: UUID, notes: str) -> Envelope:
         """Phase 2: QA agent_id passes task_id with notes."""
