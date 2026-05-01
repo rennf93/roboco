@@ -44,3 +44,32 @@ class PassReviewRequest(BaseModel):
 class FailReviewRequest(BaseModel):
     task_id: UUID
     issues: list[str] = Field(..., min_length=1)
+
+
+class ClaimDocTaskRequest(BaseModel):
+    task_id: UUID
+
+
+class IDocumentedRequest(BaseModel):
+    task_id: UUID
+    notes: str = Field(..., min_length=1)
+    files: list[str] = Field(..., min_length=1)
+
+
+class TriageRequest(BaseModel):
+    """Empty request body."""
+
+
+class UnblockRequest(BaseModel):
+    task_id: UUID
+    restore: bool = True
+
+
+class CompleteRequest(BaseModel):
+    task_id: UUID
+    notes: str = Field(..., min_length=1)
+
+
+class EscalateUpRequest(BaseModel):
+    task_id: UUID
+    reason: str = Field(..., min_length=1)
