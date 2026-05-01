@@ -1059,3 +1059,24 @@ class Choreographer:
             next="no strategic-review work — i_am_idle",
             context_briefing=await self._briefing_for(board_agent_id, None),
         )
+
+    async def auditor_triage(self, auditor_agent_id: UUID) -> Envelope:
+        """Phase 4: Auditor triage — surfaces anomalies (long-running blocked, etc.)."""
+        anomalies = await self.task.list_long_running_blocked()
+        if anomalies:
+            t = anomalies[0]
+            return Envelope.ok(
+                status=str(t.status),
+                task_id=str(t.id),
+                next=(
+                    "log a reflect-note observing the anomaly via "
+                    f"note(scope='reflect', task_id='{t.id}', text='...')"
+                ),
+                context_briefing=await self._briefing_for(auditor_agent_id, t.id),
+            )
+        return Envelope.ok(
+            status="idle",
+            task_id=None,
+            next="no anomalies — i_am_idle",
+            context_briefing=await self._briefing_for(auditor_agent_id, None),
+        )

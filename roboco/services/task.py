@@ -7,7 +7,7 @@ Handles status transitions, assignments, and queries.
 
 import asyncio
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, Any, ClassVar, cast
 from uuid import UUID
 
@@ -3687,6 +3687,31 @@ class TaskService(BaseService):
             .order_by(
                 TaskTable.priority,
                 TaskTable.sequence,
+                TaskTable.created_at,
+            )
+        )
+        result = await self.session.execute(query)
+        return list(result.scalars().all())
+
+    async def list_long_running_blocked(
+        self, *, threshold_minutes: int = 30
+    ) -> list[TaskTable]:
+        """Tasks in 'blocked' state whose updated_at is older than threshold_minutes.
+
+        Surfaces anomalies for the Auditor to observe. Most-stale first, ordered by
+        updated_at ascending so the oldest blocker is at the head of the list.
+        """
+        cutoff = datetime.now(UTC) - timedelta(minutes=threshold_minutes)
+        query = (
+            select(TaskTable)
+            .where(
+                TaskTable.status == TaskStatus.BLOCKED,
+                TaskTable.updated_at.is_not(None),
+                TaskTable.updated_at < cutoff,
+            )
+            .order_by(
+                TaskTable.updated_at,
+                TaskTable.priority,
                 TaskTable.created_at,
             )
         )
