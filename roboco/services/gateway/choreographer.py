@@ -742,13 +742,45 @@ class Choreographer:
         )
 
     async def unblock(
-        self, agent_id: UUID, task_id: UUID, *, restore: bool = True
+        self, pm_agent_id: UUID, task_id: UUID, *, restore: bool = True
     ) -> Envelope:
-        """Phase 3: PM agent_id unblocks task_id; restore=True (default) returns
-        task to its pre_block_state. restore=False legacy: dumps to in_progress.
-        """
-        del agent_id, task_id, restore  # Phase 3 implementation will use these
-        raise NotImplementedError("Phase 3")
+        """PM unblocks task; restore=True (default) returns to pre_block_state."""
+        t = await self.task.get(task_id)
+        if t is None:
+            return Envelope.not_found(message=f"task {task_id} not found")
+        if str(t.status) != "blocked":
+            return Envelope.invalid_state(
+                message=f"task {task_id} is in {t.status}, expected blocked",
+                remediate=(
+                    "this task is not blocked; call triage() to find blocked tasks"
+                ),
+                context_briefing=await self._briefing_for(pm_agent_id, task_id),
+            )
+
+        has_decision = await self.journal.has_decision_for_task(pm_agent_id, task_id)
+        if not has_decision:
+            from roboco.services.gateway.remediation import (
+                hint_for_missing_journal_decision,
+            )
+
+            return Envelope.tracing_gap(
+                missing=["journal:decision"],
+                remediate=hint_for_missing_journal_decision(),
+                context_briefing=await self._briefing_for(pm_agent_id, task_id),
+            )
+
+        t = await self.task.unblock_with_restore(pm_agent_id, task_id, restore=restore)
+        next_msg = (
+            "task restored to its pre-block state — original assignee will resume"
+            if restore
+            else "task back to in_progress; you'll need to re-engage the workflow"
+        )
+        return Envelope.ok(
+            status=str(t.status),
+            task_id=str(task_id),
+            next=next_msg,
+            context_briefing=await self._briefing_for(pm_agent_id, task_id),
+        )
 
     async def complete(self, agent_id: UUID, task_id: UUID, notes: str) -> Envelope:
         """Phase 3: PM agent_id completes task_id with notes."""
