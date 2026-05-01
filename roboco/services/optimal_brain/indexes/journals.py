@@ -8,7 +8,7 @@ from typing import Any
 from uuid import UUID
 
 from roboco.models.optimal import IndexJournalEntryParams, IndexType
-from roboco.services.optimal_brain.indexes.base import BaseIndexPlugin
+from roboco.services.optimal_brain.indexes.base import BaseIndexPlugin, build_doc_source
 
 
 class JournalsIndexPlugin(BaseIndexPlugin):
@@ -43,10 +43,11 @@ class JournalsIndexPlugin(BaseIndexPlugin):
             "tags": kwargs.get("tags", []),
         }
 
-    def build_source_uri(self, doc_id: str | None = None, **kwargs: Any) -> str:
-        """Build source URI for journal entry."""
-        entry_id = kwargs.get("entry_id", doc_id or "unknown")
-        return f"roboco://journals/{entry_id}"
+    def build_source_uri(self, doc_id: str | None = None, **kwargs: Any) -> str | None:
+        """Build source URI for journal entry; returns None when no entry_id exists."""
+        raw = kwargs.get("entry_id") or doc_id
+        entry_id = str(raw) if raw is not None else None
+        return build_doc_source(kind="journals", id_=entry_id)
 
     async def index_entry(self, params: IndexJournalEntryParams) -> None:
         """

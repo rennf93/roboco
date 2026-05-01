@@ -27,6 +27,13 @@ from roboco.services.optimal_brain import (
 logger = structlog.get_logger()
 
 
+def build_doc_source(*, kind: str, id_: str | None) -> str | None:
+    """Construct a roboco:// doc source URI; returns None if id_ is None."""
+    if id_ is None:
+        return None
+    return f"roboco://{kind}/{id_}"
+
+
 @dataclass
 class IndexConfig:
     """Configuration for an index plugin."""
@@ -133,7 +140,7 @@ class BaseIndexPlugin(ABC):
         ...
 
     @abstractmethod
-    def build_source_uri(self, doc_id: str | None = None, **kwargs: Any) -> str:
+    def build_source_uri(self, doc_id: str | None = None, **kwargs: Any) -> str | None:
         """
         Build a source URI for the document.
 
@@ -142,7 +149,8 @@ class BaseIndexPlugin(ABC):
             **kwargs: Additional context for URI building
 
         Returns:
-            A source URI string (e.g., "roboco://errors/err-001")
+            A source URI string (e.g., "roboco://errors/err-001"), or None if the
+            required ID is missing — callers must skip indexing when None is returned.
         """
         ...
 
@@ -396,6 +404,19 @@ class BaseIndexPlugin(ABC):
         metadata = self.prepare_metadata(content, **kwargs)
         source = self.build_source_uri(doc_id, **kwargs)
 
+        if source is None:
+            logger.debug(
+                "Skipping ingest: build_source_uri returned None",
+                index_type=self.index_type.value,
+                doc_id=doc_id,
+            )
+            return IngestResult(
+                doc_id=doc_id or "unknown",
+                chunk_count=0,
+                success=False,
+                error="source URI could not be built (missing ID)",
+            )
+
         # Create document
         doc = Document(
             content=content,
@@ -535,6 +556,21 @@ class BaseIndexPlugin(ABC):
 
             metadata = self.prepare_metadata(content, **kwargs)
             source = self.build_source_uri(doc_id, **kwargs)
+            if source is None:
+                logger.debug(
+                    "Skipping batch ingest: build_source_uri returned None",
+                    index_type=self.index_type.value,
+                    doc_id=doc_id,
+                )
+                results.append(
+                    IngestResult(
+                        doc_id=doc_id or "unknown",
+                        chunk_count=0,
+                        success=False,
+                        error="source URI could not be built (missing ID)",
+                    )
+                )
+                continue
             doc = Document(content=content, source=source, metadata=metadata)
             docs_to_process.append((doc, doc_id, kwargs))
         return docs_to_process
