@@ -29,7 +29,13 @@ from roboco.enforcement import (
     validate_task_transition,
 )
 from roboco.events import Event, EventType, get_event_bus
-from roboco.models.base import AgentRole, BlockerResolverType, TaskStatus, Team
+from roboco.models.base import (
+    AgentRole,
+    BlockerResolverType,
+    TaskNature,
+    TaskStatus,
+    Team,
+)
 from roboco.models.permissions import AgentContext, TaskAction
 from roboco.models.task import TaskCreateRequest
 from roboco.models.work_session import WorkSessionStatus
@@ -3661,6 +3667,31 @@ class TaskService(BaseService):
     async def list_awaiting_ceo_approval(self) -> list[TaskTable]:
         """List tasks awaiting CEO approval (org-wide, no team filter)."""
         return await self.list_by_status(TaskStatus.AWAITING_CEO_APPROVAL)
+
+    async def list_strategic_for_board(self) -> list[TaskTable]:
+        """Root tasks (no parent) in awaiting_pm_review with strategic nature.
+
+        Strategic = non-technical roots: product strategy, marketing, vision —
+        the work the Board (Product Owner, Head Marketing) curates before
+        escalating to CEO. The codebase models nature as a binary
+        TECHNICAL/NON_TECHNICAL split, so non_technical is the strategic-board
+        bucket.
+        """
+        query = (
+            select(TaskTable)
+            .where(
+                TaskTable.parent_task_id.is_(None),
+                TaskTable.status == TaskStatus.AWAITING_PM_REVIEW,
+                TaskTable.nature == TaskNature.NON_TECHNICAL,
+            )
+            .order_by(
+                TaskTable.priority,
+                TaskTable.sequence,
+                TaskTable.created_at,
+            )
+        )
+        result = await self.session.execute(query)
+        return list(result.scalars().all())
 
     async def get_subtasks(self, parent_task_id: UUID) -> list[TaskTable]:
         """Get all subtasks of a parent task."""

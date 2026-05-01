@@ -1031,12 +1031,31 @@ class Choreographer:
                 remediate=hint_for_missing_journal_decision(),
                 context_briefing=await self._briefing_for(agent_id, task_id),
             )
-        t = await self.task.escalate_to_ceo(
-            task_id, agent_role=me.role, notes=reason
-        )
+        t = await self.task.escalate_to_ceo(task_id, agent_role=me.role, notes=reason)
         return Envelope.ok(
             status=str(t.status),
             task_id=str(task_id),
             next="idle until CEO acts via UI",
             context_briefing=await self._briefing_for(agent_id, task_id),
+        )
+
+    async def board_triage(self, board_agent_id: UUID) -> Envelope:
+        """Phase 4: Board triage — next strategic root task awaiting PM review."""
+        strategic = await self.task.list_strategic_for_board()
+        if strategic:
+            t = strategic[0]
+            return Envelope.ok(
+                status=str(t.status),
+                task_id=str(t.id),
+                next=(
+                    f"review and call escalate_to_ceo(task_id='{t.id}', reason=...)"
+                    " or i_am_idle"
+                ),
+                context_briefing=await self._briefing_for(board_agent_id, t.id),
+            )
+        return Envelope.ok(
+            status="idle",
+            task_id=None,
+            next="no strategic-review work — i_am_idle",
+            context_briefing=await self._briefing_for(board_agent_id, None),
         )

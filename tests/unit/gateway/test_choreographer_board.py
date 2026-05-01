@@ -194,3 +194,62 @@ async def test_board_escalate_to_ceo_succeeds_for_main_pm():
         agent_role="main_pm",
         notes="root task done",
     )
+
+
+@pytest.mark.asyncio
+async def test_board_triage_returns_strategic_first():
+    po_id = uuid4()
+    strategic = MagicMock(
+        id=uuid4(),
+        status="awaiting_pm_review",
+        title="strategic root",
+        team="backend",
+        parent_task_id=None,
+    )
+    task_svc = AsyncMock()
+    task_svc.agent_for.return_value = MagicMock(role="product_owner", team="board")
+    task_svc.list_strategic_for_board.return_value = [strategic]
+    deps = _make_deps(task=task_svc)
+    c = Choreographer(deps)
+
+    env = await c.board_triage(po_id)
+    body = env.as_dict()
+    assert body["task_id"] == str(strategic.id)
+    assert "escalate_to_ceo" in body["next"]
+
+
+@pytest.mark.asyncio
+async def test_board_triage_returns_idle_when_nothing_strategic():
+    po_id = uuid4()
+    task_svc = AsyncMock()
+    task_svc.agent_for.return_value = MagicMock(role="product_owner", team="board")
+    task_svc.list_strategic_for_board.return_value = []
+    deps = _make_deps(task=task_svc)
+    c = Choreographer(deps)
+
+    env = await c.board_triage(po_id)
+    body = env.as_dict()
+    assert body["status"] == "idle"
+    assert body["task_id"] is None
+
+
+@pytest.mark.asyncio
+async def test_board_triage_works_for_head_marketing():
+    """Verb is role-agnostic among board members — head_marketing also gets results."""
+    hm_id = uuid4()
+    strategic = MagicMock(
+        id=uuid4(),
+        status="awaiting_pm_review",
+        title="marketing strategic",
+        team="frontend",
+        parent_task_id=None,
+    )
+    task_svc = AsyncMock()
+    task_svc.agent_for.return_value = MagicMock(role="head_marketing", team="board")
+    task_svc.list_strategic_for_board.return_value = [strategic]
+    deps = _make_deps(task=task_svc)
+    c = Choreographer(deps)
+
+    env = await c.board_triage(hm_id)
+    body = env.as_dict()
+    assert body["task_id"] == str(strategic.id)
