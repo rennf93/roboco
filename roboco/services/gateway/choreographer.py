@@ -18,6 +18,18 @@ from roboco.services.gateway.envelope import Envelope
 from roboco.services.gateway.evidence_builder import (
     BriefingInputs,
     build_context_briefing,
+    build_evidence_for_task,
+)
+from roboco.services.gateway.merge_chain import parent_branch_for
+from roboco.services.gateway.remediation import (
+    hint_for_missing_progress,
+    hint_for_missing_reflect,
+    hint_for_unaddressed_acceptance_criteria,
+)
+from roboco.services.gateway.tracing_gate import (
+    GateContext,
+    Requirement,
+    check_requirements,
 )
 
 if TYPE_CHECKING:
@@ -215,9 +227,136 @@ class Choreographer:
         )
 
     async def i_am_done(self, agent_id: UUID, task_id: UUID, notes: str) -> Envelope:
-        """Phase 1: mark task_id complete for agent_id with notes."""
-        del agent_id, task_id, notes
-        raise NotImplementedError("Phase 1")
+        """Submit work for QA. Runs verify/push/PR/submit-qa sequentially as needed.
+
+        Each step gated by tracing/state preconditions; returns precise
+        remediation hints when prerequisites are missing.
+        """
+        t = await self.task.get(task_id)
+        if t is None:
+            return Envelope.not_found(message=f"task {task_id} not found")
+        if t.assigned_to != agent_id:
+            return Envelope.not_authorized(
+                message="not assigned to you",
+                remediate="claim it via i_will_work_on(task_id) first",
+                context_briefing=await self._briefing_for(agent_id, task_id),
+            )
+
+        # 1. Tracing-gate preconditions
+        has_reflect = await self.journal.has_reflect_for_task(agent_id, task_id)
+        gate_ctx = GateContext(journal_reflect_present=has_reflect)
+        gate = check_requirements(
+            t,
+            [
+                Requirement.PROGRESS_AT_LEAST_ONE,
+                Requirement.JOURNAL_REFLECT,
+                Requirement.ACCEPTANCE_CRITERIA_ADDRESSED,
+            ],
+            gate_ctx,
+        )
+        if not gate.passed:
+            return await self._build_tracing_gap(agent_id, task_id, gate.missing)
+
+        # 2. Smart catch-up: verification, push, PR, submit_qa
+        t = await self._run_catch_up(agent_id, task_id, t, notes)
+
+        # 3. Auto-A2A to QA agent for this team
+        await self._notify_qa(agent_id, task_id, t)
+
+        # 4. Build evidence for the response
+        journal_highlights = await self.evidence_repo.journal_highlights_for_task(
+            task_id
+        )
+        files_changed: list[str] = []
+        if t.work_session_id:
+            files_changed = await self.work_session.files_changed(t.work_session_id)
+        evidence = build_evidence_for_task(
+            t,
+            journal_highlights=journal_highlights,
+            files_changed=files_changed,
+        )
+        return Envelope.ok(
+            status=str(t.status),
+            task_id=str(task_id),
+            next="idle until QA responds",
+            evidence=evidence.as_dict(),
+            context_briefing=await self._briefing_for(agent_id, task_id),
+        )
+
+    async def _build_tracing_gap(
+        self, agent_id: UUID, task_id: UUID, missing: list[str]
+    ) -> Envelope:
+        """Translate missing requirement keys into agent-facing hints."""
+        hints: list[str] = []
+        unaddressed: list[str] = []
+        for m in missing:
+            if m == "progress>=1":
+                hints.append(hint_for_missing_progress())
+            elif m == "journal:reflect":
+                hints.append(hint_for_missing_reflect(task_id=str(task_id)))
+            elif m.startswith("acceptance_criterion:"):
+                unaddressed.append(m.split(":", 1)[1])
+        if unaddressed:
+            hints.append(
+                hint_for_unaddressed_acceptance_criteria(
+                    criteria=unaddressed,
+                    task_id=str(task_id),
+                )
+            )
+        return Envelope.tracing_gap(
+            missing=missing,
+            remediate=" ; ".join(hints),
+            context_briefing=await self._briefing_for(agent_id, task_id),
+        )
+
+    async def _run_catch_up(
+        self, agent_id: UUID, task_id: UUID, t: Any, notes: str
+    ) -> Any:
+        """Run verification, push, PR creation, and submit_qa as needed."""
+        if not t.self_verified:
+            t = await self.task.submit_verification(agent_id, task_id, notes)
+
+        has_unpushed = await self.work_session.has_unpushed_commits(t.work_session_id)
+        if has_unpushed:
+            await self.git.push(t.branch_name)
+
+        if t.pr_number is None:
+            parent = parent_branch_for(t.branch_name)
+            await self.git.create_pr(t.branch_name, parent=parent, is_root_pr=False)
+            t = await self.task.get(task_id)  # refresh after PR creation
+
+        return await self.task.submit_qa(agent_id, task_id, notes)
+
+    async def _notify_qa(self, agent_id: UUID, task_id: UUID, t: Any) -> None:
+        """Send A2A notification to the QA agent for this task's team."""
+        qa_agent = await self.task.qa_agent_for_team(t.team)
+        if qa_agent is not None:
+            skill = self._resolve_skill(qa_agent, ["code_review", "qa_review"])
+            await self.a2a.send(
+                from_agent=agent_id,
+                to_agent=qa_agent.id,
+                skill=skill,
+                task_id=task_id,
+                body=f"Ready for review. PR: {t.pr_url}",
+            )
+
+    def _resolve_skill(self, target_agent: Any, preference: list[str]) -> str:
+        """Pick first skill in preference list that target_agent has.
+
+        Falls back to the first entry in preference when no match is found.
+        """
+        have: set[str] = set()
+        for s in target_agent.skills or []:
+            if isinstance(s, dict):
+                sid = s.get("id")
+                if sid:
+                    have.add(sid)
+            elif isinstance(s, str):
+                have.add(s)
+        for skill in preference:
+            if skill in have:
+                return skill
+        return preference[0]
 
     async def i_am_blocked(
         self, agent_id: UUID, task_id: UUID, reason: str

@@ -241,3 +241,236 @@ async def test_i_have_committed_no_plan_returns_tracing_gap() -> None:
     assert body["error"] == "tracing_gap"
     assert "plan" in body["missing"]
     task_svc.add_progress.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_i_am_done_full_catch_up() -> None:
+    agent_id = uuid4()
+    task_id = uuid4()
+    branch = "feature/backend/abc--def"
+    ws_id = uuid4()
+    initial = MagicMock(
+        id=task_id,
+        status="in_progress",
+        assigned_to=agent_id,
+        plan={"x": 1},
+        branch_name=branch,
+        work_session_id=ws_id,
+        self_verified=False,
+        pr_number=None,
+        pr_url=None,
+        team="backend",
+        progress_updates=[{"message": "did x"}],
+        acceptance_criteria=["AC1"],
+        acceptance_criteria_status=[
+            {"criterion": "AC1", "referencing_artifact_id": "c1"}
+        ],
+        commits=[],
+        documents=[],
+        dev_notes="",
+    )
+    after_verify = MagicMock(
+        id=task_id,
+        status="verifying",
+        assigned_to=agent_id,
+        plan={"x": 1},
+        branch_name=branch,
+        work_session_id=ws_id,
+        self_verified=True,
+        pr_number=None,
+        pr_url=None,
+        team="backend",
+        progress_updates=[{"message": "did x"}],
+        acceptance_criteria=["AC1"],
+        acceptance_criteria_status=[
+            {"criterion": "AC1", "referencing_artifact_id": "c1"}
+        ],
+        commits=[],
+        documents=[],
+        dev_notes="",
+    )
+    after_pr = MagicMock(
+        id=task_id,
+        status="verifying",
+        assigned_to=agent_id,
+        plan={"x": 1},
+        branch_name=branch,
+        work_session_id=ws_id,
+        self_verified=True,
+        pr_number=8,
+        pr_url="https://x/pr/8",
+        team="backend",
+        progress_updates=[{"message": "did x"}],
+        acceptance_criteria=["AC1"],
+        acceptance_criteria_status=[
+            {"criterion": "AC1", "referencing_artifact_id": "c1"}
+        ],
+        commits=[],
+        documents=[],
+        dev_notes="",
+    )
+    after_submit = MagicMock(
+        id=task_id,
+        status="awaiting_qa",
+        assigned_to=agent_id,
+        plan={"x": 1},
+        branch_name=branch,
+        work_session_id=ws_id,
+        self_verified=True,
+        pr_number=8,
+        pr_url="https://x/pr/8",
+        team="backend",
+        progress_updates=[{"message": "did x"}],
+        acceptance_criteria=["AC1"],
+        acceptance_criteria_status=[
+            {"criterion": "AC1", "referencing_artifact_id": "c1"}
+        ],
+        commits=[],
+        documents=[],
+        dev_notes="",
+    )
+
+    task_svc = AsyncMock()
+    task_svc.get.side_effect = [initial, after_pr]  # initial fetch + post-PR refresh
+    task_svc.submit_verification.return_value = after_verify
+    task_svc.submit_qa.return_value = after_submit
+    task_svc.qa_agent_for_team.return_value = MagicMock(
+        id=uuid4(), skills=[{"id": "code_review"}]
+    )
+
+    work_svc = AsyncMock()
+    work_svc.has_unpushed_commits.return_value = True
+    work_svc.files_changed.return_value = ["README.md"]
+
+    git_svc = AsyncMock()
+    git_svc.create_pr.return_value = {"pr_number": 8, "pr_url": "https://x/pr/8"}
+
+    a2a_svc = AsyncMock()
+
+    journal_svc = AsyncMock()
+    journal_svc.has_reflect_for_task.return_value = True
+
+    deps = _make_deps(
+        task=task_svc,
+        work_session=work_svc,
+        git=git_svc,
+        a2a=a2a_svc,
+        journal=journal_svc,
+    )
+    deps.evidence_repo.journal_highlights_for_task.return_value = []
+    c = Choreographer(deps)
+
+    env = await c.i_am_done(agent_id, task_id, "all done")
+    assert env.error is None
+    assert env.status == "awaiting_qa"
+    git_svc.push.assert_awaited_once_with(branch)
+    git_svc.create_pr.assert_awaited_once()
+    a2a_svc.send.assert_awaited_once()
+    body = env.as_dict()
+    assert body["evidence"]["pr_url"] == "https://x/pr/8"
+
+
+@pytest.mark.asyncio
+async def test_i_am_done_blocks_when_acceptance_criteria_unaddressed() -> None:
+    agent_id = uuid4()
+    task_id = uuid4()
+    t = MagicMock(
+        id=task_id,
+        status="in_progress",
+        assigned_to=agent_id,
+        plan={"x": 1},
+        branch_name="feature/backend/abc",
+        work_session_id=uuid4(),
+        self_verified=False,
+        progress_updates=[{"message": "p"}],
+        acceptance_criteria=["AC1", "AC2"],
+        acceptance_criteria_status=[
+            {"criterion": "AC1", "referencing_artifact_id": "c1"}
+        ],
+        commits=[],
+        documents=[],
+        dev_notes="",
+    )
+    task_svc = AsyncMock()
+    task_svc.get.return_value = t
+    journal_svc = AsyncMock()
+    journal_svc.has_reflect_for_task.return_value = True
+    deps = _make_deps(task=task_svc, journal=journal_svc)
+    c = Choreographer(deps)
+
+    env = await c.i_am_done(agent_id, task_id, "done")
+    body = env.as_dict()
+    assert body["error"] == "tracing_gap"
+    assert any("AC2" in m for m in body["missing"])
+
+
+@pytest.mark.asyncio
+async def test_i_am_done_blocks_when_journal_reflect_missing() -> None:
+    agent_id = uuid4()
+    task_id = uuid4()
+    t = MagicMock(
+        id=task_id,
+        status="in_progress",
+        assigned_to=agent_id,
+        plan={"x": 1},
+        branch_name="feature/backend/abc",
+        work_session_id=uuid4(),
+        self_verified=False,
+        progress_updates=[{"message": "p"}],
+        acceptance_criteria=["AC1"],
+        acceptance_criteria_status=[
+            {"criterion": "AC1", "referencing_artifact_id": "c1"}
+        ],
+        commits=[],
+        documents=[],
+        dev_notes="",
+    )
+    task_svc = AsyncMock()
+    task_svc.get.return_value = t
+    journal_svc = AsyncMock()
+    journal_svc.has_reflect_for_task.return_value = False  # no reflect
+    deps = _make_deps(task=task_svc, journal=journal_svc)
+    c = Choreographer(deps)
+
+    env = await c.i_am_done(agent_id, task_id, "done")
+    body = env.as_dict()
+    assert body["error"] == "tracing_gap"
+    assert "journal:reflect" in body["missing"]
+
+
+@pytest.mark.asyncio
+async def test_i_am_done_not_assigned_returns_not_authorized() -> None:
+    agent_id = uuid4()
+    other_agent = uuid4()
+    task_id = uuid4()
+    t = MagicMock(id=task_id, status="in_progress", assigned_to=other_agent)
+    task_svc = AsyncMock()
+    task_svc.get.return_value = t
+    deps = _make_deps(task=task_svc)
+    c = Choreographer(deps)
+
+    env = await c.i_am_done(agent_id, task_id, "x")
+    body = env.as_dict()
+    assert body["error"] == "not_authorized"
+
+
+@pytest.mark.asyncio
+async def test_i_am_done_skill_resolution_picks_existing_skill() -> None:
+    """Resolver picks first matching skill.
+
+    Falls back to the first preference entry when no match is found.
+    """
+    deps = _make_deps()
+    c = Choreographer(deps)
+
+    qa = MagicMock(id=uuid4(), skills=[{"id": "qa_review"}, {"id": "test_validation"}])
+    skill = c._resolve_skill(qa, ["code_review", "qa_review"])
+    assert skill == "qa_review"
+
+    qa_with_canonical = MagicMock(id=uuid4(), skills=[{"id": "code_review"}])
+    skill2 = c._resolve_skill(qa_with_canonical, ["code_review", "qa_review"])
+    assert skill2 == "code_review"
+
+    qa_with_neither = MagicMock(id=uuid4(), skills=[{"id": "other_skill"}])
+    skill3 = c._resolve_skill(qa_with_neither, ["code_review", "qa_review"])
+    assert skill3 == "code_review"  # fallback to first
