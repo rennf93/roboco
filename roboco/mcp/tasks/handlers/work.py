@@ -162,7 +162,7 @@ async def handle_task_start(
     guidance = "Task started. Work through your plan step by step:\n"
     if branch_name:
         guidance += (
-            f"✓ Checked out branch: {branch_name}\n"
+            f"Checked out branch: {branch_name}\n"
             f"   Workspace: /data/workspaces/{project_slug}/...\n"
             "   Use roboco_git_* tools for git operations.\n\n"
         )

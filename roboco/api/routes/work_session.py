@@ -9,7 +9,12 @@ from uuid import UUID
 
 from fastapi import APIRouter, HTTPException, Query, status
 
-from roboco.api.deps import CurrentAgentContext, DbSession
+from roboco.api.deps import (
+    CurrentAgentContext,
+    DbSession,
+    require_developer_or_above,
+    require_pm_or_above,
+)
 from roboco.api.schemas.work_session import (
     AddCommitRequest,
     AddFilesRequest,
@@ -26,38 +31,6 @@ from roboco.models.work_session import WorkSessionCreate, WorkSessionStatus
 from roboco.services.work_session import get_work_session_service
 
 router = APIRouter()
-
-
-# =============================================================================
-# PERMISSION HELPERS
-# =============================================================================
-
-
-def _require_pm_or_above(agent: CurrentAgentContext, action: str) -> None:
-    """Require PM or higher role for an action."""
-    allowed_roles = {"cell_pm", "main_pm", "product_owner", "auditor", "ceo"}
-    if agent.role.value not in allowed_roles:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail=f"Only PMs and management can {action}",
-        )
-
-
-def _require_developer_or_above(agent: CurrentAgentContext, action: str) -> None:
-    """Require developer or higher role for an action."""
-    allowed_roles = {
-        "developer",
-        "cell_pm",
-        "main_pm",
-        "product_owner",
-        "auditor",
-        "ceo",
-    }
-    if agent.role.value not in allowed_roles:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail=f"Only developers and above can {action}",
-        )
 
 
 # =============================================================================
@@ -150,7 +123,7 @@ async def create_session(
 
     Typically created automatically when claiming a task.
     """
-    _require_developer_or_above(agent, "create work sessions")
+    require_developer_or_above(agent.role, "create work sessions")
 
     service = get_work_session_service(db)
 
@@ -190,7 +163,7 @@ async def add_commit(
     agent: CurrentAgentContext,
 ) -> WorkSessionResponse:
     """Add a commit to the work session."""
-    _require_developer_or_above(agent, "add commits")
+    require_developer_or_above(agent.role, "add commits")
 
     service = get_work_session_service(db)
 
@@ -214,7 +187,7 @@ async def add_files_modified(
     agent: CurrentAgentContext,
 ) -> WorkSessionResponse:
     """Add modified files to the work session."""
-    _require_developer_or_above(agent, "add files")
+    require_developer_or_above(agent.role, "add files")
 
     service = get_work_session_service(db)
 
@@ -243,7 +216,7 @@ async def create_pr(
     agent: CurrentAgentContext,
 ) -> WorkSessionResponse:
     """Record PR creation for the work session."""
-    _require_developer_or_above(agent, "create PRs")
+    require_developer_or_above(agent.role, "create PRs")
 
     service = get_work_session_service(db)
 
@@ -267,7 +240,7 @@ async def update_pr_status(
     agent: CurrentAgentContext,
 ) -> WorkSessionResponse:
     """Update the PR status."""
-    _require_developer_or_above(agent, "update PR status")
+    require_developer_or_above(agent.role, "update PR status")
 
     service = get_work_session_service(db)
 
@@ -291,7 +264,7 @@ async def merge_pr(
     agent: CurrentAgentContext,
 ) -> WorkSessionResponse:
     """Record PR merge and complete the session (PM only)."""
-    _require_pm_or_above(agent, "merge PRs")
+    require_pm_or_above(agent.role, "merge PRs")
 
     service = get_work_session_service(db)
 
@@ -319,7 +292,7 @@ async def complete_session(
     agent: CurrentAgentContext,
 ) -> WorkSessionResponse:
     """Mark the session as completed."""
-    _require_developer_or_above(agent, "complete sessions")
+    require_developer_or_above(agent.role, "complete sessions")
 
     service = get_work_session_service(db)
 
@@ -343,7 +316,7 @@ async def abandon_session(
     reason: Annotated[str | None, Query(description="Reason for abandonment")] = None,
 ) -> WorkSessionResponse:
     """Abandon/cancel the work session."""
-    _require_developer_or_above(agent, "abandon sessions")
+    require_developer_or_above(agent.role, "abandon sessions")
 
     service = get_work_session_service(db)
 

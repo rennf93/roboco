@@ -151,7 +151,14 @@ AGENT_TEAM_MAP: Final[dict[str, str]] = {
     "ux-qa": "ux_ui",
     "ux-pm": "ux_ui",
     "ux-doc": "ux_ui",
-    # Management has no team
+    # Management — main-pm gets its own team folder; board members share `board`.
+    # These match Team.MAIN_PM and Team.BOARD enum values so workspace path
+    # resolution never produces a literal "None" segment.
+    "main-pm": "main_pm",
+    "product-owner": "board",
+    "head-marketing": "board",
+    "auditor": "board",
+    "ceo": "board",
 }
 
 

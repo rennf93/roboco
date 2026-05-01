@@ -211,11 +211,30 @@ class HandoffStatus(StrEnum):
 
 
 class ModelProvider(StrEnum):
-    """LLM provider options."""
+    """LLM provider options.
+
+    `ANTHROPIC` is the built-in default — routed via the mounted `~/.claude/`
+    credentials inside each agent container. `OLLAMA_CLOUD` routes via
+    `ANTHROPIC_BASE_URL` + `ANTHROPIC_AUTH_TOKEN` env injection at spawn.
+    OPENAI / LOCAL are historical placeholders (unused today).
+    """
 
     ANTHROPIC = "anthropic"
+    OLLAMA_CLOUD = "ollama_cloud"
     OPENAI = "openai"
     LOCAL = "local"
+
+
+class AssignmentScope(StrEnum):
+    """Scope for a model_assignment row.
+
+    Resolution precedence at spawn time:
+        AGENT_SLUG > ROLE > GLOBAL
+    """
+
+    GLOBAL = "global"
+    ROLE = "role"
+    AGENT_SLUG = "agent_slug"
 
 
 # =============================================================================

@@ -5,7 +5,7 @@ Structured exception hierarchy for the AI Agents Company system.
 All exceptions include context for debugging and logging.
 """
 
-from typing import Any
+from typing import Any, ClassVar
 from uuid import UUID
 
 
@@ -210,6 +210,39 @@ class TaskError(RobocoError):
 class TaskLifecycleError(TaskError):
     """Invalid task state transition."""
 
+    # Procedural hints for the common "I skipped a step" footguns. Keyed by
+    # (current_status, target_status); value is the tool-call sequence the
+    # agent needs to run to actually reach the target. Weak models read
+    # "valid transitions: [...]" and then guess — giving them the tool
+    # calls explicitly saves the guess cycle.
+    _TRANSITION_HINTS: ClassVar[dict[tuple[str, str], str]] = {
+        ("claimed", "awaiting_documentation"): (
+            "QA pass skipped the in_progress step. "
+            "Call `roboco_task_start(task_id)` first, then "
+            "`roboco_task_qa_pass(task_id, qa_notes=...)`."
+        ),
+        ("claimed", "awaiting_pm_review"): (
+            "Call `roboco_task_start(task_id)` first to move claimed → "
+            "in_progress, then the handoff tool for your role."
+        ),
+        ("claimed", "completed"): (
+            "Call `roboco_task_start(task_id)` before `roboco_task_complete(task_id)`."
+        ),
+        ("claimed", "needs_revision"): (
+            "QA fail from claimed needs the start step first. "
+            "Call `roboco_task_start(task_id)` then "
+            "`roboco_task_qa_fail(task_id, notes=...)`."
+        ),
+        ("pending", "in_progress"): (
+            "Pending tasks must be claimed first. "
+            "Call `roboco_task_claim(task_id)` then `roboco_task_start`."
+        ),
+        ("backlog", "in_progress"): (
+            "Activate the task first via "
+            "`roboco_task_activate(task_id)`, then claim + start."
+        ),
+    }
+
     def __init__(
         self,
         current_status: str,
@@ -231,6 +264,9 @@ class TaskLifecycleError(TaskError):
         default_msg = f"Cannot transition from '{current_status}' to '{target_status}'"
         if valid_transitions:
             default_msg += f". Valid transitions: {valid_transitions}"
+        hint = self._TRANSITION_HINTS.get((current_status, target_status))
+        if hint:
+            default_msg += f". {hint}"
 
         super().__init__(
             message=message or default_msg,
@@ -240,6 +276,7 @@ class TaskLifecycleError(TaskError):
                 "current_status": current_status,
                 "target_status": target_status,
                 "valid_transitions": valid_transitions,
+                "hint": hint,
                 **kwargs,
             },
         )

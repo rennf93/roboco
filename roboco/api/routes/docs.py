@@ -19,7 +19,7 @@ from roboco.api.schemas.docs import (
     WriteDocResponse,
 )
 from roboco.services.base import NotFoundError, UnauthorizedError, ValidationError
-from roboco.services.docs import get_docs_service
+from roboco.services.docs import WriteDocInput, get_docs_service
 
 router = APIRouter()
 
@@ -57,7 +57,13 @@ async def write_doc(
     try:
         rel_path, doc_ref, is_update = await service.write_doc(
             agent_id=str(agent.agent_id),
-            req=data,
+            req=WriteDocInput(
+                task_id=data.task_id,
+                filename=data.filename,
+                doc_type=data.doc_type.value,
+                title=data.title,
+                content=data.content,
+            ),
         )
         await db.commit()
 

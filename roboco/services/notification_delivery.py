@@ -25,7 +25,7 @@ from roboco.agents_config import (
 from roboco.db.tables import AgentTable, NotificationTable, TaskTable
 from roboco.events import Event, EventType, get_event_bus
 from roboco.models.base import AgentRole, NotificationPriority, NotificationType
-from roboco.services.base import BaseService, NotFoundError
+from roboco.services.base import BaseService, NotFoundError, ValidationError
 from roboco.utils.converters import require_uuid
 
 
@@ -527,13 +527,13 @@ class NotificationDeliveryService(BaseService):
             priority="high",
             from_agent=blocker_agent_id,
             to_agents=[pm.id],
-            subject=f"🚫 ACTION REQUIRED: Blocked - {task_title[:40]}",
+            subject=f"ACTION REQUIRED: Blocked - {task_title[:40]}",
             body=(
                 f"Task {task_id} has been BLOCKED by {blocker_name}.\n\n"
                 f"Type: {details.blocker_type}\n"
                 f"Reason: {details.reason}\n"
                 f"What's needed: {details.what_needed}\n\n"
-                "⚠️ ACTION REQUIRED:\n"
+                "ACTION REQUIRED:\n"
                 "When resolved, you MUST call:\n"
                 f"  roboco_task_unblock('{task_id}')\n\n"
                 "Verbal resolution in chat is NOT enough - "
@@ -938,6 +938,33 @@ class NotificationDeliveryService(BaseService):
             notification.read_by = [*notification.read_by, agent_id]
             await self.session.flush()
 
+    _MIN_SUBJECT_CHARS: ClassVar[int] = 5
+    _MIN_BODY_CHARS: ClassVar[int] = 10
+    _MAX_RECIPIENTS: ClassVar[int] = 50
+
+    def _assert_content(self, data: "ApiNotificationCreate") -> None:
+        """Reject empty subjects, sparse bodies, and over-large recipient lists.
+
+        Keeps the filter on what makes a notification useful: enough text
+        to act on, and not enough recipients to be a broadcast.
+        """
+        if not data.subject or len(data.subject.strip()) < self._MIN_SUBJECT_CHARS:
+            raise ValidationError(
+                f"SUBJECT_REQUIRED: Notification subject must be >= "
+                f"{self._MIN_SUBJECT_CHARS} chars."
+            )
+        if not data.body or len(data.body.strip()) < self._MIN_BODY_CHARS:
+            raise ValidationError(
+                f"BODY_REQUIRED: Notification body must be >= "
+                f"{self._MIN_BODY_CHARS} chars. Say what to do next."
+            )
+        if len(data.to_agents) > self._MAX_RECIPIENTS:
+            raise ValidationError(
+                f"TOO_MANY_RECIPIENTS: {len(data.to_agents)} recipients "
+                f"exceeds {self._MAX_RECIPIENTS}. Post in a broadcast "
+                "channel instead of spraying notifications."
+            )
+
     async def send_from_api(
         self,
         *,
@@ -950,6 +977,7 @@ class NotificationDeliveryService(BaseService):
             validate_notification_permission,
         )
 
+        self._assert_content(data)
         agent = await self._get_agent_by_id(sender_agent_id)
         if not agent:
             raise NotFoundError(resource_type="Agent", resource_id=str(sender_agent_id))

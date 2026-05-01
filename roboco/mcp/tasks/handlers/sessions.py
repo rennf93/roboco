@@ -155,10 +155,18 @@ async def handle_session_link_task(
         )
 
     if resp.is_status(status.HTTP_409_CONFLICT):
+        # Link duplication is now idempotent server-side, so a 409 here
+        # means the task already has a *different* primary session and
+        # this call tried to promote a second one — that's a real
+        # conflict, not benign duplication.
         return format_error_response(
-            "ALREADY_LINKED",
-            "Session is already linked to this task",
-            {"session_id": input_data.session_id, "task_id": input_data.task_id},
+            "PRIMARY_CONFLICT",
+            "Task already has a different primary session",
+            {
+                "session_id": input_data.session_id,
+                "task_id": input_data.task_id,
+                "detail": resp.text,
+            },
         )
 
     if not resp.ok:

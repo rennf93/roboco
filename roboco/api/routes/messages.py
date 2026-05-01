@@ -30,26 +30,6 @@ from roboco.services.messaging import (
 
 router = APIRouter()
 
-_MAX_MSG_CHARS = 10_000
-
-
-def _assert_send_content(raw: str | None) -> None:
-    """Validate request content before delegating to the service."""
-    trimmed = (raw or "").strip()
-    if not trimmed:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="EMPTY_MESSAGE: message content cannot be blank.",
-        )
-    if len(raw or "") > _MAX_MSG_CHARS:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=(
-                f"MESSAGE_TOO_LONG: {len(raw or '')} chars exceeds "
-                f"{_MAX_MSG_CHARS}. Split the message or link a doc."
-            ),
-        )
-
 
 @router.get(
     "",
@@ -112,7 +92,6 @@ async def send_message(
     data: MessageCreateRequest,
 ) -> MessageResponse:
     """Send a message via MessagingService."""
-    _assert_send_content(data.content)
     messaging = get_messaging_service(db)
 
     service_request = ServiceMessageRequest(

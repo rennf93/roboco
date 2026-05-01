@@ -5,6 +5,7 @@ Request/response models for git operation endpoints.
 """
 
 from datetime import datetime
+from uuid import UUID
 
 from pydantic import BaseModel, Field
 
@@ -75,7 +76,7 @@ class GitCreateBranchRequest(BaseModel):
     """Request to create a branch."""
 
     project_slug: str
-    task_id: str
+    task_id: UUID
     branch_type: str = Field(..., pattern=r"^(feature|bug|chore|docs|hotfix)$")
     agent_id: str
     parent_branch: str | None = None
@@ -128,7 +129,7 @@ class GitCommitRequest(BaseModel):
     """Request to create a commit."""
 
     project_slug: str
-    task_id: str
+    task_id: UUID
     agent_id: str
     # Commit message fields
     message: str = Field(
@@ -167,7 +168,7 @@ class GitPushRequest(BaseModel):
     """Request to push commits."""
 
     project_slug: str
-    task_id: str
+    task_id: UUID
     agent_id: str
     force: bool = False
 
@@ -190,7 +191,7 @@ class GitCreatePRRequest(BaseModel):
     """Request to create a pull request."""
 
     project_slug: str
-    task_id: str
+    task_id: UUID
     agent_id: str
     # PR content (auto-generated from templates if not provided)
     title: str | None = Field(None, description="PR title (auto-generated if not set)")
@@ -217,7 +218,7 @@ class GitMergePRRequest(BaseModel):
 
     project_slug: str
     pr_number: int
-    task_id: str
+    task_id: UUID
     merge_method: str = Field(default="squash", pattern=r"^(merge|squash|rebase)$")
     agent_id: str
 

@@ -28,6 +28,7 @@ from roboco.api.routes.notifications import router as notifications_router
 from roboco.api.routes.optimal import router as optimal_router
 from roboco.api.routes.orchestrator import router as orchestrator_router
 from roboco.api.routes.project import router as project_router
+from roboco.api.routes.provider import router as provider_router
 from roboco.api.routes.sessions import router as sessions_router
 from roboco.api.routes.stream import router as stream_router
 from roboco.api.routes.tasks import router as tasks_router
@@ -270,6 +271,13 @@ def create_app() -> FastAPI:
         project_router,
         prefix=f"{api_prefix}/projects",
         tags=["Projects"],
+    )
+
+    # AI Providers (model routing + Ollama-cloud fallback)
+    app.include_router(
+        provider_router,
+        prefix=f"{api_prefix}/providers",
+        tags=["Providers"],
     )
 
     # Work Sessions

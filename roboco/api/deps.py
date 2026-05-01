@@ -319,6 +319,66 @@ async def get_agent_context(
 CurrentAgentContext = Annotated[AgentContext, Depends(get_agent_context)]
 
 
+# =============================================================================
+# ROLE-GATE HELPERS
+#
+# Small HTTP-layer guards for routes that need a coarse "PM or above" /
+# "developer or above" check. They raise HTTPException directly because
+# the check IS the HTTP authorization decision — no service-side logic,
+# no translation layer needed.
+# =============================================================================
+
+_PM_OR_ABOVE_ROLES: frozenset[str] = frozenset(
+    {"cell_pm", "main_pm", "product_owner", "auditor", "ceo"}
+)
+_DEVELOPER_OR_ABOVE_ROLES: frozenset[str] = frozenset(
+    {"developer", "cell_pm", "main_pm", "product_owner", "auditor", "ceo"}
+)
+
+
+def _role_value(role: Any) -> str:
+    """AgentRole or str → plain string for set membership checks."""
+    return role.value if hasattr(role, "value") else str(role)
+
+
+def require_pm_or_above(role: Any, action: str) -> None:
+    """Raise 403 unless caller is PM-or-above (cell_pm/main_pm/board/CEO)."""
+    if _role_value(role) not in _PM_OR_ABOVE_ROLES:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=f"Only PMs and management can {action}",
+        )
+
+
+def require_developer_or_above(role: Any, action: str) -> None:
+    """Raise 403 unless caller is developer-or-above."""
+    if _role_value(role) not in _DEVELOPER_OR_ABOVE_ROLES:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=f"Only developers and above can {action}",
+        )
+
+
+_GLOBAL_CELL_ACCESS_ROLES: frozenset[str] = frozenset(
+    {"main_pm", "product_owner", "auditor", "ceo"}
+)
+
+
+def require_cell_access(agent: AgentContext, cell: Team, action: str) -> None:
+    """Raise 403 unless caller can act in the given cell.
+
+    Main PM, board, and CEO can act across all cells. Cell PMs and their
+    members are restricted to their own cell.
+    """
+    if _role_value(agent.role) in _GLOBAL_CELL_ACCESS_ROLES:
+        return
+    if agent.team != cell:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=f"Cannot {action} projects in {cell.value} cell",
+        )
+
+
 def require_channel_read(
     channel_name: str,
 ) -> Callable[..., Coroutine[Any, Any, None]]:

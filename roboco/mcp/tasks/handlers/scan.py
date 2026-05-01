@@ -74,7 +74,7 @@ async def handle_task_scan(
     if blocked_tasks:
         result["blocked_tasks"] = blocked_tasks
         result["blocked_action_required"] = (
-            f"⚠️ {len(blocked_tasks)} BLOCKED task(s) need your attention!\n"
+            f"{len(blocked_tasks)} BLOCKED task(s) need your attention!\n"
             "For each resolved blocker, you MUST call:\n"
             "  roboco_task_unblock(task_id)\n\n"
             "Verbal resolution in chat is NOT enough."

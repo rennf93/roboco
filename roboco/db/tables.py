@@ -31,12 +31,14 @@ from roboco.models.a2a import A2AConversationStatus, A2AMessageKind
 from roboco.models.base import (
     AgentRole,
     AgentStatus,
+    AssignmentScope,
     BlockerResolverType,
     ChannelType,
     Complexity,
     HandoffStatus,
     JournalEntryType,
     MessageType,
+    ModelProvider,
     NotificationPriority,
     NotificationType,
     SessionStatus,
@@ -140,6 +142,16 @@ class TaskTable(Base):
     # (`human`). NULL for never-blocked tasks and for pre-existing rows.
     blocker_resolver_type: Mapped[BlockerResolverType | None] = mapped_column(
         Enum(BlockerResolverType), nullable=True
+    )
+    # Agent who raised the current block/escalation. Escalate reassigns the
+    # task to the resolver (PM) so they can work the fix, which loses the
+    # original dev's identity. We stash it here so `unblock` can flip
+    # assignment back and the orchestrator respawns the right agent. NULL
+    # = never blocked or pre-migration row.
+    blocker_raised_by: Mapped[UUID | None] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("agents.id", ondelete="SET NULL"),
+        nullable=True,
     )
     priority: Mapped[int] = mapped_column(Integer, nullable=False, default=2)
 
@@ -1494,4 +1506,101 @@ class AuditLogTable(Base):
     __table_args__ = (
         Index("ix_audit_log_agent_timestamp", "agent_id", "timestamp"),
         Index("ix_audit_log_target", "target_type", "target_id"),
+    )
+
+
+# =============================================================================
+# PROVIDER ROUTING TABLES
+# =============================================================================
+
+
+class ProviderConfigTable(Base):
+    """SQLAlchemy table for model-provider connections.
+
+    One row per "logical provider" — e.g., "Anthropic (default)" (a
+    pointer-only row with no secret, served by the mounted ~/.claude auth)
+    or "Ollama Cloud Kimi" (holds an encrypted API key and a base URL).
+    `ModelAssignmentTable` rows reference these via `provider_config_id`.
+    """
+
+    __tablename__ = "provider_configs"
+
+    id: Mapped[UUID] = mapped_column(
+        UUID(as_uuid=True), primary_key=True, default=uuid4
+    )
+    name: Mapped[str] = mapped_column(
+        String(100), unique=True, nullable=False, index=True
+    )
+    type: Mapped[ModelProvider] = mapped_column(
+        Enum(ModelProvider, name="modelprovider"), nullable=False
+    )
+    # `base_url = NULL` → Anthropic-default path: no ANTHROPIC_BASE_URL
+    # injection, Claude Code inside the container uses its mounted
+    # ~/.claude credentials. Non-null routes to that endpoint instead.
+    base_url: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # Fernet-encrypted auth token (Ollama API key for ollama_cloud rows;
+    # NULL for anthropic rows — their auth lives in the mounted directory).
+    auth_token_encrypted: Mapped[str | None] = mapped_column(Text, nullable=True)
+    enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=lambda: datetime.now(UTC), nullable=False
+    )
+    updated_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), onupdate=lambda: datetime.now(UTC), nullable=True
+    )
+
+    __table_args__ = (Index("ix_provider_configs_enabled", "enabled"),)
+
+
+class ModelAssignmentTable(Base):
+    """SQLAlchemy table for (scope, provider, model) routing rows.
+
+    Precedence at spawn time (implemented in `ModelRoutingService`):
+        AGENT_SLUG > ROLE > GLOBAL
+    with a legacy fallback to `ROLE_MODEL_MAP` when no row applies.
+    """
+
+    __tablename__ = "model_assignments"
+
+    id: Mapped[UUID] = mapped_column(
+        UUID(as_uuid=True), primary_key=True, default=uuid4
+    )
+    scope: Mapped[AssignmentScope] = mapped_column(
+        Enum(AssignmentScope, name="assignmentscope"), nullable=False
+    )
+    # NULL when scope = 'global'; role name for 'role'; agent slug for 'agent_slug'.
+    scope_value: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    provider_config_id: Mapped[UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("provider_configs.id", ondelete="RESTRICT"),
+        nullable=False,
+    )
+    # Raw Claude Code `--model` identifier (`claude-opus-4-7`,
+    # `kimi-k2.6:cloud`, etc.). The orchestrator's CLI-translation only
+    # fires for anthropic providers; non-anthropic values pass through.
+    model_name: Mapped[str] = mapped_column(String(100), nullable=False)
+
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=lambda: datetime.now(UTC), nullable=False
+    )
+    updated_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), onupdate=lambda: datetime.now(UTC), nullable=True
+    )
+
+    provider: Mapped["ProviderConfigTable"] = relationship(
+        "ProviderConfigTable", lazy="joined"
+    )
+
+    __table_args__ = (
+        # NULLS NOT DISTINCT so the global row (scope_value=NULL) can't be
+        # duplicated. Requires PostgreSQL 15+ (roboco runs on pgvector 16).
+        Index(
+            "ux_model_assignments_scope_key",
+            "scope",
+            "scope_value",
+            unique=True,
+            postgresql_nulls_not_distinct=True,
+        ),
+        Index("ix_model_assignments_provider", "provider_config_id"),
     )

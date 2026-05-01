@@ -179,6 +179,15 @@ async def create_entry(
 
     entry = await service.create_entry(entry_create)
 
+    if entry is None:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=(
+                "JOURNAL_ENTRY_SKIPPED: The referenced task, session, or journal "
+                "no longer exists. This typically happens after a runtime reset."
+            ),
+        )
+
     return JournalEntryResponse(
         id=entry.id,
         journal_id=entry.journal_id,
@@ -326,6 +335,15 @@ async def add_task_reflection(
         ),
     )
 
+    if entry is None:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=(
+                "JOURNAL_ENTRY_SKIPPED: Referenced task or journal"
+                " no longer exists."
+            ),
+        )
+
     return JournalEntryResponse(
         id=entry.id,
         journal_id=entry.journal_id,
@@ -370,6 +388,15 @@ async def add_decision_log(
         ),
     )
 
+    if entry is None:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=(
+                "JOURNAL_ENTRY_SKIPPED: Referenced task or journal"
+                " no longer exists."
+            ),
+        )
+
     return JournalEntryResponse(
         id=entry.id,
         journal_id=entry.journal_id,
@@ -411,6 +438,15 @@ async def add_learning(
             tags=request.tags,
         ),
     )
+
+    if entry is None:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=(
+                "JOURNAL_ENTRY_SKIPPED: Referenced task or journal"
+                " no longer exists."
+            ),
+        )
 
     return JournalEntryResponse(
         id=entry.id,
@@ -455,6 +491,15 @@ async def add_struggle(
         ),
     )
 
+    if entry is None:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=(
+                "JOURNAL_ENTRY_SKIPPED: Referenced task or journal"
+                " no longer exists."
+            ),
+        )
+
     return JournalEntryResponse(
         id=entry.id,
         journal_id=entry.journal_id,
@@ -496,6 +541,15 @@ async def add_general_entry(
             is_private=request.is_private,
         ),
     )
+
+    if entry is None:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=(
+                "JOURNAL_ENTRY_SKIPPED: Referenced task or journal"
+                " no longer exists."
+            ),
+        )
 
     return JournalEntryResponse(
         id=entry.id,
@@ -650,12 +704,7 @@ async def get_journal_by_agent(
             detail=e.message,
         ) from e
 
-    journal = await service.get_journal_by_agent(resolved_id)
-    if not journal:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"Journal not found for agent: {agent_id}",
-        )
+    journal = await service.get_or_create_journal(resolved_id)
 
     return JournalResponse(
         id=journal.id,

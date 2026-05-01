@@ -1724,6 +1724,108 @@ class OptimalService:
         plugin = self._get_plugin(index_type)
         await plugin.ingest(content=content, doc_id=doc_id, **metadata)
 
+    async def _check_embedding_health(
+        self, details: dict[str, Any], timeout: float
+    ) -> bool:
+        """Test embedding model connectivity; record result in `details`."""
+        import asyncio
+
+        from roboco.config import settings
+        from roboco.services.optimal_brain.shared_embedder import get_shared_embedder
+
+        try:
+            async with asyncio.timeout(timeout):
+                embedder = await get_shared_embedder(
+                    model=settings.default_embedding_model
+                )
+                if hasattr(embedder, "aembed_query"):
+                    test_embedding = await embedder.aembed_query("health check")
+                else:
+                    test_embedding = await asyncio.to_thread(
+                        embedder.embed_query, "health check"
+                    )
+                if (
+                    test_embedding
+                    and len(test_embedding) == settings.embedding_dimensions
+                ):
+                    details["embedding_model"] = settings.default_embedding_model
+                    details["embedding_dimensions"] = len(test_embedding)
+                    return True
+        except TimeoutError:
+            details["embedding_error"] = f"Timeout after {timeout}s"
+        except Exception as e:
+            details["embedding_error"] = str(e)
+        return False
+
+    async def _check_llm_health(self, details: dict[str, Any], timeout: float) -> bool:
+        """Test LLM (Ollama) connectivity; record result in `details`."""
+        import httpx
+
+        from roboco.config import settings
+
+        try:
+            async with httpx.AsyncClient(timeout=timeout) as client:
+                resp = await client.post(
+                    f"{settings.local_llm_base_url}/chat/completions",
+                    json={
+                        "model": settings.local_llm_model,
+                        "messages": [{"role": "user", "content": "ping"}],
+                        "max_tokens": 5,
+                    },
+                )
+                if resp.is_success:
+                    details["llm_model"] = settings.local_llm_model
+                    details["llm_base_url"] = settings.local_llm_base_url
+                    return True
+        except Exception as e:
+            details["llm_error"] = str(e)
+        return False
+
+    async def _check_vector_store_health(
+        self, details: dict[str, Any], timeout: float
+    ) -> bool:
+        """Test vector store connectivity + per-index search; record details."""
+        import asyncio
+
+        try:
+            async with asyncio.timeout(timeout):
+                stats = await self.get_stats()
+                if not stats.get("initialized"):
+                    return False
+                details["vector_store"] = "connected"
+
+                index_health: dict[str, str] = {}
+                for index_type, plugin in self._plugins.items():
+                    try:
+                        outcome = await plugin.search("test", top_k=1)
+                        index_health[index_type.value] = (
+                            "ok"
+                            if outcome.success
+                            else f"error: {outcome.error_message or 'unknown'}"
+                        )
+                    except Exception as idx_e:
+                        index_health[index_type.value] = f"error: {idx_e}"
+                details["index_health"] = index_health
+                return True
+        except TimeoutError:
+            details["vector_store_error"] = f"Timeout after {timeout}s"
+        except Exception as e:
+            details["vector_store_error"] = str(e)
+        return False
+
+    async def check_health(
+        self, timeout: float = 10.0
+    ) -> tuple[bool, bool, bool, dict[str, Any]]:
+        """Run embedding/LLM/vector-store health probes in sequence.
+
+        Returns (embedding_ok, llm_ok, vector_ok, details).
+        """
+        details: dict[str, Any] = {}
+        embedding_ok = await self._check_embedding_health(details, timeout)
+        llm_ok = await self._check_llm_health(details, timeout)
+        vector_ok = await self._check_vector_store_health(details, timeout)
+        return embedding_ok, llm_ok, vector_ok, details
+
 
 class _OptimalServiceHolder:
     """Holder for singleton OptimalService instance."""

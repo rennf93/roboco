@@ -5,32 +5,48 @@ Handles git operations for agents working on code tasks.
 All business logic for git commands, commit templates, PR generation.
 """
 
+from __future__ import annotations
+
 import asyncio
 import base64
 import re
 import subprocess
 from pathlib import Path
-from typing import Any, ClassVar, cast
+from typing import TYPE_CHECKING, Any, ClassVar, cast
 from uuid import UUID
 
 import httpx
-from sqlalchemy.ext.asyncio import AsyncSession
 
-from roboco.api.schemas.git import (
-    GitCommitRequest,
-    GitCreateBranchRequest,
-    GitCreatePRRequest,
-)
+if TYPE_CHECKING:
+    from sqlalchemy.ext.asyncio import AsyncSession
+
+    # `api.schemas.git` would trigger `api/__init__.py` (which historically
+    # loaded the FastAPI app + every route module). The package init no
+    # longer re-exports `app`, but keeping these imports type-only respects
+    # the layer rule: services don't depend on the api layer at runtime.
+    # Routes already pass the Pydantic models, so the methods are duck-typed
+    # at call time.
+    from roboco.api.schemas.git import (
+        GitCheckoutRequest,
+        GitCommitRequest,
+        GitCreateBranchRequest,
+        GitCreatePRRequest,
+        GitMergePRRequest,
+    )
+    from roboco.db.tables import TaskTable
 from roboco.config import settings
-from roboco.db.tables import TaskTable
 from roboco.exceptions import GitCommandError, GitError, GitTimeoutError
+from roboco.models.base import AgentRole, TaskStatus
 from roboco.services.base import (
     BaseService,
     NotFoundError,
+    ServiceError,
+    UnauthorizedError,
     ValidationError,
 )
 from roboco.services.project import get_project_service
 from roboco.services.task import TaskService, get_task_service
+from roboco.services.work_session import get_work_session_service
 from roboco.services.workspace import WorkspaceError, get_workspace_service
 from roboco.templates.git import (
     BranchNameError,
@@ -48,6 +64,7 @@ from roboco.templates.git import (
 )
 from roboco.templates.git.pr_internal import InternalCommitInfo
 from roboco.templates.git.pr_root import CommitInfo as PRCommitInfo
+from roboco.utils.converters import require_uuid
 
 # Git command timeout in seconds
 _GIT_TIMEOUT = 30
@@ -216,19 +233,45 @@ class GitService(BaseService):
     # STATUS / INFO METHODS
     # =========================================================================
 
+    _PORCELAIN_STATUS_WIDTH: ClassVar[int] = 2
+
     @staticmethod
     def _classify_porcelain(
         lines: list[str],
     ) -> tuple[list[str], list[str], list[str]]:
-        """Split `git status --porcelain` lines into staged/unstaged/untracked."""
+        """Split `git status --porcelain` lines into staged/unstaged/untracked.
+
+        Canonical porcelain format is `XY PATH` — 2 status chars, 1 space
+        separator, filename. Slicing `line[3:]` ASSUMES both X and Y are
+        always present as chars. Git sometimes emits a single-column
+        status (e.g., `M README.md` from very old git or non-canonical
+        callers), which trips `line[3:]` into producing "EADME.md".
+        Split on the first whitespace run to survive either layout.
+        """
         staged: list[str] = []
         unstaged: list[str] = []
         untracked: list[str] = []
+        min_len = GitService._PORCELAIN_STATUS_WIDTH + 1  # status + separator
+        expected_parts = 2  # split gives [status, path]
         for line in lines:
-            if not line:
+            if not line or len(line) < min_len:
                 continue
-            status_code = line[:2]
-            file_path = line[3:]
+            # Canonical: XY is positions [0:2], separator at [2], path [3:].
+            # Defensive: if the char at position 2 isn't whitespace (broken
+            # status line), fall back to splitting on whitespace.
+            if line[2] in (" ", "\t"):
+                status_code = line[:2]
+                file_path = line[3:]
+            else:
+                parts = line.split(maxsplit=1)
+                if len(parts) < expected_parts:
+                    continue
+                status_code = parts[0].ljust(GitService._PORCELAIN_STATUS_WIDTH)[
+                    : GitService._PORCELAIN_STATUS_WIDTH
+                ]
+                file_path = parts[1]
+            if not file_path:
+                continue
             if status_code[0] in "MADRC":
                 staged.append(file_path)
             if status_code[1] in "MADRC":
@@ -398,7 +441,7 @@ class GitService(BaseService):
 
         Returns: (commit_hash, full_message, files_changed, insertions, deletions)
         """
-        task_id = UUID(request.task_id)
+        task_id = request.task_id
 
         # Stage files
         if request.files:
@@ -445,6 +488,112 @@ class GitService(BaseService):
         stat_result = await self._run_git(workspace, ["diff", "--stat", "HEAD~1..HEAD"])
         insertions, deletions, files_changed = self._parse_commit_stats(
             stat_result.stdout
+        )
+
+        return commit_hash, full_message, files_changed, insertions, deletions
+
+    async def _assert_task_owned_with_branch(
+        self, task_id: UUID, agent_id: UUID
+    ) -> TaskTable:
+        """Load task + check assignee + branch. Raises typed service errors."""
+        task_service = get_task_service(self.session)
+        task = await task_service.get(task_id)
+        if not task:
+            raise NotFoundError(resource_type="Task", resource_id=str(task_id))
+        if task.assigned_to != agent_id:
+            raise UnauthorizedError(
+                action="commit",
+                reason=(
+                    "NOT_ASSIGNED: Only the assigned agent can operate on "
+                    "this task's branch."
+                ),
+            )
+        if not task.branch_name:
+            raise ValidationError(
+                "NO_BRANCH: Task has no branch set. Claim the task to "
+                "generate one before committing."
+            )
+        return task
+
+    async def _assert_on_task_branch(
+        self, workspace: Path, task_branch: str | None
+    ) -> None:
+        """Reject ops when the workspace is on a branch other than the task's."""
+        if not task_branch:
+            return
+        current_branch = await self.get_current_branch(workspace)
+        if current_branch and current_branch != task_branch:
+            raise ValidationError(
+                f"BRANCH_MISMATCH: Workspace is on '{current_branch}' but "
+                f"task requires '{task_branch}'. Use roboco_git_checkout("
+                f"branch=task_branch) first."
+            )
+
+    async def _link_commit_to_task(
+        self,
+        task_uuid: UUID,
+        commit_hash: str,
+        message: str,
+        agent_id: UUID,
+    ) -> None:
+        """Attach a new commit to the task + work session (best effort).
+
+        Linking failures are logged but do not fail the commit: the commit
+        itself has already landed on the branch. Silent-swallow would hide
+        regressions in either add_commit path, so we log warnings instead.
+        """
+        task_service = get_task_service(self.session)
+        try:
+            task = await task_service.get(task_uuid)
+            await task_service.add_commit(
+                task_id=task_uuid,
+                hash=commit_hash,
+                message=message,
+                agent_id=agent_id,
+            )
+            if task and task.work_session_id:
+                work_session_service = get_work_session_service(self.session)
+                await work_session_service.add_commit(
+                    require_uuid(task.work_session_id), commit_hash
+                )
+            await self.session.commit()
+        except Exception as e:
+            self.log.warning(
+                "Commit linking failed; commit present on branch but "
+                "task rows not updated",
+                task_id=str(task_uuid),
+                commit_hash=commit_hash,
+                error=str(e),
+            )
+
+    async def commit_for_task(
+        self,
+        agent_id: UUID,
+        data: GitCommitRequest,
+    ) -> tuple[str, str, int, int, int]:
+        """Create a commit for the caller's assigned task.
+
+        Orchestrates precondition checks, workspace resolution, the git
+        commit itself, and commit-to-task linking. Raises typed service
+        errors; the API layer translates them to HTTP status codes.
+
+        Returns: (commit_hash, full_message, files_changed, insertions, deletions)
+        """
+        task = await self._assert_task_owned_with_branch(data.task_id, agent_id)
+
+        workspace = await self.get_workspace(data.project_slug, agent_id)
+        await self._assert_on_task_branch(workspace, task.branch_name)
+
+        (
+            commit_hash,
+            full_message,
+            files_changed,
+            insertions,
+            deletions,
+        ) = await self.create_commit(workspace, agent_id, data)
+
+        await self._link_commit_to_task(
+            data.task_id, commit_hash, data.message, agent_id
         )
 
         return commit_hash, full_message, files_changed, insertions, deletions
@@ -527,7 +676,7 @@ class GitService(BaseService):
 
         Returns: (branch_name, created_from)
         """
-        task_id = UUID(request.task_id)
+        task_id = request.task_id
         task_service = get_task_service(self.session)
 
         try:
@@ -596,6 +745,59 @@ class GitService(BaseService):
 
         return branch_name, base_branch
 
+    @staticmethod
+    def _enum_str(value: Any) -> str | None:
+        """Return .value when present; otherwise str(), preserving None."""
+        if value is None:
+            return None
+        return value.value if hasattr(value, "value") else str(value)
+
+    def _resolve_branch_team(self, project_slug: str, project: Any, task: Any) -> str:
+        """Pick the `team` segment for a create_branch call.
+
+        Uses the TASK's team first (who is doing the work), then falls
+        back to the project's assigned cell. This ensures a main-pm
+        planning task gets a main_pm branch even if the project cell
+        is backend.
+        """
+        project_cell = (
+            self._enum_str(project.assigned_cell)
+            if project and project.assigned_cell
+            else None
+        )
+        task_team = self._enum_str(task.team) if task and task.team else None
+        if project_cell == "fullstack":
+            return f"{project_slug}/{task_team or 'cross'}"
+        if task_team:
+            return task_team
+        if project_cell:
+            return project_cell
+        return "cross"
+
+    async def create_branch_for_task(
+        self,
+        agent_id: UUID,
+        data: GitCreateBranchRequest,
+    ) -> tuple[str, str]:
+        """Resolve workspace + team segment, create the branch, commit.
+
+        Returns: (branch_name, created_from)
+        """
+        task_service = get_task_service(self.session)
+        project_service = get_project_service(self.session)
+
+        workspace = await self.get_workspace(data.project_slug, agent_id)
+        task = await task_service.get(data.task_id)
+        project = await project_service.get_by_slug(data.project_slug)
+
+        team_for_branch = self._resolve_branch_team(data.project_slug, project, task)
+        branch_name, created_from = await self.create_branch(
+            workspace, team_for_branch, data
+        )
+
+        await self.session.commit()
+        return branch_name, created_from
+
     async def checkout(self, workspace: Path, branch: str) -> None:
         """Checkout a branch.
 
@@ -613,6 +815,72 @@ class GitService(BaseService):
             await self._run_git(
                 workspace, ["checkout", "-b", branch, f"origin/{branch}"]
             )
+
+    async def _allowed_checkout_branches(
+        self, project_slug: str, agent_id: UUID
+    ) -> set[str]:
+        """Collect branches this agent is allowed to checkout."""
+        from sqlalchemy import or_, select
+
+        from roboco.db.tables import TaskTable
+
+        project_service = get_project_service(self.session)
+        task_service = get_task_service(self.session)
+        project = await project_service.get_by_slug(project_slug)
+        allowed: set[str] = set()
+        if project and project.default_branch:
+            allowed.add(project.default_branch)
+
+        # Include tasks where agent is either assignee OR claimer
+        result = await self.session.execute(
+            select(TaskTable)
+            .where(
+                or_(
+                    TaskTable.assigned_to == agent_id,
+                    TaskTable.claimed_by == agent_id,
+                )
+            )
+            .where(TaskTable.branch_name.is_not(None))
+        )
+        for t in result.scalars().all():
+            allowed.add(str(t.branch_name))
+
+        # Also include ancestor branches (parent task branches) so devs
+        # can checkout parent branches when working on subtasks.
+        my_tasks = await task_service.list_by_assignee(agent_id)
+        for t in my_tasks:
+            if t.branch_name:
+                allowed.add(str(t.branch_name))
+
+        return allowed
+
+    async def checkout_branch_for_agent(
+        self,
+        agent_id: UUID,
+        data: GitCheckoutRequest,
+    ) -> None:
+        """Enforce the checkout allowlist + run the checkout.
+
+        Agents can only check out branches they have reason to be on: any
+        of their own assigned tasks' branches, or the project default
+        branch (read-only inspection). Hierarchical prefixes are allowed
+        so a PM can checkout the parent branch of a subtask they own.
+        """
+        allowed = await self._allowed_checkout_branches(data.project_slug, agent_id)
+        if data.branch not in allowed and not any(
+            owned.startswith(f"{data.branch}--") for owned in allowed
+        ):
+            raise UnauthorizedError(
+                action="checkout",
+                reason=(
+                    f"CHECKOUT_RESTRICTED: Cannot checkout '{data.branch}'. "
+                    f"Allowed: {sorted(allowed)} (and their ancestors). "
+                    "Claim the task whose branch you want to work on."
+                ),
+            )
+
+        workspace = await self.get_workspace(data.project_slug, agent_id)
+        await self.checkout(workspace, data.branch)
 
     async def push(self, workspace: Path, force: bool = False) -> tuple[str, int]:
         """Push commits to remote.
@@ -638,6 +906,37 @@ class GitService(BaseService):
         await self._run_git(workspace, args, token=token)
 
         return branch, commits_to_push
+
+    async def push_for_task(
+        self,
+        agent_id: UUID,
+        agent_role: AgentRole | str,
+        data: Any,
+    ) -> tuple[str, int]:
+        """Push commits for the caller's assigned task.
+
+        Force-push is CEO-only. Otherwise standard assignee + branch
+        preconditions. Raises typed service errors; the API layer
+        translates them to HTTP status codes.
+
+        Returns: (branch, commits_pushed)
+        """
+        if getattr(data, "force", False) and agent_role != AgentRole.CEO:
+            raise UnauthorizedError(
+                action="force_push",
+                reason=(
+                    "FORCE_PUSH_FORBIDDEN: Force-push is CEO-only. If your "
+                    "branch diverged, roboco_git_checkout a fresh branch "
+                    "and replay your commits."
+                ),
+            )
+
+        task = await self._assert_task_owned_with_branch(data.task_id, agent_id)
+
+        workspace = await self.get_workspace(data.project_slug, agent_id)
+        await self._assert_on_task_branch(workspace, task.branch_name)
+
+        return await self.push(workspace, getattr(data, "force", False))
 
     # =========================================================================
     # PR METHODS
@@ -893,11 +1192,10 @@ class GitService(BaseService):
 
         Returns: (pr_number, pr_url, title, source_branch, target_branch)
         """
-        task_id = UUID(request.task_id)
         task_service = get_task_service(self.session)
-        task = await task_service.get(task_id)
+        task = await task_service.get(request.task_id)
         if not task:
-            raise NotFoundError("Task", str(task_id))
+            raise NotFoundError("Task", str(request.task_id))
 
         source_branch = await self.get_current_branch(workspace)
         default_branch = await self._project_default_branch(request.project_slug)
@@ -907,7 +1205,7 @@ class GitService(BaseService):
             request, task, default_branch
         )
         pr_title, pr_body = await self._generate_pr_title_body(
-            request, task, source_branch, target_branch, task_id
+            request, task, source_branch, target_branch, request.task_id
         )
 
         owner, repo = self._parse_github_remote(workspace)
@@ -952,6 +1250,105 @@ class GitService(BaseService):
             source_branch,
             target_branch,
         )
+
+    _PR_OPEN_STATES: ClassVar[frozenset[str]] = frozenset(
+        {
+            TaskStatus.IN_PROGRESS.value,
+            TaskStatus.VERIFYING.value,
+            TaskStatus.AWAITING_QA.value,
+            TaskStatus.AWAITING_DOCUMENTATION.value,
+            TaskStatus.NEEDS_REVISION.value,
+        }
+    )
+
+    @staticmethod
+    def _status_value(task: Any) -> str:
+        """Task.status may be Enum or str across code paths — normalize."""
+        status_attr = task.status
+        return status_attr.value if hasattr(status_attr, "value") else str(status_attr)
+
+    async def _assert_pr_create_allowed(
+        self, task_id: UUID, agent_id: UUID
+    ) -> TaskTable:
+        """Enforce assignee + state gate for opening a PR."""
+        task_service = get_task_service(self.session)
+        task = await task_service.get(task_id)
+        if not task:
+            raise NotFoundError(resource_type="Task", resource_id=str(task_id))
+        if task.assigned_to != agent_id:
+            raise UnauthorizedError(
+                action="create_pr",
+                reason="NOT_ASSIGNED: Only the assignee can open the PR.",
+            )
+        current_status = self._status_value(task)
+        if current_status not in self._PR_OPEN_STATES:
+            raise ValidationError(
+                f"INVALID_STATE_FOR_PR: Task is '{current_status}'; PR "
+                f"can only be opened during active dev states "
+                f"({sorted(self._PR_OPEN_STATES)})."
+            )
+        return task
+
+    async def _record_pr_atomically(
+        self,
+        task_uuid: UUID,
+        pr_number: int,
+        pr_url: str,
+    ) -> None:
+        """Task flags + work_session PR fields must commit together.
+
+        If either write fails, roll back and raise a typed error — the
+        GitHub PR exists on remote but local bookkeeping is inconsistent,
+        and the caller must know.
+        """
+        task_service = get_task_service(self.session)
+        work_session_service = get_work_session_service(self.session)
+        try:
+            task = await task_service.mark_pr_created(
+                task_id=task_uuid, pr_number=pr_number, pr_url=pr_url
+            )
+            if task is None:
+                raise ServiceError(
+                    "PR_MARK_FAILED: mark_pr_created returned None. "
+                    "The task may be in an invalid state for PR recording. "
+                    "Check task status and retry."
+                )
+            if task.work_session_id:
+                await work_session_service.create_pr(
+                    require_uuid(task.work_session_id), pr_number, pr_url
+                )
+            await self.session.commit()
+        except Exception as exc:
+            await self.session.rollback()
+            raise ServiceError(
+                "PR_STATE_SYNC_FAILED: GitHub PR was created but the local "
+                f"state sync failed ({type(exc).__name__}). The PR exists "
+                "on GitHub but task/work_session fields are unchanged. "
+                "Retry the PR creation to reconcile, or update manually."
+            ) from exc
+
+    async def create_pr_for_task(
+        self,
+        agent_id: UUID,
+        data: GitCreatePRRequest,
+    ) -> tuple[int, str, str, str, str]:
+        """Preconditions + PR creation + state sync.
+
+        Returns: (pr_number, pr_url, title, source_branch, target_branch)
+        """
+        await self._assert_pr_create_allowed(data.task_id, agent_id)
+
+        workspace = await self.get_workspace(data.project_slug, agent_id)
+        (
+            pr_number,
+            pr_url,
+            title,
+            source_branch,
+            target_branch,
+        ) = await self.create_pull_request(workspace, data)
+
+        await self._record_pr_atomically(data.task_id, pr_number, pr_url)
+        return pr_number, pr_url, title, source_branch, target_branch
 
     async def _call_merge_api(
         self,
@@ -1090,6 +1487,102 @@ class GitService(BaseService):
         merge_commit = await self._sync_target_branch(
             workspace, target_branch, git_token
         )
+        return target_branch, merge_commit
+
+    _PM_MERGE_ROLES: ClassVar[frozenset[AgentRole]] = frozenset(
+        {AgentRole.CELL_PM, AgentRole.MAIN_PM}
+    )
+
+    def _assert_merge_role(self, current_status: str, agent_role: AgentRole) -> None:
+        """PR approval chain — PM for PM-review, CEO for CEO-approval."""
+        if current_status == TaskStatus.AWAITING_CEO_APPROVAL.value:
+            if agent_role != AgentRole.CEO:
+                raise UnauthorizedError(
+                    action="merge_pr",
+                    reason=(
+                        "CEO_ONLY: Merging from awaiting_ceo_approval "
+                        "requires the CEO role. PMs escalate; CEO merges "
+                        "to master."
+                    ),
+                )
+            return
+        if current_status == TaskStatus.AWAITING_PM_REVIEW.value:
+            if agent_role not in self._PM_MERGE_ROLES:
+                raise UnauthorizedError(
+                    action="merge_pr",
+                    reason=(
+                        "PM_ONLY: Merging from awaiting_pm_review requires "
+                        "a PM role (cell_pm or main_pm)."
+                    ),
+                )
+            return
+        raise ValidationError(
+            f"INVALID_STATE_FOR_MERGE: Task is '{current_status}'. Only "
+            "awaiting_pm_review (PM merge) or awaiting_ceo_approval "
+            "(CEO merge) can be merged."
+        )
+
+    async def _auto_complete_on_merge(
+        self,
+        task_uuid: UUID,
+        agent_id: UUID,
+        agent_role: AgentRole,
+    ) -> None:
+        """Auto-transition task after PR merge based on status + merger role.
+
+        - awaiting_ceo_approval + CEO merger → ceo_approve (→ completed)
+        - awaiting_pm_review + PM merger    → complete
+        Otherwise leaves the task alone.
+        """
+        task_service = get_task_service(self.session)
+        task = await task_service.get(task_uuid)
+        if not task:
+            return
+        current_status = self._status_value(task)
+        if (
+            current_status == TaskStatus.AWAITING_CEO_APPROVAL.value
+            and agent_role == AgentRole.CEO
+        ):
+            await task_service.ceo_approve(task_uuid)
+        elif (
+            current_status == TaskStatus.AWAITING_PM_REVIEW.value
+            and agent_role in self._PM_MERGE_ROLES
+        ):
+            await task_service.complete(task_uuid, agent_id)
+
+    async def merge_pr_for_task(
+        self,
+        agent_id: UUID,
+        agent_role: AgentRole,
+        data: GitMergePRRequest,
+    ) -> tuple[str, str]:
+        """Role-gated merge + work-session record + auto-complete.
+
+        Returns: (target_branch, merge_commit)
+        """
+        task_service = get_task_service(self.session)
+        work_session_service = get_work_session_service(self.session)
+
+        task = await task_service.get(data.task_id)
+        if not task:
+            raise NotFoundError(resource_type="Task", resource_id=str(data.task_id))
+        self._assert_merge_role(self._status_value(task), agent_role)
+
+        workspace = await self.get_workspace(data.project_slug, agent_id)
+        target_branch, merge_commit = await self.merge_pull_request(
+            workspace=workspace,
+            pr_number=data.pr_number,
+            merge_method=data.merge_method,
+            project_slug=data.project_slug,
+        )
+
+        if task.work_session_id:
+            await work_session_service.merge_pr(
+                require_uuid(task.work_session_id), agent_id
+            )
+
+        await self._auto_complete_on_merge(data.task_id, agent_id, agent_role)
+        await self.session.commit()
         return target_branch, merge_commit
 
 

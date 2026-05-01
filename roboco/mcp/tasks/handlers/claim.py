@@ -124,6 +124,14 @@ async def _validate_sibling_sequence(
     """Ensure earlier sequence siblings are complete before claiming.
 
     If task has sequence=2, then sequence=1 siblings must be completed first.
+
+    IMPORTANT: previously used `GET /tasks?parent_task_id=<id>` which silently
+    ignored the query param (the list endpoint has no such filter) and returned
+    every task the caller could see — including the *parent*. A parent task
+    with lower sequence would then be treated as a blocking sibling, so a dev
+    couldn't claim its subtask while the PM's coordination task was paused
+    (paused is the CORRECT state post-delegation, not a blocker). Switched to
+    `/tasks/{parent_id}/subtasks` which returns real siblings only.
     """
     parent_id = task.get("parent_task_id")
     if not parent_id:
@@ -133,8 +141,9 @@ async def _validate_sibling_sequence(
     if my_sequence == 0:
         return None  # First in sequence, no prior siblings
 
-    # Get all sibling tasks (same parent)
-    siblings_resp = await client.get(f"/tasks?parent_task_id={parent_id}")
+    # Real sibling lookup: use the dedicated subtasks endpoint so the
+    # parent is never in the result set.
+    siblings_resp = await client.get(f"/tasks/{parent_id}/subtasks")
     if not siblings_resp.ok:
         return None
 
@@ -252,7 +261,7 @@ def _revision_guidance(
 ) -> str:
     """Guidance for a task resumed after being rejected by QA or CEO."""
     parts = [
-        "⚠️ REVISION REQUIRED - READ EXISTING CONTEXT FIRST!\n",
+        "REVISION REQUIRED - READ EXISTING CONTEXT FIRST!\n",
         "This task was REJECTED and needs fixes. Before doing anything:\n",
     ]
     if qa_notes:
@@ -276,7 +285,7 @@ def _existing_plan_guidance(
 ) -> str:
     """Guidance for a resumed task that already has a plan."""
     parts = [
-        "📋 EXISTING PLAN FOUND - REVIEW BEFORE CONTINUING!\n",
+        "EXISTING PLAN FOUND - REVIEW BEFORE CONTINUING!\n",
         f"Plan progress: {_plan_progress_fragment(plan)} steps completed\n",
     ]
     if checkpoints:

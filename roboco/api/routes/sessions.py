@@ -21,8 +21,9 @@ from roboco.api.schemas.sessions import (
     SessionTaskLinkRequest,
     SessionTaskLinkResponse,
     SessionTaskLinksResponse,
+    link_to_response,
+    session_to_response,
 )
-from roboco.db.tables import SessionTaskTable
 from roboco.models.session import (
     SessionForTasksCreate,
     SessionTaskRelationshipType,
@@ -33,64 +34,9 @@ from roboco.services.messaging import (
     get_messaging_service,
 )
 from roboco.services.permissions import is_pm_role
-from roboco.services.proactive import get_proactive_service
 from roboco.utils.converters import require_uuid
 
 router = APIRouter()
-
-logger = __import__("structlog").get_logger(__name__)
-
-
-async def _inject_session_context(session_id: UUID, agent_id: UUID) -> None:
-    """Fire-and-forget proactive-context injection after session start.
-
-    Failure is swallowed — we never let context-injection errors take down
-    a successful session creation.
-    """
-    try:
-        proactive = await get_proactive_service()
-        context = await proactive.get_context_for_session(
-            session_id=session_id, agent_id=agent_id
-        )
-        if context and not context.is_empty():
-            logger.info(
-                "Injected session proactive context",
-                session_id=str(session_id),
-                agent_id=str(agent_id),
-            )
-    except Exception as e:
-        logger.warning(
-            "Failed to inject session context",
-            session_id=str(session_id),
-            error=str(e),
-        )
-
-
-def _session_to_response(session) -> SessionResponse:  # type: ignore[no-untyped-def]
-    """Minimal SessionTable → SessionResponse mapper."""
-    return SessionResponse(
-        id=require_uuid(session.id),
-        group_id=require_uuid(session.group_id),
-        status=session.status,
-        scope=session.scope,
-        message_count=session.message_count,
-        total_content_length=session.total_content_length,
-        started_at=session.started_at,
-        last_activity_at=session.last_activity_at,
-        closed_at=session.closed_at,
-    )
-
-
-def _link_to_response(link: SessionTaskTable) -> SessionTaskLinkResponse:
-    return SessionTaskLinkResponse(
-        id=require_uuid(link.id),
-        session_id=require_uuid(link.session_id),
-        task_id=require_uuid(link.task_id),
-        is_primary=link.is_primary,
-        relationship_type=link.relationship_type,
-        added_at=link.added_at,
-        added_by=require_uuid(link.added_by) if link.added_by else None,
-    )
 
 
 # =============================================================================
@@ -165,7 +111,7 @@ async def get_session(
         session_row = await messaging.get_session_or_raise(session_id)
     except NotFoundError as e:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(e)) from e
-    return _session_to_response(session_row)
+    return session_to_response(session_row)
 
 
 @router.post(
@@ -197,8 +143,7 @@ async def create_session(
     except PermissionError as e:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(e)) from e
 
-    await _inject_session_context(require_uuid(session_row.id), agent_id)
-    return _session_to_response(session_row)
+    return session_to_response(session_row)
 
 
 @router.post(
@@ -221,7 +166,7 @@ async def close_session(
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST, detail=str(e)
         ) from e
-    return _session_to_response(session_row)
+    return session_to_response(session_row)
 
 
 # =============================================================================
@@ -241,7 +186,7 @@ async def get_sessions_for_task(
 ) -> list[SessionTaskLinkResponse]:
     messaging = get_messaging_service(db)
     links = await messaging.get_sessions_for_task(task_id)
-    return [_link_to_response(link) for link in links]
+    return [link_to_response(link) for link in links]
 
 
 @router.post(
@@ -302,8 +247,8 @@ async def create_session_for_tasks(
         ) from e
 
     return SessionTaskLinksResponse(
-        session=_session_to_response(session_row),
-        links=[_link_to_response(link) for link in links],
+        session=session_to_response(session_row),
+        links=[link_to_response(link) for link in links],
     )
 
 
@@ -346,7 +291,7 @@ async def link_task_to_session(
     except ConflictError as e:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(e)) from e
 
-    return _link_to_response(link)
+    return link_to_response(link)
 
 
 @router.delete(
@@ -393,4 +338,4 @@ async def get_tasks_for_session(
     except NotFoundError as e:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(e)) from e
     links = await messaging.get_tasks_for_session(session_id)
-    return [_link_to_response(link) for link in links]
+    return [link_to_response(link) for link in links]

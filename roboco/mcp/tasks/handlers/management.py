@@ -359,6 +359,21 @@ def _build_task_payload(
     if should_inherit and parent_task is not None:
         task_type = parent_task.get("task_type", "code")
 
+    # Status defaulting: schema default is "backlog" (PMs may want to stage
+    # subtasks before activating). But when the PM passes `assigned_to`, the
+    # intent is delegation — the task should be dispatch-ready immediately.
+    # Auto-promote backlog → pending in that case so the dispatcher can spawn
+    # the assignee without an explicit `roboco_task_activate` follow-up. If
+    # the PM *explicitly* set status="backlog" (in model_fields_set), honor
+    # that — they're staging on purpose.
+    status = input_data.status
+    if (
+        input_data.assigned_to
+        and status == "backlog"
+        and "status" not in input_data.model_fields_set
+    ):
+        status = "pending"
+
     payload: dict[str, Any] = {
         "title": input_data.title,
         "description": input_data.description,
@@ -367,7 +382,7 @@ def _build_task_payload(
         "priority": input_data.priority,
         "estimated_complexity": input_data.complexity,
         "nature": input_data.nature,
-        "status": input_data.status,  # Always included, defaults to "backlog"
+        "status": status,
         "sequence": input_data.sequence,  # Task ordering (lower = first)
         "task_type": task_type,
         "project_id": project_id,  # Required for all tasks
@@ -439,42 +454,187 @@ def _validate_assignee_role(
     assignee: str | None,
     task_type: str,
 ) -> dict[str, Any] | None:
-    """PMs cannot assign code tasks to other PMs (or themselves)."""
+    """Enforce the delegation chain: Main-PM → Cell-PM → Dev/QA/Doc.
+
+    Rules:
+      - PMs creating a `code` task MUST name an assignee at creation
+        time. Unassigned code subtasks race the dispatcher, which
+        auto-claims them back to the PM's team target (i.e. the PM
+        itself for cell_pm) — the PM ends up owning code work they
+        intended to delegate. See BUG-2 in SMOKETEST_NOTES.md.
+      - PMs never own `code` tasks (always `planning` when a PM is the
+        assignee).
+      - Main-PM must delegate through a Cell-PM. Direct Main-PM →
+        Dev/QA/Doc assignments skip the cell-level review layer and are
+        rejected. The spec (main_pm.md) is explicit: "NEVER code tasks
+        to PMs, and NEVER to cell members directly."
+      - Cell-PMs may assign `code` to their devs as usual.
+    """
     pm_roles = ("main_pm", "cell_pm")
-    if caller_role not in pm_roles or task_type != "code" or not assignee:
+    if caller_role not in pm_roles:
+        return None
+
+    if task_type == "code" and not assignee:
+        return format_error_response(
+            "CODE_TASK_NEEDS_ASSIGNEE",
+            "Code tasks must name an assignee at creation time — "
+            "unassigned code subtasks get auto-claimed by the dispatcher "
+            "back to the creating PM.",
+            {"task_type": task_type, "caller_role": caller_role},
+            hint=(
+                "Pass assigned_to='be-dev-1' (or the developer slug for "
+                "your cell) when creating the task."
+            ),
+        )
+
+    if not assignee:
         return None
     assignee_role = get_agent_role(assignee)
-    if assignee_role not in pm_roles:
+
+    # PMs can't take on code work — the assignee being another PM with
+    # task_type=code is the classic violation.
+    if task_type == "code" and assignee_role in pm_roles:
+        return format_error_response(
+            "PM_CANNOT_OWN_CODE_TASKS",
+            "PMs cannot be assigned code tasks. Use task_type='planning' "
+            "(PMs coordinate; they don't write code).",
+            {"assignee": assignee, "assignee_role": assignee_role},
+            hint=(
+                "If this is work for a cell, assign the planning task to "
+                "that cell's PM: be-pm, fe-pm, or ux-pm."
+            ),
+        )
+
+    # Main-PM must delegate through a Cell-PM. Any other assignee
+    # (developer/qa/documenter/board member) skips the hierarchy.
+    if caller_role == "main_pm" and assignee_role not in ("cell_pm",):
+        return format_error_response(
+            "MAIN_PM_MUST_DELEGATE_TO_CELL_PM",
+            "Main PM assignments must go to a Cell PM (be-pm, fe-pm, "
+            "ux-pm) — not directly to a developer, QA, documenter, or "
+            "board member.",
+            {"assignee": assignee, "assignee_role": assignee_role or "unknown"},
+            hint=(
+                "Create a planning task for the Cell PM; the Cell PM then "
+                "creates code tasks for their cell's developers."
+            ),
+        )
+    return None
+
+
+async def _require_no_orphan_when_caller_has_active_work(
+    client: ApiClient,
+    input_data: TaskCreateInput,
+    caller_role: str | None,
+) -> dict[str, Any] | None:
+    """Stop the orphan-subtask + skip-claim failure modes at the source.
+
+    If the caller is actively assigned to work (task in pending / claimed /
+    in_progress / verifying), new tasks they create MUST be subtasks of their
+    claimed task. CEO is exempt — creates root tasks freely.
+
+    Two distinct signals:
+      - Caller has `pending` assigned task but no `claimed` work → they
+        skipped the claim step entirely. Force them to claim first.
+      - Caller has `claimed`/`in_progress` work but omitted `parent_task_id`
+        → orphan delegation. Force them to parent the new task.
+    """
+    if caller_role == "ceo":
         return None
-    return format_error_response(
-        "PM_CANNOT_OWN_CODE_TASKS",
-        "PMs cannot be assigned code tasks. Assign to a developer.",
-        {"assignee": assignee, "assignee_role": assignee_role},
-        hint="Assign to: be-dev-1, be-dev-2, fe-dev-1, etc.",
-    )
+
+    resp = await client.get("/tasks/my")
+    if not resp.ok:
+        return None
+
+    my_tasks = resp.json()
+    if not isinstance(my_tasks, list):
+        return None
+
+    working_statuses = {"claimed", "in_progress", "verifying"}
+    working = [t for t in my_tasks if t.get("status") in working_statuses]
+    pending_assigned = [t for t in my_tasks if t.get("status") == "pending"]
+
+    if pending_assigned and not working:
+        assigned = pending_assigned[0]
+        return format_error_response(
+            "CLAIM_OWN_TASK_FIRST",
+            "You have an assigned task that you have not claimed. "
+            "Claim and start your own task before creating subtasks.",
+            {
+                "your_assigned_task_id": assigned["id"],
+                "your_assigned_task_title": assigned.get("title"),
+                "your_assigned_task_status": assigned.get("status"),
+                "workflow": "CLAIM your task → PLAN → START → THEN create subtasks",
+            },
+            hint=f"Call roboco_task_claim('{assigned['id']}') first.",
+        )
+
+    if working and not input_data.parent_task_id:
+        parent = working[0]
+        return format_error_response(
+            "ORPHAN_SUBTASK_NOT_ALLOWED",
+            "You are working a claimed task. New tasks must be subtasks of "
+            "your claimed task — set parent_task_id.",
+            {
+                "your_claimed_task_id": parent["id"],
+                "your_claimed_task_title": parent.get("title"),
+                "your_claimed_task_status": parent.get("status"),
+            },
+            hint=(
+                f"Pass parent_task_id='{parent['id']}' to make this a subtask, "
+                f"or pause/complete your current task before creating root work."
+            ),
+        )
+
+    return None
+
+
+def _run_preflight_validators(
+    input_data: TaskCreateInput, agent_id: str
+) -> dict[str, Any] | None:
+    """Synchronous preflight checks that don't depend on caller's active work."""
+    for error in (
+        _validate_create_permissions(agent_id),
+        _validate_cell_pm_team(agent_id, input_data.team),
+        _validate_description_length(input_data),
+        validate_assignee_can_work_on_team(input_data.assigned_to, input_data.team)
+        if input_data.assigned_to
+        else None,
+    ):
+        if error:
+            return error
+    return None
 
 
 async def _validate_task_create_inputs(
     client: ApiClient, input_data: TaskCreateInput, agent_id: str
 ) -> tuple[str | None, dict[str, Any] | None]:
-    """Validate all inputs for task creation. Returns (project_id, None) or error."""
-    if error := _validate_create_permissions(agent_id):
+    """Validate all inputs for task creation. Returns (project_id, None) or error.
+
+    Order matters — we want the most *actionable* error first so a weak
+    model converges fast:
+      1. Preflight (permissions / team / description / assignee-team).
+      2. Caller-state checks (claim your task first, don't orphan).
+      3. Assignee-role / delegation-chain rules.
+      4. Project validation (requires API call).
+
+    The caller-state check (#2) runs before the role check (#3) because
+    when a PM forgets to claim its own task and tries to delegate, the
+    actionable fix is "claim first", not "wrong task type". Leading with
+    the role error costs a retry cycle.
+    """
+    caller_role = get_agent_role(agent_id)
+    if error := _run_preflight_validators(input_data, agent_id):
         return None, error
 
-    if error := _validate_cell_pm_team(agent_id, input_data.team):
-        return None, error
-
-    if error := _validate_description_length(input_data):
-        return None, error
-
-    assignee = input_data.assigned_to
-    if assignee and (
-        error := validate_assignee_can_work_on_team(assignee, input_data.team)
+    if error := await _require_no_orphan_when_caller_has_active_work(
+        client, input_data, caller_role
     ):
         return None, error
 
-    caller_role = get_agent_role(agent_id)
-    if error := _validate_assignee_role(caller_role, assignee, input_data.task_type):
+    if error := _validate_assignee_role(
+        caller_role, input_data.assigned_to, input_data.task_type
+    ):
         return None, error
 
     return await _validate_project(client, input_data)
@@ -569,7 +729,7 @@ async def handle_task_create(
 
     if assignment_failure:
         guidance += (
-            f"\n\n🚨 CRITICAL: Assignment to '{input_data.assigned_to}' FAILED! "
+            f"\n\nCRITICAL: Assignment to '{input_data.assigned_to}' FAILED! "
             f"Error: {assignment_failure}. "
             "Task was created but NOT assigned to intended agent. "
             "You may need to manually assign using roboco_task_assign()."
@@ -579,7 +739,7 @@ async def handle_task_create(
     if input_data.assigned_to:
         role_warning = get_role_mismatch_warning(task, input_data.assigned_to)
         if role_warning:
-            guidance += f"\n\n⚠️ ROLE WARNING: {role_warning}"
+            guidance += f"\n\nROLE WARNING: {role_warning}"
 
     return format_task_response(task, "CREATED", guidance)
 
@@ -741,10 +901,10 @@ def _build_assign_guidance(task: dict[str, Any], assignee: str) -> str:
     )
     role_warning = get_role_mismatch_warning(task, assignee)
     if role_warning:
-        guidance += f"\n\n⚠️ ROLE WARNING: {role_warning}"
+        guidance += f"\n\nROLE WARNING: {role_warning}"
     if task.get("status") == "claimed" and task.get("claimed_by"):
         guidance += (
-            "\n\n⚠️ Note: This task was already claimed. If you're delegating work, "
+            "\n\nNote: This task was already claimed. If you're delegating work, "
             "consider using roboco_task_create(parent_task_id=...) to create a subtask "
             "for better tracking and branch hierarchy management."
         )

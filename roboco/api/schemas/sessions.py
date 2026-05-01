@@ -5,12 +5,14 @@ Request/response models for session endpoints.
 """
 
 from datetime import datetime
+from typing import Any
 from uuid import UUID
 
 from pydantic import BaseModel, Field
 
 from roboco.models import SessionStatus
 from roboco.models.session import SessionScope
+from roboco.utils.converters import require_uuid
 
 
 class ListSessionsParams(BaseModel):
@@ -127,3 +129,34 @@ class TaskSessionsResponse(BaseModel):
     task_id: UUID
     sessions: list[SessionTaskLinkResponse]
     primary_session_id: UUID | None
+
+
+def session_to_response(session: Any) -> SessionResponse:
+    """SessionTable → SessionResponse.
+
+    Boundary adapter: keeps DB ORM rows out of the HTTP response layer.
+    """
+    return SessionResponse(
+        id=require_uuid(session.id),
+        group_id=require_uuid(session.group_id),
+        status=session.status,
+        scope=session.scope,
+        message_count=session.message_count,
+        total_content_length=session.total_content_length,
+        started_at=session.started_at,
+        last_activity_at=session.last_activity_at,
+        closed_at=session.closed_at,
+    )
+
+
+def link_to_response(link: Any) -> SessionTaskLinkResponse:
+    """SessionTaskTable → SessionTaskLinkResponse."""
+    return SessionTaskLinkResponse(
+        id=require_uuid(link.id),
+        session_id=require_uuid(link.session_id),
+        task_id=require_uuid(link.task_id),
+        is_primary=link.is_primary,
+        relationship_type=link.relationship_type,
+        added_at=link.added_at,
+        added_by=require_uuid(link.added_by) if link.added_by else None,
+    )

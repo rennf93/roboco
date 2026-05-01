@@ -4,7 +4,7 @@ MCP Input Schemas
 Pydantic models for MCP tool input validation.
 """
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 # =============================================================================
 # JOURNAL SCHEMAS
@@ -205,6 +205,33 @@ class TaskCreateInput(BaseModel):
     complexity: str = Field(
         default="medium", description="Complexity: low, medium, high, critical"
     )
+
+    @field_validator("priority", mode="before")
+    @classmethod
+    def _priority_must_be_int(cls, v: object) -> object:
+        if isinstance(v, str):
+            raise ValueError(
+                f"priority must be an integer 0-3, got string {v!r}. "
+                f"If you meant task complexity, use the `complexity` field "
+                f"(low|medium|high|critical) instead."
+            )
+        return v
+
+    @field_validator("complexity", mode="before")
+    @classmethod
+    def _complexity_must_be_valid(cls, v: object) -> object:
+        if isinstance(v, int):
+            raise ValueError(
+                f"complexity must be a string (low|medium|high|critical), "
+                f"got int {v!r}. If you meant task priority, use the "
+                f"`priority` field (int 0-3) instead."
+            )
+        if isinstance(v, str) and v not in ("low", "medium", "high", "critical"):
+            raise ValueError(
+                f"complexity must be one of: low, medium, high, critical. Got {v!r}."
+            )
+        return v
+
     nature: str = Field(
         default="technical", description="Task nature: technical, non_technical"
     )

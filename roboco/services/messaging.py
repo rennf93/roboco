@@ -709,7 +709,39 @@ class MessagingService(BaseService):
         group.active_session_id = new_session.id
         group.total_sessions += 1
         await self.session.flush()
+
+        await self._inject_proactive_context(
+            session_id=cast("UUID", new_session.id), agent_id=agent_id
+        )
         return new_session
+
+    async def _inject_proactive_context(
+        self, *, session_id: UUID, agent_id: UUID
+    ) -> None:
+        """Fire-and-forget proactive-context injection for a new session.
+
+        Failure is swallowed: context injection is a best-effort enhancement,
+        not a hard requirement of session creation.
+        """
+        from roboco.services.proactive import get_proactive_service
+
+        try:
+            proactive = await get_proactive_service()
+            context = await proactive.get_context_for_session(
+                session_id=session_id, agent_id=agent_id
+            )
+            if context and not context.is_empty():
+                self.log.info(
+                    "Injected session proactive context",
+                    session_id=str(session_id),
+                    agent_id=str(agent_id),
+                )
+        except Exception as e:
+            self.log.warning(
+                "Failed to inject session context",
+                session_id=str(session_id),
+                error=str(e),
+            )
 
     async def close_session_or_raise(self, session_id: UUID) -> SessionTable:
         """Close an active session; raise if missing or already closed.
@@ -782,7 +814,7 @@ class MessagingService(BaseService):
         ),
     ) -> SessionTaskTable:
         """
-        Link a session to a task.
+        Link a session to a task (idempotent).
 
         Args:
             session_id: Session to link
@@ -792,30 +824,40 @@ class MessagingService(BaseService):
             relationship_type: Type of relationship
 
         Returns:
-            Created link
+            Created link, or the existing link if (session_id, task_id) is
+            already linked. Re-linking the same pair is a no-op — upstream
+            callers sometimes re-issue the link after a create_session_for_
+            _tasks call, and that should be a cheap success, not a 409.
 
         Raises:
             NotFoundError: If session not found
-            ConflictError: If link already exists or primary constraint violated
+            ConflictError: If `is_primary=True` but the task already has a
+                different primary session.
         """
         # Verify session exists
         session = await self.get_session(session_id)
         if not session:
             raise NotFoundError(f"Session {session_id} not found")
 
-        # Check if link already exists
+        # Idempotent duplicate handling: if this exact (session, task) pair
+        # is already linked, return the existing row. Re-creating sessions
+        # in agent flows (create_session_for_tasks → ancestor reuse → then
+        # an explicit link call) is common; the 409 it used to produce was
+        # pure noise.
         existing = await self.session.execute(
             select(SessionTaskTable).where(
                 SessionTaskTable.session_id == session_id,
                 SessionTaskTable.task_id == task_id,
             )
         )
-        if existing.scalar_one_or_none():
-            raise ConflictError(
-                f"Session {session_id} is already linked to task {task_id}"
-            )
+        existing_link = existing.scalar_one_or_none()
+        if existing_link:
+            return existing_link
 
-        # If marking as primary, check if task already has a primary session
+        # Primary constraint holds across sessions: if the task already has
+        # a primary on a *different* session, that's a real conflict —
+        # promoting two distinct sessions to primary for the same task
+        # would break the session-of-record invariant.
         if is_primary:
             existing_primary = await self.session.execute(
                 select(SessionTaskTable).where(
@@ -959,59 +1001,104 @@ class MessagingService(BaseService):
         )
         return list(result.scalars().all())
 
+    async def _walk_task_ancestors(self, task_id: UUID) -> list["TaskTable"]:  # type: ignore[name-defined]  # noqa: F821
+        """Return [parent, grandparent, ..., root] for a task, empty if none.
+
+        Walks the `parent_task_id` chain without returning the task itself.
+        Cycle-safe via a visited set (would only hit on data corruption).
+        """
+        from roboco.db.tables import TaskTable
+
+        ancestors: list[TaskTable] = []
+        seen: set[UUID] = {task_id}
+        current_id: UUID | None = task_id
+        while current_id:
+            result = await self.session.execute(
+                select(TaskTable).where(TaskTable.id == current_id)
+            )
+            task = result.scalar_one_or_none()
+            if not task or not task.parent_task_id:
+                break
+            parent_id = to_python_uuid(task.parent_task_id)
+            if parent_id is None or parent_id in seen:
+                break
+            seen.add(parent_id)
+            parent_result = await self.session.execute(
+                select(TaskTable).where(TaskTable.id == parent_id)
+            )
+            parent = parent_result.scalar_one_or_none()
+            if not parent:
+                break
+            ancestors.append(parent)
+            current_id = to_python_uuid(parent.parent_task_id)
+        return ancestors
+
+    async def _primary_session_link_for_task(
+        self, task_id: UUID
+    ) -> SessionTaskTable | None:
+        """Fetch the task's primary session link with group+session eager-loaded."""
+        result = await self.session.execute(
+            select(SessionTaskTable)
+            .where(
+                SessionTaskTable.task_id == task_id,
+                SessionTaskTable.is_primary.is_(True),
+            )
+            .options(
+                selectinload(SessionTaskTable.session).selectinload(SessionTable.group)
+            )
+        )
+        return result.scalar_one_or_none()
+
     async def _resolve_group_from_parent_tasks(
         self,
         task_ids: list[UUID],
     ) -> GroupTable | None:
+        """Resolve group by walking ancestors' primary sessions.
+
+        Groups belong to the root-task initiative: same root → same group on
+        a given channel. Walks the full ancestry so an ancestor at any depth
+        with a primary session lets subtasks reuse that group.
         """
-        Resolve group by looking at parent tasks' sessions.
-
-        When creating a session for subtasks, inherit the group from
-        the parent task's session. This maintains proper hierarchy.
-
-        Args:
-            task_ids: Task IDs to check for parent sessions
-
-        Returns:
-            Group from parent task's session, or None if no parent has a session
-        """
-        from roboco.db.tables import TaskTable
-
         for task_id in task_ids:
-            # Get the task to find its parent
-            task_result = await self.session.execute(
-                select(TaskTable).where(TaskTable.id == task_id)
-            )
-            task = task_result.scalar_one_or_none()
-
-            if not task or not task.parent_task_id:
-                continue
-
-            # Find parent task's primary session
-            parent_session_link = await self.session.execute(
-                select(SessionTaskTable)
-                .where(
-                    SessionTaskTable.task_id == task.parent_task_id,
-                    SessionTaskTable.is_primary.is_(True),
+            for ancestor in await self._walk_task_ancestors(task_id):
+                link = await self._primary_session_link_for_task(
+                    cast("UUID", ancestor.id)
                 )
-                .options(
-                    selectinload(SessionTaskTable.session).selectinload(
-                        SessionTable.group
+                if link and link.session and link.session.group:
+                    self.log.info(
+                        "Inherited group from ancestor task's session",
+                        task_id=str(task_id),
+                        ancestor_task_id=str(ancestor.id),
+                        group_id=str(link.session.group.id),
+                        group_name=link.session.group.name,
                     )
-                )
-            )
-            link = parent_session_link.scalar_one_or_none()
+                    return link.session.group
+        return None
 
-            if link and link.session and link.session.group:
-                self.log.info(
-                    "Inherited group from parent task's session",
-                    task_id=str(task_id),
-                    parent_task_id=str(task.parent_task_id),
-                    group_id=str(link.session.group.id),
-                    group_name=link.session.group.name,
-                )
-                return link.session.group
+    async def _find_ancestor_session_on_channel(
+        self,
+        task_ids: list[UUID],
+        channel_id: UUID,
+    ) -> SessionTable | None:
+        """Find an active session on ``channel_id`` owned by any ancestor.
 
+        Drives the "same task tree → same group chat" rule: if any ancestor
+        of the tasks already has an active primary session in the requested
+        channel, new subtasks link to it instead of opening a new session.
+        """
+        for task_id in task_ids:
+            for ancestor in await self._walk_task_ancestors(task_id):
+                link = await self._primary_session_link_for_task(
+                    cast("UUID", ancestor.id)
+                )
+                if (
+                    link
+                    and link.session
+                    and link.session.group
+                    and link.session.group.channel_id == channel_id
+                    and link.session.status == SessionStatus.ACTIVE
+                ):
+                    return link.session
         return None
 
     async def _resolve_group_for_session(
@@ -1035,10 +1122,24 @@ class MessagingService(BaseService):
 
         groups = await self.list_groups_in_channel(cast("UUID", channel.id))
         if not groups:
-            raise ValueError(
-                f"No groups found in channel '{req.channel_slug}'. "
-                "Create a group first or specify group_id."
+            # Auto-create a default group so sessions don't fail
+            default_group = GroupTable(
+                name="General",
+                channel_id=cast("UUID", channel.id),
+                hierarchy_level=1,
+                allowed_roles=[],
+                members=[],
             )
+            self.session.add(default_group)
+            channel.group_count += 1
+            await self.session.flush()
+            self.log.info(
+                "Auto-created default group for channel",
+                channel_slug=req.channel_slug,
+                group_id=str(default_group.id),
+            )
+            return default_group
+
         fallback_group = groups[0]
         self.log.warning(
             "Session created without explicit group, using first group",
@@ -1080,22 +1181,49 @@ class MessagingService(BaseService):
             links.append(link)
         return links
 
+    async def _link_tasks_to_existing_session(
+        self,
+        session: SessionTable,
+        req: SessionForTasksCreate,
+        pm_agent_id: UUID,
+    ) -> list[SessionTaskTable]:
+        """Link tasks to an existing session.
+
+        `link_session_to_task` is itself idempotent on duplicate
+        (session, task) pairs — re-links return the existing row — so
+        we always get a link back regardless of prior state.
+        """
+        links: list[SessionTaskTable] = []
+        session_id = cast("UUID", session.id)
+        for task_id in req.task_ids:
+            link = await self.link_session_to_task(
+                session_id=session_id,
+                task_id=task_id,
+                added_by=pm_agent_id,
+                is_primary=False,
+                relationship_type=req.relationship_type,
+            )
+            links.append(link)
+        return links
+
     async def create_session_for_tasks(
         self,
         req: SessionForTasksCreate,
         pm_agent_id: UUID,
     ) -> tuple[SessionTable, list[SessionTaskTable]]:
         """
-        Create a new session linked to one or more tasks (PM operation).
+        Create (or reuse) a session linked to one or more tasks (PM operation).
 
-        This is the main entry point for PMs to create work sessions.
+        If any ancestor of the requested tasks already has an active primary
+        session in the target channel, we link to that session instead of
+        opening a new one — keeping the whole task tree in one group chat.
 
         Args:
             req: Session creation request with task IDs
             pm_agent_id: PM agent creating the session
 
         Returns:
-            Tuple of (created session, list of created links)
+            Tuple of (session, list of newly-created links)
 
         Raises:
             NotFoundError: If channel not found
@@ -1104,6 +1232,24 @@ class MessagingService(BaseService):
         channel = await self.get_channel_by_slug(req.channel_slug)
         if not channel:
             raise NotFoundError(f"Channel '{req.channel_slug}' not found")
+
+        channel_id = cast("UUID", channel.id)
+        reusable = await self._find_ancestor_session_on_channel(
+            req.task_ids, channel_id
+        )
+        if reusable:
+            links = await self._link_tasks_to_existing_session(
+                reusable, req, pm_agent_id
+            )
+            self.log.info(
+                "Reused ancestor session for subtasks",
+                session_id=str(reusable.id),
+                task_count=len(req.task_ids),
+                newly_linked=len(links),
+                channel_slug=req.channel_slug,
+                pm_agent_id=str(pm_agent_id),
+            )
+            return reusable, links
 
         group = await self._resolve_group_for_session(req, channel)
         session = await self.create_session(self._build_session_request(req, group))
@@ -1277,6 +1423,19 @@ class MessagingService(BaseService):
                 error=str(e),
             )
 
+    _MAX_MSG_CHARS: ClassVar[int] = 10_000
+
+    def _assert_content(self, raw: str | None) -> None:
+        """Reject empty / over-cap message content with a readable error."""
+        trimmed = (raw or "").strip()
+        if not trimmed:
+            raise ValueError("EMPTY_MESSAGE: message content cannot be blank.")
+        if len(raw or "") > self._MAX_MSG_CHARS:
+            raise ValueError(
+                f"MESSAGE_TOO_LONG: {len(raw or '')} chars exceeds "
+                f"{self._MAX_MSG_CHARS}. Split the message or link a doc."
+            )
+
     async def send_message(
         self,
         req: MessageCreateRequest,
@@ -1293,9 +1452,11 @@ class MessagingService(BaseService):
             Created message
 
         Raises:
-            ValueError: If session not found or not active
+            ValueError: If session not found or not active, or if content is
+                blank/too long.
             ChannelAccessDeniedError: If agent cannot write to channel
         """
+        self._assert_content(req.content)
         session, group, channel = await self._get_message_context(req.session_id)
 
         if agent_slug:

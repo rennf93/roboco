@@ -35,7 +35,7 @@ def _block_success_response(
         block_json,
         "RESOLVE_BLOCKER",
         f"Task blocked: {data.reason}\n\n"
-        "✅ Your PM has been AUTOMATICALLY NOTIFIED with action required.\n"
+        "Your PM has been AUTOMATICALLY NOTIFIED with action required.\n"
         "   They must call roboco_task_unblock() when resolved.\n\n"
         "Your options:\n"
         "1. WAIT - PM will resolve and unblock\n"

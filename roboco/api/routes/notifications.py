@@ -20,46 +20,13 @@ from roboco.api.schemas.notifications import (
     notification_to_response,
 )
 from roboco.enforcement import NotificationPermissionError
-from roboco.services.base import NotFoundError
+from roboco.services.base import NotFoundError, ValidationError
 from roboco.services.notification_delivery import (
     ApiNotificationCreate,
     get_notification_delivery_service,
 )
 
 router = APIRouter()
-
-_MIN_SUBJECT_CHARS = 5
-_MIN_BODY_CHARS = 10
-_MAX_RECIPIENTS = 50
-
-
-def _assert_notification_content(data: NotificationCreateRequest) -> None:
-    """Validate subject/body/recipients gates for send_notification."""
-    if not data.subject or len(data.subject.strip()) < _MIN_SUBJECT_CHARS:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=(
-                f"SUBJECT_REQUIRED: Notification subject must be >= "
-                f"{_MIN_SUBJECT_CHARS} chars."
-            ),
-        )
-    if not data.body or len(data.body.strip()) < _MIN_BODY_CHARS:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=(
-                f"BODY_REQUIRED: Notification body must be >= "
-                f"{_MIN_BODY_CHARS} chars. Say what to do next."
-            ),
-        )
-    if len(data.to_agents) > _MAX_RECIPIENTS:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=(
-                f"TOO_MANY_RECIPIENTS: {len(data.to_agents)} recipients "
-                f"exceeds {_MAX_RECIPIENTS}. Post in a broadcast channel "
-                "instead of spraying notifications."
-            ),
-        )
 
 
 @router.get(
@@ -146,9 +113,7 @@ async def send_notification(
     agent_id: CurrentAgentId,
     data: NotificationCreateRequest,
 ) -> NotificationResponse:
-    """Send a notification; delegates recipient lookup + permission check."""
-    _assert_notification_content(data)
-
+    """Send a notification; delegates content+permission checks to the service."""
     service = get_notification_delivery_service(db)
     try:
         notification = await service.send_from_api(
@@ -164,6 +129,10 @@ async def send_notification(
                 expires_at=data.expires_at,
             ),
         )
+    except ValidationError as e:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST, detail=e.message
+        ) from e
     except NotFoundError as e:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(e)) from e
     except NotificationPermissionError as e:

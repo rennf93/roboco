@@ -8,6 +8,7 @@ Handles documentation file management for agents:
 """
 
 import asyncio
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, ClassVar
@@ -19,7 +20,6 @@ if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncSession
 
 from roboco.agents_config import get_agent_role, get_agent_team
-from roboco.api.schemas.docs import WriteDocRequest
 from roboco.db.tables import TaskTable
 from roboco.models.task import DocRef
 from roboco.services.base import (
@@ -28,6 +28,23 @@ from roboco.services.base import (
     UnauthorizedError,
     ValidationError,
 )
+
+
+@dataclass(frozen=True)
+class WriteDocInput:
+    """Primitive write-doc fields from the API layer.
+
+    Route-layer DTO that bundles the raw inputs so the service method
+    signature stays pure of api.schemas. `doc_type` is a plain string;
+    the Pydantic StrEnum validation happens at the HTTP boundary, and
+    the service re-validates against TYPE_SUBFOLDERS.
+    """
+
+    task_id: UUID
+    filename: str
+    doc_type: str
+    title: str
+    content: str
 
 # =============================================================================
 # CONSTANTS
@@ -95,7 +112,7 @@ class DocsService(BaseService):
     async def write_doc(
         self,
         agent_id: str,
-        req: WriteDocRequest,
+        req: WriteDocInput,
     ) -> tuple[str, DocRef, bool]:
         """
         Write or update a documentation file with RAG-based deduplication.
@@ -134,7 +151,7 @@ class DocsService(BaseService):
                 ),
             )
 
-        doc_type = req.doc_type.value
+        doc_type = req.doc_type
 
         # 2. Validate doc_type
         if doc_type not in TYPE_SUBFOLDERS:
@@ -238,7 +255,7 @@ class DocsService(BaseService):
         self,
         agent_id: str,
         team: str,
-        req: WriteDocRequest,
+        req: WriteDocInput,
         doc_type: str,
     ) -> tuple[str, DocRef, bool]:
         """Create a new documentation file."""
@@ -284,7 +301,7 @@ class DocsService(BaseService):
         self,
         agent_id: str,
         existing_path: str,
-        req: WriteDocRequest,
+        req: WriteDocInput,
         doc_type: str,
     ) -> tuple[str, DocRef, bool]:
         """Update an existing documentation file."""

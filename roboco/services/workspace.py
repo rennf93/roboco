@@ -55,19 +55,29 @@ def _chown_entry(entry: str) -> bool:
     return True
 
 
-def _group_writable(entry: str) -> None:
-    """Best-effort chmod g+w (+x for dirs) on a single entry."""
+def _make_owner_and_group_rw(entry: str) -> None:
+    """Best-effort chmod ensuring owner+group have rw (+x for dirs).
+
+    NAS volumes with POSIX ACL inheritance can land cloned files with
+    owner=0 (e.g. `.git/config` arriving as `----rw----`). POSIX permission
+    rules check the OWNER bits when the caller IS the owner — group bits
+    only apply to non-owners — so an agent-owned file with empty owner
+    perms is unreadable to the agent even though group has rw. We must
+    set owner perms explicitly. chmod always respects the caller's
+    capabilities; if chown failed earlier (we're not root), we still
+    can't chmod files we don't own, so this is best-effort by design.
+    """
     import stat as _stat
 
     try:
         st = Path(entry).stat()
-        # Add group read + write (and execute for dirs). chmod
-        # always respects the caller's capabilities — if chown
-        # failed because we're not root, we still can't chmod
-        # files we don't own.
-        new_mode = st.st_mode | _stat.S_IRGRP | _stat.S_IWGRP
+        new_mode = (
+            st.st_mode
+            | _stat.S_IRUSR | _stat.S_IWUSR
+            | _stat.S_IRGRP | _stat.S_IWGRP
+        )
         if _stat.S_ISDIR(st.st_mode):
-            new_mode |= _stat.S_IXGRP
+            new_mode |= _stat.S_IXUSR | _stat.S_IXGRP
         if new_mode != st.st_mode:
             Path(entry).chmod(new_mode)
     except OSError:
@@ -108,7 +118,7 @@ def _ensure_agent_owned(workspace: Path) -> None:
         for entry in entries:
             if not _chown_entry(entry):
                 failed_chowns += 1
-            _group_writable(entry)
+            _make_owner_and_group_rw(entry)
 
     if failed_chowns:
         logger.warning(
@@ -207,10 +217,20 @@ class WorkspaceService:
         Returns:
             Path to the workspace directory
 
+        Raises:
+            WorkspaceError: If team is None (would produce a literal
+                "None" segment otherwise — see agents_config.AGENT_TEAM_MAP
+                for the canonical team for each agent).
+
         Example:
             >>> get_workspace_path('roboco', Team.BACKEND, 'be-dev-1')
             Path('/data/workspaces/roboco/backend/be-dev-1')
         """
+        if team is None:
+            raise WorkspaceError(
+                f"Cannot resolve workspace path for {agent_slug}: team is None. "
+                "Add the agent to AGENT_TEAM_MAP in roboco/agents_config.py."
+            )
         team_str = team.value if isinstance(team, Team) else str(team)
         return self.root / project_slug / team_str / agent_slug
 
@@ -485,6 +505,18 @@ class WorkspaceService:
             )
             subprocess.run(
                 ["git", "config", "user.email", f"{slug}@agents.roboco.dev"],
+                cwd=str(workspace),
+                check=True,
+                capture_output=True,
+            )
+            # Disable filesystem mode tracking. The workspace volumes live
+            # on the NAS (`/volume1/...`), which has POSIX ACL inheritance
+            # that gives every cloned file the executable bit. With the
+            # default `core.fileMode = true`, git treats every tracked
+            # file as modified the moment it's cloned, and `task_start`'s
+            # clean-tree check refuses to checkout the feature branch.
+            subprocess.run(
+                ["git", "config", "core.fileMode", "false"],
                 cwd=str(workspace),
                 check=True,
                 capture_output=True,

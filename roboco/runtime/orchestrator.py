@@ -21,9 +21,12 @@ import tempfile
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from typing import Any, ClassVar
+from typing import TYPE_CHECKING, Any, ClassVar
 
 import httpx
+
+if TYPE_CHECKING:
+    from roboco.services.llm import AgentRoute
 import structlog
 from fastapi import status as http_status
 
@@ -220,6 +223,12 @@ class AgentOrchestrator:
         # dispatcher. Reset at the start of every _dispatch_all_work.
         # Consumed via `self._mark_task_handled` / `_is_task_handled`.
         self._tick_handled_tasks: set[str] = set()
+        # Respawn circuit breaker: per (agent_slug, task_id), tracks how
+        # many times we've spawned without the task status changing. A PM
+        # that gets re-spawned on the same pending task with no progress
+        # is in a loop — without this gate the orchestrator re-spawns every
+        # tick forever (seen in production on 2026-04-22).
+        self._pm_respawn_tracker: dict[tuple[str, str], dict[str, Any]] = {}
 
     # =========================================================================
     # LIFECYCLE
@@ -452,20 +461,40 @@ class AgentOrchestrator:
                     "mcp__roboco-git__*",
                     "mcp__roboco-docs__*",
                     "mcp__roboco-test__*",
-                    f"Write({workspace_path}/**)",
-                    f"Edit({workspace_path}/**)",
                 ],
-                "deny": [],
+                # PMs coordinate; they open + merge PRs but never author code.
+                # Edit/Write are denied so weaker models can't read the
+                # subtask title imperatively and start editing source — they
+                # have to decompose into a dev subtask. create_pr + merge_pr
+                # stay allowed (needed for the PR chain). Devs are the only
+                # role that authors code in this hierarchy.
+                "deny": [
+                    "mcp__roboco-git__roboco_git_commit",
+                    "mcp__roboco-git__roboco_git_push",
+                    "Bash(git commit:*)",
+                    "Bash(git push:*)",
+                    "Write(*)",
+                    "Edit(*)",
+                ],
             },
             "main_pm": {
                 "allow": [
                     "mcp__roboco-git__*",
                     "mcp__roboco-docs__*",
                     "mcp__roboco-test__*",
-                    f"Write({workspace_path}/**)",
-                    f"Edit({workspace_path}/**)",
                 ],
-                "deny": [],
+                # Same reasoning as cell_pm — Main PM sits between CEO and
+                # cell PMs; the work product is coordination + review, not
+                # commits or edits. create_pr is still allowed (master-bound
+                # PR). Code work routes Main PM → Cell PM → Dev only.
+                "deny": [
+                    "mcp__roboco-git__roboco_git_commit",
+                    "mcp__roboco-git__roboco_git_push",
+                    "Bash(git commit:*)",
+                    "Bash(git push:*)",
+                    "Write(*)",
+                    "Edit(*)",
+                ],
             },
             "product_owner": {
                 "allow": [
@@ -961,8 +990,15 @@ class AgentOrchestrator:
         canonical_role = get_agent_role(agent_id)
         team = get_agent_team(agent_id)
 
+        # Resolve the provider route for this agent. Caller-supplied `model`
+        # wins (dispatcher overrides, tests). Otherwise the routing service
+        # resolves (agent_slug | role | global) assignments, falling back
+        # internally to `ROLE_MODEL_MAP` when no rows exist — so a fresh
+        # deployment with an empty `model_assignments` table behaves exactly
+        # as before.
+        route = await self._resolve_agent_route(agent_id)
         if not model:
-            model = ROLE_MODEL_MAP.get(canonical_role, "sonnet")
+            model = route.model_name
 
         project_slug = self._resolve_project_slug(git_context, agent_id, task_id)
         workspace_path = f"/data/workspaces/{project_slug}/{team}/{agent_id}"
@@ -986,6 +1022,9 @@ class AgentOrchestrator:
             mcp_config_path=mcp_config_path,
             git_context=git_context,
             briefing_path=briefing_path,
+            provider_type=route.provider_type.value,
+            provider_base_url=route.base_url,
+            provider_auth_token=route.auth_token,
         )
         instance = AgentInstance(
             agent_id=agent_id,
@@ -1222,6 +1261,15 @@ class AgentOrchestrator:
                 f"ROBOCO_AGENT_STOP_ATTEMPT_ALLOWANCE={settings.agent_stop_attempt_allowance}",
             ]
         )
+        # Provider routing: only inject ANTHROPIC_* env vars when the
+        # resolved provider is non-Anthropic (i.e. Ollama Cloud). For the
+        # Anthropic default path both fields are None and Claude Code
+        # inside the container continues to use its mounted ~/.claude
+        # credentials — preserving legacy behaviour byte-for-byte.
+        if config.provider_base_url:
+            cmd.extend(["-e", f"ANTHROPIC_BASE_URL={config.provider_base_url}"])
+        if config.provider_auth_token:
+            cmd.extend(["-e", f"ANTHROPIC_AUTH_TOKEN={config.provider_auth_token}"])
         return cmd
 
     @staticmethod
@@ -1276,16 +1324,35 @@ class AgentOrchestrator:
     def _append_image_and_claude_args(
         cls, cmd: list[str], config: AgentConfig, initial_prompt: str | None
     ) -> None:
-        """Append the image + Claude Code CLI args to the docker run cmd."""
+        """Append the image + Claude Code CLI args to the docker run cmd.
+
+        `--tools` explicitly enumerates the built-in tools loaded at session
+        start. Without it, Claude CLI's default behavior leaves Edit/Write
+        in the deferred pool, so an agent that doesn't reliably call
+        ToolSearch (e.g. weaker non-Anthropic models routed via
+        Ollama-cloud) ends up unable to modify any file. The set below is
+        the minimum every agent role needs:
+          - Read/Write/Edit  : file IO inside the workspace
+          - Bash             : shell commands (gated by bash-guard hook)
+          - Grep/Glob        : code navigation
+          - Task             : sub-agent dispatch (used for ToolSearch and
+                               other delegated jobs)
+          - TodoWrite        : per-session planning
+        Permissions still gate *which* paths Edit/Write can touch (see
+        `_get_role_permissions`), so this is purely about loading vs
+        denying.
+        """
         cmd.extend(
             [
                 get_agent_image(config.agent_id),
                 "--model",
-                MODEL_MAP.get(config.model, config.model),
+                cls._resolve_cli_model(config),
                 "--system-prompt-file",
                 "/app/system-prompt.md",
                 "--mcp-config",
                 "/app/mcp-config.json",
+                "--tools",
+                "Read,Write,Edit,Bash,Grep,Glob,Task,TodoWrite",
                 "--output-format",
                 "stream-json",
                 "--verbose",
@@ -1293,6 +1360,20 @@ class AgentOrchestrator:
                 initial_prompt or cls._default_spawn_prompt(),
             ]
         )
+
+    @staticmethod
+    def _resolve_cli_model(config: AgentConfig) -> str:
+        """Return the string to pass to `claude --model`.
+
+        For the Anthropic provider, short names (`opus|sonnet|haiku`) are
+        translated through `MODEL_MAP` as they always were. For non-
+        Anthropic providers (currently Ollama Cloud) the model identifier
+        is passed verbatim so raw tags like `kimi-k2.6:cloud` reach the
+        Ollama-side Claude Code integration intact.
+        """
+        if config.provider_type == "anthropic":
+            return MODEL_MAP.get(config.model, config.model)
+        return config.model
 
     async def _spawn_container(
         self,
@@ -1747,6 +1828,97 @@ class AgentOrchestrator:
         await self._auto_block_task(client, task_id, f"readiness: {reason}")
         return reason
 
+    async def _resolve_agent_route(self, agent_id: str) -> "AgentRoute":
+        """Resolve (provider, model) for `agent_id` via `ModelRoutingService`.
+
+        Errors are contained: any DB/session failure degrades to a legacy
+        Anthropic-default AgentRoute so spawn never stalls on routing.
+        """
+        from roboco.db.base import get_session_factory
+        from roboco.models.base import ModelProvider
+        from roboco.models.runtime import MODEL_MAP
+        from roboco.services.llm import (
+            AgentRoute,
+            get_model_routing_service,
+        )
+
+        try:
+            factory = get_session_factory()
+            async with factory() as db:
+                router = get_model_routing_service(db)
+                return await router.resolve_for_agent(agent_id)
+        except Exception as e:  # pragma: no cover
+            role = get_agent_role(agent_id) or ""
+            short = ROLE_MODEL_MAP.get(role, "sonnet")
+            logger.warning(
+                "Model routing resolve failed; using legacy Anthropic path",
+                agent_id=agent_id,
+                error=str(e),
+            )
+            return AgentRoute(
+                provider_id=None,
+                provider_type=ModelProvider.ANTHROPIC,
+                base_url=None,
+                auth_token=None,
+                model_name=MODEL_MAP.get(short, short),
+            )
+
+    _TOOL_LOAD_CACHE: ClassVar[dict[str, str]] = {}
+
+    def _build_tool_load_block(self, role: str) -> str:
+        """Build the mandatory first-action ToolSearch directive.
+
+        Weak models consistently skip the role prompt's `Load on spawn
+        (one ToolSearch select: call)` line — then trip on "Edit exists
+        but is not enabled in this context" when they try to edit a
+        file, or "No such tool available: mcp__roboco-task__…" when
+        they try to act. Hoisting the directive into the briefing's
+        first block (with the exact query string inline) pulls the
+        bootstrap into the prompt-most-salient position.
+
+        Returns empty string if we can't locate the role file — the
+        briefing still works without it.
+        """
+        if role in self._TOOL_LOAD_CACHE:
+            return self._TOOL_LOAD_CACHE[role]
+        block = self._read_tool_load_from_role_prompt(role)
+        self._TOOL_LOAD_CACHE[role] = block
+        return block
+
+    def _read_tool_load_from_role_prompt(self, role: str) -> str:
+        """Parse the `Load on spawn` line out of the role prompt."""
+        role_file = self.project_root / "agents" / "prompts" / "roles" / f"{role}.md"
+        if not role_file.exists():
+            return ""
+        try:
+            text = role_file.read_text()
+        except OSError:
+            return ""
+        marker = "## Load on spawn"
+        idx = text.find(marker)
+        if idx < 0:
+            return ""
+        # After the marker, the next line starts with a backtick-quoted list.
+        tail = text[idx + len(marker) :]
+        tick_start = tail.find("`")
+        tick_end = tail.find("`", tick_start + 1)
+        if tick_start < 0 or tick_end < 0:
+            return ""
+        tool_list = tail[tick_start + 1 : tick_end].strip()
+        if not tool_list:
+            return ""
+        return (
+            "## First action required\n"
+            "Before any other tool call, run ToolSearch to enable the tools\n"
+            "your role needs. Copy this verbatim as your first action:\n"
+            "\n"
+            f'```\nToolSearch(query="select:{tool_list}")\n```\n'
+            "\n"
+            "Skipping this step results in 'tool exists but is not enabled\n"
+            "in this context' errors that waste tool-call budget.\n"
+            "\n"
+        )
+
     async def _write_agent_briefing(
         self,
         agent_id: str,
@@ -1765,6 +1937,7 @@ class AgentOrchestrator:
         team = get_agent_team(agent_id) or "-"
         escalate_to = get_escalation_target(agent_id) or "main-pm"
 
+        tool_load_block = self._build_tool_load_block(role)
         task_block = ""
         if task_id:
             try:
@@ -1781,12 +1954,15 @@ class AgentOrchestrator:
                         else "- (none listed — ask PM before proceeding)"
                     )
                     branch = task.get("branch_name") or "(to be created)"
+                    project_slug = task.get("project_slug") or "(unset — ask PM)"
                     task_block = (
                         "\n## Current task\n"
                         f"- **ID:** `{task.get('id', task_id)}`\n"
                         f"- **Title:** {task.get('title', '(untitled)')}\n"
                         f"- **Status:** {task.get('status', 'unknown')}\n"
                         f"- **Type:** {task.get('task_type', 'unknown')}\n"
+                        f"- **Project slug:** `{project_slug}` "
+                        "(pass this as `project_slug=` on every git/task tool)\n"
                         f"- **Branch:** `{branch}`\n"
                         "\n### Acceptance criteria\n"
                         f"{criteria}\n"
@@ -1802,6 +1978,7 @@ class AgentOrchestrator:
         content = (
             f"# Session briefing — {agent_id}\n"
             "\n"
+            f"{tool_load_block}"
             "## You are\n"
             f"- **Agent:** `{agent_id}`\n"
             f"- **Role:** {role}\n"
@@ -2997,7 +3174,7 @@ You do NOT assign to developers directly - Cell PMs manage their teams.
 - Frontend work → fe-pm (who manages fe-dev-1, fe-dev-2)
 - UX/UI work → ux-pm (who manages ux-dev-1, ux-dev-2)
 
-🚨 NEVER assign to be-dev-1, fe-dev-1, ux-dev-1, ux-dev-2 directly. ONLY to Cell PMs.
+NEVER assign to be-dev-1, fe-dev-1, ux-dev-1, ux-dev-2 directly. ONLY to Cell PMs.
 
 == WHEN TO WORK ON IT YOURSELF ==
 
@@ -3274,12 +3451,53 @@ Start now: roboco_task_get("{task_id}")
         }
     )
 
+    _PM_RESPAWN_MAX_UNPRODUCTIVE = 3
+
+    def _pm_respawn_should_gate(self, agent_slug: str, task: dict[str, Any]) -> bool:
+        """Return True when the respawn should be skipped (loop detected).
+
+        Tracks (agent_slug, task_id) -> count of consecutive spawns where
+        the task's status did not advance. When the task status changes,
+        the counter resets. Once the count hits the threshold, the spawn
+        is skipped and a warning logged; operators must intervene.
+        """
+        task_id = task.get("id")
+        if not task_id:
+            return False
+        key = (agent_slug, task_id)
+        current_status = task.get("status")
+        record = self._pm_respawn_tracker.get(key)
+        if record is None or record.get("last_status") != current_status:
+            self._pm_respawn_tracker[key] = {
+                "count": 1,
+                "last_status": current_status,
+            }
+            return False
+        record["count"] += 1
+        if record["count"] > self._PM_RESPAWN_MAX_UNPRODUCTIVE:
+            logger.warning(
+                "PM respawn loop detected — skipping spawn",
+                agent_id=agent_slug,
+                task_id=task_id,
+                task_status=current_status,
+                spawn_attempts=record["count"],
+                threshold=self._PM_RESPAWN_MAX_UNPRODUCTIVE,
+                hint=(
+                    "Agent repeatedly spawned without advancing task state. "
+                    "Investigate prompt/schema drift or escalate manually."
+                ),
+            )
+            return True
+        return False
+
     async def _handle_pm_assigned_task(
         self, task: dict[str, Any], assigned_to: str
     ) -> None:
         """Spawn an already-assigned PM agent if it isn't running."""
         agent_slug = self._resolve_agent_slug(assigned_to)
         if agent_slug not in self._PM_AGENTS or self._is_agent_active(agent_slug):
+            return
+        if self._pm_respawn_should_gate(agent_slug, task):
             return
         logger.info(
             "Spawning assigned PM agent",
@@ -3322,6 +3540,25 @@ Start now: roboco_task_get("{task_id}")
                 routing=routing,
             )
             return
+
+        # Don't auto-claim back to the creator. A PM that just created this
+        # task is about to assign it (e.g. be-pm creating a code subtask to
+        # hand to be-dev-1 one tool-call later). Racing in and claiming for
+        # the PM hijacks the delegation — the PM ends up owning a code task
+        # it never intended to work on itself. Skip this tick and let the
+        # next dispatch pick it up once assigned_to is set, OR re-evaluate
+        # when we have a clearer signal the creator won't route it.
+        created_by = task.get("created_by")
+        if created_by:
+            creator_slug = self._resolve_agent_slug(str(created_by))
+            if creator_slug == agent_id:
+                logger.info(
+                    "Skipping auto-claim: routing target is the creator",
+                    task_id=task.get("id"),
+                    creator=creator_slug,
+                    routing=routing,
+                )
+                return
 
         logger.info(
             "Routing task",

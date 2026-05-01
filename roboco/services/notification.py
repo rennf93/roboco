@@ -273,11 +273,42 @@ class NotificationService:
                     to_agents=[str(a) for a in params.to_agents],
                 )
                 return
+            # notifications.to_agents is UUID[] — callers across the codebase
+            # pass slugs ("be-dev-1", "be-qa"). Resolve every recipient before
+            # insert; drop (with warn) any that don't resolve instead of
+            # letting asyncpg crash with "invalid UUID 'be-dev-1'".
+            to_agents_uuids: list[UUID] = []
+            unresolved: list[str] = []
+            for recipient in params.to_agents:
+                resolved = await _resolve_agent_uuid(db, recipient)
+                if resolved is None:
+                    unresolved.append(str(recipient))
+                else:
+                    to_agents_uuids.append(resolved)
+            if unresolved:
+                logger.warning(
+                    "Dropping unresolved notification recipients",
+                    unresolved=unresolved,
+                    type=params.notification_type.value
+                    if hasattr(params.notification_type, "value")
+                    else str(params.notification_type),
+                    subject=params.subject[:80],
+                )
+            if not to_agents_uuids:
+                logger.warning(
+                    "Skipping notification: no resolvable recipients",
+                    to_agents_input=[str(a) for a in params.to_agents],
+                    type=params.notification_type.value
+                    if hasattr(params.notification_type, "value")
+                    else str(params.notification_type),
+                    subject=params.subject[:80],
+                )
+                return
             notification = NotificationTable(
                 type=params.notification_type,
                 priority=params.priority,
                 from_agent=from_agent_uuid,
-                to_agents=params.to_agents,
+                to_agents=to_agents_uuids,
                 subject=params.subject,
                 body=params.body,
                 related_task_id=params.related_task_id,

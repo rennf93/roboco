@@ -99,8 +99,15 @@ export enum HandoffStatus {
 
 export enum ModelProvider {
   ANTHROPIC = "anthropic",
+  OLLAMA_CLOUD = "ollama_cloud",
   OPENAI = "openai",
   LOCAL = "local",
+}
+
+export enum AssignmentScope {
+  GLOBAL = "global",
+  ROLE = "role",
+  AGENT_SLUG = "agent_slug",
 }
 
 export enum SessionTaskRelationshipType {

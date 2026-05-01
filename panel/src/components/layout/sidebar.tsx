@@ -19,6 +19,7 @@ import {
   FolderGit2,
   GitBranch,
   Database,
+  Cpu,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { ScrollArea } from "@/components/ui/scroll-area";
@@ -118,7 +119,18 @@ export function Sidebar() {
       </ScrollArea>
 
       {/* Footer */}
-      <div className="border-t p-2">
+      <div className="border-t p-2 space-y-1">
+        <Link
+          href="/settings/ai-providers"
+          className={cn(
+            "flex items-center gap-3 rounded-lg px-3 py-2 text-sm font-medium text-muted-foreground hover:bg-muted hover:text-foreground transition-colors",
+            sidebarCollapsed && "justify-center px-2"
+          )}
+          title={sidebarCollapsed ? "AI Providers" : undefined}
+        >
+          <Cpu className="h-5 w-5" />
+          {!sidebarCollapsed && <span>AI Providers</span>}
+        </Link>
         <Link
           href="/settings"
           className={cn(

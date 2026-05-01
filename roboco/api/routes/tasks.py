@@ -4,7 +4,7 @@ Task API Routes
 Full CRUD operations and lifecycle management for tasks.
 """
 
-from typing import Annotated, Any, NoReturn, cast
+from typing import Annotated, cast
 from uuid import UUID
 
 from fastapi import APIRouter, Body, HTTPException, Query, status
@@ -41,26 +41,28 @@ from roboco.api.schemas.tasks import (
     task_to_response,
     transform_update_data,
 )
-from roboco.db.tables import TaskTable
 from roboco.exceptions import TaskLifecycleError
-from roboco.models.base import AgentRole, SubstituteReason, TaskStatus, Team
+from roboco.models.base import AgentRole, TaskStatus, Team
 from roboco.models.task import TaskCreate
 from roboco.services.audit import get_audit_service
-from roboco.services.base import NotFoundError
+from roboco.services.base import (
+    NotFoundError,
+    ServiceError,
+    UnauthorizedError,
+    ValidationError,
+)
 from roboco.services.messaging import get_messaging_service
 from roboco.services.notification_delivery import (
-    BlockerDetails,
     EscalationError,
     PMRejectDetails,
     get_notification_delivery_service,
 )
-from roboco.services.permissions import AgentContext, PermissionService, TaskAction
+from roboco.services.permissions import TaskAction
 from roboco.services.task import (
-    SoftBlockInfo,
+    SoftBlockInput,
     TaskCreateRequest,
     extract_original_developer,
     get_task_service,
-    notify_pm_for_substitute,
 )
 from roboco.utils.converters import require_uuid
 
@@ -71,9 +73,18 @@ router = APIRouter()
 # note is useless for the next reader, so the transition is refused.
 _MIN_NOTES_CHARS = 20
 
-# Max descendant IDs shown inline in an error before truncating to a
-# "+N more" tail.
-_MAX_ERR_IDS = 5
+
+def _translate_error(e: ServiceError) -> HTTPException:
+    """Service errors → HTTP status. Kept at route layer; everything else moves."""
+    if isinstance(e, NotFoundError):
+        return HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=e.message)
+    if isinstance(e, UnauthorizedError):
+        return HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=e.message)
+    if isinstance(e, ValidationError):
+        return HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=e.message)
+    return HTTPException(
+        status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=e.message
+    )
 
 
 # =============================================================================
@@ -530,59 +541,6 @@ async def get_descendants(
 # =============================================================================
 
 
-def _assert_claim_permission(
-    permissions: PermissionService, agent: AgentContext, task: TaskTable
-) -> None:
-    """Block claims from agents that don't hold the CLAIM permission."""
-    if not permissions.can_perform_task_action(agent, TaskAction.CLAIM, task.team):
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="Not authorized to claim tasks",
-        )
-
-
-def _assert_no_self_review(agent: AgentContext, task: TaskTable) -> None:
-    """QA/Documenter can't claim tasks they authored."""
-    # Block at claim time so the task isn't grabbed and then stuck (the
-    # outcome endpoints also block self-review, but blocking here keeps
-    # the task in the queue for a different reviewer/documenter).
-    if agent.role not in (AgentRole.QA, AgentRole.DOCUMENTER):
-        return
-    original_dev = extract_original_developer(task.quick_context)
-    if original_dev and str(agent.agent_id) == original_dev:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail=(
-                "SELF_REVIEW: Cannot claim a task that you developed. "
-                "Leave it for another "
-                f"{agent.role.value}."
-            ),
-        )
-
-
-async def _resolve_claim_target(
-    service: Any,
-    permissions: PermissionService,
-    agent: AgentContext,
-    task: TaskTable,
-    data: ClaimRequest | None,
-) -> tuple[UUID, bool]:
-    """Pick the final claim target + whether reassignment is allowed."""
-    can_assign = permissions.can_perform_task_action(
-        agent, TaskAction.ASSIGN, task.team
-    )
-    claim_agent_id = agent.agent_id
-    if data and data.agent_id and can_assign:
-        try:
-            claim_agent_id = await service.resolve_agent_id(data.agent_id)
-        except NotFoundError as e:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND, detail=str(e)
-            ) from e
-    allow_reassign = bool(can_assign and data and data.agent_id is not None)
-    return claim_agent_id, allow_reassign
-
-
 @router.post("/{task_id}/claim", response_model=TaskResponse)
 async def claim_task(
     task_id: UUID,
@@ -591,33 +549,17 @@ async def claim_task(
     permissions: PermissionServiceDep,
     data: Annotated[ClaimRequest | None, Body()] = None,
 ) -> TaskResponse:
-    """
-    Claim a task.
-
-    Privileged roles (system, PM) can claim tasks on behalf of other agents
-    by providing agent_id in the request body.
-    """
+    """Claim a task (privileged roles may claim on behalf of another agent)."""
     service = get_task_service(db)
-    task = await service.get(task_id)
-    if not task:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND, detail="Task not found"
+    try:
+        task = await service.claim_task_for_agent(
+            task_id,
+            agent,
+            permissions,
+            claim_target_slug=(data.agent_id if data else None),
         )
-
-    _assert_claim_permission(permissions, agent, task)
-    _assert_no_self_review(agent, task)
-
-    claim_agent_id, allow_reassign = await _resolve_claim_target(
-        service, permissions, agent, task, data
-    )
-    task = await service.claim(task_id, claim_agent_id, allow_reassign=allow_reassign)
-    if not task:
-        status_msg = "not pending or claimed" if allow_reassign else "not pending"
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=f"Cannot claim task - {status_msg}",
-        )
-    await db.commit()
+    except ServiceError as e:
+        raise _translate_error(e) from e
     return task_to_response(task)
 
 
@@ -766,16 +708,6 @@ async def block_task(
     return task_to_response(task)
 
 
-def _parse_resolver_type(raw: str) -> Any:
-    """Parse resolver type; fall back to AGENT on bad input."""
-    from roboco.models.base import BlockerResolverType
-
-    try:
-        return BlockerResolverType(raw)
-    except ValueError:
-        return BlockerResolverType.AGENT
-
-
 @router.post("/{task_id}/soft-block", response_model=TaskResponse)
 async def soft_block_task(
     task_id: UUID,
@@ -783,62 +715,21 @@ async def soft_block_task(
     db: DbSession,
     agent: CurrentAgentContext,
 ) -> TaskResponse:
-    """Soft-block a task due to an external factor (not a task dependency).
-
-    Use this when blocked by:
-    - External dependencies (waiting for API access, credentials)
-    - Questions that need PM/stakeholder input
-    - Technical blockers (infrastructure issues)
-
-    For blocking due to another task, use the /block endpoint instead.
-    """
+    """Soft-block a task due to an external factor (not a task dependency)."""
     service = get_task_service(db)
-    task = await service.get(task_id)
-    if not task:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND, detail="Task not found"
+    try:
+        task = await service.soft_block_task_for_agent(
+            task_id,
+            agent,
+            SoftBlockInput(
+                blocker_type=data.blocker_type,
+                reason=data.reason,
+                what_needed=data.what_needed,
+                resolver_type_raw=data.resolver_type,
+            ),
         )
-
-    # Only assigned agent or PM can block a task
-    if task.assigned_to != agent.agent_id and agent.role not in (
-        AgentRole.CELL_PM,
-        AgentRole.MAIN_PM,
-    ):
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="Not authorized to block this task",
-        )
-
-    resolver_type = _parse_resolver_type(data.resolver_type)
-
-    task = await service.soft_block(
-        task_id,
-        SoftBlockInfo(
-            reason=data.reason,
-            blocker_type=data.blocker_type,
-            what_needed=data.what_needed,
-            resolver_type=resolver_type,
-        ),
-        agent.role,
-    )
-    if not task:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Cannot block task - must be in_progress",
-        )
-
-    delivery = get_notification_delivery_service(db)
-    await delivery.notify_pm_of_block(
-        task=task,
-        task_id=task_id,
-        blocker_agent_id=agent.agent_id,
-        details=BlockerDetails(
-            blocker_type=data.blocker_type,
-            reason=data.reason,
-            what_needed=data.what_needed,
-        ),
-    )
-    await db.commit()
+    except ServiceError as e:
+        raise _translate_error(e) from e
     return task_to_response(task)
 
 
@@ -1187,46 +1078,6 @@ async def fail_qa(
     return task_to_response(task)
 
 
-async def _assert_docs_complete_allowed(
-    agent: AgentContext, task: TaskTable, task_id: UUID, data: QANotes | None
-) -> str:
-    """Verify docs_complete preconditions; return the notes payload."""
-    if agent.role != AgentRole.DOCUMENTER:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="Only documenters can mark documentation as complete",
-        )
-
-    # Documenter cannot document their own work (self-review prevention)
-    original_dev = extract_original_developer(task.quick_context)
-    if original_dev and str(agent.agent_id) == original_dev:
-        audit = get_audit_service()
-        await audit.log_task_action_denial(
-            agent_id=agent.agent_id,
-            agent_role=agent.role.value,
-            task_id=task_id,
-            action="docs_complete",
-            reason="Self-documentation not permitted",
-        )
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="Cannot document your own task",
-        )
-
-    # Doc completion notes are required so PM + future maintainers can
-    # see what was documented / where. Vague notes are a false signal.
-    if not data or not data.notes or len(data.notes.strip()) < _MIN_NOTES_CHARS:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=(
-                "DOC_NOTES_REQUIRED: docs_complete must include notes "
-                "(>=20 chars) listing what was documented and where. "
-                "Use roboco_task_docs_complete(notes='...')."
-            ),
-        )
-    return data.notes
-
-
 @router.post("/{task_id}/docs-complete", response_model=TaskResponse)
 async def docs_complete(
     task_id: UUID,
@@ -1237,29 +1088,14 @@ async def docs_complete(
     """Mark documentation as complete (documenter only).
 
     Transitions task from awaiting_documentation to awaiting_pm_review.
-    The Cell PM will then review and complete the task.
     """
     service = get_task_service(db)
-    task = await service.get(task_id)
-    if not task:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND, detail="Task not found"
+    try:
+        task = await service.docs_complete_for_task(
+            task_id, agent, notes=(data.notes if data else None)
         )
-
-    doc_notes = await _assert_docs_complete_allowed(agent, task, task_id, data)
-
-    task = await service.docs_complete(task_id, doc_notes)
-    if not task:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Cannot mark docs complete - invalid status for documenter workflow",
-        )
-
-    delivery = get_notification_delivery_service(db)
-    await delivery.notify_pm_of_docs_complete(
-        task=task, task_id=task_id, submitter_agent_id=agent.agent_id
-    )
-    await db.commit()
+    except ServiceError as e:
+        raise _translate_error(e) from e
     return task_to_response(task)
 
 
@@ -1310,93 +1146,6 @@ async def submit_for_pm_review(
     return task_to_response(task)
 
 
-def _assert_can_complete(
-    permissions: PermissionService, agent: AgentContext, task: TaskTable
-) -> None:
-    """Only PM roles (or CEO) may transition tasks to completed."""
-    can_close = permissions.can_perform_task_action(agent, TaskAction.CLOSE, task.team)
-    if not can_close:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="Only PMs can complete tasks",
-        )
-
-    # PM self-approval block: the PM who created the task (kicked it
-    # off) cannot also sign off on its completion at the awaiting_pm_review
-    # stage — that defeats the review gate. CEO is exempt (final
-    # authority); a PM completing their OWN in_progress task is fine
-    # (solo PM work, no review required).
-    if (
-        task.status.value == "awaiting_pm_review"
-        and task.created_by == agent.agent_id
-        and agent.role != AgentRole.CEO
-    ):
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail=(
-                "SELF_APPROVAL: You created this task; a different PM "
-                "must complete it from awaiting_pm_review. Escalate or "
-                "hand off to another PM."
-            ),
-        )
-
-
-def _assert_force_complete_allowed(
-    agent: AgentContext, force_complete: bool, justification: str | None
-) -> None:
-    """`force_with_cancelled` is CEO-only and requires a justification."""
-    if not force_complete:
-        return
-    if agent.role != AgentRole.CEO:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="force_with_cancelled requires CEO approval. "
-            "Only CEO can complete tasks when subtasks are not all completed.",
-        )
-    if not justification:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="force_with_cancelled requires justification",
-        )
-
-
-async def _raise_complete_failure(
-    service: Any, task_id: UUID, original_status: str
-) -> NoReturn:
-    """Explain why a completion attempt failed (never returns)."""
-    refetch = await service.get(task_id)
-    if refetch:
-        descendants = await service.get_all_descendants(task_id)
-        incomplete = [
-            str(d.id)[:8]
-            for d in descendants
-            if d.status.value not in ("completed", "cancelled")
-        ]
-        if incomplete:
-            shown = ", ".join(incomplete[:_MAX_ERR_IDS])
-            extra = (
-                f" (+{len(incomplete) - _MAX_ERR_IDS} more)"
-                if len(incomplete) > _MAX_ERR_IDS
-                else ""
-            )
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail=f"Cannot complete task - {len(incomplete)} subtask(s) "
-                f"still in progress: {shown}{extra}. "
-                "Monitor and help unblock stuck tasks.",
-            )
-        if original_status not in ("awaiting_pm_review", "in_progress"):
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail=f"Cannot complete - status is '{original_status}'. "
-                "Must be 'awaiting_pm_review' or 'in_progress'.",
-            )
-    raise HTTPException(
-        status_code=status.HTTP_400_BAD_REQUEST,
-        detail="Cannot complete task - check task status and subtasks.",
-    )
-
-
 @router.post("/{task_id}/complete", response_model=TaskResponse)
 async def complete_task(
     task_id: UUID,
@@ -1416,29 +1165,16 @@ async def complete_task(
     Requires justification. Does NOT apply to pending/in_progress subtasks.
     """
     service = get_task_service(db)
-    task = await service.get(task_id)
-    if not task:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND, detail="Task not found"
+    try:
+        task = await service.complete_task_for_agent(
+            task_id,
+            agent,
+            permissions,
+            force_with_cancelled=(data.force_with_cancelled if data else False),
+            justification=(data.justification if data else None),
         )
-
-    _assert_can_complete(permissions, agent, task)
-
-    force_complete = data.force_with_cancelled if data else False
-    justification = data.justification if data else None
-    _assert_force_complete_allowed(agent, force_complete, justification)
-
-    original_status = task.status.value if task.status else "unknown"
-
-    task = await service.complete(
-        task_id,
-        agent_id=agent.agent_id,
-        force_with_cancelled=force_complete,
-        justification=justification,
-    )
-    if not task:
-        await _raise_complete_failure(service, task_id, original_status)
-    await db.commit()
+    except ServiceError as e:
+        raise _translate_error(e) from e
     return task_to_response(task)
 
 
@@ -1532,75 +1268,6 @@ async def get_awaiting_ceo_approval_tasks(
     return task_list_to_response(tasks)
 
 
-def _assert_escalation_permission(
-    permissions: PermissionService, agent: AgentContext, task: TaskTable
-) -> None:
-    """Only PMs/higher can escalate to CEO."""
-    if not permissions.can_perform_task_action(agent, TaskAction.CLOSE, task.team):
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="Only PMs can escalate tasks to CEO",
-        )
-
-
-def _assert_escalation_pr_gates(task: TaskTable) -> None:
-    """PR must exist + be confirmed before CEO escalation."""
-    if task.pr_number is None:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=(
-                "NO_PR: Cannot escalate to CEO without an open PR. "
-                "Ensure the PR exists and pr_number is set on the task."
-            ),
-        )
-    if not task.pr_created:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=(
-                "PR_NOT_CONFIRMED: pr_created flag is false. The PR "
-                "handler must confirm the PR exists before escalation."
-            ),
-        )
-
-
-async def _assert_escalation_subtasks_done(service: Any, task_id: UUID) -> None:
-    """Parent task can't escalate while any descendant is still live."""
-    descendants = await service.get_all_descendants(task_id)
-    active_descendants = [
-        d for d in descendants if d.status.value not in ("completed", "cancelled")
-    ]
-    if not active_descendants:
-        return
-    ids_shown = ", ".join(str(d.id)[:8] for d in active_descendants[:_MAX_ERR_IDS])
-    extra = (
-        f" (+{len(active_descendants) - _MAX_ERR_IDS} more)"
-        if len(active_descendants) > _MAX_ERR_IDS
-        else ""
-    )
-    raise HTTPException(
-        status_code=status.HTTP_400_BAD_REQUEST,
-        detail=(
-            f"ACTIVE_SUBTASKS: Cannot escalate while "
-            f"{len(active_descendants)} subtask(s) remain active: "
-            f"{ids_shown}{extra}."
-        ),
-    )
-
-
-def _assert_escalation_notes(data: QANotes | None) -> str:
-    """Escalation notes are mandatory (>= _MIN_NOTES_CHARS)."""
-    if not data or not data.notes or len(data.notes.strip()) < _MIN_NOTES_CHARS:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=(
-                "ESCALATION_NOTES_REQUIRED: Escalation to CEO must "
-                "include notes (>=20 chars) explaining why CEO review "
-                "is needed (scope, risk, breaking-change, etc)."
-            ),
-        )
-    return data.notes
-
-
 @router.post("/{task_id}/escalate-to-ceo", response_model=TaskResponse)
 async def escalate_to_ceo(
     task_id: UUID,
@@ -1611,44 +1278,16 @@ async def escalate_to_ceo(
 ) -> TaskResponse:
     """Escalate a task to CEO for final approval (PM only).
 
-    Used for major tasks that require CEO sign-off before merge:
-    - Parent tasks with subtasks
-    - High-priority features
-    - Breaking changes
+    For major tasks that need CEO sign-off before merge: parent tasks
+    with subtasks, high-priority features, breaking changes.
     """
     service = get_task_service(db)
-    task = await service.get(task_id)
-    if not task:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND, detail="Task not found"
+    try:
+        task = await service.escalate_to_ceo_for_agent(
+            task_id, agent, permissions, notes=(data.notes if data else None)
         )
-
-    _assert_escalation_permission(permissions, agent, task)
-    # PM cannot escalate a task they created to themselves — CEO
-    # approval exists as an independent review.  If the creator IS the
-    # escalating PM, that's fine (they're asking CEO to review, not
-    # approving themselves); the self-approval block lives on the
-    # CEO-approve path.  Field gates we DO enforce here:
-    _assert_escalation_pr_gates(task)
-    await _assert_escalation_subtasks_done(service, task_id)
-    notes = _assert_escalation_notes(data)
-
-    task = await service.escalate_to_ceo(task_id, agent.role.value, notes)
-    if not task:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Cannot escalate to CEO - task must be in awaiting_pm_review status",
-        )
-
-    delivery = get_notification_delivery_service(db)
-    await delivery.notify_ceo_of_escalation(
-        task=task,
-        task_id=task_id,
-        escalator_agent_id=agent.agent_id,
-        escalator_role=agent.role.value,
-        notes=notes,
-    )
-    await db.commit()
+    except ServiceError as e:
+        raise _translate_error(e) from e
     return task_to_response(task)
 
 
@@ -1880,41 +1519,6 @@ async def escalate_task(
 # SUBSTITUTION (ALL AGENTS CAN SUBSTITUTE OUT)
 # =============================================================================
 
-# Map substitute reasons to target task statuses
-_REASON_TO_STATUS: dict[SubstituteReason, TaskStatus] = {
-    SubstituteReason.TASK_COMPLETE: TaskStatus.AWAITING_QA,
-    SubstituteReason.LOW_CONTEXT: TaskStatus.PENDING,
-    SubstituteReason.OUT_OF_SCOPE_TEAM: TaskStatus.PENDING,
-    SubstituteReason.OUT_OF_SCOPE_ROLE: TaskStatus.PENDING,
-    SubstituteReason.MAX_RETRIES: TaskStatus.PENDING,
-    SubstituteReason.BLOCKED_EXTERNAL: TaskStatus.BLOCKED,
-}
-
-
-def _parse_substitute_reason(raw: str) -> SubstituteReason:
-    """Validate reason string or raise 400 with the allowed values."""
-    try:
-        return SubstituteReason(raw)
-    except ValueError as e:
-        valid_reasons = [r.value for r in SubstituteReason]
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=f"Invalid reason: {raw}. Valid: {valid_reasons}",
-        ) from e
-
-
-def _substitute_target_status(
-    reason: SubstituteReason, agent: AgentContext
-) -> TaskStatus:
-    """QA/doc `task_complete` routes to PM review; otherwise use the map."""
-    new_status = _REASON_TO_STATUS.get(reason, TaskStatus.PENDING)
-    if reason == SubstituteReason.TASK_COMPLETE and agent.role in (
-        "qa",
-        "documenter",
-    ):
-        new_status = TaskStatus.AWAITING_PM_REVIEW
-    return new_status
-
 
 @router.post("/{task_id}/substitute", response_model=TaskResponse)
 async def substitute_task(
@@ -1923,62 +1527,19 @@ async def substitute_task(
     db: DbSession,
     agent: CurrentAgentContext,
 ) -> TaskResponse:
+    """Request to be substituted out of a task — graceful release.
+
+    Bypasses the "can't claim while in_progress" rule. Reasons:
+    `low_context`, `out_of_scope_team`, `out_of_scope_role`, `task_complete`,
+    `max_retries`, `blocked_external`.
     """
-    Request to be substituted out of a task.
-
-    This allows agents to gracefully release tasks when they can't continue.
-    IMPORTANT: This BYPASSES the "can't claim while in_progress" rule.
-
-    Substitution reasons:
-    - low_context: Insufficient context to continue safely
-    - out_of_scope_team: Task belongs to different team
-    - out_of_scope_role: Task requires different role
-    - task_complete: Finished work, releasing for next stage
-    - max_retries: Exceeded retry limit, need fresh perspective
-    - blocked_external: Need skills outside your capabilities
-    """
-    reason = _parse_substitute_reason(data.reason)
-
     service = get_task_service(db)
-    task = await service.get(task_id)
-    if not task:
-        raise HTTPException(status.HTTP_404_NOT_FOUND, detail="Task not found")
-
-    if task.assigned_to != agent.agent_id:
-        raise HTTPException(
-            status.HTTP_403_FORBIDDEN,
-            detail="You can only substitute out of tasks you own",
+    try:
+        task = await service.substitute_task_for_agent(
+            task_id, agent, reason_raw=data.reason, details=data.details
         )
-
-    new_status = _substitute_target_status(reason, agent)
-    update_data, target_pm_slug = await service.build_substitute_update(
-        agent_id=agent.agent_id,
-        task=task,
-        new_status=new_status,
-        reason=data.reason,
-        details=data.details,
-    )
-
-    task = await service.update(task_id, **update_data)
-    if not task:
-        raise HTTPException(status.HTTP_500_INTERNAL_SERVER_ERROR, "Update failed")
-
-    if new_status == TaskStatus.AWAITING_PM_REVIEW and target_pm_slug:
-        await notify_pm_for_substitute(
-            db,
-            pm_slug=target_pm_slug,
-            task_id=task_id,
-            from_agent_id=agent.agent_id,
-            message=(
-                f"Task needs review: {task.title or 'Unknown task'}",
-                f"Task {task_id} requires PM review.\n\n"
-                f"Reason: {reason.value}\n"
-                f"Details: {data.details}\n\n"
-                "Please review and reassign as needed.",
-            ),
-        )
-
-    await db.commit()
+    except ServiceError as e:
+        raise _translate_error(e) from e
     return task_to_response(task)
 
 

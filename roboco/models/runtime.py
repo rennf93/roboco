@@ -38,13 +38,22 @@ class OrchestratorAgentConfig:
 
     agent_id: str
     blueprint_path: Path
-    model: str = "sonnet"  # sonnet, opus, haiku
+    model: str = "sonnet"  # sonnet, opus, haiku, or any ollama-cloud tag
     mcp_config_path: Path | None = None
     working_directory: Path | None = None
     # Git context for tasks requiring git workflow
     git_context: SpawnGitContext | None = None
     # Pre-rendered SessionStart briefing mounted as /app/briefing.md
     briefing_path: Path | None = None
+    # Provider routing, resolved from `model_assignments` at spawn.
+    # provider_type drives `--model` CLI translation:
+    # `"anthropic"` → short-name lookup through MODEL_MAP,
+    # anything else (currently `"ollama_cloud"`) → pass `model` verbatim.
+    # provider_base_url + provider_auth_token are both NULL for the
+    # Anthropic default (container uses mounted ~/.claude credentials).
+    provider_type: str = "anthropic"
+    provider_base_url: str | None = None
+    provider_auth_token: str | None = None
 
 
 @dataclass

@@ -189,7 +189,9 @@ class JournalService(BaseService):
     # ENTRY CRUD
     # =========================================================================
 
-    async def create_entry(self, entry_create: JournalEntryCreate) -> JournalEntry:
+    async def create_entry(
+        self, entry_create: JournalEntryCreate
+    ) -> JournalEntry | None:
         """
         Create a new journal entry.
 
@@ -197,8 +199,11 @@ class JournalService(BaseService):
             entry_create: Entry creation schema
 
         Returns:
-            The created entry
+            The created entry, or None if the referenced task/session/journal
+            no longer exists (e.g. after a runtime reset).
         """
+        from sqlalchemy.exc import IntegrityError
+
         # Create entry in database
         entry_row = JournalEntryTable(
             journal_id=entry_create.journal_id,
@@ -231,7 +236,21 @@ class JournalService(BaseService):
             entries_by_type[type_key] = entries_by_type.get(type_key, 0) + 1
             journal_row.entries_by_type = entries_by_type
 
-        await self.session.commit()
+        try:
+            await self.session.commit()
+        except IntegrityError as e:
+            await self.session.rollback()
+            self.log.warning(
+                "Journal entry skipped - referenced row was deleted",
+                journal_id=str(entry_create.journal_id),
+                task_id=str(entry_create.task_id) if entry_create.task_id else None,
+                session_id=str(entry_create.session_id)
+                if entry_create.session_id
+                else None,
+                error=str(e.orig),
+            )
+            return None
+
         await self.session.refresh(entry_row)
 
         self.log.info(
@@ -417,7 +436,7 @@ class JournalService(BaseService):
         self,
         agent_id: UUID,
         params: TaskReflectionParams,
-    ) -> JournalEntry:
+    ) -> JournalEntry | None:
         """Add a task reflection entry."""
         journal = await self.get_or_create_journal(agent_id)
         # Update journal_id in params
@@ -447,7 +466,7 @@ class JournalService(BaseService):
         self,
         agent_id: UUID,
         params: DecisionLogParams,
-    ) -> JournalEntry:
+    ) -> JournalEntry | None:
         """Add a decision log entry."""
         journal = await self.get_or_create_journal(agent_id)
         params_with_journal = DecisionLogParams(
@@ -477,7 +496,7 @@ class JournalService(BaseService):
         self,
         agent_id: UUID,
         params: LearningEntryParams,
-    ) -> JournalEntry:
+    ) -> JournalEntry | None:
         """Add a learning entry."""
         journal = await self.get_or_create_journal(agent_id)
         params_with_journal = LearningEntryParams(
@@ -506,7 +525,7 @@ class JournalService(BaseService):
         self,
         agent_id: UUID,
         params: StruggleEntryParams,
-    ) -> JournalEntry:
+    ) -> JournalEntry | None:
         """Add a struggle entry."""
         journal = await self.get_or_create_journal(agent_id)
         params_with_journal = StruggleEntryParams(
@@ -536,7 +555,7 @@ class JournalService(BaseService):
         self,
         agent_id: UUID,
         params: GeneralEntryParams,
-    ) -> JournalEntry:
+    ) -> JournalEntry | None:
         """Add a general journal entry."""
         journal = await self.get_or_create_journal(agent_id)
         params_with_journal = GeneralEntryParams(

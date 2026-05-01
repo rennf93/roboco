@@ -40,7 +40,13 @@ class TestRunRequest(BaseModel):
 
 
 class TestRunResponse(BaseModel):
-    """Response from test run."""
+    """Response from test run.
+
+    `skipped=True` + `skip_reason` indicates the project opted out of
+    this check (e.g., no test_command configured). That's distinct
+    from a failure — QA should treat it as "nothing to verify here,
+    move on" rather than a gate violation.
+    """
 
     project_slug: str
     passed: bool
@@ -50,6 +56,8 @@ class TestRunResponse(BaseModel):
     duration_seconds: float = 0
     output: str = ""
     failures: list[str] = []
+    skipped: bool = False
+    skip_reason: str | None = None
 
 
 # =============================================================================
@@ -78,12 +86,17 @@ class LintIssue(BaseModel):
 
 
 class LintResponse(BaseModel):
-    """Response from lint run."""
+    """Response from lint run.
+
+    See `TestRunResponse` for `skipped` / `skip_reason` semantics.
+    """
 
     project_slug: str
     passed: bool
     issues: list[LintIssue] = []
     fixed_count: int = 0
+    skipped: bool = False
+    skip_reason: str | None = None
 
 
 # =============================================================================
@@ -102,11 +115,16 @@ class FormatRequest(BaseModel):
 
 
 class FormatResponse(BaseModel):
-    """Response from format run."""
+    """Response from format run.
+
+    See `TestRunResponse` for `skipped` / `skip_reason` semantics.
+    """
 
     project_slug: str
     files_modified: int = 0
     files_unchanged: int = 0
+    skipped: bool = False
+    skip_reason: str | None = None
 
 
 # =============================================================================
@@ -132,11 +150,16 @@ class TypecheckError(BaseModel):
 
 
 class TypecheckResponse(BaseModel):
-    """Response from type check run."""
+    """Response from type check run.
+
+    See `TestRunResponse` for `skipped` / `skip_reason` semantics.
+    """
 
     project_slug: str
     passed: bool
     errors: list[TypecheckError] = []
+    skipped: bool = False
+    skip_reason: str | None = None
 
 
 # =============================================================================
@@ -153,9 +176,14 @@ class BuildRequest(BaseModel):
 
 
 class BuildResponse(BaseModel):
-    """Response from build run."""
+    """Response from build run.
+
+    See `TestRunResponse` for `skipped` / `skip_reason` semantics.
+    """
 
     project_slug: str
     success: bool
     duration_seconds: float = 0
     output: str = ""
+    skipped: bool = False
+    skip_reason: str | None = None

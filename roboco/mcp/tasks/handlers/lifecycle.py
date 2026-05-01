@@ -739,34 +739,62 @@ async def handle_task_cancel(
     )
 
 
-async def _check_in_progress_tasks(client: ApiClient) -> dict[str, Any] | None:
-    """Check for in-progress tasks. Returns error or None.
+async def _pause_in_progress_tasks(client: ApiClient) -> list[dict[str, Any]]:
+    """Pause every in-progress task owned by the caller before going idle.
 
-    If the scan itself fails (API unreachable etc.), we log and conservatively
-    allow the idle — an unreachable API is a bigger problem that the agent
-    can't resolve here, and blocking the idle handshake only compounds it.
+    PMs that delegate work to subordinate cells were previously left holding
+    their parent task in `in_progress` while the cell did the actual work.
+    The orchestrator would then de-spawn the PM but the task stayed locked
+    in_progress, blocking forward state transitions and clogging dashboards.
+
+    `agent_idle` semantically means "I'm parking my work; respawn me when
+    something needs me." Auto-pausing the caller's `in_progress` tasks
+    matches that intent: the task is preserved (claimed_by, plan, branch,
+    progress_updates all intact), and the agent can `roboco_task_resume`
+    it on its next spawn — typically when the delegated subtask returns.
+
+    Failures are non-fatal — if a single pause call fails (e.g. lifecycle
+    enforcement rejects it for a particular task), we log and continue.
+    Idle still proceeds; the unpaused task just stays in_progress and the
+    operator can pause it manually from the panel.
     """
     import structlog
 
+    log = structlog.get_logger()
+    paused: list[dict[str, Any]] = []
     try:
         scan_resp = await client.get("/tasks/my", params={"status": "in_progress"})
-        if scan_resp.ok:
-            tasks = scan_resp.json()
-            if tasks:
-                task_info = [
-                    {"id": t.get("id"), "title": t.get("title")} for t in tasks
-                ]
-                return format_error_response(
-                    "TASKS_IN_PROGRESS",
-                    "You have in-progress tasks. Handle them before going idle.",
-                    {"tasks": task_info},
-                )
     except Exception as e:
-        structlog.get_logger().warning(
-            "Failed to check in-progress tasks before idle",
-            error=str(e),
-        )
-    return None
+        log.warning("Failed to scan in-progress tasks before idle", error=str(e))
+        return paused
+
+    if not scan_resp.ok:
+        return paused
+
+    tasks = scan_resp.json()
+    if not isinstance(tasks, list):
+        return paused
+
+    for t in tasks:
+        tid = t.get("id")
+        if not tid:
+            continue
+        try:
+            pause_resp = await client.post(f"/tasks/{tid}/pause")
+            if pause_resp.ok:
+                paused.append({"id": tid, "title": t.get("title")})
+            else:
+                log.warning(
+                    "Auto-pause on idle failed for task",
+                    task_id=tid,
+                    status_code=pause_resp.status_code,
+                    detail=pause_resp.text[:200],
+                )
+        except Exception as e:
+            log.warning(
+                "Auto-pause on idle raised for task", task_id=tid, error=str(e)
+            )
+    return paused
 
 
 def _format_idle_response(resp: Any) -> dict[str, Any]:
@@ -796,9 +824,15 @@ def _format_idle_response(resp: Any) -> dict[str, Any]:
 
 
 async def handle_agent_idle(client: ApiClient, agent_id: str) -> dict[str, Any]:
-    """Handle agent going idle (no work available)."""
-    if error := await _check_in_progress_tasks(client):
-        return error
+    """Handle agent going idle (no work available).
+
+    Auto-pauses any `in_progress` tasks the caller still owns — going idle
+    while holding active task state is the most common cause of orphaned
+    locks (PMs delegating to subordinate cells, devs handing off to QA).
+    Pause preserves all task state and lets the agent resume on its next
+    spawn without re-running plan/start.
+    """
+    paused = await _pause_in_progress_tasks(client)
 
     try:
         resp = await client.post(
@@ -811,4 +845,12 @@ async def handle_agent_idle(client: ApiClient, agent_id: str) -> dict[str, Any]:
             f"Failed to connect to orchestrator: {type(e).__name__}",
         )
 
-    return _format_idle_response(resp)
+    response = _format_idle_response(resp)
+    if paused and response.get("status") == "idle":
+        response["paused_tasks"] = paused
+        response["message"] = (
+            f"{response.get('message', '')} "
+            f"Auto-paused {len(paused)} in-progress task(s); "
+            "they'll be in your queue on next spawn."
+        )
+    return response

@@ -9,7 +9,12 @@ from uuid import UUID
 
 from fastapi import APIRouter, HTTPException, Query, status
 
-from roboco.api.deps import CurrentAgentContext, DbSession
+from roboco.api.deps import (
+    CurrentAgentContext,
+    DbSession,
+    require_cell_access,
+    require_pm_or_above,
+)
 from roboco.api.schemas.project import (
     ProjectCreateRequest,
     ProjectResponse,
@@ -25,40 +30,6 @@ from roboco.models.project import ProjectCreate, ProjectUpdate
 from roboco.services.project import get_project_service
 
 router = APIRouter()
-
-
-# =============================================================================
-# PERMISSION HELPERS
-# =============================================================================
-
-
-def _require_pm_or_above(agent: CurrentAgentContext, action: str) -> None:
-    """Require PM or higher role for an action."""
-    allowed_roles = {"cell_pm", "main_pm", "product_owner", "auditor", "ceo"}
-    if agent.role.value not in allowed_roles:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail=f"Only PMs and management can {action}",
-        )
-
-
-def _require_cell_access(
-    agent: CurrentAgentContext,
-    cell: Team,
-    action: str,
-) -> None:
-    """Require agent to have access to a cell."""
-    # Main PM, board, and CEO can access all cells
-    global_roles = {"main_pm", "product_owner", "auditor", "ceo"}
-    if agent.role.value in global_roles:
-        return
-
-    # Cell PMs can only manage their own cell
-    if agent.team != cell:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail=f"Cannot {action} projects in {cell.value} cell",
-        )
 
 
 # =============================================================================
@@ -141,8 +112,8 @@ async def create_project(
     Creates a project record for a git repository.
     The workspace must be cloned separately.
     """
-    _require_pm_or_above(agent, "create projects")
-    _require_cell_access(agent, data.assigned_cell, "create")
+    require_pm_or_above(agent.role, "create projects")
+    require_cell_access(agent, data.assigned_cell, "create")
 
     service = get_project_service(db)
 
@@ -198,7 +169,7 @@ async def update_project(
 
     Partial update - only provided fields are changed.
     """
-    _require_pm_or_above(agent, "update projects")
+    require_pm_or_above(agent.role, "update projects")
 
     service = get_project_service(db)
 
@@ -215,7 +186,7 @@ async def update_project(
             detail=f"Project not found: {project_id}",
         )
 
-    _require_cell_access(agent, project.assigned_cell, "update")
+    require_cell_access(agent, project.assigned_cell, "update")
 
     # Convert request to service model
     update_data = ProjectUpdate(
@@ -262,7 +233,7 @@ async def delete_project(
     This removes the project registration. The actual git repository
     and workspace are not affected.
     """
-    _require_pm_or_above(agent, "delete projects")
+    require_pm_or_above(agent.role, "delete projects")
 
     service = get_project_service(db)
 
@@ -279,7 +250,7 @@ async def delete_project(
             detail=f"Project not found: {project_id}",
         )
 
-    _require_cell_access(agent, project.assigned_cell, "delete")
+    require_cell_access(agent, project.assigned_cell, "delete")
 
     deleted = await service.delete(cast("UUID", project.id))
     await db.commit()
@@ -308,7 +279,7 @@ async def set_workspace(
 
     Called after cloning the repository to a local path.
     """
-    _require_pm_or_above(agent, "set workspace")
+    require_pm_or_above(agent.role, "set workspace")
 
     service = get_project_service(db)
 
@@ -390,7 +361,7 @@ async def add_agent_access(
     By default, all agents in the assigned cell have access.
     This restricts access to specific agents.
     """
-    _require_pm_or_above(agent, "manage access")
+    require_pm_or_above(agent.role, "manage access")
 
     service = get_project_service(db)
 
@@ -427,7 +398,7 @@ async def remove_agent_access(
     """
     Remove an agent from the project's allowed list (PM only).
     """
-    _require_pm_or_above(agent, "manage access")
+    require_pm_or_above(agent.role, "manage access")
 
     service = get_project_service(db)
 
