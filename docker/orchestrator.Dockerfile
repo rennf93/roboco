@@ -42,10 +42,11 @@ RUN uv sync --frozen --no-dev
 # ---- Runner -----------------------------------------------------------------
 FROM python:3.13-slim-bookworm AS runner
 
-# Runtime apt deps: docker-cli (spawn agents), git (workspace ops).
+# Runtime apt deps: docker-cli (spawn agents), git (workspace ops),
+# make (backstop for projects whose CI commands use make targets).
 # curl/gnupg/lsb-release are only needed to add the docker repo, then purged.
 RUN apt-get update && apt-get install -y --no-install-recommends \
-        curl ca-certificates gnupg lsb-release git \
+        curl ca-certificates gnupg lsb-release git make \
     && curl -fsSL https://download.docker.com/linux/debian/gpg \
         | gpg --dearmor -o /usr/share/keyrings/docker-archive-keyring.gpg \
     && DEBIAN_CODENAME=$(lsb_release -cs) \
