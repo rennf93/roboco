@@ -1,8 +1,9 @@
 """Align agent skills to a canonical set.
 
-Standardizes QA skills on `code_review` (drops `qa_review`); merges any
-ad-hoc per-role skill names. Backfills existing rows; new rows get the
-canonical names from agents_config.ROLE_SKILLS.
+Standardizes QA skills on `code_review` (drops `qa_review`) by substituting
+old skill ids in the existing agents.skills JSON column. Preserves all other
+skills + agent-specific customizations. Idempotent: safe to re-run; only
+updates rows that actually need substitution.
 
 Revision ID: 008_align_skills
 Revises: 007_gateway_triggers_table
@@ -22,166 +23,73 @@ branch_labels = None
 depends_on = None
 
 
-# Canonical skill substitutions: old -> new
+# Canonical skill substitutions: old -> new.
+# Extend this dict for future skill renames; the migration logic stays the same.
 SKILL_SUBSTITUTIONS = {
     "qa_review": "code_review",
 }
 
 
+def _substitute(
+    skills_value: list | str | None,
+    mapping: dict[str, str],
+) -> tuple[list, bool]:
+    """Apply substitutions to a skills value (list of dicts or list of strings).
+
+    Returns (new_list, changed).
+    """
+    if skills_value is None:
+        return [], False
+    if isinstance(skills_value, str):
+        skills: list = json.loads(skills_value)
+    else:
+        skills = list(skills_value)
+    new_skills: list = []
+    changed = False
+    for original in skills:
+        if isinstance(original, dict):
+            old_id = original.get("id")
+            if old_id in mapping:
+                new_skills.append({**original, "id": mapping[old_id]})
+                changed = True
+                continue
+        elif isinstance(original, str) and original in mapping:
+            new_skills.append(mapping[original])
+            changed = True
+            continue
+        new_skills.append(original)
+    return new_skills, changed
+
+
 def upgrade() -> None:
-    """Add skills column and substitute old skill names in the existing agents."""
-    # Add skills column to agents table if it doesn't exist
-    op.add_column(
-        "agents",
-        sa.Column("skills", sa.JSON(), nullable=False, server_default="[]"),
-    )
-
-    # Backfill skills from agents_config.ROLE_SKILLS based on agent role
+    """Substitute old skill ids in agents.skills; preserves everything else."""
     bind = op.get_bind()
-
-    # Define canonical skills per role (mirrors agents_config.ROLE_SKILLS)
-    role_skills_map = {
-        "developer": [
-            {
-                "id": "code_implementation",
-                "name": "Code Implementation",
-                "description": "Implement features, fix bugs, write production code",
-                "tags": ["coding", "implementation", "bugfix"],
-            },
-            {
-                "id": "code_review",
-                "name": "Code Review",
-                "description": "Review code changes and provide feedback",
-                "tags": ["review", "feedback"],
-            },
-            {
-                "id": "technical_research",
-                "name": "Technical Research",
-                "description": "Research technical solutions and approaches",
-                "tags": ["research", "analysis"],
-            },
-        ],
-        "qa": [
-            {
-                "id": "code_review",
-                "name": "Code Review",
-                "description": "Review code for bugs, security issues, and quality",
-                "tags": ["review", "quality", "security"],
-            },
-            {
-                "id": "test_validation",
-                "name": "Test Validation",
-                "description": "Validate test coverage and test quality",
-                "tags": ["testing", "validation"],
-            },
-            {
-                "id": "security_audit",
-                "name": "Security Audit",
-                "description": "Audit code for security vulnerabilities",
-                "tags": ["security", "audit"],
-            },
-        ],
-        "documenter": [
-            {
-                "id": "documentation",
-                "name": "Documentation",
-                "description": "Create and maintain documentation",
-                "tags": ["docs", "writing"],
-            },
-            {
-                "id": "handoff_review",
-                "name": "Handoff Review",
-                "description": "Review and document task handoffs",
-                "tags": ["handoff", "review"],
-            },
-        ],
-        "cell_pm": [
-            {
-                "id": "task_management",
-                "name": "Task Management",
-                "description": "Create, assign, and manage tasks within the cell",
-                "tags": ["planning", "coordination"],
-            },
-            {
-                "id": "blocker_resolution",
-                "name": "Blocker Resolution",
-                "description": "Help resolve blockers and coordinate resources",
-                "tags": ["support", "coordination"],
-            },
-            {
-                "id": "qa_coordination",
-                "name": "QA Coordination",
-                "description": "Coordinate QA reviews and approvals",
-                "tags": ["qa", "approval"],
-            },
-        ],
-        "main_pm": [
-            {
-                "id": "task_triage",
-                "name": "Task Triage",
-                "description": "Triage and distribute tasks to cell PMs",
-                "tags": ["triage", "distribution"],
-            },
-            {
-                "id": "cross_cell_coordination",
-                "name": "Cross-Cell Coordination",
-                "description": "Coordinate work across multiple cells",
-                "tags": ["coordination", "cross-team"],
-            },
-            {
-                "id": "escalation_handling",
-                "name": "Escalation Handling",
-                "description": "Handle escalated issues from cell PMs",
-                "tags": ["escalation", "support"],
-            },
-        ],
-        "product_owner": [
-            {
-                "id": "requirements_clarification",
-                "name": "Requirements Clarification",
-                "description": "Clarify product requirements and priorities",
-                "tags": ["requirements", "product"],
-            },
-            {
-                "id": "feature_approval",
-                "name": "Feature Approval",
-                "description": "Approve feature implementations",
-                "tags": ["approval", "product"],
-            },
-        ],
-        "head_marketing": [
-            {
-                "id": "market_analysis",
-                "name": "Market Analysis",
-                "description": "Provide market context and analysis",
-                "tags": ["marketing", "analysis"],
-            },
-        ],
-        "auditor": [
-            {
-                "id": "quality_audit",
-                "name": "Quality Audit",
-                "description": "Audit quality and compliance",
-                "tags": ["audit", "quality"],
-            },
-        ],
-    }
-
-    rows = bind.execute(sa.text("SELECT id, role FROM agents")).fetchall()
+    rows = bind.execute(sa.text("SELECT id, skills FROM agents")).fetchall()
     for row in rows:
-        agent_id = row.id
-        role = row.role
-
-        # Get canonical skills for this role
-        skills = role_skills_map.get(role, [])
-
-        if skills:
+        new_skills, changed = _substitute(row.skills, SKILL_SUBSTITUTIONS)
+        if changed:
             bind.execute(
                 sa.text("UPDATE agents SET skills = :s WHERE id = :id"),
-                {"s": json.dumps(skills), "id": agent_id},
+                {"s": json.dumps(new_skills), "id": row.id},
             )
 
 
 def downgrade() -> None:
-    """Remove the skills column from agents table."""
-    op.drop_column("agents", "skills")
+    """Reverse substitution: code_review -> qa_review for QA agents only.
+
+    Limited to role='qa' so we don't accidentally rename `code_review` skills
+    that legitimately belong to non-QA agents (e.g., developers also have
+    code_review as a skill).
+    """
+    bind = op.get_bind()
+    inverse = {v: k for k, v in SKILL_SUBSTITUTIONS.items()}
+    rows = bind.execute(
+        sa.text("SELECT id, skills FROM agents WHERE role = 'qa'")
+    ).fetchall()
+    for row in rows:
+        new_skills, changed = _substitute(row.skills, inverse)
+        if changed:
+            bind.execute(
+                sa.text("UPDATE agents SET skills = :s WHERE id = :id"),
+                {"s": json.dumps(new_skills), "id": row.id},
+            )
