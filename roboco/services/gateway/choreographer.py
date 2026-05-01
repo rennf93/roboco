@@ -319,7 +319,7 @@ class Choreographer:
 
         has_unpushed = await self.work_session.has_unpushed_commits(t.work_session_id)
         if has_unpushed:
-            await self.git.push(t.branch_name)
+            await self.git.push_branch(t.branch_name)
 
         if t.pr_number is None:
             parent = parent_branch_for(t.branch_name)

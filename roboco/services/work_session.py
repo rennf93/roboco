@@ -624,6 +624,31 @@ class WorkSessionService(BaseService):
         )
         return work_session
 
+    # =========================================================================
+    # GATEWAY (CHOREOGRAPHER) BACKFILL
+    # =========================================================================
+
+    async def files_changed(self, work_session_id: UUID) -> list[str]:
+        """Files modified during this work session (empty list if none/unknown)."""
+        work_session = await self.get(work_session_id)
+        if work_session is None:
+            return []
+        return list(work_session.files_modified or [])
+
+    async def has_unpushed_commits(self, work_session_id: UUID) -> bool:
+        """True iff the session has commits that haven't been pushed.
+
+        The schema doesn't track per-commit push state, so we use PR
+        existence as the proxy: a PR can only exist after a successful
+        push. Sessions with commits but no PR are treated as unpushed.
+        """
+        work_session = await self.get(work_session_id)
+        if work_session is None:
+            return False
+        if not work_session.commits:
+            return False
+        return work_session.pr_number is None
+
 
 # =============================================================================
 # SERVICE FACTORY

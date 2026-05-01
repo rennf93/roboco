@@ -728,6 +728,72 @@ class JournalService(BaseService):
             )
             return []
 
+    # =========================================================================
+    # GATEWAY (CHOREOGRAPHER) BACKFILL
+    #
+    # Existence checks the gateway uses to enforce tracing requirements
+    # (every transition demands a journal entry of the appropriate type).
+    # =========================================================================
+
+    async def _has_entry_of_type(
+        self,
+        agent_id: UUID,
+        task_id: UUID,
+        entry_type: JournalEntryType,
+    ) -> bool:
+        """True iff agent has a journal entry of `entry_type` for this task."""
+        query = (
+            select(func.count(JournalEntryTable.id))
+            .join(JournalTable, JournalEntryTable.journal_id == JournalTable.id)
+            .where(
+                JournalTable.agent_id == agent_id,
+                JournalEntryTable.task_id == task_id,
+                JournalEntryTable.type == entry_type,
+            )
+        )
+        result = await self.session.execute(query)
+        return (result.scalar() or 0) > 0
+
+    async def has_decision_for_task(self, agent_id: UUID, task_id: UUID) -> bool:
+        """True iff a DECISION_LOG entry exists for (agent, task)."""
+        return await self._has_entry_of_type(
+            agent_id, task_id, JournalEntryType.DECISION_LOG
+        )
+
+    async def has_learning_for_task(self, agent_id: UUID, task_id: UUID) -> bool:
+        """True iff a LEARNING entry exists for (agent, task)."""
+        return await self._has_entry_of_type(
+            agent_id, task_id, JournalEntryType.LEARNING
+        )
+
+    async def has_reflect_for_task(self, agent_id: UUID, task_id: UUID) -> bool:
+        """True iff a TASK_REFLECTION entry exists for (agent, task)."""
+        return await self._has_entry_of_type(
+            agent_id, task_id, JournalEntryType.TASK_REFLECTION
+        )
+
+    async def write_struggle(
+        self,
+        *,
+        agent_id: UUID,
+        task_id: UUID,
+        content: str,
+    ) -> JournalEntry | None:
+        """Write a STRUGGLE entry for (agent, task) with `content` as body.
+
+        Title is derived from the first line of content (truncated to 100
+        chars) so the entry has a meaningful summary in lists.
+        """
+        first_line = content.strip().splitlines()[0] if content.strip() else "Struggle"
+        title = first_line[:100]
+        params = StruggleEntryParams(
+            title=title,
+            what_struggled=content,
+            attempted_solutions=[],
+            task_id=task_id,
+        )
+        return await self.add_struggle(agent_id, params)
+
 
 def get_journal_service(db: AsyncSession) -> JournalService:
     """Factory function for JournalService."""
