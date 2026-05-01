@@ -1001,6 +1001,42 @@ class Choreographer:
     async def escalate_to_ceo(
         self, agent_id: UUID, task_id: UUID, reason: str
     ) -> Envelope:
-        """Phase 4: board agent_id escalates task_id to CEO with reason."""
-        del agent_id, task_id, reason
-        raise NotImplementedError("Phase 4")
+        """Board/Main PM escalates task_id to CEO with reason."""
+        t = await self.task.get(task_id)
+        if t is None:
+            return Envelope.not_found(message=f"task {task_id} not found")
+        me = await self.task.agent_for(agent_id)
+        if me.role not in ("main_pm", "product_owner", "head_marketing"):
+            return Envelope.not_authorized(
+                message=f"role {me.role} cannot escalate to CEO directly",
+                remediate="use escalate_up() to go through your escalation chain",
+                context_briefing=await self._briefing_for(agent_id, task_id),
+            )
+        if str(t.status) != "awaiting_pm_review":
+            return Envelope.invalid_state(
+                message=(
+                    f"task {task_id} is in {t.status}, expected awaiting_pm_review"
+                ),
+                remediate="this task is not at the gate for CEO approval",
+                context_briefing=await self._briefing_for(agent_id, task_id),
+            )
+        has_decision = await self.journal.has_decision_for_task(agent_id, task_id)
+        if not has_decision:
+            from roboco.services.gateway.remediation import (
+                hint_for_missing_journal_decision,
+            )
+
+            return Envelope.tracing_gap(
+                missing=["journal:decision"],
+                remediate=hint_for_missing_journal_decision(),
+                context_briefing=await self._briefing_for(agent_id, task_id),
+            )
+        t = await self.task.escalate_to_ceo(
+            task_id, agent_role=me.role, notes=reason
+        )
+        return Envelope.ok(
+            status=str(t.status),
+            task_id=str(task_id),
+            next="idle until CEO acts via UI",
+            context_briefing=await self._briefing_for(agent_id, task_id),
+        )

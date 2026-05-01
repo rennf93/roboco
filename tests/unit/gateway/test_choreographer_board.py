@@ -1,0 +1,196 @@
+"""Tests for Board (and Main PM) escalate_to_ceo Choreographer verb.
+
+Covers Phase 4 Task 1: role allow-list (main_pm, product_owner, head_marketing),
+state gate (awaiting_pm_review only), and journal:decision tracing gate.
+"""
+
+from __future__ import annotations
+
+from unittest.mock import AsyncMock, MagicMock
+from uuid import uuid4
+
+import pytest
+from roboco.services.gateway.choreographer import Choreographer, ChoreographerDeps
+
+
+def _make_deps(**overrides):
+    base = {
+        "task": AsyncMock(),
+        "work_session": AsyncMock(),
+        "git": AsyncMock(),
+        "a2a": AsyncMock(),
+        "journal": AsyncMock(),
+        "audit": AsyncMock(),
+        "evidence_repo": AsyncMock(),
+    }
+    base.update(overrides)
+    repo = base["evidence_repo"]
+    for method in (
+        "list_unread_a2a",
+        "list_unread_mentions",
+        "list_pending_notifications",
+        "task_metadata_gaps",
+        "recent_team_activity",
+        "blockers_in_lane",
+        "journal_highlights_for_task",
+    ):
+        getattr(repo, method).return_value = []
+    return ChoreographerDeps(**base)
+
+
+@pytest.mark.asyncio
+async def test_board_escalate_to_ceo_succeeds_for_product_owner():
+    agent_id = uuid4()
+    task_id = uuid4()
+    t = MagicMock(
+        id=task_id,
+        status="awaiting_pm_review",
+        team="backend",
+    )
+    after = MagicMock(**{**t.__dict__, "status": "awaiting_ceo_approval"})
+    task_svc = AsyncMock()
+    task_svc.get.return_value = t
+    task_svc.agent_for.return_value = MagicMock(role="product_owner")
+    task_svc.escalate_to_ceo.return_value = after
+    journal_svc = AsyncMock()
+    journal_svc.has_decision_for_task.return_value = True
+    deps = _make_deps(task=task_svc, journal=journal_svc)
+    c = Choreographer(deps)
+
+    env = await c.escalate_to_ceo(agent_id, task_id, reason="ready for CEO sign-off")
+    assert env.error is None
+    assert env.status == "awaiting_ceo_approval"
+    task_svc.escalate_to_ceo.assert_awaited_once_with(
+        task_id,
+        agent_role="product_owner",
+        notes="ready for CEO sign-off",
+    )
+
+
+@pytest.mark.asyncio
+async def test_board_escalate_to_ceo_succeeds_for_head_marketing():
+    agent_id = uuid4()
+    task_id = uuid4()
+    t = MagicMock(
+        id=task_id,
+        status="awaiting_pm_review",
+        team="backend",
+    )
+    after = MagicMock(**{**t.__dict__, "status": "awaiting_ceo_approval"})
+    task_svc = AsyncMock()
+    task_svc.get.return_value = t
+    task_svc.agent_for.return_value = MagicMock(role="head_marketing")
+    task_svc.escalate_to_ceo.return_value = after
+    journal_svc = AsyncMock()
+    journal_svc.has_decision_for_task.return_value = True
+    deps = _make_deps(task=task_svc, journal=journal_svc)
+    c = Choreographer(deps)
+
+    env = await c.escalate_to_ceo(agent_id, task_id, reason="brand-affecting change")
+    assert env.error is None
+    assert env.status == "awaiting_ceo_approval"
+    task_svc.escalate_to_ceo.assert_awaited_once_with(
+        task_id,
+        agent_role="head_marketing",
+        notes="brand-affecting change",
+    )
+
+
+@pytest.mark.asyncio
+async def test_board_escalate_to_ceo_blocks_wrong_state():
+    agent_id = uuid4()
+    task_id = uuid4()
+    t = MagicMock(id=task_id, status="in_progress", team="backend")
+    task_svc = AsyncMock()
+    task_svc.get.return_value = t
+    task_svc.agent_for.return_value = MagicMock(role="product_owner")
+    deps = _make_deps(task=task_svc)
+    c = Choreographer(deps)
+
+    env = await c.escalate_to_ceo(agent_id, task_id, reason="x")
+    body = env.as_dict()
+    assert body["error"] == "invalid_state"
+    assert "awaiting_pm_review" in body["message"]
+    task_svc.escalate_to_ceo.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_board_escalate_to_ceo_blocks_disallowed_role():
+    agent_id = uuid4()
+    task_id = uuid4()
+    t = MagicMock(id=task_id, status="awaiting_pm_review", team="backend")
+    task_svc = AsyncMock()
+    task_svc.get.return_value = t
+    task_svc.agent_for.return_value = MagicMock(role="qa")
+    deps = _make_deps(task=task_svc)
+    c = Choreographer(deps)
+
+    env = await c.escalate_to_ceo(agent_id, task_id, reason="x")
+    body = env.as_dict()
+    assert body["error"] == "not_authorized"
+    assert "qa" in body["message"]
+    task_svc.escalate_to_ceo.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_board_escalate_to_ceo_requires_journal_decision():
+    agent_id = uuid4()
+    task_id = uuid4()
+    t = MagicMock(id=task_id, status="awaiting_pm_review", team="backend")
+    task_svc = AsyncMock()
+    task_svc.get.return_value = t
+    task_svc.agent_for.return_value = MagicMock(role="product_owner")
+    journal_svc = AsyncMock()
+    journal_svc.has_decision_for_task.return_value = False
+    deps = _make_deps(task=task_svc, journal=journal_svc)
+    c = Choreographer(deps)
+
+    env = await c.escalate_to_ceo(agent_id, task_id, reason="x")
+    body = env.as_dict()
+    assert body["error"] == "tracing_gap"
+    assert "journal:decision" in body["missing"]
+    task_svc.escalate_to_ceo.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_board_escalate_to_ceo_returns_not_found_when_task_missing():
+    agent_id = uuid4()
+    task_id = uuid4()
+    task_svc = AsyncMock()
+    task_svc.get.return_value = None
+    deps = _make_deps(task=task_svc)
+    c = Choreographer(deps)
+
+    env = await c.escalate_to_ceo(agent_id, task_id, reason="x")
+    body = env.as_dict()
+    assert body["error"] == "not_found"
+    task_svc.escalate_to_ceo.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_board_escalate_to_ceo_succeeds_for_main_pm():
+    agent_id = uuid4()
+    task_id = uuid4()
+    t = MagicMock(
+        id=task_id,
+        status="awaiting_pm_review",
+        team="backend",
+    )
+    after = MagicMock(**{**t.__dict__, "status": "awaiting_ceo_approval"})
+    task_svc = AsyncMock()
+    task_svc.get.return_value = t
+    task_svc.agent_for.return_value = MagicMock(role="main_pm")
+    task_svc.escalate_to_ceo.return_value = after
+    journal_svc = AsyncMock()
+    journal_svc.has_decision_for_task.return_value = True
+    deps = _make_deps(task=task_svc, journal=journal_svc)
+    c = Choreographer(deps)
+
+    env = await c.escalate_to_ceo(agent_id, task_id, reason="root task done")
+    assert env.error is None
+    assert env.status == "awaiting_ceo_approval"
+    task_svc.escalate_to_ceo.assert_awaited_once_with(
+        task_id,
+        agent_role="main_pm",
+        notes="root task done",
+    )
