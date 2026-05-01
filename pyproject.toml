@@ -195,6 +195,7 @@ module = [
     "piragi.*",
     "toon.*",
     "sse_starlette.*",
+    "asyncpg.*",
 ]
 ignore_missing_imports = true
 
