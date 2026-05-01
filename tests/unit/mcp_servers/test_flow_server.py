@@ -1,0 +1,136 @@
+"""Tests for roboco-flow MCP server."""
+
+from __future__ import annotations
+
+import importlib
+from typing import TYPE_CHECKING, Any
+from unittest.mock import MagicMock, patch
+
+import pytest
+
+if TYPE_CHECKING:
+    import types
+
+
+@pytest.fixture()
+def flow_module(monkeypatch: pytest.MonkeyPatch) -> types.ModuleType:
+    """Import the flow_server module with controlled env vars."""
+    monkeypatch.setenv("ROBOCO_AGENT_ID", "00000000-0000-0000-0000-000000000001")
+    monkeypatch.setenv("ROBOCO_AGENT_ROLE", "developer")
+    monkeypatch.setenv("ROBOCO_ORCHESTRATOR_URL", "http://test-orchestrator:8000")
+
+    import roboco.mcp.flow_server as srv
+
+    importlib.reload(srv)
+    return srv
+
+
+def _make_fake_client(return_value: dict[str, Any]) -> MagicMock:
+    """Build a fake httpx.Client context-manager that returns the given dict."""
+    fake_response = MagicMock()
+    fake_response.json.return_value = return_value
+    fake_client = MagicMock()
+    fake_client.__enter__ = MagicMock(return_value=fake_client)
+    fake_client.__exit__ = MagicMock(return_value=False)
+    fake_client.post.return_value = fake_response
+    return fake_client
+
+
+def test_role_path_uses_agent_role(flow_module) -> None:  # type: ignore[no-untyped-def]
+    expected = "/api/v2/flow/developer/give_me_work"
+    assert flow_module._role_path("give_me_work") == expected
+
+
+def test_role_path_includes_verb(flow_module) -> None:  # type: ignore[no-untyped-def]
+    assert flow_module._role_path("i_am_done") == "/api/v2/flow/developer/i_am_done"
+
+
+def test_give_me_work_posts_to_orchestrator(flow_module) -> None:  # type: ignore[no-untyped-def]
+    fake_client = _make_fake_client({"status": "idle", "task_id": None})
+
+    with patch("httpx.Client", return_value=fake_client):
+        result = flow_module.give_me_work()
+
+    assert result == {"status": "idle", "task_id": None}
+    fake_client.post.assert_called_once()
+    args, kwargs = fake_client.post.call_args
+    assert "/api/v2/flow/developer/give_me_work" in args[0]
+    assert kwargs["headers"]["X-Agent-ID"] == "00000000-0000-0000-0000-000000000001"
+    assert kwargs["headers"]["X-Agent-Role"] == "developer"
+
+
+def test_i_will_work_on_passes_plan(flow_module) -> None:  # type: ignore[no-untyped-def]
+    fake_client = _make_fake_client({"status": "in_progress"})
+
+    with patch("httpx.Client", return_value=fake_client):
+        flow_module.i_will_work_on("task-uuid", plan="my plan")
+
+    args, kwargs = fake_client.post.call_args
+    assert kwargs["json"] == {"task_id": "task-uuid", "plan": "my plan"}
+    assert "/api/v2/flow/developer/i_will_work_on" in args[0]
+
+
+def test_i_will_work_on_plan_defaults_to_none(flow_module) -> None:  # type: ignore[no-untyped-def]
+    fake_client = _make_fake_client({"status": "in_progress"})
+
+    with patch("httpx.Client", return_value=fake_client):
+        flow_module.i_will_work_on("task-uuid")
+
+    _, kwargs = fake_client.post.call_args
+    assert kwargs["json"] == {"task_id": "task-uuid", "plan": None}
+
+
+def test_i_have_committed_sends_message(flow_module) -> None:  # type: ignore[no-untyped-def]
+    fake_client = _make_fake_client({"status": "recorded"})
+
+    with patch("httpx.Client", return_value=fake_client):
+        result = flow_module.i_have_committed("fix: typo in handler")
+
+    assert result == {"status": "recorded"}
+    _, kwargs = fake_client.post.call_args
+    assert kwargs["json"] == {"message": "fix: typo in handler"}
+
+
+def test_i_am_done_sends_task_id_and_notes(flow_module) -> None:  # type: ignore[no-untyped-def]
+    fake_client = _make_fake_client({"status": "awaiting_qa"})
+
+    with patch("httpx.Client", return_value=fake_client):
+        result = flow_module.i_am_done("task-abc", notes="all tests green")
+
+    assert result == {"status": "awaiting_qa"}
+    args, kwargs = fake_client.post.call_args
+    assert "/api/v2/flow/developer/i_am_done" in args[0]
+    assert kwargs["json"] == {"task_id": "task-abc", "notes": "all tests green"}
+
+
+def test_i_am_done_notes_defaults_to_empty(flow_module) -> None:  # type: ignore[no-untyped-def]
+    fake_client = _make_fake_client({"status": "awaiting_qa"})
+
+    with patch("httpx.Client", return_value=fake_client):
+        flow_module.i_am_done("task-abc")
+
+    _, kwargs = fake_client.post.call_args
+    assert kwargs["json"]["notes"] == ""
+
+
+def test_i_am_blocked_sends_reason(flow_module) -> None:  # type: ignore[no-untyped-def]
+    fake_client = _make_fake_client({"status": "blocked"})
+
+    with patch("httpx.Client", return_value=fake_client):
+        result = flow_module.i_am_blocked("task-xyz", reason="waiting for env var")
+
+    assert result == {"status": "blocked"}
+    _, kwargs = fake_client.post.call_args
+    assert kwargs["json"] == {"task_id": "task-xyz", "reason": "waiting for env var"}
+
+
+def test_i_am_idle_posts_empty_body(flow_module) -> None:  # type: ignore[no-untyped-def]
+    fake_client = _make_fake_client({"status": "idle"})
+
+    with patch("httpx.Client", return_value=fake_client):
+        result = flow_module.i_am_idle()
+
+    assert result == {"status": "idle"}
+    _, kwargs = fake_client.post.call_args
+    assert kwargs["json"] == {}
+    assert "/api/v2/flow/developer/i_am_idle" in fake_client.post.call_args[0][0]

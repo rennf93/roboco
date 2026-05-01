@@ -163,6 +163,8 @@ select = [
 "roboco/services/*.py" = ["PLC0415"]
 "roboco/api/routes/*.py" = ["PLC0415"]
 "roboco/runtime/*.py" = ["PLC0415"]
+# Test fixtures that reload modules to test env-var-at-import-time behavior
+"tests/unit/mcp_servers/*.py" = ["PLC0415"]
 
 # =============================================================================
 # MyPy Configuration
