@@ -141,9 +141,51 @@ class Choreographer:
     async def i_will_work_on(
         self, agent_id: UUID, task_id: UUID, plan: str | None = None
     ) -> Envelope:
-        """Phase 1: claim task_id for agent_id with optional plan."""
-        del agent_id, task_id, plan
-        raise NotImplementedError("Phase 1")
+        """Claim/start/recover any actionable state of agent_id's task_id."""
+        t = await self.task.get(task_id)
+        if t is None:
+            return Envelope.not_found(message=f"task {task_id} not found")
+        status = str(t.status)
+        briefing = await self._briefing_for(agent_id, task_id)
+
+        if status == "needs_revision":
+            if t.assigned_to != agent_id:
+                t = await self.task.claim(agent_id, task_id)
+            t = await self.task.start(agent_id, task_id)
+        elif status == "pending":
+            if t.assigned_to is None or t.assigned_to != agent_id:
+                t = await self.task.claim(agent_id, task_id)
+            if not t.plan and not plan:
+                remediate = (
+                    f"call i_will_work_on(task_id='{task_id}',"
+                    f" plan='<one-paragraph plan describing what you will do>')"
+                )
+                return Envelope.tracing_gap(
+                    missing=["plan"],
+                    remediate=remediate,
+                    context_briefing=briefing,
+                )
+            if plan:
+                t = await self.task.set_plan(task_id, plan)
+            t = await self.task.start(agent_id, task_id)
+        elif status == "claimed" and t.assigned_to == agent_id:
+            t = await self.task.start(agent_id, task_id)
+        else:
+            return Envelope.invalid_state(
+                message=f"task {task_id} is in {status}; cannot start work",
+                remediate="call give_me_work() to find an actionable task",
+                context_briefing=briefing,
+            )
+
+        return Envelope.ok(
+            status=str(t.status),
+            task_id=str(task_id),
+            next=(
+                "edit + commit; call i_have_committed when ready,"
+                " or i_am_done when finished"
+            ),
+            context_briefing=briefing,
+        )
 
     async def i_have_committed(self, agent_id: UUID, message: str) -> Envelope:
         """Phase 1: record commit message for agent_id."""

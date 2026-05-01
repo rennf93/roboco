@@ -83,3 +83,109 @@ async def test_give_me_work_returns_idle_when_no_work() -> None:
     body = env.as_dict()
     assert body["status"] == "idle"
     assert "i_am_idle" in body["next"]
+
+
+@pytest.mark.asyncio
+async def test_i_will_work_on_pending_with_plan() -> None:
+    agent_id = uuid4()
+    task_id = uuid4()
+    pending_task = MagicMock(id=task_id, status="pending", plan=None, assigned_to=None)
+    in_progress_task = MagicMock(
+        id=task_id, status="in_progress", plan={"text": "do x"}, assigned_to=agent_id
+    )
+    task_svc = AsyncMock()
+    task_svc.get.return_value = pending_task
+    task_svc.claim.return_value = MagicMock(
+        id=task_id, status="claimed", plan=None, assigned_to=agent_id
+    )
+    task_svc.set_plan.return_value = MagicMock(
+        id=task_id, status="claimed", plan={"text": "do x"}, assigned_to=agent_id
+    )
+    task_svc.start.return_value = in_progress_task
+    deps = _make_deps(task=task_svc)
+    c = Choreographer(deps)
+
+    env = await c.i_will_work_on(agent_id, task_id, plan="do x then y")
+    assert env.error is None
+    assert env.status == "in_progress"
+    task_svc.claim.assert_awaited_once_with(agent_id, task_id)
+    task_svc.set_plan.assert_awaited_once()
+    task_svc.start.assert_awaited_once_with(agent_id, task_id)
+
+
+@pytest.mark.asyncio
+async def test_i_will_work_on_pending_no_plan_returns_tracing_gap() -> None:
+    agent_id = uuid4()
+    task_id = uuid4()
+    pending_task = MagicMock(
+        id=task_id,
+        status="pending",
+        plan=None,
+        assigned_to=None,
+        description="task description",
+    )
+    task_svc = AsyncMock()
+    task_svc.get.return_value = pending_task
+    task_svc.claim.return_value = MagicMock(
+        id=task_id, status="claimed", plan=None, assigned_to=agent_id
+    )
+    deps = _make_deps(task=task_svc)
+    c = Choreographer(deps)
+
+    env = await c.i_will_work_on(agent_id, task_id, plan=None)
+    body = env.as_dict()
+    assert body["error"] == "tracing_gap"
+    assert "plan" in body["missing"]
+    assert "i_will_work_on" in body["remediate"]
+
+
+@pytest.mark.asyncio
+async def test_i_will_work_on_needs_revision_re_starts() -> None:
+    agent_id = uuid4()
+    task_id = uuid4()
+    nr_task = MagicMock(
+        id=task_id, status="needs_revision", assigned_to=agent_id, plan={"x": 1}
+    )
+    in_progress_task = MagicMock(
+        id=task_id, status="in_progress", assigned_to=agent_id, plan={"x": 1}
+    )
+    task_svc = AsyncMock()
+    task_svc.get.return_value = nr_task
+    task_svc.start.return_value = in_progress_task
+    deps = _make_deps(task=task_svc)
+    c = Choreographer(deps)
+
+    env = await c.i_will_work_on(agent_id, task_id)
+    assert env.status == "in_progress"
+    task_svc.claim.assert_not_awaited()  # already assigned
+    task_svc.start.assert_awaited_once_with(agent_id, task_id)
+
+
+@pytest.mark.asyncio
+async def test_i_will_work_on_task_not_found_returns_not_found() -> None:
+    agent_id = uuid4()
+    task_id = uuid4()
+    task_svc = AsyncMock()
+    task_svc.get.return_value = None
+    deps = _make_deps(task=task_svc)
+    c = Choreographer(deps)
+
+    env = await c.i_will_work_on(agent_id, task_id)
+    body = env.as_dict()
+    assert body["error"] == "not_found"
+
+
+@pytest.mark.asyncio
+async def test_i_will_work_on_invalid_state_returns_invalid_state() -> None:
+    agent_id = uuid4()
+    task_id = uuid4()
+    completed_task = MagicMock(id=task_id, status="completed", assigned_to=agent_id)
+    task_svc = AsyncMock()
+    task_svc.get.return_value = completed_task
+    deps = _make_deps(task=task_svc)
+    c = Choreographer(deps)
+
+    env = await c.i_will_work_on(agent_id, task_id)
+    body = env.as_dict()
+    assert body["error"] == "invalid_state"
+    assert "completed" in body["message"]
