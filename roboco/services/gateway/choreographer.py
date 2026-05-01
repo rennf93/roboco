@@ -188,9 +188,31 @@ class Choreographer:
         )
 
     async def i_have_committed(self, agent_id: UUID, message: str) -> Envelope:
-        """Phase 1: record commit message for agent_id."""
-        del agent_id, message
-        raise NotImplementedError("Phase 1")
+        """Record that the dev made a commit; auto-creates progress entry."""
+        t = await self.task.get_active_task_for_agent(agent_id)
+        if t is None:
+            return Envelope.invalid_state(
+                message="no active task for this agent",
+                remediate="call give_me_work() then i_will_work_on(task_id, plan)",
+                context_briefing=await self._briefing_for(agent_id, None),
+            )
+        if not t.plan:
+            no_plan_remediate = (
+                f"plan must be set first;"
+                f" call i_will_work_on(task_id='{t.id}', plan='...')"
+            )
+            return Envelope.tracing_gap(
+                missing=["plan"],
+                remediate=no_plan_remediate,
+                context_briefing=await self._briefing_for(agent_id, t.id),
+            )
+        await self.task.add_progress(t.id, agent_id, message)
+        return Envelope.ok(
+            status=str(t.status),
+            task_id=str(t.id),
+            next="continue working, or i_am_done when finished",
+            context_briefing=await self._briefing_for(agent_id, t.id),
+        )
 
     async def i_am_done(self, agent_id: UUID, task_id: UUID, notes: str) -> Envelope:
         """Phase 1: mark task_id complete for agent_id with notes."""

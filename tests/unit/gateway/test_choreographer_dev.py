@@ -189,3 +189,55 @@ async def test_i_will_work_on_invalid_state_returns_invalid_state() -> None:
     body = env.as_dict()
     assert body["error"] == "invalid_state"
     assert "completed" in body["message"]
+
+
+@pytest.mark.asyncio
+async def test_i_have_committed_records_progress() -> None:
+    agent_id = uuid4()
+    task_id = uuid4()
+    active = MagicMock(
+        id=task_id, status="in_progress", assigned_to=agent_id, plan={"x": 1}
+    )
+    task_svc = AsyncMock()
+    task_svc.get_active_task_for_agent.return_value = active
+    deps = _make_deps(task=task_svc)
+    c = Choreographer(deps)
+
+    env = await c.i_have_committed(agent_id, "feat(api): add /healthz endpoint")
+    assert env.error is None
+    task_svc.add_progress.assert_awaited_once_with(
+        task_id, agent_id, "feat(api): add /healthz endpoint"
+    )
+
+
+@pytest.mark.asyncio
+async def test_i_have_committed_no_active_task_returns_invalid_state() -> None:
+    agent_id = uuid4()
+    task_svc = AsyncMock()
+    task_svc.get_active_task_for_agent.return_value = None
+    deps = _make_deps(task=task_svc)
+    c = Choreographer(deps)
+
+    env = await c.i_have_committed(agent_id, "feat: x")
+    body = env.as_dict()
+    assert body["error"] == "invalid_state"
+    assert "give_me_work" in body["remediate"]
+
+
+@pytest.mark.asyncio
+async def test_i_have_committed_no_plan_returns_tracing_gap() -> None:
+    agent_id = uuid4()
+    task_id = uuid4()
+    active = MagicMock(
+        id=task_id, status="in_progress", assigned_to=agent_id, plan=None
+    )
+    task_svc = AsyncMock()
+    task_svc.get_active_task_for_agent.return_value = active
+    deps = _make_deps(task=task_svc)
+    c = Choreographer(deps)
+
+    env = await c.i_have_committed(agent_id, "feat: x")
+    body = env.as_dict()
+    assert body["error"] == "tracing_gap"
+    assert "plan" in body["missing"]
+    task_svc.add_progress.assert_not_awaited()
