@@ -27,9 +27,7 @@ async def test_resolve_project_slug_accepts_slug() -> None:
     mock_service = MagicMock()
     mock_service.get_by_slug = AsyncMock(return_value=project)
 
-    with patch(
-        "roboco.api.routes.git.get_project_service", return_value=mock_service
-    ):
+    with patch("roboco.api.routes.git.get_project_service", return_value=mock_service):
         result = await _resolve_project_slug("roboco", MagicMock())
 
     assert result == "roboco"
@@ -45,9 +43,7 @@ async def test_resolve_project_slug_accepts_uuid() -> None:
     mock_service = MagicMock()
     mock_service.get = AsyncMock(return_value=project)
 
-    with patch(
-        "roboco.api.routes.git.get_project_service", return_value=mock_service
-    ):
+    with patch("roboco.api.routes.git.get_project_service", return_value=mock_service):
         result = await _resolve_project_slug(str(uid), MagicMock())
 
     assert result == "roboco"
@@ -62,9 +58,7 @@ async def test_resolve_project_slug_raises_404_for_missing_slug() -> None:
     mock_service.get_by_slug = AsyncMock(return_value=None)
 
     with (
-        patch(
-            "roboco.api.routes.git.get_project_service", return_value=mock_service
-        ),
+        patch("roboco.api.routes.git.get_project_service", return_value=mock_service),
         pytest.raises(HTTPException) as exc_info,
     ):
         await _resolve_project_slug("nonexistent", MagicMock())
@@ -81,9 +75,7 @@ async def test_resolve_project_slug_raises_404_for_missing_uuid() -> None:
     mock_service.get = AsyncMock(return_value=None)
 
     with (
-        patch(
-            "roboco.api.routes.git.get_project_service", return_value=mock_service
-        ),
+        patch("roboco.api.routes.git.get_project_service", return_value=mock_service),
         pytest.raises(HTTPException) as exc_info,
     ):
         await _resolve_project_slug(str(uid), MagicMock())

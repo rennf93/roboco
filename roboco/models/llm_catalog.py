@@ -69,7 +69,6 @@ MODEL_CATALOG: tuple[CatalogEntry, ...] = (
     # --- Ollama Cloud (verbatim tags) ---
     # Pro plan active as of 2026-04-22. Drop any entry that stops working —
     # the catalog is the single source of truth the Settings dropdown renders from.
-
     CatalogEntry("glm-5.1:cloud", ModelProvider.OLLAMA_CLOUD, "GLM 5.1"),
     CatalogEntry("kimi-k2.6:cloud", ModelProvider.OLLAMA_CLOUD, "Kimi K2.6"),
     CatalogEntry("minimax-m2.7:cloud", ModelProvider.OLLAMA_CLOUD, "Minimax M2.7"),

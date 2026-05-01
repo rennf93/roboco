@@ -791,9 +791,7 @@ async def _pause_in_progress_tasks(client: ApiClient) -> list[dict[str, Any]]:
                     detail=pause_resp.text[:200],
                 )
         except Exception as e:
-            log.warning(
-                "Auto-pause on idle raised for task", task_id=tid, error=str(e)
-            )
+            log.warning("Auto-pause on idle raised for task", task_id=tid, error=str(e))
     return paused
 
 
