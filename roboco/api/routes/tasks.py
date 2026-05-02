@@ -601,8 +601,8 @@ async def start_task(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=(
                 "NO_PLAN: Cannot start a claimed task without a plan. "
-                "Call roboco_task_plan() with approach + sub_tasks + "
-                "risks before roboco_task_start()."
+                "Set task.plan via PATCH /api/tasks/{id} (panel) or "
+                "call gateway i_will_work_on(task_id, plan='...') (agents)."
             ),
         )
 
