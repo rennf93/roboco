@@ -78,3 +78,24 @@ class EscalateUpRequest(BaseModel):
 class EscalateToCeoRequest(BaseModel):
     task_id: UUID
     reason: str = Field(..., min_length=1)
+
+
+class IWillPlanRequest(BaseModel):
+    task_id: UUID
+    plan: str = Field(..., min_length=1)
+
+
+class DelegateRequest(BaseModel):
+    parent_task_id: UUID
+    title: str = Field(..., min_length=1)
+    description: str = Field(..., min_length=1)
+    assigned_to: str = Field(..., min_length=1)
+    team: str = Field(..., min_length=1)
+    task_type: str = "code"
+    acceptance_criteria: list[str] | None = None
+    estimated_complexity: str = "medium"
+
+
+class SubmitUpRequest(BaseModel):
+    task_id: UUID
+    notes: str = Field(..., min_length=1)

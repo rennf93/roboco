@@ -44,9 +44,13 @@ def _build_app(mock_choreographer: MagicMock) -> FastAPI:
 
 @pytest.mark.asyncio
 async def test_give_me_work_returns_envelope() -> None:
-    """POST /api/v2/flow/cell_pm/give_me_work returns 200 with envelope shape."""
+    """POST /api/v2/flow/cell_pm/give_me_work returns 200 with envelope shape.
+
+    Cell PM's give_me_work routes to ``pm_give_me_work`` so the response
+    surfaces non-pending PM tasks (paused, awaiting_pm_review) too.
+    """
     mock_chore = MagicMock()
-    mock_chore.give_me_work = AsyncMock(return_value=_make_envelope(status="idle"))
+    mock_chore.pm_give_me_work = AsyncMock(return_value=_make_envelope(status="idle"))
     client = TestClient(_build_app(mock_chore))
 
     resp = client.post(
@@ -58,7 +62,7 @@ async def test_give_me_work_returns_envelope() -> None:
     assert resp.status_code == _HTTP_200
     body = resp.json()
     assert body["status"] == "idle"
-    mock_chore.give_me_work.assert_awaited_once()
+    mock_chore.pm_give_me_work.assert_awaited_once()
 
 
 @pytest.mark.asyncio
@@ -212,6 +216,86 @@ def test_escalate_up_rejects_empty_reason() -> None:
     resp = client.post(
         "/api/v2/flow/cell_pm/escalate_up",
         json={"task_id": _TASK_ID, "reason": ""},
+        headers=_HEADERS,
+    )
+
+    assert resp.status_code == _HTTP_422
+
+
+@pytest.mark.asyncio
+async def test_i_will_plan_dispatches_to_choreographer() -> None:
+    """POST /api/v2/flow/cell_pm/i_will_plan forwards task_id and plan."""
+    mock_chore = MagicMock()
+    mock_chore.i_will_plan = AsyncMock(
+        return_value=_make_envelope(status="in_progress", task_id=_TASK_ID)
+    )
+    client = TestClient(_build_app(mock_chore))
+
+    resp = client.post(
+        "/api/v2/flow/cell_pm/i_will_plan",
+        json={"task_id": _TASK_ID, "plan": "break into 3 subtasks for backend"},
+        headers=_HEADERS,
+    )
+
+    assert resp.status_code == _HTTP_200
+    mock_chore.i_will_plan.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_delegate_dispatches_inputs_bundle() -> None:
+    """POST /api/v2/flow/cell_pm/delegate forwards body via DelegateInputs."""
+    mock_chore = MagicMock()
+    mock_chore.delegate = AsyncMock(
+        return_value=_make_envelope(status="created", task_id=_TASK_ID)
+    )
+    client = TestClient(_build_app(mock_chore))
+
+    resp = client.post(
+        "/api/v2/flow/cell_pm/delegate",
+        json={
+            "parent_task_id": _TASK_ID,
+            "title": "Implement /v1/foo",
+            "description": "Add the foo endpoint with tests.",
+            "assigned_to": "be-dev-1",
+            "team": "backend",
+        },
+        headers=_HEADERS,
+    )
+
+    assert resp.status_code == _HTTP_200
+    mock_chore.delegate.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_submit_up_dispatches_notes() -> None:
+    """POST /api/v2/flow/cell_pm/submit_up forwards task_id and notes."""
+    mock_chore = MagicMock()
+    mock_chore.submit_up = AsyncMock(
+        return_value=_make_envelope(status="awaiting_pm_review", task_id=_TASK_ID)
+    )
+    client = TestClient(_build_app(mock_chore))
+
+    resp = client.post(
+        "/api/v2/flow/cell_pm/submit_up",
+        json={
+            "task_id": _TASK_ID,
+            "notes": "cell finished all subtasks, ready for main pm review",
+        },
+        headers=_HEADERS,
+    )
+
+    assert resp.status_code == _HTTP_200
+    mock_chore.submit_up.assert_awaited_once()
+
+
+def test_submit_up_rejects_empty_notes() -> None:
+    """POST /api/v2/flow/cell_pm/submit_up rejects empty notes."""
+    mock_chore = MagicMock()
+    client = TestClient(_build_app(mock_chore))
+
+    resp = client.post(
+        "/api/v2/flow/cell_pm/submit_up",
+        json={"task_id": _TASK_ID, "notes": ""},
         headers=_HEADERS,
     )
 

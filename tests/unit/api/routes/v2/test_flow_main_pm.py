@@ -174,3 +174,64 @@ def test_escalate_up_rejects_empty_reason() -> None:
     )
 
     assert resp.status_code == _HTTP_422
+
+
+@pytest.mark.asyncio
+async def test_give_me_work_routes_to_pm_give_me_work() -> None:
+    """POST /api/v2/flow/main_pm/give_me_work delegates to pm_give_me_work."""
+    mock_chore = MagicMock()
+    mock_chore.pm_give_me_work = AsyncMock(return_value=_make_envelope(status="idle"))
+    client = TestClient(_build_app(mock_chore))
+
+    resp = client.post(
+        "/api/v2/flow/main_pm/give_me_work",
+        json={},
+        headers=_HEADERS,
+    )
+
+    assert resp.status_code == _HTTP_200
+    mock_chore.pm_give_me_work.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_i_will_plan_dispatches_to_choreographer() -> None:
+    """POST /api/v2/flow/main_pm/i_will_plan forwards task_id and plan."""
+    mock_chore = MagicMock()
+    mock_chore.i_will_plan = AsyncMock(
+        return_value=_make_envelope(status="in_progress", task_id=_TASK_ID)
+    )
+    client = TestClient(_build_app(mock_chore))
+
+    resp = client.post(
+        "/api/v2/flow/main_pm/i_will_plan",
+        json={"task_id": _TASK_ID, "plan": "split into backend, frontend, ux cells"},
+        headers=_HEADERS,
+    )
+
+    assert resp.status_code == _HTTP_200
+    mock_chore.i_will_plan.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_delegate_to_cell_pm_dispatches_inputs_bundle() -> None:
+    """POST /api/v2/flow/main_pm/delegate forwards body via DelegateInputs."""
+    mock_chore = MagicMock()
+    mock_chore.delegate = AsyncMock(
+        return_value=_make_envelope(status="created", task_id=_TASK_ID)
+    )
+    client = TestClient(_build_app(mock_chore))
+
+    resp = client.post(
+        "/api/v2/flow/main_pm/delegate",
+        json={
+            "parent_task_id": _TASK_ID,
+            "title": "Backend slice",
+            "description": "Plan + drive backend work for feature X.",
+            "assigned_to": "be-pm",
+            "team": "backend",
+        },
+        headers=_HEADERS,
+    )
+
+    assert resp.status_code == _HTTP_200
+    mock_chore.delegate.assert_awaited_once()

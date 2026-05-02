@@ -161,6 +161,38 @@ def escalate_to_ceo(task_id: str, reason: str) -> dict[str, Any]:
     return _post(_role_path("escalate_to_ceo"), {"task_id": task_id, "reason": reason})
 
 
+# ---------- Cell PM + Main PM extras ----------
+# i_will_plan, delegate, submit_up, give_me_work — restore the pre-Phase-4
+# PM lifecycle so PMs can drive parent tasks instead of stalling.
+
+
+def i_will_plan(task_id: str, plan: str) -> dict[str, Any]:
+    """PM: claim+start a pending parent task with a one-paragraph plan."""
+    return _post(_role_path("i_will_plan"), {"task_id": task_id, "plan": plan})
+
+
+def delegate(
+    parent_task_id: str, title: str, description: str, body: dict
+) -> dict[str, Any]:
+    """PM: create a subtask of parent_task_id.
+
+    Required body keys: ``assigned_to``, ``team``. Optional: ``task_type``,
+    ``acceptance_criteria``, ``estimated_complexity``.
+    """
+    payload: dict[str, Any] = {
+        "parent_task_id": parent_task_id,
+        "title": title,
+        "description": description,
+    }
+    payload.update(body)
+    return _post(_role_path("delegate"), payload)
+
+
+def submit_up(task_id: str, notes: str) -> dict[str, Any]:
+    """Cell PM: bubble a finished cell-scope task up to the Main PM."""
+    return _post(_role_path("submit_up"), {"task_id": task_id, "notes": notes})
+
+
 # ---------- Tool registry ----------
 #
 # Maps the verb name an agent calls (matches manifest entries and the
@@ -189,6 +221,9 @@ _TOOLS: dict[str, Any] = {
     "unblock": unblock,
     "complete": complete,
     "escalate_up": escalate_up,
+    "i_will_plan": i_will_plan,
+    "delegate": delegate,
+    "submit_up": submit_up,
     # board / main pm
     "escalate_to_ceo": escalate_to_ceo,
 }
