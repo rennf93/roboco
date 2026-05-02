@@ -60,8 +60,10 @@ _CELL_PM_DO = ("note", "say", "dm", "evidence")
 
 _MAIN_PM_FLOW = (
     "triage_all",
+    "unblock",
     "complete",
     "escalate_up",
+    "escalate_to_ceo",
     "i_am_idle",
 )
 _MAIN_PM_DO = ("note", "say", "dm", "evidence")

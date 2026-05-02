@@ -8,6 +8,7 @@ from fastapi import APIRouter, Depends, Header
 from roboco.api.deps import get_choreographer
 from roboco.api.schemas.v2.flow import (
     CompleteRequest,
+    EscalateToCeoRequest,
     EscalateUpRequest,
     IAmIdleRequest,
     TriageRequest,
@@ -49,6 +50,16 @@ async def escalate_up(
     choreographer: _ChoreographerDep,
 ) -> dict:
     env = await choreographer.escalate_up(x_agent_id, body.task_id, body.reason)
+    return env.as_dict()
+
+
+@router.post("/escalate_to_ceo")
+async def escalate_to_ceo(
+    body: EscalateToCeoRequest,
+    x_agent_id: _AgentIdHeader,
+    choreographer: _ChoreographerDep,
+) -> dict:
+    env = await choreographer.escalate_to_ceo(x_agent_id, body.task_id, body.reason)
     return env.as_dict()
 
 
