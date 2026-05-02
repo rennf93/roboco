@@ -4356,6 +4356,32 @@ class TaskService(BaseService):
         task.qa_evidence_inspected = True
         await self.session.flush()
 
+    async def reassign(
+        self, task_id: UUID, new_assignee: UUID | None
+    ) -> TaskTable | None:
+        """Set ``task.assigned_to`` (and ``claimed_by``) to ``new_assignee``.
+
+        Used by the gateway choreographer to hand a task off to the agent
+        that should drive the next lifecycle stage (e.g. dev → qa, qa →
+        documenter, doc → cell_pm). Pass ``None`` to clear assignment so
+        no agent gets respawned (e.g. after escalating to CEO, who acts
+        via the UI).
+
+        Returns the refreshed task, or None if the task no longer exists.
+        """
+        task = await self.get(task_id)
+        if task is None:
+            return None
+        task.assigned_to = cast("Any", new_assignee) if new_assignee else None
+        task.claimed_by = cast("Any", new_assignee) if new_assignee else None
+        await self.session.flush()
+        self.log.info(
+            "Task reassigned",
+            task_id=str(task_id),
+            new_assignee=str(new_assignee) if new_assignee else None,
+        )
+        return task
+
     async def mark_agent_idle(self, agent_id: UUID) -> None:
         """Set agent.status = IDLE."""
         result = await self.session.execute(

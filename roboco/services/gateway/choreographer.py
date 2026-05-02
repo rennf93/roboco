@@ -329,9 +329,15 @@ class Choreographer:
         return await self.task.submit_qa(agent_id, task_id, notes)
 
     async def _notify_qa(self, agent_id: UUID, task_id: UUID, t: Any) -> None:
-        """Send A2A notification to the QA agent for this task's team."""
+        """Reassign + A2A-notify the QA agent for this task's team.
+
+        ``submit_qa`` clears ``assigned_to`` to None. We then explicitly
+        reassign to the QA agent so the orchestrator's per-agent task
+        polling spawns QA (not the dev again) for the next stage.
+        """
         qa_agent = await self.task.qa_agent_for_team(t.team)
         if qa_agent is not None:
+            await self.task.reassign(task_id, qa_agent.id)
             skill = self._resolve_skill(qa_agent, ["code_review", "qa_review"])
             await self.a2a.send(
                 from_agent=agent_id,
@@ -481,8 +487,11 @@ class Choreographer:
 
         t = await self.task.qa_pass(qa_agent_id, task_id, notes)
 
+        # qa_pass clears assigned_to to None; reassign to the team's
+        # documenter so the orchestrator spawns the right agent next.
         doc_agent = await self.task.documenter_for_team(t.team)
         if doc_agent is not None:
+            await self.task.reassign(task_id, doc_agent.id)
             await self.a2a.send(
                 from_agent=qa_agent_id,
                 to_agent=doc_agent.id,
@@ -667,8 +676,14 @@ class Choreographer:
         t = await self.task.docs_complete(
             doc_agent_id, task_id, notes=notes, files=files
         )
+        # docs_complete may have promoted the task to awaiting_pm_review and
+        # already routed it to the PM up the parent chain
+        # (_maybe_advance_to_pm_review). Explicitly reassign anyway to the
+        # cell PM for this team — guarantees a respawn target even when the
+        # parent-chain heuristic returns None or picks the wrong PM.
         pm_agent = await self.task.cell_pm_for_team(t.team)
         if pm_agent is not None:
+            await self.task.reassign(task_id, pm_agent.id)
             await self.a2a.send(
                 from_agent=doc_agent_id,
                 to_agent=pm_agent.id,
@@ -844,18 +859,51 @@ class Choreographer:
             return guard
         target = parent_branch_for(t.branch_name)
         merge_result = await self.git.pr_merge(t.pr_number, target=target)
+        leaf_parent_id = t.parent_task_id
+        leaf_team = t.team
         t = await self.task.cell_pm_complete(
             pm_agent_id,
             task_id,
             notes,
             merge_commit=merge_result.get("merge_commit_sha"),
         )
+        # Now that the leaf is completed, propagate the completion up to the
+        # parent task: if the parent's subtasks are all terminal, hand the
+        # parent off to the cell_pm for that team so it gets respawned for
+        # the next stage (cell-PM PR merge or main-PM hand-off).
+        if leaf_parent_id is not None:
+            await self._maybe_advance_parent_to_pm_review(leaf_parent_id, leaf_team)
         return Envelope.ok(
             status=str(t.status),
             task_id=str(task_id),
             next=f"merged into {target}; triage() for next item",
             context_briefing=await self._briefing_for(pm_agent_id, task_id),
         )
+
+    async def _maybe_advance_parent_to_pm_review(
+        self, parent_task_id: UUID, leaf_team: Any
+    ) -> None:
+        """Promote a parent task to awaiting_pm_review once all subtasks finish.
+
+        Walks up from the just-completed leaf. If every direct subtask of
+        the parent is terminal, set the parent's ``assigned_to`` to the cell
+        PM for the parent's team so the orchestrator spawns the right PM
+        for the next stage (review/merge/escalate). Status itself is left
+        untouched here — the cell PM transitions it via ``complete``.
+        """
+        parent = await self.task.get(parent_task_id)
+        if parent is None:
+            return
+        all_terminal = await self.task.all_subtasks_terminal(parent_task_id)
+        if not all_terminal:
+            return
+        team = parent.team or leaf_team
+        if team is None:
+            return
+        pm_agent = await self.task.cell_pm_for_team(team)
+        if pm_agent is None:
+            return
+        await self.task.reassign(parent_task_id, pm_agent.id)
 
     async def _main_pm_complete_guard(
         self, main_pm_agent_id: UUID, root_task_id: UUID, t: Any
@@ -937,6 +985,10 @@ class Choreographer:
             await self.git.create_pr(t.branch_name, parent="master", is_root_pr=True)
 
         t = await self.task.escalate_to_ceo(main_pm_agent_id, root_task_id, notes)
+        # CEO acts via the UI, not as an agent the orchestrator spawns. Clear
+        # ``assigned_to`` so no agent gets respawned to chase this task while
+        # it sits in awaiting_ceo_approval.
+        await self.task.reassign(root_task_id, None)
         return Envelope.ok(
             status=str(t.status),
             task_id=str(root_task_id),
@@ -1032,6 +1084,8 @@ class Choreographer:
                 context_briefing=await self._briefing_for(agent_id, task_id),
             )
         t = await self.task.escalate_to_ceo(task_id, agent_role=me.role, notes=reason)
+        # Same as main_pm_complete: CEO acts via UI, not as a spawnable agent.
+        await self.task.reassign(task_id, None)
         return Envelope.ok(
             status=str(t.status),
             task_id=str(task_id),
