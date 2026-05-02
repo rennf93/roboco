@@ -50,6 +50,10 @@ _DOC_FLOW = (
 _DOC_DO = ("commit", "note", "say", "dm", "evidence")
 
 _CELL_PM_FLOW = (
+    "give_me_work",
+    "i_will_plan",
+    "delegate",
+    "submit_up",
     "triage",
     "unblock",
     "complete",
@@ -59,6 +63,9 @@ _CELL_PM_FLOW = (
 _CELL_PM_DO = ("note", "say", "dm", "evidence")
 
 _MAIN_PM_FLOW = (
+    "give_me_work",
+    "i_will_plan",
+    "delegate",
     "triage_all",
     "unblock",
     "complete",

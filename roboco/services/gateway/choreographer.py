@@ -12,7 +12,8 @@ injection so later phases just fill in the bodies.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any
+from typing import Any
+from uuid import UUID
 
 from roboco.config import settings
 from roboco.services.gateway.envelope import Envelope
@@ -33,9 +34,6 @@ from roboco.services.gateway.tracing_gate import (
     check_requirements,
 )
 
-if TYPE_CHECKING:
-    from uuid import UUID
-
 
 @dataclass(frozen=True)
 class ChoreographerDeps:
@@ -54,6 +52,19 @@ class ChoreographerDeps:
     journal: Any
     audit: Any
     evidence_repo: Any
+
+
+@dataclass(frozen=True)
+class DelegateInputs:
+    """Bundle of fields the ``delegate`` verb receives from the route layer."""
+
+    title: str
+    description: str
+    assigned_to: str
+    team: str
+    task_type: str = "code"
+    acceptance_criteria: list[str] | None = None
+    estimated_complexity: str = "medium"
 
 
 class Choreographer:
@@ -384,7 +395,13 @@ class Choreographer:
         )
 
     async def i_am_idle(self, agent_id: UUID) -> Envelope:
-        """Report no more work. Soft-block if there are unread A2As or @mentions."""
+        """Report no more work. Soft-block if there are unread A2As or @mentions.
+
+        Before marking the agent idle, auto-pause every in_progress task this
+        agent owns so the orchestrator's PM-closure dispatcher can wake them
+        when subtasks finish, instead of leaving the parent stuck at
+        ``in_progress`` forever.
+        """
         briefing = await self._briefing_for(agent_id, None)
         if briefing.get("unread_a2a") or briefing.get("unread_mentions"):
             return Envelope.ok(
@@ -396,6 +413,7 @@ class Choreographer:
                 ),
                 context_briefing=briefing,
             )
+        await self._auto_pause_in_progress_tasks(agent_id)
         await self.task.mark_agent_idle(agent_id)
         return Envelope.ok(
             status="idle",
@@ -403,6 +421,17 @@ class Choreographer:
             next="container will shut down",
             context_briefing=briefing,
         )
+
+    async def _auto_pause_in_progress_tasks(self, agent_id: UUID) -> None:
+        """Pause every in_progress task assigned to this agent.
+
+        Restores the pre-Phase-4 auto-pause behavior: a PM that called
+        i_will_plan and is now idle leaves the parent at ``paused`` so the
+        closure dispatcher knows to respawn it when subtasks complete.
+        """
+        in_progress = await self.task.list_in_progress_for_agent(agent_id)
+        for t in in_progress:
+            await self.task.pause_for_agent(agent_id, t.id)
 
     # --- Phase 2 (QA) verbs ---
 
@@ -697,6 +726,374 @@ class Choreographer:
             next="idle until PM completes",
             context_briefing=await self._briefing_for(doc_agent_id, task_id),
         )
+
+    async def i_will_plan(
+        self, pm_agent_id: UUID, task_id: UUID, plan: str
+    ) -> Envelope:
+        """PM mirror of i_will_work_on for parent tasks.
+
+        Transitions a pending task owned (or claimable by) this PM into
+        in_progress with the supplied plan. Required before a PM can call
+        ``delegate`` to spawn subtasks.
+        """
+        t = await self.task.get(task_id)
+        if t is None:
+            return Envelope.not_found(message=f"task {task_id} not found")
+        agent = await self.task.agent_for(pm_agent_id)
+        if agent is None or agent.role not in ("cell_pm", "main_pm"):
+            return Envelope.not_authorized(
+                message="only cell_pm or main_pm may call i_will_plan",
+                remediate="this verb is reserved for PMs",
+                context_briefing=await self._briefing_for(pm_agent_id, task_id),
+            )
+        if str(t.status) != "pending":
+            return Envelope.invalid_state(
+                message=f"task {task_id} is in {t.status}, expected pending",
+                remediate="call give_me_work() to find a pending task to plan",
+                context_briefing=await self._briefing_for(pm_agent_id, task_id),
+            )
+        if not plan or not plan.strip():
+            return Envelope.tracing_gap(
+                missing=["plan"],
+                remediate=(
+                    f"call i_will_plan(task_id='{task_id}',"
+                    " plan='<one-paragraph plan describing the breakdown>')"
+                ),
+                context_briefing=await self._briefing_for(pm_agent_id, task_id),
+            )
+
+        if t.assigned_to is None or t.assigned_to != pm_agent_id:
+            t = await self.task.claim(pm_agent_id, task_id)
+            if t is None:
+                return Envelope.invalid_state(
+                    message="claim failed",
+                    remediate="task may already be claimed by another agent",
+                    context_briefing=await self._briefing_for(pm_agent_id, task_id),
+                )
+        await self.task.set_plan(task_id, plan)
+        t = await self.task.start(pm_agent_id, task_id)
+        return Envelope.ok(
+            status=str(t.status) if t else "in_progress",
+            task_id=str(task_id),
+            next=(
+                "delegate(parent_task_id, title, description, assigned_to, team)"
+                " for each subtask, then i_am_idle"
+            ),
+            context_briefing=await self._briefing_for(pm_agent_id, task_id),
+        )
+
+    async def delegate(
+        self,
+        pm_agent_id: UUID,
+        parent_task_id: UUID,
+        inputs: DelegateInputs,
+    ) -> Envelope:
+        """Create a subtask under parent_task_id with delegation-chain validation.
+
+        Main PM may delegate to a Cell PM slug; a Cell PM may delegate to
+        its own team's developers. Anything else is rejected with an
+        explicit hint about the chain.
+        """
+        parent = await self.task.get(parent_task_id)
+        if parent is None:
+            return Envelope.not_found(message=f"task {parent_task_id} not found")
+        agent = await self.task.agent_for(pm_agent_id)
+        guard = await self._delegate_guard(
+            pm_agent_id, parent_task_id, parent, agent, inputs
+        )
+        if guard is not None:
+            return guard
+
+        new_task = await self._create_subtask_from_inputs(
+            pm_agent_id, parent_task_id, parent, inputs
+        )
+        return Envelope.ok(
+            status="created",
+            task_id=str(new_task.id),
+            next="continue delegating subtasks, or i_am_idle when done",
+            context_briefing=await self._briefing_for(pm_agent_id, parent_task_id),
+        )
+
+    async def _delegate_guard(
+        self,
+        pm_agent_id: UUID,
+        parent_task_id: UUID,
+        parent: Any,
+        agent: Any,
+        inputs: DelegateInputs,
+    ) -> Envelope | None:
+        """Return rejection Envelope if a delegate precondition fails; else None."""
+        from roboco.seeds.initial_data import AGENT_UUIDS
+
+        if agent is None or agent.role not in ("cell_pm", "main_pm"):
+            return Envelope.not_authorized(
+                message="only cell_pm or main_pm may delegate",
+                remediate="this verb is reserved for PMs",
+                context_briefing=await self._briefing_for(pm_agent_id, parent_task_id),
+            )
+        chain_error = self._validate_delegation_chain(agent.role, inputs.assigned_to)
+        if chain_error is not None:
+            return Envelope.not_authorized(
+                message=chain_error,
+                remediate=(
+                    "Main PM delegates to be-pm/fe-pm/ux-pm. "
+                    "Cell PM delegates to its own team's devs (e.g. backend "
+                    "PM -> be-dev-1/be-dev-2)."
+                ),
+                context_briefing=await self._briefing_for(pm_agent_id, parent_task_id),
+            )
+        if inputs.assigned_to not in AGENT_UUIDS:
+            return Envelope.invalid_state(
+                message=f"unknown agent slug: {inputs.assigned_to!r}",
+                remediate=f"valid slugs: {sorted(AGENT_UUIDS)}",
+                context_briefing=await self._briefing_for(pm_agent_id, parent_task_id),
+            )
+        if parent.project_id is None:
+            return Envelope.invalid_state(
+                message="parent task has no project_id",
+                remediate="parent task must have a project to inherit",
+                context_briefing=await self._briefing_for(pm_agent_id, parent_task_id),
+            )
+        try:
+            self._resolve_delegate_enums(inputs)
+        except ValueError as exc:
+            return Envelope.invalid_state(
+                message=f"invalid enum value: {exc}",
+                remediate="check team/task_type/estimated_complexity",
+                context_briefing=await self._briefing_for(pm_agent_id, parent_task_id),
+            )
+        return None
+
+    @staticmethod
+    def _resolve_delegate_enums(inputs: DelegateInputs) -> tuple[Any, Any, Any]:
+        """Convert string inputs to Team/TaskType/Complexity enums.
+
+        Raises ValueError if any string is not a member of its enum.
+        """
+        from roboco.models.base import Complexity, TaskType, Team
+
+        return (
+            Team(inputs.team),
+            TaskType(inputs.task_type),
+            Complexity(inputs.estimated_complexity),
+        )
+
+    async def _create_subtask_from_inputs(
+        self,
+        pm_agent_id: UUID,
+        parent_task_id: UUID,
+        parent: Any,
+        inputs: DelegateInputs,
+    ) -> Any:
+        """Resolve enums + AGENT_UUIDS slug and call TaskService.create_subtask."""
+        from roboco.models.task import TaskCreateRequest
+        from roboco.seeds.initial_data import AGENT_UUIDS
+
+        team_enum, type_enum, complexity_enum = self._resolve_delegate_enums(inputs)
+        assignee_id = UUID(AGENT_UUIDS[inputs.assigned_to])
+        req = TaskCreateRequest(
+            title=inputs.title,
+            description=inputs.description,
+            acceptance_criteria=inputs.acceptance_criteria or [],
+            team=team_enum,
+            created_by=pm_agent_id,
+            project_id=UUID(str(parent.project_id)),
+            parent_task_id=parent_task_id,
+            assigned_to=assignee_id,
+            task_type=type_enum,
+            estimated_complexity=complexity_enum,
+        )
+        return await self.task.create_subtask(req)
+
+    @staticmethod
+    def _validate_delegation_chain(pm_role: str, target_slug: str) -> str | None:
+        """Return error string if delegation chain is invalid; else None."""
+        cell_pm_targets = {
+            "cell_pm": {
+                "backend": {"be-dev-1", "be-dev-2"},
+                "frontend": {"fe-dev-1", "fe-dev-2"},
+                "ux_ui": {"ux-dev-1", "ux-dev-2"},
+            },
+        }
+        main_pm_targets = {"be-pm", "fe-pm", "ux-pm"}
+
+        if pm_role == "main_pm":
+            if target_slug not in main_pm_targets:
+                return (
+                    f"main_pm cannot delegate to {target_slug!r}; allowed: "
+                    f"{sorted(main_pm_targets)}"
+                )
+            return None
+        if pm_role == "cell_pm":
+            allowed_for_any_team: set[str] = set()
+            for team_targets in cell_pm_targets["cell_pm"].values():
+                allowed_for_any_team |= team_targets
+            if target_slug not in allowed_for_any_team:
+                return (
+                    f"cell_pm cannot delegate to {target_slug!r}; allowed: "
+                    f"{sorted(allowed_for_any_team)}"
+                )
+            return None
+        return f"role {pm_role!r} cannot delegate"
+
+    async def submit_up(self, pm_agent_id: UUID, task_id: UUID, notes: str) -> Envelope:
+        """Cell PM bubbles a finished cell-scope task up to the Main PM.
+
+        Opens a cell-level PR into the parent (Main PM) branch, transitions
+        the task to ``awaiting_pm_review``, and reassigns to the Main PM.
+        Required preconditions: caller owns the task, all subtasks
+        terminal, journal:decision logged, notes >= 20 chars.
+        """
+        t = await self.task.get(task_id)
+        if t is None:
+            return Envelope.not_found(message=f"task {task_id} not found")
+        guard = await self._submit_up_guard(pm_agent_id, task_id, t, notes)
+        if guard is not None:
+            return guard
+
+        parent_branch = parent_branch_for(t.branch_name)
+        await self.git.create_pr(t.branch_name, parent=parent_branch, is_root_pr=False)
+        t = await self.task.submit_pm_review(pm_agent_id, task_id, notes)
+        if t is None:
+            return Envelope.invalid_state(
+                message="could not transition to awaiting_pm_review",
+                remediate="check task state — must be in_progress with PR ready",
+                context_briefing=await self._briefing_for(pm_agent_id, task_id),
+            )
+        await self._handoff_to_main_pm(pm_agent_id, task_id)
+        return Envelope.ok(
+            status="awaiting_pm_review",
+            task_id=str(task_id),
+            next="idle until Main PM reviews",
+            context_briefing=await self._briefing_for(pm_agent_id, task_id),
+        )
+
+    async def _submit_up_guard(
+        self, pm_agent_id: UUID, task_id: UUID, t: Any, notes: str
+    ) -> Envelope | None:
+        """Return a rejection Envelope if any submit_up precondition fails."""
+        ownership = await self._submit_up_ownership_guard(
+            pm_agent_id, task_id, t, notes
+        )
+        if ownership is not None:
+            return ownership
+        return await self._submit_up_state_guard(pm_agent_id, task_id, t)
+
+    async def _submit_up_ownership_guard(
+        self, pm_agent_id: UUID, task_id: UUID, t: Any, notes: str
+    ) -> Envelope | None:
+        """Role + assignment + notes-length guards for submit_up."""
+        from roboco.config import settings as roboco_settings
+
+        agent = await self.task.agent_for(pm_agent_id)
+        if agent is None or agent.role != "cell_pm":
+            return Envelope.not_authorized(
+                message="submit_up is reserved for cell_pm",
+                remediate="main_pm should call complete on root tasks instead",
+                context_briefing=await self._briefing_for(pm_agent_id, task_id),
+            )
+        if t.assigned_to != pm_agent_id:
+            return Envelope.not_authorized(
+                message="not assigned to you",
+                remediate="claim the task or wait for assignment",
+                context_briefing=await self._briefing_for(pm_agent_id, task_id),
+            )
+        if not notes or len(notes) < roboco_settings.docs_notes_min_chars:
+            return Envelope.tracing_gap(
+                missing=["notes>=min"],
+                remediate=(
+                    "submit_up requires substantive notes describing the"
+                    " cell's contribution (>= 20 chars)."
+                ),
+                context_briefing=await self._briefing_for(pm_agent_id, task_id),
+            )
+        return None
+
+    async def _submit_up_state_guard(
+        self, pm_agent_id: UUID, task_id: UUID, t: Any
+    ) -> Envelope | None:
+        """Journal + subtask-closure + branch guards for submit_up."""
+        has_decision = await self.journal.has_decision_for_task(pm_agent_id, task_id)
+        if not has_decision:
+            from roboco.services.gateway.remediation import (
+                hint_for_missing_journal_decision,
+            )
+
+            return Envelope.tracing_gap(
+                missing=["journal:decision"],
+                remediate=hint_for_missing_journal_decision(),
+                context_briefing=await self._briefing_for(pm_agent_id, task_id),
+            )
+        if not await self.task.all_subtasks_terminal(task_id):
+            return Envelope.tracing_gap(
+                missing=["subtasks not all terminal"],
+                remediate=(
+                    "all subtasks must be in completed/cancelled before"
+                    " bubbling up. Call triage() to find pending subtasks."
+                ),
+                context_briefing=await self._briefing_for(pm_agent_id, task_id),
+            )
+        if not t.branch_name:
+            return Envelope.invalid_state(
+                message="task has no branch; cannot open cell-level PR",
+                remediate="cell PMs must claim+plan their parent task first",
+                context_briefing=await self._briefing_for(pm_agent_id, task_id),
+            )
+        return None
+
+    async def _handoff_to_main_pm(self, pm_agent_id: UUID, task_id: UUID) -> None:
+        """Reassign the task to the Main PM and A2A-notify the handoff."""
+        main_pm = await self.task.main_pm_agent()
+        if main_pm is None:
+            return
+        main_pm_uuid = UUID(str(main_pm.id))
+        await self.task.reassign(task_id, main_pm_uuid)
+        await self.a2a.send(
+            from_agent=pm_agent_id,
+            to_agent=main_pm_uuid,
+            skill="task_management",
+            task_id=task_id,
+            body=f"Cell scope complete for {task_id}. Ready for Main PM review.",
+        )
+
+    async def pm_give_me_work(self, pm_agent_id: UUID) -> Envelope:
+        """Return the PM's first assigned task in any active status, or idle.
+
+        Mirrors the developer's give_me_work but does not filter to dev-only
+        statuses — PMs care about all assigned tasks (planning, paused, in
+        progress, awaiting_pm_review).
+        """
+        assigned = await self.task.list_assigned_for_agent(pm_agent_id)
+        if assigned:
+            t = assigned[0]
+            return Envelope.ok(
+                status=str(t.status),
+                task_id=str(t.id),
+                next=self._pm_next_hint(str(t.status), t.id),
+                context_briefing=await self._briefing_for(pm_agent_id, t.id),
+            )
+        return Envelope.ok(
+            status="idle",
+            task_id=None,
+            next="no assigned work — call triage() or i_am_idle()",
+            context_briefing=await self._briefing_for(pm_agent_id, None),
+        )
+
+    @staticmethod
+    def _pm_next_hint(status: str, task_id: Any) -> str:
+        """Compose a status-aware next hint for PMs."""
+        if status == "pending":
+            return f"call i_will_plan(task_id='{task_id}', plan='...') to start"
+        if status == "paused":
+            return (
+                f"check subtasks; when terminal, call complete(task_id='{task_id}')"
+                " or submit_up()"
+            )
+        if status == "blocked":
+            return f"investigate then unblock(task_id='{task_id}')"
+        if status == "awaiting_pm_review":
+            return f"review and complete(task_id='{task_id}')"
+        return f"act on task {task_id} — current status: {status}"
 
     async def triage(self, pm_agent_id: UUID) -> Envelope:
         """Cell PM triage: blocked > awaiting_pm_review > idle."""

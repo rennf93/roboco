@@ -4277,6 +4277,16 @@ class TaskService(BaseService):
         """Find the Cell PM for a team."""
         return await self._agent_with_role_and_team(AgentRole.CELL_PM, team)
 
+    async def main_pm_agent(self) -> AgentTable | None:
+        """Find the Main PM (org-wide; takes the earliest-created if many)."""
+        result = await self.session.execute(
+            select(AgentTable)
+            .where(AgentTable.role == AgentRole.MAIN_PM)
+            .order_by(AgentTable.created_at)
+            .limit(1)
+        )
+        return result.scalar_one_or_none()
+
     async def get_active_task_for_agent(self, agent_id: UUID) -> TaskTable | None:
         """Most-recently-updated task currently being worked by the agent."""
         query = (
@@ -4624,6 +4634,73 @@ class TaskService(BaseService):
             reason=reason,
         )
         return task
+
+    async def list_in_progress_for_agent(self, agent_id: UUID) -> list[TaskTable]:
+        """In-progress tasks currently assigned to the agent."""
+        query = (
+            select(TaskTable)
+            .where(
+                TaskTable.assigned_to == agent_id,
+                TaskTable.status == TaskStatus.IN_PROGRESS,
+            )
+            .order_by(TaskTable.priority, TaskTable.updated_at.desc())
+        )
+        result = await self.session.execute(query)
+        return list(result.scalars().all())
+
+    async def pause_for_agent(
+        self, agent_id: UUID, task_id: UUID, agent_role: str | None = None
+    ) -> TaskTable | None:
+        """Gateway-flavored pause: only succeeds when caller owns the task."""
+        task = await self.get(task_id)
+        if task is None or task.assigned_to != agent_id:
+            return None
+        return await self.pause(task_id, agent_role=agent_role)
+
+    async def submit_pm_review(
+        self, agent_id: UUID, task_id: UUID, notes: str
+    ) -> TaskTable | None:
+        """Gateway alias of submit_for_pm_review for cell-PM submit_up.
+
+        Flushes any progress note then transitions in_progress →
+        awaiting_pm_review with the agent's role inferred from agent_id so
+        the lifecycle validator allows the transition.
+        """
+        if notes:
+            await self.add_progress(task_id, agent_id, notes)
+        agent = await self.agent_for(agent_id)
+        agent_role = agent.role if agent else "cell_pm"
+        return await self.submit_for_pm_review(
+            task_id, agent_role=agent_role, notes=notes or None
+        )
+
+    async def create_subtask(self, req: TaskCreateRequest) -> TaskTable:
+        """PM-friendly subtask creation; sets status from assignee presence.
+
+        When ``assigned_to`` is provided the task is created in ``pending`` so
+        the orchestrator can spawn the assignee immediately. Without an
+        assignee it stays in ``backlog`` and a PM must run ``activate`` later.
+        Caller-supplied status takes precedence; otherwise we infer from the
+        presence of an assignee.
+        """
+        if req.parent_task_id is None:
+            raise ValueError("create_subtask requires parent_task_id")
+        inferred_status = TaskStatus.PENDING if req.assigned_to else TaskStatus.BACKLOG
+        prepared = TaskCreateRequest(
+            title=req.title,
+            description=req.description,
+            acceptance_criteria=req.acceptance_criteria
+            or ["completed and reviewed by assignee"],
+            team=req.team,
+            created_by=req.created_by,
+            project_id=req.project_id,
+            parent_task_id=req.parent_task_id,
+            assigned_to=req.assigned_to,
+            estimated_complexity=req.estimated_complexity,
+            task_type=req.task_type,
+            status=req.status or inferred_status,
+        )
+        return await self.create(prepared)
 
 
 # =============================================================================
