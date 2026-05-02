@@ -1,19 +1,23 @@
-"""Reconcile enum values with the ORM and add missing members.
+"""Reconcile every postgres enum with the ORM (lowercase) + add new members.
 
 Two adjustments to bring postgres enum types in line with the StrEnum
 classes the ORM serializes:
 
-1. Add missing values that were introduced after migration 001:
-   - agentrole.system  (used internally for orchestrator-owned operations)
-   - team.fullstack    (cross-team work)
-   - taskstatus.quarantined (safe-park state for problematic tasks)
+1. Add missing members that were introduced after migration 001:
+   - agentrole.system        (orchestrator-owned operations)
+   - team.fullstack          (cross-team work)
+   - taskstatus.quarantined  (safe-park state for problematic tasks)
 
-2. If the database was previously bootstrapped via Base.metadata.create_all
-   (which uses the StrEnum member NAME — uppercase), reconcile the enum
-   values to lowercase so they match alembic 001's declared values and
-   the new ORM (Enum(..., values_callable=...)) serialization. This is a
-   conditional rebuild: if the enum already has lowercase members the
-   block is a no-op.
+2. If any enum was previously bootstrapped via Base.metadata.create_all
+   (which uses the StrEnum member NAME — uppercase), reconcile every
+   affected enum to lowercase so values match alembic 001's declared
+   members and the new ORM serialization (Enum(..., values_callable=...)).
+
+The reconcile path is dynamic: any enum found with uppercase members is
+rebuilt by renaming the old type, creating a fresh lowercase type with
+the same members (lower-cased) plus any desired additions, ALTER-ing
+every column that references the type with `USING lower(col::text)::T`,
+then dropping the old type. Repeats per affected enum.
 
 Revision ID: 009_enum_reconcile
 Revises: 008_align_skills
@@ -22,13 +26,8 @@ Create Date: 2026-05-02
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
-
 from alembic import op
 from sqlalchemy import text
-
-if TYPE_CHECKING:
-    from sqlalchemy.sql.elements import TextClause
 
 revision = "009_enum_reconcile"
 down_revision = "008_align_skills"
@@ -36,125 +35,118 @@ branch_labels = None
 depends_on = None
 
 
-# Per-enum desired member set (matches the StrEnum `.value` lists in
-# roboco/models/base.py + roboco/models/a2a.py + work_session.py).
-_DESIRED: dict[str, tuple[str, ...]] = {
-    "agentrole": (
-        "system",
-        "ceo",
-        "product_owner",
-        "head_marketing",
-        "auditor",
-        "main_pm",
-        "cell_pm",
-        "developer",
-        "qa",
-        "documenter",
-    ),
-    "team": (
-        "backend",
-        "frontend",
-        "ux_ui",
-        "fullstack",
-        "main_pm",
-        "board",
-        "marketing",
-    ),
-    "taskstatus": (
-        "backlog",
-        "pending",
-        "claimed",
-        "in_progress",
-        "blocked",
-        "paused",
-        "verifying",
-        "needs_revision",
-        "awaiting_qa",
-        "awaiting_documentation",
-        "awaiting_pm_review",
-        "awaiting_ceo_approval",
-        "completed",
-        "cancelled",
-        "quarantined",
-    ),
+# Members the ORM defines that may not be in the alembic-declared enum.
+# Every value here is a literal already used by the ORM today; adding
+# them to the postgres enum is what unblocks the next-write path.
+_DESIRED_ADDITIONS: dict[str, tuple[str, ...]] = {
+    "agentrole": ("system",),
+    "team": ("fullstack",),
+    "taskstatus": ("quarantined",),
 }
 
 
-# (enum_name, table_name, column_name) — used by the conditional rebuild.
-_USAGES: tuple[tuple[str, str, str], ...] = (
-    ("agentrole", "agents", "role"),
-    ("team", "agents", "team"),
-    ("team", "tasks", "team"),
-    ("team", "projects", "assigned_cell"),
-    ("taskstatus", "tasks", "status"),
-)
-
-
 def upgrade() -> None:
-    """Add missing values; rebuild if uppercase drift is detected."""
+    """Add missing values; rebuild any enum found with uppercase members."""
     bind = op.get_bind()
 
-    # Step 1: detect drift. If any enum has uppercase members, the DB was
-    # bootstrapped via create_all and needs a full rebuild for ALL the
-    # enums we use. If everything is lowercase already, just ADD missing
-    # values one by one (the cheap path).
-    drifted = bool(
-        bind.execute(
-            _drift_query(),
-        ).scalar()
-    )
+    # Step 1: find every enum that has at least one uppercase member.
+    drifted = [
+        row[0]
+        for row in bind.execute(
+            text(
+                """
+                SELECT DISTINCT t.typname
+                FROM pg_enum e
+                JOIN pg_type t ON e.enumtypid = t.oid
+                WHERE e.enumlabel ~ '[A-Z]'
+                ORDER BY t.typname
+                """
+            )
+        )
+    ]
 
     if not drifted:
-        # Cheap path: ADD missing values per enum.
-        for enum_name, members in _DESIRED.items():
-            for value in members:
+        # Cheap path: add the missing values for known additions.
+        for enum_name, additions in _DESIRED_ADDITIONS.items():
+            for value in additions:
                 op.execute(f"ALTER TYPE {enum_name} ADD VALUE IF NOT EXISTS '{value}'")
         return
 
-    # Drift path: rebuild the affected enums. Each rebuild is a
-    # rename-old / create-new / alter-column / drop-old sequence. We
-    # USING lower(col::text)::new_enum to convert uppercase data.
-    for enum_name, members in _DESIRED.items():
+    # Step 2: rebuild each drifted enum.
+    # For each enum:
+    #   - read current members
+    #   - construct new member list as lowercase(current) plus desired_additions
+    #   - rename old, create new, ALTER every (table, column) using it,
+    #     drop old.
+    for enum_name in drifted:
+        current = [
+            row[0]
+            for row in bind.execute(
+                text(
+                    """
+                    SELECT e.enumlabel
+                    FROM pg_enum e
+                    JOIN pg_type t ON e.enumtypid = t.oid
+                    WHERE t.typname = :name
+                    ORDER BY e.enumsortorder
+                    """
+                ),
+                {"name": enum_name},
+            )
+        ]
+        new_members: list[str] = []
+        seen: set[str] = set()
+        for member in current:
+            lowered = member.lower()
+            if lowered not in seen:
+                new_members.append(lowered)
+                seen.add(lowered)
+        for addition in _DESIRED_ADDITIONS.get(enum_name, ()):
+            if addition not in seen:
+                new_members.append(addition)
+                seen.add(addition)
+
+        usages = [
+            (row[0], row[1])
+            for row in bind.execute(
+                text(
+                    """
+                    SELECT n.nspname || '.' || c.relname AS table_qualified, a.attname
+                    FROM pg_attribute a
+                    JOIN pg_class c ON a.attrelid = c.oid
+                    JOIN pg_namespace n ON c.relnamespace = n.oid
+                    JOIN pg_type t ON a.atttypid = t.oid
+                    WHERE t.typname = :name
+                      AND a.attnum > 0
+                      AND NOT a.attisdropped
+                      AND c.relkind = 'r'
+                    """
+                ),
+                {"name": enum_name},
+            )
+        ]
+
         op.execute(f"ALTER TYPE {enum_name} RENAME TO {enum_name}_old")
-        members_sql = ", ".join(f"'{v}'" for v in members)
+        members_sql = ", ".join(f"'{v}'" for v in new_members)
         op.execute(f"CREATE TYPE {enum_name} AS ENUM ({members_sql})")
 
-    for enum_name, table, column in _USAGES:
-        op.execute(
-            f"ALTER TABLE {table} "
-            f"ALTER COLUMN {column} TYPE {enum_name} "
-            f"USING lower({column}::text)::{enum_name}"
-        )
+        for table_qualified, column in usages:
+            op.execute(
+                f"ALTER TABLE {table_qualified} "
+                f"ALTER COLUMN {column} TYPE {enum_name} "
+                f"USING lower({column}::text)::{enum_name}"
+            )
 
-    for enum_name in _DESIRED:
         op.execute(f"DROP TYPE {enum_name}_old")
 
 
 def downgrade() -> None:
-    """Remove the values added by upgrade.
+    """Intentional no-op.
 
-    Postgres has no DROP VALUE primitive; the only way to remove an enum
-    member is the rebuild dance from upgrade. For the no-drift path we
-    simply leave the added values in place — they cause no harm and
-    backing them out would be a destructive rebuild on healthy data. For
-    the drift path we cannot recover the prior uppercase values without
-    losing referential integrity, so we likewise leave the rebuild in
-    place. This downgrade is therefore intentionally a no-op.
+    Postgres has no DROP VALUE primitive — removing an enum member would
+    require the same rebuild dance from upgrade. We can't recover the
+    prior uppercase shape after the data was already lowercased without
+    losing referential integrity, so we leave the reconciled state in
+    place.
     """
     return None
-
-
-def _drift_query() -> TextClause:
-    """SELECT true iff any tracked enum has uppercase members."""
-    enum_list = ", ".join(f"'{name}'" for name in _DESIRED)
-    return text(
-        f"""
-        SELECT EXISTS (
-            SELECT 1
-            FROM pg_enum e
-            JOIN pg_type t ON e.enumtypid = t.oid
-            WHERE t.typname IN ({enum_list})
-              AND e.enumlabel ~ '[A-Z]'
-        )
-        """
-    )
