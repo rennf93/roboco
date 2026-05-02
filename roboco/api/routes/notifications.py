@@ -14,15 +14,12 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from roboco.api.deps import CurrentAgentContext, CurrentAgentId, DbSession
 from roboco.api.schemas.notifications import (
     ListNotificationsParams,
-    NotificationCreateRequest,
     NotificationListResponse,
     NotificationResponse,
     notification_to_response,
 )
-from roboco.enforcement import NotificationPermissionError
-from roboco.services.base import NotFoundError, ValidationError
+from roboco.services.base import NotFoundError
 from roboco.services.notification_delivery import (
-    ApiNotificationCreate,
     get_notification_delivery_service,
 )
 
@@ -102,48 +99,6 @@ async def get_notification(
 
 
 @router.post(
-    "",
-    response_model=NotificationResponse,
-    status_code=status.HTTP_201_CREATED,
-    summary="Send notification",
-    description="Send a notification. Only PMs, Board, and Auditor can send.",
-)
-async def send_notification(
-    db: DbSession,
-    agent_id: CurrentAgentId,
-    data: NotificationCreateRequest,
-) -> NotificationResponse:
-    """Send a notification; delegates content+permission checks to the service."""
-    service = get_notification_delivery_service(db)
-    try:
-        notification = await service.send_from_api(
-            sender_agent_id=agent_id,
-            data=ApiNotificationCreate(
-                type=data.type,
-                priority=data.priority,
-                to_agents=list(data.to_agents),
-                subject=data.subject,
-                body=data.body,
-                requires_ack=data.requires_ack,
-                related_task_id=data.related_task_id,
-                expires_at=data.expires_at,
-            ),
-        )
-    except ValidationError as e:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST, detail=e.message
-        ) from e
-    except NotFoundError as e:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(e)) from e
-    except NotificationPermissionError as e:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN, detail=e.message
-        ) from e
-
-    return notification_to_response(notification, agent_id)
-
-
-@router.post(
     "/{notification_id}/ack",
     response_model=NotificationResponse,
     summary="Acknowledge notification",
@@ -192,73 +147,3 @@ async def mark_as_read(
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(e)) from e
     except PermissionError as e:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(e)) from e
-
-
-@router.get(
-    "/pending-a2a",
-    summary="Check pending A2A",
-    description="Check if there's a pending A2A notification to a target about a task.",
-)
-async def check_pending_a2a(
-    db: DbSession,
-    from_agent: str,
-    to_agent: str,
-    task_id: str,
-) -> dict[str, bool]:
-    """
-    Check if there's already a pending A2A notification.
-
-    Prevents duplicate messages — one message per task until response. The
-    route resolves slugs → UUIDs (pure lookup against AGENT_UUIDS config)
-    then hands the check to the service.
-    """
-    from roboco.seeds.initial_data import AGENT_UUIDS
-
-    from_uuid = AGENT_UUIDS.get(from_agent)
-    to_uuid = AGENT_UUIDS.get(to_agent)
-    if not from_uuid or not to_uuid:
-        return {"has_pending": False}
-
-    try:
-        task_uuid = UUID(task_id)
-    except ValueError:
-        return {"has_pending": False}
-
-    service = get_notification_delivery_service(db)
-    has_pending = await service.has_pending_a2a(
-        from_agent_id=UUID(from_uuid),
-        to_agent_id=UUID(to_uuid),
-        task_id=task_uuid,
-    )
-    return {"has_pending": has_pending}
-
-
-@router.post(
-    "/ack-a2a",
-    status_code=status.HTTP_204_NO_CONTENT,
-    summary="Auto-ack A2A notifications",
-    description="Acknowledge A2A notifications when responding. Called by SDK.",
-)
-async def ack_a2a_notifications(
-    db: DbSession,
-    data: dict[str, str],
-) -> None:
-    """Auto-ack A2A_REQUEST notifications when agent B responds to agent A."""
-    from roboco.seeds.initial_data import AGENT_UUIDS
-
-    from_uuid = AGENT_UUIDS.get(data.get("from_agent", ""))
-    to_uuid = AGENT_UUIDS.get(data.get("to_agent", ""))
-    task_id_str = data.get("task_id", "")
-    if not from_uuid or not to_uuid or not task_id_str:
-        return
-    try:
-        task_uuid = UUID(task_id_str)
-    except ValueError:
-        return
-
-    service = get_notification_delivery_service(db)
-    await service.auto_ack_a2a(
-        from_agent_id=UUID(from_uuid),
-        to_agent_id=UUID(to_uuid),
-        task_id=task_uuid,
-    )

@@ -11,7 +11,7 @@ Also implements the ACK system for tracking acknowledgments.
 
 from dataclasses import dataclass
 from datetime import UTC, datetime
-from typing import Any, ClassVar, Literal
+from typing import ClassVar, Literal
 from uuid import UUID
 
 from sqlalchemy import and_, select
@@ -25,7 +25,7 @@ from roboco.agents_config import (
 from roboco.db.tables import AgentTable, NotificationTable, TaskTable
 from roboco.events import Event, EventType, get_event_bus
 from roboco.models.base import AgentRole, NotificationPriority, NotificationType
-from roboco.services.base import BaseService, NotFoundError, ValidationError
+from roboco.services.base import BaseService, NotFoundError
 from roboco.utils.converters import require_uuid
 
 
@@ -58,24 +58,6 @@ class PMRejectDetails:
     from_role: str
     developer_agent_id: UUID
     notes: str | None
-
-
-@dataclass(frozen=True)
-class ApiNotificationCreate:
-    """Service-side view of the API's notification-send request.
-
-    Avoids importing api/schemas types into the service layer; the route
-    pydantic model is translated into this dataclass at the boundary.
-    """
-
-    type: Any
-    priority: Any
-    to_agents: list[UUID]
-    subject: str
-    body: str
-    requires_ack: bool
-    related_task_id: UUID | None
-    expires_at: Any | None
 
 
 class NotificationDeliveryService(BaseService):
@@ -938,119 +920,6 @@ class NotificationDeliveryService(BaseService):
             notification.read_by = [*notification.read_by, agent_id]
             await self.session.flush()
 
-    _MIN_SUBJECT_CHARS: ClassVar[int] = 5
-    _MIN_BODY_CHARS: ClassVar[int] = 10
-    _MAX_RECIPIENTS: ClassVar[int] = 50
-
-    def _assert_content(self, data: "ApiNotificationCreate") -> None:
-        """Reject empty subjects, sparse bodies, and over-large recipient lists.
-
-        Keeps the filter on what makes a notification useful: enough text
-        to act on, and not enough recipients to be a broadcast.
-        """
-        if not data.subject or len(data.subject.strip()) < self._MIN_SUBJECT_CHARS:
-            raise ValidationError(
-                f"SUBJECT_REQUIRED: Notification subject must be >= "
-                f"{self._MIN_SUBJECT_CHARS} chars."
-            )
-        if not data.body or len(data.body.strip()) < self._MIN_BODY_CHARS:
-            raise ValidationError(
-                f"BODY_REQUIRED: Notification body must be >= "
-                f"{self._MIN_BODY_CHARS} chars. Say what to do next."
-            )
-        if len(data.to_agents) > self._MAX_RECIPIENTS:
-            raise ValidationError(
-                f"TOO_MANY_RECIPIENTS: {len(data.to_agents)} recipients "
-                f"exceeds {self._MAX_RECIPIENTS}. Post in a broadcast "
-                "channel instead of spraying notifications."
-            )
-
-    async def send_from_api(
-        self,
-        *,
-        sender_agent_id: UUID,
-        data: "ApiNotificationCreate",
-    ) -> NotificationTable:
-        """Resolve sender/recipient slugs, validate permissions, persist, deliver."""
-        from roboco.enforcement import (
-            NotificationPermissionError,
-            validate_notification_permission,
-        )
-
-        self._assert_content(data)
-        agent = await self._get_agent_by_id(sender_agent_id)
-        if not agent:
-            raise NotFoundError(resource_type="Agent", resource_id=str(sender_agent_id))
-
-        recipient_slugs: list[str] = []
-        for recipient_uuid in data.to_agents:
-            recipient = await self._get_agent_by_id(recipient_uuid)
-            if recipient:
-                recipient_slugs.append(recipient.slug)
-
-        try:
-            validate_notification_permission(
-                sender_id=agent.slug, recipients=recipient_slugs
-            )
-        except NotificationPermissionError:
-            # Re-raise — route converts to 403.
-            raise
-
-        notification = NotificationTable(
-            type=data.type,
-            priority=data.priority,
-            from_agent=sender_agent_id,
-            to_agents=data.to_agents,
-            subject=data.subject,
-            body=data.body,
-            requires_ack=data.requires_ack,
-            related_task_id=data.related_task_id,
-            expires_at=data.expires_at,
-        )
-        await self._persist_and_deliver(notification)
-        return notification
-
-    async def has_pending_a2a(
-        self, *, from_agent_id: UUID, to_agent_id: UUID, task_id: UUID
-    ) -> bool:
-        """True iff there's an unacked A2A_REQUEST from→to about this task."""
-        result = await self.session.execute(
-            select(NotificationTable).where(
-                NotificationTable.type == NotificationType.A2A_REQUEST,
-                NotificationTable.from_agent == from_agent_id,
-                NotificationTable.related_task_id == task_id,
-                NotificationTable.to_agents.contains([to_agent_id]),
-            )
-        )
-        return any(to_agent_id not in n.acked_by for n in result.scalars().all())
-
-    async def auto_ack_a2a(
-        self, *, from_agent_id: UUID, to_agent_id: UUID, task_id: UUID
-    ) -> int:
-        """Ack every A2A_REQUEST from→to about this task. Returns count acked."""
-        result = await self.session.execute(
-            select(NotificationTable).where(
-                NotificationTable.type == NotificationType.A2A_REQUEST,
-                NotificationTable.from_agent == from_agent_id,
-                NotificationTable.related_task_id == task_id,
-                NotificationTable.to_agents.contains([to_agent_id]),
-            )
-        )
-        now = datetime.now(UTC).isoformat()
-        acked = 0
-        touched = False
-        for notif in result.scalars().all():
-            if to_agent_id not in notif.acked_by:
-                notif.acked_by = [*notif.acked_by, to_agent_id]
-                notif.acked_at = {**notif.acked_at, str(to_agent_id): now}
-                acked += 1
-                touched = True
-            if to_agent_id not in notif.read_by:
-                notif.read_by = [*notif.read_by, to_agent_id]
-                touched = True
-        if touched:
-            await self.session.flush()
-        return acked
 
 
 # =============================================================================
