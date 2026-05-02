@@ -1320,3 +1320,62 @@ class A2AService:
             edited_at=msg.edited_at,
             edit_history=msg.edit_history or [],
         )
+
+    # =========================================================================
+    # GATEWAY (CHOREOGRAPHER + CONTENT_ACTIONS) BACKFILL
+    # =========================================================================
+
+    async def _resolve_slug_from_id(self, agent_id: UUID) -> str:
+        """Look up an agent's slug from its UUID; raise ValueError if missing."""
+        result = await self.session.execute(
+            select(AgentTable.slug).where(AgentTable.id == agent_id)
+        )
+        slug = result.scalar_one_or_none()
+        if not slug:
+            raise ValueError(f"Agent not found for id {agent_id}")
+        return str(slug)
+
+    async def send(
+        self,
+        *,
+        from_agent: UUID,
+        to_agent: UUID | str,
+        task_id: UUID,
+        body: str,
+        skill: str | None = None,
+    ) -> A2AChatMessage:
+        """Gateway adapter — send a directed A2A message between two agents.
+
+        Recipient may be either a UUID (choreographer call shape) or a
+        slug string (content_actions call shape). The sender is always a
+        UUID; both ends are resolved to slugs because the
+        conversation/message tables key on slug.
+
+        Resolves to:
+        1. `get_or_create_conversation(sender_slug, recipient_slug, task_id=...)`
+        2. `send_chat_message(conversation.id, sender_slug, content=body, ...)`
+
+        `skill` is recorded in message metadata so the receiver knows which
+        capability is being requested.
+        """
+        from_slug = await self._resolve_slug_from_id(from_agent)
+        to_slug = (
+            await self._resolve_slug_from_id(to_agent)
+            if isinstance(to_agent, UUID)
+            else to_agent
+        )
+
+        conv = await self.get_or_create_conversation(
+            agent_a=from_slug,
+            agent_b=to_slug,
+            task_id=task_id,
+        )
+        options: dict[str, Any] = {}
+        if skill is not None:
+            options["skill"] = skill
+        return await self.send_chat_message(
+            conversation_id=UUID(conv.id),
+            from_agent=from_slug,
+            content=body,
+            options=options or None,
+        )

@@ -193,7 +193,7 @@ class ContentActions:
             )
         await self.a2a.send(
             from_agent=agent_id,
-            to_agent_slug=recipient,
+            to_agent=recipient,
             task_id=task_id,
             body=text,
             skill=skill,

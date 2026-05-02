@@ -794,6 +794,57 @@ class JournalService(BaseService):
         )
         return await self.add_struggle(agent_id, params)
 
+    # Mapping from gateway scope strings (note/decision/reflect/learning/struggle)
+    # to canonical JournalEntryType enum values. Defined as a class-level constant
+    # so the lookup is a single dict access per call.
+    _SCOPE_TO_TYPE: ClassVar[dict[str, JournalEntryType]] = {
+        "note": JournalEntryType.GENERAL,
+        "decision": JournalEntryType.DECISION_LOG,
+        "reflect": JournalEntryType.TASK_REFLECTION,
+        "learning": JournalEntryType.LEARNING,
+        "struggle": JournalEntryType.STRUGGLE,
+    }
+
+    async def write_entry(
+        self,
+        *,
+        agent_id: UUID,
+        title: str,
+        content: str,
+        scope: str = "note",
+        task_id: UUID | None = None,
+    ) -> JournalEntry | None:
+        """Gateway adapter — write a journal entry by `scope` string.
+
+        The gateway speaks in scope strings (`note`, `decision`, `reflect`,
+        `learning`, `struggle`) while the service stores entries by
+        `JournalEntryType` enum keyed off a `journal_id` (which the agent
+        doesn't carry). This adapter resolves both: maps scope to the enum,
+        looks up or creates the agent's journal, then delegates to
+        `create_entry(JournalEntryCreate(...))`.
+
+        Raises:
+            ValueError: If `scope` is not one of the supported gateway
+                scopes. Caller (gateway) validates the scope set before
+                reaching here, but the guard is kept defensive.
+        """
+        entry_type = self._SCOPE_TO_TYPE.get(scope)
+        if entry_type is None:
+            raise ValueError(
+                f"unknown scope {scope!r}; "
+                f"expected one of {sorted(self._SCOPE_TO_TYPE)}"
+            )
+        journal = await self.get_or_create_journal(agent_id)
+        return await self.create_entry(
+            JournalEntryCreate(
+                journal_id=journal.id,
+                type=entry_type,
+                title=title,
+                content=content,
+                task_id=task_id,
+            )
+        )
+
 
 def get_journal_service(db: AsyncSession) -> JournalService:
     """Factory function for JournalService."""

@@ -1753,6 +1753,68 @@ class MessagingService(BaseService):
         )
         return True
 
+    # =========================================================================
+    # GATEWAY (CONTENT_ACTIONS) BACKFILL
+    # =========================================================================
+
+    async def _default_group_for_channel(
+        self,
+        channel: ChannelTable,
+    ) -> GroupTable:
+        """Return a usable group for posting into `channel`.
+
+        Strategy: pick the first existing group ordered by hierarchy_level
+        then name. If the channel has no groups yet (fresh channel), create
+        a single default group. Channels were originally designed to have
+        explicit groups created at provisioning time, but the gateway
+        `say` verb addresses the channel as a whole — so we paper over
+        that boundary here rather than forcing every caller to know about
+        groups.
+        """
+        groups = await self.list_groups_in_channel(cast("UUID", channel.id))
+        if groups:
+            return groups[0]
+        return await self.create_group(
+            GroupCreateRequest(
+                name="default",
+                channel_id=cast("UUID", channel.id),
+                allowed_roles=[],
+                hierarchy_level=4,
+                members=[],
+            )
+        )
+
+    async def post_to_channel(
+        self,
+        *,
+        agent_id: UUID,
+        channel_slug: str,
+        content: str,
+        task_id: UUID | None = None,
+    ) -> MessageTable:
+        """Gateway adapter — post a message to a channel by slug.
+
+        The gateway `say` verb addresses channels by slug (`backend-cell`,
+        `all-hands`, ...) and doesn't carry session/group IDs. This adapter
+        resolves the channel by slug, picks the channel's default group,
+        gets or creates the active session for that group, then sends a
+        message via `send_message`.
+
+        Channel access is enforced inside `send_message` (channel writers
+        list + role rules); this adapter never bypasses that check.
+        """
+        channel = await self.get_channel_by_slug_or_raise(channel_slug)
+        group = await self._default_group_for_channel(channel)
+        session = await self.get_or_create_active_session(cast("UUID", group.id))
+        return await self.send_message(
+            MessageCreateRequest(
+                agent_id=agent_id,
+                session_id=cast("UUID", session.id),
+                content=content,
+                task_id=task_id,
+            )
+        )
+
 
 # =============================================================================
 # SERVICE FACTORY

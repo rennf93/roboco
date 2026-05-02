@@ -306,7 +306,7 @@ async def test_dm_with_active_task_succeeds() -> None:
     assert body["task_id"] == str(task_id)
     a2a_svc.send.assert_awaited_once()
     call_kwargs = a2a_svc.send.call_args.kwargs
-    assert call_kwargs["to_agent_slug"] == "be-qa-1"
+    assert call_kwargs["to_agent"] == "be-qa-1"
     assert call_kwargs["skill"] == "code_review"
 
 

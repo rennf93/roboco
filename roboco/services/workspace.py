@@ -626,6 +626,110 @@ class WorkspaceService:
                     )
         return workspaces
 
+    # =========================================================================
+    # GATEWAY (CONTENT_ACTIONS) BACKFILL
+    # =========================================================================
+
+    async def _resolve_branch_to_project_slug(self, branch_name: str) -> str:
+        """Look up the task that owns `branch_name` and return its project slug.
+
+        Raises WorkspaceError when no task references the branch or the
+        project record is missing — fetching a phantom branch would
+        silently no-op otherwise.
+        """
+        from sqlalchemy import select
+
+        from roboco.db.tables import TaskTable
+        from roboco.services.project import get_project_service
+
+        result = await self.session.execute(
+            select(TaskTable).where(TaskTable.branch_name == branch_name).limit(1)
+        )
+        task = result.scalar_one_or_none()
+        if task is None:
+            raise WorkspaceError(f"No task references branch {branch_name!r}")
+        project_service = get_project_service(self.session)
+        project = await project_service.get(UUID(str(task.project_id)))
+        if project is None:
+            raise WorkspaceError(
+                f"Task {task.id} for branch {branch_name!r} has no project"
+            )
+        return str(project.slug)
+
+    async def fetch_branch_for_inspection(
+        self,
+        *,
+        agent_id: UUID,
+        branch_name: str,
+    ) -> Path:
+        """Fetch `branch_name` into the inspecting agent's workspace.
+
+        QA / Documenter / PM agents need to read a developer's branch from
+        their own workspace before diffing. This adapter:
+
+        1. Resolves the project from the branch (via the owning task).
+        2. Ensures a healthy workspace for `agent_id` on that project
+           (clones if missing — same path as the agent's first claim).
+        3. Runs `git fetch origin <branch>` with the project token so the
+           branch ref is locally available for `git diff`.
+
+        Returns the workspace path so the caller can chain checkout/diff
+        operations if needed.
+        """
+        from roboco.services.project import get_project_service
+
+        project_slug = await self._resolve_branch_to_project_slug(branch_name)
+        workspace = await self.ensure_workspace(
+            project_slug=project_slug,
+            agent_id=agent_id,
+        )
+
+        from roboco.utils.crypto import EncryptionError
+
+        project_service = get_project_service(self.session)
+        project = await project_service.get_by_slug(project_slug)
+        git_token: str | None = None
+        if project is not None:
+            try:
+                git_token = await project_service.get_decrypted_token_by_slug(
+                    project_slug
+                )
+            except EncryptionError:
+                # Token-decrypt failure (rotated key / corrupted record) is
+                # non-fatal here: a public branch fetch still works without
+                # auth, and a real auth failure surfaces from git below.
+                git_token = None
+
+        prefix: list[str] = []
+        if git_token:
+            import base64
+
+            basic = base64.b64encode(f"x-access-token:{git_token}".encode()).decode()
+            prefix = ["-c", f"http.extraheader=Authorization: Basic {basic}"]
+
+        def _do_fetch() -> subprocess.CompletedProcess[str]:
+            return subprocess.run(
+                ["git", *prefix, "fetch", "origin", branch_name],
+                cwd=str(workspace),
+                capture_output=True,
+                text=True,
+                timeout=settings.workspace_clone_timeout,
+                check=False,
+            )
+
+        result = await asyncio.to_thread(_do_fetch)
+        if result.returncode != 0:
+            logger.warning(
+                "fetch_branch_for_inspection: fetch returned non-zero",
+                branch=branch_name,
+                workspace=str(workspace),
+                stderr=result.stderr.strip(),
+            )
+        # Re-chown so the agent user can still write into .git after our
+        # root-side fetch updated refs/objects.
+        await asyncio.to_thread(_ensure_agent_owned, workspace)
+        return workspace
+
     async def delete_workspace(
         self,
         project_slug: str,

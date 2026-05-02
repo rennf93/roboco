@@ -1806,20 +1806,97 @@ class GitService(BaseService):
             )
         return str(base_ref)
 
-    async def diff(self, *, branch_name: str) -> str:
-        """Return the git diff for `branch_name` against its parent or master."""
+    async def diff(
+        self,
+        *,
+        branch_name: str,
+        base: str | None = None,
+    ) -> str:
+        """Return the git diff for `branch_name` against `base`.
+
+        When `base` is omitted, diffs against the branch's parent (per
+        `parent_branch_for`) which is what the choreographer/PR-review
+        path wants. Content_actions evidence path can pass `HEAD~1` to
+        get just the latest change diff for incremental review.
+        """
         from roboco.services.gateway.merge_chain import parent_branch_for
 
         workspace = await self._workspace_for_branch(branch_name)
-        parent = parent_branch_for(branch_name)
-        # Make sure the parent ref exists locally before diffing.
-        await self._run_git(workspace, ["fetch", "origin", parent], check=False)
-        diff_result = await self._run_git(
-            workspace,
-            ["diff", f"origin/{parent}...{branch_name}"],
-            check=False,
-        )
+        if base is None:
+            parent = parent_branch_for(branch_name)
+            # Make sure the parent ref exists locally before diffing.
+            await self._run_git(workspace, ["fetch", "origin", parent], check=False)
+            diff_args = ["diff", f"origin/{parent}...{branch_name}"]
+        else:
+            diff_args = ["diff", f"{base}...{branch_name}"]
+        diff_result = await self._run_git(workspace, diff_args, check=False)
         return diff_result.stdout
+
+    async def commit(
+        self,
+        *,
+        branch_name: str,
+        message: str,
+        task_id: UUID,
+        files: list[str] | None = None,
+    ) -> dict[str, Any]:
+        """Gateway adapter — commit on `branch_name` with a free-form message.
+
+        Resolves the workspace + project from the branch (same approach as
+        `push_branch`/`create_pr`), stages the requested files (or all),
+        and runs `git commit -m {message}`. Bypasses the conventional-commit
+        template — content_actions has its own validator that asserts the
+        message is descriptive, and the orchestrator-side git template only
+        applies to the structured `commit_for_task` API path.
+
+        Returns a dict shaped for the gateway: ``{"sha": str, "message": str,
+        "files_changed": int, "insertions": int, "deletions": int}``. Tests
+        and downstream gateway code only consume `sha`; the rest is included
+        so we don't have to invent a new shape later.
+        """
+        workspace = await self._workspace_for_branch(branch_name)
+        await self._assert_on_task_branch(workspace, branch_name)
+
+        # Stage files explicitly when provided; otherwise stage everything
+        # the agent has touched. Mirrors create_commit's staging logic.
+        if files:
+            for file in files:
+                await self._run_git(workspace, ["add", file])
+        else:
+            await self._run_git(workspace, ["add", "-A"])
+
+        # Free-form gateway commit — message is passed verbatim. The
+        # gateway's commit_validator already rejected garbage messages
+        # before we got here; we don't double-validate.
+        await self._run_git(workspace, ["commit", "-m", message])
+
+        log_result = await self._run_git(workspace, ["log", "-1", "--format=%H|%s"])
+        parts = log_result.stdout.strip().split("|", 1)
+        commit_hash = parts[0] if parts else "unknown"
+        full_message = parts[1] if len(parts) > 1 else message
+
+        stat_result = await self._run_git(
+            workspace, ["diff", "--stat", "HEAD~1..HEAD"], check=False
+        )
+        insertions, deletions, files_changed = self._parse_commit_stats(
+            stat_result.stdout
+        )
+
+        # Best-effort link to the task; mirrors commit_for_task. A linking
+        # failure must not lose the commit.
+        task = await self._task_for_branch(branch_name)
+        if task is not None and task.assigned_to is not None:
+            await self._link_commit_to_task(
+                task_id, commit_hash, message, UUID(str(task.assigned_to))
+            )
+
+        return {
+            "sha": commit_hash,
+            "message": full_message,
+            "files_changed": files_changed,
+            "insertions": insertions,
+            "deletions": deletions,
+        }
 
 
 def get_git_service(session: AsyncSession) -> GitService:
