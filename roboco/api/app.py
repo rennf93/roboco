@@ -32,7 +32,6 @@ from roboco.api.routes.provider import router as provider_router
 from roboco.api.routes.sessions import router as sessions_router
 from roboco.api.routes.stream import router as stream_router
 from roboco.api.routes.tasks import router as tasks_router
-from roboco.api.routes.test import router as test_router
 from roboco.api.routes.v2 import do as do_module
 from roboco.api.routes.v2 import flow_auditor as flow_auditor_module
 from roboco.api.routes.v2 import flow_board as flow_board_module
@@ -265,13 +264,6 @@ def create_app() -> FastAPI:
         git_router,
         prefix=f"{api_prefix}/git",
         tags=["Git Operations"],
-    )
-
-    # Test/CI Operations
-    app.include_router(
-        test_router,
-        prefix=f"{api_prefix}/test",
-        tags=["Test Operations"],
     )
 
     # Project Management

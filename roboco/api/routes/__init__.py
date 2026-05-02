@@ -21,7 +21,6 @@ from roboco.api.routes import (
     sessions,
     stream,
     tasks,
-    test,
     work_session,
 )
 
@@ -42,6 +41,5 @@ __all__ = [
     "sessions",
     "stream",
     "tasks",
-    "test",
     "work_session",
 ]
