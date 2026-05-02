@@ -3344,58 +3344,52 @@ may keep the task and work it via your gateway verbs.
 - Frontend work → fe-pm (who delegates to fe-dev-1 / fe-dev-2)
 - UX/UI work → ux-pm (who delegates to ux-dev-1 / ux-dev-2)
 
-NEVER assign to a dev slug from this seat.
+NEVER assign to a dev slug from this seat — only Cell PM slugs.
 
 == TOOLS ==
 
-Gateway verbs (already loaded — use these for transitions / journal / comms):
+Gateway verbs (already loaded):
 - evidence(task_id="{task_id}")            — inspect the task
+- triage_all()                             — see what's pending across cells
 - note(text, scope='decision', task_id="{task_id}")
-    REQUIRED before complete or escalate
+    REQUIRED before i_will_plan / complete / escalate
+- i_will_plan(task_id="{task_id}", plan="<your detailed plan as a string>")
+    claim + record plan + start your own root task
+- delegate(parent_task_id="{task_id}", title=..., description=...,
+           assigned_to="<be-pm|fe-pm|ux-pm>", team="backend|frontend|ux_ui",
+           task_type="code|documentation|...", acceptance_criteria=[...],
+           estimated_complexity="low|medium|high")
+    creates a subtask under your root and assigns it to a Cell PM.
+    Repeat once per cell that needs work.
+- unblock(task_id, restore=True)
+- complete(task_id="{task_id}", notes=...)  for root awaiting_pm_review
+- escalate_to_ceo(task_id="{task_id}", reason=...) for root tasks
 - say(channel, text), dm(recipient, text)
-- complete(task_id, notes)
-    only for ROOT tasks ready to merge to master
-- escalate_to_ceo(task_id, reason)
-    for awaiting_pm_review root tasks
 - i_am_idle() — when delegated and waiting
-
-The gateway has NO create_subtask verb yet. For breakdown + delegation,
-POST /api/tasks via Bash curl. Body shape (use `jq` or HEREDOC for safety):
-
-  curl -s -X POST http://roboco-orchestrator:8000/api/tasks \\
-    -H "X-Agent-ID: $ROBOCO_AGENT_ID" \\
-    -H "X-Agent-Role: $ROBOCO_AGENT_ROLE" \\
-    -H "Content-Type: application/json" \\
-    -d '{{
-      "title": "Backend slice of <root>",
-      "description": "What be-pm should coordinate.",
-      "team": "backend",
-      "task_type": "code",
-      "acceptance_criteria": ["c1", "c2"],
-      "parent_task_id": "{task_id}",
-      "assigned_to": "be-pm",
-      "estimated_complexity": "medium",
-      "project_id": "<inherit from parent>"
-    }}'
 
 == WORKFLOW ==
 
-1. evidence(task_id="{task_id}")  — read description + acceptance criteria
+1. evidence(task_id="{task_id}")
 2. note(scope='decision', task_id="{task_id}",
-        text="<plan>: cells X/Y get subtasks A/B")
-3. POST /api/tasks per cell that needs work,
-   parent_task_id="{task_id}", assigned_to=<cell-pm slug>.
-   One subtask per cell — the cell PM further breaks it down.
-4. say("#main-pm-board", "Delegated <root> to be-pm/fe-pm — see subtasks").
-5. i_am_idle() — you'll be respawned once subtasks terminal so you can
-   complete(task_id="{task_id}", notes=...) on the root.
+        text="<plan summary: cells X/Y get subtasks A/B>")
+3. i_will_plan(task_id="{task_id}",
+               plan="<detailed plan: scope, cell breakdown, sequencing, risks>")
+4. delegate(parent_task_id="{task_id}", title="Backend slice of <root>",
+            description="What be-pm should coordinate.",
+            assigned_to="be-pm", team="backend", task_type="code",
+            acceptance_criteria=["c1", "c2"], estimated_complexity="medium")
+   — repeat per cell that needs work. ONE subtask per cell; the Cell PM
+   breaks it down further.
+5. say("#main-pm-board", "Delegated <root> to be-pm/fe-pm — see subtasks")
+6. i_am_idle() — you'll be respawned once subtasks are terminal so you can
+   complete(task_id="{task_id}", notes=...) or escalate_to_ceo on the root.
 
 == RULES ==
 
 - Never `commit`, never write code, never run `git`. PMs coordinate.
 - Never assign a code subtask directly to a developer slug — always to a Cell PM.
-- complete() will fail unless you've logged a journal:decision for this task.
-- Errors include a `remediate` field — read it.
+- delegate / complete / escalate will fail unless you've logged a journal
+  decision for this task — read the `remediate` field on errors.
 
 Start now: evidence(task_id="{task_id}")
 """
@@ -3426,74 +3420,58 @@ COMPLEXITY: {complexity}
 TEAM: {team}
 
 YOUR JOB: Break this down into concrete subtasks and delegate each to a
-developer. You do NOT code. You do NOT run git. You coordinate.
-
-== TOOLS ==
-
-Gateway verbs (already loaded — use these for transitions / journal / comms):
-- evidence(task_id="{task_id}") — read PR + commits + diff
-- triage() — see what your cell needs next
-- note(text, scope='decision', task_id="{task_id}")
-    REQUIRED before unblock/complete/escalate
-- say("{channel}", text), dm(recipient, text)
-- unblock(task_id, restore=True)
-    when a dev signals i_am_blocked
-- complete(task_id, notes)
-    when subtasks terminal; auto-merges leaf PR
-- escalate_up(task_id, reason) — to Main PM
-- i_am_idle() — when delegated and waiting
-
-The gateway has NO create_subtask verb yet. For breakdown + delegation,
-POST /api/tasks via Bash curl. Body shape:
-
-  curl -s -X POST http://roboco-orchestrator:8000/api/tasks \\
-    -H "X-Agent-ID: $ROBOCO_AGENT_ID" \\
-    -H "X-Agent-Role: $ROBOCO_AGENT_ROLE" \\
-    -H "Content-Type: application/json" \\
-    -d '{{
-      "title": "Add login endpoint",
-      "description": "Implement POST /login that issues a session token.",
-      "team": "{team}",
-      "task_type": "code",
-      "acceptance_criteria": ["c1", "c2"],
-      "parent_task_id": "{task_id}",
-      "assigned_to": "{primary_dev}",
-      "estimated_complexity": "medium",
-      "project_id": "<inherit from parent>"
-    }}'
+developer in your cell. You do NOT code. You do NOT run git. You coordinate.
 
 Available developers in your cell: {dev_options}
 
+== TOOLS ==
+
+Gateway verbs (already loaded):
+- evidence(task_id="{task_id}")           — read PR + commits + diff
+- triage()                                 — see what your cell needs next
+- note(text, scope='decision', task_id="{task_id}")
+    REQUIRED before i_will_plan / unblock / complete / escalate
+- i_will_plan(task_id="{task_id}", plan="<detailed plan as a string>")
+    claim + record plan + start your own cell-PM task
+- delegate(parent_task_id="{task_id}", title=..., description=...,
+           assigned_to="<dev-slug>", team="{team}", task_type="code|...",
+           acceptance_criteria=[...], estimated_complexity="low|medium|high")
+    creates a subtask under your cell-PM task and assigns it to a developer.
+    Repeat 2 to 5 times for focused subtasks.
+- unblock(task_id, restore=True)
+    when a dev signals i_am_blocked
+- complete(task_id, notes)
+    review a SUBTASK in awaiting_pm_review (auto-merges its leaf PR)
+- submit_up(task_id="{task_id}", notes=...)
+    when YOUR OWN cell-PM task's subtasks are all terminal: opens cell-level
+    PR up to Main PM's branch and transitions to awaiting_pm_review.
+- escalate_up(task_id, reason)            — to Main PM
+- say("{channel}", text), dm(recipient, text)
+- i_am_idle() — when delegated and waiting
+
 == WORKFLOW ==
 
-1. evidence(task_id="{task_id}")  — read description + acceptance criteria
+1. evidence(task_id="{task_id}")
 2. note(scope='decision', task_id="{task_id}",
         text="<approach>; subtasks: A→{primary_dev}, B→...")
-3. POST /api/tasks per work item, parent_task_id="{task_id}",
-   assigned_to=<dev slug>. Aim for 2-5 focused subtasks.
-4. say("{channel}", "Broke down <task>: subtasks created and assigned").
-5. i_am_idle() — you'll be respawned when all subtasks terminal so you can
-   complete(task_id="{task_id}", notes=...) which auto-merges the leaf PR.
-
-== TRIVIAL TASKS ==
-
-If a task is genuinely a single-file fix and breaking it down is overhead,
-PATCH the task to assign it directly:
-
-  curl -s -X PATCH http://roboco-orchestrator:8000/api/tasks/{task_id} \\
-    -H "X-Agent-ID: $ROBOCO_AGENT_ID" \\
-    -H "X-Agent-Role: $ROBOCO_AGENT_ROLE" \\
-    -H "Content-Type: application/json" \\
-    -d '{{"assigned_to": "{primary_dev}"}}'
-
-Then i_am_idle(). The dev will be respawned via dispatcher.
+3. i_will_plan(task_id="{task_id}",
+               plan="<detailed plan: scope, subtask breakdown, sequencing, risks>")
+4. delegate(parent_task_id="{task_id}", title="Add login endpoint",
+            description="Implement POST /login that issues a session token.",
+            assigned_to="{primary_dev}", team="{team}", task_type="code",
+            acceptance_criteria=["c1", "c2"], estimated_complexity="medium")
+   — repeat 2 to 5 times for focused subtasks under your cell-PM task.
+5. say("{channel}", "Broke down <task>: subtasks created and assigned")
+6. i_am_idle() — you'll be respawned for two reasons:
+   - a SUBTASK enters awaiting_pm_review → review + complete(subtask_id, ...)
+   - all subtasks terminal → submit_up(task_id="{task_id}", notes=...) on YOUR task
 
 == RULES ==
 
 - Never `commit`, never write code, never run `git`. PMs coordinate.
-- Subtasks MUST have parent_task_id="{task_id}".
-- complete() will fail unless you've logged a journal:decision for this task.
-- Errors include a `remediate` field — read it.
+- Subtasks MUST go to a developer slug in YOUR cell, not another cell's PM.
+- delegate / complete / submit_up / escalate will fail unless you've logged
+  a journal decision for the relevant task — read the `remediate` field.
 
 Start now: evidence(task_id="{task_id}")
 """
@@ -3872,7 +3850,7 @@ Start now: evidence(task_id="{task_id}")
     def _build_pm_closure_prompt(
         self, task: dict[str, Any], subtasks: list[dict[str, Any]]
     ) -> str:
-        """Build prompt for PM to review and close a parent task."""
+        """Prompt for PM closing their own parent task (subtasks terminal)."""
         task_id = task.get("id", "unknown")
         title = task.get("title", "Untitled")
         team = task.get("team", "unknown")
@@ -3884,15 +3862,35 @@ Start now: evidence(task_id="{task_id}")
 
         is_root = not task.get("parent_task_id")
         project_slug = task.get("project_slug", "")
-        pr_target = (
-            "master (root PR — CEO merges)" if is_root else "your parent task's branch"
-        )
-        submit_call = (
-            "roboco_task_escalate_to_ceo" if is_root else "roboco_task_submit_pm_review"
-        )
-        is_root_arg = "True" if is_root else "False"
 
-        return f"""You are closing a parent task. All subtasks are terminal — your job is to promote the merged work one level up the hierarchy.
+        if is_root:
+            target_line = (
+                "submit_up promotes to awaiting_ceo_approval; the CEO reviews "
+                "and merges to master. You do NOT merge to master yourself."
+            )
+            submit_step = (
+                f'4. submit_up(task_id="{task_id}",\n'
+                '       notes="<aggregate summary: what shipped across the '
+                'cells, evidence, risk callouts>")\n'
+                "   — promotes to awaiting_ceo_approval. "
+                "CEO is the final approver."
+            )
+        else:
+            target_line = (
+                "submit_up opens your cell-level PR into the parent task's "
+                "branch and transitions you to awaiting_pm_review for the "
+                "parent PM."
+            )
+            submit_step = (
+                f'4. submit_up(task_id="{task_id}",\n'
+                '       notes="<cell summary: what your cell shipped, '
+                'evidence>")\n'
+                "   — opens cell-level PR up to the parent's branch and "
+                "transitions to awaiting_pm_review."
+            )
+
+        return f"""You are closing YOUR OWN parent task. All subtasks are
+terminal — promote the merged work one level up the hierarchy.
 
 TASK: {task_id}
 TITLE: {title}
@@ -3903,33 +3901,33 @@ ROOT TASK: {"yes" if is_root else "no"}
 SUBTASK SUMMARY:
 {subtask_summary}
 
+PROMOTION TARGET: {target_line}
+
 == PM CLOSURE WORKFLOW ==
 
-1. REVIEW AGGREGATE
-   - roboco_task_get("{task_id}") — confirm every acceptance criterion.
-   - roboco_git_diff("{project_slug}") — review YOUR branch's aggregate diff (all merged subtask work).
-   - If any subtask PR is still open, review + merge it now:
-     roboco_git_merge_pr("{project_slug}", <pr_number>, "<subtask_id>", "squash")
-     then roboco_task_complete("<subtask_id>").
-   - Needs rework on a subtask: roboco_task_pm_reject("<subtask_id>", notes="specific feedback").
+1. evidence(task_id="{task_id}")
+   — review aggregate state, every acceptance criterion, and each
+   subtask's terminal status. Returns the inline diff for your branch
+   (all merged subtask work).
 
-2. OPEN YOUR PR → {pr_target}
-   - roboco_git_create_pr("{project_slug}", "{task_id}", is_root_pr={is_root_arg})
-   - This sets pr_created on your task. For non-root, targets the parent task's branch automatically.
+2. If any subtask is still in awaiting_pm_review, review + close it FIRST:
+   - APPROVE leaf: complete(task_id="<subtask_id>",
+                            notes="<merge rationale>")
+     (auto-merges the leaf PR into your cell branch).
+   - NEEDS REWORK: leave a clear note(scope='decision',
+     task_id="<subtask_id>", text="...") and rely on the dispatcher to
+     respawn the dev for revision.
 
-3. JOURNAL
-   - roboco_journal_decision: title "Closure: {title}", chosen, rationale, task_id="{task_id}".
+3. note(scope='decision', task_id="{task_id}",
+        text="Closure: {title} — <rationale, AC coverage, risks>")
+   — REQUIRED before submit_up().
 
-4. SUBMIT UP
-   - {submit_call}("{task_id}")
-   - Non-root: your parent PM reviews + merges, then handles their level.
-   - Root: CEO (human) reviews + merges master — you do NOT merge to master.
+{submit_step}
 
-5. IDLE
-   - roboco_agent_idle()
+5. i_am_idle()
 
-Start with step 1.
-"""  # noqa: E501
+Never `commit`, never write code, never run `git`. PMs coordinate.
+"""
 
     def _get_prompt_for_agent(self, agent_slug: str, task: dict[str, Any]) -> str:
         """Get the appropriate prompt based on agent role."""
@@ -4754,66 +4752,60 @@ Start with step 1.
             Markdown-formatted instructions for the current state
         """
         instructions = {
-            "NEEDS_PLAN": f"""## NEXT STEP: Submit Plan
+            "NEEDS_PLAN": f"""## NEXT STEP: Claim + Plan + Start
 
-You MUST submit a plan before starting work.
+Call i_will_work_on(task_id="{task_id}",
+    plan="<approach, ordered steps, risks, open questions>").
 
-Call roboco_task_plan("{task_id}", {{
-    "approach": "Your implementation strategy",
-    "sub_tasks": [
-        {{"title": "Step 1", "description": "First action"}},
-        {{"title": "Step 2", "description": "Next action"}}
-    ],
-    "risks": ["Potential issues"],
-    "open_questions": ["Clarifications needed"]
-}})
-
-You CANNOT call roboco_task_start() until plan is submitted.
+This single verb claims the task, records your plan, and transitions
+to in_progress.
 """,
             "READY_TO_START": f"""## NEXT STEP: Start Work
 
-Your plan is approved. Call roboco_task_start("{task_id}") to begin.
-
-Then proceed to execute your sub_tasks using roboco_git_* tools.
+Call i_will_work_on(task_id="{task_id}", plan="<your plan as a string>")
+to begin.
 """,
             "EXECUTING": """## IN PROGRESS
 
-Continue development. REQUIRED GATES before you can submit for QA
-(enforced server-side - ignoring them returns 400):
-1. roboco_git_commit() - at least one commit on this task
-2. roboco_git_push() - push the branch
-3. roboco_git_create_pr() - open the PR; task.pr_number MUST be set
-4. roboco_task_progress() - at least one progress update (percent + note)
+Continue development. Required gates before i_am_done() will succeed
+(enforced server-side — `remediate` tells you what's missing):
+1. commit("<type(scope): subject, >=20 chars>")
+   — stages tracked changes; auto-prefixes task ID. Repeat per chunk.
+2. i_have_committed("<progress note>")
+   — record at least one progress entry.
+3. note(scope='decision'|'learning'|'reflect', task_id="...", text=...)
+   as you make trade-offs.
 
-In addition:
-- roboco_journal_* to log decisions/learnings as you work
-- When all acceptance criteria are met AND steps 1-4 are done:
-  roboco_task_submit_verification() then roboco_task_submit_qa().
+When acceptance criteria are met, call
+i_am_done(task_id="...", notes="<self-verification summary>"):
+this chains submit_verification + push + create_pr + submit_qa in one verb.
 
-QA will REJECT the task if pr_number is not set - don't ask QA to
-review unpushed or un-PR'd work.
+If you hit something you can't unblock yourself:
+i_am_blocked(task_id="...",
+    reason="<blocked_external|low_context|...>").
 """,
             "REVISION_REQUIRED": f"""## REVISION REQUESTED
 
 QA or PM requested changes:
-1. Call roboco_task_get("{task_id}") to see feedback
-2. Call roboco_task_claim("{task_id}") to reclaim
-3. Update plan if needed: roboco_task_plan()
-4. Call roboco_task_start("{task_id}") to resume
+1. evidence(task_id="{task_id}") — read qa_notes / pm_notes / inline diff
+2. i_will_work_on(task_id="{task_id}",
+   plan="<revised plan addressing each issue>")
+3. commit() the fixes, then
+   i_am_done(task_id="{task_id}", notes="<what was fixed>")
 """,
-            "VERIFYING": """## SELF-VERIFICATION
+            "VERIFYING": f"""## SELF-VERIFICATION
 
-Run quality checks and verify against acceptance criteria:
-1. Run tests, lint, type checks
-2. Review changes with roboco_git_diff()
-3. Confirm the PR is OPEN on GitHub (roboco_task_get → pr_number not null)
-4. Confirm you have at least one roboco_task_progress() update
-3. If all good: roboco_task_submit_qa()
-4. If issues found: fix and commit
+Run the project's quality checks against acceptance criteria:
+1. Run tests, lint, type checks in your workspace.
+2. evidence(task_id="{task_id}") — sanity-check inline diff + commits.
+3. If everything passes:
+   i_am_done(task_id="{task_id}", notes="<verification summary>")
+   — chains submit_verification + push + create_pr + submit_qa.
+4. If issues found: commit() the fixes and retry.
 """,
         }
         return instructions.get(
-            state, f'Call roboco_task_get("{task_id}") to check status.'
+            state, f'Call evidence(task_id="{task_id}") to check status.'
         )
 
     def _build_dev_prompt(self, task: dict[str, Any]) -> str:
@@ -4836,7 +4828,9 @@ WORKFLOW STATE: {workflow_state}
 
 {instructions}
 
-Start by calling roboco_task_get("{task_id}") for full details.
+Start by calling evidence(task_id="{task_id}") for full details and acceptance criteria.
+
+When out of work: i_am_idle().
 """
 
     def _build_qa_prompt(self, task: dict[str, Any]) -> str:
@@ -4853,15 +4847,27 @@ TITLE: {title}
 DEVELOPER: {assigned_to}
 TEAM: {team}
 
-Begin QA review:
+== QA WORKFLOW ==
 
-1. Call roboco_task_get("{task_id}") for full details and acceptance criteria
-2. Review the implementation against ALL acceptance criteria
-3. Test the changes thoroughly
-4. Call roboco_task_qa_pass() with notes if approved
-   OR roboco_task_qa_fail() with specific issues if rejected
-5. Call roboco_task_scan() to check for more QA work
-6. If no more work, call roboco_agent_idle() to shutdown gracefully
+1. claim_review(task_id="{task_id}")
+   — assigns the QA seat; returns inline diff + PR + commits as evidence.
+   The PR is already open (dev opened it before submitting QA);
+   review on GitHub if you need more context.
+2. Review the implementation against EVERY acceptance criterion.
+   Run/read tests; sanity-check the diff for regressions, security,
+   and scope creep.
+3. Decide:
+   - PASS: pass(task_id="{task_id}",
+            notes="<>=80 chars: what you verified, which AC, evidence>")
+     — transitions awaiting_qa → awaiting_documentation.
+   - FAIL: fail(task_id="{task_id}",
+            issues=["concrete issue 1", "concrete issue 2", ...])
+     — transitions to needs_revision; each issue must be specific and
+     actionable.
+4. note(scope='reflect'|'learning', task_id="{task_id}", text=...)
+   for anything worth flagging.
+5. give_me_work() to pick up the next QA item,
+   or i_am_idle() if the queue is empty.
 """
 
     def _build_doc_prompt(self, task: dict[str, Any]) -> str:
@@ -4870,42 +4876,64 @@ Begin QA review:
         title = task.get("title", "Untitled")
         team = task.get("team", "unknown")
 
-        return f"""A task is ready for documentation.
+        return f"""A task is ready for documentation. The dev's PR is already open
+— you're documenting alongside the QA-passed branch.
 
 TASK ID: {task_id}
 TITLE: {title}
 TEAM: {team}
 
-Begin documentation:
+== DOC WORKFLOW ==
 
-1. Call roboco_task_get("{task_id}") for full details and dev handoff notes
-2. Create or update documentation based on what was implemented
-3. Ensure code comments, README updates, API docs as needed
-4. Call roboco_task_docs_complete("{task_id}") when documentation is done
-5. Call roboco_task_scan() to check for more documentation work
-6. If no more work, call roboco_agent_idle() to shutdown gracefully
+1. claim_doc_task(task_id="{task_id}")
+   — assigns the doc seat and opens your workspace on the task's branch.
+2. evidence(task_id="{task_id}") — read dev handoff notes, qa_notes,
+   and the inline diff so the docs reflect what actually shipped.
+3. Write/update docs in your workspace: README sections, API references,
+   code comments, migration notes, or new docs files as the change requires.
+4. commit("docs(scope): <subject, >=20 chars>") per logical doc chunk
+   — auto-prefixes the task ID and stages tracked changes.
+5. i_documented(task_id="{task_id}",
+   notes="<>=20 chars: what you documented and where>",
+   files=["docs/foo.md", "README.md", ...])
+   — transitions awaiting_documentation → awaiting_pm_review.
+6. give_me_work() for the next doc item,
+   or i_am_idle() if the queue is empty.
 """
 
     def _build_pm_review_prompt(self, task: dict[str, Any]) -> str:
-        """Build initial prompt for PM to review and complete a task."""
+        """Prompt for PM reviewing a SUBTASK in awaiting_pm_review."""
         task_id = task.get("id", "unknown")
         title = task.get("title", "Untitled")
         team = task.get("team", "unknown")
 
-        return f"""A task is awaiting your PM review for final completion.
+        return f"""A SUBTASK in your cell is awaiting your PM review.
+It has passed QA and documentation; the leaf PR is open and ready to merge.
 
 TASK ID: {task_id}
 TITLE: {title}
 TEAM: {team}
 
-This task has passed QA and documentation. Review and complete:
+== PM REVIEW WORKFLOW (leaf subtask) ==
 
-1. Call roboco_task_get("{task_id}") to review the task details
-2. Verify dev_notes, QA notes, and documentation are satisfactory
-3. If this task has subtasks, verify all subtasks are completed
-4. Call roboco_task_complete("{task_id}") to finalize the task
-5. Call roboco_task_scan() to check for more tasks needing review
-6. If no more work, call roboco_agent_idle() to shutdown gracefully
+1. evidence(task_id="{task_id}")
+   — review PR, commits, inline diff, dev_notes, qa_notes, doc files.
+2. Spot-check that:
+   - every acceptance criterion is satisfied,
+   - QA's pass notes line up with the actual diff,
+   - docs reflect what shipped.
+3. note(scope='decision', task_id="{task_id}",
+        text="<approve rationale or rejection reason>")
+   — REQUIRED before complete().
+4. Decide:
+   - APPROVE: complete(task_id="{task_id}", notes="<merge rationale>")
+     — auto-merges the leaf PR and finalizes the subtask.
+   - NEEDS REWORK: leave a clear note(scope='decision', text="...") and
+     rely on the dispatcher to respawn the dev for revision.
+     Use escalate_up only if the issue is truly outside your cell.
+5. give_me_work() / triage() for the next item, or i_am_idle().
+
+Never `commit`, never write code, never run `git`. PMs coordinate.
 """
 
     def _build_marketing_prompt(self, task: dict[str, Any]) -> str:
