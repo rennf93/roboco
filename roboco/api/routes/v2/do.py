@@ -1,0 +1,91 @@
+"""Content-tool HTTP endpoints. Thin handlers; delegate to ContentActions."""
+
+from typing import Annotated
+from uuid import UUID
+
+from fastapi import APIRouter, Depends, Header
+
+from roboco.api.deps import get_content_actions
+from roboco.api.schemas.v2.do import (
+    CommitRequest,
+    DmRequest,
+    EvidenceRequest,
+    NoteRequest,
+    SayRequest,
+)
+from roboco.services.gateway.content_actions import ContentActions
+
+router = APIRouter(prefix="/api/v2/do", tags=["v2-do"])
+
+_AgentIdHeader = Annotated[UUID, Header(alias="X-Agent-ID")]
+_ContentActionsDep = Annotated[ContentActions, Depends(get_content_actions)]
+
+
+@router.post("/commit")
+async def do_commit(
+    body: CommitRequest,
+    x_agent_id: _AgentIdHeader,
+    actions: _ContentActionsDep,
+) -> dict:
+    env = await actions.commit(
+        agent_id=x_agent_id,
+        message=body.message,
+        files=body.files,
+    )
+    return env.as_dict()
+
+
+@router.post("/note")
+async def do_note(
+    body: NoteRequest,
+    x_agent_id: _AgentIdHeader,
+    actions: _ContentActionsDep,
+) -> dict:
+    env = await actions.note(
+        agent_id=x_agent_id,
+        text=body.text,
+        scope=body.scope,
+        task_id=body.task_id,
+    )
+    return env.as_dict()
+
+
+@router.post("/say")
+async def do_say(
+    body: SayRequest,
+    x_agent_id: _AgentIdHeader,
+    actions: _ContentActionsDep,
+) -> dict:
+    env = await actions.say(
+        agent_id=x_agent_id,
+        channel=body.channel,
+        text=body.text,
+        task_id=body.task_id,
+    )
+    return env.as_dict()
+
+
+@router.post("/dm")
+async def do_dm(
+    body: DmRequest,
+    x_agent_id: _AgentIdHeader,
+    actions: _ContentActionsDep,
+) -> dict:
+    env = await actions.dm(
+        agent_id=x_agent_id,
+        recipient=body.recipient,
+        text=body.text,
+        task_id=body.task_id,
+        skill=body.skill,
+    )
+    return env.as_dict()
+
+
+@router.post("/evidence")
+async def do_evidence(
+    body: EvidenceRequest,
+    x_agent_id: _AgentIdHeader,
+    actions: _ContentActionsDep,
+) -> dict:
+    env = await actions.evidence(agent_id=x_agent_id, task_id=body.task_id)
+    return env.as_dict()

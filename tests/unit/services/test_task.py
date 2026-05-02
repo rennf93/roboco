@@ -1,0 +1,555 @@
+"""Unit tests for TaskService gateway-backfill methods.
+
+These cover the methods the Choreographer calls into; full end-to-end
+behavior is exercised by the gateway tests. Each test mocks the DB
+session boundary and checks the method's contract.
+"""
+
+from __future__ import annotations
+
+from datetime import datetime
+from unittest.mock import AsyncMock, MagicMock
+from uuid import uuid4
+
+import pytest
+from roboco.models.base import (
+    AgentRole,
+    AgentStatus,
+    BlockerResolverType,
+    TaskStatus,
+    Team,
+)
+from roboco.services.task import GatewayAgentView, TaskService
+
+
+def _build_task(**overrides: object) -> MagicMock:
+    base: dict[str, object] = {
+        "id": uuid4(),
+        "status": TaskStatus.PENDING,
+        "branch_name": "feature/backend/abc12345",
+        "assigned_to": None,
+        "claimed_by": None,
+        "claimed_at": None,
+        "plan": None,
+        "qa_evidence_inspected": False,
+        "pre_block_state": None,
+        "pre_block_assignee": None,
+        "pre_block_metadata": None,
+        "blocker_resolver_type": None,
+        "blocker_raised_by": None,
+        "commits": [],
+        "dev_notes": None,
+    }
+    base.update(overrides)
+    return MagicMock(**base)
+
+
+def _service_with(execute_returns: object) -> TaskService:
+    """Build a TaskService whose session.execute returns `execute_returns`."""
+    session = MagicMock()
+    session.execute = AsyncMock(return_value=execute_returns)
+    session.flush = AsyncMock()
+    return TaskService(session)
+
+
+def _bind(svc: TaskService, name: str, value: object) -> None:
+    """Stub `name` on `svc` without tripping mypy's method-assign check."""
+    object.__setattr__(svc, name, value)
+
+
+# ---------------------------------------------------------------------------
+# Aliases / thin wrappers
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_list_blocked_for_team_filters_by_team() -> None:
+    svc = TaskService(MagicMock())
+    list_blocked_mock = AsyncMock(return_value=[MagicMock(id="t1")])
+    _bind(svc, "list_blocked", list_blocked_mock)
+    out = await svc.list_blocked_for_team(Team.BACKEND)
+    list_blocked_mock.assert_awaited_once_with(team=Team.BACKEND)
+    assert len(out) == 1
+
+
+@pytest.mark.asyncio
+async def test_list_blocked_all_teams_passes_no_team() -> None:
+    svc = TaskService(MagicMock())
+    list_blocked_mock = AsyncMock(return_value=[])
+    _bind(svc, "list_blocked", list_blocked_mock)
+    await svc.list_blocked_all_teams()
+    list_blocked_mock.assert_awaited_once_with()
+
+
+@pytest.mark.asyncio
+async def test_list_awaiting_pm_review_for_team_passes_team() -> None:
+    svc = TaskService(MagicMock())
+    list_pm_mock = AsyncMock(return_value=[])
+    _bind(svc, "list_awaiting_pm_review", list_pm_mock)
+    await svc.list_awaiting_pm_review_for_team(Team.FRONTEND)
+    list_pm_mock.assert_awaited_once_with(team=Team.FRONTEND)
+
+
+@pytest.mark.asyncio
+async def test_submit_verification_records_progress_when_notes_given() -> None:
+    svc = TaskService(MagicMock())
+    add_progress_mock = AsyncMock()
+    submit_for_verification_mock = AsyncMock(return_value=MagicMock())
+    _bind(svc, "add_progress", add_progress_mock)
+    _bind(svc, "submit_for_verification", submit_for_verification_mock)
+    agent_id = uuid4()
+    task_id = uuid4()
+    await svc.submit_verification(agent_id, task_id, "implemented login")
+    add_progress_mock.assert_awaited_once_with(task_id, agent_id, "implemented login")
+    submit_for_verification_mock.assert_awaited_once_with(
+        task_id, agent_role="developer"
+    )
+
+
+@pytest.mark.asyncio
+async def test_submit_verification_skips_progress_when_notes_empty() -> None:
+    svc = TaskService(MagicMock())
+    add_progress_mock = AsyncMock()
+    _bind(svc, "add_progress", add_progress_mock)
+    _bind(svc, "submit_for_verification", AsyncMock(return_value=MagicMock()))
+    await svc.submit_verification(uuid4(), uuid4(), "")
+    add_progress_mock.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_submit_qa_records_progress_when_notes_given() -> None:
+    svc = TaskService(MagicMock())
+    add_progress_mock = AsyncMock()
+    submit_for_qa_mock = AsyncMock(return_value=MagicMock())
+    _bind(svc, "add_progress", add_progress_mock)
+    _bind(svc, "submit_for_qa", submit_for_qa_mock)
+    agent_id = uuid4()
+    task_id = uuid4()
+    await svc.submit_qa(agent_id, task_id, "ready for review")
+    add_progress_mock.assert_awaited_once()
+    submit_for_qa_mock.assert_awaited_once_with(task_id, agent_role="developer")
+
+
+# ---------------------------------------------------------------------------
+# list_assigned_for_agent
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_list_assigned_for_agent_returns_active_tasks() -> None:
+    expected_tasks = [MagicMock(id="t1"), MagicMock(id="t2")]
+    scalars = MagicMock()
+    scalars.all.return_value = expected_tasks
+    result = MagicMock()
+    result.scalars.return_value = scalars
+    svc = _service_with(result)
+    out = await svc.list_assigned_for_agent(uuid4())
+    assert out == expected_tasks
+
+
+# ---------------------------------------------------------------------------
+# agent_for
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_agent_for_returns_view_with_role_team_skills(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    fake_agent = MagicMock(
+        id=uuid4(), slug="be-pm", role=AgentRole.CELL_PM, team=Team.BACKEND
+    )
+    result = MagicMock()
+    result.scalar_one_or_none.return_value = fake_agent
+    svc = _service_with(result)
+
+    monkeypatch.setattr(
+        "roboco.agents_config.get_escalation_target", lambda _slug: "main_pm"
+    )
+    monkeypatch.setattr(
+        "roboco.agents_config.get_agent_skills",
+        lambda _slug: [{"id": "task_management"}],
+    )
+    view = await svc.agent_for(uuid4())
+    assert isinstance(view, GatewayAgentView)
+    assert view.role == "cell_pm"
+    assert view.team == "backend"
+    assert view.escalation_target == "main_pm"
+    assert view.skills == [{"id": "task_management"}]
+
+
+@pytest.mark.asyncio
+async def test_agent_for_returns_none_when_missing() -> None:
+    result = MagicMock()
+    result.scalar_one_or_none.return_value = None
+    svc = _service_with(result)
+    assert await svc.agent_for(uuid4()) is None
+
+
+# ---------------------------------------------------------------------------
+# qa/documenter/cell_pm for_team
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_qa_agent_for_team_finds_qa() -> None:
+    qa = MagicMock(id=uuid4(), role=AgentRole.QA, team=Team.BACKEND)
+    scalars = MagicMock()
+    scalars.first.return_value = qa
+    result = MagicMock()
+    result.scalars.return_value = scalars
+    svc = _service_with(result)
+    out = await svc.qa_agent_for_team(Team.BACKEND)
+    assert out is qa
+
+
+@pytest.mark.asyncio
+async def test_documenter_for_team_returns_none_when_missing() -> None:
+    scalars = MagicMock()
+    scalars.first.return_value = None
+    result = MagicMock()
+    result.scalars.return_value = scalars
+    svc = _service_with(result)
+    assert await svc.documenter_for_team(Team.BACKEND) is None
+
+
+@pytest.mark.asyncio
+async def test_cell_pm_for_team_finds_pm() -> None:
+    pm = MagicMock(id=uuid4(), role=AgentRole.CELL_PM, team=Team.UX_UI)
+    scalars = MagicMock()
+    scalars.first.return_value = pm
+    result = MagicMock()
+    result.scalars.return_value = scalars
+    svc = _service_with(result)
+    assert await svc.cell_pm_for_team(Team.UX_UI) is pm
+
+
+# ---------------------------------------------------------------------------
+# get_active_task_for_agent + list_paused_for_agent
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_get_active_task_for_agent_returns_top_task() -> None:
+    task = MagicMock(id=uuid4(), status=TaskStatus.IN_PROGRESS)
+    result = MagicMock()
+    result.scalar_one_or_none.return_value = task
+    svc = _service_with(result)
+    assert await svc.get_active_task_for_agent(uuid4()) is task
+
+
+@pytest.mark.asyncio
+async def test_list_paused_for_agent_returns_paused_tasks() -> None:
+    paused = [MagicMock(id=uuid4(), status=TaskStatus.PAUSED)]
+    scalars = MagicMock()
+    scalars.all.return_value = paused
+    result = MagicMock()
+    result.scalars.return_value = scalars
+    svc = _service_with(result)
+    out = await svc.list_paused_for_agent(uuid4())
+    assert out == paused
+
+
+# ---------------------------------------------------------------------------
+# list_awaiting_main_pm_all
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_list_awaiting_main_pm_all_returns_root_tasks() -> None:
+    roots = [MagicMock(id=uuid4(), parent_task_id=None)]
+    scalars = MagicMock()
+    scalars.all.return_value = roots
+    result = MagicMock()
+    result.scalars.return_value = scalars
+    svc = _service_with(result)
+    out = await svc.list_awaiting_main_pm_all()
+    assert out == roots
+
+
+# ---------------------------------------------------------------------------
+# all_subtasks_terminal
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_all_subtasks_terminal_true_when_all_completed() -> None:
+    scalars = MagicMock()
+    scalars.all.return_value = [TaskStatus.COMPLETED, TaskStatus.CANCELLED]
+    result = MagicMock()
+    result.scalars.return_value = scalars
+    svc = _service_with(result)
+    assert await svc.all_subtasks_terminal(uuid4()) is True
+
+
+@pytest.mark.asyncio
+async def test_all_subtasks_terminal_false_when_one_active() -> None:
+    scalars = MagicMock()
+    scalars.all.return_value = [TaskStatus.COMPLETED, TaskStatus.IN_PROGRESS]
+    result = MagicMock()
+    result.scalars.return_value = scalars
+    svc = _service_with(result)
+    assert await svc.all_subtasks_terminal(uuid4()) is False
+
+
+@pytest.mark.asyncio
+async def test_all_subtasks_terminal_true_when_no_subtasks() -> None:
+    scalars = MagicMock()
+    scalars.all.return_value = []
+    result = MagicMock()
+    result.scalars.return_value = scalars
+    svc = _service_with(result)
+    assert await svc.all_subtasks_terminal(uuid4()) is True
+
+
+# ---------------------------------------------------------------------------
+# set_plan
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_set_plan_wraps_string_into_text_dict() -> None:
+    task = _build_task()
+    svc = TaskService(MagicMock(flush=AsyncMock()))
+    _bind(svc, "get", AsyncMock(return_value=task))
+    out = await svc.set_plan(task.id, "do the thing")
+    assert task.plan == {"text": "do the thing"}
+    assert out is task
+
+
+@pytest.mark.asyncio
+async def test_set_plan_passes_dict_through() -> None:
+    task = _build_task()
+    svc = TaskService(MagicMock(flush=AsyncMock()))
+    _bind(svc, "get", AsyncMock(return_value=task))
+    out = await svc.set_plan(task.id, {"steps": ["a", "b"]})
+    assert task.plan == {"steps": ["a", "b"]}
+    assert out is task
+
+
+@pytest.mark.asyncio
+async def test_set_plan_returns_none_when_task_missing() -> None:
+    svc = TaskService(MagicMock(flush=AsyncMock()))
+    _bind(svc, "get", AsyncMock(return_value=None))
+    assert await svc.set_plan(uuid4(), "plan") is None
+
+
+# ---------------------------------------------------------------------------
+# mark_evidence_inspected + mark_agent_idle
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_mark_evidence_inspected_sets_flag() -> None:
+    task = _build_task(qa_evidence_inspected=False)
+    svc = TaskService(MagicMock(flush=AsyncMock()))
+    _bind(svc, "get", AsyncMock(return_value=task))
+    await svc.mark_evidence_inspected(task.id)
+    assert task.qa_evidence_inspected is True
+
+
+@pytest.mark.asyncio
+async def test_mark_evidence_inspected_no_op_on_missing_task() -> None:
+    svc = TaskService(MagicMock(flush=AsyncMock()))
+    _bind(svc, "get", AsyncMock(return_value=None))
+    await svc.mark_evidence_inspected(uuid4())  # must not raise
+
+
+@pytest.mark.asyncio
+async def test_mark_agent_idle_sets_status_idle() -> None:
+    agent = MagicMock(id=uuid4(), status=AgentStatus.ACTIVE)
+    result = MagicMock()
+    result.scalar_one_or_none.return_value = agent
+    svc = _service_with(result)
+    await svc.mark_agent_idle(agent.id)
+    assert agent.status == AgentStatus.IDLE
+
+
+# ---------------------------------------------------------------------------
+# qa_claim / doc_claim
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_qa_claim_sets_assignment_on_awaiting_qa() -> None:
+    task = _build_task(status=TaskStatus.AWAITING_QA)
+    svc = TaskService(MagicMock(flush=AsyncMock()))
+    _bind(svc, "get", AsyncMock(return_value=task))
+    qa_id = uuid4()
+    out = await svc.qa_claim(qa_id, task.id)
+    assert out is task
+    assert task.assigned_to == qa_id
+    assert task.claimed_by == qa_id
+    assert isinstance(task.claimed_at, datetime)
+
+
+@pytest.mark.asyncio
+async def test_qa_claim_rejects_wrong_status() -> None:
+    task = _build_task(status=TaskStatus.IN_PROGRESS)
+    svc = TaskService(MagicMock(flush=AsyncMock()))
+    _bind(svc, "get", AsyncMock(return_value=task))
+    out = await svc.qa_claim(uuid4(), task.id)
+    assert out is None
+
+
+@pytest.mark.asyncio
+async def test_doc_claim_sets_assignment_on_awaiting_documentation() -> None:
+    task = _build_task(status=TaskStatus.AWAITING_DOCUMENTATION)
+    svc = TaskService(MagicMock(flush=AsyncMock()))
+    _bind(svc, "get", AsyncMock(return_value=task))
+    doc_id = uuid4()
+    out = await svc.doc_claim(doc_id, task.id)
+    assert out is task
+    assert task.assigned_to == doc_id
+
+
+# ---------------------------------------------------------------------------
+# qa_pass / qa_fail
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_qa_pass_delegates_to_pass_qa() -> None:
+    svc = TaskService(MagicMock())
+    pass_qa_mock = AsyncMock(return_value=MagicMock())
+    _bind(svc, "pass_qa", pass_qa_mock)
+    task_id = uuid4()
+    await svc.qa_pass(uuid4(), task_id, "looks good")
+    pass_qa_mock.assert_awaited_once_with(task_id, notes="looks good", agent_role="qa")
+
+
+@pytest.mark.asyncio
+async def test_qa_fail_appends_issues_to_dev_notes() -> None:
+    task = _build_task(dev_notes=None)
+    svc = TaskService(MagicMock(flush=AsyncMock()))
+    fail_qa_mock = AsyncMock(return_value=task)
+    _bind(svc, "get", AsyncMock(return_value=task))
+    _bind(svc, "fail_qa", fail_qa_mock)
+    issues = ["missing test", "no docstring"]
+    await svc.qa_fail(uuid4(), task.id, "blocking", issues)
+    assert task.dev_notes is not None
+    assert "missing test" in task.dev_notes
+    assert "no docstring" in task.dev_notes
+    fail_qa_mock.assert_awaited_once_with(task.id, notes="blocking", agent_role="qa")
+
+
+# ---------------------------------------------------------------------------
+# unblock_with_restore
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_unblock_with_restore_returns_to_pre_block_state() -> None:
+    pre_assignee = uuid4()
+    task = _build_task(
+        status=TaskStatus.BLOCKED,
+        pre_block_state="in_progress",
+        pre_block_assignee=pre_assignee,
+        pre_block_metadata={"foo": "bar"},
+        blocker_resolver_type=BlockerResolverType.AGENT,
+        blocker_raised_by=pre_assignee,
+    )
+    svc = TaskService(MagicMock(flush=AsyncMock()))
+    _bind(svc, "get", AsyncMock(return_value=task))
+    out = await svc.unblock_with_restore(uuid4(), task.id, restore=True)
+    assert out is task
+    assert task.status == TaskStatus.IN_PROGRESS
+    assert task.assigned_to == pre_assignee
+    assert task.pre_block_state is None
+    assert task.pre_block_assignee is None
+
+
+@pytest.mark.asyncio
+async def test_unblock_with_restore_falls_through_when_no_snapshot() -> None:
+    task = _build_task(status=TaskStatus.BLOCKED, pre_block_state=None)
+    svc = TaskService(MagicMock(flush=AsyncMock()))
+    unblock_mock = AsyncMock(return_value=task)
+    _bind(svc, "get", AsyncMock(return_value=task))
+    _bind(svc, "unblock", unblock_mock)
+    out = await svc.unblock_with_restore(uuid4(), task.id, restore=True)
+    unblock_mock.assert_awaited_once()
+    assert out is task
+
+
+@pytest.mark.asyncio
+async def test_unblock_with_restore_calls_legacy_unblock_when_restore_false() -> None:
+    task = _build_task(
+        status=TaskStatus.BLOCKED, pre_block_state=TaskStatus.IN_PROGRESS.value
+    )
+    svc = TaskService(MagicMock(flush=AsyncMock()))
+    unblock_mock = AsyncMock(return_value=task)
+    _bind(svc, "get", AsyncMock(return_value=task))
+    _bind(svc, "unblock", unblock_mock)
+    await svc.unblock_with_restore(uuid4(), task.id, restore=False)
+    unblock_mock.assert_awaited_once()
+
+
+# ---------------------------------------------------------------------------
+# cell_pm_complete
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_cell_pm_complete_appends_merge_commit() -> None:
+    task = _build_task(commits=[{"hash": "old", "message": "earlier"}])
+    svc = TaskService(MagicMock(flush=AsyncMock()))
+    complete_mock = AsyncMock(return_value=task)
+    _bind(svc, "get", AsyncMock(return_value=task))
+    _bind(svc, "complete", complete_mock)
+    pm_id = uuid4()
+    await svc.cell_pm_complete(pm_id, task.id, "all good", merge_commit="deadbeef")
+    assert task.commits[-1]["hash"] == "deadbeef"
+    assert task.commits[-1]["kind"] == "merge"
+    complete_mock.assert_awaited_once_with(task.id, agent_id=pm_id)
+
+
+@pytest.mark.asyncio
+async def test_cell_pm_complete_skips_merge_when_none() -> None:
+    task = _build_task(commits=[])
+    svc = TaskService(MagicMock(flush=AsyncMock()))
+    complete_mock = AsyncMock(return_value=task)
+    _bind(svc, "get", AsyncMock(return_value=task))
+    _bind(svc, "complete", complete_mock)
+    await svc.cell_pm_complete(uuid4(), task.id, "all good", merge_commit=None)
+    assert task.commits == []
+
+
+# ---------------------------------------------------------------------------
+# escalate / escalate_up_to_role
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_escalate_returns_none_when_no_target_configured(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    task = _build_task()
+    agent = MagicMock(id=uuid4(), slug="lone-agent")
+    agent_result = MagicMock()
+    agent_result.scalar_one_or_none.return_value = agent
+
+    session = MagicMock()
+    session.execute = AsyncMock(return_value=agent_result)
+    session.flush = AsyncMock()
+    svc = TaskService(session)
+    _bind(svc, "get", AsyncMock(return_value=task))
+    monkeypatch.setattr(
+        "roboco.agents_config.get_escalation_target", lambda _slug: None
+    )
+    out = await svc.escalate(uuid4(), task.id, "stuck")
+    assert out is None
+
+
+@pytest.mark.asyncio
+async def test_escalate_up_to_role_returns_none_for_unknown_role() -> None:
+    task = _build_task()
+    agent = MagicMock(id=uuid4(), slug="some-agent")
+    agent_result = MagicMock()
+    agent_result.scalar_one_or_none.return_value = agent
+
+    session = MagicMock()
+    session.execute = AsyncMock(return_value=agent_result)
+    svc = TaskService(session)
+    _bind(svc, "get", AsyncMock(return_value=task))
+    out = await svc.escalate_up_to_role(uuid4(), task.id, "bogus_role", "reason")
+    assert out is None

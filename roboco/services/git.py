@@ -471,7 +471,9 @@ class GitService(BaseService):
             description=request.message,
             body=request.body,
         )
-        full_message = build_commit_message(commit_ctx, settings.internal_api_url)
+        full_message = build_commit_message(
+            commit_ctx, settings.public_base_url.rstrip("/") + "/api/v1"
+        )
 
         # Create commit with agent attribution
         author = f"{agent_id} <{agent_id}@roboco.ai>"
@@ -1584,6 +1586,240 @@ class GitService(BaseService):
         await self._auto_complete_on_merge(data.task_id, agent_id, agent_role)
         await self.session.commit()
         return target_branch, merge_commit
+
+    # =========================================================================
+    # GATEWAY (CHOREOGRAPHER) BACKFILL
+    #
+    # Branch-keyed entry points. The gateway holds branch_name + pr_number
+    # but not project_slug or workspace path; these methods derive both
+    # from the task that owns the branch.
+    # =========================================================================
+
+    async def _task_for_branch(self, branch_name: str) -> TaskTable | None:
+        """Find the task whose branch_name matches `branch_name`."""
+        from sqlalchemy import select
+
+        from roboco.db.tables import TaskTable as _TaskTable
+
+        result = await self.session.execute(
+            select(_TaskTable).where(_TaskTable.branch_name == branch_name).limit(1)
+        )
+        return result.scalar_one_or_none()
+
+    async def _project_slug_for_branch(self, branch_name: str) -> str | None:
+        """Resolve project slug via the task that owns the branch."""
+        task = await self._task_for_branch(branch_name)
+        if task is None:
+            return None
+        project_service = get_project_service(self.session)
+        project = await project_service.get(UUID(str(task.project_id)))
+        return project.slug if project else None
+
+    async def _workspace_for_branch(self, branch_name: str) -> Path:
+        """Get a workspace where this branch can be operated on.
+
+        Uses the assignee's workspace when one is recorded; otherwise
+        falls back to the project's static workspace_path.
+        """
+        task = await self._task_for_branch(branch_name)
+        if task is None:
+            raise NotFoundError("Branch", branch_name)
+        project_service = get_project_service(self.session)
+        project = await project_service.get(UUID(str(task.project_id)))
+        if project is None:
+            raise NotFoundError("Project", str(task.project_id))
+        agent_id = UUID(str(task.assigned_to)) if task.assigned_to is not None else None
+        return await self.get_workspace(project.slug, agent_id=agent_id)
+
+    async def push_branch(self, branch_name: str) -> tuple[str, int]:
+        """Push `branch_name` to origin from the assignee's workspace.
+
+        Gateway-only entry point — the legacy `push(workspace, force)`
+        signature stays intact for non-gateway callers. Resolves the
+        workspace from the task that owns the branch, then delegates.
+        Returns (branch, commits_pushed).
+        """
+        workspace = await self._workspace_for_branch(branch_name)
+        return await self.push(workspace)
+
+    async def create_pr(
+        self,
+        branch_name: str,
+        *,
+        parent: str,
+        is_root_pr: bool,
+    ) -> dict[str, Any]:
+        """Open a PR for `branch_name` targeting `parent`.
+
+        Returns: ``{"pr_number": int, "pr_url": str}``. Resolves the
+        underlying project + task from the branch name; the gateway never
+        passes a project_slug. The `parent` arg supersedes the task's
+        natural parent so root PRs can target master.
+        """
+        task = await self._task_for_branch(branch_name)
+        if task is None:
+            raise NotFoundError("Branch", branch_name)
+        project_service = get_project_service(self.session)
+        project = await project_service.get(UUID(str(task.project_id)))
+        if project is None:
+            raise NotFoundError("Project", str(task.project_id))
+
+        workspace = await self._workspace_for_branch(branch_name)
+        git_token = await self._get_project_token_or_raise(project.slug)
+        owner, repo = self._parse_github_remote(workspace)
+
+        pr_title = f"[{str(task.id)[:8]}] {task.title}"
+        pr_body = task.description or ""
+
+        resp = await self._post_pr(
+            owner,
+            repo,
+            git_token,
+            {
+                "title": pr_title,
+                "body": pr_body,
+                "head": branch_name,
+                "base": parent,
+            },
+        )
+
+        if resp.status_code == _GH_UNPROCESSABLE and "already exists" in resp.text:
+            found = await self._find_existing_pr(
+                owner, repo, branch_name, parent, git_token
+            )
+            if found:
+                pr_number = int(found["number"])
+                pr_url = str(found["html_url"])
+                await self._record_pr_atomically(UUID(str(task.id)), pr_number, pr_url)
+                return {
+                    "pr_number": pr_number,
+                    "pr_url": pr_url,
+                    "is_root_pr": is_root_pr,
+                }
+
+        if not resp.is_success:
+            raise GitError(
+                f"GitHub API refused PR creation ({resp.status_code}): "
+                f"{resp.text[:200]}",
+                {"owner": owner, "repo": repo, "head": branch_name},
+            )
+
+        pr_data = resp.json()
+        pr_number = int(pr_data["number"])
+        pr_url = str(pr_data["html_url"])
+        await self._record_pr_atomically(UUID(str(task.id)), pr_number, pr_url)
+        return {"pr_number": pr_number, "pr_url": pr_url, "is_root_pr": is_root_pr}
+
+    async def pr_merge(self, pr_number: int, *, target: str) -> dict[str, Any]:
+        """Merge PR `pr_number` into `target`.
+
+        Returns: ``{"merge_commit_sha": str | None}``. Looks up the
+        task/project that owns the PR to resolve workspace + token.
+        """
+        from sqlalchemy import select
+
+        from roboco.db.tables import TaskTable as _TaskTable
+
+        result = await self.session.execute(
+            select(_TaskTable).where(_TaskTable.pr_number == pr_number).limit(1)
+        )
+        task = result.scalar_one_or_none()
+        if task is None:
+            raise NotFoundError("PR", str(pr_number))
+        project_service = get_project_service(self.session)
+        project = await project_service.get(UUID(str(task.project_id)))
+        if project is None:
+            raise NotFoundError("Project", str(task.project_id))
+
+        workspace = await self.get_workspace(
+            project.slug,
+            agent_id=UUID(str(task.assigned_to)) if task.assigned_to else None,
+        )
+        git_token = await self._get_project_token_or_raise(project.slug)
+        owner, repo = self._parse_github_remote(workspace)
+
+        resp = await self._call_merge_api(owner, repo, pr_number, git_token, "squash")
+        if not resp.is_success:
+            raise GitError(
+                f"GitHub API refused PR merge ({resp.status_code}): {resp.text[:200]}",
+                {"owner": owner, "repo": repo, "pr": pr_number},
+            )
+        await self._delete_pr_branch_best_effort(owner, repo, pr_number, git_token)
+
+        merge_commit = await self._sync_target_branch(workspace, target, git_token)
+        if task.work_session_id:
+            ws_service = get_work_session_service(self.session)
+            await ws_service.merge_pr(
+                require_uuid(task.work_session_id),
+                UUID(str(task.assigned_to)) if task.assigned_to else UUID(int=0),
+            )
+        return {"merge_commit_sha": merge_commit or None}
+
+    async def pr_target(self, pr_number: int) -> str:
+        """Return the current target (base) branch of an open PR."""
+        from sqlalchemy import select
+
+        from roboco.db.tables import TaskTable as _TaskTable
+
+        result = await self.session.execute(
+            select(_TaskTable).where(_TaskTable.pr_number == pr_number).limit(1)
+        )
+        task = result.scalar_one_or_none()
+        if task is None:
+            raise NotFoundError("PR", str(pr_number))
+        project_service = get_project_service(self.session)
+        project = await project_service.get(UUID(str(task.project_id)))
+        if project is None:
+            raise NotFoundError("Project", str(task.project_id))
+
+        workspace = await self.get_workspace(
+            project.slug,
+            agent_id=UUID(str(task.assigned_to)) if task.assigned_to else None,
+        )
+        owner, repo = self._parse_github_remote(workspace)
+        git_token = await self._get_project_token_or_raise(project.slug)
+
+        try:
+            async with httpx.AsyncClient(timeout=_GIT_TIMEOUT) as client:
+                resp = await client.get(
+                    f"https://api.github.com/repos/{owner}/{repo}/pulls/{pr_number}",
+                    headers={
+                        "Authorization": f"Bearer {git_token}",
+                        "Accept": "application/vnd.github+json",
+                    },
+                )
+        except httpx.HTTPError as e:
+            raise GitError(
+                f"GitHub API error fetching PR #{pr_number}: {e}",
+                {"owner": owner, "repo": repo, "pr": pr_number},
+            ) from e
+        if not resp.is_success:
+            raise GitError(
+                f"GitHub API refused PR fetch ({resp.status_code}): {resp.text[:200]}",
+                {"owner": owner, "repo": repo, "pr": pr_number},
+            )
+        base_ref = (resp.json().get("base") or {}).get("ref")
+        if not base_ref:
+            raise GitError(
+                f"PR #{pr_number} has no base ref",
+                {"owner": owner, "repo": repo, "pr": pr_number},
+            )
+        return str(base_ref)
+
+    async def diff(self, *, branch_name: str) -> str:
+        """Return the git diff for `branch_name` against its parent or master."""
+        from roboco.services.gateway.merge_chain import parent_branch_for
+
+        workspace = await self._workspace_for_branch(branch_name)
+        parent = parent_branch_for(branch_name)
+        # Make sure the parent ref exists locally before diffing.
+        await self._run_git(workspace, ["fetch", "origin", parent], check=False)
+        diff_result = await self._run_git(
+            workspace,
+            ["diff", f"origin/{parent}...{branch_name}"],
+            check=False,
+        )
+        return diff_result.stdout
 
 
 def get_git_service(session: AsyncSession) -> GitService:

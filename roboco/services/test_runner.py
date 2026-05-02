@@ -169,6 +169,14 @@ class TestRunnerService(BaseService):
                 service_name="test_runner",
                 reason=f"Command timed out after {timeout}s: {command}",
             ) from e
+        except FileNotFoundError as e:
+            binary = argv[0] if argv else command
+            raise ValidationError(
+                f"Command binary not found: '{binary}'. "
+                "Update the project's configured command (e.g., replace 'make test' "
+                "with 'uv run pytest') or ensure the binary is installed in the "
+                "runtime environment."
+            ) from e
 
     def _project_cmd(self, project: Any, attr: str) -> str | None:
         """Fetch a configured command for the project, or None if unset.

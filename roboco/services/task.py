@@ -7,7 +7,7 @@ Handles status transitions, assignments, and queries.
 
 import asyncio
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, Any, ClassVar, cast
 from uuid import UUID
 
@@ -29,7 +29,14 @@ from roboco.enforcement import (
     validate_task_transition,
 )
 from roboco.events import Event, EventType, get_event_bus
-from roboco.models.base import AgentRole, BlockerResolverType, TaskStatus, Team
+from roboco.models.base import (
+    AgentRole,
+    AgentStatus,
+    BlockerResolverType,
+    TaskNature,
+    TaskStatus,
+    Team,
+)
 from roboco.models.permissions import AgentContext, TaskAction
 from roboco.models.task import TaskCreateRequest
 from roboco.models.work_session import WorkSessionStatus
@@ -127,6 +134,24 @@ class SoftBlockInfo:
     blocker_type: str
     what_needed: str
     resolver_type: BlockerResolverType | None = None
+
+
+@dataclass(frozen=True)
+class GatewayAgentView:
+    """Read-only union of DB-backed and config-derived agent attributes.
+
+    The Choreographer reads `agent.id`, `agent.role`, `agent.team`,
+    `agent.skills`, and `agent.escalation_target` uniformly. The first
+    three live on AgentTable; the last two come from `agents_config`. This
+    view assembles them so the Choreographer can stay agnostic about
+    storage location.
+    """
+
+    id: UUID
+    role: str
+    team: str | None
+    escalation_target: str | None
+    skills: list[dict[str, Any]]
 
 
 def _default_claim_statuses(role: str | None) -> set[TaskStatus]:
@@ -3662,6 +3687,56 @@ class TaskService(BaseService):
         """List tasks awaiting CEO approval (org-wide, no team filter)."""
         return await self.list_by_status(TaskStatus.AWAITING_CEO_APPROVAL)
 
+    async def list_strategic_for_board(self) -> list[TaskTable]:
+        """Root tasks (no parent) in awaiting_pm_review with strategic nature.
+
+        Strategic = non-technical roots: product strategy, marketing, vision —
+        the work the Board (Product Owner, Head Marketing) curates before
+        escalating to CEO. The codebase models nature as a binary
+        TECHNICAL/NON_TECHNICAL split, so non_technical is the strategic-board
+        bucket.
+        """
+        query = (
+            select(TaskTable)
+            .where(
+                TaskTable.parent_task_id.is_(None),
+                TaskTable.status == TaskStatus.AWAITING_PM_REVIEW,
+                TaskTable.nature == TaskNature.NON_TECHNICAL,
+            )
+            .order_by(
+                TaskTable.priority,
+                TaskTable.sequence,
+                TaskTable.created_at,
+            )
+        )
+        result = await self.session.execute(query)
+        return list(result.scalars().all())
+
+    async def list_long_running_blocked(
+        self, *, threshold_minutes: int = 30
+    ) -> list[TaskTable]:
+        """Tasks in 'blocked' state whose updated_at is older than threshold_minutes.
+
+        Surfaces anomalies for the Auditor to observe. Most-stale first, ordered by
+        updated_at ascending so the oldest blocker is at the head of the list.
+        """
+        cutoff = datetime.now(UTC) - timedelta(minutes=threshold_minutes)
+        query = (
+            select(TaskTable)
+            .where(
+                TaskTable.status == TaskStatus.BLOCKED,
+                TaskTable.updated_at.is_not(None),
+                TaskTable.updated_at < cutoff,
+            )
+            .order_by(
+                TaskTable.updated_at,
+                TaskTable.priority,
+                TaskTable.created_at,
+            )
+        )
+        result = await self.session.execute(query)
+        return list(result.scalars().all())
+
     async def get_subtasks(self, parent_task_id: UUID) -> list[TaskTable]:
         """Get all subtasks of a parent task."""
         result = await self.session.execute(
@@ -4211,6 +4286,463 @@ class TaskService(BaseService):
             if pm_uuid:
                 update_data["assigned_to"] = pm_uuid
         return update_data, target_pm_slug
+
+    # =========================================================================
+    # GATEWAY (CHOREOGRAPHER) BACKFILL
+    #
+    # Thin wrappers + queries the gateway Choreographer composes into
+    # intent-verb sequences. Most are aliases over canonical service
+    # methods; a handful (qa_claim, doc_claim, qa_pass, qa_fail, escalate,
+    # cell_pm_complete) are flow-specific variants that don't fit cleanly
+    # into the existing API.
+    # =========================================================================
+
+    # Active states a developer counts as "current work" for an agent.
+    _DEV_ACTIVE_STATUSES: ClassVar[set[TaskStatus]] = {
+        TaskStatus.CLAIMED,
+        TaskStatus.IN_PROGRESS,
+        TaskStatus.VERIFYING,
+        TaskStatus.AWAITING_QA,
+        TaskStatus.AWAITING_DOCUMENTATION,
+    }
+
+    # Statuses that count as "still assignable to the agent" for triage.
+    _AGENT_NON_TERMINAL_STATUSES: ClassVar[set[TaskStatus]] = {
+        TaskStatus.PENDING,
+        TaskStatus.CLAIMED,
+        TaskStatus.IN_PROGRESS,
+        TaskStatus.NEEDS_REVISION,
+        TaskStatus.VERIFYING,
+        TaskStatus.AWAITING_QA,
+        TaskStatus.AWAITING_DOCUMENTATION,
+        TaskStatus.AWAITING_PM_REVIEW,
+        TaskStatus.PAUSED,
+    }
+
+    async def submit_verification(
+        self, agent_id: UUID, task_id: UUID, notes: str
+    ) -> TaskTable | None:
+        """Submit task for self-verification (gateway alias of submit_for_verification).
+
+        `notes` is currently advisory — recorded as a progress entry for
+        the audit trail. The underlying transition does not require notes.
+        """
+        if notes:
+            await self.add_progress(task_id, agent_id, notes)
+        return await self.submit_for_verification(task_id, agent_role="developer")
+
+    async def submit_qa(
+        self, agent_id: UUID, task_id: UUID, notes: str
+    ) -> TaskTable | None:
+        """Submit task for QA review (gateway alias of submit_for_qa)."""
+        if notes:
+            await self.add_progress(task_id, agent_id, notes)
+        return await self.submit_for_qa(task_id, agent_role="developer")
+
+    async def list_blocked_for_team(self, team: Team) -> list[TaskTable]:
+        """List blocked tasks for a single team."""
+        return await self.list_blocked(team=team)
+
+    async def list_blocked_all_teams(self) -> list[TaskTable]:
+        """List blocked tasks across all teams."""
+        return await self.list_blocked()
+
+    async def list_awaiting_pm_review_for_team(self, team: Team) -> list[TaskTable]:
+        """List awaiting-PM-review tasks for a single team."""
+        return await self.list_awaiting_pm_review(team=team)
+
+    async def list_assigned_for_agent(self, agent_id: UUID) -> list[TaskTable]:
+        """Active (non-terminal) tasks currently assigned to an agent."""
+        query = (
+            select(TaskTable)
+            .where(
+                TaskTable.assigned_to == agent_id,
+                TaskTable.status.in_(self._AGENT_NON_TERMINAL_STATUSES),
+            )
+            .order_by(TaskTable.priority, TaskTable.updated_at.desc())
+        )
+        result = await self.session.execute(query)
+        return list(result.scalars().all())
+
+    async def agent_for(self, agent_id: UUID) -> GatewayAgentView | None:
+        """Return a gateway-shaped view of the agent (DB + config derived).
+
+        Combines AgentTable's role/team with `agents_config`'s
+        escalation_target + skills so the Choreographer reads one object.
+        """
+        from roboco.agents_config import (
+            get_agent_skills,
+            get_escalation_target,
+        )
+
+        result = await self.session.execute(
+            select(AgentTable).where(AgentTable.id == agent_id)
+        )
+        agent = result.scalar_one_or_none()
+        if agent is None:
+            return None
+        slug = agent.slug
+        role_value = (
+            agent.role.value if hasattr(agent.role, "value") else str(agent.role)
+        )
+        team_value: str | None = None
+        if agent.team is not None:
+            team_value = (
+                agent.team.value if hasattr(agent.team, "value") else str(agent.team)
+            )
+        return GatewayAgentView(
+            id=UUID(str(agent.id)),
+            role=role_value,
+            team=team_value,
+            escalation_target=get_escalation_target(slug),
+            skills=get_agent_skills(slug),
+        )
+
+    async def _agent_with_role_and_team(
+        self, role: AgentRole, team: Team
+    ) -> AgentTable | None:
+        """Find an agent matching role + team."""
+        result = await self.session.execute(
+            select(AgentTable).where(
+                AgentTable.role == role,
+                AgentTable.team == team,
+            )
+        )
+        return result.scalars().first()
+
+    async def qa_agent_for_team(self, team: Team) -> AgentTable | None:
+        """Find the QA agent for a team."""
+        return await self._agent_with_role_and_team(AgentRole.QA, team)
+
+    async def documenter_for_team(self, team: Team) -> AgentTable | None:
+        """Find the Documenter agent for a team."""
+        return await self._agent_with_role_and_team(AgentRole.DOCUMENTER, team)
+
+    async def cell_pm_for_team(self, team: Team) -> AgentTable | None:
+        """Find the Cell PM for a team."""
+        return await self._agent_with_role_and_team(AgentRole.CELL_PM, team)
+
+    async def get_active_task_for_agent(self, agent_id: UUID) -> TaskTable | None:
+        """Most-recently-updated task currently being worked by the agent."""
+        query = (
+            select(TaskTable)
+            .where(
+                TaskTable.assigned_to == agent_id,
+                TaskTable.status.in_(self._DEV_ACTIVE_STATUSES),
+            )
+            .order_by(TaskTable.updated_at.desc().nullslast())
+            .limit(1)
+        )
+        result = await self.session.execute(query)
+        return result.scalar_one_or_none()
+
+    async def list_paused_for_agent(self, agent_id: UUID) -> list[TaskTable]:
+        """Paused tasks assigned to the agent."""
+        query = (
+            select(TaskTable)
+            .where(
+                TaskTable.assigned_to == agent_id,
+                TaskTable.status == TaskStatus.PAUSED,
+            )
+            .order_by(TaskTable.priority, TaskTable.updated_at.desc())
+        )
+        result = await self.session.execute(query)
+        return list(result.scalars().all())
+
+    async def list_awaiting_main_pm_all(self) -> list[TaskTable]:
+        """Root tasks (no parent) awaiting PM review across all teams.
+
+        Used by Main PM triage — root tasks have escalated past their
+        cell PMs and need final approval/escalation to CEO.
+        """
+        query = (
+            select(TaskTable)
+            .where(
+                TaskTable.parent_task_id.is_(None),
+                TaskTable.status == TaskStatus.AWAITING_PM_REVIEW,
+            )
+            .order_by(
+                TaskTable.priority,
+                TaskTable.sequence,
+                TaskTable.created_at,
+            )
+        )
+        result = await self.session.execute(query)
+        return list(result.scalars().all())
+
+    async def all_subtasks_terminal(self, task_id: UUID) -> bool:
+        """True iff every direct subtask is in a terminal status.
+
+        Empty subtask list returns True (no children = vacuously terminal).
+        """
+        terminal = {TaskStatus.COMPLETED, TaskStatus.CANCELLED}
+        result = await self.session.execute(
+            select(TaskTable.status).where(TaskTable.parent_task_id == task_id)
+        )
+        statuses = result.scalars().all()
+        return all(s in terminal for s in statuses)
+
+    async def set_plan(
+        self, task_id: UUID, plan: str | dict[str, Any]
+    ) -> TaskTable | None:
+        """Write the task's plan field. Strings are wrapped as {'text': plan}."""
+        task = await self.get(task_id)
+        if not task:
+            return None
+        task.plan = plan if isinstance(plan, dict) else {"text": plan}
+        await self.session.flush()
+        return task
+
+    async def mark_evidence_inspected(self, task_id: UUID) -> None:
+        """Set qa_evidence_inspected=True on the task."""
+        task = await self.get(task_id)
+        if task is None:
+            return
+        task.qa_evidence_inspected = True
+        await self.session.flush()
+
+    async def mark_agent_idle(self, agent_id: UUID) -> None:
+        """Set agent.status = IDLE."""
+        result = await self.session.execute(
+            select(AgentTable).where(AgentTable.id == agent_id)
+        )
+        agent = result.scalar_one_or_none()
+        if agent is None:
+            return
+        agent.status = AgentStatus.IDLE
+        await self.session.flush()
+
+    async def _qa_or_doc_claim(
+        self,
+        agent_id: UUID,
+        task_id: UUID,
+        expected_status: TaskStatus,
+    ) -> TaskTable | None:
+        """Claim-without-transition for QA / Documenter review states.
+
+        Status stays at expected_status (it's a review state, not an
+        active dev state). Sets assigned_to + claimed_by + claimed_at so
+        the gateway can route subsequent verbs to the right agent.
+        """
+        task = await self.get(task_id)
+        if task is None:
+            return None
+        if task.status != expected_status:
+            return None
+        task.assigned_to = cast("Any", agent_id)
+        task.claimed_by = cast("Any", agent_id)
+        task.claimed_at = datetime.now(UTC)
+        await self.session.flush()
+        return task
+
+    async def qa_claim(self, qa_agent_id: UUID, task_id: UUID) -> TaskTable | None:
+        """QA claims a task in awaiting_qa (no state transition)."""
+        return await self._qa_or_doc_claim(qa_agent_id, task_id, TaskStatus.AWAITING_QA)
+
+    async def doc_claim(self, doc_agent_id: UUID, task_id: UUID) -> TaskTable | None:
+        """Documenter claims a task in awaiting_documentation."""
+        return await self._qa_or_doc_claim(
+            doc_agent_id, task_id, TaskStatus.AWAITING_DOCUMENTATION
+        )
+
+    async def qa_pass(
+        self, qa_agent_id: UUID, task_id: UUID, notes: str
+    ) -> TaskTable | None:
+        """QA passes the task (gateway-flavored wrapper of pass_qa).
+
+        Records the QA agent as the one performing the transition. The
+        underlying pass_qa() clears assignment so a documenter can claim.
+        """
+        del qa_agent_id  # gateway already validated assignment
+        return await self.pass_qa(task_id, notes=notes, agent_role="qa")
+
+    async def qa_fail(
+        self,
+        qa_agent_id: UUID,
+        task_id: UUID,
+        notes: str,
+        issues: list[str],
+    ) -> TaskTable | None:
+        """QA fails the task with concrete issues.
+
+        `notes` is the QA narrative (stored on `qa_notes`); `issues` is
+        appended to `dev_notes` as a checklist for the dev's revision.
+        """
+        del qa_agent_id  # gateway already validated assignment
+        task = await self.get(task_id)
+        if task is None:
+            return None
+        if issues:
+            issue_block = "[QA ISSUES]\n" + "\n".join(f"- {i}" for i in issues)
+            task.dev_notes = _append_capped(task.dev_notes, issue_block)
+            await self.session.flush()
+        return await self.fail_qa(task_id, notes=notes, agent_role="qa")
+
+    async def unblock_with_restore(
+        self,
+        pm_agent_id: UUID,
+        task_id: UUID,
+        *,
+        restore: bool,
+    ) -> TaskTable | None:
+        """PM unblocks a task; restore=True returns it to its pre-block state.
+
+        Pre-block snapshot lives on `pre_block_state` /
+        `pre_block_assignee` / `pre_block_metadata` (migration 006). When
+        restore=True and a snapshot exists, the task returns to that exact
+        state. Otherwise falls through to the legacy unblock() which
+        moves the task to in_progress and hands it back to the original
+        raiser.
+        """
+        del pm_agent_id  # gateway already validated PM authority
+        task = await self.get(task_id)
+        if task is None:
+            return None
+        if not restore or not task.pre_block_state:
+            return await self.unblock(task_id, agent_role="cell_pm")
+
+        if task.status != TaskStatus.BLOCKED:
+            return None
+
+        try:
+            restored_status = TaskStatus(task.pre_block_state)
+        except ValueError:
+            return await self.unblock(task_id, agent_role="cell_pm")
+
+        task.status = restored_status
+        if task.pre_block_assignee:
+            task.assigned_to = cast("Any", task.pre_block_assignee)
+            task.claimed_by = cast("Any", task.pre_block_assignee)
+        task.pre_block_state = None
+        task.pre_block_assignee = None
+        task.pre_block_metadata = None
+        task.blocker_resolver_type = None
+        task.blocker_raised_by = None
+        await self.session.flush()
+        return task
+
+    async def cell_pm_complete(
+        self,
+        pm_agent_id: UUID,
+        task_id: UUID,
+        notes: str,
+        merge_commit: str | None = None,
+    ) -> TaskTable | None:
+        """Cell PM completes a task; records the parent-branch merge commit.
+
+        Wraps the canonical complete() to also annotate the task with the
+        merge commit SHA on its parent branch. Merge SHA is appended to
+        `task.commits` as a synthetic entry tagged 'merge' so downstream
+        PR-tracking surfaces it without a separate column.
+        """
+        task = await self.get(task_id)
+        if task is None:
+            return None
+        if notes:
+            self._record_completion_notes(task, notes)
+        if merge_commit:
+            merge_entry = {
+                "hash": merge_commit,
+                "message": f"[merge] PR for task {task_id}",
+                "timestamp": datetime.now(UTC).isoformat(),
+                "author_agent_id": str(pm_agent_id),
+                "kind": "merge",
+            }
+            task.commits = [*task.commits, merge_entry]
+            await self.session.flush()
+        return await self.complete(task_id, agent_id=pm_agent_id)
+
+    async def escalate(
+        self, agent_id: UUID, task_id: UUID, reason: str
+    ) -> TaskTable | None:
+        """Escalate a task one rung up the agent's escalation chain.
+
+        Looks up the escalation target via `agents_config.ESCALATION_CHAIN`,
+        then applies the same state mutations as a chain escalation:
+        reassigns the task to the target, marks BLOCKED, and stashes the
+        raiser so a future unblock can restore the workflow.
+        """
+        from roboco.agents_config import get_escalation_target
+
+        task = await self.get(task_id)
+        if task is None:
+            return None
+
+        agent_result = await self.session.execute(
+            select(AgentTable).where(AgentTable.id == agent_id)
+        )
+        agent = agent_result.scalar_one_or_none()
+        if agent is None:
+            return None
+
+        target_slug = get_escalation_target(agent.slug)
+        if not target_slug:
+            return None
+
+        target_result = await self.session.execute(
+            select(AgentTable).where(AgentTable.slug == target_slug)
+        )
+        target = target_result.scalar_one_or_none()
+        if target is None:
+            return None
+
+        await self.apply_escalation(
+            task=task,
+            target_agent_id=UUID(str(target.id)),
+            escalator_slug=agent.slug,
+            target_slug=target_slug,
+            reason=reason,
+        )
+        return task
+
+    async def escalate_up_to_role(
+        self,
+        agent_id: UUID,
+        task_id: UUID,
+        target_role: str,
+        reason: str,
+    ) -> TaskTable | None:
+        """Escalate a task to an agent holding `target_role`.
+
+        Picks the first agent matching the role; ties broken by created_at.
+        Used when the escalation target is known by role rather than slug
+        (e.g., 'main_pm' resolves to whichever agent currently holds the
+        Main PM role).
+        """
+        task = await self.get(task_id)
+        if task is None:
+            return None
+
+        agent_result = await self.session.execute(
+            select(AgentTable).where(AgentTable.id == agent_id)
+        )
+        agent = agent_result.scalar_one_or_none()
+        if agent is None:
+            return None
+
+        try:
+            role_enum = AgentRole(target_role)
+        except ValueError:
+            return None
+
+        target_result = await self.session.execute(
+            select(AgentTable)
+            .where(AgentTable.role == role_enum)
+            .order_by(AgentTable.created_at)
+            .limit(1)
+        )
+        target = target_result.scalar_one_or_none()
+        if target is None:
+            return None
+
+        await self.apply_escalation(
+            task=task,
+            target_agent_id=UUID(str(target.id)),
+            escalator_slug=agent.slug,
+            target_slug=target.slug,
+            reason=reason,
+        )
+        return task
 
 
 # =============================================================================
