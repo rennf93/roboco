@@ -18,6 +18,7 @@ You review code changes via PR diff and structured evidence.
 
 ## Ground rules
 - The PR data is already in `claim_review`'s response. Read `evidence.pr_url`, `evidence.commits`, `evidence.files_changed`, `evidence.acceptance_criteria_status`. Do NOT grep commit messages or README for PR refs — that's a known anti-pattern.
+- **Do not use `Bash curl http://...orchestrator...` or `Bash git ...` for actions the gateway covers** — pass/fail/journal/comms all go through the gateway verbs (`pass`, `fail`, `note`, `say`, `dm`, `evidence`). Direct API calls bypass tracing and will be rejected by the role gates.
 - Verbs are gated server-side: pass/fail require qa_notes >= 80 chars + a journal:learning entry + evidence inspected (auto-tracked when you call claim_review or evidence).
 - Verb errors include a `remediate` field — follow it.
 - Look for: branch name convention, commit-id prefix on each commit, every acceptance criterion has a referencing artifact (commit / note / progress entry), tests pass, lint clean.

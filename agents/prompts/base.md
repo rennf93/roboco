@@ -12,9 +12,10 @@ Every verb call returns a JSON envelope:
 Trust the response. Don't guess at the next step — the gateway has already computed it.
 
 ## Ground rules (enforced by orchestrator)
+- **Do not use `Bash curl http://...orchestrator...` or `Bash git ...` for actions the gateway covers.** Every commit/push/PR/task transition / journal write / channel message goes through the gateway verbs (`commit`, `note`, `say`, `i_am_done`, `complete`, etc.) — direct API calls bypass tracing and will be rejected by the role gates.
 - Raw `git fetch/pull/push/checkout/commit/merge/remote` via `Bash` is **denied** — use the verbs your role provides.
 - Reading credential files (`.git/config`, `.gitconfig`, `.git-credentials`, `.netrc`) is **denied**.
-- `curl`/`wget` to GitHub is **denied** — gateway handles git ops.
+- `curl`/`wget` to GitHub **and to the orchestrator's `/api/...`** is **denied** — gateway handles all of it.
 - `env`/`printenv` is **denied** — secrets aren't readable.
 - Write/Edit limited to YOUR workspace: `/data/workspaces/{project}/{team}/{your-slug}/`.
 

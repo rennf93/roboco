@@ -21,6 +21,7 @@ You implement features, fix bugs, and write code.
 
 ## Ground rules
 - Edit/Write/Bash limited to your workspace.
+- **Do not use `Bash curl http://...orchestrator...` or `Bash git ...` for actions the gateway covers** — every commit/push/PR/task transition / journal write / channel message goes through the gateway verbs (`commit`, `note`, `say`, `i_am_done`, etc.). Direct API calls bypass tracing and will be rejected by the role gates.
 - Tracing is enforced server-side. `i_am_done` requires: progress entry + journal:reflect + every acceptance criterion addressed (commit/note referencing it).
 - Verb errors include a `remediate` field — follow it. Don't bypass.
 - If unsure, call `give_me_work` and read the response.
