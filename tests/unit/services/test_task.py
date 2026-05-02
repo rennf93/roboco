@@ -356,6 +356,38 @@ async def test_mark_evidence_inspected_no_op_on_missing_task() -> None:
 
 
 @pytest.mark.asyncio
+async def test_reassign_sets_assigned_to_and_claimed_by() -> None:
+    task = _build_task(assigned_to=None, claimed_by=None)
+    svc = TaskService(MagicMock(flush=AsyncMock()))
+    _bind(svc, "get", AsyncMock(return_value=task))
+    new_assignee = uuid4()
+    out = await svc.reassign(task.id, new_assignee)
+    assert out is task
+    assert task.assigned_to == new_assignee
+    assert task.claimed_by == new_assignee
+
+
+@pytest.mark.asyncio
+async def test_reassign_clears_assignment_when_none() -> None:
+    prev = uuid4()
+    task = _build_task(assigned_to=prev, claimed_by=prev)
+    svc = TaskService(MagicMock(flush=AsyncMock()))
+    _bind(svc, "get", AsyncMock(return_value=task))
+    out = await svc.reassign(task.id, None)
+    assert out is task
+    assert task.assigned_to is None
+    assert task.claimed_by is None
+
+
+@pytest.mark.asyncio
+async def test_reassign_returns_none_when_task_missing() -> None:
+    svc = TaskService(MagicMock(flush=AsyncMock()))
+    _bind(svc, "get", AsyncMock(return_value=None))
+    out = await svc.reassign(uuid4(), uuid4())
+    assert out is None
+
+
+@pytest.mark.asyncio
 async def test_mark_agent_idle_sets_status_idle() -> None:
     agent = MagicMock(id=uuid4(), status=AgentStatus.ACTIVE)
     result = MagicMock()
