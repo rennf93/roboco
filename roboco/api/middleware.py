@@ -12,6 +12,7 @@ from typing import cast
 import structlog
 from fastapi import FastAPI, HTTPException, Request, Response
 from fastapi import status as http_status
+from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from starlette.middleware.base import BaseHTTPMiddleware
 
@@ -239,6 +240,29 @@ async def http_exception_handler(request: Request, exc: Exception) -> JSONRespon
 # =============================================================================
 
 
+async def request_validation_handler(request: Request, exc: Exception) -> JSONResponse:
+    """Log the rejected body before returning the standard 422 response.
+
+    FastAPI's default 422 returns validation details to the client but
+    nothing lands in server logs. During smoke tests this leaves us
+    blind to which field actually broke. Log the body + the per-field
+    errors so the next 422 is debuggable in one log scan.
+    """
+    rve = cast("RequestValidationError", exc)
+    body = rve.body if isinstance(rve.body, str | bytes | dict | list) else None
+    logger.warning(
+        "Request validation failed",
+        path=request.url.path,
+        method=request.method,
+        body=body,
+        errors=rve.errors(),
+    )
+    return JSONResponse(
+        status_code=http_status.HTTP_422_UNPROCESSABLE_ENTITY,
+        content={"detail": rve.errors(), "body": body},
+    )
+
+
 def setup_middleware(app: FastAPI) -> None:
     """
     Setup all middleware for the application.
@@ -248,11 +272,13 @@ def setup_middleware(app: FastAPI) -> None:
     2. RequestLoggingMiddleware - logs with correlation ID
 
     Exception handler priority:
-    1. HTTPException - most common, converts to string error codes
-    2. RobocoError - custom domain exceptions
-    3. Exception - catch-all for unexpected errors
+    1. RequestValidationError - 422s; log body + per-field errors
+    2. HTTPException - most common, converts to string error codes
+    3. RobocoError - custom domain exceptions
+    4. Exception - catch-all for unexpected errors
     """
     # Exception handlers (order: specific to general)
+    app.add_exception_handler(RequestValidationError, request_validation_handler)
     app.add_exception_handler(HTTPException, http_exception_handler)
     app.add_exception_handler(RobocoError, roboco_exception_handler)
     app.add_exception_handler(Exception, generic_exception_handler)
