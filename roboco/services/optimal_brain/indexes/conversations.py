@@ -8,7 +8,7 @@ from typing import Any
 from uuid import UUID
 
 from roboco.models.optimal import IndexConversationParams, IndexType
-from roboco.services.optimal_brain.indexes.base import BaseIndexPlugin
+from roboco.services.optimal_brain.indexes.base import BaseIndexPlugin, build_doc_source
 
 
 class ConversationsIndexPlugin(BaseIndexPlugin):
@@ -45,12 +45,15 @@ class ConversationsIndexPlugin(BaseIndexPlugin):
         self,
         doc_id: str | None = None,
         **kwargs: Any,
-    ) -> str:
-        """Build source URI for conversation."""
+    ) -> str | None:
+        """Build source URI for conversation; returns None if session_id is missing."""
         del doc_id  # Unused - URI built from session/agent
-        session_id = kwargs.get("session_id", "unknown")
-        agent_id = kwargs.get("agent_id", "unknown")
-        return f"roboco://conversations/{session_id}-{agent_id}"
+        raw_session = kwargs.get("session_id")
+        if raw_session is None:
+            return None
+        agent_id = kwargs.get("agent_id") or "unknown"
+        combined = f"{raw_session}-{agent_id}"
+        return build_doc_source(kind="conversations", id_=combined)
 
     async def index_message(self, params: IndexConversationParams) -> None:
         """

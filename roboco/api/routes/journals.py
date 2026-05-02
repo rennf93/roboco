@@ -339,8 +339,7 @@ async def add_task_reflection(
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
             detail=(
-                "JOURNAL_ENTRY_SKIPPED: Referenced task or journal"
-                " no longer exists."
+                "JOURNAL_ENTRY_SKIPPED: Referenced task or journal no longer exists."
             ),
         )
 
@@ -392,8 +391,7 @@ async def add_decision_log(
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
             detail=(
-                "JOURNAL_ENTRY_SKIPPED: Referenced task or journal"
-                " no longer exists."
+                "JOURNAL_ENTRY_SKIPPED: Referenced task or journal no longer exists."
             ),
         )
 
@@ -443,8 +441,7 @@ async def add_learning(
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
             detail=(
-                "JOURNAL_ENTRY_SKIPPED: Referenced task or journal"
-                " no longer exists."
+                "JOURNAL_ENTRY_SKIPPED: Referenced task or journal no longer exists."
             ),
         )
 
@@ -495,8 +492,7 @@ async def add_struggle(
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
             detail=(
-                "JOURNAL_ENTRY_SKIPPED: Referenced task or journal"
-                " no longer exists."
+                "JOURNAL_ENTRY_SKIPPED: Referenced task or journal no longer exists."
             ),
         )
 
@@ -546,8 +542,7 @@ async def add_general_entry(
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
             detail=(
-                "JOURNAL_ENTRY_SKIPPED: Referenced task or journal"
-                " no longer exists."
+                "JOURNAL_ENTRY_SKIPPED: Referenced task or journal no longer exists."
             ),
         )
 

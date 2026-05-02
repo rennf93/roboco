@@ -72,9 +72,7 @@ def _make_owner_and_group_rw(entry: str) -> None:
     try:
         st = Path(entry).stat()
         new_mode = (
-            st.st_mode
-            | _stat.S_IRUSR | _stat.S_IWUSR
-            | _stat.S_IRGRP | _stat.S_IWGRP
+            st.st_mode | _stat.S_IRUSR | _stat.S_IWUSR | _stat.S_IRGRP | _stat.S_IWGRP
         )
         if _stat.S_ISDIR(st.st_mode):
             new_mode |= _stat.S_IXUSR | _stat.S_IXGRP

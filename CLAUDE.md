@@ -326,19 +326,53 @@ The Auditor has silent read access to ALL channels.
 8. **Commits linked to tasks** - Every commit references its task ID
 9. **CEO approves major changes** - Escalation path for important work
 
-## MCP Servers
+## Agent Gateway
 
-RoboCo provides MCP (Model Context Protocol) servers for agents:
+Agents do not call the API or per-domain MCP tools directly. They go through
+two thin MCP servers (`roboco-flow`, `roboco-do`) backed by the server-side
+**Choreographer** in `roboco/services/gateway/`. The Choreographer composes
+the existing services (TaskService, JournalService, GitService, etc.) into
+intent-verb sequences. Tracing, claim-locking, evidence assembly, and
+remediation hints are all centralized there.
 
-| Server | Purpose |
-|--------|---------|
-| `task_server` | Task CRUD, lifecycle transitions, claiming |
-| `git_server` | Git operations (commit, push, branch, PR) |
-| `message_server` | Channel messaging, sessions |
-| `journal_server` | Agent personal logs |
-| `notify_server` | Formal notifications |
-| `optimal_server` | RAG queries, knowledge base |
-| `a2a_server` | Agent-to-agent protocol |
+Each agent gets a **spawn manifest** at `/app/tool-manifest.json` listing
+the verbs its role is allowed to call. The orchestrator builds the
+manifest from `roboco/services/gateway/role_config.py` and mounts it
+read-only into the agent container.
+
+### Verb surface (all roles get `i_am_idle`; the rest are role-scoped)
+
+| Role          | Flow verbs                                                                                       |
+|---------------|--------------------------------------------------------------------------------------------------|
+| developer     | `give_me_work`, `i_will_work_on`, `i_have_committed`, `i_am_done`, `i_am_blocked`                |
+| qa            | `claim_review`, `pass`, `fail`                                                                   |
+| documenter    | `claim_doc_task`, `i_documented`                                                                 |
+| cell_pm       | `triage`, `unblock`, `complete`, `escalate_up`                                                   |
+| main_pm       | `triage_all`, `unblock`, `complete`, `escalate_up`, `escalate_to_ceo`                            |
+| product_owner | `triage`, `escalate_to_ceo`                                                                      |
+| head_marketing| `triage`, `escalate_to_ceo`                                                                      |
+| auditor       | `triage` (read-only — no `say`/`dm`)                                                             |
+
+Content tools (do_server) — most roles: `commit`, `note`, `say`, `dm`, `evidence`.
+Auditor is restricted to `note` (scope=reflect) + `evidence`.
+
+### MCP servers running per agent container
+
+| Server               | Purpose                                                              |
+|----------------------|----------------------------------------------------------------------|
+| `roboco-flow`        | Intent verbs (give_me_work, i_am_done, claim_review, complete, ...) |
+| `roboco-do`          | Content tools (commit, note, say, dm, evidence)                      |
+| `roboco-git-readonly`| Read-only git: status, log, diff, branches                           |
+| `roboco-optimal`     | RAG: `roboco_ask_mentor`, `roboco_kb_search`                         |
+| `roboco-docs`        | Project docs file management (selected roles)                        |
+
+Every verb returns a standardized **Envelope**:
+- ok: `{status, task_id, next, evidence?, context_briefing}`
+- error: `{error, message, remediate, missing}`
+
+The `next` field tells the agent what to call next; the `remediate` field
+on errors tells them exactly how to fix and retry. Agents should not guess
+state — trust the response.
 
 ## Services
 

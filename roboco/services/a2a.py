@@ -1035,8 +1035,15 @@ class A2AService:
             Created A2AChatMessage
 
         Raises:
-            ValueError: If conversation not found or sender not participant
+            ValueError: If conversation_id is nil, conversation not found,
+                or sender not participant
         """
+        if conversation_id.int == 0:
+            raise ValueError(
+                "conversation_id must not be the nil UUID; "
+                "call get_or_create_conversation() first"
+            )
+
         from datetime import UTC, datetime
 
         opts = options or {}

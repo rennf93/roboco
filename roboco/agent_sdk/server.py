@@ -11,9 +11,11 @@ Features:
 - Fallback to main API when target offline
 """
 
+import json
 import os
 import time
 from collections import Counter, deque
+from pathlib import Path
 
 import httpx
 import structlog
@@ -41,6 +43,48 @@ logger = structlog.get_logger()
 AGENT_ID = os.environ.get("ROBOCO_AGENT_ID", "unknown")
 MAIN_API_URL = os.environ.get("ROBOCO_API_URL", "http://roboco-orchestrator:8000")
 SDK_PORT = int(os.environ.get("ROBOCO_SDK_PORT", "9000"))
+
+
+# =============================================================================
+# TOOL MANIFEST (gateway-enabled path)
+# =============================================================================
+
+
+def load_tool_manifest() -> dict[str, object] | None:
+    """Load the per-role tool manifest when the gateway is enabled and the file exists.
+
+    Reads ROBOCO_GATEWAY_ENABLED and ROBOCO_TOOL_MANIFEST_PATH from the
+    environment at call-time so tests can override them via monkeypatch without
+    needing importlib.reload.
+
+    Returns:
+        Parsed manifest dict when gateway is enabled and file is present and
+        valid JSON.  Returns None in all other cases (gateway disabled, file
+        missing, or JSON parse error).  Never raises.
+    """
+    gateway_enabled = (
+        os.environ.get("ROBOCO_GATEWAY_ENABLED", "false").lower() == "true"
+    )
+    if not gateway_enabled:
+        return None
+
+    manifest_path = Path(
+        os.environ.get("ROBOCO_TOOL_MANIFEST_PATH", "/app/tool-manifest.json")
+    )
+    if not manifest_path.exists():
+        return None
+
+    try:
+        parsed: dict[str, object] = json.loads(manifest_path.read_text())
+        return parsed
+    except (json.JSONDecodeError, OSError) as exc:
+        logger.warning(
+            "Failed to load tool manifest",
+            path=str(manifest_path),
+            error=str(exc),
+        )
+        return None
+
 
 app = FastAPI(
     title=f"RoboCo SDK Server ({AGENT_ID})",

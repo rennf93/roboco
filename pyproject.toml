@@ -79,6 +79,7 @@ dev = [
     "radon",
     "xenon",
     "deptry",
+    "import-linter",
 
     # Type Stubs
     "types-redis",
@@ -162,6 +163,8 @@ select = [
 "roboco/services/*.py" = ["PLC0415"]
 "roboco/api/routes/*.py" = ["PLC0415"]
 "roboco/runtime/*.py" = ["PLC0415"]
+# Test fixtures that reload modules to test env-var-at-import-time behavior
+"tests/unit/mcp_servers/*.py" = ["PLC0415"]
 
 # =============================================================================
 # MyPy Configuration
@@ -192,6 +195,7 @@ module = [
     "piragi.*",
     "toon.*",
     "sse_starlette.*",
+    "asyncpg.*",
 ]
 ignore_missing_imports = true
 
@@ -341,5 +345,34 @@ DEP003 = ["starlette"]
 
 [dependency-groups]
 dev = [
+    "pytest>=9.0.3",
+    "pytest-asyncio>=1.3.0",
+    "pytest-cov>=7.1.0",
     "types-aiofiles",
 ]
+
+# =============================================================================
+# Import Linter (architectural boundaries)
+# =============================================================================
+[tool.importlinter]
+root_package = "roboco"
+
+[[tool.importlinter.contracts]]
+name = "Gateway layer must not import from API routes or MCP servers"
+type = "forbidden"
+source_modules = ["roboco.services.gateway"]
+forbidden_modules = ["roboco.api.routes", "roboco.mcp"]
+
+[[tool.importlinter.contracts]]
+name = "Services must not import from API routes"
+type = "forbidden"
+source_modules = ["roboco.services"]
+forbidden_modules = ["roboco.api.routes"]
+
+# =============================================================================
+# Roboco Commit Validator
+# =============================================================================
+[tool.roboco.commits]
+subject_min_chars = 20
+banned_words = ["wip", "tmp", "asdf", "oops", "fix", "update", "change", "stuff", "things"]
+prefer_conventional = true

@@ -5,6 +5,9 @@
 .claude/scripts/*
 .claude/skills/*
 
+# Superpowers (session-private design + plans)
+docs/superpowers/
+
 # Python
 __pycache__/
 *.py[cod]

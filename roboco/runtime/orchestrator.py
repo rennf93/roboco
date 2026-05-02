@@ -91,41 +91,17 @@ AGENT_IMAGES: dict[str, str] = {
     "auditor": "roboco-agent-pm",
 }
 
-# Complete list of MCP tools that trigger traceability reminders
-# These tools represent key decision points where agents should document their work
+# Complete list of MCP tools that trigger traceability reminders.
+# Post-gateway: every state-changing verb agents call routes through
+# roboco-flow (intent verbs) or roboco-do (content tools). Read-only git
+# views (roboco-git-readonly) and KB queries (roboco-optimal) emit one
+# additional trigger because they are the inputs PMs/devs cite when they
+# justify their next move.
 TRACEABILITY_TRIGGER_TOOLS: list[str] = [
-    # === Task Lifecycle (All Roles) ===
-    "mcp__roboco-task__roboco_task_claim",
-    "mcp__roboco-task__roboco_task_plan",
-    "mcp__roboco-task__roboco_task_start",
-    "mcp__roboco-task__roboco_task_progress",
-    "mcp__roboco-task__roboco_task_pause",
-    "mcp__roboco-task__roboco_task_block",
-    "mcp__roboco-task__roboco_task_unblock",
-    "mcp__roboco-task__roboco_task_escalate",
-    "mcp__roboco-task__roboco_task_escalate_to_ceo",
-    "mcp__roboco-task__roboco_task_substitute",
-    # === Developer Submission ===
-    "mcp__roboco-task__roboco_task_submit_verification",
-    "mcp__roboco-task__roboco_task_submit_qa",
-    "mcp__roboco-task__roboco_task_submit_pm_review",
-    # === QA Tools ===
-    "mcp__roboco-task__roboco_task_qa_pass",
-    "mcp__roboco-task__roboco_task_qa_fail",
-    # === Documenter Tools ===
-    "mcp__roboco-task__roboco_task_docs_complete",
-    # === PM Tools ===
-    "mcp__roboco-task__roboco_task_create",
-    "mcp__roboco-task__roboco_task_activate",
-    "mcp__roboco-task__roboco_task_complete",
-    "mcp__roboco-task__roboco_task_cancel",
-    # === Git Tools ===
-    "mcp__roboco-git__roboco_git_commit",
-    "mcp__roboco-git__roboco_git_push",
-    "mcp__roboco-git__roboco_git_create_pr",
-    "mcp__roboco-git__roboco_git_merge_pr",
-    # === A2A Tools ===
-    "mcp__roboco-a2a__roboco_agent_request",
+    # === Intent verbs (all role-scoped lifecycle transitions) ===
+    "mcp__roboco-flow__*",
+    # === Content tools (commit/push/PR + journal/notify/message) ===
+    "mcp__roboco-do__*",
     # === KB Tools ===
     "mcp__roboco-optimal__roboco_ask_mentor",
 ]
@@ -170,6 +146,251 @@ def _read_project_slug(task: dict[str, Any]) -> str | None:
     project = task.get("project") or {}
     inner = project.get("slug") if isinstance(project, dict) else None
     return str(inner) if inner else None
+
+
+def _resolve_agent_cli_model(provider_type: str, model: str) -> str:
+    """Translate an agent model name to the string Claude Code expects.
+
+    For the Anthropic provider, short names (``opus|sonnet|haiku``) are
+    translated through ``MODEL_MAP`` as they always were.  For non-Anthropic
+    providers (currently Ollama Cloud) the model identifier is passed verbatim
+    so raw tags like ``kimi-k2.6:cloud`` reach the Ollama-side integration
+    intact.
+
+    Extracted as a module-level function so both the ``--model`` CLI arg
+    builder and the ``CLAUDE_CODE_SUBAGENT_MODEL`` env-var injector can call
+    the same logic without referencing the class by name inside a staticmethod.
+    """
+    if provider_type == "anthropic":
+        return MODEL_MAP.get(model, model)
+    return model
+
+
+# =============================================================================
+# SPAWN MANIFEST — per-developer tool manifest mounting (Phase 1)
+# =============================================================================
+
+# Phase 4: every role gets a gateway manifest. The legacy briefing path is gone.
+GATEWAY_ENABLED_ROLES: frozenset[str] = frozenset(
+    {
+        "developer",
+        "qa",
+        "documenter",
+        "cell_pm",
+        "main_pm",
+        "product_owner",
+        "head_marketing",
+        "auditor",
+    }
+)
+
+
+def _build_manifest_for_agent(agent_id: str, model: str) -> Path | None:
+    """Write a SpawnManifest for developer-role agents; return the host path.
+
+    Returns ``None`` for roles outside ``GATEWAY_ENABLED_ROLES`` so callers
+    can skip the manifest mount entirely without extra branching.
+
+    Args:
+        agent_id: Agent slug (e.g. ``be-dev-1``).
+        model:    Resolved model name passed to ``SpawnInputs.agent_model``.
+
+    Returns:
+        Absolute host path to the written JSON file, or ``None``.
+    """
+    from uuid import UUID
+
+    from roboco.runtime.spawn_manifest import (
+        SpawnInputs,
+        build_for_role,
+        write_manifest,
+    )
+
+    role = get_agent_role(agent_id) or "developer"
+    if role not in GATEWAY_ENABLED_ROLES:
+        return None
+
+    team = get_agent_team(agent_id) or "backend"
+    # UUID for the agent comes from the seeded AGENT_UUIDS map (slug -> UUID
+    # string).  Fall back to uuid4 for unknown agents so the function stays
+    # callable in tests without seeded data.
+    raw_uuid = AGENT_UUIDS.get(agent_id)
+    agent_uuid = UUID(raw_uuid) if raw_uuid else __import__("uuid").uuid4()
+
+    workspace_path = Path(settings.workspaces_root) / "roboco" / team / agent_id
+
+    manifest = build_for_role(
+        SpawnInputs(
+            agent_id=agent_uuid,
+            role=role,
+            team=team,
+            workspace_path=workspace_path,
+            agent_model=model,
+        )
+    )
+
+    host_dir = Path(settings.manifest_host_dir)
+    host_path = host_dir / f"{agent_id}.json"
+    write_manifest(manifest, host_path)
+    return host_path
+
+
+# =============================================================================
+# GATEWAY PRE-SPAWN CHECK (gated behind settings.gateway_enabled)
+# =============================================================================
+
+
+async def _count_recent_spawns_for_task(
+    db_session: Any,
+    task_id: Any,
+    cutoff: datetime,
+) -> int:
+    """Count recent SPAWN decisions for ``task_id`` since ``cutoff``."""
+    from sqlalchemy import select
+
+    from roboco.db.tables import GatewayTriggerTable
+
+    result = await db_session.execute(
+        select(GatewayTriggerTable).where(
+            GatewayTriggerTable.task_id == task_id,
+            GatewayTriggerTable.created_at >= cutoff,
+            GatewayTriggerTable.decision == "spawn",
+        )
+    )
+    return len(result.scalars().all())
+
+
+async def _count_recent_spawns_for_role(
+    db_session: Any,
+    target_role: str,
+    cutoff: datetime,
+) -> int:
+    """Count recent SPAWN decisions for ``target_role`` since ``cutoff``."""
+    from sqlalchemy import select
+
+    from roboco.db.tables import GatewayTriggerTable
+
+    result = await db_session.execute(
+        select(GatewayTriggerTable).where(
+            GatewayTriggerTable.target_role == target_role,
+            GatewayTriggerTable.created_at >= cutoff,
+            GatewayTriggerTable.decision == "spawn",
+        )
+    )
+    return len(result.scalars().all())
+
+
+async def _record_trigger_decision(
+    db_session: Any,
+    task_id: Any,
+    trigger_kind: str,
+    target_role: str,
+    decision: Any,
+) -> None:
+    """Persist a gateway trigger decision row."""
+    from uuid import uuid4 as _uuid4
+
+    from roboco.db.tables import GatewayTriggerTable
+
+    row = GatewayTriggerTable(
+        id=_uuid4(),
+        trigger_kind=trigger_kind,
+        task_id=task_id,
+        target_role=target_role,
+        decision=decision.outcome.value,
+        decision_reason=decision.reason,
+    )
+    db_session.add(row)
+    await db_session.flush()
+
+
+async def gateway_pre_spawn_check(
+    *,
+    task_id: str | None,
+    trigger_kind: str,
+    target_role: str,
+) -> tuple[str, str]:
+    """Consult trigger_filter before spawning a container.
+
+    Returns a ``(outcome, reason)`` tuple where ``outcome`` is one of
+    ``"spawn"``, ``"queue"``, or ``"drop"``.
+
+    When ``settings.gateway_enabled`` is False (the default in Phase 0) this
+    function returns immediately with ``("spawn", "gateway disabled")`` so the
+    existing legacy dispatch path is **completely unchanged**.
+    """
+    if not settings.gateway_enabled:
+        return "spawn", "gateway disabled (legacy path)"
+
+    from roboco.db.base import get_session_factory
+    from roboco.services.gateway.trigger_filter import (
+        Decision,
+        SpawnConfig,
+        SpawnDecision,
+        TriggerContext,
+        TriggerKind,
+        decide_spawn,
+    )
+
+    cutoff = datetime.now(tz=UTC) - timedelta(seconds=settings.spawn_cooldown_seconds)
+    role_cutoff = datetime.now(tz=UTC) - timedelta(seconds=60)
+
+    # When no task_id we cannot query counts; allow (no-task spawns like idle PMs).
+    if task_id is None:
+        return SpawnDecision.SPAWN, "no task_id — no-task spawn, skip gate"
+
+    try:
+        from sqlalchemy import select as _select
+
+        from roboco.db.tables import TaskTable as _TaskTable
+
+        factory = get_session_factory()
+        async with factory() as db:
+            recent_for_task = await _count_recent_spawns_for_task(db, task_id, cutoff)
+            recent_for_role = await _count_recent_spawns_for_role(
+                db, target_role, role_cutoff
+            )
+
+            # Load the lightweight task proxy needed by is_stale / decide_spawn.
+            task_result = await db.execute(
+                _select(_TaskTable).where(_TaskTable.id == task_id)
+            )
+            task_row = task_result.scalars().first()
+
+            if task_row is None:
+                return SpawnDecision.SPAWN, "task not found in DB — allow by default"
+
+            trigger = TriggerContext(
+                kind=TriggerKind(trigger_kind),
+                skill=None,
+                recent_spawns_for_task=recent_for_task,
+                recent_spawns_for_role=recent_for_role,
+            )
+            config = SpawnConfig(
+                cooldown_seconds=settings.spawn_cooldown_seconds,
+                role_rate_per_minute=settings.role_spawn_rate_per_minute,
+                claim_stale_seconds=settings.claim_stale_seconds,
+            )
+            decision: Decision = decide_spawn(
+                task=task_row, trigger=trigger, config=config
+            )
+
+            await _record_trigger_decision(
+                db, task_id, trigger_kind, target_role, decision
+            )
+            await db.commit()
+
+        return decision.outcome.value, decision.reason
+
+    except Exception as exc:
+        # Gateway errors must never block a spawn — degrade gracefully.
+        logger.warning(
+            "Gateway pre-spawn check failed; defaulting to spawn",
+            task_id=task_id,
+            trigger_kind=trigger_kind,
+            error=str(exc),
+        )
+        return "spawn", f"gateway error (degraded): {exc}"
 
 
 class AgentReadinessError(Exception):
@@ -405,6 +626,15 @@ class AgentOrchestrator:
     ) -> dict[str, list[str]]:
         """Get role-specific allow/deny lists for Claude Code tools.
 
+        Post-gateway shape: every state-changing operation an agent can
+        perform routes through ``mcp__roboco-flow__*`` (intent verbs) or
+        ``mcp__roboco-do__*`` (content tools — commit, push, PR, journal,
+        notify, message), both granted to every role via ``base_allow``.
+        Role-specific configuration here only governs file IO (Write/Edit
+        scoping) plus a small handful of legacy native-tool denies that
+        remain meaningful for weak models. Read-only git lives in
+        ``mcp__roboco-git-readonly__*``.
+
         Args:
             role: Agent role (developer, qa, documenter, cell_pm, main_pm, etc.)
             workspace_path: Path to agent's own workspace directory
@@ -418,33 +648,21 @@ class AgentOrchestrator:
         configs: dict[str, dict[str, list[str]]] = {
             "developer": {
                 "allow": [
-                    "mcp__roboco-git__*",
-                    "mcp__roboco-test__*",
                     f"Write({workspace_path}/**)",
                     f"Edit({workspace_path}/**)",
                 ],
                 "deny": [],
             },
             "qa": {
-                "allow": [
-                    "mcp__roboco-git__roboco_git_status",
-                    "mcp__roboco-git__roboco_git_log",
-                    "mcp__roboco-git__roboco_git_diff",
-                    "mcp__roboco-test__*",
-                ],
+                # QA reads code + the open PR via the gateway; never edits.
+                "allow": [],
                 "deny": [
-                    "mcp__roboco-git__roboco_git_commit",
-                    "mcp__roboco-git__roboco_git_push",
-                    "mcp__roboco-git__roboco_git_create_pr",
                     "Write(*)",
                     "Edit(*)",
                 ],
             },
             "documenter": {
                 "allow": [
-                    "mcp__roboco-docs__*",
-                    "mcp__roboco-git__*",
-                    "mcp__roboco-test__*",
                     f"Write({cell_workspace_path}/**)",
                     f"Edit({cell_workspace_path}/**)",
                     "Write(/app/docs/**)",
@@ -457,20 +675,13 @@ class AgentOrchestrator:
                 "deny": [],
             },
             "cell_pm": {
-                "allow": [
-                    "mcp__roboco-git__*",
-                    "mcp__roboco-docs__*",
-                    "mcp__roboco-test__*",
-                ],
-                # PMs coordinate; they open + merge PRs but never author code.
-                # Edit/Write are denied so weaker models can't read the
-                # subtask title imperatively and start editing source — they
-                # have to decompose into a dev subtask. create_pr + merge_pr
-                # stay allowed (needed for the PR chain). Devs are the only
-                # role that authors code in this hierarchy.
+                # PMs coordinate; they open + merge PRs through the gateway
+                # but never author code. Edit/Write are denied so weaker
+                # models can't read the subtask title imperatively and
+                # start editing source — they have to decompose into a dev
+                # subtask. Devs are the only role that authors code.
+                "allow": [],
                 "deny": [
-                    "mcp__roboco-git__roboco_git_commit",
-                    "mcp__roboco-git__roboco_git_push",
                     "Bash(git commit:*)",
                     "Bash(git push:*)",
                     "Write(*)",
@@ -478,18 +689,12 @@ class AgentOrchestrator:
                 ],
             },
             "main_pm": {
-                "allow": [
-                    "mcp__roboco-git__*",
-                    "mcp__roboco-docs__*",
-                    "mcp__roboco-test__*",
-                ],
                 # Same reasoning as cell_pm — Main PM sits between CEO and
                 # cell PMs; the work product is coordination + review, not
-                # commits or edits. create_pr is still allowed (master-bound
-                # PR). Code work routes Main PM → Cell PM → Dev only.
+                # commits or edits. Code work routes Main PM → Cell PM →
+                # Dev only.
+                "allow": [],
                 "deny": [
-                    "mcp__roboco-git__roboco_git_commit",
-                    "mcp__roboco-git__roboco_git_push",
                     "Bash(git commit:*)",
                     "Bash(git push:*)",
                     "Write(*)",
@@ -498,9 +703,6 @@ class AgentOrchestrator:
             },
             "product_owner": {
                 "allow": [
-                    "mcp__roboco-git__*",
-                    "mcp__roboco-docs__*",
-                    "mcp__roboco-test__*",
                     f"Write({workspace_path}/**)",
                     f"Edit({workspace_path}/**)",
                 ],
@@ -508,22 +710,14 @@ class AgentOrchestrator:
             },
             "head_marketing": {
                 "allow": [
-                    "mcp__roboco-docs__*",
-                    "mcp__roboco-git__roboco_git_status",
-                    "mcp__roboco-git__roboco_git_log",
-                    "mcp__roboco-git__roboco_git_diff",
                     f"Write({workspace_path}/**)",
                     f"Edit({workspace_path}/**)",
                 ],
                 "deny": [],
             },
             "auditor": {
-                "allow": [
-                    "mcp__roboco-git__roboco_git_status",
-                    "mcp__roboco-git__roboco_git_log",
-                    "mcp__roboco-git__roboco_git_diff",
-                    "mcp__roboco-test__roboco_test_status",
-                ],
+                # Auditor is read-only across the org — observes, never edits.
+                "allow": [],
                 "deny": [
                     "Write(*)",
                     "Edit(*)",
@@ -563,15 +757,15 @@ class AgentOrchestrator:
         Returns:
             Path to the generated settings file
         """
-        # Base MCP tools for all agents
+        # Base MCP tools for all agents. Post-gateway every role gets the
+        # full intent-verb + content-tool surface; the orchestrator-side
+        # API rejects verbs/tools the agent's role isn't authorized for,
+        # so granting `*` here is safe.
         base_allow = [
-            "mcp__roboco-task__*",
-            "mcp__roboco-message__*",
-            "mcp__roboco-notify__*",
-            "mcp__roboco-journal__*",
+            "mcp__roboco-flow__*",
+            "mcp__roboco-do__*",
             "mcp__roboco-optimal__*",
-            "mcp__roboco-a2a__*",
-            "mcp__roboco-project__*",
+            "mcp__roboco-git-readonly__*",
             "Read(*)",  # All agents can read any file
         ]
 
@@ -909,7 +1103,38 @@ class AgentOrchestrator:
         Each dispatcher iterates many tasks; if `spawn_agent` raised, the
         remaining tasks were skipped until the next tick. This wrapper logs
         and returns None on failure so siblings still get dispatched.
+
+        When ``settings.gateway_enabled`` is True the gateway pre-spawn check
+        runs first; a QUEUE or DROP outcome skips the container launch.
+        When the flag is False (Phase 0 default) this block is a single
+        boolean test and the legacy path is completely unchanged.
         """
+        # Gateway gate — zero-cost when gateway_enabled=False (Phase 0 default).
+        target_role = get_agent_role(agent_id) or "unknown"
+        # Map context_label to one of the TriggerKind string values; unknown
+        # labels fall back to "scan" which is the least-specific kind.
+        trigger_kind_map = {
+            "a2a": "a2a",
+            "escalation": "escalation",
+            "notification": "notification",
+        }
+        trigger_kind = trigger_kind_map.get(context_label, "scan")
+
+        outcome, reason = await gateway_pre_spawn_check(
+            task_id=task_id,
+            trigger_kind=trigger_kind,
+            target_role=target_role,
+        )
+        if outcome != "spawn":
+            logger.info(
+                "Gateway pre-spawn check suppressed spawn",
+                agent_id=agent_id,
+                task_id=task_id,
+                outcome=outcome,
+                reason=reason,
+            )
+            return None
+
         try:
             return await self.spawn_agent(
                 agent_id=agent_id,
@@ -1270,6 +1495,32 @@ class AgentOrchestrator:
             cmd.extend(["-e", f"ANTHROPIC_BASE_URL={config.provider_base_url}"])
         if config.provider_auth_token:
             cmd.extend(["-e", f"ANTHROPIC_AUTH_TOKEN={config.provider_auth_token}"])
+        # Subagent model override: Claude Code's Task (Agent) tool defaults to
+        # claude-haiku-4-5-20251001 regardless of the parent's --model flag.
+        # When the parent runs on a non-Anthropic provider (e.g. Ollama Cloud),
+        # that default model is unreachable and subagent dispatch fails.
+        # CLAUDE_CODE_SUBAGENT_MODEL is a Claude Code env var (verified in
+        # v2.1.123 binary) that short-circuits the default selection so the
+        # spawned sub-task uses the same model as the parent agent.
+        subagent_model = _resolve_agent_cli_model(config.provider_type, config.model)
+        cmd.extend(["-e", f"CLAUDE_CODE_SUBAGENT_MODEL={subagent_model}"])
+        # Spawn manifest + gateway flag — developer role only in Phase 1.
+        # _build_manifest_for_agent writes the JSON file to the host and
+        # returns the path; other roles get None and the gateway flag stays off.
+        manifest_host_path = _build_manifest_for_agent(config.agent_id, subagent_model)
+        if manifest_host_path:
+            cmd.extend(
+                [
+                    "-v",
+                    f"{manifest_host_path}:/app/tool-manifest.json:ro",
+                    "-e",
+                    "ROBOCO_GATEWAY_ENABLED=true",
+                    "-e",
+                    "ROBOCO_TOOL_MANIFEST_PATH=/app/tool-manifest.json",
+                ]
+            )
+        else:
+            cmd.extend(["-e", "ROBOCO_GATEWAY_ENABLED=false"])
         return cmd
 
     @staticmethod
@@ -1363,17 +1614,8 @@ class AgentOrchestrator:
 
     @staticmethod
     def _resolve_cli_model(config: AgentConfig) -> str:
-        """Return the string to pass to `claude --model`.
-
-        For the Anthropic provider, short names (`opus|sonnet|haiku`) are
-        translated through `MODEL_MAP` as they always were. For non-
-        Anthropic providers (currently Ollama Cloud) the model identifier
-        is passed verbatim so raw tags like `kimi-k2.6:cloud` reach the
-        Ollama-side Claude Code integration intact.
-        """
-        if config.provider_type == "anthropic":
-            return MODEL_MAP.get(config.model, config.model)
-        return config.model
+        """Return the string to pass to `claude --model`."""
+        return _resolve_agent_cli_model(config.provider_type, config.model)
 
     async def _spawn_container(
         self,
@@ -1475,18 +1717,21 @@ class AgentOrchestrator:
     ) -> Path:
         """Generate MCP config for an agent.
 
-        All agents get access to these MCP servers:
-        - roboco-task: Task management
-        - roboco-message: Channel messaging
-        - roboco-journal: Personal journaling
-        - roboco-notify: Notifications (read for all, send for PMs)
-        - roboco-optimal: Knowledge base, RAG, semantic search
-        - roboco-git: Git operations (role-based at handler level)
-        - roboco-a2a: Agent-to-Agent protocol
-        - roboco-test: Test/lint/format tools
-        - roboco-docs: Documentation file management
+        Post-gateway: every state-changing tool routes through one of two
+        servers, and read-only views go through two more:
 
-        Git context is passed to MCP servers so git tools can use defaults.
+        - roboco-flow         intent verbs (lifecycle transitions)
+        - roboco-do           content tools (commit, push, PR, journal,
+                              notify, message)
+        - roboco-git-readonly status, log, diff, branch list
+        - roboco-optimal      knowledge base, RAG, semantic search
+        - roboco-docs         documentation file management (panel docs)
+
+        The agent's role is asserted by the orchestrator API on every
+        verb/tool call, so all roles get the same MCP surface from this
+        registration; verbs the agent's role can't run return a
+        not-authorized error rather than 404. Git context is forwarded
+        only as a fallback for tools that resolve project/branch from env.
         """
         # MCP servers run inside agent containers, need to connect via Docker network
         if PROJECT_HOST_PATH:
@@ -1494,9 +1739,13 @@ class AgentOrchestrator:
         else:
             api_url = f"http://127.0.0.1:{settings.port}"
 
+        agent_role = get_agent_role(agent_id) or ""
+
         mcp_env: dict[str, str] = {
             "ROBOCO_API_URL": api_url,
+            "ROBOCO_ORCHESTRATOR_URL": api_url,
             "ROBOCO_AGENT_ID": agent_id,
+            "ROBOCO_AGENT_ROLE": agent_role,
         }
 
         # Add git context if available
@@ -1506,129 +1755,42 @@ class AgentOrchestrator:
             if git_context.branch_name:
                 mcp_env["ROBOCO_BRANCH"] = git_context.branch_name
 
-        # Base MCP servers - all agents get these
         mcp_servers: dict[str, dict[str, Any]] = {
-            "roboco-task": {
+            # Intent verbs — every role-scoped lifecycle transition.
+            "roboco-flow": {
                 "command": "uv",
-                "args": ["run", "python", "-m", "roboco.mcp.task_server", agent_id],
+                "args": ["run", "python", "-m", "roboco.mcp.flow_server"],
                 "env": mcp_env,
             },
-            "roboco-message": {
+            # Content tools — commit, push, PR, journal, notify, message.
+            "roboco-do": {
+                "command": "uv",
+                "args": ["run", "python", "-m", "roboco.mcp.do_server"],
+                "env": mcp_env,
+            },
+            # Read-only git views — status, log, diff, branches.
+            "roboco-git-readonly": {
+                "command": "uv",
+                "args": ["run", "python", "-m", "roboco.mcp.git_readonly"],
+                "env": mcp_env,
+            },
+            # Knowledge base — RAG / semantic search / ask_mentor.
+            "roboco-optimal": {
                 "command": "uv",
                 "args": [
                     "run",
                     "python",
                     "-m",
-                    "roboco.mcp.message_server",
-                    agent_id,
-                ],
-                "env": mcp_env,
-            },
-            "roboco-journal": {
-                "command": "uv",
-                "args": [
-                    "run",
-                    "python",
-                    "-m",
-                    "roboco.mcp.journal_server",
+                    "roboco.mcp.optimal_server",
                     agent_id,
                 ],
                 "env": mcp_env,
             },
         }
 
-        # Notify server - everyone can READ notifications, only PMs can SEND
-        # (permission check happens at handler level)
-        mcp_servers["roboco-notify"] = {
-            "command": "uv",
-            "args": [
-                "run",
-                "python",
-                "-m",
-                "roboco.mcp.notify_server",
-                agent_id,
-            ],
-            "env": mcp_env,
-        }
-
-        # Optimal server - knowledge base, RAG, semantic search
-        # All agents can search; indexing permissions checked at API level
-        mcp_servers["roboco-optimal"] = {
-            "command": "uv",
-            "args": [
-                "run",
-                "python",
-                "-m",
-                "roboco.mcp.optimal_server",
-                agent_id,
-            ],
-            "env": mcp_env,
-        }
-
-        # Git server - branch management, commits, PRs
-        # Role-based permissions enforced at handler level:
-        # - All agents: read-only (status, log, diff, branch list)
-        # - Developers: commit, push, create PR
-        # - PMs: checkout, merge PR (branches auto-created on claim)
-        mcp_servers["roboco-git"] = {
-            "command": "uv",
-            "args": [
-                "run",
-                "python",
-                "-m",
-                "roboco.mcp.git.git_server",
-                agent_id,
-            ],
-            "env": mcp_env,
-        }
-
-        # A2A server - Agent-to-Agent protocol for cross-cell coordination
-        # All agents can discover and request help from other agents
-        mcp_servers["roboco-a2a"] = {
-            "command": "uv",
-            "args": [
-                "run",
-                "python",
-                "-m",
-                "roboco.mcp.a2a_server",
-                agent_id,
-            ],
-            "env": mcp_env,
-        }
-
-        # Project server - project and workspace management
-        # All agents can list/view projects and manage their own workspace
-        # PMs can create projects and list all workspaces
-        mcp_servers["roboco-project"] = {
-            "command": "uv",
-            "args": [
-                "run",
-                "python",
-                "-m",
-                "roboco.mcp.project_server",
-                agent_id,
-            ],
-            "env": mcp_env,
-        }
-
-        # Test server - run tests, lint, format, typecheck, build
-        # Role-based permissions enforced at handler level
-        mcp_servers["roboco-test"] = {
-            "command": "uv",
-            "args": [
-                "run",
-                "python",
-                "-m",
-                "roboco.mcp.test.test_server",
-                agent_id,
-            ],
-            "env": mcp_env,
-        }
-
-        # Docs server - documentation file management.
-        # Registered for every role that is granted mcp__roboco-docs__* in
-        # _get_role_permissions; handlers still enforce per-role access.
-        agent_role = get_agent_role(agent_id)
+        # Docs server — documentation file management. Registered only for
+        # roles that touch panel docs; handlers still enforce per-role
+        # access so the surface is fail-closed.
         docs_roles = (
             "documenter",
             "cell_pm",
@@ -1871,7 +2033,7 @@ class AgentOrchestrator:
         Weak models consistently skip the role prompt's `Load on spawn
         (one ToolSearch select: call)` line — then trip on "Edit exists
         but is not enabled in this context" when they try to edit a
-        file, or "No such tool available: mcp__roboco-task__…" when
+        file, or "No such tool available: mcp__roboco-flow__…" when
         they try to act. Hoisting the directive into the briefing's
         first block (with the exact query string inline) pulls the
         bootstrap into the prompt-most-salient position.
