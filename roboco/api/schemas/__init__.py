@@ -55,7 +55,6 @@ from roboco.api.schemas.messages import (
 )
 from roboco.api.schemas.notifications import (
     ListNotificationsParams,
-    NotificationCreateRequest,
     NotificationListResponse,
     NotificationResponse,
 )
@@ -171,7 +170,6 @@ __all__ = [
     "MessageEditRequest",
     "MessageListResponse",
     "MessageResponse",
-    "NotificationCreateRequest",
     "NotificationListResponse",
     "NotificationResponse",
     "OrchestratorStatusResponse",

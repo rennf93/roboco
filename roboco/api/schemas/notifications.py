@@ -54,19 +54,6 @@ class NotificationListResponse(BaseModel):
     pending_ack_count: int
 
 
-class NotificationCreateRequest(BaseModel):
-    """Request to create a notification."""
-
-    type: NotificationType
-    priority: NotificationPriority = NotificationPriority.NORMAL
-    to_agents: list[UUID] = Field(..., min_length=1)
-    subject: str = Field(..., min_length=1, max_length=200)
-    body: str
-    requires_ack: bool = True
-    related_task_id: UUID | None = None
-    expires_at: datetime | None = None
-
-
 # =============================================================================
 # RESPONSE CONVERTERS
 # =============================================================================
