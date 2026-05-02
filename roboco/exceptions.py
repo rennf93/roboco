@@ -218,28 +218,28 @@ class TaskLifecycleError(TaskError):
     _TRANSITION_HINTS: ClassVar[dict[tuple[str, str], str]] = {
         ("claimed", "awaiting_documentation"): (
             "QA pass skipped the in_progress step. "
-            "Call `roboco_task_start(task_id)` first, then "
-            "`roboco_task_qa_pass(task_id, qa_notes=...)`."
+            "Call gateway i_will_work_on(task_id, plan='...') first, "
+            "then pass(task_id, notes=...)."
         ),
         ("claimed", "awaiting_pm_review"): (
-            "Call `roboco_task_start(task_id)` first to move claimed → "
-            "in_progress, then the handoff tool for your role."
+            "Call i_will_work_on(task_id, plan='...') first to "
+            "claimed → in_progress, then the handoff verb for your role."
         ),
         ("claimed", "completed"): (
-            "Call `roboco_task_start(task_id)` before `roboco_task_complete(task_id)`."
+            "Call i_will_work_on(task_id, plan='...') before complete(task_id)."
         ),
         ("claimed", "needs_revision"): (
             "QA fail from claimed needs the start step first. "
-            "Call `roboco_task_start(task_id)` then "
-            "`roboco_task_qa_fail(task_id, notes=...)`."
+            "Call i_will_work_on(task_id, plan='...') then "
+            "fail(task_id, issues=[...])."
         ),
         ("pending", "in_progress"): (
-            "Pending tasks must be claimed first. "
-            "Call `roboco_task_claim(task_id)` then `roboco_task_start`."
+            "Pending tasks must be claimed + planned first. "
+            "Call gateway i_will_work_on(task_id, plan='...')."
         ),
         ("backlog", "in_progress"): (
-            "Activate the task first via "
-            "`roboco_task_activate(task_id)`, then claim + start."
+            "Activate the task first: PATCH /api/tasks/{id} "
+            "(status=pending), then i_will_work_on(task_id, plan='...')."
         ),
     }
 

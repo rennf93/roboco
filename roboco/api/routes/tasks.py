@@ -854,8 +854,9 @@ async def submit_for_qa(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=(
                 "NOT_SELF_VERIFIED: Cannot submit for QA without a prior "
-                "self-verification step. Call "
-                "roboco_task_submit_verification() first, then submit_qa."
+                "self-verification step. Call gateway i_am_done() "
+                "(handles verification + QA submit), or for the panel "
+                "POST /api/tasks/{id}/verify before /submit-qa."
             ),
         )
     if not task.commits:
@@ -864,7 +865,7 @@ async def submit_for_qa(
             detail=(
                 "NO_COMMITS: Cannot submit for QA without at least one "
                 "commit on this task. Use roboco_git_commit() before "
-                "roboco_task_submit_qa()."
+                "i_am_done() via gateway, or POST /api/tasks/{id}/submit-qa."
             ),
         )
     if task.pr_number is None:
@@ -881,8 +882,9 @@ async def submit_for_qa(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=(
                 "NO_PROGRESS: Cannot submit for QA without any "
-                "progress updates. Call roboco_task_progress() at least "
-                "once during execution before submitting."
+                "progress updates. Add progress entries via the gateway "
+                "(i_have_committed auto-records) at least once during "
+                "execution before submitting."
             ),
         )
 
@@ -953,8 +955,9 @@ async def pass_qa(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=(
                 "NO_PR_ATTACHED: Cannot pass QA without a PR on this "
-                "task. Use roboco_task_qa_fail(notes='PR not created - "
-                "dev must push and open PR') so the dev fixes it."
+                "task. Call gateway fail(task_id, issues=['PR not created'])"
+                " or POST /api/tasks/{id}/fail-qa with the same issue, "
+                "so the dev fixes it."
             ),
         )
 
@@ -967,8 +970,9 @@ async def pass_qa(
             detail=(
                 "QA_NOTES_REQUIRED: QA pass must include notes (>=20 "
                 "chars) summarizing what was verified against the "
-                "acceptance criteria. Use roboco_task_qa_pass("
-                "notes='...')."
+                "acceptance criteria. Call gateway pass(task_id, "
+                "notes='...') or POST /api/tasks/{id}/pass-qa with "
+                "notes set."
             ),
         )
 
@@ -1395,7 +1399,7 @@ async def escalate_task(
 
     msg = (
         f"Task escalated to {outcome.target_slug} and set to BLOCKED. "
-        f"PM will receive notification and must call roboco_task_unblock() "
+        f"PM will receive notification and must call gateway unblock(task_id) "
         "to provide guidance or reassign."
     )
     return EscalateResponse(
