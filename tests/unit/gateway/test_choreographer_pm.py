@@ -551,9 +551,9 @@ async def test_escalate_up_routes_by_escalation_target() -> None:
     task_svc.get.return_value = t
     task_svc.agent_for.return_value = MagicMock(
         role="cell_pm",
-        escalation_target="main_pm",
+        escalation_target="main-pm",
     )
-    task_svc.escalate_up_to_role.return_value = after
+    task_svc.escalate.return_value = after
     journal_svc = AsyncMock()
     journal_svc.has_decision_for_task.return_value = True
     deps = _make_deps(task=task_svc, journal=journal_svc)
@@ -561,12 +561,35 @@ async def test_escalate_up_routes_by_escalation_target() -> None:
 
     env = await c.escalate_up(pm_id, task_id, reason="cross-cell coordination needed")
     assert env.error is None
-    task_svc.escalate_up_to_role.assert_awaited_once_with(
+    task_svc.escalate.assert_awaited_once_with(
         pm_id,
         task_id,
-        "main_pm",
         "cross-cell coordination needed",
     )
+
+
+@pytest.mark.asyncio
+async def test_escalate_up_returns_invalid_state_when_target_lookup_fails() -> None:
+    """Regression: escalate_up_to_role returning None used to crash on t.status."""
+    pm_id = uuid4()
+    task_id = uuid4()
+    t = MagicMock(id=task_id, status="blocked", assigned_to=pm_id, team="backend")
+    task_svc = AsyncMock()
+    task_svc.get.return_value = t
+    task_svc.agent_for.return_value = MagicMock(
+        role="cell_pm",
+        escalation_target="main-pm",
+    )
+    task_svc.escalate.return_value = None  # target slug not found in DB
+    journal_svc = AsyncMock()
+    journal_svc.has_decision_for_task.return_value = True
+    deps = _make_deps(task=task_svc, journal=journal_svc)
+    c = Choreographer(deps)
+
+    env = await c.escalate_up(pm_id, task_id, reason="x")
+    body = env.as_dict()
+    assert body["error"] == "invalid_state"
+    assert "main-pm" in body["message"]
 
 
 @pytest.mark.asyncio

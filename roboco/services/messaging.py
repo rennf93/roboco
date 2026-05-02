@@ -263,9 +263,15 @@ class MessagingService(BaseService):
         await self.session.flush()
 
     async def get_channel_by_slug(self, slug: str) -> ChannelTable | None:
-        """Get a channel by slug."""
+        """Get a channel by slug.
+
+        Strips a leading ``#`` so agents passing channel names with the
+        Slack-style ``#`` prefix (e.g. ``#main-pm-board``) resolve to the
+        same row stored without it.
+        """
+        normalized = slug.lstrip("#") if slug else slug
         result = await self.session.execute(
-            select(ChannelTable).where(ChannelTable.slug == slug)
+            select(ChannelTable).where(ChannelTable.slug == normalized)
         )
         return result.scalar_one_or_none()
 
@@ -284,8 +290,9 @@ class MessagingService(BaseService):
         Returns:
             Channel if found or created, None if not a valid channel
         """
+        normalized = slug.lstrip("#") if slug else slug
         # First try database
-        channel = await self.get_channel_by_slug(slug)
+        channel = await self.get_channel_by_slug(normalized)
         if channel:
             return channel
 
@@ -294,7 +301,7 @@ class MessagingService(BaseService):
         from roboco.seeds import DEFAULT_CHANNELS
 
         channel_data = next(
-            (c for c in DEFAULT_CHANNELS if c["slug"] == slug),
+            (c for c in DEFAULT_CHANNELS if c["slug"] == normalized),
             None,
         )
         if not channel_data:

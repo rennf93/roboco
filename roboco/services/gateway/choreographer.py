@@ -1427,21 +1427,31 @@ class Choreographer:
             )
 
         me = await self.task.agent_for(pm_agent_id)
-        target_role = me.escalation_target
-        if not target_role:
+        target_slug = me.escalation_target if me else None
+        if not target_slug:
             return Envelope.invalid_state(
                 message="no escalation target configured for your role",
-                remediate="check agents_config.py for your role's escalation_target",
+                remediate="check agents_config.py ESCALATION_CHAIN for your slug",
                 context_briefing=await self._briefing_for(pm_agent_id, task_id),
             )
 
-        t = await self.task.escalate_up_to_role(
-            pm_agent_id, task_id, target_role, reason
-        )
+        t = await self.task.escalate(pm_agent_id, task_id, reason)
+        if t is None:
+            return Envelope.invalid_state(
+                message=(
+                    f"could not escalate task {task_id} to {target_slug}: "
+                    "target agent not found or task missing"
+                ),
+                remediate=(
+                    f"verify {target_slug} exists in agents table and that the "
+                    "task is still present"
+                ),
+                context_briefing=await self._briefing_for(pm_agent_id, task_id),
+            )
         return Envelope.ok(
             status=str(t.status),
             task_id=str(task_id),
-            next=f"escalated to {target_role}; idle until they respond",
+            next=f"escalated to {target_slug}; idle until they respond",
             context_briefing=await self._briefing_for(pm_agent_id, task_id),
         )
 
