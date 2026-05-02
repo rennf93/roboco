@@ -7,7 +7,7 @@ that build responses from ORM rows and normalize update payloads.
 
 from datetime import datetime
 from typing import Any
-from uuid import UUID
+from uuid import UUID, uuid4
 
 from pydantic import BaseModel, Field
 from sqlalchemy import inspect as sa_inspect
@@ -481,13 +481,29 @@ class TeamTasksQuery(BaseModel):
 
 
 def convert_plan(plan_data: dict | None) -> TaskPlanResponse | None:
-    """Convert plan JSON dict to TaskPlanResponse."""
+    """Convert plan JSON dict to TaskPlanResponse.
+
+    Coerces malformed sub_task ids (e.g., agent supplied "1" instead of a
+    UUID) to a fresh UUID so a single bad write doesn't permanently brick
+    the read path. The DB-level id is replaced; PMs treat sub_task.order
+    + title as the stable handle anyway.
+    """
     if not plan_data:
         return None
 
+    def _coerce_id(value: object) -> UUID:
+        if isinstance(value, UUID):
+            return value
+        if isinstance(value, str):
+            try:
+                return UUID(value)
+            except (ValueError, AttributeError):
+                return uuid4()
+        return uuid4()
+
     sub_tasks = [
         SubTaskResponse(
-            id=st.get("id"),
+            id=_coerce_id(st.get("id")),
             title=st.get("title", ""),
             description=st.get("description"),
             completed=st.get("completed", False),
