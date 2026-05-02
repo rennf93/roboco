@@ -1,13 +1,11 @@
 """
 MCP Server Utilities
 
-Shared utilities for all MCP servers to avoid code duplication.
-Contains common functions for:
-- Agent header generation
-- Error response formatting
-- Agent UUID resolution with caching
-- API client for internal API calls
-- Shared caches for cross-server data
+Shared HTTP helpers used by the surviving MCP servers (`optimal_server.py`
+and `docs_server.py`). Older callers (`task_server`, `journal_server`,
+`message_server`, `notify_server`, `a2a_server`, `project_server`) were
+deleted in Phase 4 T9; their helpers (agent UUID resolution + cache,
+`format_success_response`, etc.) were dropped along with them.
 """
 
 import os
@@ -18,38 +16,25 @@ import httpx
 from roboco.agents_config import get_agent_role, get_agent_team
 from roboco.config import settings
 
-# =============================================================================
-# SHARED CACHES (Module-level for cross-request persistence)
-# =============================================================================
-
-# Agent UUID cache: maps slug -> UUID for quick lookups
-# This cache is shared across all MCP servers to avoid redundant API calls
-_agent_uuid_cache: dict[str, str] = {}
-
-# UUID format constants
-_UUID_LENGTH = 36  # Standard UUID string length
-_UUID_HYPHEN_COUNT = 4  # Number of hyphens in a UUID
-
-# HTTP status code ranges
-_HTTP_OK = 200
+# HTTP success range used by ApiResponse.ok (200 ≤ status < 300).
 _HTTP_SUCCESS_MIN = 200
-_HTTP_SUCCESS_MAX = 300  # exclusive
+_HTTP_SUCCESS_MAX = 300
 
-# Default timeout for API calls (seconds)
+# Default timeout for API calls (seconds).
 DEFAULT_TIMEOUT = 30.0
 
 
-def get_agent_headers(agent_id: str) -> dict[str, str]:
+def _get_agent_headers(agent_id: str) -> dict[str, str]:
     """
-    Get standard headers for API calls from an MCP server.
+    Build the standard headers ApiClient sends with every request.
 
-    Args:
-        agent_id: The agent's identifier (slug or UUID)
+    Returns headers dict with X-Agent-ID, X-Agent-Role, optionally
+    X-Agent-Team, and X-Agent-Token when ROBOCO_AGENT_TOKEN is set in the
+    environment (injected by the orchestrator at spawn time).
 
-    Returns:
-        Headers dict with X-Agent-ID, X-Agent-Role, optionally X-Agent-Team,
-        and X-Agent-Token when ROBOCO_AGENT_TOKEN is set in the
-        environment (injected by the orchestrator at spawn time).
+    The API middleware verifies token == HMAC(agent_id:role:team,
+    ROBOCO_AGENT_AUTH_SECRET), which stops an agent on the Docker network
+    from spoofing another agent's role via header.
     """
     headers = {
         "X-Agent-ID": agent_id,
@@ -58,10 +43,6 @@ def get_agent_headers(agent_id: str) -> dict[str, str]:
     team = get_agent_team(agent_id)
     if team:
         headers["X-Agent-Team"] = team
-    # Auth token — orchestrator sets this per-agent in the container env.
-    # The API middleware verifies token == HMAC(agent_id:role:team,
-    # ROBOCO_AGENT_AUTH_SECRET), which stops an agent on the Docker
-    # network from spoofing another agent's role via header.
     token = os.environ.get("ROBOCO_AGENT_TOKEN")
     if token:
         headers["X-Agent-Token"] = token
@@ -91,112 +72,6 @@ def format_error_response(
     from roboco.api.schemas.common import error_response
 
     return error_response(code, message, details, hint)
-
-
-def format_success_response(
-    data: Any,
-    guidance: str | None = None,
-    next_step: str | None = None,
-) -> dict[str, Any]:
-    """
-    Format a standardized success response for MCP tools.
-
-    Uses the common success_response format for consistency with API layer.
-
-    Args:
-        data: Response payload
-        guidance: Actionable next step guidance
-        next_step: Workflow hint (e.g., PLAN, EXECUTE)
-
-    Returns:
-        Standardized success response dict with status="success"
-    """
-    from roboco.api.schemas.common import success_response
-
-    return success_response(data, guidance, next_step)
-
-
-async def resolve_agent_uuid(
-    agent_id: str,
-    headers: dict[str, str],
-) -> str | None:
-    """
-    Resolve an agent identifier to its UUID.
-
-    If the agent_id is already a UUID, returns it directly.
-    Otherwise, looks up the agent by slug/name via the API.
-
-    Args:
-        agent_id: Agent identifier (slug like "be-dev-1" or UUID string)
-        headers: Request headers for API authentication
-
-    Returns:
-        UUID string if found, None otherwise
-    """
-    # If it looks like a UUID already, return it
-    if len(agent_id) == _UUID_LENGTH and agent_id.count("-") == _UUID_HYPHEN_COUNT:
-        return agent_id
-
-    # Look up by slug - GET /agents/{id} accepts both UUID and slug
-    async with httpx.AsyncClient(timeout=DEFAULT_TIMEOUT) as client:
-        try:
-            resp = await client.get(
-                f"{settings.internal_api_url}/agents/{agent_id}",
-                headers=headers,
-            )
-            if resp.status_code == _HTTP_OK:
-                data = resp.json()
-                agent_id_result: str | None = data.get("id")
-                return agent_id_result
-        except Exception:
-            pass
-    return None
-
-
-async def resolve_agent_uuid_cached(
-    agent_id: str,
-    client: "ApiClient",
-) -> str | None:
-    """
-    Resolve an agent identifier to its UUID with caching.
-
-    This is the preferred method for MCP servers as it caches results
-    to avoid redundant API calls across tool invocations.
-
-    Args:
-        agent_id: Agent identifier (slug like "be-dev-1" or UUID string)
-        client: ApiClient instance for making API calls
-
-    Returns:
-        UUID string if found, None otherwise
-    """
-    # Check cache first
-    if agent_id in _agent_uuid_cache:
-        return _agent_uuid_cache[agent_id]
-
-    # Resolve using the non-cached method
-    result = await resolve_agent_uuid(agent_id, client._get_headers())
-
-    # Cache the result if found
-    if result:
-        _agent_uuid_cache[agent_id] = result
-
-    return result
-
-
-def clear_agent_uuid_cache() -> None:
-    """Clear the agent UUID cache. Useful for testing."""
-    _agent_uuid_cache.clear()
-
-
-def get_cached_agent_uuid(agent_id: str) -> str | None:
-    """
-    Get cached agent UUID without making API call.
-
-    Returns:
-        Cached UUID if available, None otherwise
-    """
-    return _agent_uuid_cache.get(agent_id)
 
 
 # =============================================================================
@@ -282,7 +157,7 @@ class ApiClient:
 
     def _get_headers(self) -> dict[str, str]:
         """Get headers with agent context."""
-        return get_agent_headers(self.agent_id)
+        return _get_agent_headers(self.agent_id)
 
     async def _ensure_client(self) -> httpx.AsyncClient:
         """Get or create the httpx client."""
