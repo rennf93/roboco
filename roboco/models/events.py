@@ -38,7 +38,6 @@ class EventType(StrEnum):
     TASK_AWAITING_CEO_APPROVAL = "task.awaiting_ceo_approval"  # Escalated to CEO
     TASK_CEO_APPROVED = "task.ceo_approved"  # CEO approved
     TASK_CEO_REJECTED = "task.ceo_rejected"  # CEO rejected, needs revision
-    TASK_PM_REJECTED = "task.pm_rejected"  # PM sent back to dev for rework
     TASK_COMPLETED = "task.completed"
     TASK_CANCELLED = "task.cancelled"
 

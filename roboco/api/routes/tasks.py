@@ -54,7 +54,6 @@ from roboco.services.base import (
 from roboco.services.messaging import get_messaging_service
 from roboco.services.notification_delivery import (
     EscalationError,
-    PMRejectDetails,
     get_notification_delivery_service,
 )
 from roboco.services.permissions import TaskAction
@@ -560,58 +559,6 @@ async def claim_task(
         )
     except ServiceError as e:
         raise _translate_error(e) from e
-    return task_to_response(task)
-
-
-@router.post("/{task_id}/unclaim", response_model=TaskResponse)
-async def unclaim_task(
-    task_id: UUID,
-    db: DbSession,
-    agent: CurrentAgentContext,
-    data: Annotated[ClaimRequest | None, Body()] = None,
-) -> TaskResponse:
-    """
-    Release a claimed task back to the task pool.
-
-    Use this when an agent claimed a task but realizes they shouldn't work on it.
-    Optionally specify a different agent to hand off to.
-    """
-    service = get_task_service(db)
-    task = await service.get(task_id)
-    if not task:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND, detail="Task not found"
-        )
-
-    # Only assigned agent can unclaim
-    if task.assigned_to != agent.agent_id:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="Only the assigned agent can unclaim this task",
-        )
-
-    # Optionally hand off to a specific agent
-    return_to: UUID | None = None
-    if data and data.agent_id:
-        try:
-            return_to = await service.resolve_agent_id(data.agent_id)
-        except NotFoundError as e:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND, detail=str(e)
-            ) from e
-
-    task = await service.unclaim(
-        task_id,
-        agent_id=agent.agent_id,
-        agent_role=agent.role,
-        return_to_assignee=return_to,
-    )
-    if not task:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Cannot unclaim task - must be in CLAIMED status",
-        )
-    await db.commit()
     return task_to_response(task)
 
 
@@ -1288,61 +1235,6 @@ async def escalate_to_ceo(
         )
     except ServiceError as e:
         raise _translate_error(e) from e
-    return task_to_response(task)
-
-
-@router.post("/{task_id}/pm-reject", response_model=TaskResponse)
-async def pm_reject(
-    task_id: UUID,
-    db: DbSession,
-    agent: CurrentAgentContext,
-    permissions: PermissionServiceDep,
-    data: QANotes | None = None,
-) -> TaskResponse:
-    """PM sends a task back to the developer for rework.
-
-    Transitions `awaiting_pm_review → needs_revision`. Use when the PR is
-    close but needs changes; for structural problems prefer cancel or
-    escalate. The original developer re-claims from `needs_revision`.
-    """
-    service = get_task_service(db)
-    task = await service.get(task_id)
-    if not task:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND, detail="Task not found"
-        )
-
-    can_close = permissions.can_perform_task_action(agent, TaskAction.CLOSE, task.team)
-    if not can_close:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="Only PMs can reject tasks back to dev",
-        )
-
-    notes = data.notes if data else None
-    task = await service.pm_reject(task_id, agent.role.value, notes)
-    if not task:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=("Cannot pm_reject - task must be in awaiting_pm_review status"),
-        )
-
-    # Notify the original developer so they pick it back up quickly
-    dev_uuid = extract_original_developer(task.quick_context)
-    if dev_uuid:
-        delivery = get_notification_delivery_service(db)
-        await delivery.notify_developer_of_pm_reject(
-            task=task,
-            task_id=task_id,
-            from_agent_id=agent.agent_id,
-            details=PMRejectDetails(
-                from_role=agent.role.value,
-                developer_agent_id=UUID(dev_uuid),
-                notes=notes,
-            ),
-        )
-
-    await db.commit()
     return task_to_response(task)
 
 
