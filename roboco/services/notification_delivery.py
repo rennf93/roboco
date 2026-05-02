@@ -51,15 +51,6 @@ class BlockerDetails:
     what_needed: str
 
 
-@dataclass(frozen=True)
-class PMRejectDetails:
-    """Metadata for a PM-reject developer notification."""
-
-    from_role: str
-    developer_agent_id: UUID
-    notes: str | None
-
-
 class NotificationDeliveryService(BaseService):
     """
     Service for delivering notifications to agents.
@@ -607,30 +598,6 @@ class NotificationDeliveryService(BaseService):
             ),
             related_task_id=task_id,
             requires_ack=False,
-        )
-        await self._persist_and_deliver(notification)
-
-    async def notify_developer_of_pm_reject(
-        self,
-        *,
-        task: TaskTable,
-        task_id: UUID,
-        from_agent_id: UUID,
-        details: PMRejectDetails,
-    ) -> None:
-        """Notify the original developer that PM sent the task back for rework."""
-        notification = NotificationTable(
-            type="task_assignment",
-            priority="high",
-            from_agent=from_agent_id,
-            to_agents=[details.developer_agent_id],
-            subject=f"Rework needed: {task.title or 'Unknown task'}",
-            body=(
-                f"Task {task_id} sent back for rework by {details.from_role}.\n\n"
-                f"Notes: {details.notes or 'see pm_reject_notes in task quick_context'}"
-            ),
-            related_task_id=task_id,
-            requires_ack=True,
         )
         await self._persist_and_deliver(notification)
 
