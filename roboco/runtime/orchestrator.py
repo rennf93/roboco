@@ -3239,13 +3239,7 @@ Start by:
         return None
 
     def _classify_code_task(self, task: dict[str, Any]) -> str:
-        """Classify a generic `code` task via keyword/complexity heuristics.
-
-        Default for a single-team code task is `dev` — implementation tasks
-        belong to developers. Cell PM intermediation is reserved for tasks
-        that explicitly signal coordination work (PM keywords) so the PM
-        does not become a re-delegation hop on every routine ticket.
-        """
+        """Classify a generic `code` task via keyword/complexity heuristics."""
         team = task.get("team")
         title = (task.get("title") or "").lower()
         description = (task.get("description") or "").lower()
@@ -3263,11 +3257,7 @@ Start by:
         ):
             return "main_pm"
 
-        # Cell PM only for tasks that name actual coordination work
-        # (coordinate, integration, cross-team, sync, planning, milestone,
-        # dependencies, review). Plain "medium-complexity" no longer
-        # triggers PM routing — the PM was just a re-delegation hop.
-        if self._has_pm_keywords(text):
+        if self._has_pm_keywords(text) or complexity == "medium":
             return "cell_pm"
 
         return "dev"
