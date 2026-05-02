@@ -1740,11 +1740,17 @@ class AgentOrchestrator:
             api_url = f"http://127.0.0.1:{settings.port}"
 
         agent_role = get_agent_role(agent_id) or ""
+        # Gateway v2 endpoints declare X-Agent-ID as Annotated[UUID, Header(...)],
+        # so the MCP server has to forward the agent's UUID — not the slug — or
+        # every gateway call 422s on header parse. Resolve via AGENT_UUIDS map;
+        # if the slug isn't in the map (custom agents), fall back to the slug
+        # and let the API surface the unknown-agent error.
+        agent_uuid = AGENT_UUIDS.get(agent_id, agent_id)
 
         mcp_env: dict[str, str] = {
             "ROBOCO_API_URL": api_url,
             "ROBOCO_ORCHESTRATOR_URL": api_url,
-            "ROBOCO_AGENT_ID": agent_id,
+            "ROBOCO_AGENT_ID": agent_uuid,
             "ROBOCO_AGENT_ROLE": agent_role,
         }
 
