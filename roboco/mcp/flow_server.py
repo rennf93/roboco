@@ -1,17 +1,26 @@
 """roboco-flow MCP server — exposes intent verbs to agents.
 
-Tools are role-scoped via the agent's spawn manifest. The MCP server
-registers all dev verbs unconditionally; the orchestrator's API rejects
-verbs that don't match the agent's role. Phase 1 ships dev verbs;
-Phases 2-4 add QA, doc, PM, board verbs.
+Tools are role-scoped via the agent's spawn manifest. The orchestrator writes
+``/app/tool-manifest.json`` into each spawned agent container with that role's
+``flow_tools`` array; this module reads the manifest at import time and only
+registers the verbs listed there. If the manifest is missing or unreadable
+(e.g. local test runs without the bind mount) the full registry is registered
+as a failsafe and a warning is logged.
+
+The orchestrator's API still rejects verbs that don't match the agent's role
+(defence-in-depth), but per-agent registration prevents the model from ever
+*seeing* an off-role verb in its tool palette.
 """
 
 from __future__ import annotations
 
+import json
 import os
+from pathlib import Path
 from typing import Any
 
 import httpx
+import structlog
 from mcp.server.fastmcp import FastMCP
 
 ORCHESTRATOR_URL = os.environ.get(
@@ -25,6 +34,7 @@ _HEADERS = {"X-Agent-ID": AGENT_ID, "X-Agent-Role": AGENT_ROLE}
 _TIMEOUT = 30
 
 mcp = FastMCP("roboco-flow")
+log = structlog.get_logger()
 
 
 def _post(path: str, body: dict[str, Any]) -> dict[str, Any]:
@@ -45,76 +55,65 @@ def _role_path(verb: str) -> str:
     return f"/api/v2/flow/{AGENT_ROLE}/{verb}"
 
 
-# ---------- Dev verbs (Phase 1) ----------
+# ---------- Dev verbs ----------
 
 
-@mcp.tool()
 def give_me_work() -> dict[str, Any]:
     """Get your current task or report idle. Returns task + context_briefing."""
     return _post(_role_path("give_me_work"), {})
 
 
-@mcp.tool()
 def i_will_work_on(task_id: str, plan: str | None = None) -> dict[str, Any]:
     """Claim/start/recover a task. Works for pending, claimed, needs_revision."""
     return _post(_role_path("i_will_work_on"), {"task_id": task_id, "plan": plan})
 
 
-@mcp.tool()
 def i_have_committed(message: str) -> dict[str, Any]:
     """Record that you made a commit. Auto-creates progress entry."""
     return _post(_role_path("i_have_committed"), {"message": message})
 
 
-@mcp.tool()
 def i_am_done(task_id: str, notes: str = "") -> dict[str, Any]:
     """Submit work for QA. Runs verify/push/PR/submit-qa as needed."""
     return _post(_role_path("i_am_done"), {"task_id": task_id, "notes": notes})
 
 
-@mcp.tool()
 def i_am_blocked(task_id: str, reason: str) -> dict[str, Any]:
     """Escalate to PM. Logs a struggle journal entry."""
     return _post(_role_path("i_am_blocked"), {"task_id": task_id, "reason": reason})
 
 
-@mcp.tool()
 def i_am_idle() -> dict[str, Any]:
     """Report no more work. Soft-blocks if you have unread A2A/mentions."""
     return _post(_role_path("i_am_idle"), {})
 
 
-# ---------- QA verbs (Phase 2) ----------
+# ---------- QA verbs ----------
 
 
-@mcp.tool()
 def claim_review(task_id: str) -> dict[str, Any]:
     """QA: claim a task for review. Returns PR diff + evidence inline."""
     return _post(_role_path("claim_review"), {"task_id": task_id})
 
 
-@mcp.tool(name="pass")
 def pass_review(task_id: str, notes: str) -> dict[str, Any]:
     """QA: accept the work. notes >= 80 chars; journal:learning required."""
     return _post(_role_path("pass"), {"task_id": task_id, "notes": notes})
 
 
-@mcp.tool(name="fail")
 def fail_review(task_id: str, issues: list[str]) -> dict[str, Any]:
     """QA: reject the work with issues. Each issue should be concrete and actionable."""
     return _post(_role_path("fail"), {"task_id": task_id, "issues": issues})
 
 
-# ---------- Doc verbs (Phase 3) ----------
+# ---------- Doc verbs ----------
 
 
-@mcp.tool()
 def claim_doc_task(task_id: str) -> dict[str, Any]:
     """Doc: claim a task in awaiting_documentation state."""
     return _post(_role_path("claim_doc_task"), {"task_id": task_id})
 
 
-@mcp.tool()
 def i_documented(task_id: str, notes: str, files: list[str]) -> dict[str, Any]:
     """Doc: mark documentation complete. files=['<doc-path>', ...]."""
     return _post(
@@ -123,64 +122,89 @@ def i_documented(task_id: str, notes: str, files: list[str]) -> dict[str, Any]:
     )
 
 
-# ---------- PM verbs (Phase 3) ----------
+# ---------- PM verbs ----------
 # Cell PM + Main PM share: triage, unblock, complete, escalate_up
 
 
-@mcp.tool()
 def triage() -> dict[str, Any]:
     """PM: get the most important task to act on next."""
     return _post(_role_path("triage"), {})
 
 
-@mcp.tool()
 def triage_all() -> dict[str, Any]:
     """Main PM: triage across all teams."""
     return _post(_role_path("triage_all"), {})
 
 
-@mcp.tool()
 def unblock(task_id: str, restore: bool = True) -> dict[str, Any]:
     """PM: unblock a task. restore=True (default) restores pre_block_state."""
     return _post(_role_path("unblock"), {"task_id": task_id, "restore": restore})
 
 
-@mcp.tool()
 def complete(task_id: str, notes: str) -> dict[str, Any]:
     """PM: complete a task. Cell PM auto-merges PR; Main PM opens PR + escalates."""
     return _post(_role_path("complete"), {"task_id": task_id, "notes": notes})
 
 
-@mcp.tool()
 def escalate_up(task_id: str, reason: str) -> dict[str, Any]:
     """PM/Doc/Dev: escalate to your role's escalation target."""
     return _post(_role_path("escalate_up"), {"task_id": task_id, "reason": reason})
 
 
-# ---------- Board + Auditor verbs (Phase 4) ----------
+# ---------- Board + Auditor verbs ----------
 # Board (PO + Head Marketing) + Main PM share: escalate_to_ceo
 # Auditor uses triage (already registered above) for read-only anomaly surfacing.
 
 
-@mcp.tool()
 def escalate_to_ceo(task_id: str, reason: str) -> dict[str, Any]:
     """Board / Main PM: escalate a strategic task to CEO for final approval."""
     return _post(_role_path("escalate_to_ceo"), {"task_id": task_id, "reason": reason})
 
 
-def _validate_role_compatibility() -> None:
-    """Warn if the manifest references verbs we haven't implemented yet."""
-    import json
-    from pathlib import Path
+# ---------- Tool registry ----------
+#
+# Maps the verb name an agent calls (matches manifest entries and the
+# orchestrator's role-scoped API path) to the Python implementation.
+# ``pass`` and ``fail`` are reserved keywords, so their Python implementations
+# are renamed but registered under the original names.
 
-    import structlog
+_TOOLS: dict[str, Any] = {
+    # dev
+    "give_me_work": give_me_work,
+    "i_will_work_on": i_will_work_on,
+    "i_have_committed": i_have_committed,
+    "i_am_done": i_am_done,
+    "i_am_blocked": i_am_blocked,
+    "i_am_idle": i_am_idle,
+    # qa
+    "claim_review": claim_review,
+    "pass": pass_review,
+    "fail": fail_review,
+    # doc
+    "claim_doc_task": claim_doc_task,
+    "i_documented": i_documented,
+    # pm
+    "triage": triage,
+    "triage_all": triage_all,
+    "unblock": unblock,
+    "complete": complete,
+    "escalate_up": escalate_up,
+    # board / main pm
+    "escalate_to_ceo": escalate_to_ceo,
+}
 
-    log = structlog.get_logger()
+
+def _load_manifest_flow_tools() -> list[str] | None:
+    """Read the spawn manifest and return its ``flow_tools`` list.
+
+    Returns ``None`` when the manifest is missing or unreadable so callers can
+    fall back to registering the full tool set. Never raises.
+    """
     manifest_path = Path(
         os.environ.get("ROBOCO_TOOL_MANIFEST_PATH", "/app/tool-manifest.json"),
     )
     if not manifest_path.exists():
-        return
+        return None
     try:
         manifest = json.loads(manifest_path.read_text())
     except (OSError, json.JSONDecodeError) as exc:
@@ -189,42 +213,51 @@ def _validate_role_compatibility() -> None:
             path=str(manifest_path),
             error=str(exc),
         )
-        return
-    role = manifest.get("role", AGENT_ROLE)
-    flow_tools = set(manifest.get("flow_tools", []))
-    implemented = {
-        # dev (Phase 1)
-        "give_me_work",
-        "i_will_work_on",
-        "i_have_committed",
-        "i_am_done",
-        "i_am_blocked",
-        "i_am_idle",
-        # qa (Phase 2)
-        "claim_review",
-        "pass",
-        "fail",
-        # doc (Phase 3)
-        "claim_doc_task",
-        "i_documented",
-        # pm (Phase 3)
-        "triage",
-        "triage_all",
-        "unblock",
-        "complete",
-        "escalate_up",
-        # board + auditor (Phase 4)
-        "escalate_to_ceo",
-    }
-    missing = flow_tools - implemented
-    if missing:
+        return None
+    flow_tools = manifest.get("flow_tools")
+    if not isinstance(flow_tools, list):
         log.warning(
-            "flow_server: manifest references unimplemented verbs",
-            role=role,
-            missing=sorted(missing),
+            "flow_server: manifest missing flow_tools list",
+            path=str(manifest_path),
         )
+        return None
+    return [str(verb) for verb in flow_tools]
+
+
+def _register_tools() -> list[str]:
+    """Register MCP tools according to the manifest, or all tools as a failsafe.
+
+    Returns the list of verb names actually registered.
+    """
+    allowed = _load_manifest_flow_tools()
+    if allowed is None:
+        log.warning(
+            "flow_server: manifest unavailable; registering all flow verbs",
+            role=AGENT_ROLE,
+        )
+        names = list(_TOOLS)
+    else:
+        unknown = [verb for verb in allowed if verb not in _TOOLS]
+        if unknown:
+            log.warning(
+                "flow_server: manifest references unimplemented verbs",
+                role=AGENT_ROLE,
+                missing=sorted(unknown),
+            )
+        names = [verb for verb in allowed if verb in _TOOLS]
+
+    for verb in names:
+        mcp.tool(name=verb)(_TOOLS[verb])
+    log.info(
+        "flow_server: registered tools",
+        role=AGENT_ROLE,
+        tools=sorted(names),
+    )
+    return names
+
+
+_REGISTERED_TOOLS = _register_tools()
 
 
 if __name__ == "__main__":
-    _validate_role_compatibility()
     mcp.run()
