@@ -65,7 +65,7 @@ def build_commit_message(ctx: CommitContext, api_base: str) -> str:
 
     Args:
         ctx: CommitContext with task, agent, and commit details
-        api_base: API base URL for building links (e.g., http://localhost:8000/api/v1)
+        api_base: API base URL for building links (e.g., http://localhost:8000/api)
 
     Returns:
         Formatted commit message with header, body, metadata, and links

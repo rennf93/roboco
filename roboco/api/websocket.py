@@ -209,7 +209,7 @@ async def validate_channel_access(channel_id: UUID, agent_id: UUID) -> bool:
     Calls the permissions API to check read access.
     """
     try:
-        url = f"http://{settings.host}:{settings.port}/api/v1/permissions/check"
+        url = f"http://{settings.host}:{settings.port}/api/permissions/check"
         async with httpx.AsyncClient(timeout=10.0) as client:
             response = await client.get(
                 url,

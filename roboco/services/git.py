@@ -397,7 +397,7 @@ class GitService(BaseService):
         relationship. If it hasn't been eager-loaded, touching it from this
         sync helper inside an async request triggers an async IO call with
         no greenlet context → `MissingGreenlet`, which breaks
-        POST /api/v1/git/commit. Inspect loaded-state first and return
+        POST /api/git/commit. Inspect loaded-state first and return
         None when not loaded (callers treat None as "no primary session").
         """
         if not task:
@@ -472,7 +472,7 @@ class GitService(BaseService):
             body=request.body,
         )
         full_message = build_commit_message(
-            commit_ctx, settings.public_base_url.rstrip("/") + "/api/v1"
+            commit_ctx, settings.public_base_url.rstrip("/") + "/api"
         )
 
         # Create commit with agent attribution

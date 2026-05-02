@@ -5,7 +5,7 @@ gateway intent verbs in roboco-flow. This server only exposes the four
 read-only views agents need to reason about workspace state: status,
 log, diff, and branch list.
 
-Endpoint shapes mirror /api/v1/git/* on the orchestrator. The panel uses
+Endpoint shapes mirror /api/git/* on the orchestrator. The panel uses
 the same endpoints, so they stay even though the agent-side write tools
 are gone.
 """
@@ -52,7 +52,7 @@ def roboco_git_status(project_slug: str) -> dict[str, Any]:
     Returns:
         Current branch, staged/unstaged/untracked files, ahead/behind counts.
     """
-    return _get("/api/v1/git/status", {"project_slug": project_slug})
+    return _get("/api/git/status", {"project_slug": project_slug})
 
 
 @mcp.tool()
@@ -74,7 +74,7 @@ def roboco_git_log(
     params: dict[str, Any] = {"project_slug": project_slug, "limit": limit}
     if branch is not None:
         params["branch"] = branch
-    return _get("/api/v1/git/log", params)
+    return _get("/api/git/log", params)
 
 
 @mcp.tool()
@@ -96,7 +96,7 @@ def roboco_git_diff(
     params: dict[str, Any] = {"project_slug": project_slug, "staged": staged}
     if file_path is not None:
         params["file_path"] = file_path
-    return _get("/api/v1/git/diff", params)
+    return _get("/api/git/diff", params)
 
 
 @mcp.tool()
@@ -114,7 +114,7 @@ def roboco_git_branch_list(
         Branches with current branch marked.
     """
     return _get(
-        "/api/v1/git/branches",
+        "/api/git/branches",
         {"project_slug": project_slug, "include_remote": include_remote},
     )
 

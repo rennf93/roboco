@@ -344,7 +344,7 @@ export function AIRoutingCard() {
           </div>
           {catalogOllamaOnly.length === 0 ? (
             <p className="text-xs text-muted-foreground">
-              Ollama catalog empty — check /api/v1/providers/catalog.
+              Ollama catalog empty — check /api/providers/catalog.
             </p>
           ) : null}
         </section>

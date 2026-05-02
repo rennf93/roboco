@@ -66,9 +66,9 @@ class Settings(BaseSettings):
         Note: 0.0.0.0 is only valid for binding, not connecting - use 127.0.0.1 instead.
         """
         if self.api_url:
-            return f"{self.api_url.rstrip('/')}/api/v1"
+            return f"{self.api_url.rstrip('/')}/api"
         connect_host = "127.0.0.1" if self.host == "0.0.0.0" else self.host  # nosec B104
-        return f"http://{connect_host}:{self.port}/api/v1"
+        return f"http://{connect_host}:{self.port}/api"
 
     # ==========================================================================
     # Database

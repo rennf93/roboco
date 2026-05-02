@@ -12,7 +12,7 @@ export function ConnectionStatus() {
   useEffect(() => {
     const checkConnection = async () => {
       try {
-        // Health endpoint is at /health (not under /api/v1)
+        // Health endpoint is at /health (not under /api)
         const response = await fetch("/health", {
           method: "GET",
           signal: AbortSignal.timeout(5000),

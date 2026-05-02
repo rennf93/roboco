@@ -152,7 +152,7 @@ async def _persist_received_message(msg: A2AMessage) -> None:
         async with httpx.AsyncClient() as client:
             # First, ensure conversation exists
             conv_resp = await client.post(
-                f"{MAIN_API_URL}/api/v1/a2a/chat/conversations",
+                f"{MAIN_API_URL}/api/a2a/chat/conversations",
                 json={
                     "target_agent": msg.from_agent,
                     "topic": msg.skill,  # Use skill as topic
@@ -244,7 +244,7 @@ async def _create_notification_fallback(req: SendRequest) -> None:
     async with httpx.AsyncClient() as client:
         try:
             await client.post(
-                f"{MAIN_API_URL}/api/v1/a2a/message/send",
+                f"{MAIN_API_URL}/api/a2a/message/send",
                 json={
                     "message": {
                         "role": "user",
@@ -485,7 +485,7 @@ async def traceability_remind(tool: str = "") -> dict:
         try:
             async with httpx.AsyncClient() as client:
                 resp = await client.get(
-                    f"{MAIN_API_URL}/api/v1/journals/me/entries",
+                    f"{MAIN_API_URL}/api/journals/me/entries",
                     params={"limit": 3},
                     headers={
                         "X-Agent-ID": AGENT_ID,
@@ -669,7 +669,7 @@ async def terminal_force_substitute() -> dict[str, str]:
     try:
         async with httpx.AsyncClient() as client:
             await client.post(
-                f"{MAIN_API_URL}/api/v1/tasks/auto-substitute",
+                f"{MAIN_API_URL}/api/tasks/auto-substitute",
                 json={"reason": "stopped_without_transition"},
                 headers={"X-Agent-ID": AGENT_ID, "X-Agent-Role": role},
                 timeout=5.0,
@@ -712,7 +712,7 @@ async def journal_post_mortem(req: PostMortemRequest) -> dict[str, str]:
     try:
         async with httpx.AsyncClient() as client:
             await client.post(
-                f"{MAIN_API_URL}/api/v1/journals/me/entries",
+                f"{MAIN_API_URL}/api/journals/me/entries",
                 json=payload,
                 headers={
                     "X-Agent-ID": AGENT_ID,

@@ -7,11 +7,11 @@ See: https://a2a-protocol.org/latest/specification/
 Endpoints:
 - GET /.well-known/agent.json: System Agent Card
 - GET /agents/{agent_id}/.well-known/agent.json: Per-agent Agent Card
-- POST /api/v1/a2a/message/send: Send message and create/update task
-- POST /api/v1/a2a/message/stream: Send message with SSE streaming
-- GET /api/v1/a2a/tasks/{task_id}: Get task state
-- GET /api/v1/a2a/tasks: List tasks
-- POST /api/v1/a2a/tasks/{task_id}/cancel: Cancel task
+- POST /api/a2a/message/send: Send message and create/update task
+- POST /api/a2a/message/stream: Send message with SSE streaming
+- GET /api/a2a/tasks/{task_id}: Get task state
+- GET /api/a2a/tasks: List tasks
+- POST /api/a2a/tasks/{task_id}/cancel: Cancel task
 """
 
 import asyncio
@@ -51,7 +51,7 @@ from roboco.models.a2a import (
 from roboco.services.a2a import A2AService
 from roboco.utils.converters import require_uuid
 
-# Router for A2A API endpoints (mounted at /api/v1/a2a)
+# Router for A2A API endpoints (mounted at /api/a2a)
 router = APIRouter()
 
 # Router for well-known endpoints (mounted at root level)
@@ -103,7 +103,7 @@ async def get_agent_card(
 
 
 # =============================================================================
-# A2A API ENDPOINTS (mounted at /api/v1/a2a)
+# A2A API ENDPOINTS (mounted at /api/a2a)
 # =============================================================================
 
 

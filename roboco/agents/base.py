@@ -509,7 +509,7 @@ class Agent(ABC):
         Returns:
             JSON response as dictionary
         """
-        url = f"http://{settings.host}:{settings.port}/api/v1{path}"
+        url = f"http://{settings.host}:{settings.port}/api{path}"
         async with httpx.AsyncClient(timeout=30.0) as client:
             response = await client.request(method, url, **kwargs)
             response.raise_for_status()

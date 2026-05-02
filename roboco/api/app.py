@@ -169,7 +169,7 @@ def create_app() -> FastAPI:
     app.include_router(a2a_wellknown_router, tags=["A2A Protocol"])
 
     # API v1
-    api_prefix = "/api/v1"
+    api_prefix = "/api"
 
     app.include_router(
         agents_router,

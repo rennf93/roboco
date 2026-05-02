@@ -169,7 +169,7 @@ def build_pr_body_root(ctx: RootPRContext, api_base: str) -> str:
 
     Args:
         ctx: RootPRContext with all task tree information
-        api_base: API base URL for links (e.g., http://localhost:8000/api/v1)
+        api_base: API base URL for links (e.g., http://localhost:8000/api)
 
     Returns:
         Formatted PR body markdown

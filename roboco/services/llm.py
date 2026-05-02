@@ -153,7 +153,7 @@ class ModelRoutingService(BaseService):
         if entry is None:
             raise ValueError(
                 f"Unknown model '{model_name}'. Use one from "
-                "GET /api/v1/providers/catalog."
+                "GET /api/providers/catalog."
             )
         provider = await self._get_seeded_provider(entry.provider_type)
 

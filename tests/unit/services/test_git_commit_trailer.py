@@ -22,17 +22,17 @@ def _make_ctx() -> CommitContext:
 def test_build_commit_message_uses_given_api_base() -> None:
     """build_commit_message embeds the api_base it receives."""
     ctx = _make_ctx()
-    out = build_commit_message(ctx, "https://roboco.example.com/api/v1")
-    assert "https://roboco.example.com/api/v1" in out
+    out = build_commit_message(ctx, "https://roboco.example.com/api")
+    assert "https://roboco.example.com/api" in out
     assert "127.0.0.1" not in out
 
 
 def test_build_commit_message_strips_trailing_slash() -> None:
     """Trailing slash on api_base is stripped to avoid double slashes."""
     ctx = _make_ctx()
-    out = build_commit_message(ctx, "https://roboco.example.com/api/v1/")
+    out = build_commit_message(ctx, "https://roboco.example.com/api/")
     assert "//tasks/" not in out
-    assert "https://roboco.example.com/api/v1/tasks/" in out
+    assert "https://roboco.example.com/api/tasks/" in out
 
 
 def test_links_use_public_base_url(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -41,7 +41,7 @@ def test_links_use_public_base_url(monkeypatch: pytest.MonkeyPatch) -> None:
     importlib.reload(config_module)
     try:
         settings = config_module.Settings()
-        api_base = settings.public_base_url.rstrip("/") + "/api/v1"
+        api_base = settings.public_base_url.rstrip("/") + "/api"
         ctx = _make_ctx()
         out = build_commit_message(ctx, api_base)
         assert "https://roboco.example.com" in out

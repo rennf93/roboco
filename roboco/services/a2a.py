@@ -105,7 +105,7 @@ class A2AService:
                 url="https://github.com/roboco",
             ),
             protocol_version="1.0",
-            service_endpoint=f"{A2AService.get_service_endpoint()}/api/v1/a2a",
+            service_endpoint=f"{A2AService.get_service_endpoint()}/api/a2a",
             version=settings.app_version,
             capabilities=AgentCapabilities(
                 streaming=True,
@@ -241,7 +241,7 @@ class A2AService:
                 url="https://github.com/roboco",
             ),
             protocol_version="1.0",
-            service_endpoint=f"{self.get_service_endpoint()}/api/v1/a2a",
+            service_endpoint=f"{self.get_service_endpoint()}/api/a2a",
             version=settings.app_version,
             capabilities=AgentCapabilities(
                 streaming=True,

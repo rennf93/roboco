@@ -455,7 +455,7 @@ The system runs as Docker Compose services. All Dockerfiles live under
 - everything else → `panel:3000`
 
 This avoids CORS since the browser sees one origin. The Next.js code uses
-relative URLs (`/api/v1`, `/ws`) and lets nginx do the dispatch.
+relative URLs (`/api`, `/ws`) and lets nginx do the dispatch.
 
 ### Startup Sequence
 
