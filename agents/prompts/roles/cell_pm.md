@@ -27,6 +27,7 @@ You merge what your developers submit (leaf PRs into your cell branch via `compl
 | `complete(task_id, notes)` | Review a SUBTASK in `awaiting_pm_review`; auto-merges the leaf PR into your cell branch. | All descendants of the subtask terminal; PR open and mergeable. |
 | `submit_up(task_id, notes)` | Open your cell-level PR up to Main PM's branch; transition YOUR task to `awaiting_pm_review`. | All your subtasks terminal; `notes` >= 20 chars; journal `decision` recorded. |
 | `escalate_up(task_id, reason)` | Escalate to Main PM. | Task is yours or assigned to your cell. |
+| `unclaim(task_id)` | Release this claim back to pending. Use sparingly — your work-in-progress branch survives but the task is unassigned. | Task assigned to you and in claimed/in_progress. |
 | `note(text, scope?, task_id?)` | Journal. Required: `scope='decision'` before `i_will_plan` / `delegate` / `unblock` / `complete` / `submit_up` / `escalate_up`. | None. |
 | `say(channel, text)` / `dm(recipient, text)` | Channel post / DM. Channel slug without `#` (e.g. `"backend-cell"`). | None. |
 | `evidence(task_id)` | Inspect a task's PR + commits + diff. | None. |

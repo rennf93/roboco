@@ -771,6 +771,55 @@ class Choreographer:
             context_briefing=await self._briefing_for(agent_id, task_id),
         )
 
+    async def unclaim(self, agent_id: UUID, task_id: UUID) -> Envelope:
+        """Voluntarily release a claimed/in_progress task back to pending.
+
+        Audit J33 — ``_pending_assignment_guard`` already remediates with
+        "or unclaim it first," but the verb didn't exist. This makes that
+        promise true. The work-in-progress branch survives; only the claim
+        is released so another agent (or the same one, fresh) can pick it
+        up. State and authorization checks live here; the DB write itself
+        is in ``TaskService.unclaim_for_agent``.
+        """
+        t = await self.task.get(task_id)
+        briefing = await self._briefing_for(agent_id, task_id)
+        if t is None:
+            return await self._emit_rejection(
+                Envelope.not_found(message=f"task {task_id} not found"),
+                agent_id=agent_id,
+                task_id=task_id,
+                verb="unclaim",
+            )
+        if t.assigned_to != agent_id:
+            return await self._emit_rejection(
+                Envelope.not_authorized(
+                    message="not your claim",
+                    remediate="only the current claimant can unclaim",
+                    context_briefing=briefing,
+                ),
+                agent_id=agent_id,
+                task_id=task_id,
+                verb="unclaim",
+            )
+        after = await self.task.unclaim_for_agent(task_id, agent_id)
+        if after is None:
+            return await self._emit_rejection(
+                Envelope.invalid_state(
+                    message=f"cannot unclaim from status {t.status}",
+                    remediate="only claimed/in_progress tasks can be unclaimed",
+                    context_briefing=briefing,
+                ),
+                agent_id=agent_id,
+                task_id=task_id,
+                verb="unclaim",
+            )
+        return Envelope.ok(
+            status=str(after.status),
+            task_id=str(task_id),
+            next="task returned to pending; another agent (or you, fresh) can claim",
+            context_briefing=briefing,
+        )
+
     async def i_am_idle(self, agent_id: UUID) -> Envelope:
         """Report no more work. Soft-block if there are unread A2As or @mentions.
 

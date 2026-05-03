@@ -12,6 +12,7 @@ from roboco.api.schemas.v2.flow import (
     GiveMeWorkRequest,
     IAmIdleRequest,
     IDocumentedRequest,
+    UnclaimRequest,
 )
 from roboco.services.gateway.choreographer import Choreographer
 
@@ -55,6 +56,16 @@ async def i_documented(
     env = await choreographer.i_documented(
         x_agent_id, body.task_id, body.notes, body.files
     )
+    return env.as_dict()
+
+
+@router.post("/unclaim")
+async def unclaim(
+    body: UnclaimRequest,
+    x_agent_id: _AgentIdHeader,
+    choreographer: _ChoreographerDep,
+) -> dict:
+    env = await choreographer.unclaim(x_agent_id, body.task_id)
     return env.as_dict()
 
 

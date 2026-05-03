@@ -88,6 +88,11 @@ def i_am_blocked(task_id: str, reason: str) -> dict[str, Any]:
     return _post(_role_path("i_am_blocked"), {"task_id": task_id, "reason": reason})
 
 
+def unclaim(task_id: str) -> dict[str, Any]:
+    """Release this claim back to pending. Branch survives; task is unassigned."""
+    return _post(_role_path("unclaim"), {"task_id": task_id})
+
+
 def i_am_idle() -> dict[str, Any]:
     """Report no more work. Soft-blocks if you have unread A2A/mentions."""
     return _post(_role_path("i_am_idle"), {})
@@ -213,6 +218,7 @@ _TOOLS: dict[str, Any] = {
     "submit_for_qa": submit_for_qa,
     "i_am_done": i_am_done,
     "i_am_blocked": i_am_blocked,
+    "unclaim": unclaim,
     "i_am_idle": i_am_idle,
     # qa
     "claim_review": claim_review,

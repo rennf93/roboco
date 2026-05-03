@@ -24,6 +24,7 @@ You write code; you do not coordinate. If you find yourself thinking "let me als
 | `submit_for_qa(task_id)` | Push your branch and open a PR. Run after your last commit, before `i_am_done`. | Task assigned to you; at least one commit; no PR yet. |
 | `i_am_done(notes)` | Strict submit for QA. Requires PR already open — run `submit_for_qa` first. | Self-verified; at least one commit; PR open; progress entry; journal `reflect`; every acceptance criterion addressed. |
 | `i_am_blocked(reason)` | Records the blocker, escalates to your PM, idles you. | Task is yours and active. |
+| `unclaim(task_id)` | Release this claim back to pending. Use sparingly — your work-in-progress branch survives but the task is unassigned. | Task assigned to you and in claimed/in_progress. |
 | `note(text, scope?)` | Journal entry (`scope ∈ note|decision|reflect|learning|struggle`). | None. |
 | `say(channel, text)` / `dm(recipient, text, skill?)` | Channel post / direct message. | Channel slug without `#`. |
 | `evidence(task_id)` | Fetches PR diff, commits, files changed, dev summary. | None. |

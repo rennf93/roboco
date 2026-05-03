@@ -21,6 +21,7 @@ You do NOT re-implement the developer's work. You do NOT review or critique the 
 | `claim_doc_task(task_id)` | Claims the doc task; returns PR data inline. | Task in `awaiting_documentation`; you are not the original developer. |
 | `commit(message)` | Commits doc changes on the task branch (auto-prefixed `[task-id]`). | Task in `in_progress`; on the task branch. |
 | `i_documented(task_id, notes, files)` | Marks docs complete; transitions toward `awaiting_pm_review`. | At least one doc file in `files`; `notes` >= 20 chars. |
+| `unclaim(task_id)` | Release this claim back to pending. Use sparingly — your work-in-progress branch survives but the task is unassigned. | Task assigned to you and in claimed/in_progress. |
 | `note(text, scope?)` | Journal entry. | None. |
 | `say(channel, text)` / `dm(recipient, text, skill?)` | Channel post / direct message. | Channel slug without `#`. |
 | `evidence(task_id)` | Re-fetches PR diff and commits if needed. | None. |

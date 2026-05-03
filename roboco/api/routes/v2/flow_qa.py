@@ -13,6 +13,7 @@ from roboco.api.schemas.v2.flow import (
     GiveMeWorkRequest,
     IAmIdleRequest,
     PassReviewRequest,
+    UnclaimRequest,
 )
 from roboco.services.gateway.choreographer import Choreographer
 
@@ -64,6 +65,16 @@ async def qa_fail(
     choreographer: _ChoreographerDep,
 ) -> dict:
     env = await choreographer.fail_review(x_agent_id, body.task_id, body.issues)
+    return env.as_dict()
+
+
+@router.post("/unclaim")
+async def unclaim(
+    body: UnclaimRequest,
+    x_agent_id: _AgentIdHeader,
+    choreographer: _ChoreographerDep,
+) -> dict:
+    env = await choreographer.unclaim(x_agent_id, body.task_id)
     return env.as_dict()
 
 

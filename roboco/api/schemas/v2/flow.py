@@ -32,6 +32,10 @@ class IAmBlockedRequest(BaseModel):
     reason: str = Field(..., min_length=1)
 
 
+class UnclaimRequest(BaseModel):
+    task_id: UUID
+
+
 class IAmIdleRequest(BaseModel):
     """Empty request body."""
 

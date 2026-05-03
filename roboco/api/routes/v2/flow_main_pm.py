@@ -17,6 +17,7 @@ from roboco.api.schemas.v2.flow import (
     IWillPlanRequest,
     TriageRequest,
     UnblockRequest,
+    UnclaimRequest,
 )
 from roboco.services.gateway.choreographer import Choreographer, DelegateInputs
 
@@ -117,6 +118,16 @@ async def unblock(
     choreographer: _ChoreographerDep,
 ) -> dict:
     env = await choreographer.unblock(x_agent_id, body.task_id, restore=body.restore)
+    return env.as_dict()
+
+
+@router.post("/unclaim")
+async def unclaim(
+    body: UnclaimRequest,
+    x_agent_id: _AgentIdHeader,
+    choreographer: _ChoreographerDep,
+) -> dict:
+    env = await choreographer.unclaim(x_agent_id, body.task_id)
     return env.as_dict()
 
 

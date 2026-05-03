@@ -15,6 +15,7 @@ from roboco.api.schemas.v2.flow import (
     IHaveCommittedRequest,
     IWillWorkOnRequest,
     SubmitForQaRequest,
+    UnclaimRequest,
 )
 from roboco.services.gateway.choreographer import Choreographer
 
@@ -86,6 +87,16 @@ async def i_am_blocked(
     choreographer: _ChoreographerDep,
 ) -> dict:
     env = await choreographer.i_am_blocked(x_agent_id, body.task_id, body.reason)
+    return env.as_dict()
+
+
+@router.post("/unclaim")
+async def unclaim(
+    body: UnclaimRequest,
+    x_agent_id: _AgentIdHeader,
+    choreographer: _ChoreographerDep,
+) -> dict:
+    env = await choreographer.unclaim(x_agent_id, body.task_id)
     return env.as_dict()
 
 

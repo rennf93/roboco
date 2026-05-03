@@ -29,6 +29,7 @@ _DEV_FLOW = (
     "submit_for_qa",
     "i_am_done",
     "i_am_blocked",
+    "unclaim",
     "i_am_idle",
 )
 _DEV_DO = ("commit", "note", "say", "dm", "evidence")
@@ -38,6 +39,7 @@ _QA_FLOW = (
     "claim_review",
     "pass",
     "fail",
+    "unclaim",
     "i_am_idle",
 )
 _QA_DO = ("note", "say", "dm", "evidence")
@@ -46,6 +48,7 @@ _DOC_FLOW = (
     "give_me_work",
     "claim_doc_task",
     "i_documented",
+    "unclaim",
     "i_am_idle",
 )
 _DOC_DO = ("commit", "note", "say", "dm", "evidence")
@@ -59,6 +62,7 @@ _CELL_PM_FLOW = (
     "unblock",
     "complete",
     "escalate_up",
+    "unclaim",
     "i_am_idle",
 )
 _CELL_PM_DO = ("note", "say", "dm", "evidence")
@@ -72,6 +76,7 @@ _MAIN_PM_FLOW = (
     "complete",
     "escalate_up",
     "escalate_to_ceo",
+    "unclaim",
     "i_am_idle",
 )
 _MAIN_PM_DO = ("note", "say", "dm", "evidence")

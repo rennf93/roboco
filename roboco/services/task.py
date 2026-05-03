@@ -1798,6 +1798,35 @@ class TaskService(BaseService):
         )
         await self.session.flush()
 
+    async def unclaim_for_agent(
+        self, task_id: UUID, agent_id: UUID
+    ) -> TaskTable | None:
+        """Voluntary unclaim by the current claimant.
+
+        Distinct from ``unclaim_for_reaper`` (which the orchestrator's
+        stale-claim sweeper calls when the holder is provably dead): this
+        path is the agent itself releasing the lock. Returns ``None`` and
+        makes no write when:
+
+        - the task does not exist
+        - the requesting agent is not the current claimant
+        - the task status is not claimed/in_progress
+
+        On success, clears ``assigned_to`` and transitions the row back to
+        ``pending`` so another agent (or the same one, fresh) can pick it
+        up. The work-in-progress branch is preserved — only the claim is
+        released.
+        """
+        task = await self.get(task_id)
+        if task is None or task.assigned_to != agent_id:
+            return None
+        if task.status not in (TaskStatus.CLAIMED, TaskStatus.IN_PROGRESS):
+            return None
+        task.assigned_to = cast("Any", None)
+        task.status = TaskStatus.PENDING
+        await self.session.flush()
+        return task
+
     async def block(
         self,
         task_id: UUID,
