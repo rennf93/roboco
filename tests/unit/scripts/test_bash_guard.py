@@ -29,6 +29,7 @@ def _run(cmd: str) -> int:
         input=payload,
         capture_output=True,
         text=True,
+        check=False,
     )
     return result.returncode
 
@@ -67,13 +68,17 @@ def test_allows_external_curl_to_documentation() -> None:
 def test_github_url_still_uses_github_specific_deny() -> None:
     """Existing GitHub deny rule must fire BEFORE the new gateway deny."""
     payload = json.dumps(
-        {"tool_name": "Bash", "tool_input": {"command": "curl https://api.github.com/user"}}
+        {
+            "tool_name": "Bash",
+            "tool_input": {"command": "curl https://api.github.com/user"},
+        }
     )
     result = subprocess.run(
         [str(GUARD)],
         input=payload,
         capture_output=True,
         text=True,
+        check=False,
     )
     assert result.returncode != _ALLOWED
     # The GitHub-specific message should appear, not the gateway message.

@@ -758,8 +758,15 @@ class OptimalService:
                 message_type=params.message_type,
             )
 
-        # Track in database
-        source = f"roboco://conversations/{params.session_id or 'unknown'}"
+        # Track in database. Refuse to fall back to 'unknown' — that masked
+        # upstream bugs where session_id was None despite the type contract.
+        if params.session_id is None:
+            raise ValueError(
+                "index_conversation: session_id is required; refusing to "
+                "build doc-source with placeholder. Caller must pass a "
+                "flushed session UUID."
+            )
+        source = f"roboco://conversations/{params.session_id}"
         await self._track_indexed_document(
             IndexType.CONVERSATIONS,
             source=source,
@@ -787,8 +794,18 @@ class OptimalService:
                 tags=params.tags,
             )
 
-        # Track in database
-        source = f"roboco://journals/{params.entry_id or 'unknown'}"
+        # Track in database. Refuse to fall back to 'unknown' — that masked
+        # the upstream bug where the journal entry row hadn't been flushed
+        # before indexing, producing roboco://journals/None doc-sources.
+        if params.entry_id is None:
+            raise ValueError(
+                "index_journal_entry: entry_id is required; refusing to "
+                "build doc-source with placeholder. Caller must flush the "
+                "entry row first (use require_uuid(entry_row.id)). System "
+                "events without a journal entry must use a different "
+                "indexing path."
+            )
+        source = f"roboco://journals/{params.entry_id}"
         await self._track_indexed_document(
             IndexType.JOURNALS,
             source=source,
@@ -896,12 +913,20 @@ class OptimalService:
             result = await plugin.record_review(review_params)
             doc_id = result.doc_id
 
-        # Track in database
-        source = f"roboco://reviews/{params.file_path or 'unknown'}"
+        # Track in database. Refuse to fall back to 'unknown' — file_path
+        # is typed `str` (required) and an empty value means the caller is
+        # broken; an unidentifiable review is worse than no review.
+        if not params.file_path:
+            raise ValueError(
+                "record_review: file_path is required; refusing to build "
+                "doc-source with placeholder. Caller must pass a non-empty "
+                "path or task identifier."
+            )
+        source = f"roboco://reviews/{params.file_path}"
         await self._track_indexed_document(
             IndexType.REVIEWS,
             source=source,
-            title=f"Review: {params.file_path or 'Code'}",
+            title=f"Review: {params.file_path}",
             preview=params.summary[:500] if params.summary else None,
             metadata={
                 "file_path": params.file_path,

@@ -1658,6 +1658,8 @@ class TaskService(BaseService):
             task_team: Team for categorization
             details: Additional event details
         """
+        from uuid import NAMESPACE_URL, uuid5
+
         from roboco.models.optimal import IndexJournalEntryParams
         from roboco.services.optimal import get_optimal_service
 
@@ -1670,11 +1672,22 @@ class TaskService(BaseService):
             if details:
                 content += f"\nDetails: {details}"
 
+            # Lifecycle events have no journal-entry row of their own. Derive
+            # a deterministic synthetic UUID from (task, event, timestamp)
+            # so the index_journal_entry source is meaningful and unique
+            # per event — never the literal "None" that the old fallback
+            # produced.
+            now_iso = datetime.now(UTC).isoformat()
+            synthetic_entry_id = uuid5(
+                NAMESPACE_URL,
+                f"roboco-lifecycle/{task_id}/{event_type}/{now_iso}",
+            )
+
             # Index to journals for lifecycle tracking
             await optimal.index_journal_entry(
                 IndexJournalEntryParams(
                     content=content,
-                    entry_id=None,  # Will be auto-generated
+                    entry_id=synthetic_entry_id,
                     agent_id=None,  # System event, no specific agent
                     entry_type=f"lifecycle_{event_type}",
                     task_id=task_id,
