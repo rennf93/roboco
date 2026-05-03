@@ -109,9 +109,11 @@ async def test_commit_no_active_task_returns_invalid_state() -> None:
 
 @pytest.mark.asyncio
 async def test_commit_strips_existing_task_prefix() -> None:
-    """Agent-supplied [task-id] prefix is stripped before validation."""
+    """Agent-supplied [task-id] prefix is stripped before validation;
+    the canonical [task-id-short] is re-applied before git.commit."""
     agent_id = uuid4()
     task_id = uuid4()
+    expected_prefix = f"[{str(task_id)[:8]}]"
     task_obj = MagicMock(
         id=task_id, status="in_progress", branch_name="feature/backend/abc"
     )
@@ -130,9 +132,11 @@ async def test_commit_strips_existing_task_prefix() -> None:
     body = env.as_dict()
 
     assert body["error"] is None
-    # The subject passed to git.commit should not include the prefix
+    # The subject passed to git.commit gets the canonical prefix re-applied,
+    # not the user-supplied [ABC12345].
     call_kwargs = git_svc.commit.call_args.kwargs
-    assert not call_kwargs["message"].startswith("[")
+    assert call_kwargs["message"].startswith(expected_prefix)
+    assert "[ABC12345]" not in call_kwargs["message"]
 
 
 # ---------------------------------------------------------------------------

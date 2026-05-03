@@ -113,14 +113,18 @@ class ContentActions:
                 remediate="call give_me_work() first",
                 context_briefing={},
             )
+        canonical_prefix = f"[{str(t.id)[:8]}]"
+        final_message = f"{canonical_prefix} {subject}"
         commit_result = await self.git.commit(
             branch_name=t.branch_name,
-            message=subject,
+            message=final_message,
             task_id=t.id,
             files=files,
         )
         sha = commit_result.get("sha", "")
-        await self.task.add_progress(t.id, agent_id, f"committed {sha[:8]}: {subject}")
+        await self.task.add_progress(
+            t.id, agent_id, f"committed {sha[:8]}: {final_message}"
+        )
         return Envelope.ok(
             status=str(t.status),
             task_id=str(t.id),
