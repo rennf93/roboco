@@ -11,7 +11,7 @@ from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, Any, ClassVar, cast
 from uuid import UUID
 
-from sqlalchemy import and_, func, or_, select
+from sqlalchemy import and_, func, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from roboco.db.tables import (
@@ -1746,6 +1746,22 @@ class TaskService(BaseService):
         self._validate_and_set_status(task, TaskStatus.IN_PROGRESS, agent_role)
         await self.session.flush()
         return task
+
+    async def heartbeat(self, task_id: UUID) -> None:
+        """Touch ``last_heartbeat_at`` to mark the claimant as alive.
+
+        Called from gateway verb entry points so a dead container's
+        claim becomes recoverable after the heartbeat TTL expires.
+        No-op if the task does not exist — the UPDATE simply matches zero
+        rows. The column is ``DateTime(timezone=True)`` so we write a
+        timezone-aware UTC value to match the schema and avoid SA's naive-
+        vs-aware mismatch warning.
+        """
+        await self.session.execute(
+            update(TaskTable)
+            .where(TaskTable.id == task_id)
+            .values(last_heartbeat_at=datetime.now(UTC))
+        )
 
     async def block(
         self,
