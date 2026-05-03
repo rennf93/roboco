@@ -23,7 +23,7 @@ from sqlalchemy import (
     Text,
     UniqueConstraint,
 )
-from sqlalchemy.dialects.postgresql import ARRAY, UUID
+from sqlalchemy.dialects.postgresql import ARRAY, JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from roboco.db.base import Base
@@ -1552,7 +1552,12 @@ class AuditLogTable(Base):
     target_type: Mapped[str | None] = mapped_column(String(40), nullable=True)
     target_id: Mapped[UUID | None] = mapped_column(UUID(as_uuid=True), nullable=True)
     severity: Mapped[str] = mapped_column(String(16), nullable=False, default="info")
-    details: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict, nullable=False)
+    # JSONB (not generic JSON) so the comparator exposes `.astext` —
+    # `AuditService.has_recent_tracing_gap` filters
+    # `details->>'reason' == 'tracing_gap'`, which the generic JSON Comparator
+    # doesn't support (raises AttributeError). JSONB also supports GIN
+    # indexing for future audit queries.
+    details: Mapped[dict[str, Any]] = mapped_column(JSONB, default=dict, nullable=False)
     timestamp: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
         default=lambda: datetime.now(UTC),
