@@ -36,10 +36,7 @@ def _ownership_violation(task_id: UUID) -> Envelope:
     gateway exposes task_id parameters so the explicit gate is required.
     """
     return Envelope.not_authorized(
-        message=(
-            f"you are not the assignee of {task_id}; "
-            "cannot post content to it"
-        ),
+        message=(f"you are not the assignee of {task_id}; cannot post content to it"),
         remediate=(
             "only the task's assignee may attach content (commit/note/say/"
             "dm/evidence) to it. Use a different task_id or omit task_id "
@@ -195,7 +192,19 @@ class ContentActions:
         text: str,
         task_id: UUID | None = None,
     ) -> Envelope:
-        """Post to a channel. task_id auto-injected if you have an active task."""
+        """Post to a channel. task_id auto-injected if you have an active task.
+
+        Channel-write RBAC is enforced inside `messaging.post_to_channel`
+        (which forwards the agent's slug to `send_message` so
+        `validate_channel_access` runs). A denial bubbles up as
+        `ChannelAccessDeniedError`; we convert it into a friendly
+        `not_authorized` Envelope listing the agent's writable channels.
+        """
+        from roboco.enforcement.channel_access import (
+            ChannelAccessDeniedError,
+            get_agent_channels,
+        )
+
         if task_id is not None:
             if reject := await self._verify_explicit_task_ownership(agent_id, task_id):
                 return reject
@@ -203,12 +212,23 @@ class ContentActions:
             t = await self.task.get_active_task_for_agent(agent_id)
             if t is not None:
                 task_id = t.id
-        await self.messaging.post_to_channel(
-            agent_id=agent_id,
-            channel_slug=channel,
-            content=text,
-            task_id=task_id,
-        )
+        try:
+            await self.messaging.post_to_channel(
+                agent_id=agent_id,
+                channel_slug=channel,
+                content=text,
+                task_id=task_id,
+            )
+        except ChannelAccessDeniedError as e:
+            writable = get_agent_channels(e.agent_id, action="write")
+            writable_str = ", ".join(writable) if writable else "(none)"
+            return Envelope.not_authorized(
+                message=(
+                    f"agent '{e.agent_id}' may not write to channel '{e.channel_slug}'"
+                ),
+                remediate=f"writable channels for your role: {writable_str}",
+                context_briefing={},
+            )
         return Envelope.ok(
             status="posted",
             task_id=str(task_id) if task_id else None,

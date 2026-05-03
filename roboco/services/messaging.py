@@ -1808,18 +1808,24 @@ class MessagingService(BaseService):
         message via `send_message`.
 
         Channel access is enforced inside `send_message` (channel writers
-        list + role rules); this adapter never bypasses that check.
+        list + role rules) when `agent_slug` is supplied — this adapter
+        looks up the slug from `agent_id` and forwards it so the check
+        always runs.
         """
+        from roboco.services.repositories import get_agent_slug
+
         channel = await self.get_channel_by_slug_or_raise(channel_slug)
         group = await self._default_group_for_channel(channel)
         session = await self.get_or_create_active_session(cast("UUID", group.id))
+        agent_slug = await get_agent_slug(self.session, agent_id)
         return await self.send_message(
             MessageCreateRequest(
                 agent_id=agent_id,
                 session_id=cast("UUID", session.id),
                 content=content,
                 task_id=task_id,
-            )
+            ),
+            agent_slug=agent_slug,
         )
 
 
