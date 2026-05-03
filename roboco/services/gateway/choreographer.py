@@ -480,10 +480,18 @@ class Choreographer:
     async def i_am_idle(self, agent_id: UUID) -> Envelope:
         """Report no more work. Soft-block if there are unread A2As or @mentions.
 
-        Before marking the agent idle, auto-pause every in_progress task this
-        agent owns so the orchestrator's PM-closure dispatcher can wake them
-        when subtasks finish, instead of leaving the parent stuck at
-        ``in_progress`` forever.
+        Before marking the agent idle:
+
+        1. Bail with ``idle_with_unread`` when context_briefing has unread A2A
+           or @mentions (must address those first).
+        2. Refuse with INVALID_STATE if the agent has any pending tasks
+           assigned but never claimed — they must call i_will_work_on (dev/qa/
+           doc) or i_will_plan (pm) first. (Gate Set C, pre-gateway implicit
+           via the orchestrator's auto-respawn.)
+        3. Auto-pause every in_progress task this agent owns so the
+           orchestrator's PM-closure dispatcher can wake them when subtasks
+           finish, instead of leaving the parent stuck at ``in_progress``
+           forever.
         """
         briefing = await self._briefing_for(agent_id, None)
         if briefing.get("unread_a2a") or briefing.get("unread_mentions"):
@@ -496,12 +504,45 @@ class Choreographer:
                 ),
                 context_briefing=briefing,
             )
+        if guard := await self._pending_assignment_guard(agent_id, briefing):
+            return guard
         await self._auto_pause_in_progress_tasks(agent_id)
         await self.task.mark_agent_idle(agent_id)
         return Envelope.ok(
             status="idle",
             task_id=None,
             next="container will shut down",
+            context_briefing=briefing,
+        )
+
+    async def _pending_assignment_guard(
+        self, agent_id: UUID, briefing: dict[str, Any]
+    ) -> Envelope | None:
+        """Refuse i_am_idle when caller owns any pending (unclaimed) task.
+
+        Pre-gateway: the orchestrator would respawn the agent after
+        i_am_idle if they still owned pending work, leading to a tight
+        respawn loop. Now an explicit refusal lets the agent fix it via
+        i_will_work_on or i_will_plan before exiting.
+        """
+        assigned = await self.task.list_assigned_for_agent(agent_id)
+        pending = [t for t in assigned if str(t.status) == "pending"]
+        if not pending:
+            return None
+        first = pending[0]
+        agent = await self.task.agent_for(agent_id)
+        verb = "i_will_plan" if agent and agent.role in ("cell_pm", "main_pm") else (
+            "i_will_work_on"
+        )
+        return Envelope.invalid_state(
+            message=(
+                f"You have task {first.id} assigned but never claimed; "
+                "cannot idle until claimed or unclaimed."
+            ),
+            remediate=(
+                f"call {verb}(task_id='{first.id}') to start work, or"
+                " unclaim it first; then retry i_am_idle"
+            ),
             context_briefing=briefing,
         )
 
