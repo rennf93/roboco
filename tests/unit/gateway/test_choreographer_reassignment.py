@@ -73,7 +73,8 @@ async def test_i_am_done_reassigns_task_to_qa_agent() -> None:
         acceptance_criteria_status=[
             {"criterion": "AC1", "referencing_artifact_id": "c1"}
         ],
-        commits=[],
+        # Gate Set E requires non-empty commits before submit_qa.
+        commits=[{"sha": "abc"}],
         documents=[],
         dev_notes="",
     )
@@ -124,7 +125,8 @@ async def test_i_am_done_skips_reassign_when_no_qa_agent() -> None:
         progress_updates=[{"message": "p"}],
         acceptance_criteria=[],
         acceptance_criteria_status=[],
-        commits=[],
+        # Gate Set E requires non-empty commits before submit_qa.
+        commits=[{"sha": "abc"}],
         documents=[],
         dev_notes="",
     )

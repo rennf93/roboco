@@ -263,7 +263,13 @@ async def test_i_have_committed_no_plan_returns_tracing_gap() -> None:
 
 
 @pytest.mark.asyncio
-async def test_i_am_done_full_catch_up() -> None:
+async def test_i_am_done_with_catchup_full_chain() -> None:
+    """The catch-up convenience verb auto-runs verify/push/PR/submit_qa.
+
+    Strict ``i_am_done`` requires the dev to have done these steps already
+    (Gate Set E). When the dev wants the gateway to drive the chain, they
+    call the explicit catch-up verb.
+    """
     agent_id = uuid4()
     task_id = uuid4()
     branch = "feature/backend/abc--def"
@@ -379,7 +385,7 @@ async def test_i_am_done_full_catch_up() -> None:
     deps.evidence_repo.journal_highlights_for_task.return_value = []
     c = Choreographer(deps)
 
-    env = await c.i_am_done(agent_id, task_id, "all done")
+    env = await c.i_am_done_with_catchup(agent_id, task_id, "all done")
     assert env.error is None
     assert env.status == "awaiting_qa"
     git_svc.push_branch.assert_awaited_once_with(branch)
