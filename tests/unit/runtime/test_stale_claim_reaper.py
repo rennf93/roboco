@@ -40,13 +40,13 @@ async def test_reap_stale_claims_releases_dead_holders() -> None:
 
     orch = AgentOrchestrator.__new__(AgentOrchestrator)  # bypass __init__
     orch._claim_heartbeat_ttl = 300
-    orch._task_svc = AsyncMock()
-    orch._task_svc.list_in_progress_or_claimed.return_value = [stale_task, fresh_task]
-    orch._task_svc.unclaim_for_reaper = AsyncMock()
+    svc = AsyncMock()
+    svc.list_in_progress_or_claimed.return_value = [stale_task, fresh_task]
+    svc.unclaim_for_reaper = AsyncMock()
 
-    await orch._reap_stale_claims()
+    await orch._reap_with_service(svc)
 
-    orch._task_svc.unclaim_for_reaper.assert_awaited_once_with(stale_id)
+    svc.unclaim_for_reaper.assert_awaited_once_with(stale_id)
 
 
 @pytest.mark.asyncio
@@ -57,13 +57,13 @@ async def test_reap_stale_claims_releases_holders_with_null_heartbeat() -> None:
 
     orch = AgentOrchestrator.__new__(AgentOrchestrator)
     orch._claim_heartbeat_ttl = 300
-    orch._task_svc = AsyncMock()
-    orch._task_svc.list_in_progress_or_claimed.return_value = [null_task]
-    orch._task_svc.unclaim_for_reaper = AsyncMock()
+    svc = AsyncMock()
+    svc.list_in_progress_or_claimed.return_value = [null_task]
+    svc.unclaim_for_reaper = AsyncMock()
 
-    await orch._reap_stale_claims()
+    await orch._reap_with_service(svc)
 
-    orch._task_svc.unclaim_for_reaper.assert_awaited_once_with(null_id)
+    svc.unclaim_for_reaper.assert_awaited_once_with(null_id)
 
 
 @pytest.mark.asyncio
@@ -81,14 +81,14 @@ async def test_reap_stale_claims_swallows_unclaim_errors() -> None:
 
     orch = AgentOrchestrator.__new__(AgentOrchestrator)
     orch._claim_heartbeat_ttl = 300
-    orch._task_svc = AsyncMock()
-    orch._task_svc.list_in_progress_or_claimed.return_value = [task_a, task_b]
-    orch._task_svc.unclaim_for_reaper = AsyncMock(
+    svc = AsyncMock()
+    svc.list_in_progress_or_claimed.return_value = [task_a, task_b]
+    svc.unclaim_for_reaper = AsyncMock(
         side_effect=[RuntimeError("transient"), None]
     )
 
-    await orch._reap_stale_claims()
+    await orch._reap_with_service(svc)
 
     # Both stale tasks attempted; second succeeded despite first raising.
     expected_attempts = 2
-    assert orch._task_svc.unclaim_for_reaper.await_count == expected_attempts
+    assert svc.unclaim_for_reaper.await_count == expected_attempts
