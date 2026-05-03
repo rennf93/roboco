@@ -224,6 +224,9 @@ async def test_pr_merge_returns_merge_commit_dict() -> None:
     project_id = uuid4()
     fake_task = MagicMock(
         project_id=project_id,
+        # Root task — no parent to lock; concurrency tests cover the
+        # parent-lock + retry-on-409 paths separately.
+        parent_task_id=None,
         assigned_to=uuid4(),
         work_session_id=None,
     )
