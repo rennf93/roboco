@@ -227,6 +227,20 @@ class Choreographer:
         siblings: list[Any] = await self.task.get_subtasks(parent_id)
         return siblings
 
+    async def _non_terminal_subtask_ids(self, parent_task_id: UUID) -> str:
+        """Return a human-readable comma-separated list of non-terminal subtasks.
+
+        Used by Gate Set F closure-time guards to name exactly which
+        subtasks are blocking parent completion.
+        """
+        terminal = {"completed", "cancelled"}
+        subtasks: list[Any] = await self.task.get_subtasks(parent_task_id)
+        non_terminal = [s for s in subtasks if str(s.status) not in terminal]
+        if not non_terminal:
+            return "(none — query out-of-sync, retry)"
+        # Format: "<id> (<status>)"
+        return ", ".join(f"{s.id} ({s.status})" for s in non_terminal)
+
     async def i_will_work_on(
         self, agent_id: UUID, task_id: UUID, plan: str | None = None
     ) -> Envelope:
@@ -1383,11 +1397,13 @@ class Choreographer:
                 context_briefing=await self._briefing_for(pm_agent_id, task_id),
             )
         if not await self.task.all_subtasks_terminal(task_id):
+            non_terminal = await self._non_terminal_subtask_ids(task_id)
             return Envelope.tracing_gap(
                 missing=["subtasks not all terminal"],
                 remediate=(
                     "all subtasks must be in completed/cancelled before"
-                    " bubbling up. Call triage() to find pending subtasks."
+                    " bubbling up. Non-terminal subtasks: "
+                    + non_terminal
                 ),
                 context_briefing=await self._briefing_for(pm_agent_id, task_id),
             )
@@ -1583,11 +1599,13 @@ class Choreographer:
             )
         all_terminal = await self.task.all_subtasks_terminal(task_id)
         if not all_terminal:
+            non_terminal = await self._non_terminal_subtask_ids(task_id)
             return Envelope.tracing_gap(
                 missing=["subtasks not all terminal"],
                 remediate=(
                     "all subtasks must be in completed/cancelled before"
-                    " completing parent. Call triage() to find pending subtasks."
+                    " completing parent. Non-terminal subtasks: "
+                    + non_terminal
                 ),
                 context_briefing=await self._briefing_for(pm_agent_id, task_id),
             )
@@ -1712,9 +1730,13 @@ class Choreographer:
             )
         all_terminal = await self.task.all_subtasks_terminal(root_task_id)
         if not all_terminal:
+            non_terminal = await self._non_terminal_subtask_ids(root_task_id)
             return Envelope.tracing_gap(
                 missing=["subtasks not all terminal"],
-                remediate="all subtasks must be in completed/cancelled state",
+                remediate=(
+                    "all subtasks must be in completed/cancelled state. "
+                    "Non-terminal subtasks: " + non_terminal
+                ),
                 context_briefing=await self._briefing_for(
                     main_pm_agent_id, root_task_id
                 ),
