@@ -120,9 +120,9 @@ async def test_i_will_work_on_pending_with_plan() -> None:
     env = await c.i_will_work_on(agent_id, task_id, plan="do x then y")
     assert env.error is None
     assert env.status == "in_progress"
-    task_svc.claim.assert_awaited_once_with(agent_id, task_id)
+    task_svc.claim.assert_awaited_once_with(task_id, agent_id)
     task_svc.set_plan.assert_awaited_once()
-    task_svc.start.assert_awaited_once_with(agent_id, task_id)
+    task_svc.start.assert_awaited_once_with(task_id, agent_id)
 
 
 @pytest.mark.asyncio
@@ -177,7 +177,7 @@ async def test_i_will_work_on_needs_revision_re_starts() -> None:
     env = await c.i_will_work_on(agent_id, task_id)
     assert env.status == "in_progress"
     task_svc.claim.assert_not_awaited()  # already assigned
-    task_svc.start.assert_awaited_once_with(agent_id, task_id)
+    task_svc.start.assert_awaited_once_with(task_id, agent_id)
 
 
 @pytest.mark.asyncio
