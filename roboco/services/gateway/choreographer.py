@@ -123,6 +123,11 @@ class Choreographer:
     def evidence_repo(self) -> Any:
         return self._deps.evidence_repo
 
+    async def _touch(self, task_id: UUID | None) -> None:
+        """Best-effort heartbeat write; silent on missing task."""
+        if task_id is not None:
+            await self.task.heartbeat(task_id)
+
     # --- Phase 1 (developer) verbs ---
 
     async def give_me_work(self, agent_id: UUID) -> Envelope:
@@ -198,9 +203,7 @@ class Choreographer:
             guard := pm_cannot_execute_code_guard(role, task_type)
         ):
             return guard
-        if not skip_role_typed and (
-            guard := role_typed_claim_guard(role, task_type)
-        ):
+        if not skip_role_typed and (guard := role_typed_claim_guard(role, task_type)):
             return guard
         in_progress = await self.task.list_in_progress_for_agent(agent_id)
         if guard := already_active_guard(in_progress, task.id):
@@ -292,6 +295,7 @@ class Choreographer:
                 context_briefing=briefing,
             )
 
+        await self._touch(task_id)
         return Envelope.ok(
             status=str(t.status),
             task_id=str(task_id),
@@ -328,6 +332,7 @@ class Choreographer:
                 context_briefing=await self._briefing_for(agent_id, t.id),
             )
         await self.task.add_progress(t.id, agent_id, message)
+        await self._touch(t.id)
         return Envelope.ok(
             status=str(t.status),
             task_id=str(t.id),
@@ -363,9 +368,7 @@ class Choreographer:
             return rejection
 
         # 2. Field-level gates (Gate Set E) — strict.
-        if rejection := await self._check_submit_qa_field_gates(
-            agent_id, task_id, t
-        ):
+        if rejection := await self._check_submit_qa_field_gates(agent_id, task_id, t):
             return rejection
 
         # 3. Submit (no catch-up).
@@ -373,6 +376,7 @@ class Choreographer:
         if submitted is not None:
             t = submitted
         await self._notify_qa(agent_id, task_id, t)
+        await self._touch(task_id)
         return await self._build_i_am_done_ok(agent_id, task_id, t)
 
     async def i_am_done_with_catchup(
@@ -575,6 +579,7 @@ class Choreographer:
             agent_id=agent_id, task_id=task_id, content=reason
         )
         t = await self.task.escalate(agent_id, task_id, reason)
+        await self._touch(task_id)
         return Envelope.ok(
             status=str(t.status),
             task_id=str(task_id),
@@ -636,8 +641,10 @@ class Choreographer:
             return None
         first = pending[0]
         agent = await self.task.agent_for(agent_id)
-        verb = "i_will_plan" if agent and agent.role in ("cell_pm", "main_pm") else (
-            "i_will_work_on"
+        verb = (
+            "i_will_plan"
+            if agent and agent.role in ("cell_pm", "main_pm")
+            else ("i_will_work_on")
         )
         return Envelope.invalid_state(
             message=(
@@ -1054,6 +1061,7 @@ class Choreographer:
                 )
         await self.task.set_plan(task_id, plan)
         t = await self.task.start(task_id, pm_agent_id)
+        await self._touch(task_id)
         return Envelope.ok(
             status=str(t.status) if t else "in_progress",
             task_id=str(task_id),
@@ -1402,8 +1410,7 @@ class Choreographer:
                 missing=["subtasks not all terminal"],
                 remediate=(
                     "all subtasks must be in completed/cancelled before"
-                    " bubbling up. Non-terminal subtasks: "
-                    + non_terminal
+                    " bubbling up. Non-terminal subtasks: " + non_terminal
                 ),
                 context_briefing=await self._briefing_for(pm_agent_id, task_id),
             )
@@ -1440,6 +1447,7 @@ class Choreographer:
         assigned = await self.task.list_assigned_for_agent(pm_agent_id)
         if assigned:
             t = assigned[0]
+            await self._touch(t.id)
             return Envelope.ok(
                 status=str(t.status),
                 task_id=str(t.id),
@@ -1604,8 +1612,7 @@ class Choreographer:
                 missing=["subtasks not all terminal"],
                 remediate=(
                     "all subtasks must be in completed/cancelled before"
-                    " completing parent. Non-terminal subtasks: "
-                    + non_terminal
+                    " completing parent. Non-terminal subtasks: " + non_terminal
                 ),
                 context_briefing=await self._briefing_for(pm_agent_id, task_id),
             )
