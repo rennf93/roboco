@@ -946,9 +946,17 @@ class TaskService(BaseService):
         # Set context for QA/Documenter claims (only if not already set)
         self._set_original_developer_context(task, agent)
 
+        now = datetime.now(UTC)
         task.assigned_to = cast("Any", agent_id)
         task.claimed_by = cast("Any", agent_id)
-        task.claimed_at = datetime.now(UTC)
+        task.claimed_at = now
+        # Seed the heartbeat at claim time. The reaper treats
+        # last_heartbeat_at IS NULL as stale; without this seed, a
+        # freshly-claimed task is reaped on the next dispatch tick
+        # (~250ms) before the agent has a chance to call any verb that
+        # would touch the heartbeat — leading to an unclaim/reclaim
+        # tight loop hammering the orchestrator.
+        task.last_heartbeat_at = now
 
         agent_role = agent.role.value if agent and agent.role else None
         if task.status in self._CLAIMABLE_STATUSES:
