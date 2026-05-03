@@ -416,8 +416,11 @@ class AuditService(SingletonService):
     ) -> None:
         """Log an orchestrator-level agent event (spawned, stopped, stranded).
 
-        agent_slug is stored in details because audit_log.agent_id is a UUID
-        and the orchestrator only sees slugs at spawn time.
+        Resolves ``agent_slug`` to its UUID so ``audit_log.agent_id`` is a
+        real FK to ``agents.id`` (Auditor + CEO queries can join on it).
+        The slug is also kept in ``details`` for redundancy and for the
+        case where an unknown slug fails to resolve (best-effort: the row
+        is still written with ``agent_id=NULL`` rather than dropped).
         """
         payload: dict[str, Any] = {"agent_slug": agent_slug}
         if details:
@@ -431,16 +434,64 @@ class AuditService(SingletonService):
             timestamp=datetime.now(UTC).isoformat(),
             **(details or {}),
         )
+        resolved_agent_id = await self._resolve_agent_id_by_slug(agent_slug)
         await self._persist(
             _AuditEvent(
                 event_type=event_type,
-                agent_id=None,
+                agent_id=resolved_agent_id,
                 target_type="task" if task_id else "agent",
                 target_id=task_id,
                 severity=severity,
                 details=payload,
             )
         )
+
+    async def _resolve_agent_id_by_slug(self, agent_slug: str) -> UUID | None:
+        """Resolve an agent slug to its UUID for ``audit_log.agent_id``.
+
+        Tries the static ``AGENT_UUIDS`` map first (the 18 seeded agents);
+        falls back to a DB lookup for agents not in the seed set (test
+        agents, future-added agents). Best-effort: returns None on any
+        failure so the audit write still succeeds with ``agent_id=NULL``
+        — observability must never block the operation being observed.
+        """
+        # Fast path: the 18 seeded agents are in the static map. No DB hit.
+        try:
+            from roboco.seeds.initial_data import AGENT_UUIDS
+
+            seeded = AGENT_UUIDS.get(agent_slug)
+            if seeded is not None:
+                return UUID(seeded)
+        except Exception as e:
+            self.log.debug(
+                "Static AGENT_UUIDS lookup failed; falling back to DB",
+                agent_slug=agent_slug,
+                error=str(e),
+            )
+
+        # Slow path: DB lookup for agents added at runtime.
+        try:
+            from sqlalchemy import select
+
+            from roboco.db.base import get_session_factory
+            from roboco.db.tables import AgentTable
+
+            session_factory = get_session_factory()
+            async with session_factory() as db:
+                result = await db.execute(
+                    select(AgentTable.id).where(AgentTable.slug == agent_slug)
+                )
+                value = result.scalar_one_or_none()
+                if value is None:
+                    return None
+                return UUID(str(value))
+        except Exception as e:
+            self.log.debug(
+                "DB slug-to-UUID resolution failed for audit row",
+                agent_slug=agent_slug,
+                error=str(e),
+            )
+            return None
 
     # =========================================================================
     # QUERY METHODS

@@ -249,6 +249,7 @@ class TaskService(BaseService):
         task: TaskTable,
         new_status: TaskStatus,
         agent_role: str | None = None,
+        audit_agent_id: str | UUID | None = None,
     ) -> None:
         """
         Validate and set task status with lifecycle enforcement.
@@ -261,6 +262,13 @@ class TaskService(BaseService):
             task: The task to update
             new_status: Target status
             agent_role: Optional role for role-restricted transitions
+            audit_agent_id: Optional explicit agent_id for the audit row.
+                Required for transitions where the caller has already
+                cleared ``task.claimed_by`` BEFORE invoking this method
+                (e.g. ``submit_for_qa`` clears claimed_by so QA can claim).
+                Without this, the audit writer reads the now-cleared value
+                and stores ``agent_id=NULL`` on rows that should attribute
+                the transition to the developer, QA, or PM who triggered it.
 
         Raises:
             TaskLifecycleError: If transition is invalid or role not permitted
@@ -322,15 +330,26 @@ class TaskService(BaseService):
 
         from roboco.services.audit import get_audit_service
 
+        # Prefer the explicit `audit_agent_id` when the caller passed one
+        # (capture-before-mutate pattern: callers like `submit_for_qa` and
+        # `pass_qa` clear `task.claimed_by` BEFORE calling us so the next
+        # role can claim, but still want the audit row attributed to the
+        # outgoing agent). Fall back to `task.claimed_by` for transitions
+        # where the assignment didn't change (claim, start_work, etc.).
+        if audit_agent_id is not None:
+            resolved_audit_agent_id: str | None = str(audit_agent_id)
+        elif task.claimed_by is not None:
+            resolved_audit_agent_id = str(task.claimed_by)
+        else:
+            resolved_audit_agent_id = None
+
         audit = get_audit_service()
         with contextlib.suppress(RuntimeError):
             bg = asyncio.get_running_loop().create_task(
                 audit.log_task_event(
                     event_type=f"task.{target}",
                     task_id=str(task.id),
-                    agent_id=(
-                        str(task.claimed_by) if task.claimed_by is not None else None
-                    ),
+                    agent_id=resolved_audit_agent_id,
                     details={
                         "from_status": current,
                         "to_status": target,
@@ -2205,12 +2224,22 @@ class TaskService(BaseService):
         if original_dev:
             task.quick_context = f"original_developer:{original_dev}"
 
+        # Capture the developer's UUID BEFORE clearing claimed_by so the
+        # `task.awaiting_qa` audit row is attributed to the dev who
+        # submitted, not NULL. Capture-before-mutate per Audit I30.
+        captured_dev_id = to_python_uuid(task.claimed_by)
+
         # Clear assignment so QA can claim the task
         # The original developer is preserved in quick_context
         task.assigned_to = None
         task.claimed_by = None
         task.self_verified = True
-        self._validate_and_set_status(task, TaskStatus.AWAITING_QA, agent_role)
+        self._validate_and_set_status(
+            task,
+            TaskStatus.AWAITING_QA,
+            agent_role,
+            audit_agent_id=captured_dev_id,
+        )
         await self.session.flush()
 
         self.log.info(
@@ -2253,6 +2282,11 @@ class TaskService(BaseService):
         # Store QA agent before clearing assignment
         qa_agent_id = task.assigned_to
 
+        # Capture the QA agent's UUID BEFORE clearing claimed_by so the
+        # `task.awaiting_documentation` audit row is attributed to QA,
+        # not NULL. Capture-before-mutate per Audit I30.
+        captured_qa_id = to_python_uuid(task.claimed_by)
+
         # Clear assignment so documenter can claim the task
         task.assigned_to = None
         task.claimed_by = None
@@ -2267,7 +2301,10 @@ class TaskService(BaseService):
         task.docs_complete = False
         # Use validated transition - QA role required per ROLE_RESTRICTED_TRANSITIONS
         self._validate_and_set_status(
-            task, TaskStatus.AWAITING_DOCUMENTATION, agent_role
+            task,
+            TaskStatus.AWAITING_DOCUMENTATION,
+            agent_role,
+            audit_agent_id=captured_qa_id,
         )
         await self.session.flush()
 
