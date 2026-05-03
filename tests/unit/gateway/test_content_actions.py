@@ -147,6 +147,10 @@ async def test_note_reflect_scope_succeeds() -> None:
     task_id = uuid4()
     task_svc = AsyncMock()
     task_svc.get_active_task_for_agent.return_value = None
+    # When task_id is explicit, ownership is verified — agent must be assignee.
+    task_svc.get.return_value = MagicMock(
+        id=task_id, assigned_to=agent_id, status="in_progress"
+    )
     journal_svc = AsyncMock()
 
     deps = _make_deps(task=task_svc, journal=journal_svc)
@@ -325,6 +329,8 @@ async def test_evidence_valid_task_returns_ok_with_pr_diff() -> None:
     task_obj = MagicMock(
         id=task_id,
         status="awaiting_qa",
+        # assigned_to=None covers post-handoff inspection (QA reviewing dev work)
+        assigned_to=None,
         branch_name="feature/backend/abc",
         work_session_id=ws_id,
         commits=["sha1"],

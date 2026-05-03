@@ -29,6 +29,26 @@ _VALID_NOTE_SCOPES: frozenset[str] = frozenset(
 _TASK_ID_PREFIX_RE = re.compile(r"^\s*\[[a-zA-Z0-9_-]+\]\s*")
 
 
+def _ownership_violation(task_id: UUID) -> Envelope:
+    """Standard envelope for Gate Set D ownership violations.
+
+    Pre-gateway, agents could not even see tasks they didn't own; the
+    gateway exposes task_id parameters so the explicit gate is required.
+    """
+    return Envelope.not_authorized(
+        message=(
+            f"you are not the assignee of {task_id}; "
+            "cannot post content to it"
+        ),
+        remediate=(
+            "only the task's assignee may attach content (commit/note/say/"
+            "dm/evidence) to it. Use a different task_id or omit task_id "
+            "for off-task channel posts (say/dm only)."
+        ),
+        context_briefing={},
+    )
+
+
 @dataclass(frozen=True)
 class ContentActionsDeps:
     """Service deps for ContentActions; bundled to keep init signature flat."""
@@ -111,6 +131,25 @@ class ContentActions:
             context_briefing={},
         )
 
+    async def _verify_explicit_task_ownership(
+        self, agent_id: UUID, task_id: UUID
+    ) -> Envelope | None:
+        """Gate Set D: refuse content posts on tasks the caller does not own.
+
+        Only call this for *explicit* task_id (caller passed it themselves).
+        Auto-fill from get_active_task_for_agent is implicitly self-owned
+        and does not need a re-check.
+
+        Allows ``assigned_to=None`` (post-handoff transient state) so QA /
+        documenter can still inspect tasks between reassignments.
+        """
+        t = await self.task.get(task_id)
+        if t is None:
+            return Envelope.not_found(message=f"task {task_id} not found")
+        if t.assigned_to is not None and t.assigned_to != agent_id:
+            return _ownership_violation(task_id)
+        return None
+
     async def note(
         self,
         *,
@@ -126,7 +165,10 @@ class ContentActions:
                 remediate=f"scope must be one of: {sorted(_VALID_NOTE_SCOPES)}",
                 context_briefing={},
             )
-        if task_id is None:
+        if task_id is not None:
+            if reject := await self._verify_explicit_task_ownership(agent_id, task_id):
+                return reject
+        else:
             t = await self.task.get_active_task_for_agent(agent_id)
             if t is not None:
                 task_id = t.id
@@ -154,7 +196,10 @@ class ContentActions:
         task_id: UUID | None = None,
     ) -> Envelope:
         """Post to a channel. task_id auto-injected if you have an active task."""
-        if task_id is None:
+        if task_id is not None:
+            if reject := await self._verify_explicit_task_ownership(agent_id, task_id):
+                return reject
+        else:
             t = await self.task.get_active_task_for_agent(agent_id)
             if t is not None:
                 task_id = t.id
@@ -181,7 +226,10 @@ class ContentActions:
         skill: str | None = None,
     ) -> Envelope:
         """A2A direct message. Requires task_id (active or explicit)."""
-        if task_id is None:
+        if task_id is not None:
+            if reject := await self._verify_explicit_task_ownership(agent_id, task_id):
+                return reject
+        else:
             t = await self.task.get_active_task_for_agent(agent_id)
             if t is not None:
                 task_id = t.id
@@ -214,10 +262,15 @@ class ContentActions:
         """Inspect a task's PR diff, commits, files.
 
         Fetches dev branch into the agent's workspace before diffing.
+        Allows inspection when caller is assignee OR task is unassigned
+        (post-handoff transient state) — strict ownership only blocks
+        cross-agent inspection of an actively-owned task.
         """
         t = await self.task.get(task_id)
         if t is None:
             return Envelope.not_found(message=f"task {task_id} not found")
+        if t.assigned_to is not None and t.assigned_to != agent_id:
+            return _ownership_violation(task_id)
         if t.branch_name and t.work_session_id:
             await self.workspace.fetch_branch_for_inspection(
                 agent_id=agent_id, branch_name=t.branch_name
