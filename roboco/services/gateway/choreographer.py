@@ -950,6 +950,10 @@ class Choreographer:
             context_briefing=await self._briefing_for(pm_agent_id, parent_task_id),
         )
 
+    # Gate Set B subtask cap (pre-gateway implicit, made explicit here).
+    # Soft warn at 8, hard block at 13. Cap enforced by ``_subtask_cap_guard``.
+    _SUBTASK_HARD_CAP: int = 12
+
     async def _delegate_guard(
         self,
         pm_agent_id: UUID,
@@ -959,8 +963,27 @@ class Choreographer:
         inputs: DelegateInputs,
     ) -> Envelope | None:
         """Return rejection Envelope if a delegate precondition fails; else None."""
-        from roboco.seeds.initial_data import AGENT_UUIDS
+        if guard := await self._delegate_role_guards(
+            pm_agent_id, parent_task_id, agent, inputs
+        ):
+            return guard
+        if guard := await self._delegate_static_guards(
+            pm_agent_id, parent_task_id, parent, inputs
+        ):
+            return guard
+        # Gate Set B: PARENT_NOT_CLAIMED + SUBTASK_CAP
+        return await self._delegate_lifecycle_guards(
+            pm_agent_id, parent_task_id, parent
+        )
 
+    async def _delegate_role_guards(
+        self,
+        pm_agent_id: UUID,
+        parent_task_id: UUID,
+        agent: Any,
+        inputs: DelegateInputs,
+    ) -> Envelope | None:
+        """Role + delegation-chain guards (the original two)."""
         if agent is None or agent.role not in ("cell_pm", "main_pm"):
             return Envelope.not_authorized(
                 message="only cell_pm or main_pm may delegate",
@@ -978,6 +1001,18 @@ class Choreographer:
                 ),
                 context_briefing=await self._briefing_for(pm_agent_id, parent_task_id),
             )
+        return None
+
+    async def _delegate_static_guards(
+        self,
+        pm_agent_id: UUID,
+        parent_task_id: UUID,
+        parent: Any,
+        inputs: DelegateInputs,
+    ) -> Envelope | None:
+        """Slug / project_id / enum guards. Pure data-shape checks."""
+        from roboco.seeds.initial_data import AGENT_UUIDS
+
         if inputs.assigned_to not in AGENT_UUIDS:
             return Envelope.invalid_state(
                 message=f"unknown agent slug: {inputs.assigned_to!r}",
@@ -996,6 +1031,61 @@ class Choreographer:
             return Envelope.invalid_state(
                 message=f"invalid enum value: {exc}",
                 remediate="check team/task_type/estimated_complexity",
+                context_briefing=await self._briefing_for(pm_agent_id, parent_task_id),
+            )
+        return None
+
+    async def _delegate_lifecycle_guards(
+        self,
+        pm_agent_id: UUID,
+        parent_task_id: UUID,
+        parent: Any,
+    ) -> Envelope | None:
+        """Gate Set B: PARENT_NOT_CLAIMED + SUBTASK_CAP.
+
+        Pre-gateway, the orchestrator enforced both implicitly: a PM only
+        ever called task_create after the orchestrator spawned them
+        post-claim, and naturally never created more than a handful of
+        subtasks in one spawn cycle.
+
+        With the gateway exposing ``delegate`` as a first-class verb,
+        these gates must be explicit.
+        """
+        if str(parent.status) != "in_progress":
+            return Envelope.invalid_state(
+                message=(
+                    f"parent task {parent_task_id} is in {parent.status}; "
+                    "must be in_progress to accept subtasks"
+                ),
+                remediate=(
+                    f"call i_will_plan(parent_task_id='{parent_task_id}',"
+                    " plan='...') before delegating subtasks"
+                ),
+                context_briefing=await self._briefing_for(pm_agent_id, parent_task_id),
+            )
+        if parent.assigned_to != pm_agent_id:
+            return Envelope.not_authorized(
+                message=(
+                    f"parent task {parent_task_id} is assigned to "
+                    f"{parent.assigned_to}, not you"
+                ),
+                remediate=(
+                    f"call i_will_plan(parent_task_id='{parent_task_id}',"
+                    " plan='...') to claim before delegating subtasks"
+                ),
+                context_briefing=await self._briefing_for(pm_agent_id, parent_task_id),
+            )
+        existing = await self.task.get_subtasks(parent_task_id)
+        if len(existing) >= self._SUBTASK_HARD_CAP:
+            return Envelope.invalid_state(
+                message=(
+                    f"parent already has {len(existing)} subtasks; "
+                    f"cap is {self._SUBTASK_HARD_CAP}"
+                ),
+                remediate=(
+                    "consolidate or split into a separate parent task before"
+                    " adding more subtasks"
+                ),
                 context_briefing=await self._briefing_for(pm_agent_id, parent_task_id),
             )
         return None

@@ -166,11 +166,17 @@ async def test_delegate_main_pm_to_cell_pm_creates_subtask() -> None:
     main_pm_id = uuid4()
     parent_id = uuid4()
     project_id = uuid4()
-    parent = MagicMock(id=parent_id, project_id=project_id)
+    parent = MagicMock(
+        id=parent_id,
+        project_id=project_id,
+        status="in_progress",
+        assigned_to=main_pm_id,
+    )
     new_task = MagicMock(id=uuid4())
     task_svc = AsyncMock()
     task_svc.get.return_value = parent
     task_svc.agent_for.return_value = MagicMock(role="main_pm", team="main_pm")
+    task_svc.get_subtasks.return_value = []
     task_svc.create_subtask.return_value = new_task
     deps = _make_deps(task=task_svc)
     c = Choreographer(deps)
@@ -198,11 +204,17 @@ async def test_delegate_cell_pm_to_team_dev_creates_subtask() -> None:
     cell_pm_id = uuid4()
     parent_id = uuid4()
     project_id = uuid4()
-    parent = MagicMock(id=parent_id, project_id=project_id)
+    parent = MagicMock(
+        id=parent_id,
+        project_id=project_id,
+        status="in_progress",
+        assigned_to=cell_pm_id,
+    )
     new_task = MagicMock(id=uuid4())
     task_svc = AsyncMock()
     task_svc.get.return_value = parent
     task_svc.agent_for.return_value = MagicMock(role="cell_pm", team="backend")
+    task_svc.get_subtasks.return_value = []
     task_svc.create_subtask.return_value = new_task
     deps = _make_deps(task=task_svc)
     c = Choreographer(deps)
