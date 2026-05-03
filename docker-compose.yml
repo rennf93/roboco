@@ -240,6 +240,10 @@ services:
       # per-role rate limit). Without this the legacy spawn path has only
       # _pm_respawn_should_gate (PM-specific) + per-tick dedupe.
       ROBOCO_GATEWAY_ENABLED: "true"
+      # Public base URL for commit-trailer links. Default 127.0.0.1 produces
+      # unusable links in commit message bodies; set to NAS LAN IP so
+      # f"{api_base}/tasks/{task_id}" renders a reachable URL.
+      ROBOCO_PUBLIC_BASE_URL: "http://192.168.50.111:8000"
     volumes:
       # Docker socket - allows spawning agent containers
       - /var/run/docker.sock:/var/run/docker.sock
