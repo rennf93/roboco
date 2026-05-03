@@ -141,3 +141,124 @@ async def test_heartbeat_is_noop_for_missing_task(db_session: AsyncSession) -> N
     # No task seeded with this id; UPDATE should affect zero rows and return.
     await svc.heartbeat(uuid4())
     await db_session.commit()
+
+
+async def _seed_pending_task_for_claim(
+    session: AsyncSession,
+) -> tuple[UUID, UUID]:
+    """Seed a pending task pre-assigned to a dev. Returns (task_id, agent_id).
+
+    Pre-assigned-and-pending mirrors the production case where the CEO/PM
+    creates a task already assigned to the executor; claim() is then the
+    transition that moves it to CLAIMED + seeds the heartbeat.
+    """
+    system_agent = AgentTable(
+        id=uuid4(),
+        name="System",
+        slug=f"system-{uuid4().hex[:8]}",
+        role=AgentRole.SYSTEM,
+        team=None,
+        status=AgentStatus.ACTIVE,
+        model_config={},
+        system_prompt="system",
+        capabilities=[],
+        permissions={},
+        metrics={},
+    )
+    session.add(system_agent)
+    await session.flush()
+
+    project = ProjectTable(
+        id=uuid4(),
+        name="Claim Test Project",
+        slug=f"claim-{uuid4().hex[:8]}",
+        git_url="https://github.com/example/claim.git",
+        default_branch="main",
+        protected_branches=["main"],
+        assigned_cell=Team.BACKEND,
+        created_by=system_agent.id,
+        is_active=True,
+    )
+    session.add(project)
+    await session.flush()
+
+    dev_agent = AgentTable(
+        id=uuid4(),
+        name="Backend Dev",
+        slug=f"be-dev-{uuid4().hex[:8]}",
+        role=AgentRole.DEVELOPER,
+        team=Team.BACKEND,
+        status=AgentStatus.ACTIVE,
+        model_config={},
+        system_prompt="dev",
+        capabilities=["python"],
+        permissions={},
+        metrics={},
+    )
+    session.add(dev_agent)
+    await session.flush()
+
+    task = TaskTable(
+        id=uuid4(),
+        title="Claim target task",
+        description="Pending pre-assigned task; claim should seed heartbeat.",
+        acceptance_criteria=["heartbeat seeded on claim"],
+        status=TaskStatus.PENDING,
+        priority=2,
+        task_type=TaskType.CODE,
+        nature=TaskNature.TECHNICAL,
+        project_id=project.id,
+        # Pre-set branch_name so _finalize_claim's _ensure_branch_for_task
+        # short-circuits — the test's assertion is on heartbeat seeding,
+        # not branch creation, and unit Postgres has no git auth.
+        branch_name="feature/backend/CLAIMED1",
+        created_by=system_agent.id,
+        assigned_to=dev_agent.id,
+        team=Team.BACKEND,
+        dependency_ids=[],
+        blocker_ids=[],
+        sequence=0,
+        plan=None,
+        estimated_complexity=Complexity.LOW,
+        execution_log={},
+        checkpoints=[],
+        progress_updates=[],
+        commits=[],
+        documents=[],
+        outputs=[],
+        last_heartbeat_at=None,
+    )
+    session.add(task)
+    await session.commit()
+
+    return UUID(str(task.id)), UUID(str(dev_agent.id))
+
+
+@pytest.mark.asyncio
+async def test_claim_seeds_last_heartbeat_at(db_session: AsyncSession) -> None:
+    """Regression: claim() must seed last_heartbeat_at so the reaper does
+    not immediately reap the freshly-claimed task on the next dispatch tick.
+
+    Smoke 2026-05-03 surfaced the reaper firing ~5x/sec against newly-
+    claimed tasks because last_heartbeat_at remained NULL until the agent
+    called a hot verb (heartbeat-on-_touch). The fix in c0eb90e seeds the
+    heartbeat at claim time. This test pins the contract.
+    """
+    task_id, agent_id = await _seed_pending_task_for_claim(db_session)
+    before = datetime.now(UTC) - timedelta(seconds=2)
+
+    svc = TaskService(db_session)
+    result = await svc.claim(task_id, agent_id)
+    await db_session.commit()
+
+    assert result is not None, "claim should succeed for pre-assigned same-agent path"
+
+    # Re-fetch via fresh query to confirm the column actually persisted.
+    row = await svc.get(task_id)
+    assert row is not None
+    assert row.status == TaskStatus.CLAIMED
+    assert row.last_heartbeat_at is not None, (
+        "claim must seed last_heartbeat_at — without it the reaper "
+        "interprets NULL as stale and reaps the claim immediately"
+    )
+    assert row.last_heartbeat_at > before
