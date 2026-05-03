@@ -2145,7 +2145,9 @@ class Choreographer:
                 verb="cell_pm_complete",
             )
         target = parent_branch_for(t.branch_name)
-        merge_result = await self.git.pr_merge(t.pr_number, target=target)
+        merge_result = await self.git.pr_merge(
+            t.pr_number, target=target, actor_agent_id=pm_agent_id
+        )
         leaf_parent_id = t.parent_task_id
         leaf_team = t.team
         t = await self.task.cell_pm_complete(

@@ -263,7 +263,9 @@ async def test_cell_pm_complete_merges_then_completes() -> None:
     env = await c.cell_pm_complete(pm_id, task_id, notes="reviewed and approved")
     assert env.error is None
     assert env.status == "completed"
-    git_svc.pr_merge.assert_awaited_once_with(8, target="feature/backend/abc")
+    git_svc.pr_merge.assert_awaited_once_with(
+        8, target="feature/backend/abc", actor_agent_id=pm_id
+    )
 
 
 @pytest.mark.asyncio

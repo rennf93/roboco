@@ -1740,7 +1740,13 @@ class GitService(BaseService):
             .with_for_update(of=_TaskTable)
         )
 
-    async def pr_merge(self, pr_number: int, *, target: str) -> dict[str, Any]:
+    async def pr_merge(
+        self,
+        pr_number: int,
+        *,
+        target: str,
+        actor_agent_id: UUID | None = None,
+    ) -> dict[str, Any]:
         """Merge PR `pr_number` into `target`.
 
         Returns: ``{"merge_commit_sha": str | None}``. Looks up the
@@ -1768,9 +1774,18 @@ class GitService(BaseService):
         if project is None:
             raise NotFoundError("Project", str(task.project_id))
 
+        # Workspace resolution priority: caller-provided actor (the PM
+        # doing the merge) > task.assigned_to > created_by. assigned_to
+        # is often None at merge time because submit_qa / pass_qa cleared
+        # it during prior transitions; without a fallback the resolver
+        # raises ValidationError when project.workspace_path is unset.
+        workspace_agent_id = actor_agent_id or (
+            UUID(str(task.assigned_to)) if task.assigned_to else None
+        )
+        if workspace_agent_id is None and task.created_by:
+            workspace_agent_id = UUID(str(task.created_by))
         workspace = await self.get_workspace(
-            project.slug,
-            agent_id=UUID(str(task.assigned_to)) if task.assigned_to else None,
+            project.slug, agent_id=workspace_agent_id
         )
         git_token = await self._get_project_token_or_raise(project.slug)
         owner, repo = self._parse_github_remote(workspace)
