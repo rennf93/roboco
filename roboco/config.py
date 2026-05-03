@@ -238,6 +238,17 @@ class Settings(BaseSettings):
         ge=30,
         description="Timeout in seconds for git clone operations",
     )
+    workspace_refresh_fetch_timeout_seconds: int = Field(
+        default=60,
+        ge=5,
+        description=(
+            "Timeout in seconds for the best-effort `git fetch origin` "
+            "that runs on every healthy-clone re-entry into "
+            "ensure_workspace. Refresh fetches transfer small deltas only "
+            "— blocking 300s (the full-clone timeout) on every spawn "
+            "against a hung remote is operationally bad."
+        ),
+    )
 
     # ==========================================================================
     # Agent Guardrails (per-session budgets, loop detection, SLAs)

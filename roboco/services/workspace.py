@@ -321,6 +321,11 @@ class WorkspaceService:
         stripped remote URL. Public repos and refresh-only fetches succeed
         without auth; auth-protected refreshes will surface their stderr
         in the warning log without aborting workspace setup.
+
+        Timeout uses `workspace_refresh_fetch_timeout_seconds` (default
+        60s), NOT `workspace_clone_timeout` (300s) — a refresh transfers
+        small deltas, so 300s of blocking on every spawn against a hung
+        remote is operationally bad.
         """
 
         def _do_fetch() -> subprocess.CompletedProcess[str]:
@@ -329,7 +334,7 @@ class WorkspaceService:
                 cwd=str(workspace),
                 capture_output=True,
                 text=True,
-                timeout=settings.workspace_clone_timeout,
+                timeout=settings.workspace_refresh_fetch_timeout_seconds,
                 check=False,
             )
 
@@ -432,6 +437,13 @@ class WorkspaceService:
                 # network blips and offline mode must not break workspace
                 # setup; checkout is unchanged.
                 await self._fetch_origin_best_effort(workspace, project_slug)
+                # Re-chown so the agent user can still write into .git
+                # after our root-side fetch updated refs/objects. Mirrors
+                # the pattern in `fetch_branch_for_inspection` — without
+                # this, new pack files under .git/objects/pack/ and ref
+                # updates under .git/refs/remotes/origin/ land root-owned
+                # and undo the chown we just ran above.
+                await asyncio.to_thread(_ensure_agent_owned, workspace)
                 logger.debug(
                     "Workspace already exists",
                     workspace=str(workspace),

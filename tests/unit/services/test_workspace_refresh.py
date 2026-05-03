@@ -25,6 +25,11 @@ if TYPE_CHECKING:
 # `origin`). Named to satisfy ruff PLR2004 — magic-value comparison.
 _MIN_GIT_FETCH_ARGC = 3
 
+# Healthy short-circuit chowns BEFORE fetch (repair pre-existing root
+# ownership) AND AFTER fetch (repair root-owned pack/refs the fetch
+# just wrote). Named to satisfy ruff PLR2004.
+_MIN_CHOWN_CALLS_AROUND_FETCH = 2
+
 
 def _service() -> WorkspaceService:
     """Build a WorkspaceService over a MagicMock session."""
@@ -101,10 +106,72 @@ async def test_ensure_workspace_fetches_origin_on_healthy_short_circuit(
         f"Expected `git fetch origin` on healthy short-circuit, "
         f"got subprocess calls: {captured}"
     )
-    # Specifically: `git fetch origin` (no extra positional refspec — fetch
-    # all branches' refs so PM/Doc sees every dev branch).
-    assert any(a[-2:] == ["fetch", "origin"] for a in fetch_calls), (
-        f"Expected exact `git fetch origin`, got: {fetch_calls}"
+    # Specifically: `git fetch origin` with NO `-c` flag and no extra
+    # positional refspec. The `-c` check protects the docstring's
+    # no-token-injection invariant — a future refactor that added
+    # `git -c http.extraheader=...` would still satisfy a loose
+    # `a[-2:] == ["fetch", "origin"]` assertion, silently regressing
+    # the no-PAT-injection guarantee.
+    assert any(
+        a[0] == "git" and "-c" not in a and a[-2:] == ["fetch", "origin"]
+        for a in fetch_calls
+    ), f"Expected exact `git fetch origin` (no `-c`), got: {fetch_calls}"
+
+
+@pytest.mark.asyncio
+async def test_ensure_workspace_rechowns_after_refresh_fetch(
+    healthy_workspace: Path,
+) -> None:
+    """Healthy-clone re-entry MUST chown again AFTER `git fetch origin`.
+
+    The orchestrator runs as root, so `git fetch` writes new pack files
+    under `.git/objects/pack/` and updates refs under
+    `.git/refs/remotes/origin/` — those land root-owned, undoing the
+    pre-fetch chown. Without a post-fetch chown, the next agent-side
+    write (.git/index.lock, packed-refs, etc.) hits Permission denied.
+
+    This mirrors the pattern in `fetch_branch_for_inspection`.
+    """
+    svc = _service()
+    agent = _fake_agent()
+    _bind(svc, "_lookup_agent_or_raise", AsyncMock(return_value=agent))
+    _bind(svc, "get_workspace_path", MagicMock(return_value=healthy_workspace))
+
+    call_log: list[str] = []
+
+    def _fake_run(
+        args: list[str], **_kwargs: object
+    ) -> subprocess.CompletedProcess[str]:
+        if "fetch" in args:
+            call_log.append("fetch")
+        return subprocess.CompletedProcess(
+            args=args, returncode=0, stdout="", stderr=""
+        )
+
+    def _fake_chown(_workspace: object) -> None:
+        call_log.append("chown")
+
+    with (
+        patch("roboco.services.workspace.subprocess.run", side_effect=_fake_run),
+        patch(
+            "roboco.services.workspace._ensure_agent_owned",
+            side_effect=_fake_chown,
+        ),
+    ):
+        await svc.ensure_workspace(
+            project_slug="roboco",
+            agent_id=agent.id,
+        )
+
+    # Expect at least: chown (pre-fetch) -> fetch -> chown (post-fetch).
+    # The post-fetch chown is the load-bearing one — it repairs ownership
+    # of objects/refs the root-side fetch just wrote.
+    assert call_log.count("chown") >= _MIN_CHOWN_CALLS_AROUND_FETCH, (
+        f"Expected at least two chown calls (pre + post fetch), got: {call_log}"
+    )
+    fetch_idx = call_log.index("fetch")
+    assert "chown" in call_log[fetch_idx + 1 :], (
+        f"Expected a chown AFTER the fetch, got: {call_log}"
     )
 
 
