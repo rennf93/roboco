@@ -18,6 +18,14 @@ def _make_deps(**overrides: AsyncMock) -> ContentActionsDeps:
         task = AsyncMock()
         task.get_active_task_for_agent.return_value = None
 
+    # commit() now checks the caller's role server-side. Default the
+    # mock's agent_for to a developer so existing commit tests still
+    # exercise the success path; tests asserting the role gate should
+    # override task.agent_for AFTER _make_deps returns.
+    from unittest.mock import MagicMock
+
+    task.agent_for.return_value = MagicMock(role="developer")
+
     if "git" in overrides:
         git = overrides["git"]
     else:
