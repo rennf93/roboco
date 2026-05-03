@@ -40,7 +40,6 @@ const STATUS_LABELS: Record<TaskStatus, string> = {
   [TaskStatus.AWAITING_CEO_APPROVAL]: "Awaiting CEO Approval",
   [TaskStatus.COMPLETED]: "Completed",
   [TaskStatus.CANCELLED]: "Cancelled",
-  [TaskStatus.QUARANTINED]: "Quarantined",
 };
 
 const TEAM_LABELS: Record<Team, string> = {

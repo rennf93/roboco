@@ -17,7 +17,6 @@ export enum TaskStatus {
   AWAITING_CEO_APPROVAL = "awaiting_ceo_approval",
   COMPLETED = "completed",
   CANCELLED = "cancelled",
-  QUARANTINED = "quarantined", // Special state for problematic tasks
 }
 
 export enum Team {
