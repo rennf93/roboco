@@ -126,6 +126,103 @@ async def test_i_will_plan_rejects_non_pending_state() -> None:
 
 
 @pytest.mark.asyncio
+async def test_i_will_plan_calls_claim_when_pre_assigned_and_pending() -> None:
+    """Regression: CEO pre-assigns root task to main-pm with status=pending.
+
+    Old code skipped claim when task.assigned_to already matched the
+    caller, leaving status=pending and start() silently returning None
+    while the choreographer fabricated an OK envelope. Smoke 2026-05-03.
+    """
+    pm_id = uuid4()
+    task_id = uuid4()
+    pending_pre_assigned = MagicMock(
+        id=task_id,
+        status="pending",
+        plan=None,
+        assigned_to=pm_id,  # CEO pre-assigned to this PM
+        task_type="planning",
+        parent_task_id=None,
+        sequence=0,
+    )
+    claimed = MagicMock(
+        id=task_id,
+        status="claimed",
+        plan=None,
+        assigned_to=pm_id,
+        task_type="planning",
+    )
+    started = MagicMock(
+        id=task_id,
+        status="in_progress",
+        plan={"text": "x"},
+        assigned_to=pm_id,
+        task_type="planning",
+    )
+    task_svc = AsyncMock()
+    task_svc.get.return_value = pending_pre_assigned
+    task_svc.agent_for.return_value = MagicMock(role="main_pm", team="main_pm")
+    task_svc.list_in_progress_for_agent.return_value = []
+    task_svc.list_paused_for_agent.return_value = []
+    task_svc.claim.return_value = claimed
+    task_svc.set_plan.return_value = claimed
+    task_svc.start.return_value = started
+    deps = _make_deps(task=task_svc)
+    c = Choreographer(deps)
+
+    env = await c.i_will_plan(pm_id, task_id, plan="distribute to be-pm and fe-pm")
+
+    assert env.error is None
+    assert env.status == "in_progress"
+    # The bug: claim was skipped when assigned_to == pm_agent_id.
+    # The fix: claim is driven by status == pending, not assigned_to mismatch.
+    task_svc.claim.assert_awaited_once_with(task_id, pm_id)
+    task_svc.start.assert_awaited_once_with(task_id, pm_id)
+
+
+@pytest.mark.asyncio
+async def test_i_will_plan_surfaces_start_failure_instead_of_faking_ok() -> None:
+    """Regression: when start() returns None, the verb must reject — not lie.
+
+    Old code returned Envelope.ok with status='in_progress' even when
+    start failed silently. Agents then called delegate against a still-
+    pending task and got PARENT_NOT_CLAIMED in a loop. Smoke 2026-05-03.
+    """
+    pm_id = uuid4()
+    task_id = uuid4()
+    pending = MagicMock(
+        id=task_id,
+        status="pending",
+        plan=None,
+        assigned_to=None,
+        task_type="planning",
+        parent_task_id=None,
+        sequence=0,
+    )
+    claimed = MagicMock(
+        id=task_id,
+        status="claimed",
+        plan=None,
+        assigned_to=pm_id,
+        task_type="planning",
+    )
+    task_svc = AsyncMock()
+    task_svc.get.return_value = pending
+    task_svc.agent_for.return_value = MagicMock(role="main_pm", team="main_pm")
+    task_svc.list_in_progress_for_agent.return_value = []
+    task_svc.list_paused_for_agent.return_value = []
+    task_svc.claim.return_value = claimed
+    task_svc.set_plan.return_value = claimed
+    task_svc.start.return_value = None  # the bug: start fails silently
+    deps = _make_deps(task=task_svc)
+    c = Choreographer(deps)
+
+    env = await c.i_will_plan(pm_id, task_id, plan="x")
+    body = env.as_dict()
+    assert body["error"] == "invalid_state"
+    assert "start failed" in body["message"]
+
+
+@pytest.mark.asyncio
 async def test_i_will_plan_returns_tracing_gap_without_plan() -> None:
     pm_id = uuid4()
     task_id = uuid4()
