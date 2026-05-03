@@ -72,6 +72,23 @@ if echo "$low" | grep -qE '(^|[[:space:];&|])(curl|wget|http|https)[[:space:]][^
     exit 2
 fi
 
+# --- internal API calls -------------------------------------------------------
+# Agents must reach the orchestrator through their MCP manifest verbs, never
+# raw HTTP. This blocks `curl http://roboco-orchestrator:8000/...`,
+# `wget http://localhost:8000/...`, `http http://127.0.0.1/...` (HTTPie),
+# scheme-less forms like `curl roboco-orchestrator:8000/...`, and the
+# protocol-relative `//host/path` form.
+# KNOWN GAPS (out of scope here):
+#   - Variable expansion: `URL=http://orchestrator/x; curl $URL` — the guard
+#     sees `curl $URL`, not the expanded URL, so this slips through. The
+#     X-Agent-Role check (task 4) is the second gate.
+#   - Interpreter one-liners: `python -c "import urllib.request; ..."` — too
+#     deeply hidden to regex. Mitigated by the manifest-bound MCP surface.
+if echo "$low" | grep -qE '(^|[[:space:];&|])(curl|wget|http|https|httpie)[[:space:]][^|]*((http|https):)?//?(roboco-[a-z0-9_-]+|localhost|127\.0\.0\.1|0\.0\.0\.0)[:/]'; then
+    echo "Denied: internal API calls bypass the gateway. Use the MCP verbs (roboco-flow / roboco-do / roboco-git-readonly / roboco-optimal / roboco-docs) — they route through the orchestrator with the right auth and tracing." >&2
+    exit 2
+fi
+
 if echo "$low" | grep -qE '(^|[[:space:];&|])(env|printenv)([[:space:]]|$)' && ! echo "$low" | grep -qE '(^|[[:space:];&|])env[[:space:]]+-i'; then
     # allow `env VAR=val cmd` style prefixes (`env ` followed by `NAME=`)
     if ! echo "$low" | grep -qE '(^|[[:space:];&|])env[[:space:]]+[a-z_][a-z0-9_]*='; then
