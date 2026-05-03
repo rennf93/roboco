@@ -23,6 +23,7 @@ instead of incrementing.
 from __future__ import annotations
 
 from datetime import UTC, datetime
+from typing import Any, cast
 from unittest.mock import AsyncMock, patch
 from uuid import uuid4
 
@@ -34,7 +35,7 @@ from roboco.seeds.initial_data import AGENT_UUIDS
 def _new_orchestrator() -> AgentOrchestrator:
     """Bypass __init__ so tests don't need a full DI graph."""
     orch = AgentOrchestrator.__new__(AgentOrchestrator)
-    orch._pm_respawn_tracker = {}  # type: ignore[attr-defined]
+    cast("Any", orch)._pm_respawn_tracker = {}
     return orch
 
 

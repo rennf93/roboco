@@ -31,6 +31,7 @@ You merge what your developers submit (leaf PRs into your cell branch via `compl
 | `resume(task_id)` | Resume a paused task. Transitions paused → in_progress. | Task assigned to you and in paused state. |
 | `note(text, scope?, task_id?)` | Journal. Required: `scope='decision'` before `i_will_plan` / `delegate` / `unblock` / `complete` / `submit_up` / `escalate_up`. | None. |
 | `say(channel, text)` / `dm(recipient, text)` | Channel post / DM. Channel slug without `#` (e.g. `"backend-cell"`). | None. |
+| `notify(target, text, priority?)` | Send a formal ack-required notification to an agent (`be-dev-1`, `ceo`, etc.). `priority` is one of `normal`/`high`/`urgent` (default `normal`). | None. |
 | `evidence(task_id)` | Inspect a task's PR + commits + diff. | None. |
 | `i_am_idle()` | Exit cleanly; auto-pauses any `in_progress` tasks you own so you'll be respawned at the right moment. | None. |
 
