@@ -69,7 +69,7 @@ _CELL_PM_FLOW = (
     "resume",
     "i_am_idle",
 )
-_CELL_PM_DO = ("note", "say", "dm", "evidence")
+_CELL_PM_DO = ("note", "say", "dm", "notify", "evidence")
 
 _MAIN_PM_FLOW = (
     "give_me_work",
@@ -84,14 +84,14 @@ _MAIN_PM_FLOW = (
     "resume",
     "i_am_idle",
 )
-_MAIN_PM_DO = ("note", "say", "dm", "evidence")
+_MAIN_PM_DO = ("note", "say", "dm", "notify", "evidence")
 
 _BOARD_FLOW = (
     "triage",
     "escalate_to_ceo",
     "i_am_idle",
 )
-_BOARD_DO = ("note", "say", "dm", "evidence")
+_BOARD_DO = ("note", "say", "dm", "notify", "evidence")
 
 _AUDITOR_FLOW = (
     "triage",

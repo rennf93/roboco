@@ -12,6 +12,7 @@ from roboco.api.schemas.v2.do import (
     DmRequest,
     EvidenceRequest,
     NoteRequest,
+    NotifyRequest,
     SayRequest,
 )
 from roboco.services.gateway.content_actions import ContentActions
@@ -82,6 +83,23 @@ async def do_dm(
         text=body.text,
         task_id=body.task_id,
         skill=body.skill,
+    )
+    return envelope_to_response(env, request)
+
+
+@router.post("/notify")
+async def do_notify(
+    request: Request,
+    body: NotifyRequest,
+    x_agent_id: _AgentIdHeader,
+    actions: _ContentActionsDep,
+) -> dict:
+    env = await actions.notify(
+        agent_id=x_agent_id,
+        target=body.target,
+        text=body.text,
+        priority=body.priority,
+        task_id=body.task_id,
     )
     return envelope_to_response(env, request)
 

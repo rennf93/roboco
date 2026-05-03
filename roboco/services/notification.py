@@ -206,6 +206,40 @@ class NotificationService:
             )
         )
 
+    async def send_ack_notification(
+        self,
+        *,
+        from_agent: UUID | str,
+        to_agent: str,
+        body: str,
+        priority: NotificationPriority = NotificationPriority.NORMAL,
+        task_id: UUID | str | None = None,
+    ) -> None:
+        """Send a free-form ack-required notification (PM/Board only).
+
+        Used by the gateway `notify` content-tool. Distinguishes from
+        the typed `send_*_notification` helpers above, which carry
+        lifecycle semantics (blocker, qa-ready, etc.). Here the caller
+        supplies the body verbatim. ALERT type is used so consumers
+        treat it as a high-attention formal signal rather than
+        conflating with task-state-driven notifications. The subject
+        is derived from the first line of `body` (truncated), matching
+        how `say`/`dm` derive a subject from free text.
+        """
+        subject = body.split("\n", 1)[0][:200] or "Notification"
+        related_task_id = str(task_id) if task_id is not None else None
+        await self._create_notification(
+            CreateNotificationParams(
+                notification_type=NotificationType.ALERT,
+                priority=priority,
+                from_agent=str(from_agent),
+                to_agents=[to_agent],
+                subject=subject,
+                body=body,
+                related_task_id=related_task_id,
+            )
+        )
+
     async def send_a2a_notification(
         self,
         task_id: str,

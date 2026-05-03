@@ -3,8 +3,9 @@
 Forwards to /api/v2/do/* on the orchestrator. Tools are role-scoped at *spawn*
 time: the orchestrator writes ``do_tools`` into the per-agent manifest and we
 register only those names on this server. The orchestrator's API is not
-role-scoped here (any allowed role can call commit/note/say/dm/evidence), so
-the path is fixed (no role segment).
+role-scoped here (any allowed role can call commit/note/say/dm/notify/evidence),
+so the path is fixed (no role segment). Per-tool role gates (e.g., notify
+restricting to PMs/Board) live inside the gateway verbs.
 
 If the manifest is missing or unreadable (local test runs without the bind
 mount) the full registry is registered as a failsafe and a warning is logged.
@@ -93,6 +94,29 @@ def dm(
     )
 
 
+def notify(
+    target: str,
+    text: str,
+    priority: str = "normal",
+    task_id: str | None = None,
+) -> dict[str, Any]:
+    """Send a formal ack-required notification (PMs and Board only).
+
+    Distinct from say (channel post) and dm (informal A2A): notify creates
+    a notification the recipient must acknowledge. priority in
+    normal|high|urgent. task_id auto-injected from active task when omitted.
+    """
+    return _post(
+        "/api/v2/do/notify",
+        {
+            "target": target,
+            "text": text,
+            "priority": priority,
+            "task_id": task_id,
+        },
+    )
+
+
 def evidence(task_id: str) -> dict[str, Any]:
     """Inspect a task's PR diff, commits, files. Fetches dev branch into workspace."""
     return _post("/api/v2/do/evidence", {"task_id": task_id})
@@ -108,6 +132,7 @@ _TOOLS: dict[str, Any] = {
     "note": note,
     "say": say,
     "dm": dm,
+    "notify": notify,
     "evidence": evidence,
 }
 

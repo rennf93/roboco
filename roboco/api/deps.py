@@ -29,6 +29,7 @@ from roboco.services.gateway.evidence_repo import EvidenceRepo
 from roboco.services.git import GitService
 from roboco.services.journal import JournalService
 from roboco.services.messaging import MessagingService
+from roboco.services.notification import NotificationService
 from roboco.services.permissions import AgentContext, PermissionService
 from roboco.services.repositories import resolve_agent_identity, resolve_agent_uuid
 from roboco.services.task import TaskService
@@ -513,7 +514,7 @@ async def get_choreographer(
 async def get_content_actions(
     db_session: DbSession,
 ) -> ContentActions:
-    """Build a ContentActions with all 6 service dependencies wired up."""
+    """Build a ContentActions with all 7 service dependencies wired up."""
     return ContentActions(
         ContentActionsDeps(
             task=TaskService(db_session),
@@ -522,6 +523,7 @@ async def get_content_actions(
             a2a=A2AService(db_session),
             journal=JournalService(db_session),
             workspace=WorkspaceService(db_session),
+            notifications=NotificationService(),
         )
     )
 
