@@ -3,10 +3,10 @@
 from typing import Annotated
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, Header
+from fastapi import APIRouter, Depends, Header, Request
 
 from roboco.api.deps import get_choreographer
-from roboco.api.routes.v2._role_dep import require_dev
+from roboco.api.routes.v2._role_dep import envelope_to_response, require_dev
 from roboco.api.schemas.v2.flow import (
     GiveMeWorkRequest,
     IAmBlockedRequest,
@@ -33,89 +33,98 @@ _ChoreographerDep = Annotated[Choreographer, Depends(get_choreographer)]
 
 @router.post("/give_me_work")
 async def give_me_work(
+    request: Request,
     _body: GiveMeWorkRequest,
     x_agent_id: _AgentIdHeader,
     choreographer: _ChoreographerDep,
 ) -> dict:
     env = await choreographer.give_me_work(x_agent_id)
-    return env.as_dict()
+    return envelope_to_response(env, request)
 
 
 @router.post("/i_will_work_on")
 async def i_will_work_on(
+    request: Request,
     body: IWillWorkOnRequest,
     x_agent_id: _AgentIdHeader,
     choreographer: _ChoreographerDep,
 ) -> dict:
     env = await choreographer.i_will_work_on(x_agent_id, body.task_id, body.plan)
-    return env.as_dict()
+    return envelope_to_response(env, request)
 
 
 @router.post("/i_have_committed")
 async def i_have_committed(
+    request: Request,
     body: IHaveCommittedRequest,
     x_agent_id: _AgentIdHeader,
     choreographer: _ChoreographerDep,
 ) -> dict:
     env = await choreographer.i_have_committed(x_agent_id, body.message)
-    return env.as_dict()
+    return envelope_to_response(env, request)
 
 
 @router.post("/submit_for_qa")
 async def submit_for_qa(
+    request: Request,
     body: SubmitForQaRequest,
     x_agent_id: _AgentIdHeader,
     choreographer: _ChoreographerDep,
 ) -> dict:
     env = await choreographer.submit_for_qa(x_agent_id, body.task_id)
-    return env.as_dict()
+    return envelope_to_response(env, request)
 
 
 @router.post("/i_am_done")
 async def i_am_done(
+    request: Request,
     body: IAmDoneRequest,
     x_agent_id: _AgentIdHeader,
     choreographer: _ChoreographerDep,
 ) -> dict:
     env = await choreographer.i_am_done(x_agent_id, body.task_id, body.notes)
-    return env.as_dict()
+    return envelope_to_response(env, request)
 
 
 @router.post("/i_am_blocked")
 async def i_am_blocked(
+    request: Request,
     body: IAmBlockedRequest,
     x_agent_id: _AgentIdHeader,
     choreographer: _ChoreographerDep,
 ) -> dict:
     env = await choreographer.i_am_blocked(x_agent_id, body.task_id, body.reason)
-    return env.as_dict()
+    return envelope_to_response(env, request)
 
 
 @router.post("/unclaim")
 async def unclaim(
+    request: Request,
     body: UnclaimRequest,
     x_agent_id: _AgentIdHeader,
     choreographer: _ChoreographerDep,
 ) -> dict:
     env = await choreographer.unclaim(x_agent_id, body.task_id)
-    return env.as_dict()
+    return envelope_to_response(env, request)
 
 
 @router.post("/resume")
 async def resume(
+    request: Request,
     body: ResumeRequest,
     x_agent_id: _AgentIdHeader,
     choreographer: _ChoreographerDep,
 ) -> dict:
     env = await choreographer.resume(x_agent_id, body.task_id)
-    return env.as_dict()
+    return envelope_to_response(env, request)
 
 
 @router.post("/i_am_idle")
 async def i_am_idle(
+    request: Request,
     _body: IAmIdleRequest,
     x_agent_id: _AgentIdHeader,
     choreographer: _ChoreographerDep,
 ) -> dict:
     env = await choreographer.i_am_idle(x_agent_id)
-    return env.as_dict()
+    return envelope_to_response(env, request)

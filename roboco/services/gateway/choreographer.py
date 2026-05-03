@@ -146,20 +146,29 @@ class Choreographer:
         return is the only fast path. Audit writes are best-effort —
         failures must NEVER block the verb (the agent's response is the
         contract; the audit row is observability-only).
+
+        Also stashes ``correlation_id`` from the structlog contextvars
+        (bound by ``CorrelationIdMiddleware`` for the inbound request)
+        into the audit row's ``details`` JSONB so post-mortem joins
+        across logs and audit trail are possible.
         """
         if env.error is None:
             return env
+        details: dict[str, Any] = {
+            "verb": verb,
+            "reason": env.error,
+            "message": env.message,
+            "missing": env.missing or [],
+        }
+        cid = structlog.contextvars.get_contextvars().get("correlation_id")
+        if cid is not None:
+            details["correlation_id"] = cid
         try:
             await self.audit.log_event(
                 event_type="gateway.rejected",
                 agent_id=agent_id,
                 task_id=task_id,
-                details={
-                    "verb": verb,
-                    "reason": env.error,
-                    "message": env.message,
-                    "missing": env.missing or [],
-                },
+                details=details,
             )
         except Exception as exc:
             # Audit is best-effort: it must NEVER block the verb. The agent's
