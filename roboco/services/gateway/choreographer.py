@@ -340,6 +340,67 @@ class Choreographer:
             context_briefing=await self._briefing_for(agent_id, t.id),
         )
 
+    async def submit_for_qa(self, agent_id: UUID, task_id: UUID) -> Envelope:
+        """Push the dev's branch and open a PR. Does NOT submit for QA itself —
+        the dev calls ``i_am_done`` after this verb returns success.
+
+        Gate E made ``i_am_done`` strict: it requires ``pr_number`` set. The
+        catch-up shortcut lives off the dev manifest, so before this verb
+        existed devs had no escape from the NO_PR rejection. ``submit_for_qa``
+        is the explicit push + open-PR step, leaving ``i_am_done`` to do the
+        strict submit.
+
+        Pre-flight: caller must own the task, have committed at least once,
+        and not already have a PR open. If a PR is already open, this verb
+        is idempotent — it points the dev at ``i_am_done``.
+        """
+        t = await self.task.get(task_id)
+        if t is None:
+            return Envelope.not_found(message=f"task {task_id} not found")
+        briefing = await self._briefing_for(agent_id, task_id)
+        if t.assigned_to != agent_id:
+            return Envelope.not_authorized(
+                message=f"task {task_id} is not assigned to you",
+                remediate="call give_me_work() to find your work",
+                context_briefing=briefing,
+            )
+        if not t.commits:
+            return Envelope.invalid_state(
+                message="no commits on this task yet",
+                remediate=(
+                    "commit at least one change before submitting for QA — "
+                    "call commit(message='<subject>')"
+                ),
+                context_briefing=briefing,
+            )
+        if t.pr_number is not None:
+            return Envelope.ok(
+                status=str(t.status),
+                task_id=str(task_id),
+                next=(
+                    f"PR #{t.pr_number} already open; call "
+                    f"i_am_done(task_id, notes='...') when self-verified"
+                ),
+                context_briefing=briefing,
+            )
+
+        await self._touch(task_id)
+        await self.git.push_branch(t.branch_name)
+        parent = parent_branch_for(t.branch_name)
+        pr = await self.git.create_pr(
+            t.branch_name, parent=parent, is_root_pr=False
+        )
+
+        return Envelope.ok(
+            status=str(t.status),
+            task_id=str(task_id),
+            next=(
+                f"PR #{pr['pr_number']} opened; call "
+                f"i_am_done(task_id, notes='...') when self-verified"
+            ),
+            context_briefing=briefing,
+        )
+
     async def i_am_done(self, agent_id: UUID, task_id: UUID, notes: str) -> Envelope:
         """Submit work for QA — strict path.
 

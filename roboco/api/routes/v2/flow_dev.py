@@ -13,6 +13,7 @@ from roboco.api.schemas.v2.flow import (
     IAmIdleRequest,
     IHaveCommittedRequest,
     IWillWorkOnRequest,
+    SubmitForQaRequest,
 )
 from roboco.services.gateway.choreographer import Choreographer
 
@@ -50,6 +51,16 @@ async def i_have_committed(
     choreographer: _ChoreographerDep,
 ) -> dict:
     env = await choreographer.i_have_committed(x_agent_id, body.message)
+    return env.as_dict()
+
+
+@router.post("/submit_for_qa")
+async def submit_for_qa(
+    body: SubmitForQaRequest,
+    x_agent_id: _AgentIdHeader,
+    choreographer: _ChoreographerDep,
+) -> dict:
+    env = await choreographer.submit_for_qa(x_agent_id, body.task_id)
     return env.as_dict()
 
 

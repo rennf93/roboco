@@ -73,8 +73,13 @@ def i_have_committed(message: str) -> dict[str, Any]:
     return _post(_role_path("i_have_committed"), {"message": message})
 
 
+def submit_for_qa(task_id: str) -> dict[str, Any]:
+    """Push your branch and open a PR. Run after your last commit, before i_am_done."""
+    return _post(_role_path("submit_for_qa"), {"task_id": task_id})
+
+
 def i_am_done(task_id: str, notes: str = "") -> dict[str, Any]:
-    """Submit work for QA. Runs verify/push/PR/submit-qa as needed."""
+    """Submit for QA. Strict — PR must be open (call submit_for_qa first)."""
     return _post(_role_path("i_am_done"), {"task_id": task_id, "notes": notes})
 
 
@@ -205,6 +210,7 @@ _TOOLS: dict[str, Any] = {
     "give_me_work": give_me_work,
     "i_will_work_on": i_will_work_on,
     "i_have_committed": i_have_committed,
+    "submit_for_qa": submit_for_qa,
     "i_am_done": i_am_done,
     "i_am_blocked": i_am_blocked,
     "i_am_idle": i_am_idle,

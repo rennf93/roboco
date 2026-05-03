@@ -26,6 +26,7 @@ _DEV_FLOW = (
     "give_me_work",
     "i_will_work_on",
     "i_have_committed",
+    "submit_for_qa",
     "i_am_done",
     "i_am_blocked",
     "i_am_idle",

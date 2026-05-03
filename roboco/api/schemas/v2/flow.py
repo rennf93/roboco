@@ -18,6 +18,10 @@ class IHaveCommittedRequest(BaseModel):
     message: str = Field(..., min_length=1)
 
 
+class SubmitForQaRequest(BaseModel):
+    task_id: UUID
+
+
 class IAmDoneRequest(BaseModel):
     task_id: UUID
     notes: str = ""
