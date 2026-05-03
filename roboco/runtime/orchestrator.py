@@ -3924,6 +3924,48 @@ Start now: evidence(task_id="{task_id}")
             in ("awaiting_pm_review", "awaiting_ceo_approval", "completed")
         )
 
+    @staticmethod
+    def _coerce_heartbeat(value: Any) -> datetime | None:
+        """Normalize ``last_heartbeat_at`` to an aware UTC datetime.
+
+        The dispatcher reads tasks via the HTTP API, which serializes
+        datetimes as ISO-8601 strings; direct service callers (and tests)
+        may pass ``datetime`` objects. Anything else is treated as
+        absent so a malformed value can't accidentally arm the gate.
+        """
+        if value is None:
+            return None
+        if isinstance(value, datetime):
+            return value if value.tzinfo else value.replace(tzinfo=UTC)
+        if isinstance(value, str):
+            try:
+                parsed = datetime.fromisoformat(value)
+            except ValueError:
+                return None
+            return parsed if parsed.tzinfo else parsed.replace(tzinfo=UTC)
+        return None
+
+    def _is_recently_paused(self, task: dict[str, Any]) -> bool:
+        """A paused task whose heartbeat is fresher than the stale cutoff.
+
+        Closes the ``i_am_idle`` vs closure-respawn race (audit C12):
+        ``i_am_idle`` auto-pauses in-flight tasks and then sets the agent
+        IDLE. If the dispatcher ticks between those two writes it sees a
+        paused parent and would spawn the closure PM against a session
+        that is mid-shutdown. A fresh ``last_heartbeat_at`` (newer than
+        ``settings.claim_stale_seconds``) is the signal that the agent
+        was alive moments ago and a respawn now would race the existing
+        session. Genuinely-stale paused tasks (or tasks with no heartbeat
+        recorded) fall through and follow the regular closure path.
+        """
+        if task.get("status") != "paused":
+            return False
+        last_hb = self._coerce_heartbeat(task.get("last_heartbeat_at"))
+        if last_hb is None:
+            return False
+        cutoff = datetime.now(UTC) - timedelta(seconds=self._claim_heartbeat_ttl)
+        return last_hb > cutoff
+
     def _closure_pm_for_team(self, team: str | None) -> str:
         """Pick the PM that owns closure for a given team."""
         if team in ("backend", "frontend", "ux_ui"):
@@ -3936,6 +3978,14 @@ Start now: evidence(task_id="{task_id}")
         """If this parent task is ready for closure, spawn its PM."""
         task_id = task.get("id")
         if not task_id:
+            return
+
+        if self._is_recently_paused(task):
+            logger.debug(
+                "Skipping closure spawn for recently-paused parent",
+                task_id=task_id,
+                last_heartbeat_at=task.get("last_heartbeat_at"),
+            )
             return
 
         descendants = await self._fetch_all_descendants(client, task_id)
