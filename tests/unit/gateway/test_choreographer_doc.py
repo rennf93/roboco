@@ -57,6 +57,9 @@ async def test_claim_doc_task_returns_evidence() -> None:
     after = MagicMock(**{**t.__dict__, "assigned_to": doc_id})
     task_svc = AsyncMock()
     task_svc.get.return_value = t
+    task_svc.agent_for.return_value = MagicMock(role="documenter", team="backend")
+    task_svc.list_in_progress_for_agent.return_value = []
+    task_svc.list_paused_for_agent.return_value = []
     task_svc.doc_claim.return_value = after
     work_svc = AsyncMock()
     work_svc.files_changed.return_value = ["README.md"]

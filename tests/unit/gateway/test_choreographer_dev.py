@@ -89,12 +89,24 @@ async def test_give_me_work_returns_idle_when_no_work() -> None:
 async def test_i_will_work_on_pending_with_plan() -> None:
     agent_id = uuid4()
     task_id = uuid4()
-    pending_task = MagicMock(id=task_id, status="pending", plan=None, assigned_to=None)
+    pending_task = MagicMock(
+        id=task_id,
+        status="pending",
+        plan=None,
+        assigned_to=None,
+        parent_task_id=None,
+        sequence=0,
+        task_type="code",
+    )
     in_progress_task = MagicMock(
         id=task_id, status="in_progress", plan={"text": "do x"}, assigned_to=agent_id
     )
     task_svc = AsyncMock()
     task_svc.get.return_value = pending_task
+    task_svc.agent_for.return_value = MagicMock(role="developer", team="backend")
+    task_svc.list_in_progress_for_agent.return_value = []
+    task_svc.list_paused_for_agent.return_value = []
+    task_svc.get_subtasks.return_value = []
     task_svc.claim.return_value = MagicMock(
         id=task_id, status="claimed", plan=None, assigned_to=agent_id
     )
@@ -123,9 +135,16 @@ async def test_i_will_work_on_pending_no_plan_returns_tracing_gap() -> None:
         plan=None,
         assigned_to=None,
         description="task description",
+        parent_task_id=None,
+        sequence=0,
+        task_type="code",
     )
     task_svc = AsyncMock()
     task_svc.get.return_value = pending_task
+    task_svc.agent_for.return_value = MagicMock(role="developer", team="backend")
+    task_svc.list_in_progress_for_agent.return_value = []
+    task_svc.list_paused_for_agent.return_value = []
+    task_svc.get_subtasks.return_value = []
     task_svc.claim.return_value = MagicMock(
         id=task_id, status="claimed", plan=None, assigned_to=agent_id
     )

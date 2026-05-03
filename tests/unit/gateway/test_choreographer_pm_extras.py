@@ -53,14 +53,34 @@ def _make_deps(**overrides: Any) -> ChoreographerDeps:
 async def test_i_will_plan_claims_starts_and_sets_plan() -> None:
     pm_id = uuid4()
     task_id = uuid4()
-    pending = MagicMock(id=task_id, status="pending", plan=None, assigned_to=None)
-    claimed = MagicMock(id=task_id, status="claimed", plan=None, assigned_to=pm_id)
+    pending = MagicMock(
+        id=task_id,
+        status="pending",
+        plan=None,
+        assigned_to=None,
+        task_type="planning",
+        parent_task_id=None,
+        sequence=0,
+    )
+    claimed = MagicMock(
+        id=task_id,
+        status="claimed",
+        plan=None,
+        assigned_to=pm_id,
+        task_type="planning",
+    )
     started = MagicMock(
-        id=task_id, status="in_progress", plan={"text": "x"}, assigned_to=pm_id
+        id=task_id,
+        status="in_progress",
+        plan={"text": "x"},
+        assigned_to=pm_id,
+        task_type="planning",
     )
     task_svc = AsyncMock()
     task_svc.get.return_value = pending
     task_svc.agent_for.return_value = MagicMock(role="cell_pm", team="backend")
+    task_svc.list_in_progress_for_agent.return_value = []
+    task_svc.list_paused_for_agent.return_value = []
     task_svc.claim.return_value = claimed
     task_svc.set_plan.return_value = claimed
     task_svc.start.return_value = started

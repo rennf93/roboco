@@ -16,6 +16,13 @@ from typing import Any
 from uuid import UUID
 
 from roboco.config import settings
+from roboco.services.gateway.claim_guards import (
+    already_active_guard,
+    paused_tasks_guard,
+    pm_cannot_execute_code_guard,
+    role_typed_claim_guard,
+    sibling_sequence_guard,
+)
 from roboco.services.gateway.envelope import Envelope
 from roboco.services.gateway.evidence_builder import (
     BriefingInputs,
@@ -162,6 +169,64 @@ class Choreographer:
         )
         return build_context_briefing(inputs)
 
+    async def _run_claim_guards(
+        self,
+        *,
+        agent_id: UUID,
+        task: Any,
+        skip_role_typed: bool = False,
+        skip_pm_code: bool = False,
+        skip_sequence: bool = False,
+    ) -> Envelope | None:
+        """Run claim-time guards (Gate Set A). Returns rejection or None.
+
+        Pre-gateway location: _helpers.py:124-204 + claim.py:121-180.
+
+        Optional skip flags isolate guards that don't apply to a given verb:
+        - skip_role_typed: i_will_plan/claim_review/claim_doc_task have their
+          own role checks; only i_will_work_on uses role_typed_claim_guard.
+        - skip_pm_code: claim_review/claim_doc_task call sites cannot be PMs
+          to begin with; pm_cannot_execute_code is meaningless there.
+        - skip_sequence: some verbs (resumption of an already-claimed task)
+          do not need to re-validate sibling order.
+        """
+        agent = await self.task.agent_for(agent_id)
+        role = agent.role if agent is not None else "developer"
+        task_type = str(getattr(task, "task_type", "code") or "code")
+
+        if not skip_pm_code and (
+            guard := pm_cannot_execute_code_guard(role, task_type)
+        ):
+            return guard
+        if not skip_role_typed and (
+            guard := role_typed_claim_guard(role, task_type)
+        ):
+            return guard
+        in_progress = await self.task.list_in_progress_for_agent(agent_id)
+        if guard := already_active_guard(in_progress, task.id):
+            return guard
+        paused = await self.task.list_paused_for_agent(agent_id)
+        if guard := paused_tasks_guard(paused):
+            return guard
+        if not skip_sequence:
+            siblings = await self._fetch_siblings(task)
+            if guard := sibling_sequence_guard(task, siblings):
+                return guard
+        return None
+
+    async def _fetch_siblings(self, task: Any) -> list[Any]:
+        """Fetch sibling tasks for the sequence-order guard.
+
+        Returns ``[]`` when the task has no parent (root task) so the
+        guard short-circuits. Otherwise returns the parent's subtasks via
+        ``TaskService.get_subtasks``.
+        """
+        parent_id = getattr(task, "parent_task_id", None)
+        if parent_id is None:
+            return []
+        siblings: list[Any] = await self.task.get_subtasks(parent_id)
+        return siblings
+
     async def i_will_work_on(
         self, agent_id: UUID, task_id: UUID, plan: str | None = None
     ) -> Envelope:
@@ -173,10 +238,15 @@ class Choreographer:
         briefing = await self._briefing_for(agent_id, task_id)
 
         if status == "needs_revision":
+            # Resumption after QA rejection: agent already owned the task,
+            # role-typed claim already passed at original claim time.
             if t.assigned_to != agent_id:
                 t = await self.task.claim(agent_id, task_id)
             t = await self.task.start(agent_id, task_id)
         elif status == "pending":
+            # Fresh claim — run all claim-time gates BEFORE mutating state.
+            if guard := await self._run_claim_guards(agent_id=agent_id, task=t):
+                return self._with_briefing(guard, briefing)
             if t.assigned_to is None or t.assigned_to != agent_id:
                 t = await self.task.claim(agent_id, task_id)
             if not t.plan and not plan:
@@ -193,6 +263,13 @@ class Choreographer:
                 t = await self.task.set_plan(task_id, plan)
             t = await self.task.start(agent_id, task_id)
         elif status == "claimed" and t.assigned_to == agent_id:
+            # Resumption: skip sibling-sequence (already passed at claim).
+            # Still enforce already_active/paused so concurrent claims fail.
+            guard = await self._run_claim_guards(
+                agent_id=agent_id, task=t, skip_sequence=True
+            )
+            if guard:
+                return self._with_briefing(guard, briefing)
             t = await self.task.start(agent_id, task_id)
         else:
             return Envelope.invalid_state(
@@ -210,6 +287,12 @@ class Choreographer:
             ),
             context_briefing=briefing,
         )
+
+    @staticmethod
+    def _with_briefing(env: Envelope, briefing: dict[str, Any]) -> Envelope:
+        """Attach a context_briefing to an Envelope (mutate-and-return helper)."""
+        env.context_briefing = briefing
+        return env
 
     async def i_have_committed(self, agent_id: UUID, message: str) -> Envelope:
         """Record that the dev made a commit; auto-creates progress entry."""
@@ -453,6 +536,23 @@ class Choreographer:
                 remediate="call give_me_work() to find an actionable QA task",
                 context_briefing=await self._briefing_for(qa_agent_id, task_id),
             )
+
+        # Gate Set A: ALREADY_ACTIVE / PAUSED_TASKS_EXIST guard QA from
+        # juggling reviews while their previous in_progress task is open.
+        # role_typed/PM-code skipped: QA verb only ever fires for QA role.
+        # sequence skipped: QA reviews are siblings on a different axis.
+        guard = await self._run_claim_guards(
+            agent_id=qa_agent_id,
+            task=t,
+            skip_role_typed=True,
+            skip_pm_code=True,
+            skip_sequence=True,
+        )
+        if guard:
+            return self._with_briefing(
+                guard, await self._briefing_for(qa_agent_id, task_id)
+            )
+
         t = await self.task.qa_claim(qa_agent_id, task_id)
 
         # Auto-mark evidence as inspected — we surface it inline in this response
@@ -636,6 +736,22 @@ class Choreographer:
                 remediate="call give_me_work() to find an actionable doc task",
                 context_briefing=await self._briefing_for(doc_agent_id, task_id),
             )
+
+        # Gate Set A: ALREADY_ACTIVE / PAUSED_TASKS_EXIST. The doc verb only
+        # ever fires for documenter role; PM-code and role-typed claim guards
+        # are skipped. Sequence guard is also irrelevant here.
+        guard = await self._run_claim_guards(
+            agent_id=doc_agent_id,
+            task=t,
+            skip_role_typed=True,
+            skip_pm_code=True,
+            skip_sequence=True,
+        )
+        if guard:
+            return self._with_briefing(
+                guard, await self._briefing_for(doc_agent_id, task_id)
+            )
+
         t = await self.task.doc_claim(doc_agent_id, task_id)
         files_changed: list[str] = []
         if t.work_session_id:
@@ -727,18 +843,10 @@ class Choreographer:
             context_briefing=await self._briefing_for(doc_agent_id, task_id),
         )
 
-    async def i_will_plan(
-        self, pm_agent_id: UUID, task_id: UUID, plan: str
-    ) -> Envelope:
-        """PM mirror of i_will_work_on for parent tasks.
-
-        Transitions a pending task owned (or claimable by) this PM into
-        in_progress with the supplied plan. Required before a PM can call
-        ``delegate`` to spawn subtasks.
-        """
-        t = await self.task.get(task_id)
-        if t is None:
-            return Envelope.not_found(message=f"task {task_id} not found")
+    async def _i_will_plan_preflight(
+        self, pm_agent_id: UUID, task_id: UUID, t: Any, plan: str
+    ) -> Envelope | None:
+        """Run i_will_plan's role / status / plan / claim guards. None = pass."""
         agent = await self.task.agent_for(pm_agent_id)
         if agent is None or agent.role not in ("cell_pm", "main_pm"):
             return Envelope.not_authorized(
@@ -761,6 +869,34 @@ class Choreographer:
                 ),
                 context_briefing=await self._briefing_for(pm_agent_id, task_id),
             )
+        # Gate Set A: PM_CANNOT_EXECUTE_CODE — cell_pm/main_pm can only plan
+        # non-code tasks. role_typed_claim_guard is skipped here because
+        # i_will_plan only services PM roles, which fall into the PM-code
+        # branch. ALREADY_ACTIVE/PAUSED still apply.
+        guard = await self._run_claim_guards(
+            agent_id=pm_agent_id, task=t, skip_role_typed=True
+        )
+        if guard:
+            return self._with_briefing(
+                guard, await self._briefing_for(pm_agent_id, task_id)
+            )
+        return None
+
+    async def i_will_plan(
+        self, pm_agent_id: UUID, task_id: UUID, plan: str
+    ) -> Envelope:
+        """PM mirror of i_will_work_on for parent tasks.
+
+        Transitions a pending task owned (or claimable by) this PM into
+        in_progress with the supplied plan. Required before a PM can call
+        ``delegate`` to spawn subtasks.
+        """
+        t = await self.task.get(task_id)
+        if t is None:
+            return Envelope.not_found(message=f"task {task_id} not found")
+        rejection = await self._i_will_plan_preflight(pm_agent_id, task_id, t, plan)
+        if rejection is not None:
+            return rejection
 
         if t.assigned_to is None or t.assigned_to != pm_agent_id:
             t = await self.task.claim(pm_agent_id, task_id)
