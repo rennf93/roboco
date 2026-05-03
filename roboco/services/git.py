@@ -79,6 +79,10 @@ _REV_LIST_PARTS = 2
 
 # GitHub REST API status codes
 _GH_UNPROCESSABLE = 422
+# 409 means the PR can't be merged in its current state — typically because
+# a concurrent sibling-subtask merge updated the target branch and our local
+# refs are stale. `pr_merge` re-syncs and retries exactly once on this code.
+_HTTP_CONFLICT = 409
 
 
 class GitService(BaseService):
@@ -1710,11 +1714,44 @@ class GitService(BaseService):
         await self._record_pr_atomically(UUID(str(task.id)), pr_number, pr_url)
         return {"pr_number": pr_number, "pr_url": pr_url, "is_root_pr": is_root_pr}
 
+    async def _lock_parent_task_for_merge(self, parent_task_id: UUID | None) -> None:
+        """SELECT FOR UPDATE on the parent task row, if any.
+
+        Two PMs completing different subtasks of the same parent could
+        race on the gh API merge call. Holding a row-level lock on the
+        parent task serializes those merges at the DB layer — the second
+        PM's transaction blocks until the first commits, by which time
+        the first PR is already merged. The lock is auto-released when
+        the surrounding transaction commits or rolls back.
+
+        Root tasks (no parent) skip the lock — there's nothing to
+        contend on at parent level, and master-bound merges are
+        serialized by GitHub's PR-state machine alone.
+        """
+        if parent_task_id is None:
+            return
+        from sqlalchemy import select
+
+        from roboco.db.tables import TaskTable as _TaskTable
+
+        await self.session.execute(
+            select(_TaskTable)
+            .where(_TaskTable.id == parent_task_id)
+            .with_for_update(of=_TaskTable)
+        )
+
     async def pr_merge(self, pr_number: int, *, target: str) -> dict[str, Any]:
         """Merge PR `pr_number` into `target`.
 
         Returns: ``{"merge_commit_sha": str | None}``. Looks up the
         task/project that owns the PR to resolve workspace + token.
+
+        Concurrency: takes a row-level lock on the parent task before
+        invoking the GitHub merge API so that two PMs completing
+        sibling subtasks of the same parent are serialized. On a 409
+        merge conflict (typical race symptom — GitHub serializes via
+        PR-state churn) the local target branch is re-pulled and the
+        merge is retried exactly once before giving up with `GitError`.
         """
         from sqlalchemy import select
 
@@ -1738,7 +1775,21 @@ class GitService(BaseService):
         git_token = await self._get_project_token_or_raise(project.slug)
         owner, repo = self._parse_github_remote(workspace)
 
+        # Serialize merges into the same parent branch — see helper docstring.
+        parent_id = UUID(str(task.parent_task_id)) if task.parent_task_id else None
+        await self._lock_parent_task_for_merge(parent_id)
+
         resp = await self._call_merge_api(owner, repo, pr_number, git_token, "squash")
+        if resp.status_code == _HTTP_CONFLICT:
+            # Race symptom — another PM merged a sibling subtask first
+            # and our local target ref is stale. Refresh and retry once;
+            # if the second attempt also conflicts, it's a real conflict
+            # (not just a race) and the choreographer surfaces it as
+            # `invalid_state` so the PM can resolve it manually.
+            await self._sync_target_branch(workspace, target, git_token)
+            resp = await self._call_merge_api(
+                owner, repo, pr_number, git_token, "squash"
+            )
         if not resp.is_success:
             raise GitError(
                 f"GitHub API refused PR merge ({resp.status_code}): {resp.text[:200]}",
