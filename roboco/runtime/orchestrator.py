@@ -3390,11 +3390,16 @@ Gateway verbs (already loaded):
 - i_will_plan(task_id="{task_id}", plan="<your detailed plan as a string>")
     claim + record plan + start your own root task
 - delegate(parent_task_id="{task_id}", title=..., description=...,
-           assigned_to="<be-pm|fe-pm|ux-pm>", team="backend|frontend|ux_ui",
-           task_type="code|documentation|...", acceptance_criteria=[...],
-           estimated_complexity="low|medium|high")
+           assigned_to=<one of "be-pm" / "fe-pm" / "ux-pm">,
+           team=<one of "backend" / "frontend" / "ux_ui">,
+           task_type=<one of "code" / "documentation" / "research" /
+                            "planning" / "design" / "administrative">,
+           acceptance_criteria=[...],
+           estimated_complexity=<one of "low" / "medium" / "high">)
     creates a subtask under your root and assigns it to a Cell PM.
-    Repeat once per cell that needs work.
+    Use the EXACT enum strings above — invented values like
+    "development" or "small" are rejected by the gateway. Repeat
+    once per cell that needs work.
 - unblock(task_id, restore=True)
 - complete(task_id="{task_id}", notes=...)  for root awaiting_pm_review
 - escalate_to_ceo(task_id="{task_id}", reason=...) for root tasks
@@ -3468,9 +3473,15 @@ Gateway verbs (already loaded):
 - i_will_plan(task_id="{task_id}", plan="<detailed plan as a string>")
     claim + record plan + start your own cell-PM task
 - delegate(parent_task_id="{task_id}", title=..., description=...,
-           assigned_to="<dev-slug>", team="{team}", task_type="code|...",
-           acceptance_criteria=[...], estimated_complexity="low|medium|high")
+           assigned_to=<dev slug in your cell, e.g. "be-dev-1">,
+           team="{team}",
+           task_type=<one of "code" / "documentation" / "research" /
+                            "planning" / "design" / "administrative">,
+           acceptance_criteria=[...],
+           estimated_complexity=<one of "low" / "medium" / "high">)
     creates a subtask under your cell-PM task and assigns it to a developer.
+    Use the EXACT enum strings above — invented values like
+    "development" or "small" are rejected by the gateway.
     Repeat 2 to 5 times for focused subtasks.
 - unblock(task_id, restore=True)
     when a dev signals i_am_blocked
