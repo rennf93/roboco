@@ -3,6 +3,13 @@
 Every successful verb returns Envelope.ok(...). Every error returns one of
 Envelope.tracing_gap / invalid_state / not_authorized / not_found. The
 shape is the single contract that MCP servers convert into JSON for agents.
+
+``correlation_id`` is intentionally NOT a constructor argument — it is a
+transport-layer concern stamped post-construction by the route handler
+from ``request.state.correlation_id`` (see
+``api.routes.v2._role_dep.envelope_to_response``). Verb logic must never
+thread it through; doing so would mix request lifecycle into business
+logic.
 """
 
 from __future__ import annotations
@@ -26,6 +33,11 @@ class Envelope:
     message: str | None = None
     remediate: str | None = None
     missing: list[str] | None = None
+    # Stamped post-construction by the route layer from
+    # ``request.state.correlation_id`` (set by ``CorrelationIdMiddleware``).
+    # Carried back to the agent so the same id flows MCP -> API -> agent
+    # and ops can join logs across the full hop.
+    correlation_id: str | None = None
 
     @classmethod
     def ok(
@@ -103,6 +115,7 @@ class Envelope:
             "evidence": self.evidence or {},
             "context_briefing": self.context_briefing,
             "error": self.error,
+            "correlation_id": self.correlation_id,
         }
         if self.error is not None:
             out["message"] = self.message

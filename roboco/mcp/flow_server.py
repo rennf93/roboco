@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import json
 import os
+import uuid
 from pathlib import Path
 from typing import Any
 
@@ -30,11 +31,26 @@ ORCHESTRATOR_URL = os.environ.get(
 AGENT_ID = os.environ["ROBOCO_AGENT_ID"]
 AGENT_ROLE = os.environ["ROBOCO_AGENT_ROLE"]
 
-_HEADERS = {"X-Agent-ID": AGENT_ID, "X-Agent-Role": AGENT_ROLE}
 _TIMEOUT = 30
 
 mcp = FastMCP("roboco-flow")
 log = structlog.get_logger()
+
+
+def _build_headers() -> dict[str, str]:
+    """Build per-call headers including a fresh X-Correlation-ID.
+
+    The agent runtime is the first hop, so we mint a UUID per MCP call.
+    The orchestrator's ``CorrelationIdMiddleware`` will accept this as the
+    inbound id and bind it to the structlog context for the request, so
+    every log line and the audit row carry the same id and the agent
+    receives it back on the envelope.
+    """
+    return {
+        "X-Agent-ID": AGENT_ID,
+        "X-Agent-Role": AGENT_ROLE,
+        "X-Correlation-ID": str(uuid.uuid4()),
+    }
 
 
 def _post(path: str, body: dict[str, Any]) -> dict[str, Any]:
@@ -42,7 +58,7 @@ def _post(path: str, body: dict[str, Any]) -> dict[str, Any]:
     with httpx.Client(timeout=_TIMEOUT) as client:
         response = client.post(
             f"{ORCHESTRATOR_URL}{path}",
-            headers=_HEADERS,
+            headers=_build_headers(),
             json=body,
         )
         response.raise_for_status()

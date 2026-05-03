@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import json
 import os
+import uuid
 from pathlib import Path
 from typing import Any
 
@@ -28,11 +29,24 @@ ORCHESTRATOR_URL = os.environ.get(
 AGENT_ID = os.environ["ROBOCO_AGENT_ID"]
 AGENT_ROLE = os.environ["ROBOCO_AGENT_ROLE"]
 
-_HEADERS = {"X-Agent-ID": AGENT_ID, "X-Agent-Role": AGENT_ROLE}
 _TIMEOUT = 30
 
 mcp = FastMCP("roboco-do")
 log = structlog.get_logger()
+
+
+def _build_headers() -> dict[str, str]:
+    """Build per-call headers including a fresh X-Correlation-ID.
+
+    Mirrors flow_server: each MCP call mints its own correlation id so the
+    orchestrator's middleware can bind it to structlog and the audit row,
+    and the envelope echoes it back to the agent.
+    """
+    return {
+        "X-Agent-ID": AGENT_ID,
+        "X-Agent-Role": AGENT_ROLE,
+        "X-Correlation-ID": str(uuid.uuid4()),
+    }
 
 
 def _post(path: str, body: dict[str, Any]) -> dict[str, Any]:
@@ -40,7 +54,7 @@ def _post(path: str, body: dict[str, Any]) -> dict[str, Any]:
     with httpx.Client(timeout=_TIMEOUT) as client:
         response = client.post(
             f"{ORCHESTRATOR_URL}{path}",
-            headers=_HEADERS,
+            headers=_build_headers(),
             json=body,
         )
         response.raise_for_status()

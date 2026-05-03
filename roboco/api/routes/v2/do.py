@@ -3,9 +3,10 @@
 from typing import Annotated
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, Header
+from fastapi import APIRouter, Depends, Header, Request
 
 from roboco.api.deps import get_content_actions
+from roboco.api.routes.v2._role_dep import envelope_to_response
 from roboco.api.schemas.v2.do import (
     CommitRequest,
     DmRequest,
@@ -23,6 +24,7 @@ _ContentActionsDep = Annotated[ContentActions, Depends(get_content_actions)]
 
 @router.post("/commit")
 async def do_commit(
+    request: Request,
     body: CommitRequest,
     x_agent_id: _AgentIdHeader,
     actions: _ContentActionsDep,
@@ -32,11 +34,12 @@ async def do_commit(
         message=body.message,
         files=body.files,
     )
-    return env.as_dict()
+    return envelope_to_response(env, request)
 
 
 @router.post("/note")
 async def do_note(
+    request: Request,
     body: NoteRequest,
     x_agent_id: _AgentIdHeader,
     actions: _ContentActionsDep,
@@ -47,11 +50,12 @@ async def do_note(
         scope=body.scope,
         task_id=body.task_id,
     )
-    return env.as_dict()
+    return envelope_to_response(env, request)
 
 
 @router.post("/say")
 async def do_say(
+    request: Request,
     body: SayRequest,
     x_agent_id: _AgentIdHeader,
     actions: _ContentActionsDep,
@@ -62,11 +66,12 @@ async def do_say(
         text=body.text,
         task_id=body.task_id,
     )
-    return env.as_dict()
+    return envelope_to_response(env, request)
 
 
 @router.post("/dm")
 async def do_dm(
+    request: Request,
     body: DmRequest,
     x_agent_id: _AgentIdHeader,
     actions: _ContentActionsDep,
@@ -78,14 +83,15 @@ async def do_dm(
         task_id=body.task_id,
         skill=body.skill,
     )
-    return env.as_dict()
+    return envelope_to_response(env, request)
 
 
 @router.post("/evidence")
 async def do_evidence(
+    request: Request,
     body: EvidenceRequest,
     x_agent_id: _AgentIdHeader,
     actions: _ContentActionsDep,
 ) -> dict:
     env = await actions.evidence(agent_id=x_agent_id, task_id=body.task_id)
-    return env.as_dict()
+    return envelope_to_response(env, request)
