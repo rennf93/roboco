@@ -322,8 +322,22 @@ class Choreographer:
                     task_id=task_id,
                     verb="i_will_work_on",
                 )
-            if t.assigned_to is None or t.assigned_to != agent_id:
-                t = await self.task.claim(task_id, agent_id)
+            # Always call claim() when status is pending — even if the dev
+            # is already in assigned_to (parent PM may pre-assign at delegate
+            # time). claim() transitions pending → claimed; idempotent for
+            # the same assignee. See i_will_plan for the same fix.
+            t = await self.task.claim(task_id, agent_id)
+            if t is None:
+                return await self._emit_rejection(
+                    Envelope.invalid_state(
+                        message="claim failed",
+                        remediate="task may already be claimed by another agent",
+                        context_briefing=briefing,
+                    ),
+                    agent_id=agent_id,
+                    task_id=task_id,
+                    verb="i_will_work_on",
+                )
             if not t.plan and not plan:
                 remediate = (
                     f"call i_will_work_on(task_id='{task_id}',"
@@ -1467,7 +1481,13 @@ class Choreographer:
                 verb="i_will_plan",
             )
 
-        if t.assigned_to is None or t.assigned_to != pm_agent_id:
+        # Always call claim() when status is pending — even if the PM is
+        # already in assigned_to (CEO pre-assigns root tasks at creation).
+        # claim() transitions pending → claimed; without that, start() below
+        # would refuse the claimed → in_progress transition and silently
+        # return None, leaving the task stuck in pending under a misleading
+        # OK envelope. claim() is idempotent for the same assignee.
+        if str(t.status) == "pending":
             t = await self.task.claim(task_id, pm_agent_id)
             if t is None:
                 return await self._emit_rejection(
@@ -1482,9 +1502,25 @@ class Choreographer:
                 )
         await self.task.set_plan(task_id, plan)
         t = await self.task.start(task_id, pm_agent_id)
+        if t is None:
+            # start() returns None on invalid status / ownership / missing
+            # plan. Surface the failure instead of pretending success.
+            return await self._emit_rejection(
+                Envelope.invalid_state(
+                    message=f"start failed for task {task_id}",
+                    remediate=(
+                        "task not in a startable state"
+                        " (claimed/paused/needs_revision) or no plan recorded"
+                    ),
+                    context_briefing=await self._briefing_for(pm_agent_id, task_id),
+                ),
+                agent_id=pm_agent_id,
+                task_id=task_id,
+                verb="i_will_plan",
+            )
         await self._touch(task_id)
         return Envelope.ok(
-            status=str(t.status) if t else "in_progress",
+            status=str(t.status),
             task_id=str(task_id),
             next=(
                 "delegate(parent_task_id, title, description, assigned_to, team)"
