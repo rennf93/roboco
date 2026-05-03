@@ -322,10 +322,17 @@ class Choreographer:
         )
 
     async def i_am_done(self, agent_id: UUID, task_id: UUID, notes: str) -> Envelope:
-        """Submit work for QA. Runs verify/push/PR/submit-qa sequentially as needed.
+        """Submit work for QA — strict path.
 
-        Each step gated by tracing/state preconditions; returns precise
-        remediation hints when prerequisites are missing.
+        Pre-gateway, the route layer enforced four field-level gates
+        (NOT_SELF_VERIFIED, NO_COMMITS, NO_PR, NO_PROGRESS) before
+        transitioning verifying → awaiting_qa. The strict gateway path
+        re-enforces those exactly: dev MUST have already committed,
+        pushed, opened a PR, reported progress, and self-verified before
+        i_am_done can submit.
+
+        For the smart-catch-up convenience that auto-runs the chain
+        on the dev's behalf, see ``i_am_done_with_catchup``.
         """
         t = await self.task.get(task_id)
         if t is None:
@@ -337,7 +344,56 @@ class Choreographer:
                 context_briefing=await self._briefing_for(agent_id, task_id),
             )
 
-        # 1. Tracing-gate preconditions
+        # 1. Tracing-gate preconditions (progress / reflect / acceptance)
+        if rejection := await self._check_tracing_gates(agent_id, task_id, t):
+            return rejection
+
+        # 2. Field-level gates (Gate Set E) — strict.
+        if rejection := await self._check_submit_qa_field_gates(
+            agent_id, task_id, t
+        ):
+            return rejection
+
+        # 3. Submit (no catch-up).
+        submitted = await self.task.submit_qa(agent_id, task_id, notes)
+        if submitted is not None:
+            t = submitted
+        await self._notify_qa(agent_id, task_id, t)
+        return await self._build_i_am_done_ok(agent_id, task_id, t)
+
+    async def i_am_done_with_catchup(
+        self, agent_id: UUID, task_id: UUID, notes: str
+    ) -> Envelope:
+        """Submit work for QA — opt-in smart catch-up.
+
+        Same tracing-gate preconditions as ``i_am_done``, but auto-runs
+        the verify / push / PR / submit_qa chain on the dev's behalf
+        instead of refusing on missing fields. Use this when the dev
+        explicitly wants the gateway to drive the closure path.
+
+        Pre-gateway behavior: dev had to call each step manually. The
+        catch-up convenience exists for backward compat with workflows
+        that rely on the implicit chain.
+        """
+        t = await self.task.get(task_id)
+        if t is None:
+            return Envelope.not_found(message=f"task {task_id} not found")
+        if t.assigned_to != agent_id:
+            return Envelope.not_authorized(
+                message="not assigned to you",
+                remediate="claim it via i_will_work_on(task_id) first",
+                context_briefing=await self._briefing_for(agent_id, task_id),
+            )
+        if rejection := await self._check_tracing_gates(agent_id, task_id, t):
+            return rejection
+        t = await self._run_catch_up(agent_id, task_id, t, notes)
+        await self._notify_qa(agent_id, task_id, t)
+        return await self._build_i_am_done_ok(agent_id, task_id, t)
+
+    async def _check_tracing_gates(
+        self, agent_id: UUID, task_id: UUID, t: Any
+    ) -> Envelope | None:
+        """Run progress / reflect / acceptance-criteria tracing gates."""
         has_reflect = await self.journal.has_reflect_for_task(agent_id, task_id)
         gate_ctx = GateContext(journal_reflect_present=has_reflect)
         gate = check_requirements(
@@ -349,16 +405,51 @@ class Choreographer:
             ],
             gate_ctx,
         )
-        if not gate.passed:
-            return await self._build_tracing_gap(agent_id, task_id, gate.missing)
+        if gate.passed:
+            return None
+        return await self._build_tracing_gap(agent_id, task_id, gate.missing)
 
-        # 2. Smart catch-up: verification, push, PR, submit_qa
-        t = await self._run_catch_up(agent_id, task_id, t, notes)
+    async def _check_submit_qa_field_gates(
+        self, agent_id: UUID, task_id: UUID, t: Any
+    ) -> Envelope | None:
+        """Gate Set E field-level gates restored from tasks.py:903-940 at 0c3d15a.
 
-        # 3. Auto-A2A to QA agent for this team
-        await self._notify_qa(agent_id, task_id, t)
+        Each missing field becomes its own tracing_gap entry with the
+        matching pre-gateway error code.
+        """
+        missing: list[str] = []
+        hints: list[str] = []
+        if not t.self_verified:
+            missing.append("NOT_SELF_VERIFIED")
+            hints.append(
+                "call commit(message=...) to add a self-verified commit first;"
+                " self_verified is set automatically when you commit on this"
+                " task's branch"
+            )
+        if not t.commits:
+            missing.append("NO_COMMITS")
+            hints.append(
+                "no commits on this task yet — call commit(message='<subject>')"
+                " before i_am_done"
+            )
+        if t.pr_number is None:
+            missing.append("NO_PR")
+            hints.append(
+                "no PR open — push your branch and open a PR before"
+                " i_am_done (or call i_am_done_with_catchup to do it auto)"
+            )
+        if not missing:
+            return None
+        return Envelope.tracing_gap(
+            missing=missing,
+            remediate=" ; ".join(hints),
+            context_briefing=await self._briefing_for(agent_id, task_id),
+        )
 
-        # 4. Build evidence for the response
+    async def _build_i_am_done_ok(
+        self, agent_id: UUID, task_id: UUID, t: Any
+    ) -> Envelope:
+        """Assemble the success envelope for i_am_done / _with_catchup."""
         journal_highlights = await self.evidence_repo.journal_highlights_for_task(
             task_id
         )
