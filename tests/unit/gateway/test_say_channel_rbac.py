@@ -66,11 +66,13 @@ async def test_say_returns_not_authorized_envelope_on_access_denied() -> None:
 
     assert body["error"] == "not_authorized"
     assert "announcements" in body["message"]
-    # Remediation should hint at the agent's writable channels (or that
-    # they have none). The role/list is resolved from CHANNEL_ACCESS via
-    # get_agent_channels using the agent's slug.
+    # Remediation should hint at the channels the agent may write to (or
+    # that they have none). The list is resolved from CHANNEL_ACCESS via
+    # get_agent_channels using the agent's slug — note the wording is
+    # slug-keyed ("channels you may write to") rather than role-keyed,
+    # since CHANNEL_ACCESS is keyed by slug not role.
     assert body["remediate"] is not None
-    assert "writable" in body["remediate"].lower()
+    assert "channels you may write to" in body["remediate"].lower()
 
 
 @pytest.mark.asyncio
@@ -90,3 +92,30 @@ async def test_say_success_path_returns_posted_envelope() -> None:
     assert body["status"] == "posted"
     assert body["next"] == "continue"
     msg_svc.post_to_channel.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_say_returns_not_authorized_when_agent_lookup_fails() -> None:
+    """If get_agent_slug returns None (deleted agent), say must fail closed.
+
+    Pins the I1 fix: post_to_channel raises ChannelAccessDeniedError directly
+    when the slug lookup fails, so send_message's `if agent_slug:` can no
+    longer skip validate_channel_access for unknown/removed agents. The
+    Envelope conversion in say() carries that through to the agent.
+    """
+    aid = uuid4()
+    msg_svc = AsyncMock()
+    msg_svc.post_to_channel.side_effect = ChannelAccessDeniedError(
+        agent_id=str(aid),
+        channel_slug="dev-all",
+        action="write",
+        message="agent not found",
+    )
+    deps = _make_deps(messaging=msg_svc)
+    actions = ContentActions(deps)
+
+    env = await actions.say(agent_id=aid, channel="dev-all", text="hi")
+    body = env.as_dict()
+
+    assert body["error"] == "not_authorized"
+    assert "dev-all" in body["message"]

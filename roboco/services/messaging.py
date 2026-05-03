@@ -1810,14 +1810,26 @@ class MessagingService(BaseService):
         Channel access is enforced inside `send_message` (channel writers
         list + role rules) when `agent_slug` is supplied — this adapter
         looks up the slug from `agent_id` and forwards it so the check
-        always runs.
+        always runs. If the slug lookup returns None (unknown / removed
+        agent), we fail closed by raising ChannelAccessDeniedError rather
+        than letting send_message silently skip validate_channel_access.
         """
+        from roboco.enforcement.channel_access import ChannelAccessDeniedError
         from roboco.services.repositories import get_agent_slug
 
         channel = await self.get_channel_by_slug_or_raise(channel_slug)
         group = await self._default_group_for_channel(channel)
         session = await self.get_or_create_active_session(cast("UUID", group.id))
         agent_slug = await get_agent_slug(self.session, agent_id)
+        if agent_slug is None:
+            raise ChannelAccessDeniedError(
+                agent_id=str(agent_id),
+                channel_slug=channel_slug,
+                action="write",
+                message=(
+                    f"agent {agent_id} not found; cannot validate channel access"
+                ),
+            )
         return await self.send_message(
             MessageCreateRequest(
                 agent_id=agent_id,

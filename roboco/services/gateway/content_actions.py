@@ -226,7 +226,7 @@ class ContentActions:
                 message=(
                     f"agent '{e.agent_id}' may not write to channel '{e.channel_slug}'"
                 ),
-                remediate=f"writable channels for your role: {writable_str}",
+                remediate=f"channels you may write to: {writable_str}",
                 context_briefing={},
             )
         return Envelope.ok(
