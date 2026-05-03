@@ -813,6 +813,9 @@ class Choreographer:
                 task_id=task_id,
                 verb="unclaim",
             )
+        # Deliberately no _touch — unclaim clears assigned_to, so there is
+        # no claimant heartbeat to refresh. (Asymmetric with `resume` by
+        # design: resume keeps the same claimant active and does heartbeat.)
         return Envelope.ok(
             status=str(after.status),
             task_id=str(task_id),
