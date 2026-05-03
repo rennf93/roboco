@@ -303,6 +303,56 @@ class WorkspaceService:
         )
 
     @staticmethod
+    async def _fetch_origin_best_effort(workspace: Path, project_slug: str) -> None:
+        """Refresh `origin`'s refs into a healthy clone. Never raises.
+
+        Called from `ensure_workspace`'s healthy short-circuit so that a
+        respawned PM/Doc reads fresh `origin/<branch>` refs instead of
+        whatever the previous spawn left on disk. We deliberately omit a
+        positional refspec — `git fetch origin` (no args after `origin`)
+        updates every branch under `refs/remotes/origin/`, which is what
+        downstream `git diff origin/<branch>` and `git log origin/<branch>`
+        readers want.
+
+        No `-c http.extraheader=…` token injection: the orchestrator did
+        the original clone with a token but `_configure_git()` already
+        scrubbed it from `.git/config`, and the *fetch* path here runs
+        from inside the orchestrator container against the credential-
+        stripped remote URL. Public repos and refresh-only fetches succeed
+        without auth; auth-protected refreshes will surface their stderr
+        in the warning log without aborting workspace setup.
+        """
+
+        def _do_fetch() -> subprocess.CompletedProcess[str]:
+            return subprocess.run(
+                ["git", "fetch", "origin"],
+                cwd=str(workspace),
+                capture_output=True,
+                text=True,
+                timeout=settings.workspace_clone_timeout,
+                check=False,
+            )
+
+        try:
+            result = await asyncio.to_thread(_do_fetch)
+        except (subprocess.TimeoutExpired, OSError) as exc:
+            logger.warning(
+                "ensure_workspace: refresh fetch failed",
+                workspace=str(workspace),
+                project=project_slug,
+                error=str(exc),
+            )
+            return
+
+        if result.returncode != 0:
+            logger.warning(
+                "ensure_workspace: refresh fetch returned non-zero",
+                workspace=str(workspace),
+                project=project_slug,
+                stderr=result.stderr.strip(),
+            )
+
+    @staticmethod
     async def _resolve_git_token(
         project_service: Any, project_slug: str, git_url: str
     ) -> str | None:
@@ -374,6 +424,14 @@ class WorkspaceService:
             # not a commit"). Require HEAD + objects/ as the real signal.
             if self._is_workspace_healthy(workspace):
                 await asyncio.to_thread(_ensure_agent_owned, workspace)
+                # Audit H26: a healthy clone short-circuit USED to return
+                # immediately, so a respawned PM/Doc could be reading
+                # arbitrarily stale refs (whatever was on disk from the
+                # last spawn). Fetch every entry so `git diff origin/...`
+                # reflects what's actually on the remote. Best-effort —
+                # network blips and offline mode must not break workspace
+                # setup; checkout is unchanged.
+                await self._fetch_origin_best_effort(workspace, project_slug)
                 logger.debug(
                     "Workspace already exists",
                     workspace=str(workspace),
