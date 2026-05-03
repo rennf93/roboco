@@ -17,14 +17,12 @@ def _make_deps(**overrides: AsyncMock) -> ContentActionsDeps:
     else:
         task = AsyncMock()
         task.get_active_task_for_agent.return_value = None
+        # commit() checks caller role server-side; default-created mocks
+        # need a default developer role so existing tests pass through.
+        # Caller-supplied mocks must set agent_for themselves.
+        from unittest.mock import MagicMock
 
-    # commit() now checks the caller's role server-side. Default the
-    # mock's agent_for to a developer so existing commit tests still
-    # exercise the success path; tests asserting the role gate should
-    # override task.agent_for AFTER _make_deps returns.
-    from unittest.mock import MagicMock
-
-    task.agent_for.return_value = MagicMock(role="developer")
+        task.agent_for.return_value = MagicMock(role="developer")
 
     if "git" in overrides:
         git = overrides["git"]
@@ -78,6 +76,7 @@ async def test_commit_descriptive_with_active_task_succeeds() -> None:
     )
     task_svc = AsyncMock()
     task_svc.get_active_task_for_agent.return_value = task_obj
+    task_svc.agent_for.return_value = MagicMock(role="developer")
     git_svc = AsyncMock()
     git_svc.commit.return_value = {"sha": "deadbeef1234"}
 
@@ -129,6 +128,7 @@ async def test_commit_strips_existing_task_prefix() -> None:
     )
     task_svc = AsyncMock()
     task_svc.get_active_task_for_agent.return_value = task_obj
+    task_svc.agent_for.return_value = MagicMock(role="developer")
     git_svc = AsyncMock()
     git_svc.commit.return_value = {"sha": "cafebabe"}
 
@@ -152,6 +152,72 @@ async def test_commit_strips_existing_task_prefix() -> None:
 # ---------------------------------------------------------------------------
 # note
 # ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_commit_rejects_pm_role() -> None:
+    """Regression: PMs must not be able to call commit (smoke 2026-05-03)."""
+    agent_id = uuid4()
+    task_svc = AsyncMock()
+    task_svc.agent_for.return_value = MagicMock(role="main_pm")
+    deps = _make_deps(task=task_svc)
+    ca = ContentActions(deps)
+
+    env = await ca.commit(agent_id=agent_id, message="fix: something")
+
+    body = env.as_dict()
+    assert body["error"] == "not_authorized"
+    assert "main_pm" in body["message"]
+    assert "delegate" in body["remediate"]
+
+
+@pytest.mark.asyncio
+async def test_commit_rejects_qa_role() -> None:
+    """QA cannot author commits — only developers and documenters can."""
+    agent_id = uuid4()
+    task_svc = AsyncMock()
+    task_svc.agent_for.return_value = MagicMock(role="qa")
+    deps = _make_deps(task=task_svc)
+    ca = ContentActions(deps)
+
+    env = await ca.commit(agent_id=agent_id, message="fix: bug")
+
+    assert env.as_dict()["error"] == "not_authorized"
+
+
+@pytest.mark.asyncio
+async def test_commit_rejects_board_role() -> None:
+    """Board members do not write code."""
+    agent_id = uuid4()
+    task_svc = AsyncMock()
+    task_svc.agent_for.return_value = MagicMock(role="product_owner")
+    deps = _make_deps(task=task_svc)
+    ca = ContentActions(deps)
+
+    env = await ca.commit(agent_id=agent_id, message="fix: thing")
+
+    assert env.as_dict()["error"] == "not_authorized"
+
+
+@pytest.mark.asyncio
+async def test_commit_allows_documenter_role() -> None:
+    """Documenters write doc commits — must not be rejected."""
+    agent_id = uuid4()
+    task_id = uuid4()
+    task_obj = MagicMock(
+        id=task_id, status="awaiting_documentation", branch_name="feature/backend/abc"
+    )
+    task_svc = AsyncMock()
+    task_svc.agent_for.return_value = MagicMock(role="documenter")
+    task_svc.get_active_task_for_agent.return_value = task_obj
+    git_svc = AsyncMock()
+    git_svc.commit.return_value = {"sha": "deadbeef"}
+    deps = _make_deps(task=task_svc, git=git_svc)
+    ca = ContentActions(deps)
+
+    env = await ca.commit(agent_id=agent_id, message="docs: add migration notes")
+
+    assert env.error is None  # not rejected on role grounds
 
 
 @pytest.mark.asyncio
