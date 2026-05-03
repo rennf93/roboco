@@ -305,6 +305,14 @@ class Settings(BaseSettings):
         ge=60,
         description="Claim heartbeat staleness threshold (seconds)",
     )
+    claim_heartbeat_ttl_seconds: int = Field(
+        default=300,
+        ge=60,
+        description=(
+            "If an agent's last_heartbeat_at is older than this, the dispatcher"
+            " considers the claim dead and releases the task back to pending."
+        ),
+    )
     spawn_cooldown_seconds: int = Field(
         default=60,
         ge=1,

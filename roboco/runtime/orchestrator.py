@@ -27,6 +27,7 @@ import httpx
 
 if TYPE_CHECKING:
     from roboco.services.llm import AgentRoute
+    from roboco.services.task import TaskService
 import structlog
 from fastapi import status as http_status
 
@@ -450,6 +451,12 @@ class AgentOrchestrator:
         # is in a loop — without this gate the orchestrator re-spawns every
         # tick forever (seen in production on 2026-04-22).
         self._pm_respawn_tracker: dict[tuple[str, str], dict[str, Any]] = {}
+        # Stale-claim reaper config + injectable service slot. Production
+        # code leaves `_task_svc` None so the reaper opens its own per-tick
+        # session; tests can pre-set a mock on an instance built via
+        # `__new__` to bypass this dance.
+        self._claim_heartbeat_ttl: int = settings.claim_heartbeat_ttl_seconds
+        self._task_svc: TaskService | None = None
 
     # =========================================================================
     # LIFECYCLE
@@ -3523,6 +3530,63 @@ Start now: evidence(task_id="{task_id}")
             except Exception as e:
                 logger.error("Dispatcher loop error", error=str(e))
 
+    async def _reap_stale_claims(self) -> None:
+        """Release claimed/in_progress tasks whose holder hasn't heart-beat in TTL.
+
+        Closes the "dead container squats task forever" failure mode that
+        the schema hinted at (``last_heartbeat_at`` since migration 006) but
+        no code enforced. The runtime decision (cutoff, iteration) lives
+        here in the orchestrator; the actual UPDATE statements live in
+        ``TaskService.unclaim_for_reaper``.
+
+        If an instance has a pre-bound ``_task_svc`` (used by tests and
+        conceivable future caching), use it directly. Otherwise open a
+        per-tick session — short-lived because the reaper runs on every
+        dispatch cycle and the work is cheap (one SELECT plus N UPDATEs
+        for the typically-empty stale set).
+        """
+        if self._task_svc is not None:
+            await self._reap_with_service(self._task_svc)
+            return
+
+        from roboco.db.base import get_session_factory
+        from roboco.services.task import TaskService
+
+        factory = get_session_factory()
+        async with factory() as db:
+            svc = TaskService(db)
+            await self._reap_with_service(svc)
+            await db.commit()
+
+    async def _reap_with_service(self, svc: "TaskService") -> None:
+        """Inner reap loop, parameterized by the TaskService to use.
+
+        Wraps each ``unclaim_for_reaper`` in try/except so a single bad row
+        doesn't abort the dispatch tick — the reaper must keep ticking even
+        if one task's release somehow fails.
+        """
+        from roboco.utils.converters import require_uuid
+
+        cutoff = datetime.now(UTC) - timedelta(seconds=self._claim_heartbeat_ttl)
+        candidates = await svc.list_in_progress_or_claimed()
+        for t in candidates:
+            ts = t.last_heartbeat_at
+            if ts is None or ts < cutoff:
+                task_id = require_uuid(t.id)
+                try:
+                    await svc.unclaim_for_reaper(task_id)
+                    logger.warning(
+                        "stale claim reaped",
+                        task_id=str(task_id),
+                        last_heartbeat=ts.isoformat() if ts else None,
+                    )
+                except Exception as exc:
+                    logger.error(
+                        "stale-claim reap failed; continuing",
+                        task_id=str(task_id),
+                        error=str(exc),
+                    )
+
     async def _dispatch_all_work(self) -> None:
         """Run all dispatchers to check for and assign work.
 
@@ -3536,8 +3600,22 @@ Start now: evidence(task_id="{task_id}")
         `_dispatch_qa_work` claimed for QA and the next dispatcher
         re-spawned the dev on the same claimed row) are defanged by
         early dispatchers marking the task handled.
+
+        The stale-claim reaper runs first, before any dispatcher tries to
+        spawn an agent for a task whose previous holder is dead. Without
+        this ordering, the spawn pass could race against a stale claim and
+        skip work the reaper would have freed in the same tick.
         """
         self._tick_handled_tasks = set()
+
+        # Free any tasks whose claim went stale before the spawn pass runs.
+        # Wrapped because a reaper failure must not block dispatch — the
+        # next tick will retry.
+        try:
+            await self._reap_stale_claims()
+        except Exception as e:
+            logger.error("Stale-claim reaper failed; continuing tick", error=str(e))
+
         # Orchestrator uses SYSTEM role for internal API calls
         # Using a well-known UUID for the orchestrator identity
         headers = {

@@ -1763,6 +1763,41 @@ class TaskService(BaseService):
             .values(last_heartbeat_at=datetime.now(UTC))
         )
 
+    async def list_in_progress_or_claimed(self) -> list[TaskTable]:
+        """All tasks currently in claimed or in_progress state.
+
+        Used by the orchestrator's stale-claim reaper to find rows whose
+        holder may have gone silent. Returns the bare row set; the reaper
+        applies the heartbeat-TTL filter in Python because the cutoff is a
+        runtime decision tied to settings, not a column.
+        """
+        result = await self.session.execute(
+            select(TaskTable).where(
+                TaskTable.status.in_([TaskStatus.CLAIMED, TaskStatus.IN_PROGRESS])
+            )
+        )
+        return list(result.scalars().all())
+
+    async def unclaim_for_reaper(self, task_id: UUID) -> None:
+        """Reaper-only unclaim: skip role checks, force the row back to pending.
+
+        Bypasses the normal claim guards because the holder is provably dead
+        (no heartbeat past TTL) — the operation is named with ``_for_reaper``
+        so callers cannot accidentally use it as a regular unclaim path.
+        Clears ``assigned_to`` and ``last_heartbeat_at`` so the next claim
+        starts fresh.
+        """
+        await self.session.execute(
+            update(TaskTable)
+            .where(TaskTable.id == task_id)
+            .values(
+                status=TaskStatus.PENDING,
+                assigned_to=None,
+                last_heartbeat_at=None,
+            )
+        )
+        await self.session.flush()
+
     async def block(
         self,
         task_id: UUID,
