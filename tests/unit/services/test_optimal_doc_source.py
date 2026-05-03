@@ -75,18 +75,25 @@ async def test_index_journal_entry_raises_when_entry_id_is_none() -> None:
     """``entry_id=None`` must raise — the silent fallback hid an upstream
     bug where the entry row hadn't been flushed before indexing, producing
     ``roboco://journals/None`` doc-sources in the RAG store.
+
+    ``entry_id`` is typed ``UUID`` (required); a real caller would have to
+    bypass the dataclass type contract for this to fire (e.g. via
+    ``cast(UUID, None)``). We simulate that with a ``SimpleNamespace`` so
+    we don't have to reach inside a frozen-style dataclass to clobber a
+    field — same pattern used by the conversation test below.
     """
     svc = _service_with_stub_plugin()
-    params = IndexJournalEntryParams(
+    fake_params = SimpleNamespace(
         content="some reflection",
         entry_type="reflect",
         entry_id=None,  # the bug we now reject
         agent_id=uuid4(),
         task_id=uuid4(),
+        tags=None,
     )
 
     with pytest.raises(ValueError, match="entry_id is required"):
-        await svc.index_journal_entry(params)
+        await svc.index_journal_entry(cast("IndexJournalEntryParams", fake_params))
 
 
 @pytest.mark.asyncio

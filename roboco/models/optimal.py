@@ -90,14 +90,11 @@ class IndexConversationParams:
 
 @dataclass
 class IndexJournalEntryParams:
-    """Parameters for indexing a journal entry.
-
-    Note: entry_id and agent_id can be None for system events (e.g., lifecycle events).
-    """
+    """Parameters for indexing a journal entry."""
 
     content: str
     entry_type: str
-    entry_id: UUID | None = None
+    entry_id: UUID  # required; lifecycle events use a different indexing path
     agent_id: UUID | None = None
     task_id: UUID | None = None
     tags: list[str] | None = None
