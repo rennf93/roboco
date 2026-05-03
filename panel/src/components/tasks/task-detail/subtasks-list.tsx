@@ -30,7 +30,6 @@ const STATUS_COLORS: Record<TaskStatus, string> = {
   [TaskStatus.AWAITING_CEO_APPROVAL]: "bg-amber-200 text-amber-800 dark:bg-amber-800 dark:text-amber-200",
   [TaskStatus.COMPLETED]: "bg-green-100 text-green-700 dark:bg-green-900 dark:text-green-300",
   [TaskStatus.CANCELLED]: "bg-gray-200 text-gray-600 dark:bg-gray-700 dark:text-gray-400",
-  [TaskStatus.QUARANTINED]: "bg-pink-100 text-pink-700 dark:bg-pink-900 dark:text-pink-300",
 };
 
 export function SubtasksList({ task }: SubtasksListProps) {

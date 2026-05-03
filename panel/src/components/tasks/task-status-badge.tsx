@@ -16,7 +16,6 @@ const statusColors: Record<TaskStatus, string> = {
   [TaskStatus.AWAITING_CEO_APPROVAL]: "bg-amber-600",
   [TaskStatus.COMPLETED]: "bg-green-500",
   [TaskStatus.CANCELLED]: "bg-gray-400",
-  [TaskStatus.QUARANTINED]: "bg-pink-500",
 };
 
 interface TaskStatusBadgeProps {

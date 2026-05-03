@@ -101,7 +101,6 @@ AWAITING_PM_REVIEW = "awaiting_pm_review"     # Ready for PM review
 AWAITING_CEO_APPROVAL = "awaiting_ceo_approval"    # Major task, CEO decides
 COMPLETED = "completed"                       # Done
 CANCELLED = "cancelled"                       # Cancelled
-QUARANTINED = "quarantined"                   # Problem task, can return to pending
 ```
 
 ### AgentRole

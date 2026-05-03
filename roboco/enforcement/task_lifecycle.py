@@ -93,8 +93,6 @@ VALID_TRANSITIONS: dict[str, list[str]] = {
     # Terminal states - cannot transition out
     "completed": [],
     "cancelled": [],
-    # Special state for quarantined tasks
-    "quarantined": ["pending"],  # Can be un-quarantined back to pending
 }
 
 # =============================================================================

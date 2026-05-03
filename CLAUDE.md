@@ -220,7 +220,6 @@ backlog -> pending -> claimed -> in_progress -> [blocked|paused] -> verifying
 | `awaiting_ceo_approval` | Major tasks escalated for CEO final approval |
 | `completed` | Terminal state - work done and merged |
 | `cancelled` | Terminal state - work cancelled |
-| `quarantined` | Special state for problematic tasks (can return to pending) |
 
 ### Role-Based Transitions
 

@@ -33,7 +33,6 @@ class TaskStatus(StrEnum):
     AWAITING_CEO_APPROVAL = "awaiting_ceo_approval"  # PMs approved, CEO decides
     COMPLETED = "completed"
     CANCELLED = "cancelled"
-    QUARANTINED = "quarantined"  # Special state for problematic tasks
 
 
 class BlockerResolverType(StrEnum):

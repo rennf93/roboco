@@ -20,9 +20,6 @@
 - `completed` - Work finished
 - `cancelled` - Work cancelled
 
-### Special States
-- `quarantined` - Problematic task, can return to pending
-
 ### Setup State
 - `backlog` - PM setup phase, not ready for work
 

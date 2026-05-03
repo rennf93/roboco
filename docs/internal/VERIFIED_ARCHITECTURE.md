@@ -134,7 +134,7 @@ class TaskStatus(str, Enum):
     CANCELLED = "cancelled"                # Terminal - cancelled
 ```
 
-**Total: 13 States** (12 regular + quarantined)
+**Total: 14 States**
 
 ### Valid Transitions (EXACT from `VALID_TRANSITIONS`)
 
@@ -171,7 +171,6 @@ VALID_TRANSITIONS = {
     "awaiting_pm_review": ["claimed", "completed", "cancelled"],
     "completed": [],  # Terminal
     "cancelled": [],  # Terminal
-    "quarantined": ["pending"],  # Special recovery
 }
 ```
 
