@@ -3688,13 +3688,33 @@ Start now: evidence(task_id="{task_id}")
 
     _PM_RESPAWN_MAX_UNPRODUCTIVE = 3
 
-    def _pm_respawn_should_gate(self, agent_slug: str, task: dict[str, Any]) -> bool:
+    async def _pm_respawn_should_gate(
+        self, agent_slug: str, task: dict[str, Any]
+    ) -> bool:
         """Return True when the respawn should be skipped (loop detected).
 
         Tracks (agent_slug, task_id) -> count of consecutive spawns where
         the task's status did not advance. When the task status changes,
         the counter resets. Once the count hits the threshold, the spawn
         is skipped and a warning logged; operators must intervene.
+
+        Tracing-gap reset (Task 13)
+        ---------------------------
+        With the gateway claim-time gates installed, a rule-following PM
+        will hit ``PARENT_NOT_CLAIMED`` (a ``tracing_gap`` envelope) and
+        the prompt will tell it to call the prerequisite verb first.
+        Each retry leaves the task status unchanged but the agent IS
+        making progress through the verb chain. Counting that as a
+        strike kills rule-followers.
+
+        Solution: before incrementing on a same-status spawn, check
+        ``audit_log`` for a ``gateway.rejected`` row tagged
+        ``reason == "tracing_gap"`` from this (agent, task) since the
+        last check. If found, reset the counter — the agent followed
+        the rules, not stuck.
+
+        Audit lookup is best-effort: any failure falls through to the
+        legacy strike behavior so audit problems don't break the gate.
         """
         task_id = task.get("id")
         if not task_id:
@@ -3702,13 +3722,22 @@ Start now: evidence(task_id="{task_id}")
         key = (agent_slug, task_id)
         current_status = task.get("status")
         record = self._pm_respawn_tracker.get(key)
+        now = datetime.now(UTC)
         if record is None or record.get("last_status") != current_status:
             self._pm_respawn_tracker[key] = {
                 "count": 1,
                 "last_status": current_status,
+                "last_check": now,
             }
             return False
+        # Same status as last spawn — could be a stuck loop OR a
+        # rule-following retry. Consult audit before counting.
+        if await self._pm_made_rule_following_retry(agent_slug, task_id, record):
+            record["count"] = 1
+            record["last_check"] = now
+            return False
         record["count"] += 1
+        record["last_check"] = now
         if record["count"] > self._PM_RESPAWN_MAX_UNPRODUCTIVE:
             logger.warning(
                 "PM respawn loop detected — skipping spawn",
@@ -3725,6 +3754,49 @@ Start now: evidence(task_id="{task_id}")
             return True
         return False
 
+    async def _pm_made_rule_following_retry(
+        self,
+        agent_slug: str,
+        task_id: str,
+        record: dict[str, Any],
+    ) -> bool:
+        """Did the agent emit a ``tracing_gap`` envelope since the last check?
+
+        Returns ``False`` for unknown slugs (defensive — the audit query
+        needs an agent UUID, and we'd rather fall through to the legacy
+        strike behavior than crash). Returns ``False`` if the audit
+        lookup raises — observability must never block the gate.
+        """
+        agent_uuid_str = AGENT_UUIDS.get(agent_slug)
+        if not agent_uuid_str:
+            return False
+        from uuid import UUID
+
+        try:
+            agent_uuid = UUID(agent_uuid_str)
+            task_uuid = UUID(task_id)
+        except (ValueError, TypeError):
+            return False
+        since = record.get("last_check") or datetime.now(UTC)
+
+        from roboco.services.audit import get_audit_service
+
+        audit = get_audit_service()
+        try:
+            return await audit.has_recent_tracing_gap(
+                agent_id=agent_uuid,
+                task_id=task_uuid,
+                since=since,
+            )
+        except Exception as exc:
+            logger.debug(
+                "audit.has_recent_tracing_gap failed; falling back to strike count",
+                agent_slug=agent_slug,
+                task_id=task_id,
+                error=str(exc),
+            )
+            return False
+
     async def _handle_pm_assigned_task(
         self, task: dict[str, Any], assigned_to: str
     ) -> None:
@@ -3732,7 +3804,7 @@ Start now: evidence(task_id="{task_id}")
         agent_slug = self._resolve_agent_slug(assigned_to)
         if agent_slug not in self._PM_AGENTS or self._is_agent_active(agent_slug):
             return
-        if self._pm_respawn_should_gate(agent_slug, task):
+        if await self._pm_respawn_should_gate(agent_slug, task):
             return
         logger.info(
             "Spawning assigned PM agent",

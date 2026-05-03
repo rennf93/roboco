@@ -446,6 +446,52 @@ class AuditService(SingletonService):
     # QUERY METHODS
     # =========================================================================
 
+    async def has_recent_tracing_gap(
+        self,
+        *,
+        agent_id: UUID,
+        task_id: UUID,
+        since: datetime,
+    ) -> bool:
+        """Has this (agent, task) emitted a ``gateway.rejected`` ``tracing_gap``?
+
+        Used by the orchestrator's PM respawn circuit breaker to tell
+        rule-following retries (agent hit a claim-time gate, returned a
+        ``tracing_gap`` envelope, and is being re-spawned to call the
+        prerequisite verb) apart from genuine no-progress hangs. The
+        former must reset the strike count; the latter must increment it.
+
+        Returns ``True`` if at least one ``audit_log`` row exists where:
+
+        * ``event_type == "gateway.rejected"``
+        * ``agent_id`` matches
+        * ``target_id`` matches the task UUID
+        * ``timestamp >= since``
+        * ``details->>'reason' == 'tracing_gap'``
+
+        Best-effort: if the underlying query raises, the caller is expected
+        to fall back to the legacy strike behavior — observability must
+        never block the orchestrator.
+        """
+        from sqlalchemy import select
+
+        from roboco.db.base import get_session_factory
+        from roboco.db.tables import AuditLogTable
+
+        session_factory = get_session_factory()
+        async with session_factory() as db:
+            query = (
+                select(AuditLogTable.id)
+                .where(AuditLogTable.event_type == "gateway.rejected")
+                .where(AuditLogTable.agent_id == agent_id)
+                .where(AuditLogTable.target_id == task_id)
+                .where(AuditLogTable.timestamp >= since)
+                .where(AuditLogTable.details["reason"].astext == "tracing_gap")
+                .limit(1)
+            )
+            result = await db.execute(query)
+            return result.scalar_one_or_none() is not None
+
     async def get_recent_events(
         self,
         limit: int = 50,
