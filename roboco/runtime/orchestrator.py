@@ -2941,13 +2941,38 @@ Start by:
     async def _check_parent_branch_ready(
         self, client: httpx.AsyncClient, task_id: str, parent_id: str
     ) -> str | None:
-        """Verify the parent task has a branch; auto-block + return msg if not."""
+        """Verify the parent task has a branch; auto-block + return msg if not.
+
+        Race window: the PM's `i_will_plan` claims the parent (transitions
+        status -> in_progress, sets assigned_to) and then `_finalize_claim`
+        creates the branch via `_ensure_branch_for_task`. Both actions land
+        in the same DB transaction but a child dev's spawn dispatch can fire
+        microseconds before that transaction commits and see branch_name=None.
+        Without retry we'd auto-block the child unnecessarily.
+
+        When the parent is clearly mid-claim (in_progress + assigned_to set)
+        re-fetch up to 3 times with a 250ms delay before giving up. Total
+        worst-case wait is 750ms — well inside the dispatcher's tick budget
+        and only paid when the race actually triggers. Real misses (parent
+        still pending or unassigned) auto-block immediately as before.
+        """
         parent_resp = await client.get(f"{self._api_url}/tasks/{parent_id}")
         if not parent_resp.is_success:
             return None
         parent = parent_resp.json()
         if parent.get("branch_name"):
             return None
+
+        if parent.get("status") == "in_progress" and parent.get("assigned_to"):
+            for _ in range(3):
+                await asyncio.sleep(0.25)
+                parent_resp = await client.get(f"{self._api_url}/tasks/{parent_id}")
+                if not parent_resp.is_success:
+                    continue
+                parent = parent_resp.json()
+                if parent.get("branch_name"):
+                    return None
+
         await self._auto_block_task(
             client,
             task_id,
