@@ -13,6 +13,7 @@ from roboco.api.schemas.v2.flow import (
     GiveMeWorkRequest,
     IAmIdleRequest,
     PassReviewRequest,
+    ResumeRequest,
     UnclaimRequest,
 )
 from roboco.services.gateway.choreographer import Choreographer
@@ -75,6 +76,16 @@ async def unclaim(
     choreographer: _ChoreographerDep,
 ) -> dict:
     env = await choreographer.unclaim(x_agent_id, body.task_id)
+    return env.as_dict()
+
+
+@router.post("/resume")
+async def resume(
+    body: ResumeRequest,
+    x_agent_id: _AgentIdHeader,
+    choreographer: _ChoreographerDep,
+) -> dict:
+    env = await choreographer.resume(x_agent_id, body.task_id)
     return env.as_dict()
 
 

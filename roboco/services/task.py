@@ -1852,6 +1852,51 @@ class TaskService(BaseService):
         await self.session.flush()
         return task
 
+    async def resume_for_agent(self, task_id: UUID, agent_id: UUID) -> TaskTable | None:
+        """Voluntary resume: transition paused task → in_progress for the assignee.
+
+        Distinct from ``resume`` (which takes only ``agent_role`` and is
+        called by closure-dispatcher / management code paths): this path
+        enforces that ``agent_id`` is the current claimant. Returns ``None``
+        and makes no write when:
+
+        - the task does not exist
+        - the requesting agent is not the current assignee
+        - the task status is not paused
+        - the lifecycle layer rejects the transition (defense-in-depth
+          against future ``VALID_TRANSITIONS``/``ROLE_RESTRICTED_TRANSITIONS``
+          changes; the choreographer pre-checks status today)
+
+        Routes through ``_validate_and_set_status`` (single point of truth)
+        to keep lifecycle enforcement consistent with claim/start/unclaim.
+        """
+        task = await self.get(task_id)
+        if task is None or task.assigned_to != agent_id:
+            return None
+        if task.status != TaskStatus.PAUSED:
+            return None
+
+        # Look up the requesting agent's role so role-restricted-transition
+        # rules apply if/when paused→in_progress ever gains restrictions.
+        # Mirrors the pattern in `unclaim_for_agent` and `_finalize_claim`.
+        agent_result = await self.session.execute(
+            select(AgentTable).where(AgentTable.id == agent_id)
+        )
+        agent = agent_result.scalar_one_or_none()
+        agent_role = agent.role.value if agent and agent.role else None
+
+        # Route through the single point of truth for status transitions.
+        # _validate_and_set_status raises TaskLifecycleError on invalid
+        # transition or role; treat that as a clean rejection (return None)
+        # so the choreographer's "invalid_state" envelope still fires
+        # instead of a 500 leaking out.
+        try:
+            self._validate_and_set_status(task, TaskStatus.IN_PROGRESS, agent_role)
+        except TaskLifecycleError:
+            return None
+        await self.session.flush()
+        return task
+
     async def block(
         self,
         task_id: UUID,

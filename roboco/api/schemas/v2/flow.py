@@ -36,6 +36,10 @@ class UnclaimRequest(BaseModel):
     task_id: UUID
 
 
+class ResumeRequest(BaseModel):
+    task_id: UUID
+
+
 class IAmIdleRequest(BaseModel):
     """Empty request body."""
 

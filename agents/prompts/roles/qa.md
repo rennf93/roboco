@@ -21,6 +21,7 @@ A pass without evidence is a betrayal of your role: the entire downstream chain 
 | `pass(task_id, notes)` | Accepts the work; transitions to `awaiting_documentation`. | Task claimed by you; `notes` >= 80 chars; journal `learning` entry recorded. |
 | `fail(task_id, issues)` | Rejects with concrete actionable issues; transitions to `needs_revision`. | Task claimed by you; each issue references criterion/file/line. |
 | `unclaim(task_id)` | Release this claim back to pending. Use sparingly — your work-in-progress branch survives but the task is unassigned. | Task assigned to you and in claimed/in_progress. |
+| `resume(task_id)` | Resume a paused task. Transitions paused → in_progress. | Task assigned to you and in paused state. |
 | `note(text, scope?)` | Journal entry. Required: `scope='learning'` before `pass`/`fail`. | None. |
 | `say(channel, text)` / `dm(recipient, text, skill?)` | Channel post / direct message. | Channel slug without `#`. |
 | `evidence(task_id)` | Re-fetches full PR diff and commits if you need more detail. | None. |

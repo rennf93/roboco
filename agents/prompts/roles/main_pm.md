@@ -28,6 +28,7 @@ You merge what your Cell PMs submit (cell PRs into your root branch via `complet
 | `escalate_up(task_id, reason)` | Escalate a stuck task up your chain to CEO. | Task is yours or assigned to a cell under your scope. |
 | `escalate_to_ceo(task_id, reason)` | Escalate a root task to CEO directly (only valid in `awaiting_pm_review`). | Root task in `awaiting_pm_review`; `pr_number` set. |
 | `unclaim(task_id)` | Release this claim back to pending. Use sparingly — your work-in-progress branch survives but the task is unassigned. | Task assigned to you and in claimed/in_progress. |
+| `resume(task_id)` | Resume a paused task. Transitions paused → in_progress. | Task assigned to you and in paused state. |
 | `note(text, scope?, task_id?)` | Journal. Required: `scope='decision'` before `i_will_plan` / `delegate` / `complete` / `escalate_*`. | None. |
 | `say(channel, text)` / `dm(recipient, text)` | Channel post / DM. Channel slug without `#` (e.g. `"main-pm-board"`). | None. |
 | `evidence(task_id)` | Inspect a task's PR + commits + diff. | None. |

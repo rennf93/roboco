@@ -186,7 +186,7 @@ class Choreographer:
             return Envelope.ok(
                 status=str(t.status),
                 task_id=str(t.id),
-                next=f"call i_will_work_on(task_id='{t.id}') to resume",
+                next=f"call resume(task_id='{t.id}') to continue paused work",
                 context_briefing=await self._briefing_for(agent_id, t.id),
             )
         return Envelope.ok(
@@ -820,6 +820,60 @@ class Choreographer:
             context_briefing=briefing,
         )
 
+    async def resume(self, agent_id: UUID, task_id: UUID) -> Envelope:
+        """Resume a paused task this agent owns; transitions paused → in_progress.
+
+        Audit J33 — ``i_am_idle`` auto-pauses owned in_progress tasks (so
+        the closure dispatcher can wake the agent when subtasks finish),
+        and the lifecycle table allows ``paused → in_progress``, but no
+        verb exposed that transition to agents. ``i_will_work_on`` is
+        explicitly limited to needs_revision/pending/claimed; overloading
+        it would muddy state-machine intent. ``resume`` keeps it explicit.
+
+        State and authorization checks live here; the DB write itself is
+        in ``TaskService.resume_for_agent``.
+        """
+        t = await self.task.get(task_id)
+        briefing = await self._briefing_for(agent_id, task_id)
+        if t is None:
+            return await self._emit_rejection(
+                Envelope.not_found(message=f"task {task_id} not found"),
+                agent_id=agent_id,
+                task_id=task_id,
+                verb="resume",
+            )
+        if t.assigned_to != agent_id:
+            return await self._emit_rejection(
+                Envelope.not_authorized(
+                    message="not your claim",
+                    remediate="only the current claimant can resume",
+                    context_briefing=briefing,
+                ),
+                agent_id=agent_id,
+                task_id=task_id,
+                verb="resume",
+            )
+        after = await self.task.resume_for_agent(task_id, agent_id)
+        if after is None:
+            return await self._emit_rejection(
+                Envelope.invalid_state(
+                    message=f"cannot resume from status {t.status}",
+                    remediate="only paused tasks can be resumed",
+                    context_briefing=briefing,
+                ),
+                agent_id=agent_id,
+                task_id=task_id,
+                verb="resume",
+            )
+        # Heartbeat — agent is back to active work after the resume.
+        await self._touch(task_id)
+        return Envelope.ok(
+            status=str(after.status),
+            task_id=str(task_id),
+            next="resumed; continue working — i_have_committed when ready",
+            context_briefing=briefing,
+        )
+
     async def i_am_idle(self, agent_id: UUID) -> Envelope:
         """Report no more work. Soft-block if there are unread A2As or @mentions.
 
@@ -851,12 +905,23 @@ class Choreographer:
             return await self._emit_rejection(
                 guard, agent_id=agent_id, task_id=None, verb="i_am_idle"
             )
-        await self._auto_pause_in_progress_tasks(agent_id)
+        paused_ids = await self._auto_pause_in_progress_tasks(agent_id)
         await self.task.mark_agent_idle(agent_id)
+        if paused_ids:
+            # Tell the agent how to come back to these tasks. Without this,
+            # an agent respawned for a paused task has no signal that
+            # `resume(task_id)` is the way back in.
+            joined = ", ".join(f"resume(task_id='{tid}')" for tid in paused_ids)
+            next_msg = (
+                "container will shut down; on respawn, "
+                f"call {joined} to continue paused work"
+            )
+        else:
+            next_msg = "container will shut down"
         return Envelope.ok(
             status="idle",
             task_id=None,
-            next="container will shut down",
+            next=next_msg,
             context_briefing=briefing,
         )
 
@@ -893,16 +958,23 @@ class Choreographer:
             context_briefing=briefing,
         )
 
-    async def _auto_pause_in_progress_tasks(self, agent_id: UUID) -> None:
+    async def _auto_pause_in_progress_tasks(self, agent_id: UUID) -> list[str]:
         """Pause every in_progress task assigned to this agent.
 
         Restores the pre-Phase-4 auto-pause behavior: a PM that called
         i_will_plan and is now idle leaves the parent at ``paused`` so the
         closure dispatcher knows to respawn it when subtasks complete.
+
+        Returns the list of task IDs that were paused (as strings) so
+        ``i_am_idle`` can tell the agent which ``resume(task_id)`` calls
+        await it on the next respawn. Empty list when nothing was active.
         """
         in_progress = await self.task.list_in_progress_for_agent(agent_id)
+        paused_ids: list[str] = []
         for t in in_progress:
             await self.task.pause_for_agent(agent_id, t.id)
+            paused_ids.append(str(t.id))
+        return paused_ids
 
     # --- Phase 2 (QA) verbs ---
 

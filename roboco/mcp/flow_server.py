@@ -93,6 +93,11 @@ def unclaim(task_id: str) -> dict[str, Any]:
     return _post(_role_path("unclaim"), {"task_id": task_id})
 
 
+def resume(task_id: str) -> dict[str, Any]:
+    """Resume a paused task. Transitions paused → in_progress for the assignee."""
+    return _post(_role_path("resume"), {"task_id": task_id})
+
+
 def i_am_idle() -> dict[str, Any]:
     """Report no more work. Soft-blocks if you have unread A2A/mentions."""
     return _post(_role_path("i_am_idle"), {})
@@ -219,6 +224,7 @@ _TOOLS: dict[str, Any] = {
     "i_am_done": i_am_done,
     "i_am_blocked": i_am_blocked,
     "unclaim": unclaim,
+    "resume": resume,
     "i_am_idle": i_am_idle,
     # qa
     "claim_review": claim_review,
