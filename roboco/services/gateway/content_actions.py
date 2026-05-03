@@ -56,6 +56,17 @@ class ContentActionsDeps:
     a2a: Any
     journal: Any
     workspace: Any
+    notifications: Any
+
+
+# Roles authorized to issue formal ack-required notifications via `notify`.
+# Pre-gateway, NotificationService callers were gated by the same set
+# (PMs and Board members); the gateway re-asserts that gate at the verb
+# layer because the do.py router is shared by all roles.
+_NOTIFY_ALLOWED_ROLES: frozenset[str] = frozenset(
+    {"cell_pm", "main_pm", "product_owner", "head_marketing"}
+)
+_VALID_NOTIFY_PRIORITIES: frozenset[str] = frozenset({"normal", "high", "urgent"})
 
 
 class ContentActions:
@@ -85,6 +96,10 @@ class ContentActions:
     @property
     def workspace(self) -> Any:
         return self._deps.workspace
+
+    @property
+    def notifications(self) -> Any:
+        return self._deps.notifications
 
     async def commit(
         self,
@@ -273,6 +288,76 @@ class ContentActions:
         return Envelope.ok(
             status="sent",
             task_id=str(task_id),
+            next="continue",
+            context_briefing={},
+        )
+
+    async def notify(
+        self,
+        *,
+        agent_id: UUID,
+        target: str,
+        text: str,
+        priority: str = "normal",
+        task_id: UUID | None = None,
+    ) -> Envelope:
+        """Send a formal ack-required notification (PMs and Board only).
+
+        Distinct from `say` (channel post, no ack) and `dm` (informal A2A):
+        a notification is a formal signal that the recipient must
+        acknowledge. Pre-gateway, NotificationService restricted senders
+        to PMs/Board; the gateway re-asserts that gate here because the
+        do.py router is shared by all roles (no router-level dep).
+
+        ``target`` is an agent slug ("be-dev-1", "main-pm", "ceo");
+        NotificationService resolves it to a UUID at insert time.
+        ``priority`` is one of normal|high|urgent. ``task_id`` is
+        auto-filled from the caller's active task when omitted, but
+        omission is permitted for off-task notifications (e.g., Board
+        broadcasts).
+        """
+        from roboco.models import NotificationPriority
+
+        if priority not in _VALID_NOTIFY_PRIORITIES:
+            return Envelope.invalid_state(
+                message=f"invalid priority {priority!r}",
+                remediate=(
+                    f"priority must be one of: {sorted(_VALID_NOTIFY_PRIORITIES)}"
+                ),
+                context_briefing={},
+            )
+        agent = await self.task.agent_for(agent_id)
+        caller_role = agent.role if agent is not None else None
+        if caller_role not in _NOTIFY_ALLOWED_ROLES:
+            return Envelope.not_authorized(
+                message=(
+                    f"role {caller_role!r} cannot send formal notifications; "
+                    "only PMs and Board may issue ack-required signals"
+                ),
+                remediate=(
+                    "use say() for channel posts or dm() for informal A2A. "
+                    "notify() is reserved for cell_pm, main_pm, "
+                    "product_owner, and head_marketing."
+                ),
+                context_briefing={},
+            )
+        if task_id is not None:
+            if reject := await self._verify_explicit_task_ownership(agent_id, task_id):
+                return reject
+        else:
+            t = await self.task.get_active_task_for_agent(agent_id)
+            if t is not None:
+                task_id = t.id
+        await self.notifications.send_ack_notification(
+            from_agent=agent_id,
+            to_agent=target,
+            body=text,
+            priority=NotificationPriority(priority),
+            task_id=task_id,
+        )
+        return Envelope.ok(
+            status="sent",
+            task_id=str(task_id) if task_id else None,
             next="continue",
             context_briefing={},
         )

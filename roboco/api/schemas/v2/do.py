@@ -29,5 +29,12 @@ class DmRequest(BaseModel):
     skill: str | None = None
 
 
+class NotifyRequest(BaseModel):
+    target: str  # agent slug
+    text: str = Field(..., min_length=1)
+    priority: str = "normal"  # normal | high | urgent
+    task_id: UUID | None = None
+
+
 class EvidenceRequest(BaseModel):
     task_id: UUID
