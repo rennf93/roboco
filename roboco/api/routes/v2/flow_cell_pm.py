@@ -6,6 +6,7 @@ from uuid import UUID
 from fastapi import APIRouter, Depends, Header
 
 from roboco.api.deps import get_choreographer
+from roboco.api.routes.v2._role_dep import require_cell_pm
 from roboco.api.schemas.v2.flow import (
     CompleteRequest,
     DelegateRequest,
@@ -19,7 +20,11 @@ from roboco.api.schemas.v2.flow import (
 )
 from roboco.services.gateway.choreographer import Choreographer, DelegateInputs
 
-router = APIRouter(prefix="/api/v2/flow/cell_pm", tags=["v2-flow-cell-pm"])
+router = APIRouter(
+    prefix="/api/v2/flow/cell_pm",
+    tags=["v2-flow-cell-pm"],
+    dependencies=[require_cell_pm],
+)
 
 
 _AgentIdHeader = Annotated[UUID, Header(alias="X-Agent-ID")]

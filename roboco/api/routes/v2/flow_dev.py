@@ -6,6 +6,7 @@ from uuid import UUID
 from fastapi import APIRouter, Depends, Header
 
 from roboco.api.deps import get_choreographer
+from roboco.api.routes.v2._role_dep import require_dev
 from roboco.api.schemas.v2.flow import (
     GiveMeWorkRequest,
     IAmBlockedRequest,
@@ -17,7 +18,11 @@ from roboco.api.schemas.v2.flow import (
 )
 from roboco.services.gateway.choreographer import Choreographer
 
-router = APIRouter(prefix="/api/v2/flow/dev", tags=["v2-flow-dev"])
+router = APIRouter(
+    prefix="/api/v2/flow/dev",
+    tags=["v2-flow-dev"],
+    dependencies=[require_dev],
+)
 
 
 _AgentIdHeader = Annotated[UUID, Header(alias="X-Agent-ID")]

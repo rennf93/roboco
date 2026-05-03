@@ -19,7 +19,7 @@ _HTTP_200 = 200
 
 _AGENT_ID = str(uuid4())
 _TASK_ID = str(uuid4())
-_HEADERS = {"X-Agent-ID": _AGENT_ID}
+_HEADERS = {"X-Agent-ID": _AGENT_ID, "X-Agent-Role": "auditor"}
 
 
 def _make_envelope(

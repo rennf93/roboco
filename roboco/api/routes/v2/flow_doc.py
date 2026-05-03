@@ -6,6 +6,7 @@ from uuid import UUID
 from fastapi import APIRouter, Depends, Header
 
 from roboco.api.deps import get_choreographer
+from roboco.api.routes.v2._role_dep import require_doc
 from roboco.api.schemas.v2.flow import (
     ClaimDocTaskRequest,
     GiveMeWorkRequest,
@@ -14,7 +15,11 @@ from roboco.api.schemas.v2.flow import (
 )
 from roboco.services.gateway.choreographer import Choreographer
 
-router = APIRouter(prefix="/api/v2/flow/documenter", tags=["v2-flow-documenter"])
+router = APIRouter(
+    prefix="/api/v2/flow/documenter",
+    tags=["v2-flow-documenter"],
+    dependencies=[require_doc],
+)
 
 
 _AgentIdHeader = Annotated[UUID, Header(alias="X-Agent-ID")]
