@@ -68,6 +68,11 @@ _NOTIFY_ALLOWED_ROLES: frozenset[str] = frozenset(
 )
 _VALID_NOTIFY_PRIORITIES: frozenset[str] = frozenset({"normal", "high", "urgent"})
 
+# Only roles whose manifest includes "commit" should reach the verb body.
+# Server-side gate is defense-in-depth in case the MCP manifest filter ever
+# misroutes the call (smoke 2026-05-03 saw main-pm hit the git layer).
+_COMMIT_ALLOWED_ROLES: frozenset[str] = frozenset({"developer", "documenter"})
+
 
 class ContentActions:
     def __init__(self, deps: ContentActionsDeps) -> None:
@@ -113,6 +118,21 @@ class ContentActions:
         Auto-prefixes [task-id], validates message via commit_validator,
         records progress entry from the commit message.
         """
+        agent = await self.task.agent_for(agent_id)
+        caller_role = agent.role if agent is not None else None
+        if caller_role not in _COMMIT_ALLOWED_ROLES:
+            return Envelope.not_authorized(
+                message=(
+                    f"role '{caller_role}' may not commit code; only"
+                    " developers and documenters write commits"
+                ),
+                remediate=(
+                    "PMs delegate code work via delegate(); board members"
+                    " do not write code. If you intended to record an"
+                    " observation, use note() instead."
+                ),
+                context_briefing={},
+            )
         subject = _strip_task_prefix(message).strip()
         result = validate_commit_message(subject)
         if not result.ok:
