@@ -23,6 +23,7 @@ from roboco.db.tables import (
 )
 from roboco.enforcement import (
     GitContext,
+    TaskLifecycleError,
     TaskOwnershipError,
     validate_git_requirements,
     validate_task_ownership,
@@ -1811,6 +1812,9 @@ class TaskService(BaseService):
         - the task does not exist
         - the requesting agent is not the current claimant
         - the task status is not claimed/in_progress
+        - the lifecycle layer rejects the transition (defense-in-depth
+          against future ``VALID_TRANSITIONS``/``ROLE_RESTRICTED_TRANSITIONS``
+          changes; the choreographer pre-checks status today)
 
         On success, clears ``assigned_to`` and transitions the row back to
         ``pending`` so another agent (or the same one, fresh) can pick it
@@ -1822,8 +1826,29 @@ class TaskService(BaseService):
             return None
         if task.status not in (TaskStatus.CLAIMED, TaskStatus.IN_PROGRESS):
             return None
+
+        # Look up the requesting agent's role so role-restricted-transition
+        # rules apply if/when claimed→pending or in_progress→pending ever
+        # gain restrictions. Mirrors the pattern in `_finalize_claim`.
+        agent_result = await self.session.execute(
+            select(AgentTable).where(AgentTable.id == agent_id)
+        )
+        agent = agent_result.scalar_one_or_none()
+        agent_role = agent.role.value if agent and agent.role else None
+
+        # Route through the single point of truth for status transitions.
+        # _validate_and_set_status raises TaskLifecycleError on invalid
+        # transition or role; treat that as a clean rejection (return None)
+        # so the choreographer's existing "invalid_state" envelope still
+        # fires instead of a 500 leaking out.
+        try:
+            self._validate_and_set_status(task, TaskStatus.PENDING, agent_role)
+        except TaskLifecycleError:
+            return None
+
+        # _validate_and_set_status only updates `status`; clearing the
+        # claim is the unclaim's specific side effect.
         task.assigned_to = cast("Any", None)
-        task.status = TaskStatus.PENDING
         await self.session.flush()
         return task
 
