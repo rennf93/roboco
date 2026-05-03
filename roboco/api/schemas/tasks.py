@@ -264,6 +264,7 @@ class TaskResponse(BaseModel):
     started_at: datetime | None
     completed_at: datetime | None
     target_date: datetime | None
+    last_heartbeat_at: datetime | None = None
 
     # Planning
     estimated_complexity: Complexity
@@ -609,6 +610,7 @@ def task_to_response(task: "TaskTable") -> TaskResponse:
         started_at=task.started_at,
         completed_at=task.completed_at,
         target_date=task.target_date,
+        last_heartbeat_at=getattr(task, "last_heartbeat_at", None),
         estimated_complexity=task.estimated_complexity,
         plan=convert_plan(task.plan),
         checkpoints=convert_checkpoints(task.checkpoints),
