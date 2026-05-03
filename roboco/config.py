@@ -300,18 +300,18 @@ class Settings(BaseSettings):
     )
 
     # Gateway coordination thresholds
+    # Single source of truth for "claim heartbeat is stale": consumed both by
+    # `trigger_filter` (deciding whether to QUEUE a fresh spawn) and by
+    # `_reap_stale_claims` (deciding whether to RELEASE the claim back to
+    # pending). Keeping them on one field guarantees both layers agree on
+    # the same tick — the reaper runs first, releases the row, and the
+    # queued spawn finds an unclaimed task. Splitting them into two fields
+    # opens a window where trigger_filter queues duplicate spawns against a
+    # claim the reaper hasn't yet released — pure dispatcher churn.
     claim_stale_seconds: int = Field(
         default=180,
         ge=60,
         description="Claim heartbeat staleness threshold (seconds)",
-    )
-    claim_heartbeat_ttl_seconds: int = Field(
-        default=300,
-        ge=60,
-        description=(
-            "If an agent's last_heartbeat_at is older than this, the dispatcher"
-            " considers the claim dead and releases the task back to pending."
-        ),
     )
     spawn_cooldown_seconds: int = Field(
         default=60,

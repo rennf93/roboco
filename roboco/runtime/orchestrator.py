@@ -451,12 +451,14 @@ class AgentOrchestrator:
         # is in a loop — without this gate the orchestrator re-spawns every
         # tick forever (seen in production on 2026-04-22).
         self._pm_respawn_tracker: dict[tuple[str, str], dict[str, Any]] = {}
-        # Stale-claim reaper config + injectable service slot. Production
-        # code leaves `_task_svc` None so the reaper opens its own per-tick
-        # session; tests can pre-set a mock on an instance built via
-        # `__new__` to bypass this dance.
-        self._claim_heartbeat_ttl: int = settings.claim_heartbeat_ttl_seconds
-        self._task_svc: TaskService | None = None
+        # Stale-claim reaper config. Sourced from the same setting that
+        # `trigger_filter` consumes so both layers agree on the staleness
+        # cutoff on the same dispatch tick — the reaper runs first, frees
+        # the row, and any spawn `trigger_filter` queues lands on an
+        # unclaimed task. Tests bypass `__init__` via `__new__` and bind
+        # a mock `_task_svc` on the instance directly; production never
+        # uses that attribute, so it's not initialized here.
+        self._claim_heartbeat_ttl: int = settings.claim_stale_seconds
 
     # =========================================================================
     # LIFECYCLE
@@ -3539,16 +3541,13 @@ Start now: evidence(task_id="{task_id}")
         here in the orchestrator; the actual UPDATE statements live in
         ``TaskService.unclaim_for_reaper``.
 
-        If an instance has a pre-bound ``_task_svc`` (used by tests and
-        conceivable future caching), use it directly. Otherwise open a
-        per-tick session — short-lived because the reaper runs on every
-        dispatch cycle and the work is cheap (one SELECT plus N UPDATEs
-        for the typically-empty stale set).
+        Opens a fresh per-tick session — short-lived because the reaper
+        runs on every dispatch cycle and the work is cheap (one SELECT
+        plus N UPDATEs for the typically-empty stale set). Tests that
+        need to inject a mock service do so by building an instance via
+        ``__new__`` (bypassing this method) and calling
+        ``_reap_with_service`` directly.
         """
-        if self._task_svc is not None:
-            await self._reap_with_service(self._task_svc)
-            return
-
         from roboco.db.base import get_session_factory
         from roboco.services.task import TaskService
 
