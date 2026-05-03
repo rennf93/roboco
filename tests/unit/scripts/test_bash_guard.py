@@ -48,5 +48,34 @@ def test_blocks_internal_curl_to_127() -> None:
     assert _run("curl http://127.0.0.1:8000/api/health") == _DENIED
 
 
+def test_blocks_scheme_less_curl_to_orchestrator() -> None:
+    assert _run("curl roboco-orchestrator:8000/api") != _ALLOWED
+
+
+def test_blocks_scheme_less_curl_to_localhost() -> None:
+    assert _run("curl localhost:8000/api") != _ALLOWED
+
+
+def test_blocks_scheme_less_curl_to_127() -> None:
+    assert _run("curl 127.0.0.1:8000/api") != _ALLOWED
+
+
 def test_allows_external_curl_to_documentation() -> None:
     assert _run("curl https://docs.python.org/3/") == _ALLOWED
+
+
+def test_github_url_still_uses_github_specific_deny() -> None:
+    """Existing GitHub deny rule must fire BEFORE the new gateway deny."""
+    payload = json.dumps(
+        {"tool_name": "Bash", "tool_input": {"command": "curl https://api.github.com/user"}}
+    )
+    result = subprocess.run(
+        [str(GUARD)],
+        input=payload,
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode != _ALLOWED
+    # The GitHub-specific message should appear, not the gateway message.
+    combined = (result.stdout + result.stderr).lower()
+    assert "github" in combined or "pat" in combined
