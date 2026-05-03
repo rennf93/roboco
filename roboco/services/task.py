@@ -1867,8 +1867,11 @@ class TaskService(BaseService):
           against future ``VALID_TRANSITIONS``/``ROLE_RESTRICTED_TRANSITIONS``
           changes; the choreographer pre-checks status today)
 
-        Routes through ``_validate_and_set_status`` (single point of truth)
-        to keep lifecycle enforcement consistent with claim/start/unclaim.
+        Delegates to ``resume`` after the gateway-specific ownership/state
+        pre-checks so we inherit its structlog "Task resumed" event and the
+        fire-and-forget RAG lifecycle-event indexing — gateway-driven resumes
+        must remain visible to logs and the RAG corpus. Mirrors
+        ``pause_for_agent``'s delegation pattern.
         """
         task = await self.get(task_id)
         if task is None or task.assigned_to != agent_id:
@@ -1885,17 +1888,14 @@ class TaskService(BaseService):
         agent = agent_result.scalar_one_or_none()
         agent_role = agent.role.value if agent and agent.role else None
 
-        # Route through the single point of truth for status transitions.
-        # _validate_and_set_status raises TaskLifecycleError on invalid
-        # transition or role; treat that as a clean rejection (return None)
-        # so the choreographer's "invalid_state" envelope still fires
-        # instead of a 500 leaking out.
+        # `resume` calls `_validate_and_set_status` internally, which raises
+        # TaskLifecycleError on invalid transition or role. Treat that as a
+        # clean rejection (return None) so the choreographer's
+        # "invalid_state" envelope still fires instead of a 500 leaking out.
         try:
-            self._validate_and_set_status(task, TaskStatus.IN_PROGRESS, agent_role)
+            return await self.resume(task_id, agent_role)
         except TaskLifecycleError:
             return None
-        await self.session.flush()
-        return task
 
     async def block(
         self,
