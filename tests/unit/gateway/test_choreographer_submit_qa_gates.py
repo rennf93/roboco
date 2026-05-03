@@ -201,9 +201,7 @@ async def test_i_am_done_proceeds_when_all_gates_pass() -> None:
     journal_svc.has_reflect_for_task.return_value = True
     work_svc = AsyncMock()
     work_svc.files_changed.return_value = ["foo.py"]
-    deps = _make_deps(
-        task=task_svc, journal=journal_svc, work_session=work_svc
-    )
+    deps = _make_deps(task=task_svc, journal=journal_svc, work_session=work_svc)
     c = Choreographer(deps)
 
     env = await c.i_am_done(agent_id, task_id, "all done")
@@ -234,9 +232,7 @@ async def test_i_am_done_with_catchup_runs_full_chain() -> None:
     after_pr_refresh = MagicMock(
         **{**after_verify.__dict__, "pr_number": 8, "pr_url": "https://x/pr/8"}
     )
-    after_submit = MagicMock(
-        **{**after_pr_refresh.__dict__, "status": "awaiting_qa"}
-    )
+    after_submit = MagicMock(**{**after_pr_refresh.__dict__, "status": "awaiting_qa"})
     task_svc = AsyncMock()
     task_svc.get.side_effect = [initial, after_pr_refresh]
     task_svc.submit_verification.return_value = after_verify

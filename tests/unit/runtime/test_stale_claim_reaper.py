@@ -83,9 +83,7 @@ async def test_reap_stale_claims_swallows_unclaim_errors() -> None:
     orch._claim_heartbeat_ttl = 300
     svc = AsyncMock()
     svc.list_in_progress_or_claimed.return_value = [task_a, task_b]
-    svc.unclaim_for_reaper = AsyncMock(
-        side_effect=[RuntimeError("transient"), None]
-    )
+    svc.unclaim_for_reaper = AsyncMock(side_effect=[RuntimeError("transient"), None])
 
     await orch._reap_with_service(svc)
 

@@ -1826,9 +1826,7 @@ class MessagingService(BaseService):
                 agent_id=str(agent_id),
                 channel_slug=channel_slug,
                 action="write",
-                message=(
-                    f"agent {agent_id} not found; cannot validate channel access"
-                ),
+                message=(f"agent {agent_id} not found; cannot validate channel access"),
             )
         return await self.send_message(
             MessageCreateRequest(

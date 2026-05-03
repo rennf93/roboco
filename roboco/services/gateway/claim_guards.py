@@ -36,9 +36,7 @@ _TERMINAL_STATUSES: frozenset[str] = frozenset({"completed", "cancelled"})
 # claim policy: developers do code-like work; QA reviews; documenters
 # document.  PMs cannot claim code (see pm_cannot_execute_code).
 _ROLE_TASK_TYPE_ALLOW: dict[str, frozenset[str]] = {
-    "developer": frozenset(
-        {"code", "research", "design"}
-    ),
+    "developer": frozenset({"code", "research", "design"}),
     "qa": frozenset(),  # QA never enters via i_will_work_on
     "documenter": frozenset(),  # Doc never enters via i_will_work_on
 }
@@ -65,8 +63,7 @@ def already_active_guard(
             "finish or pause it before claiming new work."
         ),
         remediate=(
-            f"finish or pause {blocker.id} first via i_am_done(...) "
-            "or i_am_idle()"
+            f"finish or pause {blocker.id} first via i_am_done(...) or i_am_idle()"
         ),
     )
 
@@ -85,8 +82,7 @@ def paused_tasks_guard(paused_tasks: list[Any]) -> Envelope | None:
             "claiming new work."
         ),
         remediate=(
-            f"resume {paused.id} (call i_will_work_on again) before starting "
-            "new work"
+            f"resume {paused.id} (call i_will_work_on again) before starting new work"
         ),
     )
 
@@ -103,8 +99,7 @@ def pm_cannot_execute_code_guard(role: str, task_type: str) -> Envelope | None:
     nice_role = role.replace("_", " ").title()
     return Envelope.not_authorized(
         message=(
-            f"{nice_role} cannot claim code tasks. "
-            "PMs coordinate, never execute code."
+            f"{nice_role} cannot claim code tasks. PMs coordinate, never execute code."
         ),
         remediate=(
             "PMs coordinate, never execute code. Delegate this to a "
@@ -136,10 +131,7 @@ def role_typed_claim_guard(role: str, task_type: str) -> Envelope | None:
     if task_type in allowed:
         return None
     return Envelope.not_authorized(
-        message=(
-            f"role {role!r} cannot claim a {task_type!r} task via "
-            "i_will_work_on"
-        ),
+        message=(f"role {role!r} cannot claim a {task_type!r} task via i_will_work_on"),
         remediate=(
             "developer claims code/research/design; qa uses claim_review; "
             "documenter uses claim_doc_task"
@@ -147,9 +139,7 @@ def role_typed_claim_guard(role: str, task_type: str) -> Envelope | None:
     )
 
 
-def sibling_sequence_guard(
-    target_task: Any, siblings: list[Any]
-) -> Envelope | None:
+def sibling_sequence_guard(target_task: Any, siblings: list[Any]) -> Envelope | None:
     """Refuse claim if any earlier-sequence sibling is non-terminal.
 
     Pre-gateway: claim.py:_validate_sibling_sequence 121-180.

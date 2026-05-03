@@ -305,9 +305,10 @@ async def test_cell_pm_cannot_claim_code_task_via_i_will_work_on() -> None:
     body = env.as_dict()
     assert body["error"] == "not_authorized"
     assert "PM" in body["message"] or "code" in body["message"].lower()
-    assert "delegate" in body["remediate"].lower() or "developer" in body[
-        "remediate"
-    ].lower()
+    assert (
+        "delegate" in body["remediate"].lower()
+        or "developer" in body["remediate"].lower()
+    )
     task_svc.claim.assert_not_awaited()
 
 
