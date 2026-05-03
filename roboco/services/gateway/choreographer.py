@@ -255,14 +255,14 @@ class Choreographer:
             # Resumption after QA rejection: agent already owned the task,
             # role-typed claim already passed at original claim time.
             if t.assigned_to != agent_id:
-                t = await self.task.claim(agent_id, task_id)
-            t = await self.task.start(agent_id, task_id)
+                t = await self.task.claim(task_id, agent_id)
+            t = await self.task.start(task_id, agent_id)
         elif status == "pending":
             # Fresh claim — run all claim-time gates BEFORE mutating state.
             if guard := await self._run_claim_guards(agent_id=agent_id, task=t):
                 return self._with_briefing(guard, briefing)
             if t.assigned_to is None or t.assigned_to != agent_id:
-                t = await self.task.claim(agent_id, task_id)
+                t = await self.task.claim(task_id, agent_id)
             if not t.plan and not plan:
                 remediate = (
                     f"call i_will_work_on(task_id='{task_id}',"
@@ -275,7 +275,7 @@ class Choreographer:
                 )
             if plan:
                 t = await self.task.set_plan(task_id, plan)
-            t = await self.task.start(agent_id, task_id)
+            t = await self.task.start(task_id, agent_id)
         elif status == "claimed" and t.assigned_to == agent_id:
             # Resumption: skip sibling-sequence (already passed at claim).
             # Still enforce already_active/paused so concurrent claims fail.
@@ -284,7 +284,7 @@ class Choreographer:
             )
             if guard:
                 return self._with_briefing(guard, briefing)
-            t = await self.task.start(agent_id, task_id)
+            t = await self.task.start(task_id, agent_id)
         else:
             return Envelope.invalid_state(
                 message=f"task {task_id} is in {status}; cannot start work",
@@ -1045,7 +1045,7 @@ class Choreographer:
             return rejection
 
         if t.assigned_to is None or t.assigned_to != pm_agent_id:
-            t = await self.task.claim(pm_agent_id, task_id)
+            t = await self.task.claim(task_id, pm_agent_id)
             if t is None:
                 return Envelope.invalid_state(
                     message="claim failed",
@@ -1053,7 +1053,7 @@ class Choreographer:
                     context_briefing=await self._briefing_for(pm_agent_id, task_id),
                 )
         await self.task.set_plan(task_id, plan)
-        t = await self.task.start(pm_agent_id, task_id)
+        t = await self.task.start(task_id, pm_agent_id)
         return Envelope.ok(
             status=str(t.status) if t else "in_progress",
             task_id=str(task_id),

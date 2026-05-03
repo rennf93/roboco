@@ -147,7 +147,7 @@ async def test_i_will_work_on_allows_when_earlier_sibling_terminal() -> None:
 
     env = await c.i_will_work_on(agent_id, target_id)
     assert env.error is None
-    task_svc.claim.assert_awaited_once_with(agent_id, target_id)
+    task_svc.claim.assert_awaited_once_with(target_id, agent_id)
 
 
 @pytest.mark.asyncio
@@ -242,7 +242,7 @@ async def test_i_will_work_on_resumption_does_not_self_block() -> None:
 
     env = await c.i_will_work_on(agent_id, task_id)
     assert env.error is None
-    task_svc.start.assert_awaited_once_with(agent_id, task_id)
+    task_svc.start.assert_awaited_once_with(task_id, agent_id)
 
 
 # ---------------------------------------------------------------------------
