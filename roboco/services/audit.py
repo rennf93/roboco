@@ -370,6 +370,41 @@ class AuditService(SingletonService):
             )
         )
 
+    async def log_event(
+        self,
+        *,
+        event_type: str,
+        agent_id: str | UUID | None = None,
+        task_id: str | UUID | None = None,
+        details: dict[str, Any] | None = None,
+        severity: str = "warning",
+    ) -> None:
+        """Log a generic audit event.
+
+        Free-form ``event_type`` (e.g. ``"gateway.rejected"``) lets callers
+        emit categorized signals without extending ``AuditEventType`` for
+        every new surface. The Choreographer uses this for gate-rejection
+        forensics; other layers can adopt the same shape.
+        """
+        self.log.warning(
+            "Audit event",
+            event_type=event_type,
+            agent_id=str(agent_id) if agent_id else None,
+            task_id=str(task_id) if task_id else None,
+            details=details or {},
+            timestamp=datetime.now(UTC).isoformat(),
+        )
+        await self._persist(
+            _AuditEvent(
+                event_type=event_type,
+                agent_id=agent_id,
+                target_type="task" if task_id else None,
+                target_id=task_id,
+                severity=severity,
+                details=details or {},
+            )
+        )
+
     async def log_agent_event(
         self,
         *,

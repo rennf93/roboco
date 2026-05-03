@@ -15,6 +15,8 @@ from dataclasses import dataclass
 from typing import Any
 from uuid import UUID
 
+import structlog
+
 from roboco.config import settings
 from roboco.services.gateway.claim_guards import (
     already_active_guard,
@@ -40,6 +42,8 @@ from roboco.services.gateway.tracing_gate import (
     Requirement,
     check_requirements,
 )
+
+logger = structlog.get_logger()
 
 
 @dataclass(frozen=True)
@@ -127,6 +131,41 @@ class Choreographer:
         """Best-effort heartbeat write; silent on missing task."""
         if task_id is not None:
             await self.task.heartbeat(task_id)
+
+    async def _emit_rejection(
+        self,
+        env: Envelope,
+        *,
+        agent_id: UUID,
+        task_id: UUID | None,
+        verb: str,
+    ) -> Envelope:
+        """Audit-log a rejection envelope; pass through unchanged on success.
+
+        Idempotent on success envelopes: the early `env.error is None`
+        return is the only fast path. Audit writes are best-effort —
+        failures must NEVER block the verb (the agent's response is the
+        contract; the audit row is observability-only).
+        """
+        if env.error is None:
+            return env
+        try:
+            await self.audit.log_event(
+                event_type="gateway.rejected",
+                agent_id=agent_id,
+                task_id=task_id,
+                details={
+                    "verb": verb,
+                    "reason": env.error,
+                    "message": env.message,
+                    "missing": env.missing or [],
+                },
+            )
+        except Exception as exc:
+            # Audit is best-effort: it must NEVER block the verb. The agent's
+            # response is the contract; the audit row is observability-only.
+            logger.warning("audit.log_event failed", error=str(exc), verb=verb)
+        return env
 
     # --- Phase 1 (developer) verbs ---
 
@@ -250,7 +289,12 @@ class Choreographer:
         """Claim/start/recover any actionable state of agent_id's task_id."""
         t = await self.task.get(task_id)
         if t is None:
-            return Envelope.not_found(message=f"task {task_id} not found")
+            return await self._emit_rejection(
+                Envelope.not_found(message=f"task {task_id} not found"),
+                agent_id=agent_id,
+                task_id=task_id,
+                verb="i_will_work_on",
+            )
         status = str(t.status)
         briefing = await self._briefing_for(agent_id, task_id)
 
@@ -263,7 +307,12 @@ class Choreographer:
         elif status == "pending":
             # Fresh claim — run all claim-time gates BEFORE mutating state.
             if guard := await self._run_claim_guards(agent_id=agent_id, task=t):
-                return self._with_briefing(guard, briefing)
+                return await self._emit_rejection(
+                    self._with_briefing(guard, briefing),
+                    agent_id=agent_id,
+                    task_id=task_id,
+                    verb="i_will_work_on",
+                )
             if t.assigned_to is None or t.assigned_to != agent_id:
                 t = await self.task.claim(task_id, agent_id)
             if not t.plan and not plan:
@@ -271,10 +320,15 @@ class Choreographer:
                     f"call i_will_work_on(task_id='{task_id}',"
                     f" plan='<one-paragraph plan describing what you will do>')"
                 )
-                return Envelope.tracing_gap(
-                    missing=["plan"],
-                    remediate=remediate,
-                    context_briefing=briefing,
+                return await self._emit_rejection(
+                    Envelope.tracing_gap(
+                        missing=["plan"],
+                        remediate=remediate,
+                        context_briefing=briefing,
+                    ),
+                    agent_id=agent_id,
+                    task_id=task_id,
+                    verb="i_will_work_on",
                 )
             if plan:
                 t = await self.task.set_plan(task_id, plan)
@@ -286,13 +340,23 @@ class Choreographer:
                 agent_id=agent_id, task=t, skip_sequence=True
             )
             if guard:
-                return self._with_briefing(guard, briefing)
+                return await self._emit_rejection(
+                    self._with_briefing(guard, briefing),
+                    agent_id=agent_id,
+                    task_id=task_id,
+                    verb="i_will_work_on",
+                )
             t = await self.task.start(task_id, agent_id)
         else:
-            return Envelope.invalid_state(
-                message=f"task {task_id} is in {status}; cannot start work",
-                remediate="call give_me_work() to find an actionable task",
-                context_briefing=briefing,
+            return await self._emit_rejection(
+                Envelope.invalid_state(
+                    message=f"task {task_id} is in {status}; cannot start work",
+                    remediate="call give_me_work() to find an actionable task",
+                    context_briefing=briefing,
+                ),
+                agent_id=agent_id,
+                task_id=task_id,
+                verb="i_will_work_on",
             )
 
         await self._touch(task_id)
@@ -316,20 +380,32 @@ class Choreographer:
         """Record that the dev made a commit; auto-creates progress entry."""
         t = await self.task.get_active_task_for_agent(agent_id)
         if t is None:
-            return Envelope.invalid_state(
-                message="no active task for this agent",
-                remediate="call give_me_work() then i_will_work_on(task_id, plan)",
-                context_briefing=await self._briefing_for(agent_id, None),
+            return await self._emit_rejection(
+                Envelope.invalid_state(
+                    message="no active task for this agent",
+                    remediate=(
+                        "call give_me_work() then i_will_work_on(task_id, plan)"
+                    ),
+                    context_briefing=await self._briefing_for(agent_id, None),
+                ),
+                agent_id=agent_id,
+                task_id=None,
+                verb="i_have_committed",
             )
         if not t.plan:
             no_plan_remediate = (
                 f"plan must be set first;"
                 f" call i_will_work_on(task_id='{t.id}', plan='...')"
             )
-            return Envelope.tracing_gap(
-                missing=["plan"],
-                remediate=no_plan_remediate,
-                context_briefing=await self._briefing_for(agent_id, t.id),
+            return await self._emit_rejection(
+                Envelope.tracing_gap(
+                    missing=["plan"],
+                    remediate=no_plan_remediate,
+                    context_briefing=await self._briefing_for(agent_id, t.id),
+                ),
+                agent_id=agent_id,
+                task_id=t.id,
+                verb="i_have_committed",
             )
         await self.task.add_progress(t.id, agent_id, message)
         await self._touch(t.id)
@@ -356,22 +432,37 @@ class Choreographer:
         """
         t = await self.task.get(task_id)
         if t is None:
-            return Envelope.not_found(message=f"task {task_id} not found")
+            return await self._emit_rejection(
+                Envelope.not_found(message=f"task {task_id} not found"),
+                agent_id=agent_id,
+                task_id=task_id,
+                verb="submit_for_qa",
+            )
         briefing = await self._briefing_for(agent_id, task_id)
         if t.assigned_to != agent_id:
-            return Envelope.not_authorized(
-                message=f"task {task_id} is not assigned to you",
-                remediate="call give_me_work() to find your work",
-                context_briefing=briefing,
+            return await self._emit_rejection(
+                Envelope.not_authorized(
+                    message=f"task {task_id} is not assigned to you",
+                    remediate="call give_me_work() to find your work",
+                    context_briefing=briefing,
+                ),
+                agent_id=agent_id,
+                task_id=task_id,
+                verb="submit_for_qa",
             )
         if not t.commits:
-            return Envelope.invalid_state(
-                message="no commits on this task yet",
-                remediate=(
-                    "commit at least one change before submitting for QA — "
-                    "call commit(message='<subject>')"
+            return await self._emit_rejection(
+                Envelope.invalid_state(
+                    message="no commits on this task yet",
+                    remediate=(
+                        "commit at least one change before submitting for QA — "
+                        "call commit(message='<subject>')"
+                    ),
+                    context_briefing=briefing,
                 ),
-                context_briefing=briefing,
+                agent_id=agent_id,
+                task_id=task_id,
+                verb="submit_for_qa",
             )
         if t.pr_number is not None:
             return Envelope.ok(
@@ -387,9 +478,7 @@ class Choreographer:
         await self._touch(task_id)
         await self.git.push_branch(t.branch_name)
         parent = parent_branch_for(t.branch_name)
-        pr = await self.git.create_pr(
-            t.branch_name, parent=parent, is_root_pr=False
-        )
+        pr = await self.git.create_pr(t.branch_name, parent=parent, is_root_pr=False)
 
         return Envelope.ok(
             status=str(t.status),
@@ -416,21 +505,35 @@ class Choreographer:
         """
         t = await self.task.get(task_id)
         if t is None:
-            return Envelope.not_found(message=f"task {task_id} not found")
+            return await self._emit_rejection(
+                Envelope.not_found(message=f"task {task_id} not found"),
+                agent_id=agent_id,
+                task_id=task_id,
+                verb="i_am_done",
+            )
         if t.assigned_to != agent_id:
-            return Envelope.not_authorized(
-                message="not assigned to you",
-                remediate="claim it via i_will_work_on(task_id) first",
-                context_briefing=await self._briefing_for(agent_id, task_id),
+            return await self._emit_rejection(
+                Envelope.not_authorized(
+                    message="not assigned to you",
+                    remediate="claim it via i_will_work_on(task_id) first",
+                    context_briefing=await self._briefing_for(agent_id, task_id),
+                ),
+                agent_id=agent_id,
+                task_id=task_id,
+                verb="i_am_done",
             )
 
         # 1. Tracing-gate preconditions (progress / reflect / acceptance)
         if rejection := await self._check_tracing_gates(agent_id, task_id, t):
-            return rejection
+            return await self._emit_rejection(
+                rejection, agent_id=agent_id, task_id=task_id, verb="i_am_done"
+            )
 
         # 2. Field-level gates (Gate Set E) — strict.
         if rejection := await self._check_submit_qa_field_gates(agent_id, task_id, t):
-            return rejection
+            return await self._emit_rejection(
+                rejection, agent_id=agent_id, task_id=task_id, verb="i_am_done"
+            )
 
         # 3. Submit (no catch-up).
         submitted = await self.task.submit_qa(agent_id, task_id, notes)
@@ -456,15 +559,30 @@ class Choreographer:
         """
         t = await self.task.get(task_id)
         if t is None:
-            return Envelope.not_found(message=f"task {task_id} not found")
+            return await self._emit_rejection(
+                Envelope.not_found(message=f"task {task_id} not found"),
+                agent_id=agent_id,
+                task_id=task_id,
+                verb="i_am_done_with_catchup",
+            )
         if t.assigned_to != agent_id:
-            return Envelope.not_authorized(
-                message="not assigned to you",
-                remediate="claim it via i_will_work_on(task_id) first",
-                context_briefing=await self._briefing_for(agent_id, task_id),
+            return await self._emit_rejection(
+                Envelope.not_authorized(
+                    message="not assigned to you",
+                    remediate="claim it via i_will_work_on(task_id) first",
+                    context_briefing=await self._briefing_for(agent_id, task_id),
+                ),
+                agent_id=agent_id,
+                task_id=task_id,
+                verb="i_am_done_with_catchup",
             )
         if rejection := await self._check_tracing_gates(agent_id, task_id, t):
-            return rejection
+            return await self._emit_rejection(
+                rejection,
+                agent_id=agent_id,
+                task_id=task_id,
+                verb="i_am_done_with_catchup",
+            )
         t = await self._run_catch_up(agent_id, task_id, t, notes)
         await self._notify_qa(agent_id, task_id, t)
         return await self._build_i_am_done_ok(agent_id, task_id, t)
@@ -635,7 +753,12 @@ class Choreographer:
         """Escalate task_id and write a struggle journal entry; idle the agent."""
         t = await self.task.get(task_id)
         if t is None:
-            return Envelope.not_found(message=f"task {task_id} not found")
+            return await self._emit_rejection(
+                Envelope.not_found(message=f"task {task_id} not found"),
+                agent_id=agent_id,
+                task_id=task_id,
+                verb="i_am_blocked",
+            )
         await self.journal.write_struggle(
             agent_id=agent_id, task_id=task_id, content=reason
         )
@@ -676,7 +799,9 @@ class Choreographer:
                 context_briefing=briefing,
             )
         if guard := await self._pending_assignment_guard(agent_id, briefing):
-            return guard
+            return await self._emit_rejection(
+                guard, agent_id=agent_id, task_id=None, verb="i_am_idle"
+            )
         await self._auto_pause_in_progress_tasks(agent_id)
         await self.task.mark_agent_idle(agent_id)
         return Envelope.ok(
@@ -741,14 +866,25 @@ class Choreographer:
         """
         t = await self.task.get(task_id)
         if t is None:
-            return Envelope.not_found(message=f"task {task_id} not found")
+            return await self._emit_rejection(
+                Envelope.not_found(message=f"task {task_id} not found"),
+                agent_id=qa_agent_id,
+                task_id=task_id,
+                verb="claim_review",
+            )
         if str(t.status) != "awaiting_qa":
-            return Envelope.invalid_state(
-                message=(
-                    f"task {task_id} is in {t.status}, expected awaiting_qa for review"
+            return await self._emit_rejection(
+                Envelope.invalid_state(
+                    message=(
+                        f"task {task_id} is in {t.status}, "
+                        "expected awaiting_qa for review"
+                    ),
+                    remediate="call give_me_work() to find an actionable QA task",
+                    context_briefing=await self._briefing_for(qa_agent_id, task_id),
                 ),
-                remediate="call give_me_work() to find an actionable QA task",
-                context_briefing=await self._briefing_for(qa_agent_id, task_id),
+                agent_id=qa_agent_id,
+                task_id=task_id,
+                verb="claim_review",
             )
 
         # Gate Set A: ALREADY_ACTIVE / PAUSED_TASKS_EXIST guard QA from
@@ -763,8 +899,13 @@ class Choreographer:
             skip_sequence=True,
         )
         if guard:
-            return self._with_briefing(
-                guard, await self._briefing_for(qa_agent_id, task_id)
+            return await self._emit_rejection(
+                self._with_briefing(
+                    guard, await self._briefing_for(qa_agent_id, task_id)
+                ),
+                agent_id=qa_agent_id,
+                task_id=task_id,
+                verb="claim_review",
             )
 
         t = await self.task.qa_claim(qa_agent_id, task_id)
@@ -809,12 +950,22 @@ class Choreographer:
         """
         t = await self.task.get(task_id)
         if t is None:
-            return Envelope.not_found(message=f"task {task_id} not found")
+            return await self._emit_rejection(
+                Envelope.not_found(message=f"task {task_id} not found"),
+                agent_id=qa_agent_id,
+                task_id=task_id,
+                verb="pass_review",
+            )
         if t.assigned_to != qa_agent_id:
-            return Envelope.not_authorized(
-                message="not assigned to you",
-                remediate="claim it via claim_review(task_id) first",
-                context_briefing=await self._briefing_for(qa_agent_id, task_id),
+            return await self._emit_rejection(
+                Envelope.not_authorized(
+                    message="not assigned to you",
+                    remediate="claim it via claim_review(task_id) first",
+                    context_briefing=await self._briefing_for(qa_agent_id, task_id),
+                ),
+                agent_id=qa_agent_id,
+                task_id=task_id,
+                verb="pass_review",
             )
 
         has_learning = await self.journal.has_learning_for_task(qa_agent_id, task_id)
@@ -824,8 +975,13 @@ class Choreographer:
             evidence_inspected=t.qa_evidence_inspected,
         )
         if missing:
-            return self._qa_tracing_gap(
-                missing, task_id, await self._briefing_for(qa_agent_id, task_id)
+            return await self._emit_rejection(
+                self._qa_tracing_gap(
+                    missing, task_id, await self._briefing_for(qa_agent_id, task_id)
+                ),
+                agent_id=qa_agent_id,
+                task_id=task_id,
+                verb="pass_review",
             )
 
         t = await self.task.qa_pass(qa_agent_id, task_id, notes)
@@ -892,18 +1048,33 @@ class Choreographer:
         """QA fails the task with concrete issues; transitions to needs_revision."""
         t = await self.task.get(task_id)
         if t is None:
-            return Envelope.not_found(message=f"task {task_id} not found")
+            return await self._emit_rejection(
+                Envelope.not_found(message=f"task {task_id} not found"),
+                agent_id=qa_agent_id,
+                task_id=task_id,
+                verb="fail_review",
+            )
         if t.assigned_to != qa_agent_id:
-            return Envelope.not_authorized(
-                message="not assigned to you",
-                remediate="claim it via claim_review(task_id) first",
-                context_briefing=await self._briefing_for(qa_agent_id, task_id),
+            return await self._emit_rejection(
+                Envelope.not_authorized(
+                    message="not assigned to you",
+                    remediate="claim it via claim_review(task_id) first",
+                    context_briefing=await self._briefing_for(qa_agent_id, task_id),
+                ),
+                agent_id=qa_agent_id,
+                task_id=task_id,
+                verb="fail_review",
             )
         if not issues:
-            return Envelope.invalid_state(
-                message="fail_review requires at least one issue",
-                remediate="pass issues=['<concrete actionable issue>', ...]",
-                context_briefing=await self._briefing_for(qa_agent_id, task_id),
+            return await self._emit_rejection(
+                Envelope.invalid_state(
+                    message="fail_review requires at least one issue",
+                    remediate="pass issues=['<concrete actionable issue>', ...]",
+                    context_briefing=await self._briefing_for(qa_agent_id, task_id),
+                ),
+                agent_id=qa_agent_id,
+                task_id=task_id,
+                verb="fail_review",
             )
 
         has_learning = await self.journal.has_learning_for_task(qa_agent_id, task_id)
@@ -914,8 +1085,13 @@ class Choreographer:
             evidence_inspected=t.qa_evidence_inspected,
         )
         if missing:
-            return self._qa_tracing_gap(
-                missing, task_id, await self._briefing_for(qa_agent_id, task_id)
+            return await self._emit_rejection(
+                self._qa_tracing_gap(
+                    missing, task_id, await self._briefing_for(qa_agent_id, task_id)
+                ),
+                agent_id=qa_agent_id,
+                task_id=task_id,
+                verb="fail_review",
             )
 
         t = await self.task.qa_fail(qa_agent_id, task_id, notes, issues)
@@ -941,14 +1117,25 @@ class Choreographer:
         """Documenter claims task in awaiting_documentation; returns evidence inline."""
         t = await self.task.get(task_id)
         if t is None:
-            return Envelope.not_found(message=f"task {task_id} not found")
+            return await self._emit_rejection(
+                Envelope.not_found(message=f"task {task_id} not found"),
+                agent_id=doc_agent_id,
+                task_id=task_id,
+                verb="claim_doc_task",
+            )
         if str(t.status) != "awaiting_documentation":
-            return Envelope.invalid_state(
-                message=(
-                    f"task {task_id} is in {t.status}, expected awaiting_documentation"
+            return await self._emit_rejection(
+                Envelope.invalid_state(
+                    message=(
+                        f"task {task_id} is in {t.status}, "
+                        "expected awaiting_documentation"
+                    ),
+                    remediate="call give_me_work() to find an actionable doc task",
+                    context_briefing=await self._briefing_for(doc_agent_id, task_id),
                 ),
-                remediate="call give_me_work() to find an actionable doc task",
-                context_briefing=await self._briefing_for(doc_agent_id, task_id),
+                agent_id=doc_agent_id,
+                task_id=task_id,
+                verb="claim_doc_task",
             )
 
         # Gate Set A: ALREADY_ACTIVE / PAUSED_TASKS_EXIST. The doc verb only
@@ -962,8 +1149,13 @@ class Choreographer:
             skip_sequence=True,
         )
         if guard:
-            return self._with_briefing(
-                guard, await self._briefing_for(doc_agent_id, task_id)
+            return await self._emit_rejection(
+                self._with_briefing(
+                    guard, await self._briefing_for(doc_agent_id, task_id)
+                ),
+                agent_id=doc_agent_id,
+                task_id=task_id,
+                verb="claim_doc_task",
             )
 
         t = await self.task.doc_claim(doc_agent_id, task_id)
@@ -1006,31 +1198,51 @@ class Choreographer:
         """
         t = await self.task.get(task_id)
         if t is None:
-            return Envelope.not_found(message=f"task {task_id} not found")
+            return await self._emit_rejection(
+                Envelope.not_found(message=f"task {task_id} not found"),
+                agent_id=doc_agent_id,
+                task_id=task_id,
+                verb="i_documented",
+            )
         if t.assigned_to != doc_agent_id:
-            return Envelope.not_authorized(
-                message="not assigned to you",
-                remediate="claim it via claim_doc_task(task_id) first",
-                context_briefing=await self._briefing_for(doc_agent_id, task_id),
+            return await self._emit_rejection(
+                Envelope.not_authorized(
+                    message="not assigned to you",
+                    remediate="claim it via claim_doc_task(task_id) first",
+                    context_briefing=await self._briefing_for(doc_agent_id, task_id),
+                ),
+                agent_id=doc_agent_id,
+                task_id=task_id,
+                verb="i_documented",
             )
         if not notes or len(notes) < settings.docs_notes_min_chars:
-            return Envelope.tracing_gap(
-                missing=["docs_notes>=20"],
-                remediate=(
-                    "i_documented requires notes>=20 chars summarizing what you "
-                    "documented and where (file paths)."
-                    " Include each file in `files=...`."
+            return await self._emit_rejection(
+                Envelope.tracing_gap(
+                    missing=["docs_notes>=20"],
+                    remediate=(
+                        "i_documented requires notes>=20 chars summarizing what you "
+                        "documented and where (file paths)."
+                        " Include each file in `files=...`."
+                    ),
+                    context_briefing=await self._briefing_for(doc_agent_id, task_id),
                 ),
-                context_briefing=await self._briefing_for(doc_agent_id, task_id),
+                agent_id=doc_agent_id,
+                task_id=task_id,
+                verb="i_documented",
             )
         if not files:
-            return Envelope.tracing_gap(
-                missing=["files"],
-                remediate=(
-                    "i_documented requires files=['<path>', ...]"
-                    " listing the doc files written."
+            return await self._emit_rejection(
+                Envelope.tracing_gap(
+                    missing=["files"],
+                    remediate=(
+                        "i_documented requires files=['<path>', ...]"
+                        " listing the doc files written."
+                    ),
+                    context_briefing=await self._briefing_for(doc_agent_id, task_id),
                 ),
-                context_briefing=await self._briefing_for(doc_agent_id, task_id),
+                agent_id=doc_agent_id,
+                task_id=task_id,
+                verb="i_documented",
             )
         t = await self.task.docs_complete(
             doc_agent_id, task_id, notes=notes, files=files
@@ -1107,18 +1319,33 @@ class Choreographer:
         """
         t = await self.task.get(task_id)
         if t is None:
-            return Envelope.not_found(message=f"task {task_id} not found")
+            return await self._emit_rejection(
+                Envelope.not_found(message=f"task {task_id} not found"),
+                agent_id=pm_agent_id,
+                task_id=task_id,
+                verb="i_will_plan",
+            )
         rejection = await self._i_will_plan_preflight(pm_agent_id, task_id, t, plan)
         if rejection is not None:
-            return rejection
+            return await self._emit_rejection(
+                rejection,
+                agent_id=pm_agent_id,
+                task_id=task_id,
+                verb="i_will_plan",
+            )
 
         if t.assigned_to is None or t.assigned_to != pm_agent_id:
             t = await self.task.claim(task_id, pm_agent_id)
             if t is None:
-                return Envelope.invalid_state(
-                    message="claim failed",
-                    remediate="task may already be claimed by another agent",
-                    context_briefing=await self._briefing_for(pm_agent_id, task_id),
+                return await self._emit_rejection(
+                    Envelope.invalid_state(
+                        message="claim failed",
+                        remediate="task may already be claimed by another agent",
+                        context_briefing=await self._briefing_for(pm_agent_id, task_id),
+                    ),
+                    agent_id=pm_agent_id,
+                    task_id=task_id,
+                    verb="i_will_plan",
                 )
         await self.task.set_plan(task_id, plan)
         t = await self.task.start(task_id, pm_agent_id)
@@ -1147,13 +1374,23 @@ class Choreographer:
         """
         parent = await self.task.get(parent_task_id)
         if parent is None:
-            return Envelope.not_found(message=f"task {parent_task_id} not found")
+            return await self._emit_rejection(
+                Envelope.not_found(message=f"task {parent_task_id} not found"),
+                agent_id=pm_agent_id,
+                task_id=parent_task_id,
+                verb="delegate",
+            )
         agent = await self.task.agent_for(pm_agent_id)
         guard = await self._delegate_guard(
             pm_agent_id, parent_task_id, parent, agent, inputs
         )
         if guard is not None:
-            return guard
+            return await self._emit_rejection(
+                guard,
+                agent_id=pm_agent_id,
+                task_id=parent_task_id,
+                verb="delegate",
+            )
 
         new_task = await self._create_subtask_from_inputs(
             pm_agent_id, parent_task_id, parent, inputs
@@ -1387,19 +1624,34 @@ class Choreographer:
         """
         t = await self.task.get(task_id)
         if t is None:
-            return Envelope.not_found(message=f"task {task_id} not found")
+            return await self._emit_rejection(
+                Envelope.not_found(message=f"task {task_id} not found"),
+                agent_id=pm_agent_id,
+                task_id=task_id,
+                verb="submit_up",
+            )
         guard = await self._submit_up_guard(pm_agent_id, task_id, t, notes)
         if guard is not None:
-            return guard
+            return await self._emit_rejection(
+                guard,
+                agent_id=pm_agent_id,
+                task_id=task_id,
+                verb="submit_up",
+            )
 
         parent_branch = parent_branch_for(t.branch_name)
         await self.git.create_pr(t.branch_name, parent=parent_branch, is_root_pr=False)
         t = await self.task.submit_pm_review(pm_agent_id, task_id, notes)
         if t is None:
-            return Envelope.invalid_state(
-                message="could not transition to awaiting_pm_review",
-                remediate="check task state — must be in_progress with PR ready",
-                context_briefing=await self._briefing_for(pm_agent_id, task_id),
+            return await self._emit_rejection(
+                Envelope.invalid_state(
+                    message="could not transition to awaiting_pm_review",
+                    remediate="check task state — must be in_progress with PR ready",
+                    context_briefing=await self._briefing_for(pm_agent_id, task_id),
+                ),
+                agent_id=pm_agent_id,
+                task_id=task_id,
+                verb="submit_up",
             )
         await self._handoff_to_main_pm(pm_agent_id, task_id)
         return Envelope.ok(
@@ -1602,14 +1854,24 @@ class Choreographer:
         """PM unblocks task; restore=True (default) returns to pre_block_state."""
         t = await self.task.get(task_id)
         if t is None:
-            return Envelope.not_found(message=f"task {task_id} not found")
+            return await self._emit_rejection(
+                Envelope.not_found(message=f"task {task_id} not found"),
+                agent_id=pm_agent_id,
+                task_id=task_id,
+                verb="unblock",
+            )
         if str(t.status) != "blocked":
-            return Envelope.invalid_state(
-                message=f"task {task_id} is in {t.status}, expected blocked",
-                remediate=(
-                    "this task is not blocked; call triage() to find blocked tasks"
+            return await self._emit_rejection(
+                Envelope.invalid_state(
+                    message=f"task {task_id} is in {t.status}, expected blocked",
+                    remediate=(
+                        "this task is not blocked; call triage() to find blocked tasks"
+                    ),
+                    context_briefing=await self._briefing_for(pm_agent_id, task_id),
                 ),
-                context_briefing=await self._briefing_for(pm_agent_id, task_id),
+                agent_id=pm_agent_id,
+                task_id=task_id,
+                verb="unblock",
             )
 
         has_decision = await self.journal.has_decision_for_task(pm_agent_id, task_id)
@@ -1618,10 +1880,15 @@ class Choreographer:
                 hint_for_missing_journal_decision,
             )
 
-            return Envelope.tracing_gap(
-                missing=["journal:decision"],
-                remediate=hint_for_missing_journal_decision(),
-                context_briefing=await self._briefing_for(pm_agent_id, task_id),
+            return await self._emit_rejection(
+                Envelope.tracing_gap(
+                    missing=["journal:decision"],
+                    remediate=hint_for_missing_journal_decision(),
+                    context_briefing=await self._briefing_for(pm_agent_id, task_id),
+                ),
+                agent_id=pm_agent_id,
+                task_id=task_id,
+                verb="unblock",
             )
 
         t = await self.task.unblock_with_restore(pm_agent_id, task_id, restore=restore)
@@ -1694,10 +1961,20 @@ class Choreographer:
         """Cell PM completes a task — auto-merges leaf PR into parent branch."""
         t = await self.task.get(task_id)
         if t is None:
-            return Envelope.not_found(message=f"task {task_id} not found")
+            return await self._emit_rejection(
+                Envelope.not_found(message=f"task {task_id} not found"),
+                agent_id=pm_agent_id,
+                task_id=task_id,
+                verb="cell_pm_complete",
+            )
         guard = await self._cell_pm_complete_guard(pm_agent_id, task_id, t)
         if guard is not None:
-            return guard
+            return await self._emit_rejection(
+                guard,
+                agent_id=pm_agent_id,
+                task_id=task_id,
+                verb="cell_pm_complete",
+            )
         target = parent_branch_for(t.branch_name)
         merge_result = await self.git.pr_merge(t.pr_number, target=target)
         leaf_parent_id = t.parent_task_id
@@ -1817,10 +2094,20 @@ class Choreographer:
         """Main PM completes a root task; opens master PR + escalates to CEO."""
         t = await self.task.get(root_task_id)
         if t is None:
-            return Envelope.not_found(message=f"task {root_task_id} not found")
+            return await self._emit_rejection(
+                Envelope.not_found(message=f"task {root_task_id} not found"),
+                agent_id=main_pm_agent_id,
+                task_id=root_task_id,
+                verb="main_pm_complete",
+            )
         guard = await self._main_pm_complete_guard(main_pm_agent_id, root_task_id, t)
         if guard is not None:
-            return guard
+            return await self._emit_rejection(
+                guard,
+                agent_id=main_pm_agent_id,
+                task_id=root_task_id,
+                verb="main_pm_complete",
+            )
 
         needs_pr = t.pr_number is None
         if not needs_pr:
@@ -1848,10 +2135,15 @@ class Choreographer:
             return await self.cell_pm_complete(agent_id, task_id, notes)
         if agent.role == "main_pm":
             return await self.main_pm_complete(agent_id, task_id, notes)
-        return Envelope.not_authorized(
-            message=f"role {agent.role} cannot complete tasks via this verb",
-            remediate="only cell_pm and main_pm can call complete",
-            context_briefing=await self._briefing_for(agent_id, task_id),
+        return await self._emit_rejection(
+            Envelope.not_authorized(
+                message=f"role {agent.role} cannot complete tasks via this verb",
+                remediate="only cell_pm and main_pm can call complete",
+                context_briefing=await self._briefing_for(agent_id, task_id),
+            ),
+            agent_id=agent_id,
+            task_id=task_id,
+            verb="complete",
         )
 
     async def escalate_up(
@@ -1860,7 +2152,12 @@ class Choreographer:
         """Escalate a task to the agent's escalation_target role."""
         t = await self.task.get(task_id)
         if t is None:
-            return Envelope.not_found(message=f"task {task_id} not found")
+            return await self._emit_rejection(
+                Envelope.not_found(message=f"task {task_id} not found"),
+                agent_id=pm_agent_id,
+                task_id=task_id,
+                verb="escalate_up",
+            )
 
         has_decision = await self.journal.has_decision_for_task(pm_agent_id, task_id)
         if not has_decision:
@@ -1868,33 +2165,48 @@ class Choreographer:
                 hint_for_missing_journal_decision,
             )
 
-            return Envelope.tracing_gap(
-                missing=["journal:decision"],
-                remediate=hint_for_missing_journal_decision(),
-                context_briefing=await self._briefing_for(pm_agent_id, task_id),
+            return await self._emit_rejection(
+                Envelope.tracing_gap(
+                    missing=["journal:decision"],
+                    remediate=hint_for_missing_journal_decision(),
+                    context_briefing=await self._briefing_for(pm_agent_id, task_id),
+                ),
+                agent_id=pm_agent_id,
+                task_id=task_id,
+                verb="escalate_up",
             )
 
         me = await self.task.agent_for(pm_agent_id)
         target_slug = me.escalation_target if me else None
         if not target_slug:
-            return Envelope.invalid_state(
-                message="no escalation target configured for your role",
-                remediate="check agents_config.py ESCALATION_CHAIN for your slug",
-                context_briefing=await self._briefing_for(pm_agent_id, task_id),
+            return await self._emit_rejection(
+                Envelope.invalid_state(
+                    message="no escalation target configured for your role",
+                    remediate="check agents_config.py ESCALATION_CHAIN for your slug",
+                    context_briefing=await self._briefing_for(pm_agent_id, task_id),
+                ),
+                agent_id=pm_agent_id,
+                task_id=task_id,
+                verb="escalate_up",
             )
 
         t = await self.task.escalate(pm_agent_id, task_id, reason)
         if t is None:
-            return Envelope.invalid_state(
-                message=(
-                    f"could not escalate task {task_id} to {target_slug}: "
-                    "target agent not found or task missing"
+            return await self._emit_rejection(
+                Envelope.invalid_state(
+                    message=(
+                        f"could not escalate task {task_id} to {target_slug}: "
+                        "target agent not found or task missing"
+                    ),
+                    remediate=(
+                        f"verify {target_slug} exists in agents table and that the "
+                        "task is still present"
+                    ),
+                    context_briefing=await self._briefing_for(pm_agent_id, task_id),
                 ),
-                remediate=(
-                    f"verify {target_slug} exists in agents table and that the "
-                    "task is still present"
-                ),
-                context_briefing=await self._briefing_for(pm_agent_id, task_id),
+                agent_id=pm_agent_id,
+                task_id=task_id,
+                verb="escalate_up",
             )
         return Envelope.ok(
             status=str(t.status),
@@ -1911,21 +2223,36 @@ class Choreographer:
         """Board/Main PM escalates task_id to CEO with reason."""
         t = await self.task.get(task_id)
         if t is None:
-            return Envelope.not_found(message=f"task {task_id} not found")
+            return await self._emit_rejection(
+                Envelope.not_found(message=f"task {task_id} not found"),
+                agent_id=agent_id,
+                task_id=task_id,
+                verb="escalate_to_ceo",
+            )
         me = await self.task.agent_for(agent_id)
         if me.role not in ("main_pm", "product_owner", "head_marketing"):
-            return Envelope.not_authorized(
-                message=f"role {me.role} cannot escalate to CEO directly",
-                remediate="use escalate_up() to go through your escalation chain",
-                context_briefing=await self._briefing_for(agent_id, task_id),
+            return await self._emit_rejection(
+                Envelope.not_authorized(
+                    message=f"role {me.role} cannot escalate to CEO directly",
+                    remediate="use escalate_up() to go through your escalation chain",
+                    context_briefing=await self._briefing_for(agent_id, task_id),
+                ),
+                agent_id=agent_id,
+                task_id=task_id,
+                verb="escalate_to_ceo",
             )
         if str(t.status) != "awaiting_pm_review":
-            return Envelope.invalid_state(
-                message=(
-                    f"task {task_id} is in {t.status}, expected awaiting_pm_review"
+            return await self._emit_rejection(
+                Envelope.invalid_state(
+                    message=(
+                        f"task {task_id} is in {t.status}, expected awaiting_pm_review"
+                    ),
+                    remediate="this task is not at the gate for CEO approval",
+                    context_briefing=await self._briefing_for(agent_id, task_id),
                 ),
-                remediate="this task is not at the gate for CEO approval",
-                context_briefing=await self._briefing_for(agent_id, task_id),
+                agent_id=agent_id,
+                task_id=task_id,
+                verb="escalate_to_ceo",
             )
         has_decision = await self.journal.has_decision_for_task(agent_id, task_id)
         if not has_decision:
@@ -1933,10 +2260,15 @@ class Choreographer:
                 hint_for_missing_journal_decision,
             )
 
-            return Envelope.tracing_gap(
-                missing=["journal:decision"],
-                remediate=hint_for_missing_journal_decision(),
-                context_briefing=await self._briefing_for(agent_id, task_id),
+            return await self._emit_rejection(
+                Envelope.tracing_gap(
+                    missing=["journal:decision"],
+                    remediate=hint_for_missing_journal_decision(),
+                    context_briefing=await self._briefing_for(agent_id, task_id),
+                ),
+                agent_id=agent_id,
+                task_id=task_id,
+                verb="escalate_to_ceo",
             )
         t = await self.task.escalate_to_ceo(task_id, agent_role=me.role, notes=reason)
         # Same as main_pm_complete: CEO acts via UI, not as a spawnable agent.
