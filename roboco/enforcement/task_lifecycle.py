@@ -41,11 +41,16 @@ VALID_TRANSITIONS: dict[str, list[str]] = {
     "pending": ["claimed", "cancelled"],
     # Claimed - can start, unclaim, or cancel
     "claimed": ["in_progress", "pending", "cancelled"],
-    # In progress - can block, pause, verify, submit for PM review, complete, or cancel
-    # QA direct assignment: QA can also pass/fail when assigned directly
+    # In progress - can block, pause, verify, submit for PM review, complete,
+    # cancel, OR drop back to pending via voluntary unclaim / reaper sweep.
+    # QA direct assignment: QA can also pass/fail when assigned directly.
+    # Pre-P2-4 the reaper used raw SQL to bypass this list; routing through
+    # _validate_and_set_status now means the canonical state machine sees the
+    # actual production transitions.
     "in_progress": [
         "blocked",
         "paused",
+        "pending",  # voluntary unclaim or reaper sweep
         "verifying",
         "awaiting_pm_review",
         "awaiting_documentation",  # QA pass when assigned directly

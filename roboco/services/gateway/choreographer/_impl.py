@@ -17,7 +17,6 @@ from uuid import UUID
 
 import structlog
 
-from roboco.config import settings
 from roboco.services.gateway.claim_guards import (
     already_active_guard,
     paused_tasks_guard,
@@ -147,18 +146,24 @@ class Choreographer:
         failures must NEVER block the verb (the agent's response is the
         contract; the audit row is observability-only).
 
-        Also stashes ``correlation_id`` from the structlog contextvars
-        (bound by ``CorrelationIdMiddleware`` for the inbound request)
-        into the audit row's ``details`` JSONB so post-mortem joins
-        across logs and audit trail are possible.
+        Stashes ``correlation_id`` from the structlog contextvars (bound
+        by ``CorrelationIdMiddleware`` for the inbound request) and a
+        per-attempt id into the audit row's ``details`` JSONB. The
+        attempt_id is unique per rejection event so post-mortem queries
+        can group "all attempts on task X within a window" without
+        confusing two distinct calls that share a correlation_id (audit
+        P2-7/D-N).
         """
         if env.error is None:
             return env
+        from uuid import uuid4 as _uuid4
+
         details: dict[str, Any] = {
             "verb": verb,
             "reason": env.error,
             "message": env.message,
             "missing": env.missing or [],
+            "attempt_id": str(_uuid4()),
         }
         cid = structlog.contextvars.get_contextvars().get("correlation_id")
         if cid is not None:
@@ -292,6 +297,32 @@ class Choreographer:
         # Format: "<id> (<status>)"
         return ", ".join(f"{s.id} ({s.status})" for s in non_terminal)
 
+    async def _subtasks_not_terminal_envelope(
+        self,
+        agent_id: UUID,
+        task_id: UUID,
+        *,
+        context_phrase: str,
+    ) -> Envelope | None:
+        """Return a tracing_gap rejection if any subtask of ``task_id`` is non-terminal.
+
+        Centralizes the closure-time "all subtasks terminal" gate that fires
+        in submit_up, cell_pm_complete, main_pm_complete (audit P2-3/D-15).
+        ``context_phrase`` lets each caller name the action being blocked
+        (e.g., "bubbling up", "completing parent").
+        """
+        if await self.task.all_subtasks_terminal(task_id):
+            return None
+        non_terminal = await self._non_terminal_subtask_ids(task_id)
+        return Envelope.tracing_gap(
+            missing=["subtasks not all terminal"],
+            remediate=(
+                f"all subtasks must be in completed/cancelled before"
+                f" {context_phrase}. Non-terminal subtasks: {non_terminal}"
+            ),
+            context_briefing=await self._briefing_for(agent_id, task_id),
+        )
+
     async def _i_will_work_on_pending(
         self,
         agent_id: UUID,
@@ -308,7 +339,21 @@ class Choreographer:
         if guard := await self._run_claim_guards(agent_id=agent_id, task=t):
             return self._with_briefing(guard, briefing), t
         # claim() transitions pending → claimed; idempotent for same assignee.
-        t = await self.task.claim(task_id, agent_id)
+        # Branch creation runs inside _finalize_claim and rolls back on
+        # failure (audit P0-7 / S-01); we surface the failure as an envelope
+        # so the agent gets remediate instead of a 500.
+        try:
+            t = await self.task.claim(task_id, agent_id)
+        except Exception as exc:
+            return Envelope.invalid_state(
+                message=f"claim failed during finalization: {exc}",
+                remediate=(
+                    "branch or workspace setup failed; the claim was rolled"
+                    " back. Check workspace + token, then retry"
+                    " i_will_work_on(task_id, plan)."
+                ),
+                context_briefing=briefing,
+            ), None
         if t is None:
             return Envelope.invalid_state(
                 message="claim failed",
@@ -327,6 +372,64 @@ class Choreographer:
         if plan:
             t = await self.task.set_plan(task_id, plan)
         t = await self.task.start(task_id, agent_id)
+        if t is None:
+            return self._start_failed_envelope(task_id, briefing), t
+        return None, t
+
+    @staticmethod
+    def _start_failed_envelope(task_id: UUID, briefing: dict[str, Any]) -> Envelope:
+        """Rejection envelope when ``task.start()`` returns None.
+
+        ``start()`` returns None on invalid status, ownership mismatch, or
+        missing plan. Surface the failure rather than fall through to an
+        OK envelope that dereferences ``None.status``.
+        """
+        return Envelope.invalid_state(
+            message=f"start failed for task {task_id}",
+            remediate=(
+                "task not in a startable state"
+                " (claimed/paused/needs_revision) or no plan recorded"
+            ),
+            context_briefing=briefing,
+        )
+
+    async def _i_will_work_on_needs_revision(
+        self,
+        agent_id: UUID,
+        task_id: UUID,
+        t: Any,
+        briefing: dict[str, Any],
+    ) -> tuple[Envelope | None, Any]:
+        """needs_revision branch for i_will_work_on. Returns (rejection|None, task)."""
+        if t.assigned_to != agent_id:
+            t = await self.task.claim(task_id, agent_id)
+            if t is None:
+                return Envelope.invalid_state(
+                    message="claim failed",
+                    remediate="task may already be claimed by another agent",
+                    context_briefing=briefing,
+                ), None
+        t = await self.task.start(task_id, agent_id)
+        if t is None:
+            return self._start_failed_envelope(task_id, briefing), None
+        return None, t
+
+    async def _i_will_work_on_claimed(
+        self,
+        agent_id: UUID,
+        task_id: UUID,
+        t: Any,
+        briefing: dict[str, Any],
+    ) -> tuple[Envelope | None, Any]:
+        """claimed branch for i_will_work_on. Returns (rejection|None, task)."""
+        guard = await self._run_claim_guards(
+            agent_id=agent_id, task=t, skip_sequence=True
+        )
+        if guard:
+            return self._with_briefing(guard, briefing), None
+        t = await self.task.start(task_id, agent_id)
+        if t is None:
+            return self._start_failed_envelope(task_id, briefing), None
         return None, t
 
     async def i_will_work_on(
@@ -344,37 +447,19 @@ class Choreographer:
         status = str(t.status)
         briefing = await self._briefing_for(agent_id, task_id)
 
+        rejection: Envelope | None = None
         if status == "needs_revision":
-            # Resumption after QA rejection: agent already owned the task,
-            # role-typed claim already passed at original claim time.
-            if t.assigned_to != agent_id:
-                t = await self.task.claim(task_id, agent_id)
-            t = await self.task.start(task_id, agent_id)
+            rejection, t = await self._i_will_work_on_needs_revision(
+                agent_id, task_id, t, briefing
+            )
         elif status == "pending":
             rejection, t = await self._i_will_work_on_pending(
                 agent_id, task_id, t, plan, briefing
             )
-            if rejection is not None:
-                return await self._emit_rejection(
-                    rejection,
-                    agent_id=agent_id,
-                    task_id=task_id,
-                    verb="i_will_work_on",
-                )
         elif status == "claimed" and t.assigned_to == agent_id:
-            # Resumption: skip sibling-sequence (already passed at claim).
-            # Still enforce already_active/paused so concurrent claims fail.
-            guard = await self._run_claim_guards(
-                agent_id=agent_id, task=t, skip_sequence=True
+            rejection, t = await self._i_will_work_on_claimed(
+                agent_id, task_id, t, briefing
             )
-            if guard:
-                return await self._emit_rejection(
-                    self._with_briefing(guard, briefing),
-                    agent_id=agent_id,
-                    task_id=task_id,
-                    verb="i_will_work_on",
-                )
-            t = await self.task.start(task_id, agent_id)
         elif status == "in_progress" and t.assigned_to == agent_id:
             # Idempotent re-entry: respawned dev re-calling i_will_work_on
             # on a task they already own in_progress. Skip start() (would
@@ -383,12 +468,15 @@ class Choreographer:
             # reaper activity.
             pass
         else:
+            rejection = Envelope.invalid_state(
+                message=f"task {task_id} is in {status}; cannot start work",
+                remediate="call give_me_work() to find an actionable task",
+                context_briefing=briefing,
+            )
+
+        if rejection is not None:
             return await self._emit_rejection(
-                Envelope.invalid_state(
-                    message=f"task {task_id} is in {status}; cannot start work",
-                    remediate="call give_me_work() to find an actionable task",
-                    context_briefing=briefing,
-                ),
+                rejection,
                 agent_id=agent_id,
                 task_id=task_id,
                 verb="i_will_work_on",
@@ -399,8 +487,8 @@ class Choreographer:
             status=str(t.status),
             task_id=str(task_id),
             next=(
-                "edit + commit; call i_have_committed when ready,"
-                " or i_am_done when finished"
+                "edit + commit(message) for each meaningful change,"
+                " then submit_for_qa(task_id) and i_am_done(task_id)"
             ),
             context_briefing=briefing,
         )
@@ -410,46 +498,6 @@ class Choreographer:
         """Attach a context_briefing to an Envelope (mutate-and-return helper)."""
         env.context_briefing = briefing
         return env
-
-    async def i_have_committed(self, agent_id: UUID, message: str) -> Envelope:
-        """Record that the dev made a commit; auto-creates progress entry."""
-        t = await self.task.get_active_task_for_agent(agent_id)
-        if t is None:
-            return await self._emit_rejection(
-                Envelope.invalid_state(
-                    message="no active task for this agent",
-                    remediate=(
-                        "call give_me_work() then i_will_work_on(task_id, plan)"
-                    ),
-                    context_briefing=await self._briefing_for(agent_id, None),
-                ),
-                agent_id=agent_id,
-                task_id=None,
-                verb="i_have_committed",
-            )
-        if not t.plan:
-            no_plan_remediate = (
-                f"plan must be set first;"
-                f" call i_will_work_on(task_id='{t.id}', plan='...')"
-            )
-            return await self._emit_rejection(
-                Envelope.tracing_gap(
-                    missing=["plan"],
-                    remediate=no_plan_remediate,
-                    context_briefing=await self._briefing_for(agent_id, t.id),
-                ),
-                agent_id=agent_id,
-                task_id=t.id,
-                verb="i_have_committed",
-            )
-        await self.task.add_progress(t.id, agent_id, message)
-        await self._touch(t.id)
-        return Envelope.ok(
-            status=str(t.status),
-            task_id=str(t.id),
-            next="continue working, or i_am_done when finished",
-            context_briefing=await self._briefing_for(agent_id, t.id),
-        )
 
     async def submit_for_qa(self, agent_id: UUID, task_id: UUID) -> Envelope:
         """Push the dev's branch and open a PR. Does NOT submit for QA itself —
@@ -526,17 +574,21 @@ class Choreographer:
         )
 
     async def i_am_done(self, agent_id: UUID, task_id: UUID, notes: str) -> Envelope:
-        """Submit work for QA — strict path.
+        """Submit work for QA.
 
-        Pre-gateway, the route layer enforced four field-level gates
-        (NOT_SELF_VERIFIED, NO_COMMITS, NO_PR, NO_PROGRESS) before
-        transitioning verifying → awaiting_qa. The strict gateway path
-        re-enforces those exactly: dev MUST have already committed,
-        pushed, opened a PR, reported progress, and self-verified before
-        i_am_done can submit.
+        Preconditions enforced by gates:
+          - tracing: progress entry, journal:reflect, acceptance criteria
+          - field-level: at least one commit, PR open
+        The dev must have called ``commit()`` (do_server) at least once and
+        ``submit_for_qa(task_id)`` to push + open the PR. Calling i_am_done
+        is the dev's explicit attestation that the work is complete; it
+        auto-runs the in_progress → verifying transition (which seeds
+        ``self_verified``) and then verifying → awaiting_qa.
 
-        For the smart-catch-up convenience that auto-runs the chain
-        on the dev's behalf, see ``i_am_done_with_catchup``.
+        The previous strict path required a separate ``submit_for_verification``
+        verb that wasn't on any manifest, making i_am_done unreachable
+        (audit D-08). Removed that requirement; the act of calling i_am_done
+        IS the self-verification.
         """
         t = await self.task.get(task_id)
         if t is None:
@@ -564,62 +616,25 @@ class Choreographer:
                 rejection, agent_id=agent_id, task_id=task_id, verb="i_am_done"
             )
 
-        # 2. Field-level gates (Gate Set E) — strict.
+        # 2. Field-level gates (Gate Set E) — commits + PR (self_verified
+        # auto-set in step 3, so it's not a precondition the dev must satisfy).
         if rejection := await self._check_submit_qa_field_gates(agent_id, task_id, t):
             return await self._emit_rejection(
                 rejection, agent_id=agent_id, task_id=task_id, verb="i_am_done"
             )
 
-        # 3. Submit (no catch-up).
+        # 3. Auto-run in_progress → verifying (sets self_verified) if needed.
+        if str(t.status) == "in_progress":
+            verified = await self.task.submit_verification(agent_id, task_id, notes)
+            if verified is not None:
+                t = verified
+
+        # 4. Submit verifying → awaiting_qa.
         submitted = await self.task.submit_qa(agent_id, task_id, notes)
         if submitted is not None:
             t = submitted
         await self._notify_qa(agent_id, task_id, t)
         await self._touch(task_id)
-        return await self._build_i_am_done_ok(agent_id, task_id, t)
-
-    async def i_am_done_with_catchup(
-        self, agent_id: UUID, task_id: UUID, notes: str
-    ) -> Envelope:
-        """Submit work for QA — opt-in smart catch-up.
-
-        Same tracing-gate preconditions as ``i_am_done``, but auto-runs
-        the verify / push / PR / submit_qa chain on the dev's behalf
-        instead of refusing on missing fields. Use this when the dev
-        explicitly wants the gateway to drive the closure path.
-
-        Pre-gateway behavior: dev had to call each step manually. The
-        catch-up convenience exists for backward compat with workflows
-        that rely on the implicit chain.
-        """
-        t = await self.task.get(task_id)
-        if t is None:
-            return await self._emit_rejection(
-                Envelope.not_found(message=f"task {task_id} not found"),
-                agent_id=agent_id,
-                task_id=task_id,
-                verb="i_am_done_with_catchup",
-            )
-        if t.assigned_to != agent_id:
-            return await self._emit_rejection(
-                Envelope.not_authorized(
-                    message="not assigned to you",
-                    remediate="claim it via i_will_work_on(task_id) first",
-                    context_briefing=await self._briefing_for(agent_id, task_id),
-                ),
-                agent_id=agent_id,
-                task_id=task_id,
-                verb="i_am_done_with_catchup",
-            )
-        if rejection := await self._check_tracing_gates(agent_id, task_id, t):
-            return await self._emit_rejection(
-                rejection,
-                agent_id=agent_id,
-                task_id=task_id,
-                verb="i_am_done_with_catchup",
-            )
-        t = await self._run_catch_up(agent_id, task_id, t, notes)
-        await self._notify_qa(agent_id, task_id, t)
         return await self._build_i_am_done_ok(agent_id, task_id, t)
 
     async def _check_tracing_gates(
@@ -651,13 +666,10 @@ class Choreographer:
         """
         missing: list[str] = []
         hints: list[str] = []
-        if not t.self_verified:
-            missing.append("NOT_SELF_VERIFIED")
-            hints.append(
-                "call commit(message=...) to add a self-verified commit first;"
-                " self_verified is set automatically when you commit on this"
-                " task's branch"
-            )
+        # NOTE: self_verified is no longer a precondition — i_am_done auto-runs
+        # the in_progress → verifying transition which sets it. The previous
+        # NOT_SELF_VERIFIED gate required a separate submit_for_verification
+        # verb that wasn't on any manifest (audit D-08).
         if not t.commits:
             missing.append("NO_COMMITS")
             hints.append(
@@ -667,8 +679,8 @@ class Choreographer:
         if t.pr_number is None:
             missing.append("NO_PR")
             hints.append(
-                "no PR open — push your branch and open a PR before"
-                " i_am_done (or call i_am_done_with_catchup to do it auto)"
+                "no PR open — call submit_for_qa(task_id) to push your"
+                " branch and open the PR, then retry i_am_done"
             )
         if not missing:
             return None
@@ -727,24 +739,6 @@ class Choreographer:
             context_briefing=await self._briefing_for(agent_id, task_id),
         )
 
-    async def _run_catch_up(
-        self, agent_id: UUID, task_id: UUID, t: Any, notes: str
-    ) -> Any:
-        """Run verification, push, PR creation, and submit_qa as needed."""
-        if not t.self_verified:
-            t = await self.task.submit_verification(agent_id, task_id, notes)
-
-        has_unpushed = await self.work_session.has_unpushed_commits(t.work_session_id)
-        if has_unpushed:
-            await self.git.push_branch(t.branch_name)
-
-        if t.pr_number is None:
-            parent = parent_branch_for(t.branch_name)
-            await self.git.create_pr(t.branch_name, parent=parent, is_root_pr=False)
-            t = await self.task.get(task_id)  # refresh after PR creation
-
-        return await self.task.submit_qa(agent_id, task_id, notes)
-
     async def _notify_qa(self, agent_id: UUID, task_id: UUID, t: Any) -> None:
         """Reassign + A2A-notify the QA agent for this task's team.
 
@@ -767,10 +761,18 @@ class Choreographer:
     def _resolve_skill(self, target_agent: Any, preference: list[str]) -> str:
         """Pick first skill in preference list that target_agent has.
 
-        Falls back to the first entry in preference when no match is found.
+        Reads from either ``skills`` (gateway view, list of dicts with
+        ``id`` keys) or ``capabilities`` (SQLAlchemy AgentTable, list of
+        strings). The DB-side AgentTable has no ``skills`` attribute,
+        so a naive ``target_agent.skills`` raises AttributeError on
+        production agents (audit D-06). Falls back to the first entry
+        in ``preference`` when no match is found.
         """
+        skills_attr = getattr(target_agent, "skills", None)
+        capabilities_attr = getattr(target_agent, "capabilities", None)
+        raw = skills_attr if skills_attr is not None else capabilities_attr
         have: set[str] = set()
-        for s in target_agent.skills or []:
+        for s in raw or []:
             if isinstance(s, dict):
                 sid = s.get("id")
                 if sid:
@@ -908,7 +910,7 @@ class Choreographer:
         return Envelope.ok(
             status=str(after.status),
             task_id=str(task_id),
-            next="resumed; continue working — i_have_committed when ready",
+            next="resumed; continue working — call commit() when ready",
             context_briefing=briefing,
         )
 
@@ -1014,419 +1016,11 @@ class Choreographer:
             paused_ids.append(str(t.id))
         return paused_ids
 
-    # --- Phase 2 (QA) verbs ---
-
-    async def claim_review(self, qa_agent_id: UUID, task_id: UUID) -> Envelope:
-        """QA agent claims task in awaiting_qa for review.
-
-        The response includes evidence (pr_url, pr_number, commits, files_changed,
-        journal_highlights, acceptance_criteria_status) INLINE so the QA agent
-        cannot miss the PR data. Marks `qa_evidence_inspected=true` automatically.
-        """
-        t = await self.task.get(task_id)
-        if t is None:
-            return await self._emit_rejection(
-                Envelope.not_found(message=f"task {task_id} not found"),
-                agent_id=qa_agent_id,
-                task_id=task_id,
-                verb="claim_review",
-            )
-        if str(t.status) != "awaiting_qa":
-            return await self._emit_rejection(
-                Envelope.invalid_state(
-                    message=(
-                        f"task {task_id} is in {t.status}, "
-                        "expected awaiting_qa for review"
-                    ),
-                    remediate="call give_me_work() to find an actionable QA task",
-                    context_briefing=await self._briefing_for(qa_agent_id, task_id),
-                ),
-                agent_id=qa_agent_id,
-                task_id=task_id,
-                verb="claim_review",
-            )
-
-        # Gate Set A: ALREADY_ACTIVE / PAUSED_TASKS_EXIST guard QA from
-        # juggling reviews while their previous in_progress task is open.
-        # role_typed/PM-code skipped: QA verb only ever fires for QA role.
-        # sequence skipped: QA reviews are siblings on a different axis.
-        guard = await self._run_claim_guards(
-            agent_id=qa_agent_id,
-            task=t,
-            skip_role_typed=True,
-            skip_pm_code=True,
-            skip_sequence=True,
-        )
-        if guard:
-            return await self._emit_rejection(
-                self._with_briefing(
-                    guard, await self._briefing_for(qa_agent_id, task_id)
-                ),
-                agent_id=qa_agent_id,
-                task_id=task_id,
-                verb="claim_review",
-            )
-
-        t = await self.task.qa_claim(qa_agent_id, task_id)
-
-        # Auto-mark evidence as inspected — we surface it inline in this response
-        await self.task.mark_evidence_inspected(task_id)
-
-        files_changed: list[str] = []
-        if t.work_session_id:
-            files_changed = await self.work_session.files_changed(t.work_session_id)
-        diff_summary = ""
-        if t.branch_name:
-            diff_summary = await self.git.diff(branch_name=t.branch_name)
-        journal_highlights = await self.evidence_repo.journal_highlights_for_task(
-            task_id
-        )
-        ev = build_evidence_for_task(
-            t,
-            journal_highlights=journal_highlights,
-            files_changed=files_changed,
-            pr_diff_summary=diff_summary,
-        )
-        return Envelope.ok(
-            status=str(t.status),
-            task_id=str(task_id),
-            next=(
-                "review the diff. Then call pass(notes) to accept or "
-                "fail(issues) to request changes."
-            ),
-            evidence=ev.as_dict(),
-            context_briefing=await self._briefing_for(qa_agent_id, task_id),
-        )
-
-    async def pass_review(
-        self, qa_agent_id: UUID, task_id: UUID, notes: str
-    ) -> Envelope:
-        """QA passes the task; transitions awaiting_qa → awaiting_documentation.
-
-        Gated on tracing requirements: qa_notes >= settings.qa_notes_min_chars,
-        journal:learning entry exists for this task, and qa_evidence_inspected
-        is True (auto-set by claim_review).
-        """
-        t = await self.task.get(task_id)
-        if t is None:
-            return await self._emit_rejection(
-                Envelope.not_found(message=f"task {task_id} not found"),
-                agent_id=qa_agent_id,
-                task_id=task_id,
-                verb="pass_review",
-            )
-        if t.assigned_to != qa_agent_id:
-            return await self._emit_rejection(
-                Envelope.not_authorized(
-                    message="not assigned to you",
-                    remediate="claim it via claim_review(task_id) first",
-                    context_briefing=await self._briefing_for(qa_agent_id, task_id),
-                ),
-                agent_id=qa_agent_id,
-                task_id=task_id,
-                verb="pass_review",
-            )
-
-        has_learning = await self.journal.has_learning_for_task(qa_agent_id, task_id)
-        missing = self._check_qa_pass_gates(
-            notes=notes,
-            has_learning=has_learning,
-            evidence_inspected=t.qa_evidence_inspected,
-        )
-        if missing:
-            return await self._emit_rejection(
-                self._qa_tracing_gap(
-                    missing, task_id, await self._briefing_for(qa_agent_id, task_id)
-                ),
-                agent_id=qa_agent_id,
-                task_id=task_id,
-                verb="pass_review",
-            )
-
-        t = await self.task.qa_pass(qa_agent_id, task_id, notes)
-
-        # qa_pass clears assigned_to to None; reassign to the team's
-        # documenter so the orchestrator spawns the right agent next.
-        doc_agent = await self.task.documenter_for_team(t.team)
-        if doc_agent is not None:
-            await self.task.reassign(task_id, doc_agent.id)
-            await self.a2a.send(
-                from_agent=qa_agent_id,
-                to_agent=doc_agent.id,
-                skill="documentation",
-                task_id=task_id,
-                body=f"QA passed task {t.id}. PR: {t.pr_url}. Please document.",
-            )
-        return Envelope.ok(
-            status=str(t.status),
-            task_id=str(task_id),
-            next="idle until next QA work arrives",
-            context_briefing=await self._briefing_for(qa_agent_id, task_id),
-        )
-
-    def _check_qa_pass_gates(
-        self, *, notes: str, has_learning: bool, evidence_inspected: bool
-    ) -> list[str]:
-        """Return list of missing gate keys; empty list if all pass."""
-        missing: list[str] = []
-        if not notes or len(notes) < settings.qa_notes_min_chars:
-            missing.append("qa_notes>=min")
-        if not has_learning:
-            missing.append("journal:learning")
-        if not evidence_inspected:
-            missing.append("qa_evidence_inspected")
-        return missing
-
-    def _qa_tracing_gap(
-        self, missing: list[str], task_id: UUID, briefing: dict[str, Any]
-    ) -> Envelope:
-        """Build a tracing_gap envelope with role-appropriate hints."""
-        from roboco.services.gateway.remediation import (
-            hint_for_evidence_not_inspected,
-            hint_for_missing_journal_learning,
-            hint_for_missing_qa_notes,
-        )
-
-        hint_map = {
-            "qa_notes>=min": hint_for_missing_qa_notes(),
-            "journal:learning": hint_for_missing_journal_learning(),
-            "qa_evidence_inspected": hint_for_evidence_not_inspected(
-                task_id=str(task_id)
-            ),
-        }
-        hints = [hint_map[m] for m in missing if m in hint_map]
-        return Envelope.tracing_gap(
-            missing=missing,
-            remediate=" ; ".join(hints),
-            context_briefing=briefing,
-        )
-
-    async def fail_review(
-        self, qa_agent_id: UUID, task_id: UUID, issues: list[str]
-    ) -> Envelope:
-        """QA fails the task with concrete issues; transitions to needs_revision."""
-        t = await self.task.get(task_id)
-        if t is None:
-            return await self._emit_rejection(
-                Envelope.not_found(message=f"task {task_id} not found"),
-                agent_id=qa_agent_id,
-                task_id=task_id,
-                verb="fail_review",
-            )
-        if t.assigned_to != qa_agent_id:
-            return await self._emit_rejection(
-                Envelope.not_authorized(
-                    message="not assigned to you",
-                    remediate="claim it via claim_review(task_id) first",
-                    context_briefing=await self._briefing_for(qa_agent_id, task_id),
-                ),
-                agent_id=qa_agent_id,
-                task_id=task_id,
-                verb="fail_review",
-            )
-        if not issues:
-            return await self._emit_rejection(
-                Envelope.invalid_state(
-                    message="fail_review requires at least one issue",
-                    remediate="pass issues=['<concrete actionable issue>', ...]",
-                    context_briefing=await self._briefing_for(qa_agent_id, task_id),
-                ),
-                agent_id=qa_agent_id,
-                task_id=task_id,
-                verb="fail_review",
-            )
-
-        has_learning = await self.journal.has_learning_for_task(qa_agent_id, task_id)
-        notes = "Issues:\n" + "\n".join(f"- {issue}" for issue in issues)
-        missing = self._check_qa_pass_gates(
-            notes=notes,
-            has_learning=has_learning,
-            evidence_inspected=t.qa_evidence_inspected,
-        )
-        if missing:
-            return await self._emit_rejection(
-                self._qa_tracing_gap(
-                    missing, task_id, await self._briefing_for(qa_agent_id, task_id)
-                ),
-                agent_id=qa_agent_id,
-                task_id=task_id,
-                verb="fail_review",
-            )
-
-        t = await self.task.qa_fail(qa_agent_id, task_id, notes, issues)
-        # A2A back to original developer (now reassigned)
-        if t.assigned_to is not None:
-            await self.a2a.send(
-                from_agent=qa_agent_id,
-                to_agent=t.assigned_to,
-                skill="code_review",
-                task_id=task_id,
-                body=f"QA needs changes. Issues:\n{notes}",
-            )
-        return Envelope.ok(
-            status=str(t.status),
-            task_id=str(task_id),
-            next="idle — dev will revise and re-submit",
-            context_briefing=await self._briefing_for(qa_agent_id, task_id),
-        )
+    # --- Phase 2 (QA) verbs moved to ``qa.py`` (audit P2-2). ---
 
     # --- Phase 3 (documenter + PM) verbs ---
 
-    async def claim_doc_task(self, doc_agent_id: UUID, task_id: UUID) -> Envelope:
-        """Documenter claims task in awaiting_documentation; returns evidence inline."""
-        t = await self.task.get(task_id)
-        if t is None:
-            return await self._emit_rejection(
-                Envelope.not_found(message=f"task {task_id} not found"),
-                agent_id=doc_agent_id,
-                task_id=task_id,
-                verb="claim_doc_task",
-            )
-        if str(t.status) != "awaiting_documentation":
-            return await self._emit_rejection(
-                Envelope.invalid_state(
-                    message=(
-                        f"task {task_id} is in {t.status}, "
-                        "expected awaiting_documentation"
-                    ),
-                    remediate="call give_me_work() to find an actionable doc task",
-                    context_briefing=await self._briefing_for(doc_agent_id, task_id),
-                ),
-                agent_id=doc_agent_id,
-                task_id=task_id,
-                verb="claim_doc_task",
-            )
-
-        # Gate Set A: ALREADY_ACTIVE / PAUSED_TASKS_EXIST. The doc verb only
-        # ever fires for documenter role; PM-code and role-typed claim guards
-        # are skipped. Sequence guard is also irrelevant here.
-        guard = await self._run_claim_guards(
-            agent_id=doc_agent_id,
-            task=t,
-            skip_role_typed=True,
-            skip_pm_code=True,
-            skip_sequence=True,
-        )
-        if guard:
-            return await self._emit_rejection(
-                self._with_briefing(
-                    guard, await self._briefing_for(doc_agent_id, task_id)
-                ),
-                agent_id=doc_agent_id,
-                task_id=task_id,
-                verb="claim_doc_task",
-            )
-
-        t = await self.task.doc_claim(doc_agent_id, task_id)
-        files_changed: list[str] = []
-        if t.work_session_id:
-            files_changed = await self.work_session.files_changed(t.work_session_id)
-        diff = ""
-        if t.branch_name:
-            diff = await self.git.diff(branch_name=t.branch_name)
-        journal_highlights = await self.evidence_repo.journal_highlights_for_task(
-            task_id
-        )
-        ev = build_evidence_for_task(
-            t,
-            journal_highlights=journal_highlights,
-            files_changed=files_changed,
-            pr_diff_summary=diff,
-        )
-        return Envelope.ok(
-            status=str(t.status),
-            task_id=str(task_id),
-            next=(
-                "write docs in your workspace, commit them, then call "
-                "i_documented(task_id, notes, files)"
-            ),
-            evidence=ev.as_dict(),
-            context_briefing=await self._briefing_for(doc_agent_id, task_id),
-        )
-
-    async def i_documented(
-        self,
-        doc_agent_id: UUID,
-        task_id: UUID,
-        notes: str,
-        files: list[str],
-    ) -> Envelope:
-        """Documenter signals docs complete.
-
-        Transitions awaiting_documentation → awaiting_pm_review.
-        """
-        t = await self.task.get(task_id)
-        if t is None:
-            return await self._emit_rejection(
-                Envelope.not_found(message=f"task {task_id} not found"),
-                agent_id=doc_agent_id,
-                task_id=task_id,
-                verb="i_documented",
-            )
-        if t.assigned_to != doc_agent_id:
-            return await self._emit_rejection(
-                Envelope.not_authorized(
-                    message="not assigned to you",
-                    remediate="claim it via claim_doc_task(task_id) first",
-                    context_briefing=await self._briefing_for(doc_agent_id, task_id),
-                ),
-                agent_id=doc_agent_id,
-                task_id=task_id,
-                verb="i_documented",
-            )
-        if not notes or len(notes) < settings.docs_notes_min_chars:
-            return await self._emit_rejection(
-                Envelope.tracing_gap(
-                    missing=["docs_notes>=20"],
-                    remediate=(
-                        "i_documented requires notes>=20 chars summarizing what you "
-                        "documented and where (file paths)."
-                        " Include each file in `files=...`."
-                    ),
-                    context_briefing=await self._briefing_for(doc_agent_id, task_id),
-                ),
-                agent_id=doc_agent_id,
-                task_id=task_id,
-                verb="i_documented",
-            )
-        if not files:
-            return await self._emit_rejection(
-                Envelope.tracing_gap(
-                    missing=["files"],
-                    remediate=(
-                        "i_documented requires files=['<path>', ...]"
-                        " listing the doc files written."
-                    ),
-                    context_briefing=await self._briefing_for(doc_agent_id, task_id),
-                ),
-                agent_id=doc_agent_id,
-                task_id=task_id,
-                verb="i_documented",
-            )
-        t = await self.task.docs_complete(
-            doc_agent_id, task_id, notes=notes, files=files
-        )
-        # docs_complete may have promoted the task to awaiting_pm_review and
-        # already routed it to the PM up the parent chain
-        # (_maybe_advance_to_pm_review). Explicitly reassign anyway to the
-        # cell PM for this team — guarantees a respawn target even when the
-        # parent-chain heuristic returns None or picks the wrong PM.
-        pm_agent = await self.task.cell_pm_for_team(t.team)
-        if pm_agent is not None:
-            await self.task.reassign(task_id, pm_agent.id)
-            await self.a2a.send(
-                from_agent=doc_agent_id,
-                to_agent=pm_agent.id,
-                skill="task_management",
-                task_id=task_id,
-                body=f"Docs complete for {t.id}. Ready for PM review + merge.",
-            )
-        return Envelope.ok(
-            status=str(t.status),
-            task_id=str(task_id),
-            next="idle until PM completes",
-            context_briefing=await self._briefing_for(doc_agent_id, task_id),
-        )
+    # claim_doc_task + i_documented moved to ``doc.py`` (audit P2-2).
 
     async def _i_will_plan_preflight(
         self, pm_agent_id: UUID, task_id: UUID, t: Any, plan: str
@@ -1932,16 +1526,10 @@ class Choreographer:
                 remediate=hint_for_missing_journal_decision(),
                 context_briefing=await self._briefing_for(pm_agent_id, task_id),
             )
-        if not await self.task.all_subtasks_terminal(task_id):
-            non_terminal = await self._non_terminal_subtask_ids(task_id)
-            return Envelope.tracing_gap(
-                missing=["subtasks not all terminal"],
-                remediate=(
-                    "all subtasks must be in completed/cancelled before"
-                    " bubbling up. Non-terminal subtasks: " + non_terminal
-                ),
-                context_briefing=await self._briefing_for(pm_agent_id, task_id),
-            )
+        if env := await self._subtasks_not_terminal_envelope(
+            pm_agent_id, task_id, context_phrase="bubbling up"
+        ):
+            return env
         if not t.branch_name:
             return Envelope.invalid_state(
                 message="task has no branch; cannot open cell-level PR",
@@ -2148,17 +1736,10 @@ class Choreographer:
                 remediate=hint_for_missing_journal_decision(),
                 context_briefing=await self._briefing_for(pm_agent_id, task_id),
             )
-        all_terminal = await self.task.all_subtasks_terminal(task_id)
-        if not all_terminal:
-            non_terminal = await self._non_terminal_subtask_ids(task_id)
-            return Envelope.tracing_gap(
-                missing=["subtasks not all terminal"],
-                remediate=(
-                    "all subtasks must be in completed/cancelled before"
-                    " completing parent. Non-terminal subtasks: " + non_terminal
-                ),
-                context_briefing=await self._briefing_for(pm_agent_id, task_id),
-            )
+        if env := await self._subtasks_not_terminal_envelope(
+            pm_agent_id, task_id, context_phrase="completing parent"
+        ):
+            return env
         if t.pr_number is None:
             return Envelope.invalid_state(
                 message="task has no PR; cannot merge",
@@ -2290,19 +1871,10 @@ class Choreographer:
                     main_pm_agent_id, root_task_id
                 ),
             )
-        all_terminal = await self.task.all_subtasks_terminal(root_task_id)
-        if not all_terminal:
-            non_terminal = await self._non_terminal_subtask_ids(root_task_id)
-            return Envelope.tracing_gap(
-                missing=["subtasks not all terminal"],
-                remediate=(
-                    "all subtasks must be in completed/cancelled state. "
-                    "Non-terminal subtasks: " + non_terminal
-                ),
-                context_briefing=await self._briefing_for(
-                    main_pm_agent_id, root_task_id
-                ),
-            )
+        if env := await self._subtasks_not_terminal_envelope(
+            main_pm_agent_id, root_task_id, context_phrase="escalating to CEO"
+        ):
+            return env
         return None
 
     async def main_pm_complete(
@@ -2333,7 +1905,12 @@ class Choreographer:
         if needs_pr:
             await self.git.create_pr(t.branch_name, parent="master", is_root_pr=True)
 
-        t = await self.task.escalate_to_ceo(main_pm_agent_id, root_task_id, notes)
+        # Use kwargs — service signature is (task_id, agent_role="cell_pm",
+        # notes=None). Positional was passing agent_id as task_id and the
+        # actual task_id as agent_role (audit D-07).
+        t = await self.task.escalate_to_ceo(
+            task_id=root_task_id, agent_role="main_pm", notes=notes
+        )
         # CEO acts via the UI, not as an agent the orchestrator spawns. Clear
         # ``assigned_to`` so no agent gets respawned to chase this task while
         # it sits in awaiting_ceo_approval.
@@ -2497,44 +2074,7 @@ class Choreographer:
             context_briefing=await self._briefing_for(agent_id, task_id),
         )
 
-    async def board_triage(self, board_agent_id: UUID) -> Envelope:
-        """Phase 4: Board triage — next strategic root task awaiting PM review."""
-        strategic = await self.task.list_strategic_for_board()
-        if strategic:
-            t = strategic[0]
-            return Envelope.ok(
-                status=str(t.status),
-                task_id=str(t.id),
-                next=(
-                    f"review and call escalate_to_ceo(task_id='{t.id}', reason=...)"
-                    " or i_am_idle"
-                ),
-                context_briefing=await self._briefing_for(board_agent_id, t.id),
-            )
-        return Envelope.ok(
-            status="idle",
-            task_id=None,
-            next="no strategic-review work — i_am_idle",
-            context_briefing=await self._briefing_for(board_agent_id, None),
-        )
-
-    async def auditor_triage(self, auditor_agent_id: UUID) -> Envelope:
-        """Phase 4: Auditor triage — surfaces anomalies (long-running blocked, etc.)."""
-        anomalies = await self.task.list_long_running_blocked()
-        if anomalies:
-            t = anomalies[0]
-            return Envelope.ok(
-                status=str(t.status),
-                task_id=str(t.id),
-                next=(
-                    "log a reflect-note observing the anomaly via "
-                    f"note(scope='reflect', task_id='{t.id}', text='...')"
-                ),
-                context_briefing=await self._briefing_for(auditor_agent_id, t.id),
-            )
-        return Envelope.ok(
-            status="idle",
-            task_id=None,
-            next="no anomalies — i_am_idle",
-            context_briefing=await self._briefing_for(auditor_agent_id, None),
-        )
+    # board_triage + auditor_triage moved to ``board.py`` as the first
+    # per-role mixin extraction (audit P2-2). The Choreographer class is
+    # composed in ``__init__.py`` from BoardMixin + the rest of this
+    # _impl. Methods now resolve via Python's MRO.

@@ -51,16 +51,34 @@ def _build_headers() -> dict[str, str]:
 
 
 def _post(path: str, body: dict[str, Any]) -> dict[str, Any]:
-    """POST a request to the orchestrator and return the JSON envelope."""
+    """POST a request to the orchestrator and return the JSON envelope.
+
+    Mirrors flow_server._post: surfaces the orchestrator's envelope on
+    both 2xx and 4xx so the agent always sees ``remediate``. Only
+    fabricates a transport_error envelope when the body is unparseable.
+    """
     with httpx.Client(timeout=_TIMEOUT) as client:
         response = client.post(
             f"{ORCHESTRATOR_URL}{path}",
             headers=_build_headers(),
             json=body,
         )
-        response.raise_for_status()
-        result: dict[str, Any] = response.json()
-        return result
+        try:
+            payload: dict[str, Any] = response.json()
+        except (ValueError, json.JSONDecodeError):
+            return {
+                "error": "transport_error",
+                "message": (
+                    f"orchestrator returned HTTP {response.status_code}"
+                    f" with no JSON body for {path}"
+                ),
+                "remediate": (
+                    "check that the orchestrator is up and the route exists;"
+                    " contact the human operator if this persists"
+                ),
+                "missing": [],
+            }
+        return payload
 
 
 def commit(message: str, files: list[str] | None = None) -> dict[str, Any]:
@@ -168,26 +186,35 @@ def _load_manifest_do_tools() -> list[str] | None:
 
 
 def _register_tools() -> list[str]:
-    """Register MCP tools according to the manifest, or all tools as a failsafe.
+    """Register MCP tools according to the manifest. Fails loud if absent.
+
+    Mirrors flow_server's behaviour: refuse to start if the manifest is
+    missing rather than silently exposing the full do-tool set (which
+    includes ``commit`` — the role-gate would reject it server-side, but
+    the agent shouldn't see it on its tool palette in the first place).
 
     Returns the list of tool names actually registered.
     """
     allowed = _load_manifest_do_tools()
     if allowed is None:
-        log.warning(
-            "do_server: manifest unavailable; registering all do tools",
-            role=AGENT_ROLE,
+        manifest_path = os.environ.get(
+            "ROBOCO_TOOL_MANIFEST_PATH", "/app/tool-manifest.json"
         )
-        names = list(_TOOLS)
-    else:
-        unknown = [verb for verb in allowed if verb not in _TOOLS]
-        if unknown:
-            log.warning(
-                "do_server: manifest references unknown do tools",
-                role=AGENT_ROLE,
-                missing=sorted(unknown),
-            )
-        names = [verb for verb in allowed if verb in _TOOLS]
+        msg = (
+            f"do_server: manifest unavailable at {manifest_path};"
+            f" refusing to register all-tools fallback for role"
+            f" {AGENT_ROLE!r}. Check the orchestrator manifest mount."
+        )
+        log.error("do_server: manifest missing", role=AGENT_ROLE, path=manifest_path)
+        raise RuntimeError(msg)
+    unknown = [verb for verb in allowed if verb not in _TOOLS]
+    if unknown:
+        log.warning(
+            "do_server: manifest references unknown do tools",
+            role=AGENT_ROLE,
+            missing=sorted(unknown),
+        )
+    names = [verb for verb in allowed if verb in _TOOLS]
 
     for verb in names:
         mcp.tool(name=verb)(_TOOLS[verb])

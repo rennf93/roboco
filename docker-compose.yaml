@@ -248,6 +248,11 @@ services:
       - ${ROBOCO_DATA_DIR:-./data}/agent-settings:/app/agent-settings
       # Per-agent SessionStart briefings (pre-rendered task context)
       - ${ROBOCO_DATA_DIR:-./data}/briefings:/app/briefings
+      # Per-agent spawn manifests (role-scoped tool list) — written by the
+      # orchestrator, bind-mounted into each agent container as
+      # /app/tool-manifest.json. Without this mount the file is invisible
+      # to the Docker daemon and agents fall back to all-verbs registration.
+      - ${ROBOCO_DATA_DIR:-./data}/manifests:/app/manifests
       # Agent workspaces (git clones) - persisted across restarts
       - ${ROBOCO_DATA_DIR:-./data}/workspaces:/data/workspaces
       # Persistent logs — survive `docker compose down/up`. Orchestrator and

@@ -54,21 +54,55 @@ def _build_headers() -> dict[str, str]:
 
 
 def _post(path: str, body: dict[str, Any]) -> dict[str, Any]:
-    """POST a request to the orchestrator and return the JSON envelope."""
+    """POST a request to the orchestrator and return the JSON envelope.
+
+    The orchestrator returns the standardized envelope on both success
+    (2xx) and rejection (4xx). The MCP-side bridge surfaces the envelope
+    in either case so agents see ``remediate`` / ``missing`` even on a
+    4xx response. Only raises if the response has no parseable body
+    (e.g., a 5xx with HTML error page or a network failure).
+    """
     with httpx.Client(timeout=_TIMEOUT) as client:
         response = client.post(
             f"{ORCHESTRATOR_URL}{path}",
             headers=_build_headers(),
             json=body,
         )
-        response.raise_for_status()
-        result: dict[str, Any] = response.json()
-        return result
+        try:
+            payload: dict[str, Any] = response.json()
+        except (ValueError, json.JSONDecodeError):
+            # No JSON body (HTML error page, empty body, etc). Surface the
+            # status as a synthetic envelope so the agent gets a remediate
+            # hint instead of a Python traceback.
+            return {
+                "error": "transport_error",
+                "message": (
+                    f"orchestrator returned HTTP {response.status_code}"
+                    f" with no JSON body for {path}"
+                ),
+                "remediate": (
+                    "check that the orchestrator is up and the route exists;"
+                    " contact the human operator if this persists"
+                ),
+                "missing": [],
+            }
+        return payload
+
+
+# Board route serves Product Owner + Head Marketing under one prefix.
+# AgentRole values that map to a different URL segment go here; everything
+# else passes through unchanged so route prefix == role name (developer,
+# qa, documenter, cell_pm, main_pm, auditor).
+_ROLE_TO_ROUTE_PREFIX: dict[str, str] = {
+    "product_owner": "board",
+    "head_marketing": "board",
+}
+_ROUTE_PREFIX = _ROLE_TO_ROUTE_PREFIX.get(AGENT_ROLE, AGENT_ROLE)
 
 
 def _role_path(verb: str) -> str:
-    """Build the role-scoped /api/v2/flow/<role>/<verb> path."""
-    return f"/api/v2/flow/{AGENT_ROLE}/{verb}"
+    """Build the role-scoped /api/v2/flow/<route>/<verb> path."""
+    return f"/api/v2/flow/{_ROUTE_PREFIX}/{verb}"
 
 
 # ---------- Dev verbs ----------
@@ -82,11 +116,6 @@ def give_me_work() -> dict[str, Any]:
 def i_will_work_on(task_id: str, plan: str | None = None) -> dict[str, Any]:
     """Claim/start/recover a task. Works for pending, claimed, needs_revision."""
     return _post(_role_path("i_will_work_on"), {"task_id": task_id, "plan": plan})
-
-
-def i_have_committed(message: str) -> dict[str, Any]:
-    """Record that you made a commit. Auto-creates progress entry."""
-    return _post(_role_path("i_have_committed"), {"message": message})
 
 
 def submit_for_qa(task_id: str) -> dict[str, Any]:
@@ -235,7 +264,6 @@ _TOOLS: dict[str, Any] = {
     # dev
     "give_me_work": give_me_work,
     "i_will_work_on": i_will_work_on,
-    "i_have_committed": i_have_committed,
     "submit_for_qa": submit_for_qa,
     "i_am_done": i_am_done,
     "i_am_blocked": i_am_blocked,
@@ -294,26 +322,38 @@ def _load_manifest_flow_tools() -> list[str] | None:
 
 
 def _register_tools() -> list[str]:
-    """Register MCP tools according to the manifest, or all tools as a failsafe.
+    """Register MCP tools according to the manifest. Fails loud if absent.
+
+    The manifest is the role-authoritative tool list. Falling back to
+    all-verbs registration (the previous behaviour) caused PMs to see
+    developer/QA verbs and call them at wrong URLs (404s) — see audit
+    2026-05-04 D-12. We now refuse to start without the manifest.
 
     Returns the list of verb names actually registered.
     """
     allowed = _load_manifest_flow_tools()
     if allowed is None:
-        log.warning(
-            "flow_server: manifest unavailable; registering all flow verbs",
-            role=AGENT_ROLE,
+        manifest_path = os.environ.get(
+            "ROBOCO_TOOL_MANIFEST_PATH", "/app/tool-manifest.json"
         )
-        names = list(_TOOLS)
-    else:
-        unknown = [verb for verb in allowed if verb not in _TOOLS]
-        if unknown:
-            log.warning(
-                "flow_server: manifest references unimplemented verbs",
-                role=AGENT_ROLE,
-                missing=sorted(unknown),
-            )
-        names = [verb for verb in allowed if verb in _TOOLS]
+        msg = (
+            f"flow_server: manifest unavailable at {manifest_path};"
+            f" refusing to register all-verbs fallback (would let"
+            f" {AGENT_ROLE!r} call off-role verbs at wrong URLs)."
+            f" Check that the orchestrator wrote the manifest to its"
+            f" /app/manifests/ directory and that the agent container"
+            f" has the bind-mount."
+        )
+        log.error("flow_server: manifest missing", role=AGENT_ROLE, path=manifest_path)
+        raise RuntimeError(msg)
+    unknown = [verb for verb in allowed if verb not in _TOOLS]
+    if unknown:
+        log.warning(
+            "flow_server: manifest references unimplemented verbs",
+            role=AGENT_ROLE,
+            missing=sorted(unknown),
+        )
+    names = [verb for verb in allowed if verb in _TOOLS]
 
     for verb in names:
         mcp.tool(name=verb)(_TOOLS[verb])

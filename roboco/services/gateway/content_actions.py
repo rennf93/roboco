@@ -163,7 +163,7 @@ class ContentActions:
         return Envelope.ok(
             status=str(t.status),
             task_id=str(t.id),
-            next="continue, then i_have_committed or i_am_done",
+            next="continue committing, or submit_for_qa when ready",
             context_briefing={},
         )
 

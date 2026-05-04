@@ -27,6 +27,9 @@ from __future__ import annotations
 
 import asyncio
 import importlib
+import json
+import tempfile
+from pathlib import Path
 from typing import TYPE_CHECKING, Any
 from unittest.mock import AsyncMock, MagicMock, patch
 from uuid import UUID
@@ -95,7 +98,7 @@ def test_route_stamps_request_correlation_id_onto_envelope() -> None:
     app, _ = _build_app()
     client = TestClient(app)
     r = client.post(
-        "/api/v2/flow/dev/give_me_work",
+        "/api/v2/flow/developer/give_me_work",
         json={},
         headers={**_DEV_AGENT_HEADERS, "X-Correlation-ID": "trace-xyz"},
     )
@@ -109,7 +112,7 @@ def test_route_stamps_generated_correlation_id_when_header_missing() -> None:
     app, _ = _build_app()
     client = TestClient(app)
     r = client.post(
-        "/api/v2/flow/dev/give_me_work",
+        "/api/v2/flow/developer/give_me_work",
         json={},
         headers=_DEV_AGENT_HEADERS,
     )
@@ -132,10 +135,45 @@ def _reload_mcp_module(monkeypatch: pytest.MonkeyPatch, dotted: str) -> ModuleTy
     import; we have to re-import after monkey-patching so the test sees
     the patched values. The reload itself is the lazy import — keeping
     importlib at the top-level keeps PLC0415 happy.
+
+    Also writes a stub manifest file and points the MCP server at it,
+    since both servers now refuse to register any tools without one
+    (audit P0-5 / D-12).
     """
     monkeypatch.setenv("ROBOCO_AGENT_ID", "00000000-0000-0000-0000-000000000001")
     monkeypatch.setenv("ROBOCO_AGENT_ROLE", "developer")
     monkeypatch.setenv("ROBOCO_ORCHESTRATOR_URL", "http://test-orchestrator:8000")
+
+    manifest_path = Path(tempfile.mkdtemp()) / "tool-manifest.json"
+    manifest_path.write_text(
+        json.dumps(
+            {
+                "agent_id": "00000000-0000-0000-0000-000000000001",
+                "role": "developer",
+                "team": "backend",
+                "workspace_path": "/tmp/test",
+                "flow_tools": [
+                    "give_me_work",
+                    "i_will_work_on",
+                    "submit_for_qa",
+                    "i_am_done",
+                    "i_am_blocked",
+                    "unclaim",
+                    "resume",
+                    "i_am_idle",
+                ],
+                "do_tools": ["commit", "note", "say", "dm", "evidence"],
+                "read_tools": [],
+                "write_tools": [],
+                "bash_allowed": True,
+                "subagent_allowed": False,
+                "subagent_model": None,
+                "env": {},
+            }
+        )
+    )
+    monkeypatch.setenv("ROBOCO_TOOL_MANIFEST_PATH", str(manifest_path))
+
     module = importlib.import_module(dotted)
     return importlib.reload(module)
 

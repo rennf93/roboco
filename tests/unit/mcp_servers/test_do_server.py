@@ -2,9 +2,30 @@
 
 from __future__ import annotations
 
+import json
+import tempfile
+from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
+
+# Same pattern as test_flow_server: do_server now refuses to start without
+# a manifest (audit P0-5 / D-12). The test fixture writes a stub manifest
+# with the full do-tool superset; production manifests are role-scoped.
+_DO_TEST_MANIFEST = {
+    "agent_id": "00000000-0000-0000-0000-000000000001",
+    "role": "developer",
+    "team": "backend",
+    "workspace_path": "/tmp/test",
+    "flow_tools": [],
+    "do_tools": ["commit", "note", "say", "dm", "notify", "evidence"],
+    "read_tools": [],
+    "write_tools": [],
+    "bash_allowed": True,
+    "subagent_allowed": False,
+    "subagent_model": None,
+    "env": {},
+}
 
 
 @pytest.fixture
@@ -12,6 +33,9 @@ def do_module(monkeypatch):  # type: ignore[no-untyped-def]
     monkeypatch.setenv("ROBOCO_AGENT_ID", "00000000-0000-0000-0000-000000000001")
     monkeypatch.setenv("ROBOCO_AGENT_ROLE", "developer")
     monkeypatch.setenv("ROBOCO_ORCHESTRATOR_URL", "http://test-orchestrator:8000")
+    manifest_path = Path(tempfile.mkdtemp()) / "tool-manifest.json"
+    manifest_path.write_text(json.dumps(_DO_TEST_MANIFEST))
+    monkeypatch.setenv("ROBOCO_TOOL_MANIFEST_PATH", str(manifest_path))
     import importlib
 
     import roboco.mcp.do_server as srv

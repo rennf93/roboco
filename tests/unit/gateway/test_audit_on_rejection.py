@@ -97,64 +97,6 @@ async def test_pm_cannot_execute_code_writes_audit_row() -> None:
 
 
 # ---------------------------------------------------------------------------
-# tracing_gap path: i_have_committed with no plan
-# ---------------------------------------------------------------------------
-
-
-@pytest.mark.asyncio
-async def test_i_have_committed_missing_plan_writes_audit_row() -> None:
-    """Tracing-gap rejection (missing plan) should also be audited."""
-    aid = uuid4()
-    tid = uuid4()
-    task_with_no_plan = MagicMock(
-        id=tid,
-        status="in_progress",
-        assigned_to=aid,
-        plan=None,
-    )
-    task_svc = AsyncMock()
-    task_svc.get_active_task_for_agent.return_value = task_with_no_plan
-    audit_svc = AsyncMock()
-    deps = _make_deps(task=task_svc, audit=audit_svc)
-    c = Choreographer(deps)
-
-    env = await c.i_have_committed(aid, "wip")
-
-    assert env.error == "tracing_gap"
-    audit_svc.log_event.assert_awaited()
-    args = audit_svc.log_event.await_args
-    assert args.kwargs["event_type"] == "gateway.rejected"
-    assert args.kwargs["details"]["verb"] == "i_have_committed"
-    assert args.kwargs["details"]["reason"] == "tracing_gap"
-    assert "plan" in args.kwargs["details"]["missing"]
-
-
-# ---------------------------------------------------------------------------
-# invalid_state path: i_have_committed with no active task
-# ---------------------------------------------------------------------------
-
-
-@pytest.mark.asyncio
-async def test_i_have_committed_no_active_task_writes_audit_row() -> None:
-    """invalid_state rejection (no active task) is audited."""
-    aid = uuid4()
-    task_svc = AsyncMock()
-    task_svc.get_active_task_for_agent.return_value = None
-    audit_svc = AsyncMock()
-    deps = _make_deps(task=task_svc, audit=audit_svc)
-    c = Choreographer(deps)
-
-    env = await c.i_have_committed(aid, "wip")
-
-    assert env.error == "invalid_state"
-    audit_svc.log_event.assert_awaited()
-    args = audit_svc.log_event.await_args
-    assert args.kwargs["event_type"] == "gateway.rejected"
-    assert args.kwargs["details"]["verb"] == "i_have_committed"
-    assert args.kwargs["details"]["reason"] == "invalid_state"
-
-
-# ---------------------------------------------------------------------------
 # not_found path: unknown task id
 # ---------------------------------------------------------------------------
 
@@ -212,15 +154,17 @@ async def test_successful_verb_does_not_write_audit_row() -> None:
 async def test_audit_log_event_failure_does_not_propagate() -> None:
     """If log_event raises, the verb still returns the rejection envelope."""
     aid = uuid4()
+    tid = uuid4()
     task_svc = AsyncMock()
-    task_svc.get_active_task_for_agent.return_value = None
+    # Unknown task id triggers not_found rejection on i_am_done.
+    task_svc.get.return_value = None
     audit_svc = AsyncMock()
     audit_svc.log_event.side_effect = RuntimeError("audit DB down")
     deps = _make_deps(task=task_svc, audit=audit_svc)
     c = Choreographer(deps)
 
     # Must not raise; the rejection envelope should still come back.
-    env = await c.i_have_committed(aid, "wip")
+    env = await c.i_am_done(aid, tid, notes="x")
 
-    assert env.error == "invalid_state"
+    assert env.error == "not_found"
     audit_svc.log_event.assert_awaited()

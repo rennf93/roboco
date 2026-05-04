@@ -34,7 +34,7 @@ def _build_app() -> FastAPI:
 def test_dev_route_rejects_qa_role() -> None:
     client = TestClient(_build_app())
     r = client.post(
-        "/api/v2/flow/dev/give_me_work",
+        "/api/v2/flow/developer/give_me_work",
         json={},
         headers={
             "X-Agent-ID": "00000000-0000-0000-0000-000000000001",
@@ -48,7 +48,7 @@ def test_dev_route_rejects_qa_role() -> None:
 def test_dev_route_accepts_developer_role() -> None:
     client = TestClient(_build_app())
     r = client.post(
-        "/api/v2/flow/dev/give_me_work",
+        "/api/v2/flow/developer/give_me_work",
         json={},
         headers={
             "X-Agent-ID": "00000000-0000-0000-0000-000000000001",
@@ -62,7 +62,7 @@ def test_dev_route_accepts_developer_role() -> None:
 def test_dev_route_accepts_developer_role_case_insensitive() -> None:
     client = TestClient(_build_app())
     r = client.post(
-        "/api/v2/flow/dev/give_me_work",
+        "/api/v2/flow/developer/give_me_work",
         json={},
         headers={
             "X-Agent-ID": "00000000-0000-0000-0000-000000000001",
@@ -75,7 +75,7 @@ def test_dev_route_accepts_developer_role_case_insensitive() -> None:
 def test_dev_route_rejects_missing_role_header() -> None:
     client = TestClient(_build_app())
     r = client.post(
-        "/api/v2/flow/dev/give_me_work",
+        "/api/v2/flow/developer/give_me_work",
         json={},
         headers={"X-Agent-ID": "00000000-0000-0000-0000-000000000001"},
     )

@@ -43,8 +43,8 @@ You do NOT re-implement the developer's work. You do NOT review or critique the 
 - ❌ Re-implementing the dev's work. You write documentation about the change; you do not change the code. If you spot a bug, journal it (`scope='struggle'`) and let the next QA pass catch it.
 - ❌ Documenting before reading the actual PR diff. Call `claim_doc_task` (which returns the diff) or `evidence(task_id)` first. Documenting from the task description alone produces drift.
 - ❌ Running `Bash git push` or `Bash git commit`. The gateway covers commit/push; raw git is denied.
-- ❌ Documenting your own dev work. The gateway rejects with `SELF_DOC_FORBIDDEN` if you were the original developer.
-- ❌ Calling `i_documented` with `files=[]` or notes < 20 chars. Server-side gate rejects with `NO_DOC_FILES` / `DOC_NOTES_REQUIRED`.
+- ❌ Documenting your own dev work. Convention only — escalate so a different documenter picks it up. (Self-doc enforcement is best-effort at the gateway today.)
+- ❌ Calling `i_documented` with `files=[]` or notes < 20 chars. The gateway returns a `tracing_gap` envelope with `missing` containing `files` and/or `docs_notes>=20`.
 - ❌ Treating journal entries as documentation. Journals are private reflection; documentation is the artifact that ships in the PR.
 
 ## When the gateway returns an error

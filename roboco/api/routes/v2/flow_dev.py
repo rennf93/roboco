@@ -12,7 +12,6 @@ from roboco.api.schemas.v2.flow import (
     IAmBlockedRequest,
     IAmDoneRequest,
     IAmIdleRequest,
-    IHaveCommittedRequest,
     IWillWorkOnRequest,
     ResumeRequest,
     SubmitForQaRequest,
@@ -21,8 +20,8 @@ from roboco.api.schemas.v2.flow import (
 from roboco.services.gateway.choreographer import Choreographer
 
 router = APIRouter(
-    prefix="/api/v2/flow/dev",
-    tags=["v2-flow-dev"],
+    prefix="/api/v2/flow/developer",
+    tags=["v2-flow-developer"],
     dependencies=[require_dev],
 )
 
@@ -50,17 +49,6 @@ async def i_will_work_on(
     choreographer: _ChoreographerDep,
 ) -> dict:
     env = await choreographer.i_will_work_on(x_agent_id, body.task_id, body.plan)
-    return envelope_to_response(env, request)
-
-
-@router.post("/i_have_committed")
-async def i_have_committed(
-    request: Request,
-    body: IHaveCommittedRequest,
-    x_agent_id: _AgentIdHeader,
-    choreographer: _ChoreographerDep,
-) -> dict:
-    env = await choreographer.i_have_committed(x_agent_id, body.message)
     return envelope_to_response(env, request)
 
 

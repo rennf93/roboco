@@ -343,7 +343,7 @@ read-only into the agent container.
 
 | Role          | Flow verbs                                                                                       |
 |---------------|--------------------------------------------------------------------------------------------------|
-| developer     | `give_me_work`, `i_will_work_on`, `i_have_committed`, `i_am_done`, `i_am_blocked`                |
+| developer     | `give_me_work`, `i_will_work_on`, `submit_for_qa`, `i_am_done`, `i_am_blocked`                   |
 | qa            | `claim_review`, `pass`, `fail`                                                                   |
 | documenter    | `claim_doc_task`, `i_documented`                                                                 |
 | cell_pm       | `triage`, `unblock`, `complete`, `escalate_up`                                                   |

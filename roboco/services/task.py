@@ -942,9 +942,22 @@ class TaskService(BaseService):
     ) -> None:
         """
         Apply claim-side-effects: status transition, branch + work session + context.
+
+        On branch-creation failure, the claim fields are rolled back to
+        their pre-claim values so a retry starts from a clean state. Without
+        this, a partial failure leaves the task CLAIMED with branch_name=NULL,
+        and `git checkout -b` on retry fails non-idempotent (audit S-01/D-39).
         """
         # Set context for QA/Documenter claims (only if not already set)
         self._set_original_developer_context(task, agent)
+
+        # Snapshot for rollback on branch-creation failure.
+        original_status = task.status
+        original_assigned_to = task.assigned_to
+        original_claimed_by = task.claimed_by
+        original_claimed_at = task.claimed_at
+        original_heartbeat = task.last_heartbeat_at
+        original_claimant_id = task.active_claimant_id
 
         now = datetime.now(UTC)
         task.assigned_to = cast("Any", agent_id)
@@ -957,6 +970,11 @@ class TaskService(BaseService):
         # would touch the heartbeat — leading to an unclaim/reclaim
         # tight loop hammering the orchestrator.
         task.last_heartbeat_at = now
+        # Single-claimant invariant (alembic 006): claimant_lock.try_acquire
+        # and trigger_filter.decide_spawn both branch on this column. Was
+        # declared but never written (audit D-05); now wired so the
+        # invariant is functional.
+        task.active_claimant_id = cast("Any", agent_id)
 
         agent_role = agent.role.value if agent and agent.role else None
         if task.status in self._CLAIMABLE_STATUSES:
@@ -965,7 +983,18 @@ class TaskService(BaseService):
         await self.session.flush()
 
         if not task.branch_name:
-            await self._ensure_branch_for_task(task, agent_id)
+            try:
+                await self._ensure_branch_for_task(task, agent_id)
+            except Exception:
+                # Roll back claim fields so the task is reclaimable.
+                task.status = original_status
+                task.assigned_to = original_assigned_to
+                task.claimed_by = original_claimed_by
+                task.claimed_at = original_claimed_at
+                task.last_heartbeat_at = original_heartbeat
+                task.active_claimant_id = original_claimant_id
+                await self.session.flush()
+                raise
             await self.session.refresh(task)
 
         await self._create_work_session_if_needed(task, agent_id, agent_role)
@@ -1822,21 +1851,30 @@ class TaskService(BaseService):
     async def unclaim_for_reaper(self, task_id: UUID) -> None:
         """Reaper-only unclaim: skip role checks, force the row back to pending.
 
-        Bypasses the normal claim guards because the holder is provably dead
-        (no heartbeat past TTL) — the operation is named with ``_for_reaper``
-        so callers cannot accidentally use it as a regular unclaim path.
-        Clears ``assigned_to`` and ``last_heartbeat_at`` so the next claim
-        starts fresh.
+        Routes through ``_validate_and_set_status`` (audit P2-4/D-20) so the
+        canonical state machine in ``enforcement/task_lifecycle.py`` records
+        the transition. Pre-fix this used raw UPDATE which bypassed
+        VALID_TRANSITIONS — making the lifecycle module's invariants diverge
+        from production reality.
+
+        The operation is named with ``_for_reaper`` so callers cannot
+        accidentally use it as a regular unclaim path; uses ``agent_role=None``
+        because the system itself is performing the transition. Bypasses
+        ownership/role checks because the holder is provably dead (no
+        heartbeat past TTL).
         """
-        await self.session.execute(
-            update(TaskTable)
-            .where(TaskTable.id == task_id)
-            .values(
-                status=TaskStatus.PENDING,
-                assigned_to=None,
-                last_heartbeat_at=None,
-            )
-        )
+        task = await self.get(task_id)
+        if task is None:
+            return
+        if task.status not in (TaskStatus.CLAIMED, TaskStatus.IN_PROGRESS):
+            return
+        try:
+            self._validate_and_set_status(task, TaskStatus.PENDING, None)
+        except TaskLifecycleError:
+            return
+        task.assigned_to = cast("Any", None)
+        task.last_heartbeat_at = None
+        task.active_claimant_id = cast("Any", None)
         await self.session.flush()
 
     async def unclaim_for_agent(
@@ -1889,6 +1927,7 @@ class TaskService(BaseService):
         # _validate_and_set_status only updates `status`; clearing the
         # claim is the unclaim's specific side effect.
         task.assigned_to = cast("Any", None)
+        task.active_claimant_id = cast("Any", None)
         await self.session.flush()
         return task
 
@@ -4628,9 +4667,21 @@ class TaskService(BaseService):
             return None
         if task.status != expected_status:
             return None
+        now = datetime.now(UTC)
         task.assigned_to = cast("Any", agent_id)
         task.claimed_by = cast("Any", agent_id)
-        task.claimed_at = datetime.now(UTC)
+        task.claimed_at = now
+        # Seed the heartbeat — same rationale as _finalize_claim line 959.
+        # `claimant_lock.is_stale` and the reaper both treat
+        # last_heartbeat_at IS NULL as stale; without this seed a QA/Doc
+        # claim is "stale" the moment it's recorded and any code that
+        # consults claimant_lock for awaiting_qa / awaiting_documentation
+        # tasks will misclassify the live claim as abandoned.
+        task.last_heartbeat_at = now
+        # Single-claimant invariant — see _finalize_claim. Same column
+        # used by claimant_lock + trigger_filter. Cleared by QA pass/fail
+        # and doc-complete when the review hand-off finishes.
+        task.active_claimant_id = cast("Any", agent_id)
         await self.session.flush()
         return task
 
@@ -4649,10 +4700,26 @@ class TaskService(BaseService):
     ) -> TaskTable | None:
         """QA passes the task (gateway-flavored wrapper of pass_qa).
 
-        Records the QA agent as the one performing the transition. The
-        underlying pass_qa() clears assignment so a documenter can claim.
+        The audit row is attributed to QA via task.claimed_by (set by
+        qa_claim). We assert qa_agent_id matches claimed_by so any future
+        divergence surfaces loudly instead of silently mis-recording the
+        actor (audit D-18). Clears the single-claimant lock so the
+        documenter can claim cleanly.
         """
-        del qa_agent_id  # gateway already validated assignment
+        task = await self.get(task_id)
+        if task is not None:
+            if (
+                task.claimed_by is not None
+                and to_python_uuid(task.claimed_by) != qa_agent_id
+            ):
+                self.log.warning(
+                    "qa_pass actor mismatch",
+                    task_id=str(task_id),
+                    qa_agent_id=str(qa_agent_id),
+                    claimed_by=str(task.claimed_by),
+                )
+            task.active_claimant_id = cast("Any", None)
+            await self.session.flush()
         return await self.pass_qa(task_id, notes=notes, agent_role="qa")
 
     async def qa_fail(
@@ -4666,15 +4733,28 @@ class TaskService(BaseService):
 
         `notes` is the QA narrative (stored on `qa_notes`); `issues` is
         appended to `dev_notes` as a checklist for the dev's revision.
+        Asserts the actor matches claimed_by (audit D-18).
         """
-        del qa_agent_id  # gateway already validated assignment
         task = await self.get(task_id)
         if task is None:
             return None
+        if (
+            task.claimed_by is not None
+            and to_python_uuid(task.claimed_by) != qa_agent_id
+        ):
+            self.log.warning(
+                "qa_fail actor mismatch",
+                task_id=str(task_id),
+                qa_agent_id=str(qa_agent_id),
+                claimed_by=str(task.claimed_by),
+            )
         if issues:
             issue_block = "[QA ISSUES]\n" + "\n".join(f"- {i}" for i in issues)
             task.dev_notes = _append_capped(task.dev_notes, issue_block)
-            await self.session.flush()
+        # Clear active_claimant_id — fail_qa transitions back to
+        # needs_revision and reassigns to the original developer.
+        task.active_claimant_id = cast("Any", None)
+        await self.session.flush()
         return await self.fail_qa(task_id, notes=notes, agent_role="qa")
 
     async def unblock_with_restore(

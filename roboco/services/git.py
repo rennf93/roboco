@@ -1784,9 +1784,7 @@ class GitService(BaseService):
         )
         if workspace_agent_id is None and task.created_by:
             workspace_agent_id = UUID(str(task.created_by))
-        workspace = await self.get_workspace(
-            project.slug, agent_id=workspace_agent_id
-        )
+        workspace = await self.get_workspace(project.slug, agent_id=workspace_agent_id)
         git_token = await self._get_project_token_or_raise(project.slug)
         owner, repo = self._parse_github_remote(workspace)
 

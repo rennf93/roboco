@@ -42,7 +42,7 @@ def test_blocks_internal_curl_to_orchestrator() -> None:
 
 
 def test_blocks_internal_curl_to_localhost() -> None:
-    assert _run("curl http://localhost:8000/api/v2/flow/dev/i_am_done") == _DENIED
+    assert _run("curl http://localhost:8000/api/v2/flow/developer/i_am_done") == _DENIED
 
 
 def test_blocks_internal_curl_to_127() -> None:

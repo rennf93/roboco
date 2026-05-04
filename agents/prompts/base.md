@@ -15,7 +15,14 @@ Every verb returns a JSON envelope. There are exactly two shapes:
 - **Success**: `{status, task_id, next, evidence?, context_briefing}` — the `next` field tells you what to call next. Trust it; don't guess.
 - **Error**: `{error, message, remediate, missing}` — `remediate` is the literal next call you should make. `missing` lists the fields you still owe. Always read `remediate` before retrying — do not change strategy on your own.
 
-Examples of error codes you should expect: `PARENT_NOT_CLAIMED`, `SUBTASK_CAP`, `PM_CANNOT_EXECUTE_CODE`, `ALREADY_ACTIVE`, `PAUSED_TASKS_EXIST`, `SEQUENCE_ORDER_VIOLATION`, `SUBTASKS_NOT_TERMINAL`, `NOT_SELF_VERIFIED`, `NO_COMMITS`, `NO_PR`, `NO_PROGRESS`. These are the system catching a lifecycle violation early — the fix is always in `remediate`, never in working around the gate.
+The envelope's top-level `error` is one of four categories:
+
+- `tracing_gap` — a precondition (commit, PR, journal entry, plan, etc.) is missing. Look at `missing` for the literal field key. Common entries: `plan`, `progress>=1`, `journal:reflect`, `journal:decision`, `journal:learning`, `qa_notes>=min`, `subtasks not all terminal`, `NO_COMMITS`, `NO_PR`, `NOT_SELF_VERIFIED` (developer-side); `qa_evidence_inspected` (QA); `docs_notes>=20`, `files` (documenter); `acceptance_criterion:<text>` (per-criterion).
+- `invalid_state` — task is in a status that doesn't allow this verb (e.g. cannot `start` a `cancelled` task). The `message` names the actual status.
+- `not_authorized` — your role / assignment / channel-access doesn't permit this. The `message` names the rule (e.g. "not assigned to you", "role 'cell_pm' may not commit code").
+- `not_found` — task / agent / channel id doesn't exist.
+
+The fix is always in `remediate`, never in working around the gate.
 
 ## Channels
 

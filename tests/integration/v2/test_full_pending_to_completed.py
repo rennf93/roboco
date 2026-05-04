@@ -208,29 +208,29 @@ async def test_pending_to_awaiting_ceo_approval(stateful_app: tuple) -> None:
     # 1. Dev: give_me_work -> i_will_work_on -> note -> i_am_done
     # ------------------------------------------------------------------
     r = client.post(
-        "/api/v2/flow/dev/give_me_work",
-        headers={"X-Agent-ID": dev_id},
+        "/api/v2/flow/developer/give_me_work",
+        headers={"X-Agent-ID": dev_id, "X-Agent-Role": "developer"},
         json={},
     )
     assert r.status_code == _HTTP_200
 
     r = client.post(
-        "/api/v2/flow/dev/i_will_work_on",
-        headers={"X-Agent-ID": dev_id},
+        "/api/v2/flow/developer/i_will_work_on",
+        headers={"X-Agent-ID": dev_id, "X-Agent-Role": "developer"},
         json={"task_id": str(uuid4()), "plan": "edit x then y"},
     )
     assert r.json()["status"] == "in_progress"
 
     r = client.post(
         "/api/v2/do/note",
-        headers={"X-Agent-ID": dev_id},
+        headers={"X-Agent-ID": dev_id, "X-Agent-Role": "developer"},
         json={"text": "Reflected: did the work as planned.", "scope": "reflect"},
     )
     assert r.json()["error"] is None
 
     r = client.post(
-        "/api/v2/flow/dev/i_am_done",
-        headers={"X-Agent-ID": dev_id},
+        "/api/v2/flow/developer/i_am_done",
+        headers={"X-Agent-ID": dev_id, "X-Agent-Role": "developer"},
         json={"task_id": str(uuid4()), "notes": "all done"},
     )
     assert r.json()["status"] == "awaiting_qa"
@@ -242,14 +242,14 @@ async def test_pending_to_awaiting_ceo_approval(stateful_app: tuple) -> None:
     # ------------------------------------------------------------------
     r = client.post(
         "/api/v2/flow/qa/claim_review",
-        headers={"X-Agent-ID": qa_id},
+        headers={"X-Agent-ID": qa_id, "X-Agent-Role": "qa"},
         json={"task_id": str(uuid4())},
     )
     assert r.json()["evidence"]["pr_number"] == _PR_NUMBER
 
     r = client.post(
         "/api/v2/do/note",
-        headers={"X-Agent-ID": qa_id},
+        headers={"X-Agent-ID": qa_id, "X-Agent-Role": "developer"},
         json={
             "text": "Reviewed; all acceptance criteria addressed.",
             "scope": "learning",
@@ -263,7 +263,7 @@ async def test_pending_to_awaiting_ceo_approval(stateful_app: tuple) -> None:
     )
     r = client.post(
         "/api/v2/flow/qa/pass",
-        headers={"X-Agent-ID": qa_id},
+        headers={"X-Agent-ID": qa_id, "X-Agent-Role": "qa"},
         json={"task_id": str(uuid4()), "notes": long_notes},
     )
     assert r.json()["status"] == "awaiting_documentation"
@@ -273,14 +273,14 @@ async def test_pending_to_awaiting_ceo_approval(stateful_app: tuple) -> None:
     # ------------------------------------------------------------------
     r = client.post(
         "/api/v2/flow/documenter/claim_doc_task",
-        headers={"X-Agent-ID": doc_id},
+        headers={"X-Agent-ID": doc_id, "X-Agent-Role": "documenter"},
         json={"task_id": str(uuid4())},
     )
     assert r.status_code == _HTTP_200
 
     r = client.post(
         "/api/v2/flow/documenter/i_documented",
-        headers={"X-Agent-ID": doc_id},
+        headers={"X-Agent-ID": doc_id, "X-Agent-Role": "documenter"},
         json={
             "task_id": str(uuid4()),
             "notes": "Wrote backend/guides/feature-x.md covering usage and config.",
@@ -294,14 +294,14 @@ async def test_pending_to_awaiting_ceo_approval(stateful_app: tuple) -> None:
     # ------------------------------------------------------------------
     r = client.post(
         "/api/v2/do/note",
-        headers={"X-Agent-ID": cell_pm_id},
+        headers={"X-Agent-ID": cell_pm_id, "X-Agent-Role": "developer"},
         json={"text": "Decision: approve and merge.", "scope": "decision"},
     )
     assert r.json()["error"] is None
 
     r = client.post(
         "/api/v2/flow/cell_pm/complete",
-        headers={"X-Agent-ID": cell_pm_id},
+        headers={"X-Agent-ID": cell_pm_id, "X-Agent-Role": "cell_pm"},
         json={"task_id": str(uuid4()), "notes": "Approved and merged"},
     )
     assert r.json()["status"] == "completed"
@@ -311,14 +311,14 @@ async def test_pending_to_awaiting_ceo_approval(stateful_app: tuple) -> None:
     # ------------------------------------------------------------------
     r = client.post(
         "/api/v2/do/note",
-        headers={"X-Agent-ID": main_pm_id},
+        headers={"X-Agent-ID": main_pm_id, "X-Agent-Role": "developer"},
         json={"text": "Root task ready for prod.", "scope": "decision"},
     )
     assert r.json()["error"] is None
 
     r = client.post(
         "/api/v2/flow/main_pm/complete",
-        headers={"X-Agent-ID": main_pm_id},
+        headers={"X-Agent-ID": main_pm_id, "X-Agent-Role": "main_pm"},
         json={"task_id": str(uuid4()), "notes": "Ready for prod"},
     )
     assert r.json()["status"] == "awaiting_ceo_approval"

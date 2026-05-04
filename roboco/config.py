@@ -299,10 +299,12 @@ class Settings(BaseSettings):
         description="Enable Agent Gateway feature (Phase 0 flag)",
     )
     manifest_host_dir: str = Field(
-        default="/var/lib/roboco/manifests",
+        default="/app/manifests",
         description=(
-            "Host-side directory where per-agent tool manifests are written before "
-            "being bind-mounted into developer containers as /app/tool-manifest.json"
+            "Orchestrator-side directory where per-agent tool manifests are "
+            "written. Must be a path that's bind-mounted from the host "
+            "(see docker-compose.yaml) so the docker daemon can in turn mount "
+            "the file into spawned agent containers as /app/tool-manifest.json."
         ),
     )
     public_base_url: str = Field(

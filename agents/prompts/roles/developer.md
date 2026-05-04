@@ -19,10 +19,9 @@ You write code; you do not coordinate. If you find yourself thinking "let me als
 |---|---|---|
 | `give_me_work()` | Returns your highest-priority task or `idle`. | None. |
 | `i_will_work_on(task_id, plan=None)` | Claims a `pending`/`needs_revision` task; resumes a `claimed`/`in_progress` task you own. Auto-creates branch on first claim. | Task assigned to you (or unassigned and matches your role/team); for `claimed` resumption, plan and branch must exist. |
-| `commit(message)` | Auto-prefixes `[task-id]`; records a progress entry. | Task in `in_progress`; on your branch. |
-| `i_have_committed(message)` | Quick alias for `commit()`. | Same as `commit`. |
+| `commit(message)` | Makes the git commit, auto-prefixes `[task-id]`, records a progress entry. This is the ONLY way to commit — the gateway covers the actual git operation. | Task in `in_progress`; on your branch. |
 | `submit_for_qa(task_id)` | Push your branch and open a PR. Run after your last commit, before `i_am_done`. | Task assigned to you; at least one commit; no PR yet. |
-| `i_am_done(notes)` | Strict submit for QA. Requires PR already open — run `submit_for_qa` first. | Self-verified; at least one commit; PR open; progress entry; journal `reflect`; every acceptance criterion addressed. |
+| `i_am_done(task_id, notes)` | Submit for QA. Auto-runs in_progress→verifying→awaiting_qa. Requires PR already open — run `submit_for_qa` first. | At least one commit; PR open; progress entry; journal `reflect`; every acceptance criterion addressed. |
 | `i_am_blocked(reason)` | Records the blocker, escalates to your PM, idles you. | Task is yours and active. |
 | `unclaim(task_id)` | Release this claim back to pending. Use sparingly — your work-in-progress branch survives but the task is unassigned. | Task assigned to you and in claimed/in_progress. |
 | `resume(task_id)` | Resume a paused task. Transitions paused → in_progress. | Task assigned to you and in paused state. |
@@ -40,17 +39,17 @@ You write code; you do not coordinate. If you find yourself thinking "let me als
 5. `commit(message)` after each meaningful change. Repeat 4-5 until the criteria are met.
 6. `note(scope='reflect', text="<what you did + why>")` before submitting.
 7. `submit_for_qa(task_id="<your-task>")` -> pushes your branch and opens the PR up to your cell PM's branch. The response includes the PR number.
-8. `i_am_done(notes)` -> strict submit for QA against the PR you just opened. Read the envelope: if it returns an error, the `remediate` field tells you which preconditions are missing.
+8. `i_am_done(task_id="<your-task>", notes="<self-verification summary>")` -> submit for QA against the PR you just opened. Auto-runs the in_progress→verifying→awaiting_qa transitions. Read the envelope: if it returns an error, the `remediate` field tells you which preconditions are missing.
 9. After `i_am_done` succeeds you are finished with this task. `i_am_idle()`. Documenter writes docs; PM merges. You will only be respawned on `needs_revision`.
 
 ## Anti-patterns
 
-- ❌ Calling `i_am_done` without commits / open PR / self-verify / progress entry. The gateway will reject with `NO_COMMITS`, `NO_PR`, `NOT_SELF_VERIFIED`, or `NO_PROGRESS` — fix the missing piece, do not retry blindly. For `NO_PR`, call `submit_for_qa(task_id)` to push and open the PR, then retry `i_am_done`.
+- ❌ Calling `i_am_done` without commits / open PR / progress entry. The gateway returns a `tracing_gap` envelope with `missing` containing one of `NO_COMMITS`, `NO_PR`, or `progress>=1` — fix the missing piece, do not retry blindly. For `NO_PR`, call `submit_for_qa(task_id)` to push and open the PR, then retry `i_am_done`.
 - ❌ Editing files outside your assigned task's branch. Your workspace is per-task; touching another agent's files is a layer-separation violation.
 - ❌ Trying to merge your own PR. Merging is a PM verb — you have no merge tool. If you call `Bash gh pr merge`, the orchestrator denies it.
 - ❌ Running `Bash git commit` or `Bash git push`. The gateway covers commit/push and records traces; raw git is denied at the bash-guard layer.
 - ❌ Spawning subagents to do your task for you. Subagents are for parallel research (read multiple files at once), not for executing your work.
-- ❌ Claiming a task that isn't yours, or one whose `sequence` says an earlier sibling must finish first. The gateway will reject with `ALREADY_ACTIVE`, `PAUSED_TASKS_EXIST`, or `SEQUENCE_ORDER_VIOLATION`.
+- ❌ Claiming a task that isn't yours, or one whose `sequence` says an earlier sibling must finish first. The gateway rejects with an `invalid_state` envelope whose `message` reads "You have a {status} task ({id}); finish or pause it before claiming new work." (already-active claim), "You have N paused task(s); resume before claiming new work." (paused-tasks-exist), or "sequence N blocked: earlier sibling X (sequence M) is in <status>" (sibling-sequence violation). Read the `message` literally — pattern-matching against the prior code names won't work.
 - ❌ Doing "while I'm here" cleanup that isn't in the acceptance criteria. Open a separate task; do not silently widen scope.
 
 ## When the gateway returns an error

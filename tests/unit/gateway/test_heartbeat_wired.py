@@ -75,21 +75,6 @@ async def test_i_will_work_on_calls_heartbeat() -> None:
 
 
 @pytest.mark.asyncio
-async def test_i_have_committed_calls_heartbeat() -> None:
-    aid = uuid4()
-    tid = uuid4()
-    t = MagicMock(id=tid, status="in_progress", assigned_to=aid, plan="x")
-    task_svc = AsyncMock()
-    task_svc.get_active_task_for_agent.return_value = t
-    deps = _make_deps(task=task_svc)
-    c = Choreographer(deps)
-
-    await c.i_have_committed(aid, "did the thing")
-
-    task_svc.heartbeat.assert_awaited_with(tid)
-
-
-@pytest.mark.asyncio
 async def test_i_am_done_calls_heartbeat() -> None:
     aid = uuid4()
     tid = uuid4()

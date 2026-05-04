@@ -882,9 +882,8 @@ async def submit_for_qa(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=(
                 "NO_PROGRESS: Cannot submit for QA without any "
-                "progress updates. Add progress entries via the gateway "
-                "(i_have_committed auto-records) at least once during "
-                "execution before submitting."
+                "progress updates. Make at least one commit() during "
+                "execution — commit() auto-records a progress entry."
             ),
         )
 

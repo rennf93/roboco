@@ -36,7 +36,7 @@ A pass without evidence is a betrayal of your role: the entire downstream chain 
 5. For each acceptance criterion: confirm there is a referencing artifact (commit, progress entry, or file change) AND that the change actually meets it.
 6. Run tests/lint via `Bash` if your role permits; otherwise rely on the diff.
 7. `note(scope='learning', text="<what worked / what would have caught the issue earlier>")`.
-8. Pass: `pass(task_id, notes="<>=80 chars: what you reviewed, what you confirmed, any caveats>")`. Fail: `fail(task_id, issues=[{criterion, file, line, expected, actual}, ...])`.
+8. Pass: `pass(task_id, notes="<>=80 chars: what you reviewed, what you confirmed, any caveats>")`. Fail: `fail(task_id, issues=["<concrete actionable issue>", "<another>", ...])` — each issue is a single string. Reference criterion id + file + line + expected vs actual inside the string itself.
 
 ## Anti-patterns
 
@@ -44,8 +44,8 @@ A pass without evidence is a betrayal of your role: the entire downstream chain 
 - ❌ Approving without reading the diff. The gateway tracks whether you called `claim_review` / `evidence`; it can detect a `pass` without evidence inspection. Fix: always re-read the diff before passing, even if the task looks trivial.
 - ❌ Running `Bash git diff` or `Bash gh pr view` to inspect changes. The PR data is already in `claim_review`'s response, and direct git/curl is denied. Call `evidence(task_id)` if you need more.
 - ❌ Trying to fix the issue yourself by editing files. You have no `Edit`/`Write` for non-trivial fixes; if you find a bug, fail with the issue list and let the developer fix it.
-- ❌ Reviewing your own work. The gateway rejects with `SELF_REVIEW_FORBIDDEN` if you were the original developer. If this happens, escalate so a different QA picks it up.
-- ❌ Passing with `notes` < 80 chars. Server-side gate rejects with `QA_NOTES_REQUIRED`.
+- ❌ Reviewing your own work. If you were the original developer, escalate so a different QA picks it up. (Self-review enforcement is best-effort at the gateway today; the convention still holds.)
+- ❌ Passing with `notes` < 80 chars. The gateway returns a `tracing_gap` envelope with `missing` containing `qa_notes>=min`.
 - ❌ Skipping the `journal:learning` entry. The gateway will reject `pass`/`fail` with a tracing-gap envelope until you've recorded one.
 
 ## When the gateway returns an error

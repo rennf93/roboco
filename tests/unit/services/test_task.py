@@ -442,27 +442,34 @@ async def test_doc_claim_sets_assignment_on_awaiting_documentation() -> None:
 
 @pytest.mark.asyncio
 async def test_qa_pass_delegates_to_pass_qa() -> None:
-    svc = TaskService(MagicMock())
-    pass_qa_mock = AsyncMock(return_value=MagicMock())
-    _bind(svc, "pass_qa", pass_qa_mock)
+    qa_id = uuid4()
     task_id = uuid4()
-    await svc.qa_pass(uuid4(), task_id, "looks good")
+    task = _build_task(id=task_id, claimed_by=qa_id)
+    svc = TaskService(MagicMock(flush=AsyncMock()))
+    pass_qa_mock = AsyncMock(return_value=MagicMock())
+    _bind(svc, "get", AsyncMock(return_value=task))
+    _bind(svc, "pass_qa", pass_qa_mock)
+    await svc.qa_pass(qa_id, task_id, "looks good")
     pass_qa_mock.assert_awaited_once_with(task_id, notes="looks good", agent_role="qa")
+    # active_claimant_id cleared so the documenter can claim cleanly.
+    assert task.active_claimant_id is None
 
 
 @pytest.mark.asyncio
 async def test_qa_fail_appends_issues_to_dev_notes() -> None:
-    task = _build_task(dev_notes=None)
+    qa_id = uuid4()
+    task = _build_task(dev_notes=None, claimed_by=qa_id)
     svc = TaskService(MagicMock(flush=AsyncMock()))
     fail_qa_mock = AsyncMock(return_value=task)
     _bind(svc, "get", AsyncMock(return_value=task))
     _bind(svc, "fail_qa", fail_qa_mock)
     issues = ["missing test", "no docstring"]
-    await svc.qa_fail(uuid4(), task.id, "blocking", issues)
+    await svc.qa_fail(qa_id, task.id, "blocking", issues)
     assert task.dev_notes is not None
     assert "missing test" in task.dev_notes
     assert "no docstring" in task.dev_notes
     fail_qa_mock.assert_awaited_once_with(task.id, notes="blocking", agent_role="qa")
+    assert task.active_claimant_id is None
 
 
 # ---------------------------------------------------------------------------

@@ -48,12 +48,12 @@ You merge what your Cell PMs submit (cell PRs into your root branch via `complet
 ## Anti-patterns
 
 - ❌ Assigning a code subtask directly to a developer slug. Always to a Cell PM. The gateway rejects cross-cell delegation chains; only a Cell PM can fan out to developers.
-- ❌ Creating > 8 subtasks under a single root. One subtask per cell that needs work; rarely should a root touch more than three cells. The gateway rejects with `SUBTASK_CAP`.
-- ❌ Calling `delegate` before `i_will_plan`. The gateway rejects with `PARENT_NOT_CLAIMED`.
+- ❌ Creating > 12 subtasks under a single root. One subtask per cell that needs work; rarely should a root touch more than three cells. The gateway returns an `invalid_state` envelope whose `message` reads "parent already has N subtasks; cap is 12" past the hard cap.
+- ❌ Calling `delegate` before `i_will_plan`. The gateway returns an `invalid_state` envelope whose `message` reads "parent task <id> is in pending; must be in_progress to accept subtasks" — `remediate` tells you to call `i_will_plan` first.
 - ❌ Running `Bash git ...` or `Bash curl http://orchestrator/...`. You have no commit verb; `complete` and `escalate_to_ceo` cover everything you need. Raw git/curl is denied at the bash-guard layer.
-- ❌ Trying to claim a code task yourself. The gateway rejects with `PM_CANNOT_EXECUTE_CODE`. If a code task lands on you by mistake, escalate.
+- ❌ Trying to claim a code task yourself. The gateway returns a `not_authorized` envelope whose `message` reads "Main PM cannot claim code tasks. PMs coordinate, never execute code." If a code task lands on you by mistake, escalate.
 - ❌ Calling `i_am_idle` while you have a task you never claimed. The gateway rejects — claim or escalate first.
-- ❌ Calling `complete` on the root before all cell-PM subtasks are terminal. The gateway rejects with `SUBTASKS_NOT_TERMINAL`.
+- ❌ Calling `complete` on the root before all cell-PM subtasks are terminal. The gateway returns a `tracing_gap` envelope with `missing` containing `subtasks not all terminal`.
 - ❌ Trying to merge to master yourself. Only the CEO does that. Your `complete` on the root opens the master PR and stops at `awaiting_ceo_approval`.
 - ❌ Calling `i_will_work_on` (that's a developer verb). Yours is `i_will_plan`.
 

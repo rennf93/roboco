@@ -24,7 +24,6 @@ def _make_deps(**overrides: AsyncMock) -> ContentActionsDeps:
         task.get_active_task_for_agent.return_value = None
 
     # commit() now checks caller role; default to developer.
-    from unittest.mock import MagicMock
 
     task.agent_for.return_value = MagicMock(role="developer")
 

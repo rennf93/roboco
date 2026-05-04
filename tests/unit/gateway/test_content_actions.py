@@ -20,7 +20,6 @@ def _make_deps(**overrides: AsyncMock) -> ContentActionsDeps:
         # commit() checks caller role server-side; default-created mocks
         # need a default developer role so existing tests pass through.
         # Caller-supplied mocks must set agent_for themselves.
-        from unittest.mock import MagicMock
 
         task.agent_for.return_value = MagicMock(role="developer")
 

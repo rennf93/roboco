@@ -230,10 +230,18 @@ def _build_manifest_for_agent(agent_id: str, model: str) -> Path | None:
         )
     )
 
-    host_dir = Path(settings.manifest_host_dir)
-    host_path = host_dir / f"{agent_id}.json"
-    write_manifest(manifest, host_path)
-    return host_path
+    # Two paths in play:
+    #   - orchestrator-internal: where the file is written inside the
+    #     orchestrator container (settings.manifest_host_dir). The compose
+    #     volume mount makes this dir visible on the host.
+    #   - host-side: what the docker daemon needs for the bind-mount into
+    #     the spawned agent. Computed via DATA_HOST_PATH translation.
+    write_dir = Path(settings.manifest_host_dir)
+    write_path = write_dir / f"{agent_id}.json"
+    write_manifest(manifest, write_path)
+    if DATA_HOST_PATH:
+        return Path(f"{DATA_HOST_PATH}/manifests/{agent_id}.json")
+    return write_path
 
 
 # =============================================================================
@@ -474,6 +482,13 @@ class AgentOrchestrator:
         # Restore any WaitingRecord rows left by a prior orchestrator run so
         # agents that were WAITING_LONG at shutdown can still be resolved.
         await self.restore_waiting_records()
+
+        # Self-heal: roll back orphan claims left over from a prior crash
+        # (audit P2-8). Tasks that show CLAIMED/IN_PROGRESS but have NO
+        # branch_name set indicate _finalize_claim flushed the status before
+        # branch creation failed in a pre-P0-7 run. Without this, the next
+        # claim attempt fails non-idempotent on `git checkout -b`.
+        await self._reconcile_orphan_claims_on_startup()
 
         # Note: Per-agent settings are now generated at spawn time
         # via _generate_agent_settings() - no shared settings needed
@@ -1450,6 +1465,15 @@ class AgentOrchestrator:
             "-v",
             f"{hosts['claude']}:/home/agent/.claude",
         ]
+
+        # Claude CLI also reads ~/.claude.json (a sibling FILE, not under
+        # ~/.claude/). When that file isn't mounted, the CLI logs
+        # "config not found" and falls back to a backup inside ~/.claude/
+        # (audit D-48). Mount the host's claude.json if it exists so each
+        # agent boots from the same source of truth as the host.
+        claude_json_host = f"{hosts['claude'].rstrip('/')}.json"
+        if Path(claude_json_host).exists():
+            cmd.extend(["-v", f"{claude_json_host}:/home/agent/.claude.json"])
 
         settings_host = hosts.get("settings")
         if settings_host:
@@ -3568,6 +3592,48 @@ Start now: evidence(task_id="{task_id}")
             except Exception as e:
                 logger.error("Dispatcher loop error", error=str(e))
 
+    async def _reconcile_orphan_claims_on_startup(self) -> None:
+        """Roll back tasks left in CLAIMED/IN_PROGRESS without a branch.
+
+        A task in CLAIMED/IN_PROGRESS with ``branch_name IS NULL`` is an
+        orphan: ``_finalize_claim`` flushed the status before branch creation
+        failed (or before the P0-7 rollback fix landed). The next claim then
+        fails non-idempotent on ``git checkout -b`` because the on-disk
+        branch may exist while the DB state is stale.
+
+        Best-effort: if reconciliation itself fails, log and continue —
+        startup must not be blocked by a single bad row.
+        """
+        from roboco.db.base import get_session_factory
+        from roboco.services.task import TaskService
+
+        factory = get_session_factory()
+        try:
+            async with factory() as db:
+                svc = TaskService(db)
+                candidates = await svc.list_in_progress_or_claimed()
+                orphans = [t for t in candidates if not t.branch_name]
+                if not orphans:
+                    logger.info("startup reconcile: no orphan claims")
+                    return
+                for t in orphans:
+                    try:
+                        await svc.unclaim_for_reaper(t.id)
+                        logger.warning(
+                            "startup reconcile: orphan claim rolled back",
+                            task_id=str(t.id),
+                            had_status=str(t.status),
+                        )
+                    except Exception as exc:
+                        logger.error(
+                            "startup reconcile: rollback failed",
+                            task_id=str(t.id),
+                            error=str(exc),
+                        )
+                await db.commit()
+        except Exception as exc:
+            logger.error("startup reconcile failed; continuing", error=str(exc))
+
     async def _reap_stale_claims(self) -> None:
         """Release claimed/in_progress tasks whose holder hasn't heart-beat in TTL.
 
@@ -4293,6 +4359,22 @@ Never `commit`, never write code, never run `git`. PMs coordinate.
         owner_uuid = self._resolve_dev_owner_uuid(task)
         agent_slug = self._resolve_agent_slug(owner_uuid) if owner_uuid else None
 
+        # Role/task_type mismatch guard (audit D-49). The dispatcher
+        # previously trusted whatever ``assigned_to`` named, so a
+        # documentation task accidentally assigned to a developer agent
+        # would silently spawn the dev. Reject the dispatch if the
+        # assignee's role doesn't match the task type — the PM that
+        # mis-assigned needs to fix it before any agent runs.
+        if agent_slug and not self._dev_dispatch_role_matches(task, agent_slug):
+            logger.warning(
+                "dev dispatch: role/task_type mismatch — skipping spawn",
+                task_id=task.get("id"),
+                task_type=task.get("task_type"),
+                assignee_slug=agent_slug,
+                assignee_role=get_agent_role(agent_slug),
+            )
+            return
+
         if agent_slug and status in (
             "needs_revision",
             "in_progress",
@@ -4305,6 +4387,27 @@ Never `commit`, never write code, never run `git`. PMs coordinate.
         # Pending tasks pre-assigned by PM.
         if agent_slug:
             await self._spawn_pending_dev(client, task, agent_slug)
+
+    @staticmethod
+    def _dev_dispatch_role_matches(task: dict[str, Any], agent_slug: str) -> bool:
+        """Return True if the assignee role matches the task's task_type.
+
+        Dev dispatcher only spawns developer-role agents. A doc/qa task
+        assigned to a dev (or vice versa) should be flagged, not silently
+        spawned. Returns True when the type is unknown or the assignee role
+        is unknown — the validation runs as a guard, not a strict gate, so
+        an unknown classification doesn't block work that would otherwise
+        proceed.
+        """
+        role = get_agent_role(agent_slug)
+        if role is None:
+            return True
+        task_type = task.get("task_type")
+        if task_type == "documentation":
+            return role == "documenter"
+        # `code` / `research` / `planning` / `administrative` / `design` all
+        # route through dev or PM; only the doc-task case is unambiguous.
+        return role == "developer"
 
     async def _spawn_assigned_qa(self, task: dict[str, Any], assigned_to: str) -> bool:
         """If task.assigned_to is a QA slug, spawn/skip-if-running; else False.
@@ -5005,15 +5108,15 @@ to begin.
 Continue development. Required gates before i_am_done() will succeed
 (enforced server-side — `remediate` tells you what's missing):
 1. commit("<type(scope): subject, >=20 chars>")
-   — stages tracked changes; auto-prefixes task ID. Repeat per chunk.
-2. i_have_committed("<progress note>")
-   — record at least one progress entry.
-3. note(scope='decision'|'learning'|'reflect', task_id="...", text=...)
+   — makes the git commit, auto-prefixes task ID, records progress.
+   Repeat per meaningful chunk.
+2. note(scope='decision'|'learning'|'reflect', task_id="...", text=...)
    as you make trade-offs.
 
 When acceptance criteria are met, call
-i_am_done(task_id="...", notes="<self-verification summary>"):
-this chains submit_verification + push + create_pr + submit_qa in one verb.
+submit_for_qa(task_id="...") to push your branch and open the PR,
+then i_am_done(task_id="...", notes="<self-verification summary>")
+to submit for QA review.
 
 If you hit something you can't unblock yourself:
 i_am_blocked(task_id="...",

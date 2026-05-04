@@ -14,10 +14,6 @@ class IWillWorkOnRequest(BaseModel):
     plan: str | None = None
 
 
-class IHaveCommittedRequest(BaseModel):
-    message: str = Field(..., min_length=1)
-
-
 class SubmitForQaRequest(BaseModel):
     task_id: UUID
 

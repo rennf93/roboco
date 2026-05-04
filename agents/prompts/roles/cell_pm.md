@@ -47,12 +47,12 @@ You merge what your developers submit (leaf PRs into your cell branch via `compl
 
 ## Anti-patterns
 
-- ❌ Creating > 8 subtasks per parent. Consolidate; if you genuinely need more, the work is too big for a single cell-PM scope — split your parent into two parents. The gateway rejects with `SUBTASK_CAP`.
-- ❌ Calling `delegate` before `i_will_plan`. The gateway will reject with `PARENT_NOT_CLAIMED` because the parent must be in `in_progress` and claimed by you.
+- ❌ Creating > 12 subtasks per parent (the hard cap). Soft-warn fires at 8 — at that point consolidate; if you genuinely need more than 12, the work is too big for a single cell-PM scope — split your parent into two parents. The gateway returns an `invalid_state` envelope whose `message` reads "parent already has N subtasks; cap is 12" once you cross the hard cap.
+- ❌ Calling `delegate` before `i_will_plan`. The gateway returns an `invalid_state` envelope whose `message` reads "parent task <id> is in pending; must be in_progress to accept subtasks" — `remediate` tells you to call `i_will_plan` first.
 - ❌ Running `Bash git ...` or `Bash curl http://orchestrator/...`. You have no commit verb; the gateway covers everything you need (`complete` merges, `submit_up` opens the cell PR). Raw git/curl is denied at the bash-guard layer.
-- ❌ Trying to claim a code task yourself. The gateway will reject with `PM_CANNOT_EXECUTE_CODE`. Decompose and `delegate` instead.
+- ❌ Trying to claim a code task yourself. The gateway returns a `not_authorized` envelope whose `message` reads "Cell PM cannot claim code tasks. PMs coordinate, never execute code." Decompose and `delegate` instead.
 - ❌ Calling `i_am_idle` while you have a task you never claimed. The gateway will reject — claim or escalate first.
-- ❌ Calling `complete` on a parent task whose subtasks aren't all terminal. The gateway will reject with `SUBTASKS_NOT_TERMINAL`. Wait for the closure dispatcher to bring you back.
+- ❌ Calling `complete` on a parent task whose subtasks aren't all terminal. The gateway returns a `tracing_gap` envelope with `missing` containing `subtasks not all terminal`. Wait for the closure dispatcher to bring you back.
 - ❌ Assigning a subtask to another cell's developer or to Main PM. Subtasks must go to a dev slug in YOUR cell. The gateway rejects cross-cell delegation chains.
 - ❌ Calling `i_will_work_on` (that's a developer verb). Yours is `i_will_plan`.
 
