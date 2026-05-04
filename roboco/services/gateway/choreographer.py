@@ -292,6 +292,43 @@ class Choreographer:
         # Format: "<id> (<status>)"
         return ", ".join(f"{s.id} ({s.status})" for s in non_terminal)
 
+    async def _i_will_work_on_pending(
+        self,
+        agent_id: UUID,
+        task_id: UUID,
+        t: Any,
+        plan: str | None,
+        briefing: dict[str, Any],
+    ) -> tuple[Envelope | None, Any]:
+        """Pending-branch dispatch for i_will_work_on. Extracted to keep
+        the parent's return count under PLR0911. Returns (rejection|None,
+        task). Caller emits rejection via _emit_rejection and falls
+        through to the OK envelope when rejection is None.
+        """
+        if guard := await self._run_claim_guards(agent_id=agent_id, task=t):
+            return self._with_briefing(guard, briefing), t
+        # claim() transitions pending → claimed; idempotent for same assignee.
+        t = await self.task.claim(task_id, agent_id)
+        if t is None:
+            return Envelope.invalid_state(
+                message="claim failed",
+                remediate="task may already be claimed by another agent",
+                context_briefing=briefing,
+            ), t
+        if not t.plan and not plan:
+            return Envelope.tracing_gap(
+                missing=["plan"],
+                remediate=(
+                    f"call i_will_work_on(task_id='{task_id}',"
+                    f" plan='<one-paragraph plan describing what you will do>')"
+                ),
+                context_briefing=briefing,
+            ), t
+        if plan:
+            t = await self.task.set_plan(task_id, plan)
+        t = await self.task.start(task_id, agent_id)
+        return None, t
+
     async def i_will_work_on(
         self, agent_id: UUID, task_id: UUID, plan: str | None = None
     ) -> Envelope:
@@ -314,48 +351,16 @@ class Choreographer:
                 t = await self.task.claim(task_id, agent_id)
             t = await self.task.start(task_id, agent_id)
         elif status == "pending":
-            # Fresh claim — run all claim-time gates BEFORE mutating state.
-            if guard := await self._run_claim_guards(agent_id=agent_id, task=t):
+            rejection, t = await self._i_will_work_on_pending(
+                agent_id, task_id, t, plan, briefing
+            )
+            if rejection is not None:
                 return await self._emit_rejection(
-                    self._with_briefing(guard, briefing),
+                    rejection,
                     agent_id=agent_id,
                     task_id=task_id,
                     verb="i_will_work_on",
                 )
-            # Always call claim() when status is pending — even if the dev
-            # is already in assigned_to (parent PM may pre-assign at delegate
-            # time). claim() transitions pending → claimed; idempotent for
-            # the same assignee. See i_will_plan for the same fix.
-            t = await self.task.claim(task_id, agent_id)
-            if t is None:
-                return await self._emit_rejection(
-                    Envelope.invalid_state(
-                        message="claim failed",
-                        remediate="task may already be claimed by another agent",
-                        context_briefing=briefing,
-                    ),
-                    agent_id=agent_id,
-                    task_id=task_id,
-                    verb="i_will_work_on",
-                )
-            if not t.plan and not plan:
-                remediate = (
-                    f"call i_will_work_on(task_id='{task_id}',"
-                    f" plan='<one-paragraph plan describing what you will do>')"
-                )
-                return await self._emit_rejection(
-                    Envelope.tracing_gap(
-                        missing=["plan"],
-                        remediate=remediate,
-                        context_briefing=briefing,
-                    ),
-                    agent_id=agent_id,
-                    task_id=task_id,
-                    verb="i_will_work_on",
-                )
-            if plan:
-                t = await self.task.set_plan(task_id, plan)
-            t = await self.task.start(task_id, agent_id)
         elif status == "claimed" and t.assigned_to == agent_id:
             # Resumption: skip sibling-sequence (already passed at claim).
             # Still enforce already_active/paused so concurrent claims fail.
@@ -370,6 +375,13 @@ class Choreographer:
                     verb="i_will_work_on",
                 )
             t = await self.task.start(task_id, agent_id)
+        elif status == "in_progress" and t.assigned_to == agent_id:
+            # Idempotent re-entry: respawned dev re-calling i_will_work_on
+            # on a task they already own in_progress. Skip start() (would
+            # reject — wrong source state) but fall through to the OK
+            # envelope at the end. Heartbeat fires there too, refreshing
+            # reaper activity.
+            pass
         else:
             return await self._emit_rejection(
                 Envelope.invalid_state(
@@ -1419,7 +1431,15 @@ class Choreographer:
     async def _i_will_plan_preflight(
         self, pm_agent_id: UUID, task_id: UUID, t: Any, plan: str
     ) -> Envelope | None:
-        """Run i_will_plan's role / status / plan / claim guards. None = pass."""
+        """Run i_will_plan's role / status / plan / claim guards. None = pass.
+
+        Idempotent on re-entry: if the caller already owns the task in
+        claimed/in_progress (their previous spawn moved it forward), the
+        verb returns OK with current state instead of rejecting. Without
+        this, a respawned PM hits 'task in in_progress, expected pending'
+        and loops until the reaper drops the claim back to pending —
+        producing the cycle smoke 2026-05-04 captured.
+        """
         agent = await self.task.agent_for(pm_agent_id)
         if agent is None or agent.role not in ("cell_pm", "main_pm"):
             return Envelope.not_authorized(
@@ -1427,7 +1447,13 @@ class Choreographer:
                 remediate="this verb is reserved for PMs",
                 context_briefing=await self._briefing_for(pm_agent_id, task_id),
             )
-        if str(t.status) != "pending":
+        status = str(t.status)
+        if status != "pending":
+            # Idempotent re-entry: caller already owns this task in a
+            # post-claim state. Don't reject; the i_will_plan body will
+            # short-circuit on the same condition and return OK.
+            if status in ("claimed", "in_progress") and t.assigned_to == pm_agent_id:
+                return None
             return Envelope.invalid_state(
                 message=f"task {task_id} is in {t.status}, expected pending",
                 remediate="call give_me_work() to find a pending task to plan",
@@ -1479,6 +1505,26 @@ class Choreographer:
                 agent_id=pm_agent_id,
                 task_id=task_id,
                 verb="i_will_plan",
+            )
+
+        # Idempotent re-entry: respawned PM that already owns this task in
+        # claimed/in_progress short-circuits with the current state. Touch
+        # the heartbeat so the reaper sees fresh activity, then return OK
+        # pointing at delegate as the next call. Without this short-circuit
+        # the body would reach start() — which rejects because status is
+        # not 'claimed' on the in_progress branch — and emit a misleading
+        # invalid_state envelope.
+        status = str(t.status)
+        if status in ("claimed", "in_progress") and t.assigned_to == pm_agent_id:
+            await self._touch(task_id)
+            return Envelope.ok(
+                status=status,
+                task_id=str(task_id),
+                next=(
+                    "task already claimed; delegate(parent_task_id, ...) for"
+                    " each subtask, then i_am_idle"
+                ),
+                context_briefing=await self._briefing_for(pm_agent_id, task_id),
             )
 
         # Always call claim() when status is pending — even if the PM is

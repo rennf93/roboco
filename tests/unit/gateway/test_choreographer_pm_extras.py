@@ -223,6 +223,99 @@ async def test_i_will_plan_surfaces_start_failure_instead_of_faking_ok() -> None
 
 
 @pytest.mark.asyncio
+async def test_i_will_plan_idempotent_when_already_in_progress_for_caller() -> None:
+    """Regression: respawned PM re-calling i_will_plan on a task they
+    already moved to in_progress must NOT be rejected. Returns OK with
+    current state. Smoke 2026-05-04 captured the cycle the old reject
+    caused: respawn → reject → reaper drops claim → respawn → loop.
+    """
+    pm_id = uuid4()
+    task_id = uuid4()
+    in_progress = MagicMock(
+        id=task_id,
+        status="in_progress",
+        plan={"text": "x"},
+        assigned_to=pm_id,
+        task_type="planning",
+        parent_task_id=None,
+        sequence=0,
+    )
+    task_svc = AsyncMock()
+    task_svc.get.return_value = in_progress
+    task_svc.agent_for.return_value = MagicMock(role="main_pm", team="main_pm")
+    task_svc.list_in_progress_for_agent.return_value = [in_progress]
+    task_svc.list_paused_for_agent.return_value = []
+    deps = _make_deps(task=task_svc)
+    c = Choreographer(deps)
+
+    env = await c.i_will_plan(pm_id, task_id, plan="re-entry plan")
+
+    assert env.error is None
+    assert env.status == "in_progress"
+    # Heartbeat refreshed so the reaper sees activity.
+    task_svc.heartbeat.assert_awaited()
+    # Did NOT re-call claim or start — already past those.
+    task_svc.claim.assert_not_awaited()
+    task_svc.start.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_i_will_plan_idempotent_when_already_claimed_for_caller() -> None:
+    """Same regression but task is in claimed (post-claim, pre-start)."""
+    pm_id = uuid4()
+    task_id = uuid4()
+    claimed = MagicMock(
+        id=task_id,
+        status="claimed",
+        plan=None,
+        assigned_to=pm_id,
+        task_type="planning",
+        parent_task_id=None,
+        sequence=0,
+    )
+    task_svc = AsyncMock()
+    task_svc.get.return_value = claimed
+    task_svc.agent_for.return_value = MagicMock(role="main_pm", team="main_pm")
+    task_svc.list_in_progress_for_agent.return_value = []
+    task_svc.list_paused_for_agent.return_value = []
+    deps = _make_deps(task=task_svc)
+    c = Choreographer(deps)
+
+    env = await c.i_will_plan(pm_id, task_id, plan="re-entry plan")
+
+    assert env.error is None
+    assert env.status == "claimed"
+    task_svc.heartbeat.assert_awaited()
+
+
+@pytest.mark.asyncio
+async def test_i_will_plan_still_rejects_in_progress_for_other_agent() -> None:
+    """Idempotency only applies to the caller. Different PM still rejected."""
+    pm_id = uuid4()
+    other_pm_id = uuid4()
+    task_id = uuid4()
+    in_progress = MagicMock(
+        id=task_id,
+        status="in_progress",
+        plan={"text": "x"},
+        assigned_to=other_pm_id,  # different PM owns it
+        task_type="planning",
+        parent_task_id=None,
+        sequence=0,
+    )
+    task_svc = AsyncMock()
+    task_svc.get.return_value = in_progress
+    task_svc.agent_for.return_value = MagicMock(role="main_pm", team="main_pm")
+    deps = _make_deps(task=task_svc)
+    c = Choreographer(deps)
+
+    env = await c.i_will_plan(pm_id, task_id, plan="x")
+    body = env.as_dict()
+
+    assert body["error"] == "invalid_state"
+
+
+@pytest.mark.asyncio
 async def test_i_will_plan_returns_tracing_gap_without_plan() -> None:
     pm_id = uuid4()
     task_id = uuid4()
