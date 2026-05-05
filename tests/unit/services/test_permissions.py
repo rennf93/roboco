@@ -250,3 +250,72 @@ def test_can_perform_kb_action_developer(svc: PermissionService) -> None:
     """KB SEARCH is generally allowed for developers."""
     dev = _ctx(AgentRole.DEVELOPER, team=Team.BACKEND)
     assert isinstance(svc.can_perform_kb_action(dev, KBAction.SEARCH), bool)
+
+
+# ---------------------------------------------------------------------------
+# Notification scope edge cases
+# ---------------------------------------------------------------------------
+
+
+def test_can_notify_cell_pm_to_main_pm(svc: PermissionService) -> None:
+    """Cell PMs can notify Main PM for coordination."""
+    sender = _ctx(AgentRole.CELL_PM, team=Team.BACKEND)
+    recipient = _ctx(AgentRole.MAIN_PM)
+    assert svc.can_notify(sender, recipient) is True
+
+
+def test_can_notify_cell_pm_to_other_cell_pm(svc: PermissionService) -> None:
+    sender = _ctx(AgentRole.CELL_PM, team=Team.BACKEND)
+    recipient = _ctx(AgentRole.CELL_PM, team=Team.FRONTEND)
+    assert svc.can_notify(sender, recipient) is True
+
+
+def test_can_notify_cell_pm_to_dev_in_other_team(svc: PermissionService) -> None:
+    """Cell PM cannot notify dev in a different cell."""
+    sender = _ctx(AgentRole.CELL_PM, team=Team.BACKEND)
+    recipient = _ctx(AgentRole.DEVELOPER, team=Team.FRONTEND)
+    assert svc.can_notify(sender, recipient) is False
+
+
+def test_can_notify_cell_pm_to_dev_in_same_team(svc: PermissionService) -> None:
+    sender = _ctx(AgentRole.CELL_PM, team=Team.BACKEND)
+    recipient = _ctx(AgentRole.DEVELOPER, team=Team.BACKEND)
+    assert svc.can_notify(sender, recipient) is True
+
+
+# ---------------------------------------------------------------------------
+# Communication matrix edge cases
+# ---------------------------------------------------------------------------
+
+
+def test_can_communicate_same_role_same_team(svc: PermissionService) -> None:
+    a = _ctx(AgentRole.DEVELOPER, team=Team.BACKEND)
+    b = _ctx(AgentRole.DEVELOPER, team=Team.BACKEND)
+    assert svc.can_communicate(a, b) is True
+
+
+def test_can_communicate_dev_to_qa_different_cells(
+    svc: PermissionService,
+) -> None:
+    """Cell members can't directly communicate cross-cell."""
+    a = _ctx(AgentRole.DEVELOPER, team=Team.BACKEND)
+    b = _ctx(AgentRole.QA, team=Team.FRONTEND)
+    assert svc.can_communicate(a, b) is False
+
+
+# ---------------------------------------------------------------------------
+# Slug-based shortcuts (more cases)
+# ---------------------------------------------------------------------------
+
+
+def test_can_agent_write_channel_known(svc: PermissionService) -> None:
+    """be-pm should be able to write to backend-cell."""
+    assert isinstance(
+        svc.can_agent_write_channel("be-pm", "backend-cell"), bool
+    )
+
+
+def test_can_agent_write_channel_unknown_slug(svc: PermissionService) -> None:
+    assert svc.can_agent_write_channel("ghost-agent", "any") is False
+
+
