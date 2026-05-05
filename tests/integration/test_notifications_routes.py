@@ -81,27 +81,21 @@ async def test_list_notifications_empty(notif_client: dict) -> None:
 @pytest.mark.asyncio
 async def test_get_notification_not_found(notif_client: dict) -> None:
     client = notif_client["client"]
-    response = await client.get(
-        f"/api/notifications/{uuid4()}", headers=_HDR
-    )
+    response = await client.get(f"/api/notifications/{uuid4()}", headers=_HDR)
     assert response.status_code in (404, 403)
 
 
 @pytest.mark.asyncio
 async def test_acknowledge_notification_not_found(notif_client: dict) -> None:
     client = notif_client["client"]
-    response = await client.post(
-        f"/api/notifications/{uuid4()}/ack", headers=_HDR
-    )
+    response = await client.post(f"/api/notifications/{uuid4()}/ack", headers=_HDR)
     assert response.status_code in (404, 403)
 
 
 @pytest.mark.asyncio
 async def test_mark_as_read_not_found(notif_client: dict) -> None:
     client = notif_client["client"]
-    response = await client.post(
-        f"/api/notifications/{uuid4()}/read", headers=_HDR
-    )
+    response = await client.post(f"/api/notifications/{uuid4()}/read", headers=_HDR)
     assert response.status_code in (404, 403)
 
 

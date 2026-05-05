@@ -13,12 +13,10 @@ from uuid import uuid4
 
 import pytest
 import pytest_asyncio
-from roboco.db.tables import AgentTable, ProjectTable, TaskTable
+from roboco.db.tables import AgentTable, ProjectTable
 from roboco.models import AgentRole, AgentStatus, Team
 from roboco.models.base import (
-    TaskNature,
     TaskStatus,
-    TaskType,
 )
 from roboco.models.task import TaskCreateRequest
 from roboco.services.task import TaskService
@@ -767,9 +765,7 @@ async def test_unblock_returns_none_for_missing(task_setup: dict) -> None:
 @pytest.mark.asyncio
 async def test_complete_returns_none_for_missing(task_setup: dict) -> None:
     svc = task_setup["svc"]
-    assert (
-        await svc.complete(uuid4(), agent_id=task_setup["agent_id"]) is None
-    )
+    assert await svc.complete(uuid4(), agent_id=task_setup["agent_id"]) is None
 
 
 @pytest.mark.asyncio
@@ -783,9 +779,7 @@ async def test_submit_for_pm_review_returns_none_for_missing(
 @pytest.mark.asyncio
 async def test_mark_pr_created_returns_none_for_missing(task_setup: dict) -> None:
     svc = task_setup["svc"]
-    assert (
-        await svc.mark_pr_created(uuid4(), pr_number=1, pr_url="u") is None
-    )
+    assert await svc.mark_pr_created(uuid4(), pr_number=1, pr_url="u") is None
 
 
 @pytest.mark.asyncio
@@ -793,21 +787,13 @@ async def test_unclaim_for_agent_returns_none_for_missing(
     task_setup: dict,
 ) -> None:
     svc = task_setup["svc"]
-    assert (
-        await svc.unclaim_for_agent(uuid4(), agent_id=task_setup["agent_id"])
-        is None
-    )
+    assert await svc.unclaim_for_agent(uuid4(), agent_id=task_setup["agent_id"]) is None
 
 
 @pytest.mark.asyncio
 async def test_resume_for_agent_returns_none_for_missing(task_setup: dict) -> None:
     svc = task_setup["svc"]
-    assert (
-        await svc.resume_for_agent(uuid4(), agent_id=task_setup["agent_id"])
-        is None
-    )
-
-
+    assert await svc.resume_for_agent(uuid4(), agent_id=task_setup["agent_id"]) is None
 
 
 # ---------------------------------------------------------------------------
@@ -1088,7 +1074,9 @@ async def test_add_progress_appends_update(task_setup: dict) -> None:
 
 
 @pytest.mark.asyncio
-async def test_resolve_agent_id_for_slug(task_setup: dict, db_session: AsyncSession) -> None:
+async def test_resolve_agent_id_for_slug(
+    task_setup: dict, db_session: AsyncSession
+) -> None:
     svc = task_setup["svc"]
     # task_setup created an agent with a slug; resolve via slug.
     from roboco.db.tables import AgentTable
@@ -1207,9 +1195,7 @@ async def test_claim_with_allow_reassign_attempts(
     task.assigned_to = other.id
     await db_session.flush()
     # With allow_reassign=True, the assignment-collision gate is bypassed.
-    result = await svc.claim(
-        task.id, task_setup["agent_id"], allow_reassign=True
-    )
+    result = await svc.claim(task.id, task_setup["agent_id"], allow_reassign=True)
     # Either succeeds or fails for other reason — just verify it runs.
     assert result is None or result is not None
 
@@ -1229,9 +1215,7 @@ async def test_list_by_team_with_status(task_setup: dict) -> None:
 @pytest.mark.asyncio
 async def test_list_by_assignee_with_status(task_setup: dict) -> None:
     svc = task_setup["svc"]
-    rows = await svc.list_by_assignee(
-        task_setup["agent_id"], status=TaskStatus.PENDING
-    )
+    rows = await svc.list_by_assignee(task_setup["agent_id"], status=TaskStatus.PENDING)
     assert isinstance(rows, list)
 
 
@@ -1305,3 +1289,207 @@ async def test_heartbeat_updates_last_heartbeat(
     refreshed = await svc.get(task.id)
     assert refreshed is not None
     assert refreshed.last_heartbeat_at is not None
+
+
+# ---------------------------------------------------------------------------
+# cancel cascades
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_cancel_with_note(task_setup: dict) -> None:
+    svc = task_setup["svc"]
+    task = await svc.create(_req(task_setup))
+    cancelled = await svc.cancel(task.id, cancellation_note="not needed")
+    assert cancelled is not None
+    assert cancelled.status == TaskStatus.CANCELLED
+    assert "not needed" in (cancelled.dev_notes or "")
+
+
+@pytest.mark.asyncio
+async def test_cancel_cascades_to_descendants(task_setup: dict) -> None:
+    svc = task_setup["svc"]
+    parent = await svc.create(_req(task_setup))
+    child = await svc.create(_req(task_setup, parent_task_id=parent.id))
+    cancelled = await svc.cancel(parent.id)
+    assert cancelled is not None
+    refreshed_child = await svc.get(child.id)
+    assert refreshed_child is not None
+    assert refreshed_child.status == TaskStatus.CANCELLED
+
+
+# ---------------------------------------------------------------------------
+# soft_block + unblock with restore
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_unblock_with_restore_returns_none_for_missing(
+    task_setup: dict,
+) -> None:
+    svc = task_setup["svc"]
+    result = await svc.unblock_with_restore(
+        pm_agent_id=task_setup["agent_id"], task_id=uuid4(), restore=True
+    )
+    assert result is None
+
+
+# ---------------------------------------------------------------------------
+# qa_claim/doc_claim
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_qa_claim_returns_none_for_missing(task_setup: dict) -> None:
+    svc = task_setup["svc"]
+    assert await svc.qa_claim(qa_agent_id=uuid4(), task_id=uuid4()) is None
+
+
+@pytest.mark.asyncio
+async def test_doc_claim_returns_none_for_missing(task_setup: dict) -> None:
+    svc = task_setup["svc"]
+    assert await svc.doc_claim(doc_agent_id=uuid4(), task_id=uuid4()) is None
+
+
+# ---------------------------------------------------------------------------
+# qa_pass / qa_fail / cell_pm_complete (404 paths)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_qa_pass_returns_none_for_missing(task_setup: dict) -> None:
+    svc = task_setup["svc"]
+    result = await svc.qa_pass(
+        qa_agent_id=task_setup["agent_id"],
+        task_id=uuid4(),
+        notes="LGTM, comprehensive review",
+    )
+    assert result is None
+
+
+@pytest.mark.asyncio
+async def test_qa_fail_returns_none_for_missing(task_setup: dict) -> None:
+    svc = task_setup["svc"]
+    result = await svc.qa_fail(
+        qa_agent_id=task_setup["agent_id"],
+        task_id=uuid4(),
+        notes="needs revision",
+        issues=["bug 1"],
+    )
+    assert result is None
+
+
+# ---------------------------------------------------------------------------
+# list_pending with dependency filtering
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_list_pending_filters_tasks_with_unmet_deps(
+    task_setup: dict, db_session: AsyncSession
+) -> None:
+    svc = task_setup["svc"]
+    blocker = await svc.create(_req(task_setup))
+    blocked = await svc.create(_req(task_setup))
+    blocked.dependency_ids = [blocker.id]
+    await db_session.flush()
+    pending = await svc.list_pending(team=Team.BACKEND)
+    pending_ids = {t.id for t in pending}
+    # blocker has no deps and is pending — should be included
+    assert blocker.id in pending_ids
+    # blocked depends on a non-terminal task — should be excluded
+    assert blocked.id not in pending_ids
+
+
+@pytest.mark.asyncio
+async def test_list_pending_disabled_dep_filter(
+    task_setup: dict, db_session: AsyncSession
+) -> None:
+    svc = task_setup["svc"]
+    blocker = await svc.create(_req(task_setup))
+    blocked = await svc.create(_req(task_setup))
+    blocked.dependency_ids = [blocker.id]
+    await db_session.flush()
+    pending = await svc.list_pending(team=Team.BACKEND, filter_by_dependencies=False)
+    pending_ids = {t.id for t in pending}
+    assert blocker.id in pending_ids
+    assert blocked.id in pending_ids
+
+
+@pytest.mark.asyncio
+async def test_list_pending_includes_tasks_when_deps_completed(
+    task_setup: dict, db_session: AsyncSession
+) -> None:
+    svc = task_setup["svc"]
+    blocker = await svc.create(_req(task_setup))
+    blocker.status = TaskStatus.COMPLETED
+    blocked = await svc.create(_req(task_setup))
+    blocked.dependency_ids = [blocker.id]
+    await db_session.flush()
+    pending = await svc.list_pending(team=Team.BACKEND)
+    pending_ids = {t.id for t in pending}
+    assert blocked.id in pending_ids
+
+
+# ---------------------------------------------------------------------------
+# _inherit_parent_session
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_inherit_parent_session_no_primary_returns_none(
+    task_setup: dict,
+) -> None:
+    """When parent has no primary session, child inherits nothing."""
+    svc = task_setup["svc"]
+    parent = await svc.create(_req(task_setup))
+    child_id = uuid4()
+    result = await svc._inherit_parent_session(
+        task_id=child_id,
+        parent_task_id=parent.id,
+        created_by=task_setup["agent_id"],
+    )
+    assert result is None
+
+
+# ---------------------------------------------------------------------------
+# Subtree query helpers
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_get_all_descendants_empty_for_leaf(task_setup: dict) -> None:
+    svc = task_setup["svc"]
+    leaf = await svc.create(_req(task_setup))
+    descendants = await svc.get_all_descendants(leaf.id)
+    assert descendants == []
+
+
+@pytest.mark.asyncio
+async def test_get_all_descendants_traverses_three_levels(
+    task_setup: dict,
+) -> None:
+    svc = task_setup["svc"]
+    grand = await svc.create(_req(task_setup))
+    parent = await svc.create(_req(task_setup, parent_task_id=grand.id))
+    child = await svc.create(_req(task_setup, parent_task_id=parent.id))
+    descendants = await svc.get_all_descendants(grand.id)
+    desc_ids = {d.id for d in descendants}
+    assert parent.id in desc_ids
+    assert child.id in desc_ids
+
+
+@pytest.mark.asyncio
+async def test_count_by_status_with_data(task_setup: dict) -> None:
+    svc = task_setup["svc"]
+    await svc.create(_req(task_setup))
+    counts = await svc.count_by_status(team=Team.BACKEND)
+    assert isinstance(counts, dict)
+    assert "pending" in counts
+
+
+@pytest.mark.asyncio
+async def test_get_active_count_zero_for_unknown(task_setup: dict) -> None:
+    svc = task_setup["svc"]
+    count = await svc.get_active_count(uuid4())
+    assert count == 0

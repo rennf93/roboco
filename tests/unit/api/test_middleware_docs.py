@@ -13,7 +13,6 @@ from roboco.api.middleware_docs import (
 )
 from roboco.exceptions import PermissionDeniedError
 
-
 # ---------------------------------------------------------------------------
 # _strip_path_prefixes
 # ---------------------------------------------------------------------------
@@ -70,15 +69,11 @@ def test_agent_matches_slug() -> None:
 
 
 def test_agent_matches_role() -> None:
-    assert _agent_matches_permission(
-        "be-pm", "cell_pm", "backend", "cell_pm"
-    )
+    assert _agent_matches_permission("be-pm", "cell_pm", "backend", "cell_pm")
 
 
 def test_agent_matches_team() -> None:
-    assert _agent_matches_permission(
-        "be-dev-1", "developer", "backend", "team:backend"
-    )
+    assert _agent_matches_permission("be-dev-1", "developer", "backend", "team:backend")
 
 
 def test_agent_does_not_match_different_team() -> None:

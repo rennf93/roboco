@@ -64,18 +64,14 @@ _HDR = {"X-Agent-ID": str(uuid4()), "X-Agent-Role": "developer"}
 @pytest.mark.asyncio
 async def test_list_messages_unknown_session(messages_client: dict) -> None:
     client = messages_client["client"]
-    response = await client.get(
-        f"/api/messages?session_id={uuid4()}", headers=_HDR
-    )
+    response = await client.get(f"/api/messages?session_id={uuid4()}", headers=_HDR)
     assert response.status_code == 404
 
 
 @pytest.mark.asyncio
 async def test_get_message_not_found(messages_client: dict) -> None:
     client = messages_client["client"]
-    response = await client.get(
-        f"/api/messages/{uuid4()}", headers=_HDR
-    )
+    response = await client.get(f"/api/messages/{uuid4()}", headers=_HDR)
     assert response.status_code == 404
 
 
@@ -108,7 +104,5 @@ async def test_edit_message_not_found(messages_client: dict) -> None:
 @pytest.mark.asyncio
 async def test_delete_message_not_found(messages_client: dict) -> None:
     client = messages_client["client"]
-    response = await client.delete(
-        f"/api/messages/{uuid4()}", headers=_HDR
-    )
+    response = await client.delete(f"/api/messages/{uuid4()}", headers=_HDR)
     assert response.status_code in (204, 404)

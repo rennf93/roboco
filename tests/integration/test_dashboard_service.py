@@ -187,9 +187,7 @@ def test_get_report_returns_none_for_missing(dash_setup: dict) -> None:
 
 
 @pytest.mark.asyncio
-async def test_get_channel_feeds(
-    db_session: AsyncSession, dash_setup: dict
-) -> None:
+async def test_get_channel_feeds(db_session: AsyncSession, dash_setup: dict) -> None:
     svc = dash_setup["svc"]
     ch = ChannelTable(
         id=uuid4(),

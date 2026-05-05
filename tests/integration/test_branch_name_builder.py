@@ -88,9 +88,7 @@ async def branch_setup(
 async def test_build_branch_name_root_task(branch_setup: dict) -> None:
     task = branch_setup["make_task"]()
     await branch_setup["db"].flush()
-    branch = await build_branch_name(
-        task.id, "feature", "backend", branch_setup["svc"]
-    )
+    branch = await build_branch_name(task.id, "feature", "backend", branch_setup["svc"])
     assert branch.startswith("feature/backend/")
     # Should be 8-char prefix only.
     assert len(branch.split("/")[-1]) == 8
@@ -122,9 +120,7 @@ async def test_build_branch_name_invalid_type_raises(branch_setup: dict) -> None
 @pytest.mark.asyncio
 async def test_build_branch_name_unknown_task_raises(branch_setup: dict) -> None:
     with pytest.raises(BranchNameError, match="Task not found"):
-        await build_branch_name(
-            uuid4(), "feature", "backend", branch_setup["svc"]
-        )
+        await build_branch_name(uuid4(), "feature", "backend", branch_setup["svc"])
 
 
 @pytest.mark.asyncio

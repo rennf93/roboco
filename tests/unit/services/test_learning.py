@@ -43,9 +43,7 @@ class _StubOptimal:
         )
         return self.results
 
-    async def search_learnings(
-        self, *, query: str, top_k: int
-    ) -> list[SearchResult]:
+    async def search_learnings(self, *, query: str, top_k: int) -> list[SearchResult]:
         self.search_learnings_calls.append({"query": query, "top_k": top_k})
         return self.results
 
@@ -146,6 +144,7 @@ async def test_get_learnings_for_agent_returns_filtered_results(
 ) -> None:
     aid = uuid4()
     other_id = uuid4()
+
     def _r(metadata: dict, score: float = 0.7) -> SearchResult:
         return SearchResult(
             content="x",
@@ -171,7 +170,13 @@ async def test_get_learnings_for_agent_returns_filtered_results(
     team_other_role = _r({"scope": "team", "agent_role": "qa"})
     org_visible = _r({"scope": "org", "agent_role": "qa"}, score=0.5)
     stub = _StubOptimal(
-        results=[own_personal, other_personal, team_visible, team_other_role, org_visible]
+        results=[
+            own_personal,
+            other_personal,
+            team_visible,
+            team_other_role,
+            org_visible,
+        ]
     )
     await svc.initialize(stub)
     out = await svc.get_learnings_for_agent(aid, "developer")

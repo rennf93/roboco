@@ -180,9 +180,7 @@ async def test_list_agents(a2a_route_client: dict) -> None:
 @pytest.mark.asyncio
 async def test_list_agents_filter_by_role(a2a_route_client: dict) -> None:
     client = a2a_route_client["client"]
-    response = await client.get(
-        "/api/a2a/agents?role=developer", headers=_HDR
-    )
+    response = await client.get("/api/a2a/agents?role=developer", headers=_HDR)
     assert response.status_code == 200
 
 

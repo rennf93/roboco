@@ -129,14 +129,10 @@ async def test_extract_splits_on_double_newlines(
 @pytest.mark.asyncio
 async def test_extract_keeps_code_blocks_intact(svc: ExtractionService) -> None:
     content = (
-        "Some explanation.\n\n"
-        "```\nline1\nline2\nline3\n```\n\n"
-        "Some more explanation."
+        "Some explanation.\n\n```\nline1\nline2\nline3\n```\n\nSome more explanation."
     )
     result = await svc.extract(_ctx(content))
-    code_segments = [
-        m for m in result.messages if m.content.startswith("```")
-    ]
+    code_segments = [m for m in result.messages if m.content.startswith("```")]
     assert len(code_segments) >= 1
 
 

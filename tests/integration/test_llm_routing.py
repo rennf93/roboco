@@ -129,9 +129,7 @@ async def test_upsert_role_requires_value(llm_setup: dict) -> None:
 async def test_get_assignment_returns_none_when_missing(llm_setup: dict) -> None:
     svc = llm_setup["svc"]
     assert (
-        await svc.get_assignment(
-            scope=AssignmentScope.AGENT_SLUG, scope_value="ghost"
-        )
+        await svc.get_assignment(scope=AssignmentScope.AGENT_SLUG, scope_value="ghost")
         is None
     )
 
@@ -145,8 +143,7 @@ async def test_delete_assignment(llm_setup: dict) -> None:
     )
     await svc.delete_assignment(scope=AssignmentScope.GLOBAL, scope_value=None)
     assert (
-        await svc.get_assignment(scope=AssignmentScope.GLOBAL, scope_value=None)
-        is None
+        await svc.get_assignment(scope=AssignmentScope.GLOBAL, scope_value=None) is None
     )
 
 

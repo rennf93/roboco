@@ -217,8 +217,11 @@ async def test_cancel_task_already_terminal(a2a_setup: dict) -> None:
     )
     # FK on project — use existing project
     completed.project_id = (
-        await db.execute(__import__("sqlalchemy").select(ProjectTable))
-    ).scalars().first().id
+        (await db.execute(__import__("sqlalchemy").select(ProjectTable)))
+        .scalars()
+        .first()
+        .id
+    )
     db.add(completed)
     await db.flush()
     with pytest.raises(ValueError, match="terminal state"):
@@ -293,7 +296,7 @@ async def test_get_or_create_conversation_creates(a2a_setup: dict) -> None:
     try:
         conv = await svc.get_or_create_conversation("be-dev-1", "be-dev-2")
         assert conv is not None
-    except Exception:  # noqa: BLE001
+    except Exception:
         # If the policy blocks this pair, skip — we're focused on the call path.
         pytest.skip("A2A policy denies this pair")
 
@@ -417,7 +420,7 @@ async def test_send_a2a_returns_handler_result(a2a_setup: dict) -> None:
             message="hi",
         )
         assert result is not None
-    except Exception:  # noqa: BLE001
+    except Exception:
         # Expected if the policy rejects this pair or service is wired
         # to external infra in this test setup.
         pass
@@ -440,7 +443,7 @@ async def test_create_conversation_between_dev_and_qa_in_same_cell(
         # Idempotent — same agents, same conversation.
         again = await svc.get_or_create_conversation("be-dev-1", "be-qa")
         assert again.id == conv.id
-    except Exception:  # noqa: BLE001
+    except Exception:
         pytest.skip("Policy denied this pair")
 
 
@@ -452,11 +455,10 @@ async def test_send_chat_message_in_existing_conversation(
     try:
         conv = await svc.get_or_create_conversation("be-dev-1", "be-qa")
         from uuid import UUID as _UUID
-        msg = await svc.send_chat_message(
-            _UUID(conv.id), "be-dev-1", "hello"
-        )
+
+        msg = await svc.send_chat_message(_UUID(conv.id), "be-dev-1", "hello")
         assert msg.content == "hello"
-    except Exception:  # noqa: BLE001
+    except Exception:
         pytest.skip("Policy denied this pair")
 
 
@@ -472,7 +474,7 @@ async def test_get_messages_returns_chronological(a2a_setup: dict) -> None:
         await svc.send_chat_message(cid, "be-dev-1", "second")
         msgs = await svc.get_messages(cid, "be-dev-1")
         assert len(msgs) == 2
-    except Exception:  # noqa: BLE001
+    except Exception:
         pytest.skip("Policy denied this pair")
 
 
@@ -483,10 +485,8 @@ async def test_close_conversation_with_resolution(a2a_setup: dict) -> None:
         conv = await svc.get_or_create_conversation("be-dev-1", "be-qa")
         from uuid import UUID as _UUID
 
-        await svc.close_conversation(
-            _UUID(conv.id), "be-dev-1", resolution="done"
-        )
-    except Exception:  # noqa: BLE001
+        await svc.close_conversation(_UUID(conv.id), "be-dev-1", resolution="done")
+    except Exception:
         pytest.skip("Policy denied this pair")
 
 
@@ -498,7 +498,7 @@ async def test_mark_read_clears_unread(a2a_setup: dict) -> None:
         from uuid import UUID as _UUID
 
         await svc.mark_read(_UUID(conv.id), "be-dev-1")
-    except Exception:  # noqa: BLE001
+    except Exception:
         pytest.skip("Policy denied this pair")
 
 
@@ -513,7 +513,7 @@ async def test_close_conversation_non_participant_raises(
 
         with pytest.raises(ValueError, match="Not a participant"):
             await svc.close_conversation(_UUID(conv.id), "ghost-agent")
-    except Exception:  # noqa: BLE001
+    except Exception:
         pytest.skip("Policy denied this pair")
 
 
@@ -528,5 +528,145 @@ async def test_send_chat_message_non_participant_raises(
 
         with pytest.raises(ValueError, match="Not a participant"):
             await svc.send_chat_message(_UUID(conv.id), "ghost", "hi")
-    except Exception:  # noqa: BLE001
+    except Exception:
         pytest.skip("Policy denied this pair")
+
+
+# ---------------------------------------------------------------------------
+# Pure-function helpers
+# ---------------------------------------------------------------------------
+
+
+def test_get_team_from_agent_backend() -> None:
+    from roboco.models import Team
+    from roboco.services.a2a import A2AService
+
+    assert A2AService.get_team_from_agent("be-dev-1") == Team.BACKEND
+
+
+def test_get_team_from_agent_unknown_defaults_to_backend() -> None:
+    from roboco.models import Team
+    from roboco.services.a2a import A2AService
+
+    assert A2AService.get_team_from_agent("ghost-agent") == Team.BACKEND
+
+
+def test_resolve_target_agent_explicit() -> None:
+    from roboco.services.a2a import A2AService
+
+    result = A2AService.resolve_target_agent({"target_agent": "be-dev-1"})
+    assert result == "be-dev-1"
+
+
+def test_resolve_target_agent_unknown_returns_none() -> None:
+    from roboco.services.a2a import A2AService
+
+    result = A2AService.resolve_target_agent({"target_agent": "ghost-agent"})
+    assert result is None
+
+
+def test_resolve_target_agent_none_when_no_metadata() -> None:
+    from roboco.services.a2a import A2AService
+
+    result = A2AService.resolve_target_agent({})
+    assert result is None
+
+
+def test_extract_message_text_no_text_parts() -> None:
+    from roboco.models.a2a import A2AMessage
+    from roboco.services.a2a import A2AService
+
+    msg = A2AMessage(role="user", parts=[])
+    title, desc, _full = A2AService.extract_message_text(msg)
+    assert title == "A2A Task"
+    assert desc == ""
+
+
+def test_extract_message_text_single_line() -> None:
+    from roboco.models.a2a import A2AMessage, TextPart
+    from roboco.services.a2a import A2AService
+
+    msg = A2AMessage(role="user", parts=[TextPart(text="Hello world")])
+    title, _desc, _full = A2AService.extract_message_text(msg)
+    assert title == "Hello world"
+
+
+def test_extract_message_text_multi_line() -> None:
+    from roboco.models.a2a import A2AMessage, TextPart
+    from roboco.services.a2a import A2AService
+
+    msg = A2AMessage(role="user", parts=[TextPart(text="Title here\nThis is the body")])
+    title, desc, _full = A2AService.extract_message_text(msg)
+    assert title == "Title here"
+    assert desc == "This is the body"
+
+
+@pytest.mark.asyncio
+async def test_update_task_with_message_appends_to_notes(
+    a2a_setup: dict,
+) -> None:
+    """Use a real DB-backed task instance to avoid SA private state issues."""
+    from roboco.db.tables import TaskTable
+    from roboco.models.a2a import A2AMessage, TextPart
+    from roboco.services.a2a import A2AService
+
+    db = a2a_setup["db"]
+    task = (
+        await db.execute(__import__("sqlalchemy").select(TaskTable).limit(1))
+    ).scalar_one_or_none()
+    if task is None:
+        pytest.skip("no task in DB")
+    original_notes = task.dev_notes
+    task.dev_notes = "existing notes"
+    msg = A2AMessage(role="user", parts=[TextPart(text="new message")])
+    A2AService.update_task_with_message(task, msg)
+    assert "existing notes" in task.dev_notes
+    assert "new message" in task.dev_notes
+    task.dev_notes = original_notes  # restore
+
+
+@pytest.mark.asyncio
+async def test_update_task_with_message_no_text_parts_noop(
+    a2a_setup: dict,
+) -> None:
+    from roboco.db.tables import TaskTable
+    from roboco.models.a2a import A2AMessage
+    from roboco.services.a2a import A2AService
+
+    db = a2a_setup["db"]
+    task = (
+        await db.execute(__import__("sqlalchemy").select(TaskTable).limit(1))
+    ).scalar_one_or_none()
+    if task is None:
+        pytest.skip("no task in DB")
+    original = task.dev_notes
+    task.dev_notes = "existing"
+    msg = A2AMessage(role="user", parts=[])
+    A2AService.update_task_with_message(task, msg)
+    assert task.dev_notes == "existing"
+    task.dev_notes = original
+
+
+# ---------------------------------------------------------------------------
+# resolve_creator_agent paths
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_resolve_creator_agent_with_unknown_falls_back_to_main_pm(
+    a2a_setup: dict,
+) -> None:
+    svc = a2a_setup["svc"]
+    # Unknown ID — should fall back to main PM lookup (returns None if no main PM seeded).
+    out = await svc.resolve_creator_agent("ghost-id")
+    # Either None (no main_pm) or AgentTable (main_pm seeded by a prior test).
+    assert out is None or hasattr(out, "id")
+
+
+@pytest.mark.asyncio
+async def test_resolve_creator_agent_with_none_falls_back_to_main_pm(
+    a2a_setup: dict,
+) -> None:
+    svc = a2a_setup["svc"]
+    out = await svc.resolve_creator_agent(None)
+    assert out is None or hasattr(out, "id")

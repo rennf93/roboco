@@ -165,9 +165,7 @@ async def test_create_session(session_client: dict) -> None:
 @pytest.mark.asyncio
 async def test_get_session_not_found(session_client: dict) -> None:
     client = session_client["client"]
-    response = await client.get(
-        f"/api/sessions/{uuid4()}", headers=_HDR
-    )
+    response = await client.get(f"/api/sessions/{uuid4()}", headers=_HDR)
     assert response.status_code == 404
 
 
@@ -191,9 +189,7 @@ async def test_get_session_by_id(
 @pytest.mark.asyncio
 async def test_close_session_not_found(session_client: dict) -> None:
     client = session_client["client"]
-    response = await client.post(
-        f"/api/sessions/{uuid4()}/close", headers=_HDR
-    )
+    response = await client.post(f"/api/sessions/{uuid4()}/close", headers=_HDR)
     assert response.status_code == 404
 
 

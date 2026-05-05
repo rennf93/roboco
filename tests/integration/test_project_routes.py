@@ -12,7 +12,7 @@ from httpx import ASGITransport, AsyncClient
 from roboco.api.deps import get_agent_context, get_db
 from roboco.api.routes.project import router as project_router
 from roboco.db.tables import AgentTable
-from roboco.models import AgentRole, AgentStatus, Team
+from roboco.models import AgentRole, AgentStatus
 from roboco.models.permissions import AgentContext
 
 if TYPE_CHECKING:
@@ -81,9 +81,7 @@ async def test_list_projects_empty(project_client: AsyncClient) -> None:
 
 @pytest.mark.asyncio
 async def test_create_project(project_client: AsyncClient) -> None:
-    response = await project_client.post(
-        "/api/projects", json=_payload(), headers=_HDR
-    )
+    response = await project_client.post("/api/projects", json=_payload(), headers=_HDR)
     assert response.status_code == 201
     body = response.json()
     assert "id" in body
@@ -93,21 +91,15 @@ async def test_create_project(project_client: AsyncClient) -> None:
 @pytest.mark.asyncio
 async def test_create_duplicate_returns_409(project_client: AsyncClient) -> None:
     payload = _payload()
-    response = await project_client.post(
-        "/api/projects", json=payload, headers=_HDR
-    )
+    response = await project_client.post("/api/projects", json=payload, headers=_HDR)
     assert response.status_code == 201
-    response2 = await project_client.post(
-        "/api/projects", json=payload, headers=_HDR
-    )
+    response2 = await project_client.post("/api/projects", json=payload, headers=_HDR)
     assert response2.status_code == 409
 
 
 @pytest.mark.asyncio
 async def test_get_project_not_found(project_client: AsyncClient) -> None:
-    response = await project_client.get(
-        f"/api/projects/{uuid4()}", headers=_HDR
-    )
+    response = await project_client.get(f"/api/projects/{uuid4()}", headers=_HDR)
     assert response.status_code == 404
 
 
@@ -133,9 +125,7 @@ async def test_get_project_by_slug(project_client: AsyncClient) -> None:
 
 @pytest.mark.asyncio
 async def test_update_project(project_client: AsyncClient) -> None:
-    create = await project_client.post(
-        "/api/projects", json=_payload(), headers=_HDR
-    )
+    create = await project_client.post("/api/projects", json=_payload(), headers=_HDR)
     pid = create.json()["id"]
     response = await project_client.patch(
         f"/api/projects/{pid}",
@@ -160,7 +150,5 @@ async def test_update_project_not_found(project_client: AsyncClient) -> None:
 async def test_list_projects_filter_by_cell(
     project_client: AsyncClient,
 ) -> None:
-    response = await project_client.get(
-        "/api/projects?cell=backend", headers=_HDR
-    )
+    response = await project_client.get("/api/projects?cell=backend", headers=_HDR)
     assert response.status_code == 200

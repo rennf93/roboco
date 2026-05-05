@@ -8,7 +8,7 @@ mapping) is exercised end-to-end.
 from __future__ import annotations
 
 from typing import TYPE_CHECKING
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 import pytest
 import pytest_asyncio
@@ -207,7 +207,7 @@ async def test_get_my_growth_metrics(
 @pytest_asyncio.fixture
 async def journal_setup_with_task(
     db_session: AsyncSession,
-) -> "AsyncIterator[tuple[AsyncClient, AgentTable, UUID]]":
+) -> AsyncIterator[tuple[AsyncClient, AgentTable, UUID]]:
     from roboco.db.tables import ProjectTable, TaskTable
     from roboco.models.base import TaskNature, TaskStatus, TaskType
 
@@ -348,9 +348,7 @@ async def test_get_entry_not_found(
     journal_client: tuple[AsyncClient, AgentTable],
 ) -> None:
     client, _ = journal_client
-    response = await client.get(
-        f"/api/journals/entries/{uuid4()}", headers=_HDR
-    )
+    response = await client.get(f"/api/journals/entries/{uuid4()}", headers=_HDR)
     assert response.status_code == 404
 
 
@@ -359,9 +357,7 @@ async def test_delete_entry_not_found(
     journal_client: tuple[AsyncClient, AgentTable],
 ) -> None:
     client, _ = journal_client
-    response = await client.delete(
-        f"/api/journals/entries/{uuid4()}", headers=_HDR
-    )
+    response = await client.delete(f"/api/journals/entries/{uuid4()}", headers=_HDR)
     assert response.status_code == 404
 
 
@@ -390,9 +386,7 @@ async def test_list_agent_entries_unknown_agent(
     journal_client: tuple[AsyncClient, AgentTable],
 ) -> None:
     client, _ = journal_client
-    response = await client.get(
-        f"/api/journals/{uuid4()}/entries", headers=_HDR
-    )
+    response = await client.get(f"/api/journals/{uuid4()}/entries", headers=_HDR)
     assert response.status_code in (404, 403)
 
 
@@ -402,9 +396,7 @@ async def test_list_agent_entries_for_self(
 ) -> None:
     client, agent = journal_client
     await client.get("/api/journals/me", headers=_HDR)
-    response = await client.get(
-        f"/api/journals/{agent.id}/entries", headers=_HDR
-    )
+    response = await client.get(f"/api/journals/{agent.id}/entries", headers=_HDR)
     assert response.status_code in (200, 403)
 
 

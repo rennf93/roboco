@@ -301,9 +301,7 @@ async def test_claim_unknown_task_returns_404(task_client: dict) -> None:
 @pytest.mark.asyncio
 async def test_unclaim_unknown_returns_404(task_client: dict) -> None:
     client = task_client["client"]
-    response = await client.post(
-        f"/api/tasks/{uuid4()}/unclaim", headers=_HDR
-    )
+    response = await client.post(f"/api/tasks/{uuid4()}/unclaim", headers=_HDR)
     assert response.status_code in (400, 404)
 
 
@@ -365,27 +363,21 @@ async def test_block_unknown_returns_404(task_client: dict) -> None:
 @pytest.mark.asyncio
 async def test_unblock_unknown_returns_404(task_client: dict) -> None:
     client = task_client["client"]
-    response = await client.post(
-        f"/api/tasks/{uuid4()}/unblock", headers=_HDR
-    )
+    response = await client.post(f"/api/tasks/{uuid4()}/unblock", headers=_HDR)
     assert response.status_code in (400, 403, 404, 422)
 
 
 @pytest.mark.asyncio
 async def test_pause_unknown_returns_404(task_client: dict) -> None:
     client = task_client["client"]
-    response = await client.post(
-        f"/api/tasks/{uuid4()}/pause", headers=_HDR
-    )
+    response = await client.post(f"/api/tasks/{uuid4()}/pause", headers=_HDR)
     assert response.status_code in (400, 403, 404, 422)
 
 
 @pytest.mark.asyncio
 async def test_resume_unknown_returns_404(task_client: dict) -> None:
     client = task_client["client"]
-    response = await client.post(
-        f"/api/tasks/{uuid4()}/resume", headers=_HDR
-    )
+    response = await client.post(f"/api/tasks/{uuid4()}/resume", headers=_HDR)
     assert response.status_code in (400, 403, 404, 422)
 
 
@@ -452,7 +444,5 @@ async def test_get_sessions_for_task(task_client: dict) -> None:
     client = task_client["client"]
     task = _seed_task(task_client)
     await task_client["db"].flush()
-    response = await client.get(
-        f"/api/tasks/{task.id}/sessions", headers=_HDR
-    )
+    response = await client.get(f"/api/tasks/{task.id}/sessions", headers=_HDR)
     assert response.status_code == 200

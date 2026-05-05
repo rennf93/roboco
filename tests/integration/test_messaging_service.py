@@ -577,9 +577,7 @@ async def test_default_group_for_channel_returns_existing(
 ) -> None:
     svc = msg_setup["svc"]
     ch = await svc.create_channel(_channel_req(uuid4().hex[:6]))
-    explicit = await svc.create_group(
-        GroupCreateRequest(name="g1", channel_id=ch.id)
-    )
+    explicit = await svc.create_group(GroupCreateRequest(name="g1", channel_id=ch.id))
     found = await svc._default_group_for_channel(ch)
     assert found.id == explicit.id
 
@@ -683,9 +681,7 @@ async def test_edit_message_by_author(msg_setup: dict) -> None:
     grp = await svc.create_group(GroupCreateRequest(name="g1", channel_id=ch.id))
     sess = await svc.create_session(SessionCreateRequest(group_id=grp.id))
     msg = await svc.send_message(
-        MessageCreateRequest(
-            agent_id=aid, session_id=sess.id, content="original"
-        )
+        MessageCreateRequest(agent_id=aid, session_id=sess.id, content="original")
     )
     edited = await svc.edit_message(msg.id, aid, "edited", edit_reason="typo")
     assert edited.content == "edited"
@@ -699,9 +695,7 @@ async def test_edit_message_by_non_author_raises(msg_setup: dict) -> None:
     grp = await svc.create_group(GroupCreateRequest(name="g1", channel_id=ch.id))
     sess = await svc.create_session(SessionCreateRequest(group_id=grp.id))
     msg = await svc.send_message(
-        MessageCreateRequest(
-            agent_id=aid, session_id=sess.id, content="original"
-        )
+        MessageCreateRequest(agent_id=aid, session_id=sess.id, content="original")
     )
     with pytest.raises(ValueError, match="author"):
         await svc.edit_message(msg.id, uuid4(), "edited")
@@ -715,9 +709,7 @@ async def test_delete_message_by_author(msg_setup: dict) -> None:
     grp = await svc.create_group(GroupCreateRequest(name="g1", channel_id=ch.id))
     sess = await svc.create_session(SessionCreateRequest(group_id=grp.id))
     msg = await svc.send_message(
-        MessageCreateRequest(
-            agent_id=aid, session_id=sess.id, content="original"
-        )
+        MessageCreateRequest(agent_id=aid, session_id=sess.id, content="original")
     )
     assert await svc.delete_message(msg.id, aid) is True
 
@@ -730,9 +722,7 @@ async def test_delete_message_by_non_author_raises(msg_setup: dict) -> None:
     grp = await svc.create_group(GroupCreateRequest(name="g1", channel_id=ch.id))
     sess = await svc.create_session(SessionCreateRequest(group_id=grp.id))
     msg = await svc.send_message(
-        MessageCreateRequest(
-            agent_id=aid, session_id=sess.id, content="original"
-        )
+        MessageCreateRequest(agent_id=aid, session_id=sess.id, content="original")
     )
     with pytest.raises(ValueError, match="author"):
         await svc.delete_message(msg.id, uuid4())
@@ -817,9 +807,7 @@ async def test_edit_message_or_raise_not_found(msg_setup: dict) -> None:
 async def test_delete_message_or_raise_not_found(msg_setup: dict) -> None:
     svc = msg_setup["svc"]
     with pytest.raises(NotFoundError):
-        await svc.delete_message_or_raise(
-            message_id=uuid4(), agent_id=uuid4()
-        )
+        await svc.delete_message_or_raise(message_id=uuid4(), agent_id=uuid4())
 
 
 # ---------------------------------------------------------------------------
@@ -946,6 +934,254 @@ async def test_create_session_for_tasks_creates_session(
 
 
 @pytest.mark.asyncio
+async def test_create_session_with_access_check_member_can_write(
+    msg_setup: dict,
+) -> None:
+    """Channel writer can create a session via access-checked path."""
+    from roboco.services.messaging import ApiSessionCreate
+
+    svc = msg_setup["svc"]
+    aid = msg_setup["agent_id"]
+    ch = await svc.create_channel(_channel_req(uuid4().hex[:6]))
+    # Add agent to writers list.
+    await svc.add_channel_member(ch.id, aid, can_write=True)
+    grp = await svc.create_group(GroupCreateRequest(name="g1", channel_id=ch.id))
+    sess = await svc.create_session_with_access_check(
+        agent_id=aid,
+        request=ApiSessionCreate(
+            group_id=grp.id,
+            max_time_window_minutes=30,
+            max_message_count=100,
+            max_content_length=10000,
+            timeout_seconds=300,
+        ),
+    )
+    assert sess.id is not None
+
+
+@pytest.mark.asyncio
+async def test_list_group_sessions_for_agent_member(
+    msg_setup: dict,
+) -> None:
+    """Channel member can list sessions in their group."""
+    svc = msg_setup["svc"]
+    aid = msg_setup["agent_id"]
+    ch = await svc.create_channel(_channel_req(uuid4().hex[:6]))
+    await svc.add_channel_member(ch.id, aid)
+    grp = await svc.create_group(GroupCreateRequest(name="g1", channel_id=ch.id))
+    await svc.create_session(SessionCreateRequest(group_id=grp.id))
+    sessions = await svc.list_group_sessions_for_agent(
+        group_id=grp.id, agent_id=aid, status_filter=None, limit=10
+    )
+    assert len(sessions) >= 1
+
+
+@pytest.mark.asyncio
+async def test_list_group_sessions_with_status_filter(
+    msg_setup: dict,
+) -> None:
+    svc = msg_setup["svc"]
+    aid = msg_setup["agent_id"]
+    ch = await svc.create_channel(_channel_req(uuid4().hex[:6]))
+    await svc.add_channel_member(ch.id, aid)
+    grp = await svc.create_group(GroupCreateRequest(name="g1", channel_id=ch.id))
+    await svc.create_session(SessionCreateRequest(group_id=grp.id))
+    sessions = await svc.list_group_sessions_for_agent(
+        group_id=grp.id,
+        agent_id=aid,
+        status_filter=SessionStatus.ACTIVE,
+        limit=10,
+    )
+    assert all(s.status == SessionStatus.ACTIVE for s in sessions)
+
+
+@pytest.mark.asyncio
+async def test_sweep_timed_out_sessions_closes_idle_session(
+    msg_setup: dict, db_session: AsyncSession
+) -> None:
+    from datetime import UTC, datetime, timedelta
+
+    svc = msg_setup["svc"]
+    ch = await svc.create_channel(_channel_req(uuid4().hex[:6]))
+    grp = await svc.create_group(GroupCreateRequest(name="g1", channel_id=ch.id))
+    sess = await svc.create_session(
+        SessionCreateRequest(group_id=grp.id, timeout_seconds=1)
+    )
+    # Force last_activity_at into the past so sweeper closes it.
+    sess.last_activity_at = datetime.now(UTC) - timedelta(seconds=120)
+    await db_session.flush()
+    closed = await svc.sweep_timed_out_sessions()
+    assert closed >= 1
+
+
+@pytest.mark.asyncio
+async def test_edit_message_or_raise_succeeds(msg_setup: dict) -> None:
+    svc = msg_setup["svc"]
+    aid = msg_setup["agent_id"]
+    ch = await svc.create_channel(_channel_req(uuid4().hex[:6]))
+    grp = await svc.create_group(GroupCreateRequest(name="g1", channel_id=ch.id))
+    sess = await svc.create_session(SessionCreateRequest(group_id=grp.id))
+    msg = await svc.send_message(
+        MessageCreateRequest(agent_id=aid, session_id=sess.id, content="original")
+    )
+    edited = await svc.edit_message_or_raise(
+        message_id=msg.id,
+        agent_id=aid,
+        new_content="edited content",
+        edit_reason=None,
+    )
+    assert edited.content == "edited content"
+
+
+@pytest.mark.asyncio
+async def test_delete_message_or_raise_succeeds(msg_setup: dict) -> None:
+    svc = msg_setup["svc"]
+    aid = msg_setup["agent_id"]
+    ch = await svc.create_channel(_channel_req(uuid4().hex[:6]))
+    grp = await svc.create_group(GroupCreateRequest(name="g1", channel_id=ch.id))
+    sess = await svc.create_session(SessionCreateRequest(group_id=grp.id))
+    msg = await svc.send_message(
+        MessageCreateRequest(
+            agent_id=aid, session_id=sess.id, content="will be deleted"
+        )
+    )
+    await svc.delete_message_or_raise(message_id=msg.id, agent_id=aid)
+
+
+@pytest.mark.asyncio
+async def test_send_message_with_mentions(msg_setup: dict) -> None:
+    svc = msg_setup["svc"]
+    aid = msg_setup["agent_id"]
+    other = uuid4()
+    ch = await svc.create_channel(_channel_req(uuid4().hex[:6]))
+    grp = await svc.create_group(GroupCreateRequest(name="g1", channel_id=ch.id))
+    sess = await svc.create_session(SessionCreateRequest(group_id=grp.id))
+    msg = await svc.send_message(
+        MessageCreateRequest(
+            agent_id=aid,
+            session_id=sess.id,
+            content="hi @other",
+            mentions=[other],
+        )
+    )
+    assert other in msg.mentions
+
+
+@pytest.mark.asyncio
+async def test_send_message_reply_target_unknown_raises(
+    msg_setup: dict,
+) -> None:
+    svc = msg_setup["svc"]
+    aid = msg_setup["agent_id"]
+    ch = await svc.create_channel(_channel_req(uuid4().hex[:6]))
+    grp = await svc.create_group(GroupCreateRequest(name="g1", channel_id=ch.id))
+    sess = await svc.create_session(SessionCreateRequest(group_id=grp.id))
+    with pytest.raises((ValueError, NotFoundError)):
+        await svc.send_message(
+            MessageCreateRequest(
+                agent_id=aid,
+                session_id=sess.id,
+                content="reply",
+                reply_to=uuid4(),  # Bogus reply target.
+            )
+        )
+
+
+@pytest.mark.asyncio
+async def test_get_messages_with_filters(msg_setup: dict) -> None:
+    """get_messages with before/after/type filters."""
+    from datetime import UTC, datetime, timedelta
+
+    from roboco.models import MessageType
+
+    svc = msg_setup["svc"]
+    aid = msg_setup["agent_id"]
+    ch = await svc.create_channel(_channel_req(uuid4().hex[:6]))
+    grp = await svc.create_group(GroupCreateRequest(name="g1", channel_id=ch.id))
+    sess = await svc.create_session(SessionCreateRequest(group_id=grp.id))
+    await svc.send_message(
+        MessageCreateRequest(agent_id=aid, session_id=sess.id, content="msg1")
+    )
+    cutoff = datetime.now(UTC) - timedelta(hours=1)
+    msgs, _ = await svc.get_messages(
+        sess.id,
+        before=datetime.now(UTC) + timedelta(hours=1),
+        after=cutoff,
+        message_type=MessageType.DIALOGUE,
+    )
+    assert isinstance(msgs, list)
+
+
+@pytest.mark.asyncio
+async def test_get_messages_with_limit(msg_setup: dict) -> None:
+    svc = msg_setup["svc"]
+    aid = msg_setup["agent_id"]
+    ch = await svc.create_channel(_channel_req(uuid4().hex[:6]))
+    grp = await svc.create_group(GroupCreateRequest(name="g1", channel_id=ch.id))
+    sess = await svc.create_session(SessionCreateRequest(group_id=grp.id))
+    for i in range(5):
+        await svc.send_message(
+            MessageCreateRequest(agent_id=aid, session_id=sess.id, content=f"msg-{i}")
+        )
+    msgs, has_more = await svc.get_messages(sess.id, limit=2)
+    assert len(msgs) == 2
+    assert has_more is True
+
+
+@pytest.mark.asyncio
+async def test_get_message_context_redirects_when_session_closed(
+    msg_setup: dict,
+) -> None:
+    """If session is closed, _get_message_context should redirect to active session."""
+    svc = msg_setup["svc"]
+    ch = await svc.create_channel(_channel_req(uuid4().hex[:6]))
+    grp = await svc.create_group(GroupCreateRequest(name="g1", channel_id=ch.id))
+    sess = await svc.create_session(SessionCreateRequest(group_id=grp.id))
+    # Close the session.
+    await svc.close_session(sess.id)
+    # Now request its context — should redirect to a fresh active session.
+    new_sess, new_grp, new_ch = await svc._get_message_context(sess.id)
+    assert new_grp.id == grp.id
+    assert new_ch.id == ch.id
+    assert new_sess.status == SessionStatus.ACTIVE
+
+
+@pytest.mark.asyncio
+async def test_get_message_context_unknown_session_raises(
+    msg_setup: dict,
+) -> None:
+    svc = msg_setup["svc"]
+    with pytest.raises(ValueError, match="not found"):
+        await svc._get_message_context(uuid4())
+
+
+@pytest.mark.asyncio
+async def test_validate_reply_target_unknown_message_raises(
+    msg_setup: dict,
+) -> None:
+    svc = msg_setup["svc"]
+    with pytest.raises(ValueError, match="not found"):
+        await svc._validate_reply_target(uuid4(), uuid4())
+
+
+@pytest.mark.asyncio
+async def test_validate_reply_target_wrong_session_raises(
+    msg_setup: dict,
+) -> None:
+    svc = msg_setup["svc"]
+    aid = msg_setup["agent_id"]
+    ch = await svc.create_channel(_channel_req(uuid4().hex[:6]))
+    grp = await svc.create_group(GroupCreateRequest(name="g1", channel_id=ch.id))
+    sess1 = await svc.create_session(SessionCreateRequest(group_id=grp.id))
+    msg = await svc.send_message(
+        MessageCreateRequest(agent_id=aid, session_id=sess1.id, content="msg")
+    )
+    sess2 = await svc.create_session(SessionCreateRequest(group_id=grp.id))
+    with pytest.raises(ValueError, match="not found in this session"):
+        await svc._validate_reply_target(msg.id, sess2.id)
+
+
+@pytest.mark.asyncio
 async def test_walk_task_ancestors_with_parent(
     msg_setup: dict, db_session: AsyncSession
 ) -> None:
@@ -958,9 +1194,9 @@ async def test_walk_task_ancestors_with_parent(
     child_id = uuid4()
     # Need to fetch project_id and aid from msg_setup.
     result = await db_session.execute(
-        __import__("sqlalchemy").select(TaskTable).where(
-            TaskTable.id == msg_setup["task_id"]
-        )
+        __import__("sqlalchemy")
+        .select(TaskTable)
+        .where(TaskTable.id == msg_setup["task_id"])
     )
     base_task = result.scalar_one()
 

@@ -162,8 +162,17 @@ select = [
 "roboco/services/*.py" = ["PLC0415"]
 "roboco/api/routes/*.py" = ["PLC0415"]
 "roboco/runtime/*.py" = ["PLC0415"]
-# Test fixtures that reload modules to test env-var-at-import-time behavior
-"tests/unit/mcp_servers/*.py" = ["PLC0415"]
+# Tests freely use magic values (status codes, indices), lazy imports for
+# dependency-isolation, and many fixture parameters — these style rules
+# are noise in test files.
+"tests/**/*.py" = [
+    "PLR2004",  # magic values (status codes, indices) are normal in tests
+    "PLC0415",  # lazy imports for dependency-isolation in tests
+    "PLR0913",  # many fixture parameters are normal in tests
+    "ARG001",   # unused fixture parameters (db_session for autouse, caplog) are normal
+    "SIM105",   # contextlib.suppress vs try/except/pass — both fine in tests
+    "E501",     # long lines in test fixtures/payloads are common
+]
 
 # =============================================================================
 # MyPy Configuration

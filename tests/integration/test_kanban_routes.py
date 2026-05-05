@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 from typing import TYPE_CHECKING
-from uuid import uuid4
 
 import pytest
 import pytest_asyncio
@@ -86,7 +85,5 @@ async def test_get_kanban_stats(kanban_client: AsyncClient) -> None:
 
 @pytest.mark.asyncio
 async def test_get_dev_board_with_swimlane(kanban_client: AsyncClient) -> None:
-    response = await kanban_client.get(
-        "/api/kanban/dev/backend?swimlane_by=priority"
-    )
+    response = await kanban_client.get("/api/kanban/dev/backend?swimlane_by=priority")
     assert response.status_code == 200

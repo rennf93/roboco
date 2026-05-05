@@ -408,9 +408,7 @@ async def test_write_struggle(journal_setup: dict) -> None:
 async def test_write_entry_dispatches_by_scope(journal_setup: dict) -> None:
     svc = journal_setup["svc"]
     aid = journal_setup["agent_id"]
-    entry = await svc.write_entry(
-        agent_id=aid, title="x", content="y", scope="note"
-    )
+    entry = await svc.write_entry(agent_id=aid, title="x", content="y", scope="note")
     assert entry is not None
     assert entry.type == JournalEntryType.GENERAL
 

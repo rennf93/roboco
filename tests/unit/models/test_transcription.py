@@ -103,8 +103,6 @@ def test_transcription_config_defaults() -> None:
 
 
 def test_transcription_config_custom() -> None:
-    cfg = TranscriptionConfig(
-        min_chars_for_extraction=10, max_buffers_per_agent=5
-    )
+    cfg = TranscriptionConfig(min_chars_for_extraction=10, max_buffers_per_agent=5)
     assert cfg.min_chars_for_extraction == 10
     assert cfg.max_buffers_per_agent == 5

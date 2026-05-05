@@ -110,9 +110,7 @@ async def test_list_sessions_empty(ws_client: dict) -> None:
 @pytest.mark.asyncio
 async def test_get_session_not_found(ws_client: dict) -> None:
     client = ws_client["client"]
-    response = await client.get(
-        f"/api/work-sessions/{uuid4()}", headers=_HDR
-    )
+    response = await client.get(f"/api/work-sessions/{uuid4()}", headers=_HDR)
     assert response.status_code == 404
 
 
@@ -247,9 +245,7 @@ async def test_complete_session(ws_client: dict) -> None:
         headers=_HDR,
     )
     sid = create.json()["id"]
-    response = await client.post(
-        f"/api/work-sessions/{sid}/complete", headers=_HDR
-    )
+    response = await client.post(f"/api/work-sessions/{sid}/complete", headers=_HDR)
     assert response.status_code == 200
 
 

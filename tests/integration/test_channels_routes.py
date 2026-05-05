@@ -12,7 +12,7 @@ from httpx import ASGITransport, AsyncClient
 from roboco.api.deps import get_agent_context, get_db
 from roboco.api.routes.channels import router as channels_router
 from roboco.db.tables import AgentTable, ChannelTable
-from roboco.models import AgentRole, AgentStatus, Team
+from roboco.models import AgentRole, AgentStatus
 from roboco.models.base import ChannelType
 from roboco.models.permissions import AgentContext
 
@@ -82,9 +82,7 @@ async def test_list_channels(channels_client: dict) -> None:
 @pytest.mark.asyncio
 async def test_get_channel_unknown(channels_client: dict) -> None:
     client = channels_client["client"]
-    response = await client.get(
-        f"/api/channels/{uuid4()}", headers=_HDR
-    )
+    response = await client.get(f"/api/channels/{uuid4()}", headers=_HDR)
     assert response.status_code == 404
 
 

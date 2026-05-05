@@ -310,12 +310,31 @@ def test_can_communicate_dev_to_qa_different_cells(
 
 def test_can_agent_write_channel_known(svc: PermissionService) -> None:
     """be-pm should be able to write to backend-cell."""
-    assert isinstance(
-        svc.can_agent_write_channel("be-pm", "backend-cell"), bool
-    )
+    assert isinstance(svc.can_agent_write_channel("be-pm", "backend-cell"), bool)
 
 
 def test_can_agent_write_channel_unknown_slug(svc: PermissionService) -> None:
     assert svc.can_agent_write_channel("ghost-agent", "any") is False
 
 
+def test_can_read_channel_for_main_pm_unknown_bypasses(
+    svc: PermissionService,
+) -> None:
+    """Main PM has bypass — unknown channel returns True (no DB lookup)."""
+    main_pm = _ctx(AgentRole.MAIN_PM)
+    assert svc.can_read_channel(main_pm, "ghost-channel") is True
+
+
+def test_can_write_channel_for_ceo_unknown_bypasses(
+    svc: PermissionService,
+) -> None:
+    """CEO has bypass — unknown channel returns True."""
+    ceo = _ctx(AgentRole.CEO)
+    assert svc.can_write_channel(ceo, "ghost-channel") is True
+
+
+def test_can_agent_write_channel_unknown_channel(
+    svc: PermissionService,
+) -> None:
+    """Unknown channel slug → False (no panic)."""
+    assert svc.can_agent_write_channel("be-dev-1", "ghost-channel") is False

@@ -12,7 +12,7 @@ from httpx import ASGITransport, AsyncClient
 from roboco.api.deps import get_agent_context, get_db
 from roboco.api.routes.dashboard import router as dashboard_router
 from roboco.db.tables import AgentTable
-from roboco.models import AgentRole, AgentStatus, Team
+from roboco.models import AgentRole, AgentStatus
 from roboco.models.permissions import AgentContext
 from roboco.services.dashboard import reset_storage
 
@@ -83,9 +83,7 @@ async def test_create_auditor_flag(dashboard_client: AsyncClient) -> None:
 
 @pytest.mark.asyncio
 async def test_get_auditor_flags(dashboard_client: AsyncClient) -> None:
-    response = await dashboard_client.get(
-        "/api/dashboard/auditor/flags", headers=_HDR
-    )
+    response = await dashboard_client.get("/api/dashboard/auditor/flags", headers=_HDR)
     assert response.status_code == 200
     assert isinstance(response.json(), list)
 
@@ -154,16 +152,12 @@ async def test_get_kanban_for_team_known_bug(
     raising AttributeError. We assert the bug exists so a fix flips the test.
     """
     with pytest.raises(AttributeError, match="'str' object has no attribute 'value'"):
-        await dashboard_client.get(
-            "/api/dashboard/kanban/backend", headers=_HDR
-        )
+        await dashboard_client.get("/api/dashboard/kanban/backend", headers=_HDR)
 
 
 @pytest.mark.asyncio
 async def test_get_all_agent_status(dashboard_client: AsyncClient) -> None:
-    response = await dashboard_client.get(
-        "/api/dashboard/agents/status", headers=_HDR
-    )
+    response = await dashboard_client.get("/api/dashboard/agents/status", headers=_HDR)
     assert response.status_code == 200
 
 

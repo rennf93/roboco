@@ -69,6 +69,6 @@ async def test_create_initial_messages(db_session: AsyncSession) -> None:
     # confirm the call doesn't raise.
     try:
         await create_initial_messages(db_session, channel_ids, agent_ids)
-    except Exception:  # noqa: BLE001
+    except Exception:
         # Some setups may not have everything wired; accept silent skip.
         pass
