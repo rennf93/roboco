@@ -72,8 +72,9 @@ class _StubGit:
         message: str,
         task_id: UUID,
         files: list[str] | None = None,
+        actor_agent_id: Any = None,
     ) -> dict[str, Any]:
-        del branch_name, files
+        del branch_name, files, actor_agent_id
         sha = uuid4().hex[:40]
         commits = list(self._task.commits or [])
         commits.append({"sha": sha, "message": message, "task_id": str(task_id)})
@@ -87,23 +88,38 @@ class _StubGit:
             "deletions": 0,
         }
 
-    async def push_branch(self, branch_name: str) -> tuple[str, int]:
-        del branch_name
+    async def push_branch(
+        self, branch_name: str, *, actor_agent_id: Any = None
+    ) -> tuple[str, int]:
+        del branch_name, actor_agent_id
         return ("ok", 0)
 
     async def create_pr(
-        self, branch_name: str, *, parent: str, is_root_pr: bool
+        self,
+        branch_name: str,
+        *,
+        parent: str,
+        is_root_pr: bool,
+        actor_agent_id: Any = None,
     ) -> dict[str, Any]:
-        del branch_name, parent
+        del branch_name, parent, actor_agent_id
         self._task.pr_number = _PR_NUMBER
         self._task.pr_url = _PR_URL
+        # Mirrors git._record_pr_atomically — production sets pr_created
+        # via mark_pr_created which is what the parallel-completion gate
+        # in _maybe_advance_to_pm_review reads.
+        self._task.pr_created = True
         await self._session.flush()
         return {"pr_number": _PR_NUMBER, "pr_url": _PR_URL, "is_root_pr": is_root_pr}
 
-    async def diff(self, *, branch_name: str) -> str:  # noqa: ARG002
+    async def diff(
+        self, *, branch_name: str, base: Any = None, actor_agent_id: Any = None
+    ) -> str:
+        del branch_name, base, actor_agent_id
         return "stub diff"
 
-    async def pr_target(self, pr_number: int) -> str:  # noqa: ARG002
+    async def pr_target(self, pr_number: int, *, actor_agent_id: Any = None) -> str:
+        del pr_number, actor_agent_id
         return "main"
 
     async def pr_merge(self, **kwargs: Any) -> dict[str, Any]:
@@ -204,7 +220,33 @@ async def lifecycle_setup(
         permissions={},
         metrics={},
     )
-    db_session.add_all([dev_agent, qa_agent])
+    doc_agent = AgentTable(
+        id=uuid4(),
+        name="BE Doc",
+        slug=f"be-doc-{uuid4().hex[:8]}",
+        role=AgentRole.DOCUMENTER,
+        team=Team.BACKEND,
+        status=AgentStatus.ACTIVE,
+        model_config={},
+        system_prompt="doc",
+        capabilities=["docs"],
+        permissions={},
+        metrics={},
+    )
+    cell_pm_agent = AgentTable(
+        id=uuid4(),
+        name="BE Cell PM",
+        slug=f"be-pm-{uuid4().hex[:8]}",
+        role=AgentRole.CELL_PM,
+        team=Team.BACKEND,
+        status=AgentStatus.ACTIVE,
+        model_config={},
+        system_prompt="cell_pm",
+        capabilities=["coord"],
+        permissions={},
+        metrics={},
+    )
+    db_session.add_all([dev_agent, qa_agent, doc_agent, cell_pm_agent])
     await db_session.flush()
 
     task = TaskTable(
@@ -233,6 +275,8 @@ async def lifecycle_setup(
         "project": project,
         "dev_agent": dev_agent,
         "qa_agent": qa_agent,
+        "doc_agent": doc_agent,
+        "cell_pm_agent": cell_pm_agent,
         "task": task,
     }
 
@@ -337,13 +381,90 @@ async def test_dev_full_chain_through_awaiting_qa(
     assert final.self_verified is True, "P1-3: self_verified set by auto-verify"
 
 
-# TODO P2-1 follow-up — extend the chain past awaiting_qa:
-#   - QA: claim_review → pass → awaiting_documentation
-#   - Documenter: claim_doc_task → i_documented → awaiting_pm_review
-#   - Cell PM: complete on the leaf → completed (or submit_up to a parent)
-#   - Main PM: complete on the root → awaiting_ceo_approval
-# Each stage needs the role's agent seeded (lifecycle_setup already has
-# dev + qa; add doc + cell_pm + main_pm) plus journal entries with the
-# right scope (pass needs journal:learning; complete needs journal:decision).
-# The _StubGit class above already covers commit/push/pr_create/pr_target
-# /pr_merge for the merge stages.
+@pytest.mark.asyncio
+async def test_full_chain_through_doc_handoff(
+    db_session: AsyncSession, lifecycle_setup: dict[str, Any]
+) -> None:
+    """Extend the dev chain: QA pass → documenter → awaiting_pm_review.
+
+    Verifies QA pass clears active_claimant_id (P1-4 + P1-5),
+    docs_complete transitions to awaiting_pm_review, and reassignment
+    to the cell PM happens on hand-off.
+    """
+    task = lifecycle_setup["task"]
+    dev_agent = lifecycle_setup["dev_agent"]
+    qa_agent = lifecycle_setup["qa_agent"]
+    doc_agent = lifecycle_setup["doc_agent"]
+    cell_pm_agent = lifecycle_setup["cell_pm_agent"]
+    task_service = TaskService(db_session)
+    stub_git = _StubGit(db_session, task)
+
+    deps = ChoreographerDeps(
+        task=task_service,
+        work_session=_mock_work_session(),
+        git=stub_git,
+        a2a=AsyncMock(),
+        journal=_mock_journal_with_reflect(),
+        audit=AsyncMock(),
+        evidence_repo=_mock_evidence_repo(),
+    )
+    c = Choreographer(deps)
+
+    # Drive the dev side first (same as test_dev_full_chain_through_awaiting_qa).
+    await c.i_will_work_on(dev_agent.id, task.id, plan="add the route")
+    await stub_git.commit(
+        branch_name=_BRANCH,
+        message=f"[{str(task.id)[:8]}] feat(api): add /healthz",
+        task_id=task.id,
+    )
+    await task_service.add_progress(task.id, dev_agent.id, "implemented /healthz")
+    await c.submit_for_qa(dev_agent.id, task.id)
+    env = await c.i_am_done(dev_agent.id, task.id, "tests pass; route works")
+    assert env.error is None
+    assert env.status == "awaiting_qa"
+
+    # QA path: claim_review → pass.
+    env = await c.claim_review(qa_agent.id, task.id)
+    assert env.error is None, f"claim_review failed: {env.message}"
+
+    qa_notes = (
+        "Reviewed the diff; route returns 200 OK with timestamp. Tests cover "
+        "both acceptance criteria. Approving."
+    )
+    env = await c.pass_review(qa_agent.id, task.id, notes=qa_notes)
+    assert env.error is None, f"pass_review failed: {env.message}"
+    assert env.status == "awaiting_documentation"
+
+    after_qa = await task_service.get(task.id)
+    assert after_qa is not None
+    assert after_qa.active_claimant_id is None, (
+        "P1-4 + P1-5: QA pass must clear active_claimant_id for next role"
+    )
+
+    # Documenter path: claim_doc_task → i_documented.
+    env = await c.claim_doc_task(doc_agent.id, task.id)
+    assert env.error is None, f"claim_doc_task failed: {env.message}"
+
+    env = await c.i_documented(
+        doc_agent.id,
+        task.id,
+        notes="Documented /healthz behaviour in docs/api/health.md",
+        files=["docs/api/health.md"],
+    )
+    assert env.error is None, f"i_documented failed: {env.message}"
+    assert env.status == "awaiting_pm_review", (
+        "P2-1: i_documented must transition awaiting_documentation → awaiting_pm_review"
+    )
+
+    after_docs = await task_service.get(task.id)
+    assert after_docs is not None
+    assert after_docs.assigned_to == cell_pm_agent.id, (
+        "P2-1: docs_complete must reassign to the cell PM for the team"
+    )
+
+
+# TODO P2-1 follow-up — final stages (cell_pm complete + main_pm complete +
+# CEO approval) require additional setup: a parent task hierarchy for
+# the merge chain, plus a real `git.pr_merge` simulation that updates
+# the underlying repo. The _StubGit class covers the API surface; what's
+# missing is the seeded parent task + main_pm agent.

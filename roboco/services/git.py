@@ -11,6 +11,7 @@ import asyncio
 import base64
 import re
 import subprocess
+from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, ClassVar, cast
 from uuid import UUID
@@ -1619,11 +1620,37 @@ class GitService(BaseService):
         project = await project_service.get(UUID(str(task.project_id)))
         return project.slug if project else None
 
-    async def _workspace_for_branch(self, branch_name: str) -> Path:
+    @staticmethod
+    def _resolve_workspace_agent_id(
+        task: Any, actor_agent_id: UUID | None
+    ) -> UUID | None:
+        """Workspace-agent resolution priority (audit D-40).
+
+        actor_agent_id → task.assigned_to → task.created_by → None.
+        Centralised so push_branch/create_pr/commit/diff/pr_target/pr_merge
+        share one chain — and individual methods stay below the
+        cyclomatic-complexity gate (xenon B).
+        """
+        candidate = actor_agent_id or (
+            UUID(str(task.assigned_to)) if task.assigned_to is not None else None
+        )
+        if candidate is None and task.created_by:
+            candidate = UUID(str(task.created_by))
+        return candidate
+
+    async def _workspace_for_branch(
+        self,
+        branch_name: str,
+        *,
+        actor_agent_id: UUID | None = None,
+    ) -> Path:
         """Get a workspace where this branch can be operated on.
 
-        Uses the assignee's workspace when one is recorded; otherwise
-        falls back to the project's static workspace_path.
+        Resolves the workspace via ``_resolve_workspace_agent_id`` (the
+        actor → assignee → creator fallback chain). Without it, post-
+        handoff calls (e.g. pr_target on a task whose assigned_to was
+        cleared by submit_qa) raise ValidationError when
+        project.workspace_path is unset.
         """
         task = await self._task_for_branch(branch_name)
         if task is None:
@@ -1632,18 +1659,26 @@ class GitService(BaseService):
         project = await project_service.get(UUID(str(task.project_id)))
         if project is None:
             raise NotFoundError("Project", str(task.project_id))
-        agent_id = UUID(str(task.assigned_to)) if task.assigned_to is not None else None
-        return await self.get_workspace(project.slug, agent_id=agent_id)
+        workspace_agent_id = self._resolve_workspace_agent_id(task, actor_agent_id)
+        return await self.get_workspace(project.slug, agent_id=workspace_agent_id)
 
-    async def push_branch(self, branch_name: str) -> tuple[str, int]:
+    async def push_branch(
+        self,
+        branch_name: str,
+        *,
+        actor_agent_id: UUID | None = None,
+    ) -> tuple[str, int]:
         """Push `branch_name` to origin from the assignee's workspace.
 
         Gateway-only entry point — the legacy `push(workspace, force)`
         signature stays intact for non-gateway callers. Resolves the
-        workspace from the task that owns the branch, then delegates.
-        Returns (branch, commits_pushed).
+        workspace from the task that owns the branch (with caller-actor
+        fallback per audit D-40), then delegates. Returns
+        (branch, commits_pushed).
         """
-        workspace = await self._workspace_for_branch(branch_name)
+        workspace = await self._workspace_for_branch(
+            branch_name, actor_agent_id=actor_agent_id
+        )
         return await self.push(workspace)
 
     async def create_pr(
@@ -1652,6 +1687,7 @@ class GitService(BaseService):
         *,
         parent: str,
         is_root_pr: bool,
+        actor_agent_id: UUID | None = None,
     ) -> dict[str, Any]:
         """Open a PR for `branch_name` targeting `parent`.
 
@@ -1659,6 +1695,10 @@ class GitService(BaseService):
         underlying project + task from the branch name; the gateway never
         passes a project_slug. The `parent` arg supersedes the task's
         natural parent so root PRs can target master.
+
+        ``actor_agent_id`` lets PMs opening the master PR (where
+        ``task.assigned_to`` may be None at completion time) resolve a
+        workspace via the actor's clone (audit D-40).
         """
         task = await self._task_for_branch(branch_name)
         if task is None:
@@ -1668,7 +1708,9 @@ class GitService(BaseService):
         if project is None:
             raise NotFoundError("Project", str(task.project_id))
 
-        workspace = await self._workspace_for_branch(branch_name)
+        workspace = await self._workspace_for_branch(
+            branch_name, actor_agent_id=actor_agent_id
+        )
         git_token = await self._get_project_token_or_raise(project.slug)
         owner, repo = self._parse_github_remote(workspace)
 
@@ -1740,6 +1782,52 @@ class GitService(BaseService):
             .with_for_update(of=_TaskTable)
         )
 
+    @staticmethod
+    def _resolve_merger_id(task: Any, actor_agent_id: UUID | None) -> UUID:
+        """merged_by attribution priority for pr_merge (audit D-43).
+
+        actor → assigned_to → created_by → UUID(int=0) sentinel.
+        ``UUID(0)`` is the explicit "nothing was recoverable" marker
+        instead of the silent NULL we used to write.
+        """
+        merger = (
+            actor_agent_id
+            or (UUID(str(task.assigned_to)) if task.assigned_to else None)
+            or (UUID(str(task.created_by)) if task.created_by else None)
+        )
+        return merger or UUID(int=0)
+
+    @dataclass(frozen=True)
+    class _MergeContext:
+        """Bundle of params for `_merge_with_retry` (keeps arg count under 5)."""
+
+        owner: str
+        repo: str
+        pr_number: int
+        git_token: str
+        workspace: Path
+        target: str
+
+    async def _merge_with_retry(self, ctx: GitService._MergeContext) -> Any:
+        """Single-retry merge: on 409 (race), sync target then retry once."""
+        resp = await self._call_merge_api(
+            ctx.owner, ctx.repo, ctx.pr_number, ctx.git_token, "squash"
+        )
+        if resp.status_code == _HTTP_CONFLICT:
+            # Another PM merged a sibling subtask first and our local target
+            # ref is stale. Refresh and retry once; a second 409 is a real
+            # conflict the PM resolves manually.
+            await self._sync_target_branch(ctx.workspace, ctx.target, ctx.git_token)
+            resp = await self._call_merge_api(
+                ctx.owner, ctx.repo, ctx.pr_number, ctx.git_token, "squash"
+            )
+        if not resp.is_success:
+            raise GitError(
+                f"GitHub API refused PR merge ({resp.status_code}): {resp.text[:200]}",
+                {"owner": ctx.owner, "repo": ctx.repo, "pr": ctx.pr_number},
+            )
+        return resp
+
     async def pr_merge(
         self,
         pr_number: int,
@@ -1755,8 +1843,7 @@ class GitService(BaseService):
         Concurrency: takes a row-level lock on the parent task before
         invoking the GitHub merge API so that two PMs completing
         sibling subtasks of the same parent are serialized. On a 409
-        merge conflict (typical race symptom — GitHub serializes via
-        PR-state churn) the local target branch is re-pulled and the
+        merge conflict the local target branch is re-pulled and the
         merge is retried exactly once before giving up with `GitError`.
         """
         from sqlalchemy import select
@@ -1774,53 +1861,47 @@ class GitService(BaseService):
         if project is None:
             raise NotFoundError("Project", str(task.project_id))
 
-        # Workspace resolution priority: caller-provided actor (the PM
-        # doing the merge) > task.assigned_to > created_by. assigned_to
-        # is often None at merge time because submit_qa / pass_qa cleared
-        # it during prior transitions; without a fallback the resolver
-        # raises ValidationError when project.workspace_path is unset.
-        workspace_agent_id = actor_agent_id or (
-            UUID(str(task.assigned_to)) if task.assigned_to else None
-        )
-        if workspace_agent_id is None and task.created_by:
-            workspace_agent_id = UUID(str(task.created_by))
+        workspace_agent_id = self._resolve_workspace_agent_id(task, actor_agent_id)
         workspace = await self.get_workspace(project.slug, agent_id=workspace_agent_id)
         git_token = await self._get_project_token_or_raise(project.slug)
         owner, repo = self._parse_github_remote(workspace)
 
-        # Serialize merges into the same parent branch — see helper docstring.
         parent_id = UUID(str(task.parent_task_id)) if task.parent_task_id else None
         await self._lock_parent_task_for_merge(parent_id)
 
-        resp = await self._call_merge_api(owner, repo, pr_number, git_token, "squash")
-        if resp.status_code == _HTTP_CONFLICT:
-            # Race symptom — another PM merged a sibling subtask first
-            # and our local target ref is stale. Refresh and retry once;
-            # if the second attempt also conflicts, it's a real conflict
-            # (not just a race) and the choreographer surfaces it as
-            # `invalid_state` so the PM can resolve it manually.
-            await self._sync_target_branch(workspace, target, git_token)
-            resp = await self._call_merge_api(
-                owner, repo, pr_number, git_token, "squash"
+        await self._merge_with_retry(
+            self._MergeContext(
+                owner=owner,
+                repo=repo,
+                pr_number=pr_number,
+                git_token=git_token,
+                workspace=workspace,
+                target=target,
             )
-        if not resp.is_success:
-            raise GitError(
-                f"GitHub API refused PR merge ({resp.status_code}): {resp.text[:200]}",
-                {"owner": owner, "repo": repo, "pr": pr_number},
-            )
+        )
         await self._delete_pr_branch_best_effort(owner, repo, pr_number, git_token)
-
         merge_commit = await self._sync_target_branch(workspace, target, git_token)
+
         if task.work_session_id:
             ws_service = get_work_session_service(self.session)
             await ws_service.merge_pr(
                 require_uuid(task.work_session_id),
-                UUID(str(task.assigned_to)) if task.assigned_to else UUID(int=0),
+                self._resolve_merger_id(task, actor_agent_id),
             )
         return {"merge_commit_sha": merge_commit or None}
 
-    async def pr_target(self, pr_number: int) -> str:
-        """Return the current target (base) branch of an open PR."""
+    async def pr_target(
+        self,
+        pr_number: int,
+        *,
+        actor_agent_id: UUID | None = None,
+    ) -> str:
+        """Return the current target (base) branch of an open PR.
+
+        Workspace resolution mirrors pr_merge: actor → assigned_to →
+        created_by (audit D-40). Lets the Main PM call pr_target after
+        ``submit_qa`` has cleared ``assigned_to`` without ValidationError.
+        """
         from sqlalchemy import select
 
         from roboco.db.tables import TaskTable as _TaskTable
@@ -1836,10 +1917,8 @@ class GitService(BaseService):
         if project is None:
             raise NotFoundError("Project", str(task.project_id))
 
-        workspace = await self.get_workspace(
-            project.slug,
-            agent_id=UUID(str(task.assigned_to)) if task.assigned_to else None,
-        )
+        workspace_agent_id = self._resolve_workspace_agent_id(task, actor_agent_id)
+        workspace = await self.get_workspace(project.slug, agent_id=workspace_agent_id)
         owner, repo = self._parse_github_remote(workspace)
         git_token = await self._get_project_token_or_raise(project.slug)
 
@@ -1875,6 +1954,7 @@ class GitService(BaseService):
         *,
         branch_name: str,
         base: str | None = None,
+        actor_agent_id: UUID | None = None,
     ) -> str:
         """Return the git diff for `branch_name` against `base`.
 
@@ -1882,10 +1962,16 @@ class GitService(BaseService):
         `parent_branch_for`) which is what the choreographer/PR-review
         path wants. Content_actions evidence path can pass `HEAD~1` to
         get just the latest change diff for incremental review.
+
+        ``actor_agent_id`` resolves the workspace via the caller's clone
+        when ``task.assigned_to`` is None (audit D-40) — important for
+        QA reviewing post-submit_qa.
         """
         from roboco.services.gateway.merge_chain import parent_branch_for
 
-        workspace = await self._workspace_for_branch(branch_name)
+        workspace = await self._workspace_for_branch(
+            branch_name, actor_agent_id=actor_agent_id
+        )
         if base is None:
             parent = parent_branch_for(branch_name)
             # Make sure the parent ref exists locally before diffing.
@@ -1903,6 +1989,7 @@ class GitService(BaseService):
         message: str,
         task_id: UUID,
         files: list[str] | None = None,
+        actor_agent_id: UUID | None = None,
     ) -> dict[str, Any]:
         """Gateway adapter — commit on `branch_name` with a free-form message.
 
@@ -1913,12 +2000,18 @@ class GitService(BaseService):
         message is descriptive, and the orchestrator-side git template only
         applies to the structured `commit_for_task` API path.
 
+        ``actor_agent_id`` falls back through the same chain as pr_merge
+        when ``task.assigned_to`` was cleared by an earlier transition
+        (audit D-40).
+
         Returns a dict shaped for the gateway: ``{"sha": str, "message": str,
         "files_changed": int, "insertions": int, "deletions": int}``. Tests
         and downstream gateway code only consume `sha`; the rest is included
         so we don't have to invent a new shape later.
         """
-        workspace = await self._workspace_for_branch(branch_name)
+        workspace = await self._workspace_for_branch(
+            branch_name, actor_agent_id=actor_agent_id
+        )
         await self._assert_on_task_branch(workspace, branch_name)
 
         # Stage files explicitly when provided; otherwise stage everything

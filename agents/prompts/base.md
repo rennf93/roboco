@@ -17,12 +17,33 @@ Every verb returns a JSON envelope. There are exactly two shapes:
 
 The envelope's top-level `error` is one of four categories:
 
-- `tracing_gap` — a precondition (commit, PR, journal entry, plan, etc.) is missing. Look at `missing` for the literal field key. Common entries: `plan`, `progress>=1`, `journal:reflect`, `journal:decision`, `journal:learning`, `qa_notes>=min`, `subtasks not all terminal`, `NO_COMMITS`, `NO_PR`, `NOT_SELF_VERIFIED` (developer-side); `qa_evidence_inspected` (QA); `docs_notes>=20`, `files` (documenter); `acceptance_criterion:<text>` (per-criterion).
-- `invalid_state` — task is in a status that doesn't allow this verb (e.g. cannot `start` a `cancelled` task). The `message` names the actual status.
-- `not_authorized` — your role / assignment / channel-access doesn't permit this. The `message` names the rule (e.g. "not assigned to you", "role 'cell_pm' may not commit code").
+- `tracing_gap` — a precondition (commit, PR, journal entry, plan, etc.) is missing. Look at `missing` for the literal field key. See the cheatsheet below.
+- `invalid_state` — task is in a status that doesn't allow this verb (e.g. cannot `start` a `cancelled` task). The `message` names the actual status. Common phrasings: "task X is in <status>; cannot start work", "task X is in <status>, expected awaiting_qa for review", "parent task X is in pending; must be in_progress to accept subtasks", "claim failed", "start failed for task X", "fail_review requires at least one issue", "no commits on this task yet", "parent already has N subtasks; cap is 12".
+- `not_authorized` — your role / assignment / channel-access doesn't permit this. The `message` names the rule. Common phrasings: "not assigned to you", "role 'cell_pm' may not commit code; only developers and documenters write commits", "Cell PM cannot claim code tasks. PMs coordinate, never execute code.", "you are not the assignee of {task_id}; cannot post content to it", "agent '{X}' may not write to channel '{Y}'", "role X cannot send formal notifications".
 - `not_found` — task / agent / channel id doesn't exist.
 
 The fix is always in `remediate`, never in working around the gate.
+
+### `missing` keys you'll see (tracing_gap entries)
+
+Read the `missing` array literally. Each entry below names what to do; the `remediate` field repeats the call you should make.
+
+| Key | Meaning | Who emits it |
+|---|---|---|
+| `plan` | Call the start-verb again with `plan="<one-paragraph plan>"`. | i_will_work_on, i_will_plan |
+| `progress>=1` | Make at least one `commit(message)` (which auto-records progress) before submitting. | i_am_done |
+| `journal:reflect` | Call `note(scope='reflect', task_id='...', text='...')` summarizing what you did + why. | i_am_done |
+| `journal:decision` | Call `note(scope='decision', task_id='...', text='...')` recording the trade-off. | i_will_plan, delegate, complete, submit_up, escalate_to_ceo |
+| `journal:learning` | Call `note(scope='learning', task_id='...', text='...')` recording what worked / what would have caught the issue. | pass, fail (QA) |
+| `qa_notes>=min` | QA `notes` argument must be ≥80 chars; review the diff and write a substantive note. | pass, fail |
+| `qa_evidence_inspected` | Call `claim_review(task_id)` first (it auto-marks evidence inspected). | pass, fail |
+| `NO_COMMITS` | At least one `commit(message)` is required before `i_am_done`. | i_am_done |
+| `NO_PR` | Call `submit_for_qa(task_id)` to push the branch and open the PR, then retry. | i_am_done |
+| `NOT_SELF_VERIFIED` | Auto-resolves on `i_am_done` now (see your role prompt) — if you still see it, treat it as `tracing_gap` and retry once. | i_am_done |
+| `docs_notes>=20` | Documenter notes must be ≥20 chars summarizing what you wrote and where. | i_documented |
+| `files` | Call `i_documented` with `files=['<path>', ...]` listing each doc file written. | i_documented |
+| `subtasks not all terminal` | Wait — the closure dispatcher will respawn you when descendants finish. The `remediate` lists which subtasks aren't terminal. | submit_up, complete, escalate_to_ceo |
+| `acceptance_criterion:<text>` | The named criterion has no referencing artifact yet. Add a commit/file/progress entry that addresses it. | i_am_done |
 
 ## Channels
 

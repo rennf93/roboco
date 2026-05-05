@@ -227,6 +227,35 @@ class Choreographer:
         )
         return build_context_briefing(inputs)
 
+    @staticmethod
+    def _run_role_guards(
+        role: str, task_type: str, *, skip_pm_code: bool, skip_role_typed: bool
+    ) -> Envelope | None:
+        """Sync role-based guards (pm_cannot_execute_code, role_typed)."""
+        if not skip_pm_code and (
+            guard := pm_cannot_execute_code_guard(role, task_type)
+        ):
+            return guard
+        if not skip_role_typed and (guard := role_typed_claim_guard(role, task_type)):
+            return guard
+        return None
+
+    async def _run_claim_concurrency_guards(
+        self, agent_id: UUID, task: Any, *, skip_sequence: bool
+    ) -> Envelope | None:
+        """Async concurrency-based guards (already_active, paused, sequence)."""
+        in_progress = await self.task.list_in_progress_for_agent(agent_id)
+        if guard := already_active_guard(in_progress, task.id):
+            return guard
+        paused = await self.task.list_paused_for_agent(agent_id)
+        if guard := paused_tasks_guard(paused):
+            return guard
+        if not skip_sequence:
+            siblings = await self._fetch_siblings(task)
+            if guard := sibling_sequence_guard(task, siblings):
+                return guard
+        return None
+
     async def _run_claim_guards(
         self,
         *,
@@ -252,23 +281,16 @@ class Choreographer:
         role = agent.role if agent is not None else "developer"
         task_type = str(getattr(task, "task_type", "code") or "code")
 
-        if not skip_pm_code and (
-            guard := pm_cannot_execute_code_guard(role, task_type)
+        if guard := self._run_role_guards(
+            role,
+            task_type,
+            skip_pm_code=skip_pm_code,
+            skip_role_typed=skip_role_typed,
         ):
             return guard
-        if not skip_role_typed and (guard := role_typed_claim_guard(role, task_type)):
-            return guard
-        in_progress = await self.task.list_in_progress_for_agent(agent_id)
-        if guard := already_active_guard(in_progress, task.id):
-            return guard
-        paused = await self.task.list_paused_for_agent(agent_id)
-        if guard := paused_tasks_guard(paused):
-            return guard
-        if not skip_sequence:
-            siblings = await self._fetch_siblings(task)
-            if guard := sibling_sequence_guard(task, siblings):
-                return guard
-        return None
+        return await self._run_claim_concurrency_guards(
+            agent_id, task, skip_sequence=skip_sequence
+        )
 
     async def _fetch_siblings(self, task: Any) -> list[Any]:
         """Fetch sibling tasks for the sequence-order guard.

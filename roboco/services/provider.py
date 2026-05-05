@@ -135,6 +135,35 @@ class ProviderService(BaseService):
         )
         return row
 
+    async def _apply_name_change(self, row: ProviderConfigTable, new_name: str) -> None:
+        """Set row.name with duplicate-name guard."""
+        if new_name == row.name:
+            return
+        dup = await self.get_by_name(new_name)
+        if dup and dup.id != row.id:
+            raise ConflictError(
+                f"Provider with name '{new_name}' already exists",
+                resource_type="provider",
+            )
+        row.name = new_name
+
+    def _apply_auth_token_change(
+        self, row: ProviderConfigTable, data: ProviderUpdate
+    ) -> None:
+        """Tri-state token update: clear, set, or leave unchanged."""
+        if data.clear_auth_token:
+            row.auth_token_encrypted = None
+            self.log.info("Provider auth token cleared", provider_id=str(row.id))
+            return
+        if not data.auth_token:
+            return
+        try:
+            row.auth_token_encrypted = encrypt_token(data.auth_token)
+        except EncryptionError as e:
+            self.log.error("Failed to encrypt auth token", error=str(e))
+            raise
+        self.log.info("Provider auth token updated", provider_id=str(row.id))
+
     async def update_provider(
         self, provider_id: UUID, data: ProviderUpdate
     ) -> ProviderConfigTable | None:
@@ -144,31 +173,14 @@ class ProviderService(BaseService):
             return None
 
         if data.name is not None:
-            # Duplicate-name check only when actually changing the name.
-            if data.name != row.name:
-                dup = await self.get_by_name(data.name)
-                if dup and dup.id != row.id:
-                    raise ConflictError(
-                        f"Provider with name '{data.name}' already exists",
-                        resource_type="provider",
-                    )
-            row.name = data.name
+            await self._apply_name_change(row, data.name)
         if data.base_url is not None:
             # Empty string → clear to NULL (matches git-token convention).
             row.base_url = data.base_url or None
         if data.enabled is not None:
             row.enabled = data.enabled
 
-        if data.clear_auth_token:
-            row.auth_token_encrypted = None
-            self.log.info("Provider auth token cleared", provider_id=str(row.id))
-        elif data.auth_token:
-            try:
-                row.auth_token_encrypted = encrypt_token(data.auth_token)
-            except EncryptionError as e:
-                self.log.error("Failed to encrypt auth token", error=str(e))
-                raise
-            self.log.info("Provider auth token updated", provider_id=str(row.id))
+        self._apply_auth_token_change(row, data)
 
         await self.session.flush()
         return row

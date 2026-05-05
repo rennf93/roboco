@@ -1471,9 +1471,11 @@ class AgentOrchestrator:
         # "config not found" and falls back to a backup inside ~/.claude/
         # (audit D-48). Mount the host's claude.json if it exists so each
         # agent boots from the same source of truth as the host.
-        claude_json_host = f"{hosts['claude'].rstrip('/')}.json"
-        if Path(claude_json_host).exists():
-            cmd.extend(["-v", f"{claude_json_host}:/home/agent/.claude.json"])
+        claude_dir = hosts["claude"]
+        if claude_dir:
+            claude_json_host = f"{claude_dir.rstrip('/')}.json"
+            if Path(claude_json_host).exists():
+                cmd.extend(["-v", f"{claude_json_host}:/home/agent/.claude.json"])
 
         settings_host = hosts.get("settings")
         if settings_host:
@@ -1967,25 +1969,21 @@ class AgentOrchestrator:
         return task if isinstance(task, dict) else "task payload not an object"
 
     @staticmethod
-    def _readiness_check_task(agent_id: str, task: dict[str, Any]) -> str | None:
-        """Return a persistent blocker reason on the task itself, else None."""
-        status = task.get("status", "")
-        role = get_agent_role(agent_id) or ""
-
+    @staticmethod
+    def _readiness_check_acceptance_criteria(task: dict[str, Any]) -> str | None:
+        """Return blocker reason for missing acceptance criteria, else None."""
         criteria = task.get("acceptance_criteria") or []
         if isinstance(criteria, str):
             criteria = [criteria] if criteria.strip() else []
         if not criteria:
             return "missing acceptance_criteria"
+        return None
 
-        if not _read_project_slug(task):
-            return "task has no project"
-
-        if status in {"claimed", "in_progress", "verifying"} and not task.get(
-            "branch_name"
-        ):
-            return f"state={status} but branch_name is unset"
-
+    @staticmethod
+    def _readiness_check_role_for_status(
+        agent_id: str, role: str, status: str
+    ) -> str | None:
+        """Verify agent role matches the role expected for the task status."""
         role_mismatch: dict[str, str | set[str]] = {
             "awaiting_qa": "qa",
             "awaiting_documentation": "documenter",
@@ -2002,6 +2000,21 @@ class AgentOrchestrator:
             f"state={status} requires role in {required!r} "
             f"but agent {agent_id} is {role!r}"
         )
+
+    def _readiness_check_task(self, agent_id: str, task: dict[str, Any]) -> str | None:
+        """Return a persistent blocker reason on the task itself, else None."""
+        status = task.get("status", "")
+        role = get_agent_role(agent_id) or ""
+
+        if reason := self._readiness_check_acceptance_criteria(task):
+            return reason
+        if not _read_project_slug(task):
+            return "task has no project"
+        if status in {"claimed", "in_progress", "verifying"} and not task.get(
+            "branch_name"
+        ):
+            return f"state={status} but branch_name is unset"
+        return self._readiness_check_role_for_status(agent_id, role, status)
 
     @staticmethod
     async def _readiness_check_git_token(project_slug: str | None) -> str | None:
@@ -2120,6 +2133,51 @@ class AgentOrchestrator:
             "\n"
         )
 
+    @staticmethod
+    def _format_task_briefing_block(task_id: str, task: dict[str, Any]) -> str:
+        """Build the ``## Current task`` markdown block from a fetched task."""
+        criteria_list = task.get("acceptance_criteria") or []
+        if isinstance(criteria_list, str):
+            criteria_list = [criteria_list]
+        criteria = (
+            "\n".join(f"- {c}" for c in criteria_list)
+            if criteria_list
+            else "- (none listed — ask PM before proceeding)"
+        )
+        branch = task.get("branch_name") or "(to be created)"
+        project_slug = task.get("project_slug") or "(unset — ask PM)"
+        return (
+            "\n## Current task\n"
+            f"- **ID:** `{task.get('id', task_id)}`\n"
+            f"- **Title:** {task.get('title', '(untitled)')}\n"
+            f"- **Status:** {task.get('status', 'unknown')}\n"
+            f"- **Type:** {task.get('task_type', 'unknown')}\n"
+            f"- **Project slug:** `{project_slug}` "
+            "(pass this as `project_slug=` on every git/task tool)\n"
+            f"- **Branch:** `{branch}`\n"
+            "\n### Acceptance criteria\n"
+            f"{criteria}\n"
+        )
+
+    async def _fetch_task_for_briefing(
+        self, agent_id: str, task_id: str
+    ) -> dict[str, Any] | None:
+        """Best-effort GET /tasks/{id}; returns task dict or None on failure."""
+        try:
+            async with httpx.AsyncClient(timeout=5.0) as client:
+                resp = await client.get(f"{self._api_url}/tasks/{task_id}")
+            if resp.status_code == http_status.HTTP_200_OK:
+                payload: dict[str, Any] = resp.json()
+                return payload
+        except Exception as e:
+            logger.debug(
+                "Briefing task-fetch failed — falling back to role-only",
+                agent_id=agent_id,
+                task_id=task_id,
+                error=str(e),
+            )
+        return None
+
     async def _write_agent_briefing(
         self,
         agent_id: str,
@@ -2141,40 +2199,9 @@ class AgentOrchestrator:
         tool_load_block = self._build_tool_load_block(role)
         task_block = ""
         if task_id:
-            try:
-                async with httpx.AsyncClient(timeout=5.0) as client:
-                    resp = await client.get(f"{self._api_url}/tasks/{task_id}")
-                if resp.status_code == http_status.HTTP_200_OK:
-                    task = resp.json()
-                    criteria_list = task.get("acceptance_criteria") or []
-                    if isinstance(criteria_list, str):
-                        criteria_list = [criteria_list]
-                    criteria = (
-                        "\n".join(f"- {c}" for c in criteria_list)
-                        if criteria_list
-                        else "- (none listed — ask PM before proceeding)"
-                    )
-                    branch = task.get("branch_name") or "(to be created)"
-                    project_slug = task.get("project_slug") or "(unset — ask PM)"
-                    task_block = (
-                        "\n## Current task\n"
-                        f"- **ID:** `{task.get('id', task_id)}`\n"
-                        f"- **Title:** {task.get('title', '(untitled)')}\n"
-                        f"- **Status:** {task.get('status', 'unknown')}\n"
-                        f"- **Type:** {task.get('task_type', 'unknown')}\n"
-                        f"- **Project slug:** `{project_slug}` "
-                        "(pass this as `project_slug=` on every git/task tool)\n"
-                        f"- **Branch:** `{branch}`\n"
-                        "\n### Acceptance criteria\n"
-                        f"{criteria}\n"
-                    )
-            except Exception as e:
-                logger.debug(
-                    "Briefing task-fetch failed — falling back to role-only",
-                    agent_id=agent_id,
-                    task_id=task_id,
-                    error=str(e),
-                )
+            task = await self._fetch_task_for_briefing(agent_id, task_id)
+            if task is not None:
+                task_block = self._format_task_briefing_block(task_id, task)
 
         content = (
             f"# Session briefing — {agent_id}\n"
@@ -3601,8 +3628,11 @@ Start now: evidence(task_id="{task_id}")
         fails non-idempotent on ``git checkout -b`` because the on-disk
         branch may exist while the DB state is stale.
 
-        Best-effort: if reconciliation itself fails, log and continue —
-        startup must not be blocked by a single bad row.
+        Opens its own session via the factory; the logic itself lives in
+        ``_reconcile_with_service`` so tests can drive it against an
+        injected session without the factory dance. Best-effort: if
+        reconciliation fails, log and continue — startup must not be
+        blocked by a single bad row.
         """
         from roboco.db.base import get_session_factory
         from roboco.services.task import TaskService
@@ -3611,28 +3641,39 @@ Start now: evidence(task_id="{task_id}")
         try:
             async with factory() as db:
                 svc = TaskService(db)
-                candidates = await svc.list_in_progress_or_claimed()
-                orphans = [t for t in candidates if not t.branch_name]
-                if not orphans:
-                    logger.info("startup reconcile: no orphan claims")
-                    return
-                for t in orphans:
-                    try:
-                        await svc.unclaim_for_reaper(t.id)
-                        logger.warning(
-                            "startup reconcile: orphan claim rolled back",
-                            task_id=str(t.id),
-                            had_status=str(t.status),
-                        )
-                    except Exception as exc:
-                        logger.error(
-                            "startup reconcile: rollback failed",
-                            task_id=str(t.id),
-                            error=str(exc),
-                        )
+                await self._reconcile_with_service(svc)
                 await db.commit()
         except Exception as exc:
             logger.error("startup reconcile failed; continuing", error=str(exc))
+
+    async def _reconcile_with_service(self, svc: "TaskService") -> None:
+        """Inner reconcile loop, parameterised by the TaskService to use.
+
+        Same shape as ``_reap_with_service`` — extracted so tests can
+        bypass ``get_session_factory`` and drive the logic directly.
+        """
+        from roboco.utils.converters import require_uuid
+
+        candidates = await svc.list_in_progress_or_claimed()
+        orphans = [t for t in candidates if not t.branch_name]
+        if not orphans:
+            logger.info("startup reconcile: no orphan claims")
+            return
+        for t in orphans:
+            task_id = require_uuid(t.id)
+            try:
+                await svc.unclaim_for_reaper(task_id)
+                logger.warning(
+                    "startup reconcile: orphan claim rolled back",
+                    task_id=str(task_id),
+                    had_status=str(t.status),
+                )
+            except Exception as exc:
+                logger.error(
+                    "startup reconcile: rollback failed",
+                    task_id=str(t.id),
+                    error=str(exc),
+                )
 
     async def _reap_stale_claims(self) -> None:
         """Release claimed/in_progress tasks whose holder hasn't heart-beat in TTL.
@@ -4400,7 +4441,7 @@ Never `commit`, never write code, never run `git`. PMs coordinate.
         proceed.
         """
         role = get_agent_role(agent_slug)
-        if role is None:
+        if role == "unknown":
             return True
         task_type = task.get("task_type")
         if task_type == "documentation":
@@ -4845,6 +4886,40 @@ Never `commit`, never write code, never run `git`. PMs coordinate.
         # auto-block).
         await self._detect_sla_exceeded(client)
 
+    async def _check_sla_for_task(
+        self,
+        client: httpx.AsyncClient,
+        task: dict[str, Any],
+        status: str,
+    ) -> None:
+        """Check one task's SLA; escalate if exceeded. No-ops on missing data."""
+        from roboco.enforcement.task_lifecycle import sla_seconds_for
+
+        assigned = task.get("assigned_to")
+        if not assigned:
+            return
+        assigned_slug = self._resolve_agent_slug(assigned)
+        role = get_agent_role(assigned_slug or "")
+        sla = sla_seconds_for(role, status)
+        if sla is None:
+            return
+        age = self._time_in_state(task)
+        if age is None or age.total_seconds() < sla:
+            return
+        task_id = task.get("id")
+        if not task_id:
+            return
+        await self._escalate_sla_breach(
+            client,
+            _SlaBreach(
+                task_id=str(task_id),
+                role=role or "",
+                status=status,
+                age_seconds=int(age.total_seconds()),
+                sla_seconds=sla,
+            ),
+        )
+
     async def _detect_sla_exceeded(self, client: httpx.AsyncClient) -> None:
         """Auto-escalate tasks that exceeded their per-role SLA.
 
@@ -4853,10 +4928,7 @@ Never `commit`, never write code, never run `git`. PMs coordinate.
         in `claimed`, and cell-PM tasks in `claimed` all get a soft bump so
         work doesn't silently rot.
         """
-        from roboco.enforcement.task_lifecycle import (
-            ROLE_STATE_SLA_KEYS,
-            sla_seconds_for,
-        )
+        from roboco.enforcement.task_lifecycle import ROLE_STATE_SLA_KEYS
 
         # Fetch each (role, state) combo we care about. One API call per
         # unique status so we don't fan out pointlessly.
@@ -4872,30 +4944,7 @@ Never `commit`, never write code, never run `git`. PMs coordinate.
                 )
                 continue
             for task in tasks:
-                assigned = task.get("assigned_to")
-                if not assigned:
-                    continue
-                assigned_slug = self._resolve_agent_slug(assigned)
-                role = get_agent_role(assigned_slug or "")
-                sla = sla_seconds_for(role, status)
-                if sla is None:
-                    continue
-                age = self._time_in_state(task)
-                if age is None or age.total_seconds() < sla:
-                    continue
-                task_id = task.get("id")
-                if not task_id:
-                    continue
-                await self._escalate_sla_breach(
-                    client,
-                    _SlaBreach(
-                        task_id=str(task_id),
-                        role=role or "",
-                        status=status,
-                        age_seconds=int(age.total_seconds()),
-                        sla_seconds=sla,
-                    ),
-                )
+                await self._check_sla_for_task(client, task, status)
 
     def _time_in_state(self, task: dict[str, Any]) -> timedelta | None:
         """Approximate time in current state via task.updated_at.

@@ -4,6 +4,10 @@ Mixin for ``claim_review``, ``pass_review``, ``fail_review`` and the
 two QA-specific helpers ``_check_qa_pass_gates`` / ``_qa_tracing_gap``.
 Helpers stay together with the verbs that use them — they're not used
 by any other role.
+
+Inherits from ``ChoreographerHelpers`` under ``TYPE_CHECKING`` only so
+mypy resolves ``self.task`` etc. as typed; at runtime the composed
+``Choreographer`` supplies the real attributes via MRO.
 """
 
 from __future__ import annotations
@@ -17,8 +21,14 @@ from roboco.services.gateway.evidence_builder import build_evidence_for_task
 if TYPE_CHECKING:
     from uuid import UUID
 
+    from roboco.services.gateway.choreographer._protocol import ChoreographerHelpers
 
-class QAMixin:
+    _Base = ChoreographerHelpers
+else:
+    _Base = object
+
+
+class QAMixin(_Base):
     """QA-role verbs."""
 
     async def claim_review(self, qa_agent_id: UUID, task_id: UUID) -> Envelope:
@@ -28,30 +38,30 @@ class QAMixin:
         journal_highlights, acceptance_criteria_status) INLINE so the QA agent
         cannot miss the PR data. Marks `qa_evidence_inspected=true` automatically.
         """
-        t = await self.task.get(task_id)  # type: ignore[attr-defined]
+        t = await self.task.get(task_id)
         if t is None:
-            return await self._emit_rejection(  # type: ignore[attr-defined]
+            return await self._emit_rejection(
                 Envelope.not_found(message=f"task {task_id} not found"),
                 agent_id=qa_agent_id,
                 task_id=task_id,
                 verb="claim_review",
             )
         if str(t.status) != "awaiting_qa":
-            return await self._emit_rejection(  # type: ignore[attr-defined]
+            return await self._emit_rejection(
                 Envelope.invalid_state(
                     message=(
                         f"task {task_id} is in {t.status}, "
                         "expected awaiting_qa for review"
                     ),
                     remediate="call give_me_work() to find an actionable QA task",
-                    context_briefing=await self._briefing_for(qa_agent_id, task_id),  # type: ignore[attr-defined]
+                    context_briefing=await self._briefing_for(qa_agent_id, task_id),
                 ),
                 agent_id=qa_agent_id,
                 task_id=task_id,
                 verb="claim_review",
             )
 
-        guard = await self._run_claim_guards(  # type: ignore[attr-defined]
+        guard = await self._run_claim_guards(
             agent_id=qa_agent_id,
             task=t,
             skip_role_typed=True,
@@ -59,27 +69,27 @@ class QAMixin:
             skip_sequence=True,
         )
         if guard:
-            return await self._emit_rejection(  # type: ignore[attr-defined]
-                self._with_briefing(  # type: ignore[attr-defined]
+            return await self._emit_rejection(
+                self._with_briefing(
                     guard,
-                    await self._briefing_for(qa_agent_id, task_id),  # type: ignore[attr-defined]
+                    await self._briefing_for(qa_agent_id, task_id),
                 ),
                 agent_id=qa_agent_id,
                 task_id=task_id,
                 verb="claim_review",
             )
 
-        t = await self.task.qa_claim(qa_agent_id, task_id)  # type: ignore[attr-defined]
-        await self.task.mark_evidence_inspected(task_id)  # type: ignore[attr-defined]
+        t = await self.task.qa_claim(qa_agent_id, task_id)
+        await self.task.mark_evidence_inspected(task_id)
 
         files_changed: list[str] = []
         if t.work_session_id:
-            files_changed = await self.work_session.files_changed(t.work_session_id)  # type: ignore[attr-defined]
+            files_changed = await self.work_session.files_changed(t.work_session_id)
         diff_summary = ""
         if t.branch_name:
-            diff_summary = await self.git.diff(branch_name=t.branch_name)  # type: ignore[attr-defined]
-        journal_highlights = (
-            await self.evidence_repo.journal_highlights_for_task(task_id)  # type: ignore[attr-defined]
+            diff_summary = await self.git.diff(branch_name=t.branch_name)
+        journal_highlights = await self.evidence_repo.journal_highlights_for_task(
+            task_id
         )
         ev = build_evidence_for_task(
             t,
@@ -95,59 +105,76 @@ class QAMixin:
                 "fail(issues) to request changes."
             ),
             evidence=ev.as_dict(),
-            context_briefing=await self._briefing_for(qa_agent_id, task_id),  # type: ignore[attr-defined]
+            context_briefing=await self._briefing_for(qa_agent_id, task_id),
+        )
+
+    async def _verify_qa_owner(
+        self, qa_agent_id: UUID, task_id: UUID, verb: str
+    ) -> tuple[Envelope | None, Any]:
+        """Lookup task + verify QA is the assignee. Returns (rejection, task)."""
+        t = await self.task.get(task_id)
+        if t is None:
+            return await self._emit_rejection(
+                Envelope.not_found(message=f"task {task_id} not found"),
+                agent_id=qa_agent_id,
+                task_id=task_id,
+                verb=verb,
+            ), None
+        if t.assigned_to != qa_agent_id:
+            return await self._emit_rejection(
+                Envelope.not_authorized(
+                    message="not assigned to you",
+                    remediate="claim it via claim_review(task_id) first",
+                    context_briefing=await self._briefing_for(qa_agent_id, task_id),
+                ),
+                agent_id=qa_agent_id,
+                task_id=task_id,
+                verb=verb,
+            ), None
+        return None, t
+
+    async def _qa_pass_gate_check(
+        self, qa_agent_id: UUID, task_id: UUID, notes: str, t: Any, verb: str
+    ) -> Envelope | None:
+        """QA pass-gate evaluation. Returns rejection envelope or None on pass."""
+        has_learning = await self.journal.has_learning_for_task(qa_agent_id, task_id)
+        missing = self._check_qa_pass_gates(
+            notes=notes,
+            has_learning=has_learning,
+            evidence_inspected=t.qa_evidence_inspected,
+        )
+        if not missing:
+            return None
+        return await self._emit_rejection(
+            self._qa_tracing_gap(
+                missing,
+                task_id,
+                await self._briefing_for(qa_agent_id, task_id),
+            ),
+            agent_id=qa_agent_id,
+            task_id=task_id,
+            verb=verb,
         )
 
     async def pass_review(
         self, qa_agent_id: UUID, task_id: UUID, notes: str
     ) -> Envelope:
         """QA passes the task; transitions awaiting_qa → awaiting_documentation."""
-        t = await self.task.get(task_id)  # type: ignore[attr-defined]
-        if t is None:
-            return await self._emit_rejection(  # type: ignore[attr-defined]
-                Envelope.not_found(message=f"task {task_id} not found"),
-                agent_id=qa_agent_id,
-                task_id=task_id,
-                verb="pass_review",
-            )
-        if t.assigned_to != qa_agent_id:
-            return await self._emit_rejection(  # type: ignore[attr-defined]
-                Envelope.not_authorized(
-                    message="not assigned to you",
-                    remediate="claim it via claim_review(task_id) first",
-                    context_briefing=await self._briefing_for(qa_agent_id, task_id),  # type: ignore[attr-defined]
-                ),
-                agent_id=qa_agent_id,
-                task_id=task_id,
-                verb="pass_review",
-            )
-
-        has_learning = await self.journal.has_learning_for_task(  # type: ignore[attr-defined]
-            qa_agent_id, task_id
+        rejection, t = await self._verify_qa_owner(qa_agent_id, task_id, "pass_review")
+        if rejection is not None:
+            return rejection
+        gate_rejection = await self._qa_pass_gate_check(
+            qa_agent_id, task_id, notes, t, "pass_review"
         )
-        missing = self._check_qa_pass_gates(
-            notes=notes,
-            has_learning=has_learning,
-            evidence_inspected=t.qa_evidence_inspected,
-        )
-        if missing:
-            return await self._emit_rejection(  # type: ignore[attr-defined]
-                self._qa_tracing_gap(
-                    missing,
-                    task_id,
-                    await self._briefing_for(qa_agent_id, task_id),  # type: ignore[attr-defined]
-                ),
-                agent_id=qa_agent_id,
-                task_id=task_id,
-                verb="pass_review",
-            )
+        if gate_rejection is not None:
+            return gate_rejection
 
-        t = await self.task.qa_pass(qa_agent_id, task_id, notes)  # type: ignore[attr-defined]
+        t = await self.task.qa_pass(qa_agent_id, task_id, notes)
 
-        doc_agent = await self.task.documenter_for_team(t.team)  # type: ignore[attr-defined]
+        doc_agent = await self.task.documenter_for_team(t.team)
         if doc_agent is not None:
-            await self.task.reassign(task_id, doc_agent.id)  # type: ignore[attr-defined]
-            await self.a2a.send(  # type: ignore[attr-defined]
+            await self.task.reassign(task_id, doc_agent.id)
+            await self.a2a.send(
                 from_agent=qa_agent_id,
                 to_agent=doc_agent.id,
                 skill="documentation",
@@ -158,7 +185,7 @@ class QAMixin:
             status=str(t.status),
             task_id=str(task_id),
             next="idle until next QA work arrives",
-            context_briefing=await self._briefing_for(qa_agent_id, task_id),  # type: ignore[attr-defined]
+            context_briefing=await self._briefing_for(qa_agent_id, task_id),
         )
 
     @staticmethod
@@ -204,61 +231,31 @@ class QAMixin:
         self, qa_agent_id: UUID, task_id: UUID, issues: list[str]
     ) -> Envelope:
         """QA fails the task with concrete issues; transitions to needs_revision."""
-        t = await self.task.get(task_id)  # type: ignore[attr-defined]
-        if t is None:
-            return await self._emit_rejection(  # type: ignore[attr-defined]
-                Envelope.not_found(message=f"task {task_id} not found"),
-                agent_id=qa_agent_id,
-                task_id=task_id,
-                verb="fail_review",
-            )
-        if t.assigned_to != qa_agent_id:
-            return await self._emit_rejection(  # type: ignore[attr-defined]
-                Envelope.not_authorized(
-                    message="not assigned to you",
-                    remediate="claim it via claim_review(task_id) first",
-                    context_briefing=await self._briefing_for(qa_agent_id, task_id),  # type: ignore[attr-defined]
-                ),
-                agent_id=qa_agent_id,
-                task_id=task_id,
-                verb="fail_review",
-            )
+        rejection, t = await self._verify_qa_owner(qa_agent_id, task_id, "fail_review")
+        if rejection is not None:
+            return rejection
         if not issues:
-            return await self._emit_rejection(  # type: ignore[attr-defined]
+            return await self._emit_rejection(
                 Envelope.invalid_state(
                     message="fail_review requires at least one issue",
                     remediate="pass issues=['<concrete actionable issue>', ...]",
-                    context_briefing=await self._briefing_for(qa_agent_id, task_id),  # type: ignore[attr-defined]
+                    context_briefing=await self._briefing_for(qa_agent_id, task_id),
                 ),
                 agent_id=qa_agent_id,
                 task_id=task_id,
                 verb="fail_review",
             )
 
-        has_learning = await self.journal.has_learning_for_task(  # type: ignore[attr-defined]
-            qa_agent_id, task_id
-        )
         notes = "Issues:\n" + "\n".join(f"- {issue}" for issue in issues)
-        missing = self._check_qa_pass_gates(
-            notes=notes,
-            has_learning=has_learning,
-            evidence_inspected=t.qa_evidence_inspected,
+        gate_rejection = await self._qa_pass_gate_check(
+            qa_agent_id, task_id, notes, t, "fail_review"
         )
-        if missing:
-            return await self._emit_rejection(  # type: ignore[attr-defined]
-                self._qa_tracing_gap(
-                    missing,
-                    task_id,
-                    await self._briefing_for(qa_agent_id, task_id),  # type: ignore[attr-defined]
-                ),
-                agent_id=qa_agent_id,
-                task_id=task_id,
-                verb="fail_review",
-            )
+        if gate_rejection is not None:
+            return gate_rejection
 
-        t = await self.task.qa_fail(qa_agent_id, task_id, notes, issues)  # type: ignore[attr-defined]
+        t = await self.task.qa_fail(qa_agent_id, task_id, notes, issues)
         if t.assigned_to is not None:
-            await self.a2a.send(  # type: ignore[attr-defined]
+            await self.a2a.send(
                 from_agent=qa_agent_id,
                 to_agent=t.assigned_to,
                 skill="code_review",
@@ -269,5 +266,5 @@ class QAMixin:
             status=str(t.status),
             task_id=str(task_id),
             next="idle — dev will revise and re-submit",
-            context_briefing=await self._briefing_for(qa_agent_id, task_id),  # type: ignore[attr-defined]
+            context_briefing=await self._briefing_for(qa_agent_id, task_id),
         )

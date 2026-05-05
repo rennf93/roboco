@@ -287,54 +287,61 @@ class NotificationService:
             )
         )
 
+    @staticmethod
+    def _notification_type_label(params: CreateNotificationParams) -> str:
+        """Render the notification_type for a log line."""
+        nt = params.notification_type
+        return nt.value if hasattr(nt, "value") else str(nt)
+
+    async def _resolve_recipients(
+        self, db: Any, params: CreateNotificationParams
+    ) -> list[UUID]:
+        """Resolve to_agents (slugs/UUIDs) to UUID list. Drops unresolvable.
+
+        notifications.to_agents is UUID[] — callers across the codebase
+        pass slugs ("be-dev-1", "be-qa"). Resolve every recipient before
+        insert; drop (with warn) any that don't resolve instead of
+        letting asyncpg crash with "invalid UUID 'be-dev-1'".
+        """
+        to_agents_uuids: list[UUID] = []
+        unresolved: list[str] = []
+        for recipient in params.to_agents:
+            resolved = await _resolve_agent_uuid(db, recipient)
+            if resolved is None:
+                unresolved.append(str(recipient))
+            else:
+                to_agents_uuids.append(resolved)
+        if unresolved:
+            logger.warning(
+                "Dropping unresolved notification recipients",
+                unresolved=unresolved,
+                type=self._notification_type_label(params),
+                subject=params.subject[:80],
+            )
+        return to_agents_uuids
+
     async def _create_notification(self, params: CreateNotificationParams) -> None:
         """Create a notification via the database and deliver it."""
         async with get_db_context() as db:
             from_agent_uuid = await _resolve_agent_uuid(db, params.from_agent)
             if from_agent_uuid is None:
-                # Caller passed "system" / "unknown" / an unknown slug.
-                # notifications.from_agent is NOT NULL + FK to agents.id,
-                # so we cannot insert. Skip-with-warn rather than crash
-                # the upstream request — the notification would be
-                # orphaned anyway (no sender the recipient could reply to).
+                # notifications.from_agent is NOT NULL + FK to agents.id, so
+                # we cannot insert. Skip-with-warn rather than crash the
+                # upstream request.
                 logger.warning(
-                    "Skipping notification: from_agent could not be resolved to an agent UUID",  # noqa: E501
+                    "Skipping notification: from_agent unresolvable",
                     from_agent_input=str(params.from_agent),
-                    type=params.notification_type.value
-                    if hasattr(params.notification_type, "value")
-                    else str(params.notification_type),
+                    type=self._notification_type_label(params),
                     subject=params.subject[:80],
                     to_agents=[str(a) for a in params.to_agents],
                 )
                 return
-            # notifications.to_agents is UUID[] — callers across the codebase
-            # pass slugs ("be-dev-1", "be-qa"). Resolve every recipient before
-            # insert; drop (with warn) any that don't resolve instead of
-            # letting asyncpg crash with "invalid UUID 'be-dev-1'".
-            to_agents_uuids: list[UUID] = []
-            unresolved: list[str] = []
-            for recipient in params.to_agents:
-                resolved = await _resolve_agent_uuid(db, recipient)
-                if resolved is None:
-                    unresolved.append(str(recipient))
-                else:
-                    to_agents_uuids.append(resolved)
-            if unresolved:
-                logger.warning(
-                    "Dropping unresolved notification recipients",
-                    unresolved=unresolved,
-                    type=params.notification_type.value
-                    if hasattr(params.notification_type, "value")
-                    else str(params.notification_type),
-                    subject=params.subject[:80],
-                )
+            to_agents_uuids = await self._resolve_recipients(db, params)
             if not to_agents_uuids:
                 logger.warning(
                     "Skipping notification: no resolvable recipients",
                     to_agents_input=[str(a) for a in params.to_agents],
-                    type=params.notification_type.value
-                    if hasattr(params.notification_type, "value")
-                    else str(params.notification_type),
+                    type=self._notification_type_label(params),
                     subject=params.subject[:80],
                 )
                 return

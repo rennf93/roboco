@@ -1048,7 +1048,18 @@ class TaskService(BaseService):
     async def _inject_proactive_context(self, task: TaskTable, agent_id: UUID) -> None:
         """Inject proactive knowledge context when task is claimed.
 
-        Runs as a background task, so uses its own database session.
+        Runs as a background task with its own DB session. Pre-fix the
+        outer claim() transaction could roll back (branch-creation
+        failure, FOR UPDATE conflict, etc.) but this fire-and-forget
+        survived and wrote stale context onto a task whose claim was
+        reverted (audit D-44).
+
+        Now performs a confirm-after-commit check at the top: re-reads
+        the task in a fresh session and skips if (a) task is gone, or
+        (b) the claim is no longer held by ``agent_id``. Outer rollback
+        clears ``assigned_to``, so this guard is enough to avoid stale
+        writes; it also fires correctly under successful commits because
+        a fresh read sees the post-commit state.
         """
         from uuid import UUID as PyUUID
 
@@ -1060,6 +1071,17 @@ class TaskService(BaseService):
         task_description = task.description or ""
 
         try:
+            session_factory = get_session_factory()
+            async with session_factory() as session:
+                fresh = await session.get(TaskTable, task_id)
+                if fresh is None or fresh.assigned_to != agent_id:
+                    self.log.debug(
+                        "skipping proactive context — claim was rolled back"
+                        " or task is gone",
+                        task_id=str(task_id),
+                    )
+                    return
+
             proactive = await get_proactive_service()
             agent_uuid = PyUUID(str(agent_id))
 
@@ -1072,8 +1094,6 @@ class TaskService(BaseService):
             )
 
             if context and not context.is_empty():
-                # Store context in the task using a fresh session
-                session_factory = get_session_factory()
                 async with session_factory() as session:
                     from sqlalchemy import update
 
@@ -1857,6 +1877,12 @@ class TaskService(BaseService):
         VALID_TRANSITIONS — making the lifecycle module's invariants diverge
         from production reality.
 
+        Also abandons the active WorkSession so a re-claim by the same
+        agent doesn't trip the uniqueness constraint at
+        ``WorkSessionService.create`` (audit D-41). Best-effort: if the
+        WorkSession lookup fails for any reason, the task is still
+        rolled back to pending.
+
         The operation is named with ``_for_reaper`` so callers cannot
         accidentally use it as a regular unclaim path; uses ``agent_role=None``
         because the system itself is performing the transition. Bypasses
@@ -1872,10 +1898,39 @@ class TaskService(BaseService):
             self._validate_and_set_status(task, TaskStatus.PENDING, None)
         except TaskLifecycleError:
             return
+        if task.work_session_id:
+            await self._abandon_work_session_best_effort(
+                task.work_session_id, reason="reaper-unclaim"
+            )
+            task.work_session_id = cast("Any", None)
         task.assigned_to = cast("Any", None)
         task.last_heartbeat_at = None
         task.active_claimant_id = cast("Any", None)
         await self.session.flush()
+
+    async def _abandon_work_session_best_effort(
+        self, session_id: Any, *, reason: str
+    ) -> None:
+        """Mark a WorkSession ABANDONED. Logs and continues on any failure.
+
+        Audit D-41 fix — unclaim must not leave ACTIVE WorkSessions
+        behind, but a service-layer error here mustn't block the task-
+        side unclaim from completing.
+        """
+        try:
+            from roboco.services.work_session import (
+                WorkSessionService,
+            )
+
+            ws_service = WorkSessionService(self.session)
+            await ws_service.abandon(UUID(str(session_id)), reason=reason)
+        except Exception as exc:
+            self.log.warning(
+                "abandon WorkSession failed; continuing",
+                session_id=str(session_id),
+                reason=reason,
+                error=str(exc),
+            )
 
     async def unclaim_for_agent(
         self, task_id: UUID, agent_id: UUID
@@ -1925,7 +1980,14 @@ class TaskService(BaseService):
             return None
 
         # _validate_and_set_status only updates `status`; clearing the
-        # claim is the unclaim's specific side effect.
+        # claim is the unclaim's specific side effect. Also abandon the
+        # active WorkSession so a re-claim doesn't trip the uniqueness
+        # constraint (audit D-41).
+        if task.work_session_id:
+            await self._abandon_work_session_best_effort(
+                task.work_session_id, reason="agent-unclaim"
+            )
+            task.work_session_id = cast("Any", None)
         task.assigned_to = cast("Any", None)
         task.active_claimant_id = cast("Any", None)
         await self.session.flush()
@@ -4217,22 +4279,26 @@ class TaskService(BaseService):
         await self.session.commit()
         return completed
 
-    async def escalate_to_ceo_for_agent(
+    async def _validate_escalation_preconditions(
         self,
+        task: TaskTable,
         task_id: UUID,
         agent: AgentContext,
         permissions: "PermissionService",
         notes: str | None,
-    ) -> TaskTable:
-        """Escalate a task to CEO for final approval (PM-role, PR-gated)."""
-        task = await self._load_task_or_raise(task_id)
+    ) -> None:
+        """Run all PR/permission/descendants/notes gates for escalate-to-CEO.
 
+        Raises UnauthorizedError or ValidationError on failure; returns
+        cleanly when every gate passes. Extracted from
+        ``escalate_to_ceo_for_agent`` to keep that orchestrating method
+        below B-rank cyclomatic complexity (audit P2-2 / xenon).
+        """
         if not permissions.can_perform_task_action(agent, TaskAction.CLOSE, task.team):
             raise UnauthorizedError(
                 action="escalate_to_ceo",
                 reason="Only PMs can escalate tasks to CEO",
             )
-
         if task.pr_number is None:
             raise ValidationError(
                 "NO_PR: Cannot escalate to CEO without an open PR. Ensure "
@@ -4243,7 +4309,6 @@ class TaskService(BaseService):
                 "PR_NOT_CONFIRMED: pr_created flag is false. The PR handler "
                 "must confirm the PR exists before escalation."
             )
-
         descendants = await self.get_all_descendants(task_id)
         active = [
             d
@@ -4256,7 +4321,6 @@ class TaskService(BaseService):
                 f"ACTIVE_SUBTASKS: Cannot escalate while {len(active)} "
                 f"subtask(s) remain active: {ids_shown}."
             )
-
         if not notes or len(notes.strip()) < self.MIN_NOTES_CHARS:
             raise ValidationError(
                 f"ESCALATION_NOTES_REQUIRED: Escalation to CEO must "
@@ -4264,6 +4328,19 @@ class TaskService(BaseService):
                 "why CEO review is needed (scope, risk, breaking-change, "
                 "etc)."
             )
+
+    async def escalate_to_ceo_for_agent(
+        self,
+        task_id: UUID,
+        agent: AgentContext,
+        permissions: "PermissionService",
+        notes: str | None,
+    ) -> TaskTable:
+        """Escalate a task to CEO for final approval (PM-role, PR-gated)."""
+        task = await self._load_task_or_raise(task_id)
+        await self._validate_escalation_preconditions(
+            task, task_id, agent, permissions, notes
+        )
 
         escalated = await self.escalate_to_ceo(task_id, agent.role.value, notes)
         if not escalated:
