@@ -2355,44 +2355,10 @@ async def test_get_or_create_active_session_returns_existing_active(
 
 
 # ---------------------------------------------------------------------------
-# _walk_task_ancestors — cycle-safety + parent missing
+# (orphan-parent walk is covered by test_walk_task_ancestors_orphan_parent_breaks
+# elsewhere in this file, which patches session.execute to bypass the FK
+# constraint that prevents inserting a real orphan row.)
 # ---------------------------------------------------------------------------
-
-
-@pytest.mark.asyncio
-async def test_walk_task_ancestors_orphan_parent(
-    msg_setup: dict, db_session: AsyncSession
-) -> None:
-    """parent_task_id points at non-existent task → walk stops."""
-    aid = msg_setup["agent_id"]
-    base_task_result = await db_session.execute(
-        __import__("sqlalchemy")
-        .select(TaskTable)
-        .where(TaskTable.id == msg_setup["task_id"])
-    )
-    base_task = base_task_result.scalar_one()
-    ghost_parent = uuid4()
-    child = TaskTable(
-        id=uuid4(),
-        title="child-orphan",
-        description="d",
-        acceptance_criteria=["ac"],
-        status=TaskStatus.PENDING,
-        priority=2,
-        task_type=TaskType.CODE,
-        nature=TaskNature.TECHNICAL,
-        project_id=base_task.project_id,
-        created_by=aid,
-        team=base_task.team,
-        parent_task_id=ghost_parent,
-    )
-    db_session.add(child)
-    # parent_task_id has FK to tasks; using a non-existent id will fail FK.
-    # Skip rather than committing — exercise the seen-set/path differently.
-    try:
-        await db_session.flush()
-    except Exception:
-        pytest.skip("FK enforces parent existence — orphan branch unreachable here")
 
 
 # ---------------------------------------------------------------------------

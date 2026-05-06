@@ -48,7 +48,7 @@ from roboco.api.schemas.git import (
     GitPushResponse,
     GitStatusResponse,
 )
-from roboco.exceptions import GitCommandError, GitTimeoutError
+from roboco.exceptions import GitCommandError, GitError, GitTimeoutError
 from roboco.logging import get_logger
 from roboco.services.base import (
     NotFoundError,
@@ -66,8 +66,15 @@ router = APIRouter()
 # Expected number of parts in log format output
 _LOG_FORMAT_PARTS = 5
 
+# Catch tuple for service-layer errors. `roboco.exceptions.GitError` is a
+# distinct class from `roboco.services.base.ServiceError` (it extends the
+# `roboco.exceptions.ServiceError` class), so listing both is required for
+# git timeouts/command failures to be translated to 504/500 instead of
+# bubbling as 500 Internal Server Errors with no `detail`.
+_TranslatableError = (ServiceError, GitError)
 
-def _translate_error(e: ServiceError) -> HTTPException:
+
+def _translate_error(e: ServiceError | GitError) -> HTTPException:
     """Translate service errors to HTTP exceptions."""
     if isinstance(e, NotFoundError):
         return HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=e.message)
@@ -139,7 +146,7 @@ async def get_git_status(
             ahead,
             behind,
         ) = await git_service.get_status(workspace)
-    except ServiceError as e:
+    except _TranslatableError as e:
         raise _translate_error(e) from e
 
     return GitStatusResponse(
@@ -190,7 +197,7 @@ async def get_git_log(
                 stderr=log_result.stderr[:200] if log_result.stderr else "",
             )
             return GitLogResponse(project_slug=project_slug, branch=branch, commits=[])
-    except ServiceError as e:
+    except _TranslatableError as e:
         raise _translate_error(e) from e
 
     commits = []
@@ -237,7 +244,7 @@ async def list_branches(
             args.append("-a")
 
         branch_result = await git_service._run_git(workspace, args)
-    except ServiceError as e:
+    except _TranslatableError as e:
         raise _translate_error(e) from e
 
     branches = []
@@ -296,7 +303,7 @@ async def get_git_diff(
         if staged:
             stat_args.append("--staged")
         stat_result = await git_service._run_git(workspace, stat_args)
-    except ServiceError as e:
+    except _TranslatableError as e:
         raise _translate_error(e) from e
 
     files_changed = stat_result.stdout.count("\n") - 1 if stat_result.stdout else 0
@@ -331,7 +338,7 @@ async def create_commit(
             insertions,
             deletions,
         ) = await git_service.commit_for_task(agent.agent_id, data)
-    except ServiceError as e:
+    except _TranslatableError as e:
         raise _translate_error(e) from e
 
     return GitCommitResponse(
@@ -355,7 +362,7 @@ async def push_commits(
         branch, commits_pushed = await git_service.push_for_task(
             agent.agent_id, agent.role, data
         )
-    except ServiceError as e:
+    except _TranslatableError as e:
         raise _translate_error(e) from e
 
     return GitPushResponse(
@@ -381,7 +388,7 @@ async def create_branch(
         branch_name, created_from = await git_service.create_branch_for_task(
             agent.agent_id, data
         )
-    except ServiceError as e:
+    except _TranslatableError as e:
         raise _translate_error(e) from e
 
     return GitCreateBranchResponse(
@@ -407,7 +414,7 @@ async def checkout_branch(
     git_service = get_git_service(db)
     try:
         await git_service.checkout_branch_for_agent(agent.agent_id, data)
-    except ServiceError as e:
+    except _TranslatableError as e:
         raise _translate_error(e) from e
 
     return GitCheckoutResponse(
@@ -432,7 +439,7 @@ async def create_pull_request(
             source_branch,
             target_branch,
         ) = await git_service.create_pr_for_task(agent.agent_id, data)
-    except ServiceError as e:
+    except _TranslatableError as e:
         raise _translate_error(e) from e
 
     return GitCreatePRResponse(
@@ -456,7 +463,7 @@ async def merge_pull_request(
         target_branch, merge_commit = await git_service.merge_pr_for_task(
             agent.agent_id, agent.role, data
         )
-    except ServiceError as e:
+    except _TranslatableError as e:
         raise _translate_error(e) from e
 
     return GitMergePRResponse(

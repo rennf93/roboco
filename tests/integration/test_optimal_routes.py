@@ -330,13 +330,21 @@ async def test_get_single_stats_success(optimal_client: AsyncClient) -> None:
 
 
 @pytest.mark.asyncio
-async def test_check_staleness_unreachable_via_get(
-    optimal_client: AsyncClient,
-) -> None:
-    """Route order quirk: /stats/{index_type} matches first → 400 invalid type."""
-    response = await optimal_client.get("/api/optimal/stats/staleness", headers=_HDR)
-    # Matched as stats/{index_type} with type=staleness → invalid
-    assert response.status_code == HTTPStatus.BAD_REQUEST
+async def test_check_staleness_via_http(optimal_client: AsyncClient) -> None:
+    """`/stats/staleness` is now declared before `/stats/{index_type}`, so it
+    routes correctly to `check_staleness` instead of being matched as
+    `index_type=staleness` (which would 400 as invalid IndexType)."""
+    with patch("roboco.api.routes.optimal.get_optimal_service") as mock_get:
+        mock_service = AsyncMock()
+        mock_service.check_index_staleness = AsyncMock(
+            return_value={"stale": False, "indexes": {}}
+        )
+        mock_get.return_value = mock_service
+        response = await optimal_client.get(
+            "/api/optimal/stats/staleness", headers=_HDR
+        )
+    assert response.status_code == HTTPStatus.OK
+    assert response.json() == {"stale": False, "indexes": {}}
 
 
 @pytest.mark.asyncio

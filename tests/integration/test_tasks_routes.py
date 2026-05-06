@@ -15,7 +15,6 @@ from httpx import ASGITransport, AsyncClient
 from roboco.api.deps import get_agent_context, get_db
 from roboco.api.routes.tasks import (
     _translate_error,
-    create_task,
     get_awaiting_ceo_approval_tasks,
     get_awaiting_pm_review_tasks,
 )
@@ -31,7 +30,6 @@ from roboco.models.base import (
     TaskType,
 )
 from roboco.models.permissions import AgentContext
-from roboco.models.task import TaskCreate
 from roboco.services.base import (
     NotFoundError,
     ServiceError,
@@ -1385,36 +1383,22 @@ async def test_list_tasks_developer_with_team_filters_to_own(
 
 
 @pytest.mark.asyncio
-async def test_create_task_project_required_branch(task_client: dict) -> None:
-    """create_task PROJECT_REQUIRED branch — pydantic normally enforces UUID,
-    but invoke the helper directly with `model_construct` to cover the inline
-    `if not data.project_id` 400-raising branch.
-    """
-    bypassed = TaskCreate.model_construct(
-        title="T",
-        description="d",
-        acceptance_criteria=["a"],
-        team=Team.BACKEND,
-        project_id=None,
-        priority=2,
-        nature=TaskNature.TECHNICAL,
-        task_type=TaskType.CODE,
-        sequence=0,
-        dependency_ids=[],
+async def test_create_task_missing_project_id_returns_422(task_client: dict) -> None:
+    """`TaskCreate.project_id` is `UUID` (required); pydantic rejects missing
+    value with 422 before the route runs. (The previously-dead inline runtime
+    `if not data.project_id` branch was removed.)"""
+    response = await task_client["client"].post(
+        "/api/tasks",
+        json={
+            "title": "T",
+            "description": "d",
+            "acceptance_criteria": ["a"],
+            "team": "backend",
+            # project_id intentionally missing
+        },
+        headers=_HDR,
     )
-    agent_ctx = AgentContext(
-        agent_id=task_client["agent"].id, role=AgentRole.MAIN_PM, team=None
-    )
-    permissions = PermissionService()
-    with pytest.raises(HTTPException) as exc_info:
-        await create_task(
-            data=bypassed,
-            db=task_client["db"],
-            agent=agent_ctx,
-            permissions=permissions,
-        )
-    assert exc_info.value.status_code == HTTPStatus.BAD_REQUEST
-    assert "PROJECT_REQUIRED" in str(exc_info.value.detail)
+    assert response.status_code == HTTPStatus.UNPROCESSABLE_ENTITY
 
 
 # ---------------------------------------------------------------------------

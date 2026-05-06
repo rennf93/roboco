@@ -41,10 +41,13 @@ if TYPE_CHECKING:
 async def a2a_setup(
     db_session: AsyncSession,
 ) -> AsyncIterator[dict]:
+    # Use the canonical seed slugs so the A2A policy matrix recognizes
+    # role + team and lets same-cell pairs talk. Random suffixes would
+    # leave them with role="unknown" → policy denies everything.
     dev = AgentTable(
         id=uuid4(),
         name="Dev",
-        slug=f"be-dev-{uuid4().hex[:8]}",
+        slug="be-dev-1",
         role=AgentRole.DEVELOPER,
         team=Team.BACKEND,
         status=AgentStatus.ACTIVE,
@@ -57,7 +60,7 @@ async def a2a_setup(
     qa = AgentTable(
         id=uuid4(),
         name="QA",
-        slug=f"be-qa-{uuid4().hex[:8]}",
+        slug="be-qa",
         role=AgentRole.QA,
         team=Team.BACKEND,
         status=AgentStatus.ACTIVE,
@@ -299,14 +302,10 @@ async def test_get_or_create_conversation_self_a2a_denied(a2a_setup: dict) -> No
 
 @pytest.mark.asyncio
 async def test_get_or_create_conversation_creates(a2a_setup: dict) -> None:
-    """A2A between dev pairs is allowed by default; just exercise the create path."""
+    """A2A between two same-cell devs is allowed by the policy."""
     svc = a2a_setup["svc"]
-    try:
-        conv = await svc.get_or_create_conversation("be-dev-1", "be-dev-2")
-        assert conv is not None
-    except Exception:
-        # If the policy blocks this pair, skip — we're focused on the call path.
-        pytest.skip("A2A policy denies this pair")
+    conv = await svc.get_or_create_conversation("be-dev-1", "be-dev-2")
+    assert conv is not None
 
 
 @pytest.mark.asyncio
@@ -442,14 +441,11 @@ async def test_create_conversation_between_dev_and_qa_in_same_cell(
 ) -> None:
     """Cell members can A2A within their own cell."""
     svc = a2a_setup["svc"]
-    try:
-        conv = await svc.get_or_create_conversation("be-dev-1", "be-qa")
-        assert conv is not None
-        # Idempotent — same agents, same conversation.
-        again = await svc.get_or_create_conversation("be-dev-1", "be-qa")
-        assert again.id == conv.id
-    except Exception:
-        pytest.skip("Policy denied this pair")
+    conv = await svc.get_or_create_conversation("be-dev-1", "be-qa")
+    assert conv is not None
+    # Idempotent — same agents, same conversation.
+    again = await svc.get_or_create_conversation("be-dev-1", "be-qa")
+    assert again.id == conv.id
 
 
 @pytest.mark.asyncio
@@ -457,47 +453,35 @@ async def test_send_chat_message_in_existing_conversation(
     a2a_setup: dict,
 ) -> None:
     svc = a2a_setup["svc"]
-    try:
-        conv = await svc.get_or_create_conversation("be-dev-1", "be-qa")
-        msg = await svc.send_chat_message(UUID(conv.id), "be-dev-1", "hello")
-        assert msg.content == "hello"
-    except Exception:
-        pytest.skip("Policy denied this pair")
+    conv = await svc.get_or_create_conversation("be-dev-1", "be-qa")
+    msg = await svc.send_chat_message(UUID(conv.id), "be-dev-1", "hello")
+    assert msg.content == "hello"
 
 
 @pytest.mark.asyncio
 async def test_get_messages_returns_chronological(a2a_setup: dict) -> None:
     svc = a2a_setup["svc"]
-    try:
-        conv = await svc.get_or_create_conversation("be-dev-1", "be-qa")
-        cid = UUID(conv.id)
-        await svc.send_chat_message(cid, "be-dev-1", "first")
-        await svc.send_chat_message(cid, "be-dev-1", "second")
-        msgs = await svc.get_messages(cid, "be-dev-1")
-        _SENT_COUNT = 2
-        assert len(msgs) == _SENT_COUNT
-    except Exception:
-        pytest.skip("Policy denied this pair")
+    conv = await svc.get_or_create_conversation("be-dev-1", "be-qa")
+    cid = UUID(conv.id)
+    await svc.send_chat_message(cid, "be-dev-1", "first")
+    await svc.send_chat_message(cid, "be-dev-1", "second")
+    msgs = await svc.get_messages(cid, "be-dev-1")
+    _SENT_COUNT = 2
+    assert len(msgs) == _SENT_COUNT
 
 
 @pytest.mark.asyncio
 async def test_close_conversation_with_resolution(a2a_setup: dict) -> None:
     svc = a2a_setup["svc"]
-    try:
-        conv = await svc.get_or_create_conversation("be-dev-1", "be-qa")
-        await svc.close_conversation(UUID(conv.id), "be-dev-1", resolution="done")
-    except Exception:
-        pytest.skip("Policy denied this pair")
+    conv = await svc.get_or_create_conversation("be-dev-1", "be-qa")
+    await svc.close_conversation(UUID(conv.id), "be-dev-1", resolution="done")
 
 
 @pytest.mark.asyncio
 async def test_mark_read_clears_unread(a2a_setup: dict) -> None:
     svc = a2a_setup["svc"]
-    try:
-        conv = await svc.get_or_create_conversation("be-dev-1", "be-qa")
-        await svc.mark_read(UUID(conv.id), "be-dev-1")
-    except Exception:
-        pytest.skip("Policy denied this pair")
+    conv = await svc.get_or_create_conversation("be-dev-1", "be-qa")
+    await svc.mark_read(UUID(conv.id), "be-dev-1")
 
 
 @pytest.mark.asyncio
@@ -505,12 +489,9 @@ async def test_close_conversation_non_participant_raises(
     a2a_setup: dict,
 ) -> None:
     svc = a2a_setup["svc"]
-    try:
-        conv = await svc.get_or_create_conversation("be-dev-1", "be-qa")
-        with pytest.raises(ValueError, match="Not a participant"):
-            await svc.close_conversation(UUID(conv.id), "ghost-agent")
-    except Exception:
-        pytest.skip("Policy denied this pair")
+    conv = await svc.get_or_create_conversation("be-dev-1", "be-qa")
+    with pytest.raises(ValueError, match="Not a participant"):
+        await svc.close_conversation(UUID(conv.id), "ghost-agent")
 
 
 @pytest.mark.asyncio
@@ -518,12 +499,9 @@ async def test_send_chat_message_non_participant_raises(
     a2a_setup: dict,
 ) -> None:
     svc = a2a_setup["svc"]
-    try:
-        conv = await svc.get_or_create_conversation("be-dev-1", "be-qa")
-        with pytest.raises(ValueError, match="Not a participant"):
-            await svc.send_chat_message(UUID(conv.id), "ghost", "hi")
-    except Exception:
-        pytest.skip("Policy denied this pair")
+    conv = await svc.get_or_create_conversation("be-dev-1", "be-qa")
+    with pytest.raises(ValueError, match="Not a participant"):
+        await svc.send_chat_message(UUID(conv.id), "ghost", "hi")
 
 
 # ---------------------------------------------------------------------------
@@ -580,9 +558,7 @@ async def test_update_task_with_message_appends_to_notes(
 ) -> None:
     """Use a real DB-backed task instance to avoid SA private state issues."""
     db = a2a_setup["db"]
-    task = (await db.execute(select(TaskTable).limit(1))).scalar_one_or_none()
-    if task is None:
-        pytest.skip("no task in DB")
+    task = (await db.execute(select(TaskTable).limit(1))).scalar_one()
     original_notes = task.dev_notes
     task.dev_notes = "existing notes"
     msg = A2AMessage(role="user", parts=[TextPart(text="new message")])
@@ -597,9 +573,7 @@ async def test_update_task_with_message_no_text_parts_noop(
     a2a_setup: dict,
 ) -> None:
     db = a2a_setup["db"]
-    task = (await db.execute(select(TaskTable).limit(1))).scalar_one_or_none()
-    if task is None:
-        pytest.skip("no task in DB")
+    task = (await db.execute(select(TaskTable).limit(1))).scalar_one()
     original = task.dev_notes
     task.dev_notes = "existing"
     msg = A2AMessage(role="user", parts=[])
@@ -1198,11 +1172,8 @@ async def test_list_conversations_with_status_and_task_filter(
 async def test_list_conversations_with_messages(a2a_setup: dict) -> None:
     """Seed a conversation + a message so the last_message preview path runs."""
     svc = a2a_setup["svc"]
-    try:
-        conv = await svc.get_or_create_conversation("be-dev-1", "be-qa")
-        await svc.send_chat_message(UUID(conv.id), "be-dev-1", "preview text")
-    except Exception:
-        pytest.skip("Policy denies this pair")
+    conv = await svc.get_or_create_conversation("be-dev-1", "be-qa")
+    await svc.send_chat_message(UUID(conv.id), "be-dev-1", "preview text")
 
     convs = await svc.list_conversations("be-dev-1")
     # last_message_preview should be truthy for this conv.
@@ -1218,19 +1189,23 @@ async def test_list_conversations_with_messages(a2a_setup: dict) -> None:
 async def test_send_chat_message_options_response_to(
     a2a_setup: dict,
 ) -> None:
-    """response_to_id and requires_response options surface on the message."""
+    """response_to_id and requires_response options surface on the message.
+
+    `response_to_id` has a FK to `a2a_messages.id`, so we send a real
+    "first" message to thread off — passing a random UUID would hit FK
+    violation.
+    """
     svc = a2a_setup["svc"]
-    try:
-        conv = await svc.get_or_create_conversation("be-dev-1", "be-qa")
-        msg = await svc.send_chat_message(
-            UUID(conv.id),
-            "be-dev-1",
-            "needs answer",
-            options={"requires_response": True, "response_to_id": _u()},
-        )
-        assert msg.requires_response is True
-    except Exception:
-        pytest.skip("Policy denies this pair")
+    conv = await svc.get_or_create_conversation("be-dev-1", "be-qa")
+    first = await svc.send_chat_message(UUID(conv.id), "be-qa", "first message")
+    msg = await svc.send_chat_message(
+        UUID(conv.id),
+        "be-dev-1",
+        "needs answer",
+        options={"requires_response": True, "response_to_id": UUID(first.id)},
+    )
+    assert msg.requires_response is True
+    assert msg.response_to_id == first.id
 
 
 @pytest.mark.asyncio
@@ -1238,18 +1213,15 @@ async def test_send_chat_message_from_agent_b_increments_unread_a(
     a2a_setup: dict,
 ) -> None:
     svc = a2a_setup["svc"]
-    try:
-        # First exchange establishes canonical pair (a < b lexicographically).
-        conv = await svc.get_or_create_conversation("be-dev-1", "be-qa")
-        # Send from whichever agent is conv.agent_b (the "other" side).
-        result = await svc.session.execute(
-            _sel(A2AConversationTable).where(A2AConversationTable.id == UUID(conv.id))
-        )
-        row = result.scalar_one()
-        msg = await svc.send_chat_message(UUID(conv.id), row.agent_b, "hi from b")
-        assert msg.from_agent == row.agent_b
-    except Exception:
-        pytest.skip("Policy denies this pair")
+    # First exchange establishes canonical pair (a < b lexicographically).
+    conv = await svc.get_or_create_conversation("be-dev-1", "be-qa")
+    # Send from whichever agent is conv.agent_b (the "other" side).
+    result = await svc.session.execute(
+        _sel(A2AConversationTable).where(A2AConversationTable.id == UUID(conv.id))
+    )
+    row = result.scalar_one()
+    msg = await svc.send_chat_message(UUID(conv.id), row.agent_b, "hi from b")
+    assert msg.from_agent == row.agent_b
 
 
 # ---------------------------------------------------------------------------
@@ -1262,26 +1234,20 @@ async def test_get_messages_non_participant_returns_empty(
     a2a_setup: dict,
 ) -> None:
     svc = a2a_setup["svc"]
-    try:
-        conv = await svc.get_or_create_conversation("be-dev-1", "be-qa")
-        msgs = await svc.get_messages(UUID(conv.id), "ghost-agent")
-        assert msgs == []
-    except Exception:
-        pytest.skip("Policy denies this pair")
+    conv = await svc.get_or_create_conversation("be-dev-1", "be-qa")
+    msgs = await svc.get_messages(UUID(conv.id), "ghost-agent")
+    assert msgs == []
 
 
 @pytest.mark.asyncio
 async def test_get_messages_with_before_filter(a2a_setup: dict) -> None:
     """Pass a `before` datetime — exercises the filter branch."""
     svc = a2a_setup["svc"]
-    try:
-        conv = await svc.get_or_create_conversation("be-dev-1", "be-qa")
-        await svc.send_chat_message(UUID(conv.id), "be-dev-1", "first")
-        future = datetime.now(UTC).replace(year=2099)
-        msgs = await svc.get_messages(UUID(conv.id), "be-dev-1", before=future)
-        assert isinstance(msgs, list)
-    except Exception:
-        pytest.skip("Policy denies this pair")
+    conv = await svc.get_or_create_conversation("be-dev-1", "be-qa")
+    await svc.send_chat_message(UUID(conv.id), "be-dev-1", "first")
+    future = datetime.now(UTC).replace(year=2099)
+    msgs = await svc.get_messages(UUID(conv.id), "be-dev-1", before=future)
+    assert isinstance(msgs, list)
 
 
 # ---------------------------------------------------------------------------
@@ -1292,26 +1258,20 @@ async def test_get_messages_with_before_filter(a2a_setup: dict) -> None:
 @pytest.mark.asyncio
 async def test_mark_read_non_participant(a2a_setup: dict) -> None:
     svc = a2a_setup["svc"]
-    try:
-        conv = await svc.get_or_create_conversation("be-dev-1", "be-qa")
-        # Non-participant → silent return.
-        await svc.mark_read(UUID(conv.id), "ghost")
-    except Exception:
-        pytest.skip("Policy denies this pair")
+    conv = await svc.get_or_create_conversation("be-dev-1", "be-qa")
+    # Non-participant → silent return.
+    await svc.mark_read(UUID(conv.id), "ghost")
 
 
 @pytest.mark.asyncio
 async def test_mark_read_as_agent_b(a2a_setup: dict) -> None:
     svc = a2a_setup["svc"]
-    try:
-        conv = await svc.get_or_create_conversation("be-dev-1", "be-qa")
-        result = await svc.session.execute(
-            _sel(A2AConversationTable).where(A2AConversationTable.id == UUID(conv.id))
-        )
-        row = result.scalar_one()
-        await svc.mark_read(UUID(conv.id), row.agent_b)
-    except Exception:
-        pytest.skip("Policy denies this pair")
+    conv = await svc.get_or_create_conversation("be-dev-1", "be-qa")
+    result = await svc.session.execute(
+        _sel(A2AConversationTable).where(A2AConversationTable.id == UUID(conv.id))
+    )
+    row = result.scalar_one()
+    await svc.mark_read(UUID(conv.id), row.agent_b)
 
 
 # ---------------------------------------------------------------------------
@@ -1322,16 +1282,13 @@ async def test_mark_read_as_agent_b(a2a_setup: dict) -> None:
 @pytest.mark.asyncio
 async def test_list_pairs_with_conversations(a2a_setup: dict) -> None:
     svc = a2a_setup["svc"]
-    try:
-        await svc.get_or_create_conversation("be-dev-1", "be-qa")
-        pairs = await svc.list_pairs("be-dev-1")
-        assert any(
-            (p.agent_a, p.agent_b) == ("be-dev-1", "be-qa")
-            or (p.agent_a, p.agent_b) == ("be-qa", "be-dev-1")
-            for p in pairs
-        )
-    except Exception:
-        pytest.skip("Policy denies this pair")
+    await svc.get_or_create_conversation("be-dev-1", "be-qa")
+    pairs = await svc.list_pairs("be-dev-1")
+    assert any(
+        (p.agent_a, p.agent_b) == ("be-dev-1", "be-qa")
+        or (p.agent_a, p.agent_b) == ("be-qa", "be-dev-1")
+        for p in pairs
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -1367,17 +1324,14 @@ async def test_send_gateway_adapter_uuid_to_uuid(
     svc = a2a_setup["svc"]
     dev = a2a_setup["dev"]
     qa = a2a_setup["qa"]
-    try:
-        msg = await svc.send(
-            from_agent=dev.id,
-            to_agent=qa.id,
-            task_id=a2a_setup["task_id"],
-            body="hello",
-            skill="general",
-        )
-        assert msg.content == "hello"
-    except Exception:
-        pytest.skip("Policy denies this pair")
+    msg = await svc.send(
+        from_agent=dev.id,
+        to_agent=qa.id,
+        task_id=a2a_setup["task_id"],
+        body="hello",
+        skill="general",
+    )
+    assert msg.content == "hello"
 
 
 @pytest.mark.asyncio
@@ -1387,16 +1341,13 @@ async def test_send_gateway_adapter_with_string_recipient(
     """Recipient as slug string → no DB lookup for it."""
     svc = a2a_setup["svc"]
     dev = a2a_setup["dev"]
-    try:
-        msg = await svc.send(
-            from_agent=dev.id,
-            to_agent="be-qa",
-            task_id=a2a_setup["task_id"],
-            body="hello",
-        )
-        assert msg.content == "hello"
-    except Exception:
-        pytest.skip("Policy denies this pair")
+    msg = await svc.send(
+        from_agent=dev.id,
+        to_agent="be-qa",
+        task_id=a2a_setup["task_id"],
+        body="hello",
+    )
+    assert msg.content == "hello"
 
 
 # ---------------------------------------------------------------------------
@@ -1458,12 +1409,9 @@ async def test_get_or_create_conversation_with_topic(
     a2a_setup: dict,
 ) -> None:
     svc = a2a_setup["svc"]
-    try:
-        a = await svc.get_or_create_conversation("be-dev-1", "be-qa", topic="Bug X")
-        b = await svc.get_or_create_conversation("be-dev-1", "be-qa", topic="Bug X")
-        assert a.id == b.id
-    except Exception:
-        pytest.skip("Policy denies this pair")
+    a = await svc.get_or_create_conversation("be-dev-1", "be-qa", topic="Bug X")
+    b = await svc.get_or_create_conversation("be-dev-1", "be-qa", topic="Bug X")
+    assert a.id == b.id
 
 
 # ---------------------------------------------------------------------------
@@ -1474,12 +1422,9 @@ async def test_get_or_create_conversation_with_topic(
 @pytest.mark.asyncio
 async def test_get_conversation_non_participant(a2a_setup: dict) -> None:
     svc = a2a_setup["svc"]
-    try:
-        conv = await svc.get_or_create_conversation("be-dev-1", "be-qa")
-        result = await svc.get_conversation(UUID(conv.id), "ghost")
-        assert result is None
-    except Exception:
-        pytest.skip("Policy denies this pair")
+    conv = await svc.get_or_create_conversation("be-dev-1", "be-qa")
+    result = await svc.get_conversation(UUID(conv.id), "ghost")
+    assert result is None
 
 
 @pytest.mark.asyncio
@@ -1488,13 +1433,10 @@ async def test_get_conversation_returns_model_when_participant(
 ) -> None:
     """Participant access → returns the conversation model."""
     svc = a2a_setup["svc"]
-    try:
-        conv = await svc.get_or_create_conversation("be-dev-1", "be-qa")
-        result = await svc.get_conversation(UUID(conv.id), "be-dev-1")
-        assert result is not None
-        assert result.id == conv.id
-    except Exception:
-        pytest.skip("Policy denies this pair")
+    conv = await svc.get_or_create_conversation("be-dev-1", "be-qa")
+    result = await svc.get_conversation(UUID(conv.id), "be-dev-1")
+    assert result is not None
+    assert result.id == conv.id
 
 
 # ---------------------------------------------------------------------------
@@ -1506,18 +1448,15 @@ async def test_get_conversation_returns_model_when_participant(
 async def test_get_inbox_summary_with_unread(a2a_setup: dict) -> None:
     """Send a message from a2 → a1 has unread."""
     svc = a2a_setup["svc"]
-    try:
-        conv = await svc.get_or_create_conversation("be-dev-1", "be-qa")
-        result = await svc.session.execute(
-            _sel(A2AConversationTable).where(A2AConversationTable.id == UUID(conv.id))
-        )
-        row = result.scalar_one()
-        # Send from agent_b → agent_a unread increments.
-        await svc.send_chat_message(UUID(conv.id), row.agent_b, "hi")
-        inbox = await svc.get_inbox_summary(row.agent_a)
-        assert inbox.total_unread >= 1
-    except Exception:
-        pytest.skip("Policy denies this pair")
+    conv = await svc.get_or_create_conversation("be-dev-1", "be-qa")
+    result = await svc.session.execute(
+        _sel(A2AConversationTable).where(A2AConversationTable.id == UUID(conv.id))
+    )
+    row = result.scalar_one()
+    # Send from agent_b → agent_a unread increments.
+    await svc.send_chat_message(UUID(conv.id), row.agent_b, "hi")
+    inbox = await svc.get_inbox_summary(row.agent_a)
+    assert inbox.total_unread >= 1
 
 
 # ---------------------------------------------------------------------------
@@ -1532,16 +1471,13 @@ async def test_send_gateway_adapter_skill_none(
     """skill=None branch → options dict stays empty."""
     svc = a2a_setup["svc"]
     dev = a2a_setup["dev"]
-    try:
-        msg = await svc.send(
-            from_agent=dev.id,
-            to_agent="be-qa",
-            task_id=a2a_setup["task_id"],
-            body="no skill",
-        )
-        assert msg.content == "no skill"
-    except Exception:
-        pytest.skip("Policy denies this pair")
+    msg = await svc.send(
+        from_agent=dev.id,
+        to_agent="be-qa",
+        task_id=a2a_setup["task_id"],
+        body="no skill",
+    )
+    assert msg.content == "no skill"
 
 
 @pytest.mark.asyncio
