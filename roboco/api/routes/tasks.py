@@ -115,18 +115,8 @@ async def create_task(
             detail="Not authorized to create tasks",
         )
 
-    # Validate: all tasks require project_id
-    if not data.project_id:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail={
-                "error": {
-                    "code": "PROJECT_REQUIRED",
-                    "message": "All tasks require project_id",
-                    "hint": "Specify project_id for the git repository",
-                }
-            },
-        )
+    # `data.project_id` is `UUID` (required) on TaskCreate, so pydantic
+    # rejects missing/null values with 422 before this handler runs.
 
     # Acceptance criteria required — without them, QA has nothing to
     # verify and the task is structurally unclosable.
@@ -387,6 +377,56 @@ async def get_task_stats_by_team(
     service = get_task_service(db)
     counts = await service.count_by_team()
     return TaskCountResponse(counts=counts)
+
+
+# Static-segment routes must be declared BEFORE `/{task_id}` so FastAPI
+# matches the literal path instead of treating the segment as a UUID
+# (which would 422 on these names).
+
+
+@router.get("/awaiting-pm-review", response_model=list[TaskResponse])
+async def get_awaiting_pm_review_tasks(
+    db: DbSession,
+    agent: CurrentAgentContext,
+    permissions: PermissionServiceDep,
+    team: Team | None = None,
+) -> list[TaskResponse]:
+    """Get tasks awaiting PM review."""
+    service = get_task_service(db)
+
+    # Apply team filter based on permissions
+    can_view_all = permissions.can_perform_task_action(agent, TaskAction.VIEW_ALL)
+    effective_team = team if can_view_all else agent.team
+
+    tasks = await service.list_awaiting_pm_review(effective_team)
+    return task_list_to_response(tasks)
+
+
+@router.get("/awaiting-ceo-approval", response_model=list[TaskResponse])
+async def get_awaiting_ceo_approval_tasks(
+    db: DbSession,
+    agent: CurrentAgentContext,
+    permissions: PermissionServiceDep,
+) -> list[TaskResponse]:
+    """Get tasks awaiting CEO approval.
+
+    CEO approval queue is org-wide (no team filter).
+    Only visible to PMs and above.
+    """
+    # Only PMs and above can view the CEO approval queue
+    can_view_all = permissions.can_perform_task_action(agent, TaskAction.VIEW_ALL)
+    is_pm = agent.role in (AgentRole.CELL_PM, AgentRole.MAIN_PM)
+    is_ceo = agent.role == AgentRole.CEO
+
+    if not (can_view_all or is_pm or is_ceo):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Only PMs and management can view CEO approval queue",
+        )
+
+    service = get_task_service(db)
+    tasks = await service.list_awaiting_ceo_approval()
+    return task_list_to_response(tasks)
 
 
 @router.get("/{task_id}", response_model=TaskResponse)
@@ -1171,51 +1211,6 @@ async def cancel_task(
 # =============================================================================
 # CEO APPROVAL WORKFLOW
 # =============================================================================
-
-
-@router.get("/awaiting-pm-review", response_model=list[TaskResponse])
-async def get_awaiting_pm_review_tasks(
-    db: DbSession,
-    agent: CurrentAgentContext,
-    permissions: PermissionServiceDep,
-    team: Team | None = None,
-) -> list[TaskResponse]:
-    """Get tasks awaiting PM review."""
-    service = get_task_service(db)
-
-    # Apply team filter based on permissions
-    can_view_all = permissions.can_perform_task_action(agent, TaskAction.VIEW_ALL)
-    effective_team = team if can_view_all else agent.team
-
-    tasks = await service.list_awaiting_pm_review(effective_team)
-    return task_list_to_response(tasks)
-
-
-@router.get("/awaiting-ceo-approval", response_model=list[TaskResponse])
-async def get_awaiting_ceo_approval_tasks(
-    db: DbSession,
-    agent: CurrentAgentContext,
-    permissions: PermissionServiceDep,
-) -> list[TaskResponse]:
-    """Get tasks awaiting CEO approval.
-
-    CEO approval queue is org-wide (no team filter).
-    Only visible to PMs and above.
-    """
-    # Only PMs and above can view the CEO approval queue
-    can_view_all = permissions.can_perform_task_action(agent, TaskAction.VIEW_ALL)
-    is_pm = agent.role in (AgentRole.CELL_PM, AgentRole.MAIN_PM)
-    is_ceo = agent.role == AgentRole.CEO
-
-    if not (can_view_all or is_pm or is_ceo):
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="Only PMs and management can view CEO approval queue",
-        )
-
-    service = get_task_service(db)
-    tasks = await service.list_awaiting_ceo_approval()
-    return task_list_to_response(tasks)
 
 
 @router.post("/{task_id}/escalate-to-ceo", response_model=TaskResponse)

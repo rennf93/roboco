@@ -236,13 +236,15 @@ async def test_get_ceo_velocity(dashboard_client: AsyncClient) -> None:
 
 
 @pytest.mark.asyncio
-async def test_get_main_pm_kanban_unreachable(
-    dashboard_client: AsyncClient,
-) -> None:
-    """Route order quirk: /kanban/{team} matches first; main-pm is unreachable."""
+async def test_get_main_pm_kanban_via_http(dashboard_client: AsyncClient) -> None:
+    """`/kanban/main-pm` is now declared before `/kanban/{team}`, so it routes
+    correctly to `get_main_pm_kanban` instead of being matched as
+    `team=main-pm` (which would 422)."""
     response = await dashboard_client.get("/api/dashboard/kanban/main-pm", headers=_HDR)
-    # Matched as /kanban/{team} with team=main-pm → invalid Team enum
-    assert response.status_code == HTTPStatus.UNPROCESSABLE_ENTITY
+    assert response.status_code == HTTPStatus.OK
+    body = response.json()
+    # main_pm board has columns; shape is from KanbanBoard.model_dump().
+    assert "columns" in body
 
 
 @pytest.mark.asyncio

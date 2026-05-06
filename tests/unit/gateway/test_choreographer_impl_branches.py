@@ -345,42 +345,6 @@ async def test_delegate_unknown_role_rejected() -> None:
 
 
 @pytest.mark.asyncio
-async def test_delegate_static_guard_unknown_slug_via_helper() -> None:
-    """Lines 1299-1304: unknown slug rejection in _delegate_static_guards.
-
-    Reached by calling the private helper directly — the public ``delegate``
-    path is shielded by the chain validator which catches all slugs that
-    are not in the explicit cell_pm/main_pm target sets first.
-    """
-    pm_id = uuid4()
-    parent_id = uuid4()
-    parent = MagicMock(
-        status="in_progress",
-        assigned_to=pm_id,
-        project_id=uuid4(),
-        title="p",
-    )
-    task_svc = AsyncMock()
-    task_svc.get.return_value = parent
-    deps = _make_deps(task=task_svc)
-    c = Choreographer(deps)
-    env = await c._delegate_static_guards(
-        pm_id,
-        parent_id,
-        parent,
-        DelegateInputs(
-            title="x",
-            description="y",
-            assigned_to="ghost-agent",
-            team="backend",
-        ),
-    )
-    body = env.as_dict()
-    assert body["error"] == "invalid_state"
-    assert "unknown agent slug" in body["message"]
-
-
-@pytest.mark.asyncio
 async def test_delegate_parent_no_project_rejected() -> None:
     """Line 1306: parent.project_id is None → invalid_state."""
     pm_id = uuid4()

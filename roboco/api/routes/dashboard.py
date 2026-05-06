@@ -314,6 +314,21 @@ async def get_ceo_team_details(
 # =============================================================================
 
 
+@router.get("/kanban/main-pm")
+async def get_main_pm_kanban(
+    db: DbSession,
+) -> dict[str, Any]:
+    """Get the Main PM cross-cell kanban board.
+
+    Declared BEFORE `/kanban/{team}` so FastAPI matches the literal
+    `main-pm` segment instead of treating it as a `Team` enum value
+    (which would 422 since "main-pm" isn't a Team member).
+    """
+    kanban_service = get_kanban_service(db)
+    board = await kanban_service.get_main_pm_board_flat()
+    return board.model_dump()
+
+
 @router.get("/kanban/{team}")
 async def get_team_kanban(
     team: Team,
@@ -357,16 +372,6 @@ async def get_team_kanban(
             "blocked_count": board.blocked_count,
         }
     )
-
-
-@router.get("/kanban/main-pm")
-async def get_main_pm_kanban(
-    db: DbSession,
-) -> dict[str, Any]:
-    """Get the Main PM cross-cell kanban board."""
-    kanban_service = get_kanban_service(db)
-    board = await kanban_service.get_main_pm_board_flat()
-    return board.model_dump()
 
 
 # =============================================================================

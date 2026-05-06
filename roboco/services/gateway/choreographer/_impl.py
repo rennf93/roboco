@@ -1293,15 +1293,13 @@ class Choreographer:
         parent: Any,
         inputs: DelegateInputs,
     ) -> Envelope | None:
-        """Slug / project_id / enum guards. Pure data-shape checks."""
-        from roboco.seeds.initial_data import AGENT_UUIDS
+        """project_id / enum guards. Pure data-shape checks.
 
-        if inputs.assigned_to not in AGENT_UUIDS:
-            return Envelope.invalid_state(
-                message=f"unknown agent slug: {inputs.assigned_to!r}",
-                remediate=f"valid slugs: {sorted(AGENT_UUIDS)}",
-                context_briefing=await self._briefing_for(pm_agent_id, parent_task_id),
-            )
+        The slug-validity check used to live here, but `_delegate_role_guards`
+        runs first and `_validate_delegation_chain` rejects any slug outside
+        the allowed delegation targets — which is a strict subset of
+        `AGENT_UUIDS` — so any AGENT_UUIDS check here was unreachable.
+        """
         if parent.project_id is None:
             return Envelope.invalid_state(
                 message="parent task has no project_id",

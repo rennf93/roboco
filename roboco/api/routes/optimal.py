@@ -432,6 +432,29 @@ async def get_stats(
     )
 
 
+@router.get("/stats/staleness")
+async def check_staleness(
+    agent: CurrentAgentContext,
+    permissions: PermissionServiceDep,
+) -> dict[str, Any]:
+    """
+    Check if indexes are stale (source files modified after last indexing).
+
+    Returns staleness info for file-based indexes (CODE, DOCUMENTATION).
+
+    Declared BEFORE `/stats/{index_type}` so FastAPI matches the literal
+    `staleness` segment instead of treating it as an `index_type` param.
+    """
+    if not permissions.can_perform_kb_action(agent, KBAction.VIEW_STATS):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Not authorized to view index staleness",
+        )
+
+    service = await get_optimal_service()
+    return await service.check_index_staleness()
+
+
 @router.get("/stats/{index_type}", response_model=SingleIndexStatsResponse)
 async def get_single_index_stats(
     index_type: str,
@@ -463,26 +486,6 @@ async def get_single_index_stats(
         chunk_count=stats["chunk_count"],
         last_updated=stats.get("last_updated"),
     )
-
-
-@router.get("/stats/staleness")
-async def check_staleness(
-    agent: CurrentAgentContext,
-    permissions: PermissionServiceDep,
-) -> dict[str, Any]:
-    """
-    Check if indexes are stale (source files modified after last indexing).
-
-    Returns staleness info for file-based indexes (CODE, DOCUMENTATION).
-    """
-    if not permissions.can_perform_kb_action(agent, KBAction.VIEW_STATS):
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="Not authorized to view index staleness",
-        )
-
-    service = await get_optimal_service()
-    return await service.check_index_staleness()
 
 
 @router.get("/health", response_model=RAGHealthResponse)
