@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from http import HTTPStatus
 from uuid import uuid4
 
 import pytest
@@ -54,7 +55,7 @@ def test_require_pm_or_above_allows_ceo() -> None:
 def test_require_pm_or_above_denies_developer() -> None:
     with pytest.raises(HTTPException) as exc:
         require_pm_or_above(AgentRole.DEVELOPER, "do thing")
-    assert exc.value.status_code == 403
+    assert exc.value.status_code == HTTPStatus.FORBIDDEN
 
 
 def test_require_pm_or_above_denies_qa() -> None:
@@ -104,4 +105,4 @@ def test_require_cell_access_denies_cross_cell_for_member() -> None:
         require_cell_access(
             _ctx(AgentRole.DEVELOPER, team=Team.BACKEND), Team.FRONTEND, "edit"
         )
-    assert exc.value.status_code == 403
+    assert exc.value.status_code == HTTPStatus.FORBIDDEN

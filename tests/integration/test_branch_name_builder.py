@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+from types import SimpleNamespace
 from typing import TYPE_CHECKING
+from unittest.mock import AsyncMock
 from uuid import uuid4
 
 import pytest
@@ -91,7 +93,8 @@ async def test_build_branch_name_root_task(branch_setup: dict) -> None:
     branch = await build_branch_name(task.id, "feature", "backend", branch_setup["svc"])
     assert branch.startswith("feature/backend/")
     # Should be 8-char prefix only.
-    assert len(branch.split("/")[-1]) == 8
+    _HEX_PREFIX_LEN = 8
+    assert len(branch.split("/")[-1]) == _HEX_PREFIX_LEN
 
 
 @pytest.mark.asyncio
@@ -105,8 +108,9 @@ async def test_build_branch_name_with_parent(branch_setup: dict) -> None:
     )
     # Format: feature/backend/{parent[:8]}--{child[:8]}
     assert "--" in branch
+    _PARTS = 2
     parts = branch.split("/")[-1].split("--")
-    assert len(parts) == 2
+    assert len(parts) == _PARTS
 
 
 @pytest.mark.asyncio
@@ -145,3 +149,28 @@ async def test_get_root_task_id_walks_up(branch_setup: dict) -> None:
 async def test_get_root_task_id_unknown_raises(branch_setup: dict) -> None:
     with pytest.raises(BranchNameError, match="Task not found"):
         await get_root_task_id(uuid4(), branch_setup["svc"])
+
+
+@pytest.mark.asyncio
+async def test_build_branch_name_too_deep_raises() -> None:
+    """Line 81: a hierarchy longer than MAX_TASK_DEPTH raises BranchNameError."""
+
+    # Mock service whose get() always returns a task with another parent.
+    fake_svc = AsyncMock()
+    fake_svc.get.side_effect = lambda task_id: SimpleNamespace(
+        id=task_id, parent_task_id=uuid4()
+    )
+    with pytest.raises(BranchNameError, match="too deep"):
+        await build_branch_name(uuid4(), "feature", "backend", fake_svc)
+
+
+@pytest.mark.asyncio
+async def test_get_root_task_id_too_deep_raises() -> None:
+    """Line 126: same hierarchy-too-deep guard for get_root_task_id."""
+
+    fake_svc = AsyncMock()
+    fake_svc.get.side_effect = lambda task_id: SimpleNamespace(
+        id=task_id, parent_task_id=uuid4()
+    )
+    with pytest.raises(BranchNameError, match="too deep"):
+        await get_root_task_id(uuid4(), fake_svc)

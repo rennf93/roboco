@@ -6,6 +6,7 @@ from uuid import uuid4
 
 import pytest
 from roboco.models.audit import (
+    AuditEventType,
     PermissionDenialContext,
     StateTransitionDenialContext,
 )
@@ -113,8 +114,6 @@ async def test_log_notification_denial(svc: AuditService) -> None:
 
 @pytest.mark.asyncio
 async def test_log_security_event(svc: AuditService) -> None:
-    from roboco.models.audit import AuditEventType
-
     await svc.log_security_event(
         event_type=AuditEventType.PERMISSION_DENIED,
         agent_id=str(uuid4()),
@@ -140,6 +139,36 @@ async def test_log_agent_event(svc: AuditService) -> None:
         event_type="agent_spawned",
         agent_slug="be-dev-1",
         details={"role": "developer"},
+    )
+
+
+@pytest.mark.asyncio
+async def test_log_pm_override(svc: AuditService) -> None:
+    await svc.log_pm_override(
+        agent_id=uuid4(),
+        task_id=uuid4(),
+        action="complete_with_cancelled_subtasks",
+        justification="subtasks were superseded",
+        cancelled_subtask_ids=[str(uuid4())],
+    )
+
+
+@pytest.mark.asyncio
+async def test_log_pm_override_no_subtasks(svc: AuditService) -> None:
+    await svc.log_pm_override(
+        agent_id=uuid4(),
+        task_id=uuid4(),
+        action="force_complete",
+        justification="all done",
+    )
+
+
+@pytest.mark.asyncio
+async def test_log_task_event_basic(svc: AuditService) -> None:
+    await svc.log_task_event(
+        event_type="task.created",
+        task_id=uuid4(),
+        agent_id=uuid4(),
     )
 
 

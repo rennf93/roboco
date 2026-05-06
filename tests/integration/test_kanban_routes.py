@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from http import HTTPStatus
 from typing import TYPE_CHECKING
 
 import pytest
@@ -38,52 +39,52 @@ async def kanban_client(
 @pytest.mark.asyncio
 async def test_get_dev_board(kanban_client: AsyncClient) -> None:
     response = await kanban_client.get("/api/kanban/dev/backend")
-    assert response.status_code == 200
+    assert response.status_code == HTTPStatus.OK
 
 
 @pytest.mark.asyncio
 async def test_get_qa_board(kanban_client: AsyncClient) -> None:
     response = await kanban_client.get("/api/kanban/qa/backend")
-    assert response.status_code == 200
+    assert response.status_code == HTTPStatus.OK
 
 
 @pytest.mark.asyncio
 async def test_get_documenter_board(kanban_client: AsyncClient) -> None:
     response = await kanban_client.get("/api/kanban/documenter/backend")
-    assert response.status_code == 200
+    assert response.status_code == HTTPStatus.OK
 
 
 @pytest.mark.asyncio
 async def test_get_pm_board(kanban_client: AsyncClient) -> None:
     response = await kanban_client.get("/api/kanban/pm/backend")
-    assert response.status_code == 200
+    assert response.status_code == HTTPStatus.OK
 
 
 @pytest.mark.asyncio
 async def test_get_main_pm_board(kanban_client: AsyncClient) -> None:
     response = await kanban_client.get("/api/kanban/main-pm")
-    assert response.status_code == 200
+    assert response.status_code == HTTPStatus.OK
 
 
 @pytest.mark.asyncio
 async def test_get_main_pm_board_flat(kanban_client: AsyncClient) -> None:
     response = await kanban_client.get("/api/kanban/main-pm?flat=true")
-    assert response.status_code == 200
+    assert response.status_code == HTTPStatus.OK
 
 
 @pytest.mark.asyncio
 async def test_get_board_kanban(kanban_client: AsyncClient) -> None:
     response = await kanban_client.get("/api/kanban/board")
-    assert response.status_code == 200
+    assert response.status_code == HTTPStatus.OK
 
 
 @pytest.mark.asyncio
 async def test_get_kanban_stats(kanban_client: AsyncClient) -> None:
     response = await kanban_client.get("/api/kanban/stats")
-    assert response.status_code == 200
+    assert response.status_code == HTTPStatus.OK
 
 
 @pytest.mark.asyncio
 async def test_get_dev_board_with_swimlane(kanban_client: AsyncClient) -> None:
     response = await kanban_client.get("/api/kanban/dev/backend?swimlane_by=priority")
-    assert response.status_code == 200
+    assert response.status_code == HTTPStatus.OK

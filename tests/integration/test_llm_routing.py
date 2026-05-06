@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from typing import TYPE_CHECKING
+from unittest.mock import AsyncMock, patch
 
 import pytest
 import pytest_asyncio
@@ -10,7 +11,8 @@ from roboco.db.tables import ProviderConfigTable
 from roboco.models.base import AssignmentScope, ModelProvider
 from roboco.models.llm_catalog import MODEL_CATALOG
 from roboco.services.base import NotFoundError
-from roboco.services.llm import ModelRoutingService
+from roboco.services.llm import ModelRoutingService, get_model_routing_service
+from roboco.utils.crypto import EncryptionError
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator
@@ -293,3 +295,55 @@ async def test_resolve_for_agent_uses_global_assignment(
     )
     route = await svc.resolve_for_agent("be-dev-1")
     assert route.model_name == model
+
+
+@pytest.mark.asyncio
+async def test_resolve_for_agent_uses_provider_token(llm_setup: dict) -> None:
+    """When provider has auth_token_encrypted, it's decrypted (lines 345-346)."""
+    svc = llm_setup["svc"]
+    await svc.set_ollama_api_key("test-secret-key")
+    ollama_model = _first_model_for_type(ModelProvider.OLLAMA_CLOUD)
+    await svc.upsert_assignment(
+        scope=AssignmentScope.GLOBAL, scope_value=None, model_name=ollama_model
+    )
+    route = await svc.resolve_for_agent("be-dev-1")
+    assert route.auth_token == "test-secret-key"
+
+
+@pytest.mark.asyncio
+async def test_get_seeded_provider_unknown_raises(
+    db_session: AsyncSession,
+) -> None:
+    """When the requested provider type isn't seeded, raise NotFoundError (line 238)."""
+    svc = ModelRoutingService(db_session)
+    with pytest.raises(NotFoundError):
+        await svc._get_seeded_provider(ModelProvider.ANTHROPIC)
+
+
+def test_get_model_routing_service_factory(db_session: AsyncSession) -> None:
+    """Factory wraps ModelRoutingService with the given session (line 369)."""
+
+    svc = get_model_routing_service(db_session)
+    assert isinstance(svc, ModelRoutingService)
+
+
+@pytest.mark.asyncio
+async def test_resolve_for_agent_falls_back_on_decrypt_error(
+    llm_setup: dict,
+) -> None:
+    """EncryptionError on decrypt → falls back to legacy path (lines 98-99)."""
+
+    svc = llm_setup["svc"]
+    await svc.set_ollama_api_key("garbage-token")
+    ollama_model = _first_model_for_type(ModelProvider.OLLAMA_CLOUD)
+    await svc.upsert_assignment(
+        scope=AssignmentScope.GLOBAL, scope_value=None, model_name=ollama_model
+    )
+    with patch(
+        "roboco.services.llm.ProviderService.get_decrypted_token",
+        side_effect=EncryptionError("decrypt"),
+        new_callable=AsyncMock,
+    ):
+        route = await svc.resolve_for_agent("be-dev-1")
+    # Falls back to legacy ANTHROPIC route.
+    assert route.provider_type == ModelProvider.ANTHROPIC

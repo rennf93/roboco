@@ -65,11 +65,9 @@ def _task(
     *,
     status: TaskStatus,
     team: Team = Team.BACKEND,
-    completed_at: datetime | None = None,
-    started_at: datetime | None = None,
-    dev_notes: str | None = None,
-    assigned_to: object = None,
+    **extras: object,
 ) -> TaskTable:
+    """Build a TaskTable; extras forwarded (completed_at, started_at, ...)."""
     return TaskTable(
         id=uuid4(),
         title="t",
@@ -82,10 +80,7 @@ def _task(
         project_id=setup["project_id"],
         created_by=setup["agent_id"],
         team=team,
-        completed_at=completed_at,
-        started_at=started_at,
-        dev_notes=dev_notes,
-        assigned_to=assigned_to,
+        **extras,
     )
 
 
@@ -166,7 +161,8 @@ async def test_get_blocker_metrics_with_blocked(metrics_setup: dict) -> None:
     db.add(_task(metrics_setup, status=TaskStatus.BLOCKED, team=Team.FRONTEND))
     await db.flush()
     bm = await svc.get_blocker_metrics()
-    assert bm.active_blockers == 2
+    _BLOCKED = 2
+    assert bm.active_blockers == _BLOCKED
     assert "backend" in bm.blockers_by_team or "frontend" in bm.blockers_by_team
 
 
@@ -210,8 +206,9 @@ async def test_get_team_metrics_with_data(metrics_setup: dict) -> None:
 @pytest.mark.asyncio
 async def test_get_all_team_metrics(metrics_setup: dict) -> None:
     svc = metrics_setup["svc"]
+    _TEAMS = 3
     rows = await svc.get_all_team_metrics()
-    assert len(rows) == 3  # backend, frontend, ux_ui
+    assert len(rows) == _TEAMS  # backend, frontend, ux_ui
     assert {r.team for r in rows} == {Team.BACKEND, Team.FRONTEND, Team.UX_UI}
 
 

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from http import HTTPStatus
 from typing import TYPE_CHECKING
 from uuid import uuid4
 
@@ -47,7 +48,7 @@ async def test_get_or_404_finds_existing(db_session: AsyncSession) -> None:
 async def test_get_or_404_raises_when_missing(db_session: AsyncSession) -> None:
     with pytest.raises(HTTPException) as exc:
         await get_or_404(db_session, AgentTable, uuid4(), "Agent")
-    assert exc.value.status_code == 404
+    assert exc.value.status_code == HTTPStatus.NOT_FOUND
 
 
 @pytest.mark.asyncio
@@ -78,7 +79,7 @@ async def test_get_by_field_or_404_finds(db_session: AsyncSession) -> None:
 async def test_get_by_field_or_404_raises(db_session: AsyncSession) -> None:
     with pytest.raises(HTTPException) as exc:
         await get_by_field_or_404(db_session, AgentTable, "slug", "ghost-slug", "Agent")
-    assert exc.value.status_code == 404
+    assert exc.value.status_code == HTTPStatus.NOT_FOUND
 
 
 # ---------------------------------------------------------------------------
@@ -96,7 +97,7 @@ def test_require_ownership_raises_for_other_agent() -> None:
     resource = type("R", (), {"owner": uuid4()})()
     with pytest.raises(HTTPException) as exc:
         require_ownership(resource, "owner", uuid4(), "edit")
-    assert exc.value.status_code == 403
+    assert exc.value.status_code == HTTPStatus.FORBIDDEN
 
 
 def test_require_ownership_no_owner_passes() -> None:
@@ -113,7 +114,7 @@ def test_require_recipient_passes() -> None:
 def test_require_recipient_raises() -> None:
     with pytest.raises(HTTPException) as exc:
         require_recipient([uuid4(), uuid4()], uuid4())
-    assert exc.value.status_code == 403
+    assert exc.value.status_code == HTTPStatus.FORBIDDEN
 
 
 def test_require_membership_passes() -> None:
@@ -124,4 +125,4 @@ def test_require_membership_passes() -> None:
 def test_require_membership_raises() -> None:
     with pytest.raises(HTTPException) as exc:
         require_membership([uuid4()], uuid4(), "channel")
-    assert exc.value.status_code == 403
+    assert exc.value.status_code == HTTPStatus.FORBIDDEN

@@ -158,3 +158,35 @@ def test_i_documented_rejects_empty_files_list() -> None:
     )
 
     assert resp.status_code == _HTTP_422
+
+
+@pytest.mark.asyncio
+async def test_unclaim_dispatches() -> None:
+    mock_chore = MagicMock()
+    mock_chore.unclaim = AsyncMock(
+        return_value=_make_envelope(status="awaiting_documentation", task_id=_TASK_ID)
+    )
+    client = TestClient(_build_app(mock_chore))
+    resp = client.post(
+        "/api/v2/flow/documenter/unclaim",
+        json={"task_id": _TASK_ID},
+        headers=_HEADERS,
+    )
+    assert resp.status_code == _HTTP_200
+    mock_chore.unclaim.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_resume_dispatches() -> None:
+    mock_chore = MagicMock()
+    mock_chore.resume = AsyncMock(
+        return_value=_make_envelope(status="claimed", task_id=_TASK_ID)
+    )
+    client = TestClient(_build_app(mock_chore))
+    resp = client.post(
+        "/api/v2/flow/documenter/resume",
+        json={"task_id": _TASK_ID},
+        headers=_HEADERS,
+    )
+    assert resp.status_code == _HTTP_200
+    mock_chore.resume.assert_awaited_once()

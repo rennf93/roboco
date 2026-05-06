@@ -61,3 +61,18 @@ class TestRemediate:
         r: ValidationResult = validate_commit_message("wip")
         assert r.remediate is not None
         assert "<type>" in r.remediate or "type" in r.remediate.lower()
+
+
+def test_empty_message_rejected() -> None:
+    """Lines 57-62: empty/whitespace-only message rejection branch."""
+    r = validate_commit_message("   ")
+    assert r.ok is False
+    assert r.reason == "empty message"
+
+
+def test_banned_word_long_enough_to_pass_min_chars() -> None:
+    """Lines 76-81: single-token banned word that meets min_chars."""
+    # Use min_chars=2 so 'wip' (3 chars) passes length but hits banned-word.
+    r = validate_commit_message("wip", min_chars=2)
+    assert r.ok is False
+    assert "banned single-word" in r.reason

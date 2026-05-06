@@ -42,3 +42,14 @@ class TestParentBranchFor:
     def test_invalid_pattern_raises(self) -> None:
         with pytest.raises(ValueError, match="invalid branch"):
             parent_branch_for("not-a-branch")
+
+
+def test_branch_depth_master_is_zero() -> None:
+    """Line 28: master returns 0."""
+    assert branch_depth("master") == 0
+
+
+def test_branch_depth_invalid_pattern_raises() -> None:
+    """Line 31: invalid branch pattern raises."""
+    with pytest.raises(ValueError, match="invalid branch"):
+        branch_depth("garbage-branch-name")

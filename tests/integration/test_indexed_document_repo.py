@@ -37,7 +37,8 @@ async def test_upsert_batch_inserts_new(
         {"source": "a/file2.py", "title": "F2", "preview": "y"},
     ]
     count = await repo.upsert_batch("code", docs)
-    assert count == 2
+    _DOCS = 2
+    assert count == _DOCS
 
 
 @pytest.mark.asyncio
@@ -57,8 +58,9 @@ async def test_get_by_index_type(repo: IndexedDocumentRepository) -> None:
         "documentation",
         [{"source": "doc1.md", "title": "T1"}, {"source": "doc2.md", "title": "T2"}],
     )
+    _DOCS = 2
     rows = await repo.get_by_index_type("documentation")
-    assert len(rows) >= 2
+    assert len(rows) >= _DOCS
 
 
 @pytest.mark.asyncio
@@ -70,12 +72,13 @@ async def test_count_by_index_type(repo: IndexedDocumentRepository) -> None:
 
 @pytest.mark.asyncio
 async def test_delete_by_index_type(repo: IndexedDocumentRepository) -> None:
+    _DOCS = 2
     await repo.upsert_batch(
         "to-delete",
         [{"source": "x.md", "title": "X"}, {"source": "y.md", "title": "Y"}],
     )
     deleted = await repo.delete_by_index_type("to-delete")
-    assert deleted >= 2
+    assert deleted >= _DOCS
     assert await repo.count_by_index_type("to-delete") == 0
 
 
@@ -86,7 +89,41 @@ async def test_upsert_batch_truncates_long_preview(
     """Preview is truncated to 500 chars."""
     docs = [{"source": "long.md", "title": "Long", "preview": "a" * 1000}]
     await repo.upsert_batch("code", docs)
+    _PREVIEW_MAX = 500
     rows = await repo.get_by_index_type("code")
     matching = [r for r in rows if r.source == "long.md"]
     assert matching
-    assert len(matching[0].preview) <= 500
+    assert len(matching[0].preview) <= _PREVIEW_MAX
+
+
+@pytest.mark.asyncio
+async def test_upsert_batch_updates_preview_and_metadata(
+    repo: IndexedDocumentRepository,
+) -> None:
+    """Lines 66, 68: update path with preview + metadata fields."""
+    # Insert first.
+    await repo.upsert_batch(
+        "code",
+        [{"source": "metadoc.py", "title": "Old", "metadata": {"a": 1}}],
+    )
+    # Update with preview + metadata.
+    await repo.upsert_batch(
+        "code",
+        [
+            {
+                "source": "metadoc.py",
+                "title": "New",
+                "preview": "fresh content",
+                "metadata": {"b": 2},
+            }
+        ],
+    )
+    _A_VALUE = 1
+    _B_VALUE = 2
+    rows = await repo.get_by_index_type("code")
+    matching = [r for r in rows if r.source == "metadoc.py"]
+    assert matching
+    assert matching[0].preview == "fresh content"
+    # Metadata is merged.
+    assert matching[0].extra_data["a"] == _A_VALUE
+    assert matching[0].extra_data["b"] == _B_VALUE

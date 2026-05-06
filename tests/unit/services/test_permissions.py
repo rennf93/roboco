@@ -7,6 +7,7 @@ The service is a SingletonService, so we instantiate it directly with
 
 from __future__ import annotations
 
+from unittest.mock import patch
 from uuid import uuid4
 
 import pytest
@@ -22,8 +23,8 @@ from roboco.services.permissions import PermissionService
 
 @pytest.fixture
 def svc() -> PermissionService:
-    """PermissionService is a SingletonService — bypass __init__ for unit tests."""
-    return object.__new__(PermissionService)
+    """PermissionService is a SingletonService — call __init__ to bind log."""
+    return PermissionService()
 
 
 def _ctx(role: AgentRole, team: Team | None = None) -> AgentContext:
@@ -338,3 +339,101 @@ def test_can_agent_write_channel_unknown_channel(
 ) -> None:
     """Unknown channel slug → False (no panic)."""
     assert svc.can_agent_write_channel("be-dev-1", "ghost-channel") is False
+
+
+# ---------------------------------------------------------------------------
+# Channel read for non-bypass roles (covers _check_channel_access_for_agent)
+# ---------------------------------------------------------------------------
+
+
+def test_dev_read_unknown_channel_returns_false(svc: PermissionService) -> None:
+    """Unknown channel for non-bypass role → warns + returns False (lines 137-138)."""
+    dev = _ctx(AgentRole.DEVELOPER, team=Team.BACKEND)
+    assert svc.can_read_channel(dev, "ghost-channel-x") is False
+
+
+def test_dev_write_unknown_channel_returns_false(svc: PermissionService) -> None:
+    """Unknown channel for non-bypass role on write → False."""
+    dev = _ctx(AgentRole.DEVELOPER, team=Team.BACKEND)
+    assert svc.can_write_channel(dev, "ghost-channel-y") is False
+
+
+def test_dev_can_read_own_cell_channel(svc: PermissionService) -> None:
+    """Developer in backend can read backend-cell (regular role-based access)."""
+    dev = _ctx(AgentRole.DEVELOPER, team=Team.BACKEND)
+    assert svc.can_read_channel(dev, "backend-cell") is True
+
+
+# ---------------------------------------------------------------------------
+# can_notify branches
+# ---------------------------------------------------------------------------
+
+
+def test_can_notify_developer_returns_false(svc: PermissionService) -> None:
+    """Developers cannot send notifications — short-circuits on line 236."""
+    dev = _ctx(AgentRole.DEVELOPER, team=Team.BACKEND)
+    other = _ctx(AgentRole.QA, team=Team.BACKEND)
+    assert svc.can_notify(dev, other) is False
+
+
+# ---------------------------------------------------------------------------
+# can_agent_read_channel for unknown channel (line 377)
+# ---------------------------------------------------------------------------
+
+
+def test_can_agent_read_channel_unknown_channel(svc: PermissionService) -> None:
+    """Channel not in CHANNEL_ACCESS → False (line 377)."""
+    assert svc.can_agent_read_channel("be-dev-1", "ghost-channel-z") is False
+
+
+# ---------------------------------------------------------------------------
+# can_notify list scope (lines 253-258)
+# ---------------------------------------------------------------------------
+
+
+def test_can_notify_product_owner_list_scope_in(svc: PermissionService) -> None:
+    """Product Owner has list scope — allowed recipients return True."""
+    sender = _ctx(AgentRole.PRODUCT_OWNER, team=Team.BOARD)
+    recipient = _ctx(AgentRole.MAIN_PM, team=Team.MAIN_PM)
+    assert svc.can_notify(sender, recipient) is True
+
+
+def test_can_notify_product_owner_list_scope_out(svc: PermissionService) -> None:
+    """Product Owner cannot notify recipients outside their list scope."""
+    sender = _ctx(AgentRole.PRODUCT_OWNER, team=Team.BOARD)
+    recipient = _ctx(AgentRole.DEVELOPER, team=Team.BACKEND)
+    assert svc.can_notify(sender, recipient) is False
+
+
+# ---------------------------------------------------------------------------
+# can_perform_task_action VIEW_ALL fallback for VIEW_OWN (line 310)
+# ---------------------------------------------------------------------------
+
+
+def test_view_own_falls_back_to_view_all_for_ceo(svc: PermissionService) -> None:
+    """CEO has VIEW_ALL but not VIEW_OWN — VIEW_OWN check falls back to True."""
+    ceo = _ctx(AgentRole.CEO)
+    assert svc.can_perform_task_action(ceo, TaskAction.VIEW_OWN, Team.BACKEND) is True
+
+
+def test_check_channel_access_silent_observer_grants_read(
+    svc: PermissionService,
+) -> None:
+    """Line 151: agent slug in silent list grants read access via direct call."""
+    auditor = _ctx(AgentRole.AUDITOR, team=Team.BOARD)
+    # _check_channel_access_for_agent bypasses the auditor short-circuit at
+    # can_read_channel and exercises the silent-list match (line 150-151).
+    assert svc._check_channel_access_for_agent(auditor, "backend-cell", "read") is True
+
+
+def test_can_notify_unknown_scope_returns_false(svc: PermissionService) -> None:
+    """Line 258: scope is neither 'all', 'cell', nor list → defensive return False."""
+
+    sender = _ctx(AgentRole.MAIN_PM, team=Team.MAIN_PM)
+    recipient = _ctx(AgentRole.DEVELOPER, team=Team.BACKEND)
+    # Patch _get_notification_scope directly to a bogus value type.
+    with patch(
+        "roboco.services.permissions._get_notification_scope",
+        return_value="garbage_scope",
+    ):
+        assert svc.can_notify(sender, recipient) is False

@@ -154,6 +154,24 @@ async def test_get_or_raise(ws_setup: dict) -> None:
         await svc.get_or_raise(uuid4())
 
 
+@pytest.mark.asyncio
+async def test_get_or_raise_returns_session(ws_setup: dict) -> None:
+    """Line 136: get_or_raise returns the session when found."""
+    svc = ws_setup["svc"]
+    ws = await svc.create(_payload(ws_setup))
+    found = await svc.get_or_raise(ws.id)
+    assert found.id == ws.id
+
+
+@pytest.mark.asyncio
+async def test_list_active_sessions_filtered_by_project(ws_setup: dict) -> None:
+    """Line 295: project_id filter applied."""
+    svc = ws_setup["svc"]
+    ws = await svc.create(_payload(ws_setup))
+    sessions = await svc.list_active_sessions(project_id=ws.project_id)
+    assert any(s.id == ws.id for s in sessions)
+
+
 # ---------------------------------------------------------------------------
 # Update
 # ---------------------------------------------------------------------------
@@ -168,7 +186,8 @@ async def test_update_pr_fields(ws_setup: dict) -> None:
         WorkSessionUpdate(pr_number=42, pr_url="https://github.com/x/y/pull/42"),
     )
     assert updated is not None
-    assert updated.pr_number == 42
+    _PR_NUM = 42
+    assert updated.pr_number == _PR_NUM
 
 
 @pytest.mark.asyncio
@@ -286,8 +305,9 @@ async def test_create_pr(ws_setup: dict) -> None:
     svc = ws_setup["svc"]
     ws = await svc.create(_payload(ws_setup))
     updated = await svc.create_pr(ws.id, 7, "https://github.com/x/y/pull/7")
+    _PR_NUM = 7
     assert updated is not None
-    assert updated.pr_number == 7
+    assert updated.pr_number == _PR_NUM
     assert updated.pr_status == "open"
 
 

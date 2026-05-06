@@ -107,5 +107,6 @@ def test_api_response_model() -> None:
 
 def test_list_response_model() -> None:
     r = ListResponse[int](items=[1, 2], total=2)
-    assert r.total == 2
+    _TWO = 2
+    assert r.total == _TWO
     assert r.has_more is False

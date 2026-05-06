@@ -173,3 +173,49 @@ def test_fail_review_rejects_empty_issues_list() -> None:
     )
 
     assert resp.status_code == _HTTP_422
+
+
+@pytest.mark.asyncio
+async def test_unclaim_dispatches_task_id() -> None:
+    mock_chore = MagicMock()
+    mock_chore.unclaim = AsyncMock(
+        return_value=_make_envelope(status="awaiting_qa", task_id=_TASK_ID)
+    )
+    client = TestClient(_build_app(mock_chore))
+    resp = client.post(
+        "/api/v2/flow/qa/unclaim",
+        json={"task_id": _TASK_ID},
+        headers=_HEADERS,
+    )
+    assert resp.status_code == _HTTP_200
+    mock_chore.unclaim.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_resume_dispatches_task_id() -> None:
+    mock_chore = MagicMock()
+    mock_chore.resume = AsyncMock(
+        return_value=_make_envelope(status="claimed", task_id=_TASK_ID)
+    )
+    client = TestClient(_build_app(mock_chore))
+    resp = client.post(
+        "/api/v2/flow/qa/resume",
+        json={"task_id": _TASK_ID},
+        headers=_HEADERS,
+    )
+    assert resp.status_code == _HTTP_200
+    mock_chore.resume.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_i_am_idle_dispatches_agent_id() -> None:
+    mock_chore = MagicMock()
+    mock_chore.i_am_idle = AsyncMock(return_value=_make_envelope(status="idle"))
+    client = TestClient(_build_app(mock_chore))
+    resp = client.post(
+        "/api/v2/flow/qa/i_am_idle",
+        json={},
+        headers=_HEADERS,
+    )
+    assert resp.status_code == _HTTP_200
+    mock_chore.i_am_idle.assert_awaited_once()

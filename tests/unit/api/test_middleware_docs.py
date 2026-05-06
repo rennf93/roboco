@@ -4,8 +4,14 @@ from __future__ import annotations
 
 import pytest
 from roboco.api.middleware_docs import (
+    DOCS_PERMISSIONS,
+    READ_ALL_ROLES,
     _agent_matches_permission,
+    _check_permission_match,
+    _fast_path_access_decision,
+    _get_permission_rule,
     _normalize_path,
+    _path_allowed_for_agent,
     _strip_path_prefixes,
     check_docs_access,
     get_allowed_docs_paths,
@@ -174,3 +180,39 @@ def test_get_allowed_docs_paths_for_dev() -> None:
 def test_get_allowed_docs_paths_for_unknown_agent() -> None:
     paths = get_allowed_docs_paths("ghost-agent")
     assert paths == []
+
+
+def test_get_permission_rule_parent_path_match() -> None:
+    """Line 174: parent path match in DOCS_PERMISSIONS."""
+
+    # Pick a known prefix in DOCS_PERMISSIONS, then search a child path.
+    parent = next(iter(DOCS_PERMISSIONS))
+    rule = _get_permission_rule(f"{parent}/extra/path")
+    assert rule == DOCS_PERMISSIONS[parent]
+
+
+def test_check_docs_access_unknown_role_returns_false() -> None:
+    """Line 212/240: agent without role → fast-path denial."""
+    assert check_docs_access("ghost-agent", "internal/private.md", "read") is False
+
+
+def test_check_permission_match_with_string_permission() -> None:
+    """Line 260: allowed=str path branch."""
+
+    assert _check_permission_match("be-dev-1", "developer", "backend", "*") is True
+    assert (
+        _check_permission_match("be-dev-1", "developer", "backend", "fe-dev-1") is False
+    )
+
+
+def test_path_allowed_for_agent_read_all_role() -> None:
+    """Line 297-298: READ_ALL_ROLES gets read access automatically."""
+    role = next(iter(READ_ALL_ROLES))
+    rule = {"read": [], "write": []}  # empty perms — but read-all role bypasses
+    assert _path_allowed_for_agent(rule, "x", role, None, "read") is True
+
+
+def test_fast_path_access_decision_no_role_returns_false() -> None:
+    """Line 211-212: fast path with no role → False."""
+
+    assert _fast_path_access_decision(None, "any", "read") is False

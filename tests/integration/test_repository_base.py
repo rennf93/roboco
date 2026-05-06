@@ -11,6 +11,7 @@ from roboco.db.tables import AgentTable
 from roboco.models import AgentRole, AgentStatus, Team
 from roboco.services.base import NotFoundError
 from roboco.services.repositories.base import BaseRepository
+from sqlalchemy import func, select
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator
@@ -156,11 +157,12 @@ async def test_count_with_conditions(repo_setup: dict) -> None:
 async def test_count_without_conditions(repo_setup: dict) -> None:
     repo = repo_setup["repo"]
     count = await repo.count()
-    assert count >= 2
+    _TWO = 2
+    assert count >= _TWO
 
 
 @pytest.mark.asyncio
-async def test_add(repo_setup: dict, db_session: AsyncSession) -> None:
+async def test_add(repo_setup: dict) -> None:
     repo = repo_setup["repo"]
     new_agent = AgentTable(
         id=uuid4(),
@@ -209,8 +211,6 @@ async def test_query_returns_select(repo_setup: dict) -> None:
 
 @pytest.mark.asyncio
 async def test_execute_scalar(repo_setup: dict) -> None:
-    from sqlalchemy import func, select
-
     repo = repo_setup["repo"]
     query = select(func.count(AgentTable.id))
     result = await repo.execute_scalar(query)

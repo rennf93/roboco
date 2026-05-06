@@ -94,3 +94,10 @@ def test_get_readable_journals_for_developer() -> None:
 def test_get_readable_journals_for_unknown() -> None:
     info = get_readable_journals("ghost-agent")
     assert info["scope"] == "none"
+
+
+def test_auditor_can_read_other_auditor_protected_journal() -> None:
+    """Line 72: ceo/auditor reader → True for protected journal."""
+    can, reason = can_read_journal("auditor", "ceo")
+    assert can is True
+    assert reason == "OK"
