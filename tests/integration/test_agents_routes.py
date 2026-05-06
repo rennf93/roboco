@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from http import HTTPStatus
 from typing import TYPE_CHECKING
 from uuid import uuid4
 
@@ -58,53 +59,53 @@ async def agents_client(
 async def test_list_agents(agents_client: dict) -> None:
     client = agents_client["client"]
     response = await client.get("/api/agents")
-    assert response.status_code == 200
+    assert response.status_code == HTTPStatus.OK
 
 
 @pytest.mark.asyncio
 async def test_list_agents_filter_by_role(agents_client: dict) -> None:
     client = agents_client["client"]
     response = await client.get("/api/agents?role=developer")
-    assert response.status_code == 200
+    assert response.status_code == HTTPStatus.OK
 
 
 @pytest.mark.asyncio
 async def test_list_agents_filter_by_team(agents_client: dict) -> None:
     client = agents_client["client"]
     response = await client.get("/api/agents?team=backend")
-    assert response.status_code == 200
+    assert response.status_code == HTTPStatus.OK
 
 
 @pytest.mark.asyncio
 async def test_list_agents_invalid_role_returns_400(agents_client: dict) -> None:
     client = agents_client["client"]
     response = await client.get("/api/agents?role=ghost")
-    assert response.status_code == 400
+    assert response.status_code == HTTPStatus.BAD_REQUEST
 
 
 @pytest.mark.asyncio
 async def test_list_agents_invalid_team_returns_400(agents_client: dict) -> None:
     client = agents_client["client"]
     response = await client.get("/api/agents?team=mars")
-    assert response.status_code == 400
+    assert response.status_code == HTTPStatus.BAD_REQUEST
 
 
 @pytest.mark.asyncio
 async def test_get_agent_by_uuid(agents_client: dict) -> None:
     client = agents_client["client"]
     response = await client.get(f"/api/agents/{agents_client['agent'].id}")
-    assert response.status_code == 200
+    assert response.status_code == HTTPStatus.OK
 
 
 @pytest.mark.asyncio
 async def test_get_agent_by_slug(agents_client: dict) -> None:
     client = agents_client["client"]
     response = await client.get(f"/api/agents/{agents_client['agent'].slug}")
-    assert response.status_code == 200
+    assert response.status_code == HTTPStatus.OK
 
 
 @pytest.mark.asyncio
 async def test_get_agent_unknown(agents_client: dict) -> None:
     client = agents_client["client"]
     response = await client.get(f"/api/agents/{uuid4()}")
-    assert response.status_code == 404
+    assert response.status_code == HTTPStatus.NOT_FOUND

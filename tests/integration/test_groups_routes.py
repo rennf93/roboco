@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+from http import HTTPStatus
 from typing import TYPE_CHECKING
+from unittest.mock import patch
 from uuid import uuid4
 
 import pytest
@@ -11,7 +13,7 @@ from fastapi import FastAPI
 from httpx import ASGITransport, AsyncClient
 from roboco.api.deps import get_agent_context, get_db
 from roboco.api.routes.groups import router as groups_router
-from roboco.db.tables import AgentTable, ChannelTable
+from roboco.db.tables import AgentTable, ChannelTable, GroupTable
 from roboco.models import AgentRole, AgentStatus, Team
 from roboco.models.base import ChannelType
 from roboco.models.permissions import AgentContext
@@ -85,7 +87,7 @@ async def test_create_group_main_pm(groups_client: dict) -> None:
         },
         headers=_HDR,
     )
-    assert response.status_code == 201
+    assert response.status_code == HTTPStatus.CREATED
 
 
 @pytest.mark.asyncio
@@ -100,20 +102,40 @@ async def test_create_group_unknown_channel(groups_client: dict) -> None:
         },
         headers=_HDR,
     )
-    assert response.status_code == 404
+    assert response.status_code == HTTPStatus.NOT_FOUND
+
+
+@pytest.mark.asyncio
+async def test_create_group_value_error_returns_400(groups_client: dict) -> None:
+    """Lines 84-88: ValueError from service.create_group → 400."""
+
+    client = groups_client["client"]
+    with patch(
+        "roboco.services.messaging.MessagingService.create_group",
+        side_effect=ValueError("invalid"),
+    ):
+        response = await client.post(
+            "/api/groups",
+            json={
+                "channel_slug": groups_client["channel"].slug,
+                "name": "Sprint 1",
+                "hierarchy_level": 4,
+                "allowed_roles": [],
+            },
+            headers=_HDR,
+        )
+    assert response.status_code == HTTPStatus.BAD_REQUEST
 
 
 @pytest.mark.asyncio
 async def test_get_group_not_found(groups_client: dict) -> None:
     client = groups_client["client"]
     response = await client.get(f"/api/groups/{uuid4()}", headers=_HDR)
-    assert response.status_code == 404
+    assert response.status_code == HTTPStatus.NOT_FOUND
 
 
 @pytest.mark.asyncio
 async def test_get_group(groups_client: dict, db_session: AsyncSession) -> None:
-    from roboco.db.tables import GroupTable
-
     client = groups_client["client"]
     group = GroupTable(
         id=uuid4(),
@@ -124,7 +146,7 @@ async def test_get_group(groups_client: dict, db_session: AsyncSession) -> None:
     db_session.add(group)
     await db_session.flush()
     response = await client.get(f"/api/groups/{group.id}", headers=_HDR)
-    assert response.status_code == 200
+    assert response.status_code == HTTPStatus.OK
 
 
 @pytest.mark.asyncio
@@ -174,4 +196,4 @@ async def test_create_group_developer_forbidden(
             headers=_HDR,
         )
     app.dependency_overrides.clear()
-    assert response.status_code == 403
+    assert response.status_code == HTTPStatus.FORBIDDEN

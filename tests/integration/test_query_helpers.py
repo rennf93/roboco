@@ -21,6 +21,7 @@ from roboco.services.repositories.query_helpers import (
     team_filter,
     timestamp_filter,
 )
+from sqlalchemy import select
 
 if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncSession
@@ -38,8 +39,6 @@ def test_days_ago_returns_past_datetime() -> None:
 
 
 def test_pagination_applies_limit_offset() -> None:
-    from sqlalchemy import select
-
     q = select(AgentTable)
     out = pagination(q, limit=10, offset=20)
     # SQLAlchemy compiles the query; we just verify it doesn't crash.
@@ -47,53 +46,39 @@ def test_pagination_applies_limit_offset() -> None:
 
 
 def test_status_filter_passes_through_when_none() -> None:
-    from sqlalchemy import select
-
     q = select(AgentTable)
     assert status_filter(q, AgentTable, None) is q
 
 
 def test_status_filter_applies_when_provided() -> None:
-    from sqlalchemy import select
-
     q = select(AgentTable)
     out = status_filter(q, AgentTable, AgentStatus.ACTIVE)
     assert out is not q  # Different query.
 
 
 def test_team_filter_passes_through_when_none() -> None:
-    from sqlalchemy import select
-
     q = select(AgentTable)
     assert team_filter(q, AgentTable, None) is q
 
 
 def test_team_filter_applies_when_provided() -> None:
-    from sqlalchemy import select
-
     q = select(AgentTable)
     out = team_filter(q, AgentTable, Team.BACKEND)
     assert out is not q
 
 
 def test_agent_id_filter_passes_through_when_none() -> None:
-    from sqlalchemy import select
-
     q = select(AgentTable)
     assert agent_id_filter(q, AgentTable, None) is q
 
 
 def test_agent_id_filter_applies_when_provided() -> None:
-    from sqlalchemy import select
-
     q = select(AgentTable)
     out = agent_id_filter(q, AgentTable, uuid4(), field_name="id")
     assert out is not q
 
 
 def test_timestamp_filter_with_since_and_until() -> None:
-    from sqlalchemy import select
-
     q = select(AgentTable)
     out = timestamp_filter(
         q,
@@ -105,8 +90,6 @@ def test_timestamp_filter_with_since_and_until() -> None:
 
 
 def test_timestamp_filter_no_args_unchanged() -> None:
-    from sqlalchemy import select
-
     q = select(AgentTable)
     out = timestamp_filter(q, AgentTable)
     # No filter applied.
@@ -193,6 +176,32 @@ async def test_resolve_agent_identity_unknown_uuid(
     db_session: AsyncSession,
 ) -> None:
     assert await resolve_agent_identity(db_session, str(uuid4())) is None
+
+
+@pytest.mark.asyncio
+async def test_resolve_agent_identity_with_uuid(
+    db_session: AsyncSession,
+) -> None:
+    """Line 215: passing a UUID resolves to (UUID, slug) tuple."""
+    agent = AgentTable(
+        id=uuid4(),
+        name="Dev",
+        slug=f"q-uuid-{uuid4().hex[:8]}",
+        role=AgentRole.DEVELOPER,
+        team=Team.BACKEND,
+        status=AgentStatus.ACTIVE,
+        model_config={},
+        system_prompt="x",
+        capabilities=[],
+        permissions={},
+        metrics={},
+    )
+    db_session.add(agent)
+    await db_session.flush()
+    out = await resolve_agent_identity(db_session, str(agent.id))
+    assert out is not None
+    assert out[0] == agent.id
+    assert out[1] == agent.slug
 
 
 @pytest.mark.asyncio

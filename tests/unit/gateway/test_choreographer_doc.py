@@ -120,6 +120,19 @@ async def test_i_documented_requires_min_notes() -> None:
 
 
 @pytest.mark.asyncio
+async def test_i_documented_task_not_found() -> None:
+    """Line 105: task missing → not_found via _emit_rejection."""
+    doc_id = uuid4()
+    task_id = uuid4()
+    task_svc = AsyncMock()
+    task_svc.get.return_value = None
+    deps = _make_deps(task=task_svc)
+    c = Choreographer(deps)
+    env = await c.i_documented(doc_id, task_id, notes="x" * 30, files=["docs.md"])
+    assert env.as_dict()["error"] == "not_found"
+
+
+@pytest.mark.asyncio
 async def test_i_documented_requires_files() -> None:
     doc_id = uuid4()
     task_id = uuid4()

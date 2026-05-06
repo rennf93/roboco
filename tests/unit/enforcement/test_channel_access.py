@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from unittest.mock import patch
+
 import pytest
 from roboco.enforcement.channel_access import (
     ChannelAccessDeniedError,
@@ -57,3 +59,19 @@ def test_channel_access_denied_error_has_attributes() -> None:
     assert err.agent_id == "be-dev-1"
     assert err.channel_slug == "ghost"
     assert err.action == "write"
+
+
+def test_validate_channel_access_wildcard_allows_anyone() -> None:
+    """Line 72: '*' in allowed list grants access to anyone."""
+
+    with patch(
+        "roboco.enforcement.channel_access.CHANNEL_ACCESS",
+        {"public-channel": {"read": ["*"], "write": [], "silent": []}},
+    ):
+        assert validate_channel_access("ghost-agent", "public-channel", "read") is True
+
+
+def test_validate_channel_access_silent_observer_can_read() -> None:
+    """Line 80: silent observers can read."""
+    # backend-cell has 'auditor' as silent observer.
+    assert validate_channel_access("auditor", "backend-cell", "read") is True

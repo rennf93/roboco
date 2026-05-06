@@ -91,6 +91,12 @@ def test_format_testing_with_criteria() -> None:
     assert "[ ]" in out
 
 
+def test_format_testing_empty_returns_placeholder() -> None:
+    """Line 158: empty acceptance_criteria yields fallback message."""
+    out = _format_testing([])
+    assert "No acceptance criteria" in out
+
+
 def test_build_pr_body_root() -> None:
     ctx = RootPRContext(
         root_task_id="root-123",

@@ -454,3 +454,60 @@ async def test_evidence_task_not_found_returns_not_found() -> None:
 
     assert body["error"] == "not_found"
     assert str(task_id) in body["message"]
+
+
+# ---------------------------------------------------------------------------
+# notify: invalid priority and explicit-ownership rejections
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_notify_invalid_priority_rejected() -> None:
+    """Line 342: priority not in valid set → invalid_state."""
+    deps = _make_deps()
+    ca = ContentActions(deps)
+    agent_id = uuid4()
+    env = await ca.notify(
+        agent_id=agent_id,
+        target="be-pm",
+        text="hello",
+        priority="meteoric",
+    )
+    body = env.as_dict()
+    assert body["error"] == "invalid_state"
+    assert "invalid priority" in body["message"]
+
+
+@pytest.mark.asyncio
+async def test_notify_explicit_task_not_found_rejected() -> None:
+    """Lines 365-366: explicit task_id with task missing → not_found."""
+    task_svc = AsyncMock()
+    task_svc.agent_for.return_value = MagicMock(role="cell_pm")
+    task_svc.get.return_value = None  # task lookup fails
+    deps = _make_deps(task=task_svc)
+    ca = ContentActions(deps)
+    agent_id = uuid4()
+    env = await ca.notify(
+        agent_id=agent_id,
+        target="be-dev-1",
+        text="hi",
+        priority="normal",
+        task_id=uuid4(),
+    )
+    body = env.as_dict()
+    assert body["error"] == "not_found"
+
+
+@pytest.mark.asyncio
+async def test_verify_explicit_task_ownership_returns_not_found() -> None:
+    """Line 184: helper returns not_found envelope when task missing."""
+    task_svc = AsyncMock()
+    task_svc.get.return_value = None
+    deps = _make_deps(task=task_svc)
+    ca = ContentActions(deps)
+    agent_id = uuid4()
+    task_id = uuid4()
+    env = await ca._verify_explicit_task_ownership(agent_id, task_id)
+    assert env is not None
+    body = env.as_dict()
+    assert body["error"] == "not_found"

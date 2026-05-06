@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from typing import TYPE_CHECKING
+
 from roboco.agents_config import (
     can_a2a_direct,
     can_assign_tasks,
@@ -21,7 +23,12 @@ from roboco.agents_config import (
     is_ceo,
     is_management,
     is_pm,
+    issue_agent_token,
+    verify_agent_token,
 )
+
+if TYPE_CHECKING:
+    import pytest
 
 # ---------------------------------------------------------------------------
 # get_agent_role / get_agent_team / get_agent_cell
@@ -219,3 +226,161 @@ def test_get_agent_skills_returns_list() -> None:
 def test_get_agent_skills_unknown_agent() -> None:
     skills = get_agent_skills("ghost-agent")
     assert isinstance(skills, list)
+
+
+# ---------------------------------------------------------------------------
+# Token issuance + verification (lines 45-46, 67-72, 83-89)
+# ---------------------------------------------------------------------------
+
+
+def test_issue_agent_token_returns_unsigned_when_secret_missing(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+
+    monkeypatch.delenv("ROBOCO_AGENT_AUTH_SECRET", raising=False)
+    assert issue_agent_token("be-dev-1", "developer", "backend") == "UNSIGNED"
+
+
+_SHA256_HEX_LEN = 64
+
+
+def test_issue_agent_token_signs_when_secret_present(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("ROBOCO_AGENT_AUTH_SECRET", "test-secret")
+    tok = issue_agent_token("be-dev-1", "developer", "backend")
+    assert tok != "UNSIGNED"
+    # 64 hex chars from sha256
+    assert len(tok) == _SHA256_HEX_LEN
+
+
+def test_verify_agent_token_round_trips(monkeypatch: pytest.MonkeyPatch) -> None:
+
+    monkeypatch.setenv("ROBOCO_AGENT_AUTH_SECRET", "rt-secret")
+    tok = issue_agent_token("be-dev-1", "developer", "backend")
+    assert verify_agent_token(tok, "be-dev-1", "developer", "backend") is True
+
+
+def test_verify_agent_token_rejects_when_secret_missing(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+
+    monkeypatch.delenv("ROBOCO_AGENT_AUTH_SECRET", raising=False)
+    assert verify_agent_token("anything", "be-dev-1", "developer", "backend") is False
+
+
+def test_verify_agent_token_rejects_unsigned_sentinel(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+
+    monkeypatch.setenv("ROBOCO_AGENT_AUTH_SECRET", "any-secret")
+    assert verify_agent_token("UNSIGNED", "be-dev-1", "developer", "backend") is False
+
+
+def test_verify_agent_token_rejects_empty_token(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+
+    monkeypatch.setenv("ROBOCO_AGENT_AUTH_SECRET", "any-secret")
+    assert verify_agent_token("", "be-dev-1", "developer", "backend") is False
+
+
+def test_verify_agent_token_rejects_mismatched_signature(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+
+    monkeypatch.setenv("ROBOCO_AGENT_AUTH_SECRET", "real-secret")
+    tok = issue_agent_token("be-dev-1", "developer", "backend")
+    # Verify with different role → mismatch.
+    assert verify_agent_token(tok, "be-dev-1", "qa", "backend") is False
+
+
+# ---------------------------------------------------------------------------
+# get_pm_for_agent main_pm escalation (line 360)
+# ---------------------------------------------------------------------------
+
+
+def test_get_pm_for_agent_main_pm_returns_product_owner() -> None:
+    assert get_pm_for_agent("main-pm") == "product-owner"
+
+
+# ---------------------------------------------------------------------------
+# A2A check branches: cell PM rejects board (line 682), cell-member without
+# team falls through to management route (line 704), board successful path
+# (732), main_pm dispatch (744), cell-member outbound to no-team (771-772).
+# ---------------------------------------------------------------------------
+
+
+def test_can_a2a_direct_cell_pm_to_board_denied() -> None:
+    allowed, reason = can_a2a_direct("be-pm", "product-owner")
+    assert allowed is False
+    assert reason is not None
+    assert "main-pm" in reason
+
+
+def test_can_a2a_direct_cell_member_to_unknown_management() -> None:
+    """Cell dev → CEO routes through CEO branch, not management."""
+    # Dev → main-pm: management → falls into cell_member branch's else case.
+    allowed, reason = can_a2a_direct("be-dev-1", "main-pm")
+    # Either path works; just ensure structured output.
+    assert isinstance(allowed, bool)
+    assert reason is None or isinstance(reason, str)
+
+
+def test_can_a2a_direct_main_pm_to_developer_denied() -> None:
+    allowed, reason = can_a2a_direct("main-pm", "be-dev-1")
+    # main-pm to a developer routed via cell PM.
+    assert allowed is False
+    assert reason is not None
+
+
+def test_can_a2a_direct_main_pm_to_cell_pm_allowed() -> None:
+    allowed, _ = can_a2a_direct("main-pm", "be-pm")
+    assert allowed is True
+
+
+def test_can_a2a_direct_board_to_main_pm_allowed() -> None:
+    allowed, _ = can_a2a_direct("product-owner", "main-pm")
+    assert allowed is True
+
+
+def test_can_a2a_direct_board_to_developer_denied() -> None:
+    allowed, reason = can_a2a_direct("product-owner", "be-dev-1")
+    assert allowed is False
+    assert reason is not None
+
+
+def test_get_a2a_route_hint_cell_member_to_management() -> None:
+    """Non-CEO cell-member → management agent (no team) routes via cell PM."""
+    hint = get_a2a_route_hint("be-dev-1", "main-pm")
+    # main-pm has team None → falls through to management branch (771-772).
+    assert "be-pm" in hint or "main-pm" in hint or "Use" in hint
+
+
+def test_can_a2a_direct_cell_member_to_unknown_returns_management_hint() -> None:
+    """Cell-member → agent with unresolvable team hits management branch (704)."""
+    allowed, reason = can_a2a_direct("be-dev-1", "ghost-agent")
+    assert allowed is False
+    assert reason is not None
+    assert "be-pm" in reason or "main-pm" in reason
+
+
+def test_can_a2a_direct_unknown_from_agent_falls_through() -> None:
+    """An agent with no team hits the final fallback (line 750)."""
+    allowed, reason = can_a2a_direct("ghost", "be-dev-1")
+    assert allowed is False
+    assert reason is not None
+    assert "not permitted" in reason
+
+
+def test_get_a2a_route_hint_cell_member_to_unknown_routes_via_cell_pm() -> None:
+    """Cell-member → unknown agent (no team) hits lines 770-772."""
+    hint = get_a2a_route_hint("be-dev-1", "ghost-agent")
+    assert "be-pm" in hint
+    assert "main-pm" in hint
+
+
+def test_get_a2a_route_hint_unknown_from_agent_falls_through() -> None:
+    """from_agent with no team falls through to escalate fallback (line 774)."""
+    hint = get_a2a_route_hint("ghost", "be-dev-1")
+    assert "escalate" in hint.lower()

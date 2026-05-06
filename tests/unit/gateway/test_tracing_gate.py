@@ -113,3 +113,57 @@ class TestCheckRequirements:
             GateContext(journal_reflect_present=True),
         )
         assert result.passed is True
+
+    def test_journal_decision_present(self) -> None:
+        """Line 64: journal:decision present passes."""
+        t = _task()
+        result = check_requirements(
+            t,
+            [Requirement.JOURNAL_DECISION],
+            GateContext(journal_decision_present=True),
+        )
+        assert result.passed is True
+
+    def test_journal_decision_missing(self) -> None:
+        t = _task()
+        result = check_requirements(
+            t,
+            [Requirement.JOURNAL_DECISION],
+            GateContext(journal_decision_present=False),
+        )
+        assert result.passed is False
+        assert "journal:decision" in result.missing
+
+    def test_journal_learning_present(self) -> None:
+        """Line 68: journal:learning present passes."""
+        t = _task()
+        result = check_requirements(
+            t,
+            [Requirement.JOURNAL_LEARNING],
+            GateContext(journal_learning_present=True),
+        )
+        assert result.passed is True
+
+    def test_journal_learning_missing(self) -> None:
+        t = _task()
+        result = check_requirements(
+            t,
+            [Requirement.JOURNAL_LEARNING],
+            GateContext(journal_learning_present=False),
+        )
+        assert result.passed is False
+        assert "journal:learning" in result.missing
+
+    def test_self_verified_present(self) -> None:
+        """Line 85: self_verified=True passes."""
+        t = _task()
+        t.self_verified = True
+        result = check_requirements(t, [Requirement.SELF_VERIFIED])
+        assert result.passed is True
+
+    def test_self_verified_missing(self) -> None:
+        t = _task()
+        t.self_verified = False
+        result = check_requirements(t, [Requirement.SELF_VERIFIED])
+        assert result.passed is False
+        assert "self_verified" in result.missing

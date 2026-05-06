@@ -213,3 +213,23 @@ async def test_evidence_with_task_id_returns_evidence_envelope() -> None:
     assert body["evidence"]["commits"] == ["abc123"]
     mock_actions.evidence.assert_awaited_once()
     assert str(mock_actions.evidence.call_args.kwargs["task_id"]) == _TASK_ID
+
+
+@pytest.mark.asyncio
+async def test_notify_dispatches_target_text_priority() -> None:
+    """POST /api/v2/do/notify forwards target/text/priority to ContentActions."""
+    mock_actions = MagicMock(spec=ContentActions)
+    mock_actions.notify = AsyncMock(
+        return_value=_make_envelope(status="ok", task_id=None)
+    )
+    client = TestClient(_build_app(mock_actions))
+    resp = client.post(
+        "/api/v2/do/notify",
+        json={"target": "be-pm", "text": "ack me", "priority": "normal"},
+        headers=_HEADERS,
+    )
+    assert resp.status_code == _HTTP_200
+    mock_actions.notify.assert_awaited_once()
+    call_kwargs = mock_actions.notify.call_args.kwargs
+    assert call_kwargs["target"] == "be-pm"
+    assert call_kwargs["text"] == "ack me"

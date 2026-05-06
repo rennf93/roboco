@@ -15,12 +15,15 @@ import pytest
 import pytest_asyncio
 from roboco.db.tables import ModelAssignmentTable
 from roboco.models.base import ModelProvider
+from roboco.services import provider as provider_module
 from roboco.services.base import ConflictError, NotFoundError
 from roboco.services.provider import (
     ProviderCreate,
     ProviderService,
     ProviderUpdate,
+    get_provider_service,
 )
+from roboco.utils.crypto import EncryptionError
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator
@@ -301,3 +304,110 @@ async def test_get_decrypted_token_returns_none_for_missing_provider(
     provider_svc: ProviderService,
 ) -> None:
     assert await provider_svc.get_decrypted_token(uuid4()) is None
+
+
+# ---------------------------------------------------------------------------
+# Encryption error paths (lines 115-117, 162-164)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_create_provider_encrypt_failure_propagates(
+    provider_svc: ProviderService,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """If encrypt_token fails, error is logged + raised."""
+
+    def _boom(_token: str) -> str:
+        raise EncryptionError("bad key")
+
+    monkeypatch.setattr(provider_module, "encrypt_token", _boom)
+    with pytest.raises(EncryptionError):
+        await provider_svc.create_provider(
+            ProviderCreate(
+                name=f"e-{uuid4().hex[:6]}",
+                type=ModelProvider.ANTHROPIC,
+                auth_token="some-token",
+            )
+        )
+
+
+@pytest.mark.asyncio
+async def test_update_provider_encrypt_failure_propagates(
+    provider_svc: ProviderService,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """If encrypt_token fails on update, error propagates."""
+
+    row = await provider_svc.create_provider(
+        ProviderCreate(name=f"eu-{uuid4().hex[:6]}", type=ModelProvider.ANTHROPIC)
+    )
+
+    def _boom(_token: str) -> str:
+        raise EncryptionError("bad key")
+
+    monkeypatch.setattr(provider_module, "encrypt_token", _boom)
+    with pytest.raises(EncryptionError):
+        await provider_svc.update_provider(
+            row.id, ProviderUpdate(auth_token="new-secret")
+        )
+
+
+# ---------------------------------------------------------------------------
+# Decryption error path (lines 218-224)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_get_decrypted_token_decrypt_failure_propagates(
+    provider_svc: ProviderService,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """If decrypt_token raises, error propagates."""
+
+    row = await provider_svc.create_provider(
+        ProviderCreate(
+            name=f"dec-{uuid4().hex[:6]}",
+            type=ModelProvider.ANTHROPIC,
+            auth_token="initial",
+        )
+    )
+
+    def _boom(_blob: str) -> str:
+        raise EncryptionError("decrypt failed")
+
+    monkeypatch.setattr(provider_module, "decrypt_token", _boom)
+    with pytest.raises(EncryptionError):
+        await provider_svc.get_decrypted_token(row.id)
+
+
+# ---------------------------------------------------------------------------
+# _apply_name_change identity branch (line 141)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_update_provider_same_name_is_noop(
+    provider_svc: ProviderService,
+) -> None:
+    """Updating to the same name short-circuits in _apply_name_change (line 141)."""
+    name = f"same-{uuid4().hex[:6]}"
+    row = await provider_svc.create_provider(
+        ProviderCreate(name=name, type=ModelProvider.ANTHROPIC)
+    )
+    updated = await provider_svc.update_provider(row.id, ProviderUpdate(name=name))
+    assert updated is not None
+    assert updated.name == name
+
+
+# ---------------------------------------------------------------------------
+# Factory (line 229)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_get_provider_service_factory(db_session: AsyncSession) -> None:
+    """Factory returns a configured ProviderService."""
+
+    svc = get_provider_service(db_session)
+    assert isinstance(svc, ProviderService)

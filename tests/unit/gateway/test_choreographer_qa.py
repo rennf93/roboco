@@ -150,6 +150,19 @@ async def test_claim_review_task_not_found_returns_not_found() -> None:
 
 
 @pytest.mark.asyncio
+async def test_pass_review_task_not_found_returns_not_found() -> None:
+    """Line 117 of qa.py: _verify_qa_owner emits not_found when task is None."""
+    qa_id = uuid4()
+    task_id = uuid4()
+    task_svc = AsyncMock()
+    task_svc.get.return_value = None
+    deps = _make_deps(task=task_svc)
+    c = Choreographer(deps)
+    env = await c.pass_review(qa_id, task_id, notes="x" * 80)
+    assert env.as_dict()["error"] == "not_found"
+
+
+@pytest.mark.asyncio
 async def test_pass_review_requires_qa_notes_min_chars() -> None:
     qa_id = uuid4()
     task_id = uuid4()

@@ -31,9 +31,11 @@ from uuid import UUID, uuid4
 
 import pytest
 import pytest_asyncio
+from roboco.db import base as db_base
 from roboco.db import base as roboco_db_base
 from roboco.db.tables import AgentTable
 from roboco.models.base import AgentRole, AgentStatus
+from roboco.seeds import initial_data as seeds
 from roboco.services.audit import AuditService
 from sqlalchemy.ext.asyncio import async_sessionmaker
 
@@ -207,3 +209,188 @@ async def test_has_recent_tracing_gap_respects_since_window(
         since=future_since,
     )
     assert result is False
+
+
+# ---------------------------------------------------------------------------
+# get_recent_events — query method exercises severity filters and ordering.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_get_recent_events_returns_logged_rows(
+    patched_session_factory: AsyncSession,
+) -> None:
+    agent_id = await _seed_agent(patched_session_factory)
+    audit = AuditService()
+    task_id = uuid4()
+
+    await audit.log_event(
+        event_type="gateway.rejected",
+        agent_id=agent_id,
+        task_id=task_id,
+        details={"reason": "tracing_gap"},
+    )
+
+    rows = await audit.get_recent_events(limit=10)
+    assert len(rows) >= 1
+    assert any(r["event_type"] == "gateway.rejected" for r in rows)
+
+
+@pytest.mark.asyncio
+async def test_get_recent_events_filters_event_type(
+    patched_session_factory: AsyncSession,
+) -> None:
+    agent_id = await _seed_agent(patched_session_factory)
+    audit = AuditService()
+
+    await audit.log_event(
+        event_type="task.created",
+        agent_id=agent_id,
+        task_id=uuid4(),
+    )
+    await audit.log_event(
+        event_type="task.completed",
+        agent_id=agent_id,
+        task_id=uuid4(),
+    )
+
+    rows = await audit.get_recent_events(limit=10, event_type="task.created")
+    assert all(r["event_type"] == "task.created" for r in rows)
+
+
+@pytest.mark.asyncio
+async def test_get_recent_events_filters_agent_id(
+    patched_session_factory: AsyncSession,
+) -> None:
+    agent_id = await _seed_agent(patched_session_factory)
+    audit = AuditService()
+
+    await audit.log_event(
+        event_type="task.created",
+        agent_id=agent_id,
+        task_id=uuid4(),
+    )
+
+    rows = await audit.get_recent_events(limit=10, agent_id=agent_id)
+    assert all(r["agent_id"] == str(agent_id) for r in rows)
+
+
+@pytest.mark.asyncio
+async def test_get_recent_events_filters_min_severity_warning(
+    patched_session_factory: AsyncSession,
+) -> None:
+    agent_id = await _seed_agent(patched_session_factory)
+    audit = AuditService()
+
+    await audit.log_event(
+        event_type="some.warn",
+        agent_id=agent_id,
+        task_id=uuid4(),
+        severity="warning",
+    )
+    await audit.log_event(
+        event_type="some.info",
+        agent_id=agent_id,
+        task_id=uuid4(),
+        severity="info",
+    )
+
+    rows = await audit.get_recent_events(limit=10, min_severity="warning")
+    assert all(r["severity"] in {"warning", "error"} for r in rows)
+
+
+@pytest.mark.asyncio
+async def test_get_recent_events_filters_min_severity_error(
+    patched_session_factory: AsyncSession,
+) -> None:
+    agent_id = await _seed_agent(patched_session_factory)
+    audit = AuditService()
+
+    await audit.log_event(
+        event_type="error.x",
+        agent_id=agent_id,
+        task_id=uuid4(),
+        severity="error",
+    )
+    await audit.log_event(
+        event_type="warn.x",
+        agent_id=agent_id,
+        task_id=uuid4(),
+        severity="warning",
+    )
+
+    rows = await audit.get_recent_events(limit=10, min_severity="error")
+    assert all(r["severity"] == "error" for r in rows)
+
+
+# ---------------------------------------------------------------------------
+# _resolve_agent_id_by_slug — covers static and DB lookup paths
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_resolve_agent_id_by_slug_db_lookup(
+    patched_session_factory: AsyncSession,
+) -> None:
+    """An agent NOT in AGENT_UUIDS hits the DB lookup path."""
+    agent = AgentTable(
+        id=uuid4(),
+        name="Runtime Agent",
+        slug=f"runtime-{uuid4().hex[:8]}",
+        role=AgentRole.DEVELOPER,
+        team=None,
+        status=AgentStatus.ACTIVE,
+        model_config={},
+        system_prompt="x",
+        capabilities=[],
+        permissions={},
+        metrics={},
+    )
+    patched_session_factory.add(agent)
+    await patched_session_factory.commit()
+
+    audit = AuditService()
+    resolved = await audit._resolve_agent_id_by_slug(agent.slug)
+    assert resolved == agent.id
+
+
+@pytest.mark.asyncio
+@pytest.mark.usefixtures("patched_session_factory")
+async def test_resolve_agent_id_by_slug_unknown_returns_none() -> None:
+    audit = AuditService()
+    resolved = await audit._resolve_agent_id_by_slug("nonexistent-slug-xyz123")
+    assert resolved is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.usefixtures("patched_session_factory")
+async def test_resolve_agent_id_by_slug_static_lookup_exception(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Force the AGENT_UUIDS import path to raise to cover lines 465-470."""
+
+    # Replace AGENT_UUIDS with an object that raises on .get
+    class _BadMap:
+        def get(self, *_a: object, **_k: object) -> None:
+            raise RuntimeError("boom")
+
+    monkeypatch.setattr(seeds, "AGENT_UUIDS", _BadMap())
+    audit = AuditService()
+    # Falls back to DB lookup — returns None since slug isn't in DB.
+    resolved = await audit._resolve_agent_id_by_slug("missing-fallback-slug")
+    assert resolved is None
+
+
+@pytest.mark.asyncio
+async def test_resolve_agent_id_by_slug_db_lookup_exception(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Force DB lookup to raise so the outer except runs (lines 488-494)."""
+
+    def _explode() -> object:
+        raise RuntimeError("session factory broken")
+
+    monkeypatch.setattr(db_base, "get_session_factory", _explode)
+    audit = AuditService()
+    resolved = await audit._resolve_agent_id_by_slug("nope-not-real")
+    assert resolved is None

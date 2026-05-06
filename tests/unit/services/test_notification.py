@@ -14,6 +14,7 @@ from uuid import UUID, uuid4
 
 import pytest
 from roboco.models import NotificationPriority, NotificationType
+from roboco.models.notification import CreateNotificationParams
 from roboco.services.notification import (
     NotificationService,
     _resolve_agent_uuid,
@@ -232,8 +233,6 @@ async def test_create_notification_skips_when_from_agent_unresolvable(
 ) -> None:
     """Unresolvable from_agent → log and skip, no row inserted."""
     db = _FakeDb(agent_uuid=None)  # All slug lookups return None.
-    from roboco.models.notification import CreateNotificationParams
-
     with _patch_db_context(db):
         await svc._create_notification(
             CreateNotificationParams(
@@ -254,7 +253,6 @@ async def test_create_notification_skips_when_no_resolvable_recipients(
 ) -> None:
     """All recipients unresolvable → skip with warn."""
     aid = uuid4()
-    from roboco.models.notification import CreateNotificationParams
 
     # First call resolves from_agent, subsequent slug lookups still hit our
     # fake — which always returns the same agent. Use a fake that returns the

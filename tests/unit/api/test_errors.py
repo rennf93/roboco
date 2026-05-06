@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from http import HTTPStatus
+
 import pytest
 from fastapi import HTTPException
 from roboco.api.utils.errors import (
@@ -30,31 +32,31 @@ from roboco.services.base import (
 
 def test_not_found_with_id() -> None:
     e = not_found("Task", "abc-123")
-    assert e.status_code == 404
+    assert e.status_code == HTTPStatus.NOT_FOUND
     assert "abc-123" in e.detail
 
 
 def test_not_found_without_id() -> None:
     e = not_found("Task")
-    assert e.status_code == 404
+    assert e.status_code == HTTPStatus.NOT_FOUND
     assert e.detail == "Task not found"
 
 
 def test_forbidden_basic() -> None:
     e = forbidden("edit task")
-    assert e.status_code == 403
+    assert e.status_code == HTTPStatus.FORBIDDEN
     assert "edit task" in e.detail
 
 
 def test_forbidden_with_reason() -> None:
     e = forbidden("edit", reason="not owner")
-    assert e.status_code == 403
+    assert e.status_code == HTTPStatus.FORBIDDEN
     assert "not owner" in e.detail
 
 
 def test_unauthorized_default() -> None:
     e = unauthorized()
-    assert e.status_code == 401
+    assert e.status_code == HTTPStatus.UNAUTHORIZED
 
 
 def test_unauthorized_custom() -> None:
@@ -64,7 +66,7 @@ def test_unauthorized_custom() -> None:
 
 def test_validation_error_basic() -> None:
     e = validation_error("bad input")
-    assert e.status_code == 400
+    assert e.status_code == HTTPStatus.BAD_REQUEST
 
 
 def test_validation_error_with_field() -> None:
@@ -74,7 +76,7 @@ def test_validation_error_with_field() -> None:
 
 def test_conflict_basic() -> None:
     e = conflict("duplicate")
-    assert e.status_code == 409
+    assert e.status_code == HTTPStatus.CONFLICT
 
 
 def test_conflict_with_resource() -> None:
@@ -84,7 +86,7 @@ def test_conflict_with_resource() -> None:
 
 def test_service_unavailable_basic() -> None:
     e = service_unavailable("Orchestrator")
-    assert e.status_code == 503
+    assert e.status_code == HTTPStatus.SERVICE_UNAVAILABLE
 
 
 def test_service_unavailable_with_reason() -> None:
@@ -99,32 +101,32 @@ def test_service_unavailable_with_reason() -> None:
 
 def test_handle_not_found() -> None:
     e = handle_service_error(NotFoundError(resource_type="Task", resource_id="abc"))
-    assert e.status_code == 404
+    assert e.status_code == HTTPStatus.NOT_FOUND
 
 
 def test_handle_validation_error() -> None:
     e = handle_service_error(ValidationError("bad", field="x"))
-    assert e.status_code == 400
+    assert e.status_code == HTTPStatus.BAD_REQUEST
 
 
 def test_handle_conflict() -> None:
     e = handle_service_error(ConflictError("dup", resource_type="Channel"))
-    assert e.status_code == 409
+    assert e.status_code == HTTPStatus.CONFLICT
 
 
 def test_handle_unauthorized() -> None:
     e = handle_service_error(UnauthorizedError(action="edit", reason="x"))
-    assert e.status_code == 403
+    assert e.status_code == HTTPStatus.FORBIDDEN
 
 
 def test_handle_service_unavailable() -> None:
     e = handle_service_error(ServiceUnavailableError(service_name="X", reason="r"))
-    assert e.status_code == 503
+    assert e.status_code == HTTPStatus.SERVICE_UNAVAILABLE
 
 
 def test_handle_generic_service_error() -> None:
     e = handle_service_error(ServiceError("oops"))
-    assert e.status_code == 500
+    assert e.status_code == HTTPStatus.INTERNAL_SERVER_ERROR
 
 
 # ---------------------------------------------------------------------------
@@ -140,7 +142,7 @@ async def test_service_error_handler_translates() -> None:
 
     with pytest.raises(HTTPException) as exc:
         await my_route()
-    assert exc.value.status_code == 404
+    assert exc.value.status_code == HTTPStatus.NOT_FOUND
 
 
 @pytest.mark.asyncio

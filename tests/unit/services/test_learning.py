@@ -20,6 +20,8 @@ from roboco.services.learning import (
     LearningScope,
     LearningType,
     RecordLearningParams,
+    _LearningServiceHolder,
+    get_learning_service,
 )
 
 
@@ -112,7 +114,7 @@ async def test_record_learning_normalizes_string_enums(
 async def test_record_learning_team_scope_calls_create_notifications(
     svc: LearningPropagationService,
 ) -> None:
-    """Team-scope learnings call _create_notifications, which best-effort logs on error."""
+    """Team-scope learnings call _create_notifications; best-effort logs on error."""
     stub = _StubOptimal()
     await svc.initialize(stub)
     # The notifications branch will silently fail because there's no DB
@@ -180,7 +182,8 @@ async def test_get_learnings_for_agent_returns_filtered_results(
     )
     await svc.initialize(stub)
     out = await svc.get_learnings_for_agent(aid, "developer")
-    # Visible: own personal, team for matching role, org-anyone — drop other-personal & team-other-role
+    # Visible: own personal, team for matching role, org-anyone.
+    # Filtered out: other-personal & team-other-role.
     contents = [r.metadata for r in out]
     assert own_personal.metadata in contents
     assert team_visible.metadata in contents
@@ -215,7 +218,8 @@ async def test_search_similar_learnings_passes_through(
     await svc.initialize(stub)
     out = await svc.search_similar_learnings("how to debug", top_k=3)
     assert len(out) == 1
-    assert stub.searches[0]["top_k"] == 3
+    _TOP_K = 3
+    assert stub.searches[0]["top_k"] == _TOP_K
     assert IndexType.LEARNINGS in stub.searches[0]["index_types"]
 
 
@@ -318,3 +322,13 @@ async def test_get_learning_stats_returns_dict_with_expected_keys(
     assert "total_learnings" in stats
     assert "by_type" in stats
     assert "by_scope" in stats
+
+
+@pytest.mark.asyncio
+async def test_get_learning_service_factory() -> None:
+    """get_learning_service returns a singleton instance."""
+    _LearningServiceHolder.instance = None
+    a = await get_learning_service()
+    b = await get_learning_service()
+    assert a is b
+    _LearningServiceHolder.instance = None

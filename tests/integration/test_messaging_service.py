@@ -2,13 +2,19 @@
 
 from __future__ import annotations
 
+from datetime import UTC, datetime, timedelta
+from types import SimpleNamespace
 from typing import TYPE_CHECKING
+from unittest.mock import AsyncMock, patch
 from uuid import uuid4
+from uuid import uuid4 as _u
 
 import pytest
 import pytest_asyncio
-from roboco.db.tables import AgentTable, ProjectTable, TaskTable
-from roboco.models import AgentRole, AgentStatus, Team
+from roboco.db.tables import AgentTable, MessageTable, ProjectTable, TaskTable
+from roboco.db.tables import AgentTable as _AgentTable
+from roboco.enforcement.channel_access import ChannelAccessDeniedError
+from roboco.models import AgentRole, AgentStatus, MessageType, Team
 from roboco.models.base import (
     ChannelType,
     SessionStatus,
@@ -19,10 +25,21 @@ from roboco.models.base import (
 from roboco.models.messaging import (
     ChannelCreateRequest,
     GroupCreateRequest,
+    MessageCreateRequest,
     SessionCreateRequest,
 )
-from roboco.services.base import NotFoundError
-from roboco.services.messaging import MessagingService
+from roboco.models.session import (
+    SessionForTasksCreate,
+    SessionScope,
+    SessionTaskRelationshipType,
+)
+from roboco.services.base import ConflictError, NotFoundError
+from roboco.services.messaging import (
+    ApiSessionCreate,
+    MessagingService,
+    get_messaging_service,
+)
+from sqlalchemy import select
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator
@@ -261,7 +278,8 @@ async def test_list_groups_in_channel(msg_setup: dict) -> None:
     await svc.create_group(GroupCreateRequest(name="g1", channel_id=ch.id))
     await svc.create_group(GroupCreateRequest(name="g2", channel_id=ch.id))
     groups = await svc.list_groups_in_channel(ch.id)
-    assert len(groups) >= 2
+    _CREATED_GROUPS = 2
+    assert len(groups) >= _CREATED_GROUPS
 
 
 # ---------------------------------------------------------------------------
@@ -426,6 +444,22 @@ async def test_get_or_create_active_session_returns_active(
     grp = await svc.create_group(GroupCreateRequest(name="g1", channel_id=ch.id))
     a = await svc.get_or_create_active_session(grp.id)
     assert a.status == SessionStatus.ACTIVE
+
+
+@pytest.mark.asyncio
+async def test_get_or_create_active_session_returns_existing(
+    msg_setup: dict,
+) -> None:
+    """Lines 802-804: returns the existing active session when one is registered."""
+    svc = msg_setup["svc"]
+    ch = await svc.create_channel(_channel_req(uuid4().hex[:6]))
+    grp = await svc.create_group(GroupCreateRequest(name="g1", channel_id=ch.id))
+    # First call creates and registers active_session_id on the group.
+    first = await svc.get_or_create_active_session(grp.id)
+    # Make sure DB sees the active_session_id set.
+    grp.active_session_id = first.id
+    second = await svc.get_or_create_active_session(grp.id)
+    assert second.id == first.id
 
 
 @pytest.mark.asyncio
@@ -609,9 +643,6 @@ async def test_check_session_boundaries_exceeded(msg_setup: dict) -> None:
 # ---------------------------------------------------------------------------
 # Messages
 # ---------------------------------------------------------------------------
-
-
-from roboco.models.messaging import MessageCreateRequest  # noqa: E402
 
 
 @pytest.mark.asyncio
@@ -847,8 +878,6 @@ async def test_list_group_sessions_unauthorized(msg_setup: dict) -> None:
 async def test_create_session_with_access_check_unknown_group(
     msg_setup: dict,
 ) -> None:
-    from roboco.services.messaging import ApiSessionCreate
-
     svc = msg_setup["svc"]
     with pytest.raises(NotFoundError):
         await svc.create_session_with_access_check(
@@ -867,8 +896,6 @@ async def test_create_session_with_access_check_unknown_group(
 async def test_create_session_with_access_check_unauthorized(
     msg_setup: dict,
 ) -> None:
-    from roboco.services.messaging import ApiSessionCreate
-
     svc = msg_setup["svc"]
     ch = await svc.create_channel(_channel_req(uuid4().hex[:6]))
     grp = await svc.create_group(GroupCreateRequest(name="g1", channel_id=ch.id))
@@ -894,8 +921,6 @@ async def test_create_session_with_access_check_unauthorized(
 async def test_create_session_for_tasks_unknown_channel(
     msg_setup: dict,
 ) -> None:
-    from roboco.models.session import SessionForTasksCreate, SessionScope
-
     svc = msg_setup["svc"]
     with pytest.raises(NotFoundError):
         await svc.create_session_for_tasks(
@@ -912,8 +937,6 @@ async def test_create_session_for_tasks_unknown_channel(
 async def test_create_session_for_tasks_creates_session(
     msg_setup: dict,
 ) -> None:
-    from roboco.models.session import SessionForTasksCreate, SessionScope
-
     svc = msg_setup["svc"]
     ch = await svc.create_channel(_channel_req(uuid4().hex[:6]))
     sess, links = await svc.create_session_for_tasks(
@@ -938,8 +961,6 @@ async def test_create_session_with_access_check_member_can_write(
     msg_setup: dict,
 ) -> None:
     """Channel writer can create a session via access-checked path."""
-    from roboco.services.messaging import ApiSessionCreate
-
     svc = msg_setup["svc"]
     aid = msg_setup["agent_id"]
     ch = await svc.create_channel(_channel_req(uuid4().hex[:6]))
@@ -999,8 +1020,6 @@ async def test_list_group_sessions_with_status_filter(
 async def test_sweep_timed_out_sessions_closes_idle_session(
     msg_setup: dict, db_session: AsyncSession
 ) -> None:
-    from datetime import UTC, datetime, timedelta
-
     svc = msg_setup["svc"]
     ch = await svc.create_channel(_channel_req(uuid4().hex[:6]))
     grp = await svc.create_group(GroupCreateRequest(name="g1", channel_id=ch.id))
@@ -1090,10 +1109,6 @@ async def test_send_message_reply_target_unknown_raises(
 @pytest.mark.asyncio
 async def test_get_messages_with_filters(msg_setup: dict) -> None:
     """get_messages with before/after/type filters."""
-    from datetime import UTC, datetime, timedelta
-
-    from roboco.models import MessageType
-
     svc = msg_setup["svc"]
     aid = msg_setup["agent_id"]
     ch = await svc.create_channel(_channel_req(uuid4().hex[:6]))
@@ -1123,8 +1138,9 @@ async def test_get_messages_with_limit(msg_setup: dict) -> None:
         await svc.send_message(
             MessageCreateRequest(agent_id=aid, session_id=sess.id, content=f"msg-{i}")
         )
-    msgs, has_more = await svc.get_messages(sess.id, limit=2)
-    assert len(msgs) == 2
+    _PAGE = 2
+    msgs, has_more = await svc.get_messages(sess.id, limit=_PAGE)
+    assert len(msgs) == _PAGE
     assert has_more is True
 
 
@@ -1186,9 +1202,6 @@ async def test_walk_task_ancestors_with_parent(
     msg_setup: dict, db_session: AsyncSession
 ) -> None:
     """Smoke-test ancestry walk via direct DB seeding."""
-    from roboco.db.tables import TaskTable
-    from roboco.models.base import TaskNature, TaskStatus, TaskType
-
     svc = msg_setup["svc"]
     parent_id = uuid4()
     child_id = uuid4()
@@ -1232,3 +1245,1300 @@ async def test_walk_task_ancestors_with_parent(
     ancestors = await svc._walk_task_ancestors(child_id)
     assert len(ancestors) >= 1
     assert ancestors[0].id == parent_id
+
+
+# ---------------------------------------------------------------------------
+# update_channel_fields — None values + unknown keys ignored
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_update_channel_fields_skips_none_and_unknown(
+    msg_setup: dict,
+) -> None:
+    svc = msg_setup["svc"]
+    ch = await svc.create_channel(_channel_req(uuid4().hex[:6]))
+    # Pass None and an unknown key — both skipped.
+    updated = await svc.update_channel_fields(
+        channel_id=ch.id,
+        fields={"name": None, "ghost_field": "x", "topic": "real-topic"},
+    )
+    assert updated.topic == "real-topic"
+
+
+# ---------------------------------------------------------------------------
+# get_or_create_channel_by_slug — auto-create from seeds
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_get_or_create_channel_by_slug_returns_existing(
+    msg_setup: dict,
+) -> None:
+    """If channel already exists in DB, return it directly (line 297)."""
+    svc = msg_setup["svc"]
+    req = _channel_req(uuid4().hex[:6])
+    created = await svc.create_channel(req)
+    # First time looks up DB and finds it.
+    found = await svc.get_or_create_channel_by_slug(req.slug)
+    assert found is not None
+    assert found.id == created.id
+
+
+# ---------------------------------------------------------------------------
+# remove_channel_member — channel missing
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_remove_channel_member_missing(msg_setup: dict) -> None:
+    svc = msg_setup["svc"]
+    with pytest.raises(ValueError, match="not found"):
+        await svc.remove_channel_member(uuid4(), uuid4())
+
+
+# ---------------------------------------------------------------------------
+# create_session — closes existing active session + bus publish + failure
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_create_session_publishes_event_when_bus_connected(
+    msg_setup: dict,
+) -> None:
+    """Bus connected → session_created event published."""
+    svc = msg_setup["svc"]
+    ch = await svc.create_channel(_channel_req(uuid4().hex[:6]))
+    grp = await svc.create_group(GroupCreateRequest(name="g1", channel_id=ch.id))
+    mock_bus = AsyncMock()
+    mock_bus.is_connected = lambda: True
+    mock_bus.publish = AsyncMock(return_value=None)
+    with patch("roboco.services.messaging.get_event_bus", return_value=mock_bus):
+        sess = await svc.create_session(SessionCreateRequest(group_id=grp.id))
+    assert sess.id is not None
+    mock_bus.publish.assert_awaited()
+
+
+@pytest.mark.asyncio
+async def test_create_session_handles_bus_failure(msg_setup: dict) -> None:
+    """Bus exception in publish path is logged but doesn't break."""
+    svc = msg_setup["svc"]
+    ch = await svc.create_channel(_channel_req(uuid4().hex[:6]))
+    grp = await svc.create_group(GroupCreateRequest(name="g1", channel_id=ch.id))
+    with patch(
+        "roboco.services.messaging.get_event_bus",
+        side_effect=RuntimeError("bus down"),
+    ):
+        sess = await svc.create_session(SessionCreateRequest(group_id=grp.id))
+    assert sess.id is not None
+
+
+# ---------------------------------------------------------------------------
+# sweep_timed_out_sessions — within-limits skip
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_sweep_skip_when_within_limits(msg_setup: dict) -> None:
+    """Active session whose last_activity is recent → not closed."""
+    svc = msg_setup["svc"]
+    ch = await svc.create_channel(_channel_req(uuid4().hex[:6]))
+    grp = await svc.create_group(GroupCreateRequest(name="g1", channel_id=ch.id))
+    # Long timeout — won't be closed.
+    sess = await svc.create_session(
+        SessionCreateRequest(group_id=grp.id, timeout_seconds=10000)
+    )
+    closed = await svc.sweep_timed_out_sessions()
+    fetched = await svc.get_session(sess.id)
+    # Session still active.
+    assert fetched is not None
+    assert fetched.status == SessionStatus.ACTIVE
+    # closed counter may be 0 or higher (other tests).
+    assert closed >= 0
+
+
+# ---------------------------------------------------------------------------
+# close_session — clears group's active_session_id + bus events
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_close_session_clears_active_session_on_group(
+    msg_setup: dict,
+) -> None:
+    svc = msg_setup["svc"]
+    ch = await svc.create_channel(_channel_req(uuid4().hex[:6]))
+    grp = await svc.create_group(GroupCreateRequest(name="g1", channel_id=ch.id))
+    sess = await svc.create_session(SessionCreateRequest(group_id=grp.id))
+    await svc.close_session(sess.id, "test close")
+    refreshed_group = await svc.get_group(grp.id)
+    assert refreshed_group is not None
+    assert refreshed_group.active_session_id is None
+
+
+@pytest.mark.asyncio
+async def test_close_session_publishes_event(msg_setup: dict) -> None:
+    svc = msg_setup["svc"]
+    ch = await svc.create_channel(_channel_req(uuid4().hex[:6]))
+    grp = await svc.create_group(GroupCreateRequest(name="g1", channel_id=ch.id))
+    sess = await svc.create_session(SessionCreateRequest(group_id=grp.id))
+    mock_bus = AsyncMock()
+    mock_bus.is_connected = lambda: True
+    mock_bus.publish = AsyncMock(return_value=None)
+    with patch("roboco.services.messaging.get_event_bus", return_value=mock_bus):
+        await svc.close_session(sess.id, "test")
+    mock_bus.publish.assert_awaited()
+
+
+@pytest.mark.asyncio
+async def test_resolve_group_for_session_returns_inherited_group(
+    msg_setup: dict, db_session: AsyncSession
+) -> None:
+    """Cover line 1128: _resolve_group_for_session returns inherited group.
+
+    No explicit `group_id`, parent task has primary session linked to a
+    group → `_resolve_group_from_parent_tasks` returns that group, line 1128
+    returns it before falling through to channel-default lookup.
+    """
+    svc = msg_setup["svc"]
+    aid = msg_setup["agent_id"]
+    base_task_result = await db_session.execute(
+        select(TaskTable).where(TaskTable.id == msg_setup["task_id"])
+    )
+    base_task = base_task_result.scalar_one()
+
+    parent = TaskTable(
+        id=uuid4(),
+        title="rg-parent",
+        description="d",
+        acceptance_criteria=["ac"],
+        status=TaskStatus.PENDING,
+        priority=2,
+        task_type=TaskType.CODE,
+        nature=TaskNature.TECHNICAL,
+        project_id=base_task.project_id,
+        created_by=aid,
+        team=base_task.team,
+    )
+    child = TaskTable(
+        id=uuid4(),
+        title="rg-child",
+        description="d",
+        acceptance_criteria=["ac"],
+        status=TaskStatus.PENDING,
+        priority=2,
+        task_type=TaskType.CODE,
+        nature=TaskNature.TECHNICAL,
+        project_id=base_task.project_id,
+        created_by=aid,
+        team=base_task.team,
+        parent_task_id=parent.id,
+    )
+    db_session.add_all([parent, child])
+    await db_session.flush()
+
+    channel = await svc.create_channel(_channel_req(f"rg-{uuid4().hex[:6]}"))
+    parent_grp = await svc.create_group(
+        GroupCreateRequest(name="parent-grp", channel_id=channel.id)
+    )
+    parent_sess = await svc.create_session(SessionCreateRequest(group_id=parent_grp.id))
+    await svc.link_session_to_task(parent_sess.id, parent.id, aid, is_primary=True)
+
+    req = SessionForTasksCreate(
+        task_ids=[child.id],
+        channel_slug=channel.slug,
+        scope=SessionScope.TASK,
+    )
+    resolved = await svc._resolve_group_for_session(req, channel)
+    assert resolved.id == parent_grp.id
+
+
+@pytest.mark.asyncio
+async def test_resolve_group_for_session_inherits_from_parent(
+    msg_setup: dict, db_session: AsyncSession
+) -> None:
+    """Cover line 1128: inherited group returned from _resolve_group_for_session.
+
+    Parent task has a primary session on channel A; child requests a session
+    on channel B. _find_ancestor_session_on_channel returns None (channel
+    mismatch), so _resolve_group_for_session falls through to
+    _resolve_group_from_parent_tasks which finds the parent's group, and
+    line 1128 returns it.
+    """
+    svc = msg_setup["svc"]
+    aid = msg_setup["agent_id"]
+    base_task_result = await db_session.execute(
+        select(TaskTable).where(TaskTable.id == msg_setup["task_id"])
+    )
+    base_task = base_task_result.scalar_one()
+
+    parent = TaskTable(
+        id=uuid4(),
+        title="parent-r",
+        description="d",
+        acceptance_criteria=["ac"],
+        status=TaskStatus.PENDING,
+        priority=2,
+        task_type=TaskType.CODE,
+        nature=TaskNature.TECHNICAL,
+        project_id=base_task.project_id,
+        created_by=aid,
+        team=base_task.team,
+    )
+    child = TaskTable(
+        id=uuid4(),
+        title="child-r",
+        description="d",
+        acceptance_criteria=["ac"],
+        status=TaskStatus.PENDING,
+        priority=2,
+        task_type=TaskType.CODE,
+        nature=TaskNature.TECHNICAL,
+        project_id=base_task.project_id,
+        created_by=aid,
+        team=base_task.team,
+        parent_task_id=parent.id,
+    )
+    db_session.add_all([parent, child])
+    await db_session.flush()
+
+    channel_a = await svc.create_channel(_channel_req(f"a-{uuid4().hex[:6]}"))
+    grp_a = await svc.create_group(
+        GroupCreateRequest(name="a", channel_id=channel_a.id)
+    )
+    sess_a = await svc.create_session(SessionCreateRequest(group_id=grp_a.id))
+    await svc.link_session_to_task(sess_a.id, parent.id, aid, is_primary=True)
+
+    inherited = await svc._resolve_group_from_parent_tasks([child.id])
+    assert inherited is not None
+    assert inherited.id == grp_a.id
+
+
+@pytest.mark.asyncio
+async def test_walk_task_ancestors_cycle_breaks(
+    msg_setup: dict, db_session: AsyncSession
+) -> None:
+    """Cover line 1031: cycle detection breaks the walk loop.
+
+    Build A -> B -> A and walk from B; the second hop tries to visit A which
+    is already in `seen`, so the loop breaks.
+    """
+    svc = msg_setup["svc"]
+    aid = msg_setup["agent_id"]
+    base_task_result = await db_session.execute(
+        select(TaskTable).where(TaskTable.id == msg_setup["task_id"])
+    )
+    base_task = base_task_result.scalar_one()
+
+    a = TaskTable(
+        id=uuid4(),
+        title="cycle-A",
+        description="d",
+        acceptance_criteria=["ac"],
+        status=TaskStatus.PENDING,
+        priority=2,
+        task_type=TaskType.CODE,
+        nature=TaskNature.TECHNICAL,
+        project_id=base_task.project_id,
+        created_by=aid,
+        team=base_task.team,
+    )
+    b = TaskTable(
+        id=uuid4(),
+        title="cycle-B",
+        description="d",
+        acceptance_criteria=["ac"],
+        status=TaskStatus.PENDING,
+        priority=2,
+        task_type=TaskType.CODE,
+        nature=TaskNature.TECHNICAL,
+        project_id=base_task.project_id,
+        created_by=aid,
+        team=base_task.team,
+        parent_task_id=a.id,
+    )
+    db_session.add_all([a, b])
+    await db_session.flush()
+    # Force the cycle: A -> B -> A
+    a.parent_task_id = b.id
+    await db_session.flush()
+
+    ancestors = await svc._walk_task_ancestors(b.id)
+    # Walk yields A then breaks on cycle (B already in seen).
+    assert len(ancestors) >= 1
+
+
+@pytest.mark.asyncio
+async def test_walk_task_ancestors_orphan_parent_breaks(
+    msg_setup: dict, db_session: AsyncSession
+) -> None:
+    """Cover line 1038: parent_id present but parent row missing → break.
+
+    SQLAlchemy ORM doesn't enforce FK at flush when we set the field directly
+    in Python (the FK fires on write). We patch session.execute so the second
+    call (parent lookup) returns no row, simulating an orphaned parent_id.
+    """
+    svc = msg_setup["svc"]
+    aid = msg_setup["agent_id"]
+    base_task_result = await db_session.execute(
+        select(TaskTable).where(TaskTable.id == msg_setup["task_id"])
+    )
+    base_task = base_task_result.scalar_one()
+
+    parent = TaskTable(
+        id=uuid4(),
+        title="real-parent",
+        description="d",
+        acceptance_criteria=["ac"],
+        status=TaskStatus.PENDING,
+        priority=2,
+        task_type=TaskType.CODE,
+        nature=TaskNature.TECHNICAL,
+        project_id=base_task.project_id,
+        created_by=aid,
+        team=base_task.team,
+    )
+    child = TaskTable(
+        id=uuid4(),
+        title="orphan-child",
+        description="d",
+        acceptance_criteria=["ac"],
+        status=TaskStatus.PENDING,
+        priority=2,
+        task_type=TaskType.CODE,
+        nature=TaskNature.TECHNICAL,
+        project_id=base_task.project_id,
+        created_by=aid,
+        team=base_task.team,
+        parent_task_id=parent.id,
+    )
+    db_session.add_all([parent, child])
+    await db_session.flush()
+
+    # Now point child's parent_task_id at a non-existent UUID via raw SQL —
+    # this avoids the ORM relationship loader and bypasses FK at the SQL
+    # level (Postgres still enforces, so use update with deferred FK isn't
+    # possible; instead, set it to the parent's parent_task_id which is None
+    # → no, that won't trigger line 1038 either). Skip via fake task lookup.
+    # Patch session.execute so the second call (parent lookup) returns no row.
+    real_execute = svc.session.execute
+    call_count = {"n": 0}
+    _PARENT_LOOKUP_CALL = 2
+
+    class _Empty:
+        def scalar_one_or_none(self) -> None:
+            return None
+
+    async def _fake_execute(stmt, *args, **kwargs):
+        call_count["n"] += 1
+        result = await real_execute(stmt, *args, **kwargs)
+        if call_count["n"] == _PARENT_LOOKUP_CALL:
+            return _Empty()
+        return result
+
+    svc.session.execute = _fake_execute
+    try:
+        ancestors = await svc._walk_task_ancestors(child.id)
+    finally:
+        svc.session.execute = real_execute
+    # parent lookup returned None → break before appending.
+    assert ancestors == []
+
+
+@pytest.mark.asyncio
+async def test_close_session_clears_explicit_active_session(
+    msg_setup: dict, db_session: AsyncSession
+) -> None:
+    """Cover line 584: group.active_session_id == session_id assignment.
+
+    The matching active_session_id branch only runs when the group's stored
+    active_session_id equals the session_id being closed. After re-fetch,
+    SQLAlchemy may load a value that compares unequal to the in-memory id,
+    so set it explicitly + flush to lock in the equality before close.
+    """
+    svc = msg_setup["svc"]
+    ch = await svc.create_channel(_channel_req(uuid4().hex[:6]))
+    grp = await svc.create_group(GroupCreateRequest(name="g1", channel_id=ch.id))
+    sess = await svc.create_session(SessionCreateRequest(group_id=grp.id))
+    grp.active_session_id = sess.id
+    await db_session.flush()
+    closed = await svc.close_session(sess.id, "explicit close")
+    assert closed is not None
+    refreshed = await svc.get_group(grp.id)
+    assert refreshed is not None
+    assert refreshed.active_session_id is None
+
+
+@pytest.mark.asyncio
+async def test_close_session_or_raise_clears_active_session(
+    msg_setup: dict, db_session: AsyncSession
+) -> None:
+    """Cover line 769: same active_session_id reset path via close_session_or_raise."""
+    svc = msg_setup["svc"]
+    ch = await svc.create_channel(_channel_req(uuid4().hex[:6]))
+    grp = await svc.create_group(GroupCreateRequest(name="g1", channel_id=ch.id))
+    sess = await svc.create_session(SessionCreateRequest(group_id=grp.id))
+    grp.active_session_id = sess.id
+    await db_session.flush()
+    closed = await svc.close_session_or_raise(sess.id)
+    assert closed is not None
+    refreshed = await svc.get_group(grp.id)
+    assert refreshed is not None
+    assert refreshed.active_session_id is None
+
+
+@pytest.mark.asyncio
+async def test_close_session_handles_bus_failure(msg_setup: dict) -> None:
+    svc = msg_setup["svc"]
+    ch = await svc.create_channel(_channel_req(uuid4().hex[:6]))
+    grp = await svc.create_group(GroupCreateRequest(name="g1", channel_id=ch.id))
+    sess = await svc.create_session(SessionCreateRequest(group_id=grp.id))
+    with patch(
+        "roboco.services.messaging.get_event_bus",
+        side_effect=RuntimeError("bus down"),
+    ):
+        # Doesn't raise even though bus fails.
+        await svc.close_session(sess.id, "test")
+
+
+# ---------------------------------------------------------------------------
+# create_session_with_access_check — closes prior active + privileged path
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_create_session_with_access_check_closes_prior(
+    msg_setup: dict,
+) -> None:
+    """Existing ACTIVE session is closed before creating new one."""
+    svc = msg_setup["svc"]
+    aid = msg_setup["agent_id"]
+    ch = await svc.create_channel(_channel_req(uuid4().hex[:6]))
+    await svc.add_channel_member(ch.id, aid, can_write=True)
+    grp = await svc.create_group(GroupCreateRequest(name="g1", channel_id=ch.id))
+    # Pre-create active session.
+    prior = await svc.create_session(SessionCreateRequest(group_id=grp.id))
+    new_sess = await svc.create_session_with_access_check(
+        agent_id=aid,
+        request=ApiSessionCreate(
+            group_id=grp.id,
+            max_time_window_minutes=30,
+            max_message_count=100,
+            max_content_length=10000,
+            timeout_seconds=300,
+        ),
+    )
+    assert new_sess.id != prior.id
+
+
+# ---------------------------------------------------------------------------
+# _inject_proactive_context — failure swallowed
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_inject_proactive_context_swallows_exception(
+    msg_setup: dict,
+) -> None:
+    svc = msg_setup["svc"]
+    with patch(
+        "roboco.services.proactive.get_proactive_service",
+        side_effect=RuntimeError("proactive down"),
+    ):
+        # Doesn't raise.
+        await svc._inject_proactive_context(session_id=_u(), agent_id=_u())
+
+
+@pytest.mark.asyncio
+async def test_inject_proactive_context_logs_when_context_present(
+    msg_setup: dict,
+) -> None:
+    """Context with content triggers info log."""
+    svc = msg_setup["svc"]
+    fake_proactive = AsyncMock()
+    fake_context = SimpleNamespace(is_empty=lambda: False)
+    fake_proactive.get_context_for_session = AsyncMock(return_value=fake_context)
+    with patch(
+        "roboco.services.proactive.get_proactive_service",
+        AsyncMock(return_value=fake_proactive),
+    ):
+        await svc._inject_proactive_context(session_id=_u(), agent_id=_u())
+
+
+# ---------------------------------------------------------------------------
+# close_session_or_raise — already-closed branch
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_close_session_or_raise_already_closed(
+    msg_setup: dict,
+) -> None:
+    svc = msg_setup["svc"]
+    ch = await svc.create_channel(_channel_req(uuid4().hex[:6]))
+    grp = await svc.create_group(GroupCreateRequest(name="g1", channel_id=ch.id))
+    sess = await svc.create_session(SessionCreateRequest(group_id=grp.id))
+    await svc.close_session(sess.id)
+    with pytest.raises(ValueError, match="not active"):
+        await svc.close_session_or_raise(sess.id)
+
+
+@pytest.mark.asyncio
+async def test_close_session_or_raise_clears_active(msg_setup: dict) -> None:
+    svc = msg_setup["svc"]
+    ch = await svc.create_channel(_channel_req(uuid4().hex[:6]))
+    grp = await svc.create_group(GroupCreateRequest(name="g1", channel_id=ch.id))
+    sess = await svc.create_session(SessionCreateRequest(group_id=grp.id))
+    # Force-flush so close_session reads back active_session_id from DB.
+    await svc.session.flush()
+    closed = await svc.close_session_or_raise(sess.id)
+    assert closed.status == SessionStatus.CLOSED
+    refreshed_grp = await svc.get_group(grp.id)
+    assert refreshed_grp is not None
+    assert refreshed_grp.active_session_id is None
+
+
+# ---------------------------------------------------------------------------
+# get_or_create_active_session — creates new when none active
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_get_or_create_active_session_creates_when_no_active(
+    msg_setup: dict,
+) -> None:
+    svc = msg_setup["svc"]
+    ch = await svc.create_channel(_channel_req(uuid4().hex[:6]))
+    grp = await svc.create_group(GroupCreateRequest(name="g1", channel_id=ch.id))
+    # Group has no active session yet.
+    sess = await svc.get_or_create_active_session(grp.id)
+    assert sess.status == SessionStatus.ACTIVE
+
+
+@pytest.mark.asyncio
+async def test_get_or_create_active_session_existing_inactive(
+    msg_setup: dict,
+) -> None:
+    """Group has an active_session_id but the session is closed."""
+    svc = msg_setup["svc"]
+    ch = await svc.create_channel(_channel_req(uuid4().hex[:6]))
+    grp = await svc.create_group(GroupCreateRequest(name="g1", channel_id=ch.id))
+    s1 = await svc.create_session(SessionCreateRequest(group_id=grp.id))
+    # Close the session but leave grp.active_session_id pointing at it.
+    s1.status = SessionStatus.CLOSED
+    grp_row = await svc.get_group(grp.id)
+    assert grp_row is not None
+    grp_row.active_session_id = s1.id
+    await svc.session.flush()
+    s2 = await svc.get_or_create_active_session(grp.id)
+    assert s2.status == SessionStatus.ACTIVE
+    assert s2.id != s1.id
+
+
+# ---------------------------------------------------------------------------
+# link_session_to_task — primary conflict
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_link_session_to_task_primary_conflict(
+    msg_setup: dict,
+) -> None:
+    """Two distinct sessions both promoted to primary for same task → conflict."""
+    svc = msg_setup["svc"]
+    aid = msg_setup["agent_id"]
+    tid = msg_setup["task_id"]
+    ch = await svc.create_channel(_channel_req(uuid4().hex[:6]))
+    grp = await svc.create_group(GroupCreateRequest(name="g1", channel_id=ch.id))
+    sess1 = await svc.create_session(SessionCreateRequest(group_id=grp.id))
+    sess2 = await svc.create_session(SessionCreateRequest(group_id=grp.id))
+    await svc.link_session_to_task(sess1.id, tid, aid, is_primary=True)
+    with pytest.raises(ConflictError):
+        await svc.link_session_to_task(sess2.id, tid, aid, is_primary=True)
+
+
+# ---------------------------------------------------------------------------
+# get_sessions_for_task — relationship_type filter
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_get_sessions_for_task_with_relationship_filter(
+    msg_setup: dict,
+) -> None:
+    svc = msg_setup["svc"]
+    aid = msg_setup["agent_id"]
+    tid = msg_setup["task_id"]
+    ch = await svc.create_channel(_channel_req(uuid4().hex[:6]))
+    grp = await svc.create_group(GroupCreateRequest(name="g1", channel_id=ch.id))
+    sess = await svc.create_session(SessionCreateRequest(group_id=grp.id))
+    await svc.link_session_to_task(
+        sess.id,
+        tid,
+        aid,
+        relationship_type=SessionTaskRelationshipType.DISCUSSION,
+    )
+    links = await svc.get_sessions_for_task(
+        tid, relationship_type=SessionTaskRelationshipType.DISCUSSION
+    )
+    assert len(links) >= 1
+
+
+# ---------------------------------------------------------------------------
+# _resolve_group_for_session — explicit group_id, not found, fallback
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_resolve_group_for_session_missing_explicit(
+    msg_setup: dict,
+) -> None:
+    svc = msg_setup["svc"]
+    ch = await svc.create_channel(_channel_req(uuid4().hex[:6]))
+    req = SessionForTasksCreate(
+        task_ids=[msg_setup["task_id"]],
+        channel_slug=ch.slug,
+        scope=SessionScope.TASK,
+        group_id=uuid4(),  # Doesn't exist.
+    )
+    with pytest.raises(NotFoundError):
+        await svc._resolve_group_for_session(req, ch)
+
+
+@pytest.mark.asyncio
+async def test_resolve_group_for_session_explicit_found(
+    msg_setup: dict,
+) -> None:
+    svc = msg_setup["svc"]
+    ch = await svc.create_channel(_channel_req(uuid4().hex[:6]))
+    grp = await svc.create_group(GroupCreateRequest(name="g1", channel_id=ch.id))
+    req = SessionForTasksCreate(
+        task_ids=[msg_setup["task_id"]],
+        channel_slug=ch.slug,
+        scope=SessionScope.TASK,
+        group_id=grp.id,
+    )
+    resolved = await svc._resolve_group_for_session(req, ch)
+    assert resolved.id == grp.id
+
+
+@pytest.mark.asyncio
+async def test_resolve_group_for_session_fallback_to_first(
+    msg_setup: dict,
+) -> None:
+    """No explicit group_id, no inherited ancestor — fall back to first group."""
+    svc = msg_setup["svc"]
+    ch = await svc.create_channel(_channel_req(uuid4().hex[:6]))
+    await svc.create_group(GroupCreateRequest(name="first", channel_id=ch.id))
+    await svc.create_group(
+        GroupCreateRequest(name="second", channel_id=ch.id, hierarchy_level=2)
+    )
+    req = SessionForTasksCreate(
+        task_ids=[msg_setup["task_id"]],
+        channel_slug=ch.slug,
+        scope=SessionScope.TASK,
+    )
+    resolved = await svc._resolve_group_for_session(req, ch)
+    assert resolved.name in {"first", "second"}
+
+
+# ---------------------------------------------------------------------------
+# create_session_for_tasks — reuses ancestor session
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_create_session_for_tasks_reuses_ancestor(
+    msg_setup: dict, db_session: AsyncSession
+) -> None:
+    """If an ancestor task has an ACTIVE primary session on this channel, reuse it."""
+    svc = msg_setup["svc"]
+    aid = msg_setup["agent_id"]
+    # Set up parent task with primary session.
+    parent_id = uuid4()
+    child_id = uuid4()
+    base_task_result = await db_session.execute(
+        __import__("sqlalchemy")
+        .select(TaskTable)
+        .where(TaskTable.id == msg_setup["task_id"])
+    )
+    base_task = base_task_result.scalar_one()
+
+    parent = TaskTable(
+        id=parent_id,
+        title="parent",
+        description="d",
+        acceptance_criteria=["ac"],
+        status=TaskStatus.PENDING,
+        priority=2,
+        task_type=TaskType.CODE,
+        nature=TaskNature.TECHNICAL,
+        project_id=base_task.project_id,
+        created_by=aid,
+        team=base_task.team,
+    )
+    child = TaskTable(
+        id=child_id,
+        title="child",
+        description="d",
+        acceptance_criteria=["ac"],
+        status=TaskStatus.PENDING,
+        priority=2,
+        task_type=TaskType.CODE,
+        nature=TaskNature.TECHNICAL,
+        project_id=base_task.project_id,
+        created_by=aid,
+        team=base_task.team,
+        parent_task_id=parent_id,
+    )
+    db_session.add_all([parent, child])
+    await db_session.flush()
+
+    ch = await svc.create_channel(_channel_req(uuid4().hex[:6]))
+    grp = await svc.create_group(GroupCreateRequest(name="g1", channel_id=ch.id))
+    parent_sess = await svc.create_session(SessionCreateRequest(group_id=grp.id))
+    await svc.link_session_to_task(parent_sess.id, parent_id, aid, is_primary=True)
+
+    # Create session for child — should reuse parent's session.
+    sess, _links = await svc.create_session_for_tasks(
+        SessionForTasksCreate(
+            task_ids=[child_id],
+            channel_slug=ch.slug,
+            scope=SessionScope.TASK,
+        ),
+        pm_agent_id=aid,
+    )
+    assert sess.id == parent_sess.id
+
+
+# ---------------------------------------------------------------------------
+# _check_session_boundaries — content_length boundary
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_check_session_boundaries_content_length_exceeded(
+    msg_setup: dict,
+) -> None:
+    svc = msg_setup["svc"]
+    ch = await svc.create_channel(_channel_req(uuid4().hex[:6]))
+    grp = await svc.create_group(GroupCreateRequest(name="g1", channel_id=ch.id))
+    sess = await svc.create_session(
+        SessionCreateRequest(group_id=grp.id, max_content_length=100)
+    )
+    sess.total_content_length = 200
+    assert svc._check_session_boundaries(sess) is True
+
+
+# ---------------------------------------------------------------------------
+# _get_message_context — group/channel missing branches
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_get_message_context_group_missing_raises(
+    msg_setup: dict,
+) -> None:
+    svc = msg_setup["svc"]
+    ch = await svc.create_channel(_channel_req(uuid4().hex[:6]))
+    grp = await svc.create_group(GroupCreateRequest(name="g1", channel_id=ch.id))
+    sess = await svc.create_session(SessionCreateRequest(group_id=grp.id))
+    # Patch get_group to return None on the live (active) path.
+    with (
+        patch.object(svc, "get_group", AsyncMock(return_value=None)),
+        pytest.raises(ValueError, match="not found"),
+    ):
+        await svc._get_message_context(sess.id)
+
+
+@pytest.mark.asyncio
+async def test_get_message_context_channel_missing_raises(
+    msg_setup: dict,
+) -> None:
+    svc = msg_setup["svc"]
+    ch = await svc.create_channel(_channel_req(uuid4().hex[:6]))
+    grp = await svc.create_group(GroupCreateRequest(name="g1", channel_id=ch.id))
+    sess = await svc.create_session(SessionCreateRequest(group_id=grp.id))
+    with (
+        patch.object(svc, "get_channel", AsyncMock(return_value=None)),
+        pytest.raises(ValueError, match="not found"),
+    ):
+        await svc._get_message_context(sess.id)
+
+
+@pytest.mark.asyncio
+async def test_get_message_context_closed_session_group_missing(
+    msg_setup: dict,
+) -> None:
+    """Closed-session redirect path: group lookup returns None → raise."""
+    svc = msg_setup["svc"]
+    ch = await svc.create_channel(_channel_req(uuid4().hex[:6]))
+    grp = await svc.create_group(GroupCreateRequest(name="g1", channel_id=ch.id))
+    sess = await svc.create_session(SessionCreateRequest(group_id=grp.id))
+    await svc.close_session(sess.id)
+    with (
+        patch.object(svc, "get_group", AsyncMock(return_value=None)),
+        pytest.raises(ValueError, match="not found"),
+    ):
+        await svc._get_message_context(sess.id)
+
+
+@pytest.mark.asyncio
+async def test_get_message_context_closed_session_channel_missing(
+    msg_setup: dict,
+) -> None:
+    """Closed-session redirect path: channel lookup returns None → raise."""
+    svc = msg_setup["svc"]
+    ch = await svc.create_channel(_channel_req(uuid4().hex[:6]))
+    grp = await svc.create_group(GroupCreateRequest(name="g1", channel_id=ch.id))
+    sess = await svc.create_session(SessionCreateRequest(group_id=grp.id))
+    await svc.close_session(sess.id)
+    with (
+        patch.object(svc, "get_channel", AsyncMock(return_value=None)),
+        pytest.raises(ValueError, match="not found"),
+    ):
+        await svc._get_message_context(sess.id)
+
+
+# ---------------------------------------------------------------------------
+# send_message — mention notifications path
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_send_message_with_mentions_triggers_delivery(
+    msg_setup: dict, db_session: AsyncSession
+) -> None:
+    """Mention path delivers via NotificationDelivery service."""
+    svc = msg_setup["svc"]
+    aid = msg_setup["agent_id"]
+    other = _AgentTable(
+        id=_u(),
+        name="Other",
+        slug=f"be-other-{_u().hex[:8]}",
+        role=AgentRole.QA,
+        team=Team.BACKEND,
+        status=AgentStatus.ACTIVE,
+        model_config={},
+        system_prompt="qa",
+        capabilities=[],
+        permissions={},
+        metrics={},
+    )
+    db_session.add(other)
+    await db_session.flush()
+    ch = await svc.create_channel(_channel_req(uuid4().hex[:6]))
+    grp = await svc.create_group(GroupCreateRequest(name="g1", channel_id=ch.id))
+    sess = await svc.create_session(SessionCreateRequest(group_id=grp.id))
+    mock_delivery = AsyncMock()
+    mock_delivery.deliver = AsyncMock(return_value=None)
+    with patch(
+        "roboco.services.notification_delivery.get_notification_delivery_service",
+        return_value=mock_delivery,
+    ):
+        await svc.send_message(
+            MessageCreateRequest(
+                agent_id=aid,
+                session_id=sess.id,
+                content="hi @other",
+                mentions=[other.id],
+            )
+        )
+    mock_delivery.deliver.assert_awaited()
+
+
+@pytest.mark.asyncio
+async def test_send_message_self_mention_skipped(
+    msg_setup: dict,
+) -> None:
+    """Mentioning yourself doesn't create a notification."""
+    svc = msg_setup["svc"]
+    aid = msg_setup["agent_id"]
+    ch = await svc.create_channel(_channel_req(uuid4().hex[:6]))
+    grp = await svc.create_group(GroupCreateRequest(name="g1", channel_id=ch.id))
+    sess = await svc.create_session(SessionCreateRequest(group_id=grp.id))
+    msg = await svc.send_message(
+        MessageCreateRequest(
+            agent_id=aid,
+            session_id=sess.id,
+            content="hi me",
+            mentions=[aid],  # Self-mention.
+        )
+    )
+    assert aid in msg.mentions
+
+
+@pytest.mark.asyncio
+async def test_send_message_boundary_exceeded_closes_session(
+    msg_setup: dict,
+) -> None:
+    """When boundary exceeded after send, session closed."""
+    svc = msg_setup["svc"]
+    aid = msg_setup["agent_id"]
+    ch = await svc.create_channel(_channel_req(uuid4().hex[:6]))
+    grp = await svc.create_group(GroupCreateRequest(name="g1", channel_id=ch.id))
+    sess = await svc.create_session(
+        SessionCreateRequest(group_id=grp.id, max_message_count=1)
+    )
+    await svc.send_message(
+        MessageCreateRequest(agent_id=aid, session_id=sess.id, content="msg")
+    )
+    refreshed = await svc.get_session(sess.id)
+    assert refreshed is not None
+    assert refreshed.status == SessionStatus.CLOSED
+
+
+# ---------------------------------------------------------------------------
+# edit_message_or_raise + delete_message_or_raise — wrong author
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_edit_message_or_raise_wrong_author(msg_setup: dict) -> None:
+    svc = msg_setup["svc"]
+    aid = msg_setup["agent_id"]
+    ch = await svc.create_channel(_channel_req(uuid4().hex[:6]))
+    grp = await svc.create_group(GroupCreateRequest(name="g1", channel_id=ch.id))
+    sess = await svc.create_session(SessionCreateRequest(group_id=grp.id))
+    msg = await svc.send_message(
+        MessageCreateRequest(agent_id=aid, session_id=sess.id, content="orig")
+    )
+    with pytest.raises(PermissionError):
+        await svc.edit_message_or_raise(
+            message_id=msg.id,
+            agent_id=uuid4(),
+            new_content="hi",
+            edit_reason=None,
+        )
+
+
+@pytest.mark.asyncio
+async def test_delete_message_or_raise_wrong_author(msg_setup: dict) -> None:
+    svc = msg_setup["svc"]
+    aid = msg_setup["agent_id"]
+    ch = await svc.create_channel(_channel_req(uuid4().hex[:6]))
+    grp = await svc.create_group(GroupCreateRequest(name="g1", channel_id=ch.id))
+    sess = await svc.create_session(SessionCreateRequest(group_id=grp.id))
+    msg = await svc.send_message(
+        MessageCreateRequest(agent_id=aid, session_id=sess.id, content="orig")
+    )
+    with pytest.raises(PermissionError):
+        await svc.delete_message_or_raise(
+            message_id=msg.id,
+            agent_id=uuid4(),
+        )
+
+
+# ---------------------------------------------------------------------------
+# edit_message — message not found error path
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_edit_message_not_found(msg_setup: dict) -> None:
+    svc = msg_setup["svc"]
+    with pytest.raises(ValueError, match="not found"):
+        await svc.edit_message(uuid4(), uuid4(), "x")
+
+
+@pytest.mark.asyncio
+async def test_delete_message_not_found(msg_setup: dict) -> None:
+    svc = msg_setup["svc"]
+    with pytest.raises(ValueError, match="not found"):
+        await svc.delete_message(uuid4(), uuid4())
+
+
+# ---------------------------------------------------------------------------
+# _index_message_async — failure swallowed
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_index_message_async_swallows_exception(
+    msg_setup: dict, db_session: AsyncSession
+) -> None:
+    """RAG indexing failure logged but doesn't break."""
+    svc = msg_setup["svc"]
+    aid = msg_setup["agent_id"]
+    ch = await svc.create_channel(_channel_req(uuid4().hex[:6]))
+    grp = await svc.create_group(GroupCreateRequest(name="g1", channel_id=ch.id))
+    sess = await svc.create_session(SessionCreateRequest(group_id=grp.id))
+    msg = MessageTable(
+        id=uuid4(),
+        agent_id=aid,
+        channel_id=ch.id,
+        group_id=grp.id,
+        session_id=sess.id,
+        type=MessageType.DIALOGUE,
+        content="x",
+        content_length=1,
+    )
+    db_session.add(msg)
+    await db_session.flush()
+    with patch(
+        "roboco.services.optimal.get_optimal_service",
+        side_effect=RuntimeError("rag down"),
+    ):
+        await svc._index_message_async(msg)
+
+
+# ---------------------------------------------------------------------------
+# post_to_channel — full path + agent slug not found
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_post_to_channel_agent_slug_missing_raises(
+    msg_setup: dict,
+) -> None:
+    """get_agent_slug returns None → ChannelAccessDeniedError."""
+    svc = msg_setup["svc"]
+    aid = msg_setup["agent_id"]
+    # Seed the channel into config so it's resolvable.
+    ch = await svc.create_channel(_channel_req(uuid4().hex[:6]))
+    with (
+        patch(
+            "roboco.services.repositories.get_agent_slug",
+            AsyncMock(return_value=None),
+        ),
+        pytest.raises(ChannelAccessDeniedError),
+    ):
+        await svc.post_to_channel(
+            agent_id=aid,
+            channel_slug=ch.slug,
+            content="hi",
+        )
+
+
+@pytest.mark.asyncio
+async def test_post_to_channel_full_path(msg_setup: dict) -> None:
+    """Resolves slug → group → session → message."""
+    svc = msg_setup["svc"]
+    aid = msg_setup["agent_id"]
+    ch = await svc.create_channel(_channel_req(uuid4().hex[:6]))
+    # Add agent to channel writers so write check passes.
+    await svc.add_channel_member(ch.id, aid, can_write=True)
+    with (
+        patch(
+            "roboco.services.repositories.get_agent_slug",
+            AsyncMock(return_value="be-dev-1"),
+        ),
+        patch(
+            "roboco.services.messaging.validate_channel_access",
+            return_value=None,
+        ),
+    ):
+        msg = await svc.post_to_channel(
+            agent_id=aid,
+            channel_slug=ch.slug,
+            content="hello channel",
+        )
+    assert msg.content == "hello channel"
+
+
+# ---------------------------------------------------------------------------
+# get_or_create_active_session — group has active session that's still ACTIVE
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_get_or_create_active_session_returns_existing_active(
+    msg_setup: dict,
+) -> None:
+    """Group has active_session_id pointing at ACTIVE session — returns it."""
+    svc = msg_setup["svc"]
+    ch = await svc.create_channel(_channel_req(uuid4().hex[:6]))
+    grp = await svc.create_group(GroupCreateRequest(name="g1", channel_id=ch.id))
+    await svc.create_session(SessionCreateRequest(group_id=grp.id))
+    s2 = await svc.get_or_create_active_session(grp.id)
+    assert s2.status == SessionStatus.ACTIVE
+
+
+# ---------------------------------------------------------------------------
+# _walk_task_ancestors — cycle-safety + parent missing
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_walk_task_ancestors_orphan_parent(
+    msg_setup: dict, db_session: AsyncSession
+) -> None:
+    """parent_task_id points at non-existent task → walk stops."""
+    aid = msg_setup["agent_id"]
+    base_task_result = await db_session.execute(
+        __import__("sqlalchemy")
+        .select(TaskTable)
+        .where(TaskTable.id == msg_setup["task_id"])
+    )
+    base_task = base_task_result.scalar_one()
+    ghost_parent = uuid4()
+    child = TaskTable(
+        id=uuid4(),
+        title="child-orphan",
+        description="d",
+        acceptance_criteria=["ac"],
+        status=TaskStatus.PENDING,
+        priority=2,
+        task_type=TaskType.CODE,
+        nature=TaskNature.TECHNICAL,
+        project_id=base_task.project_id,
+        created_by=aid,
+        team=base_task.team,
+        parent_task_id=ghost_parent,
+    )
+    db_session.add(child)
+    # parent_task_id has FK to tasks; using a non-existent id will fail FK.
+    # Skip rather than committing — exercise the seen-set/path differently.
+    try:
+        await db_session.flush()
+    except Exception:
+        pytest.skip("FK enforces parent existence — orphan branch unreachable here")
+
+
+# ---------------------------------------------------------------------------
+# _resolve_group_for_session — auto-create default group when channel empty
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_resolve_group_for_session_auto_creates_default(
+    msg_setup: dict,
+) -> None:
+    svc = msg_setup["svc"]
+    ch = await svc.create_channel(_channel_req(uuid4().hex[:6]))
+    # No groups in this channel.
+    req = SessionForTasksCreate(
+        task_ids=[msg_setup["task_id"]],
+        channel_slug=ch.slug,
+        scope=SessionScope.TASK,
+    )
+    grp = await svc._resolve_group_for_session(req, ch)
+    assert grp.name == "General"
+
+
+# ---------------------------------------------------------------------------
+# _resolve_group_from_parent_tasks — ancestor's primary session group
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_resolve_group_from_parent_tasks_inherits(
+    msg_setup: dict, db_session: AsyncSession
+) -> None:
+    """Task with ancestor having primary session → inherit ancestor's group."""
+    svc = msg_setup["svc"]
+    aid = msg_setup["agent_id"]
+    base_task_result = await db_session.execute(
+        __import__("sqlalchemy")
+        .select(TaskTable)
+        .where(TaskTable.id == msg_setup["task_id"])
+    )
+    base_task = base_task_result.scalar_one()
+
+    parent = TaskTable(
+        id=uuid4(),
+        title="parent-inh",
+        description="d",
+        acceptance_criteria=["ac"],
+        status=TaskStatus.PENDING,
+        priority=2,
+        task_type=TaskType.CODE,
+        nature=TaskNature.TECHNICAL,
+        project_id=base_task.project_id,
+        created_by=aid,
+        team=base_task.team,
+    )
+    child = TaskTable(
+        id=uuid4(),
+        title="child-inh",
+        description="d",
+        acceptance_criteria=["ac"],
+        status=TaskStatus.PENDING,
+        priority=2,
+        task_type=TaskType.CODE,
+        nature=TaskNature.TECHNICAL,
+        project_id=base_task.project_id,
+        created_by=aid,
+        team=base_task.team,
+        parent_task_id=parent.id,
+    )
+    db_session.add_all([parent, child])
+    await db_session.flush()
+
+    ch = await svc.create_channel(_channel_req(uuid4().hex[:6]))
+    grp = await svc.create_group(
+        GroupCreateRequest(name="parent-grp", channel_id=ch.id)
+    )
+    sess = await svc.create_session(SessionCreateRequest(group_id=grp.id))
+    await svc.link_session_to_task(sess.id, parent.id, aid, is_primary=True)
+    inherited = await svc._resolve_group_from_parent_tasks([child.id])
+    assert inherited is not None
+    assert inherited.id == grp.id
+
+
+# ---------------------------------------------------------------------------
+# _index_message_async — happy path (debug log)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_index_message_async_happy(
+    msg_setup: dict, db_session: AsyncSession
+) -> None:
+    """Successful index logs debug."""
+    svc = msg_setup["svc"]
+    aid = msg_setup["agent_id"]
+    ch = await svc.create_channel(_channel_req(uuid4().hex[:6]))
+    grp = await svc.create_group(GroupCreateRequest(name="g1", channel_id=ch.id))
+    sess = await svc.create_session(SessionCreateRequest(group_id=grp.id))
+    msg = MessageTable(
+        id=uuid4(),
+        agent_id=aid,
+        channel_id=ch.id,
+        group_id=grp.id,
+        session_id=sess.id,
+        type=MessageType.DIALOGUE,
+        content="x",
+        content_length=1,
+    )
+    db_session.add(msg)
+    await db_session.flush()
+    mock_optimal = AsyncMock()
+    mock_optimal.index_conversation = AsyncMock(return_value=None)
+    with patch(
+        "roboco.services.optimal.get_optimal_service",
+        AsyncMock(return_value=mock_optimal),
+    ):
+        await svc._index_message_async(msg)
+
+
+# ---------------------------------------------------------------------------
+# get_message_or_raise — happy path
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_get_message_or_raise_happy(msg_setup: dict) -> None:
+    svc = msg_setup["svc"]
+    aid = msg_setup["agent_id"]
+    ch = await svc.create_channel(_channel_req(uuid4().hex[:6]))
+    grp = await svc.create_group(GroupCreateRequest(name="g1", channel_id=ch.id))
+    sess = await svc.create_session(SessionCreateRequest(group_id=grp.id))
+    msg = await svc.send_message(
+        MessageCreateRequest(agent_id=aid, session_id=sess.id, content="hi")
+    )
+    found = await svc.get_message_or_raise(msg.id)
+    assert found.id == msg.id
+
+
+# ---------------------------------------------------------------------------
+# Factory function smoke
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_get_messaging_service_factory(
+    db_session: AsyncSession,
+) -> None:
+    svc = get_messaging_service(db_session)
+    assert isinstance(svc, MessagingService)

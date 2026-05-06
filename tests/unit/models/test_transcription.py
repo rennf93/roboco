@@ -37,7 +37,8 @@ def test_clear_returns_content_and_resets() -> None:
 def test_char_count() -> None:
     buf = _buffer()
     buf.append("12345")
-    assert buf.char_count == 5
+    _DATA_LEN = 5
+    assert buf.char_count == _DATA_LEN
 
 
 def test_age_property_positive() -> None:
@@ -95,14 +96,24 @@ def test_has_sentence_ending_empty_returns_false() -> None:
     assert buf._has_sentence_ending() is False
 
 
+_DEFAULT_MIN_CHARS = 50
+_DEFAULT_MAX_CHARS = 5000
+_DEFAULT_IDLE_SECONDS = 2.0
+_CUSTOM_MIN_CHARS = 10
+_CUSTOM_MAX_BUFFERS = 5
+
+
 def test_transcription_config_defaults() -> None:
     cfg = TranscriptionConfig()
-    assert cfg.min_chars_for_extraction == 50
-    assert cfg.max_chars_before_flush == 5000
-    assert cfg.idle_threshold_seconds == 2.0
+    assert cfg.min_chars_for_extraction == _DEFAULT_MIN_CHARS
+    assert cfg.max_chars_before_flush == _DEFAULT_MAX_CHARS
+    assert cfg.idle_threshold_seconds == _DEFAULT_IDLE_SECONDS
 
 
 def test_transcription_config_custom() -> None:
-    cfg = TranscriptionConfig(min_chars_for_extraction=10, max_buffers_per_agent=5)
-    assert cfg.min_chars_for_extraction == 10
-    assert cfg.max_buffers_per_agent == 5
+    cfg = TranscriptionConfig(
+        min_chars_for_extraction=_CUSTOM_MIN_CHARS,
+        max_buffers_per_agent=_CUSTOM_MAX_BUFFERS,
+    )
+    assert cfg.min_chars_for_extraction == _CUSTOM_MIN_CHARS
+    assert cfg.max_buffers_per_agent == _CUSTOM_MAX_BUFFERS

@@ -59,6 +59,17 @@ class TestStaleTriggerCleanup:
         assert decision.outcome == SpawnDecision.DROP
         assert "stale" in decision.reason.lower()
 
+    def test_a2a_code_review_for_paused_task_dropped(self) -> None:
+        """Line 79-82: non-relevant non-terminal status (paused) → drop."""
+        t = _task(status="paused")
+        decision = decide_spawn(
+            task=t,
+            trigger=_trigger(TriggerKind.A2A, skill="code_review"),
+            config=_DEFAULT_CONFIG,
+        )
+        assert decision.outcome == SpawnDecision.DROP
+        assert "code_review" in decision.reason
+
     def test_a2a_code_review_for_awaiting_qa_spawns(self) -> None:
         t = _task(status="awaiting_qa")
         decision = decide_spawn(

@@ -2920,7 +2920,10 @@ class TaskService(BaseService):
     ) -> TaskTable | None:
         """Handle Cell PM escalation to Main PM. Returns task if escalated."""
         main_pm_result = await self.session.execute(
-            select(AgentTable).where(AgentTable.role == AgentRole.MAIN_PM)
+            select(AgentTable)
+            .where(AgentTable.role == AgentRole.MAIN_PM)
+            .order_by(AgentTable.created_at)
+            .limit(1)
         )
         main_pm = main_pm_result.scalar_one_or_none()
         if not main_pm:

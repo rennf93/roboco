@@ -1,0 +1,936 @@
+"""Targeted coverage for branches in roboco.services.gateway.choreographer._impl.
+
+Each test pins one rejection-envelope branch so the larger Choreographer
+verb continues to surface remediation hints rather than crash on edge
+states (claim failures, start failures, missing parents, etc.).
+"""
+
+from __future__ import annotations
+
+from typing import Any
+from unittest.mock import AsyncMock, MagicMock
+from uuid import uuid4
+
+import pytest
+import structlog
+from roboco.services.gateway.choreographer import Choreographer, ChoreographerDeps
+from roboco.services.gateway.choreographer._impl import DelegateInputs
+from roboco.services.gateway.envelope import Envelope
+
+
+def _wire_dev_task_svc(
+    task_id, *, status: str, assigned_to=None, plan=None, parent_task_id=None
+):
+    """Build a TaskService AsyncMock pre-wired with claim-guard side effects.
+
+    Defaults `agent_for` → developer/backend and the three list-* methods to
+    empty lists so claim-guard short-circuits never fire unintentionally.
+    """
+    task_svc = AsyncMock()
+    task_svc.get.return_value = MagicMock(
+        status=status,
+        assigned_to=assigned_to,
+        plan=plan,
+        id=task_id,
+        title="t",
+        task_type="code",
+        parent_task_id=parent_task_id,
+        team="backend",
+    )
+    task_svc.agent_for.return_value = MagicMock(role="developer", team="backend")
+    task_svc.list_in_progress_for_agent.return_value = []
+    task_svc.list_paused_for_agent.return_value = []
+    task_svc.get_subtasks.return_value = []
+    return task_svc
+
+
+def _make_deps(**overrides: Any) -> ChoreographerDeps:
+    base: dict[str, Any] = {
+        "task": AsyncMock(),
+        "work_session": AsyncMock(),
+        "git": AsyncMock(),
+        "a2a": AsyncMock(),
+        "journal": AsyncMock(),
+        "audit": AsyncMock(),
+        "evidence_repo": AsyncMock(),
+    }
+    base.update(overrides)
+    repo = base["evidence_repo"]
+    for method in (
+        "list_unread_a2a",
+        "list_unread_mentions",
+        "list_pending_notifications",
+        "task_metadata_gaps",
+        "recent_team_activity",
+        "blockers_in_lane",
+        "journal_highlights_for_task",
+    ):
+        getattr(repo, method).return_value = []
+    return ChoreographerDeps(**base)
+
+
+# ---------------------------------------------------------------------------
+# _emit_rejection: ok envelope passes through unchanged (line 158)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_emit_rejection_passes_through_ok_envelope() -> None:
+    deps = _make_deps()
+    c = Choreographer(deps)
+    ok = Envelope.ok(status="x", task_id=None, next="n", context_briefing={})
+    result = await c._emit_rejection(ok, agent_id=uuid4(), task_id=None, verb="x")
+    assert result is ok
+    deps.audit.log_event.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# i_will_work_on: claim() raises Exception → invalid_state (lines 369-378)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_i_will_work_on_pending_claim_raises_returns_invalid_state() -> None:
+    agent_id = uuid4()
+    task_id = uuid4()
+    task_svc = _wire_dev_task_svc(task_id, status="pending")
+    task_svc.claim.side_effect = RuntimeError("workspace down")
+    deps = _make_deps(task=task_svc)
+    c = Choreographer(deps)
+    env = await c.i_will_work_on(agent_id, task_id, plan="plan")
+    body = env.as_dict()
+    assert body["error"] == "invalid_state"
+    assert "claim failed during finalization" in body["message"]
+
+
+@pytest.mark.asyncio
+async def test_i_will_work_on_pending_claim_returns_none_invalid_state() -> None:
+    """Lines 379-384: claim returns None → invalid_state."""
+    agent_id = uuid4()
+    task_id = uuid4()
+    task_svc = _wire_dev_task_svc(task_id, status="pending")
+    task_svc.claim.return_value = None
+    deps = _make_deps(task=task_svc)
+    c = Choreographer(deps)
+    env = await c.i_will_work_on(agent_id, task_id, plan="plan")
+    body = env.as_dict()
+    assert body["error"] == "invalid_state"
+
+
+@pytest.mark.asyncio
+async def test_i_will_work_on_pending_no_plan_tracing_gap() -> None:
+    """Lines 385-393: pending task, no plan → tracing_gap."""
+    agent_id = uuid4()
+    task_id = uuid4()
+    task_svc = _wire_dev_task_svc(task_id, status="pending", assigned_to=agent_id)
+    claimed_task = MagicMock(
+        status="pending",
+        assigned_to=agent_id,
+        plan=None,
+        id=task_id,
+        title="t",
+        task_type="code",
+    )
+    task_svc.claim.return_value = claimed_task
+    deps = _make_deps(task=task_svc)
+    c = Choreographer(deps)
+    env = await c.i_will_work_on(agent_id, task_id, plan=None)
+    body = env.as_dict()
+    assert body["error"] == "tracing_gap"
+
+
+@pytest.mark.asyncio
+async def test_i_will_work_on_start_returns_none_invalid_state() -> None:
+    """Lines 396-398: start returns None → start_failed_envelope."""
+    agent_id = uuid4()
+    task_id = uuid4()
+    task_svc = _wire_dev_task_svc(task_id, status="pending", assigned_to=agent_id)
+    claimed_task = MagicMock(
+        status="pending",
+        assigned_to=agent_id,
+        plan="some plan",
+        id=task_id,
+        title="t",
+        task_type="code",
+    )
+    task_svc.claim.return_value = claimed_task
+    task_svc.set_plan.return_value = claimed_task
+    task_svc.start.return_value = None  # start fails
+    deps = _make_deps(task=task_svc)
+    c = Choreographer(deps)
+    env = await c.i_will_work_on(agent_id, task_id, plan="ok plan")
+    body = env.as_dict()
+    assert body["error"] == "invalid_state"
+    assert "start failed" in body["message"]
+
+
+# ---------------------------------------------------------------------------
+# _i_will_work_on_needs_revision: claim returns None → invalid_state (lines 427-433)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_needs_revision_branch_claim_fails_invalid_state() -> None:
+    """Lines 427-433: needs_revision, not assigned, claim fails → invalid_state."""
+    agent_id = uuid4()
+    task_id = uuid4()
+    other_id = uuid4()
+    task_svc = _wire_dev_task_svc(
+        task_id, status="needs_revision", assigned_to=other_id, plan="p"
+    )
+    task_svc.claim.return_value = None
+    deps = _make_deps(task=task_svc)
+    c = Choreographer(deps)
+    env = await c.i_will_work_on(agent_id, task_id, plan="ok")
+    body = env.as_dict()
+    assert body["error"] == "invalid_state"
+
+
+@pytest.mark.asyncio
+async def test_needs_revision_branch_start_fails() -> None:
+    """Line 436: start returns None in needs_revision branch."""
+    agent_id = uuid4()
+    task_id = uuid4()
+    task_svc = _wire_dev_task_svc(
+        task_id, status="needs_revision", assigned_to=agent_id, plan="p"
+    )
+    task_svc.start.return_value = None
+    deps = _make_deps(task=task_svc)
+    c = Choreographer(deps)
+    env = await c.i_will_work_on(agent_id, task_id, plan="ok")
+    body = env.as_dict()
+    assert body["error"] == "invalid_state"
+
+
+# ---------------------------------------------------------------------------
+# _i_will_work_on_claimed: start fails → start_failed_envelope (line 454)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_claimed_branch_returns_start_failed() -> None:
+    """Line 454: start fails in claimed branch."""
+    agent_id = uuid4()
+    task_id = uuid4()
+    task_svc = _wire_dev_task_svc(
+        task_id, status="claimed", assigned_to=agent_id, plan="p"
+    )
+    task_svc.start.return_value = None
+    deps = _make_deps(task=task_svc)
+    c = Choreographer(deps)
+    env = await c.i_will_work_on(agent_id, task_id, plan="ok")
+    body = env.as_dict()
+    assert body["error"] == "invalid_state"
+
+
+# ---------------------------------------------------------------------------
+# i_will_work_on with in_progress assigned to self → idempotent (line 491)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_i_will_work_on_in_progress_assigned_to_self_idempotent() -> None:
+    """Line 491: in_progress assigned_to=agent → idempotent re-entry pass through."""
+    agent_id = uuid4()
+    task_id = uuid4()
+    task_svc = _wire_dev_task_svc(
+        task_id, status="in_progress", assigned_to=agent_id, plan="p"
+    )
+    task_svc.heartbeat = AsyncMock()
+    deps = _make_deps(task=task_svc)
+    c = Choreographer(deps)
+    env = await c.i_will_work_on(agent_id, task_id, plan="ok")
+    body = env.as_dict()
+    # No error — re-entry pass.
+    assert "error" not in body or body.get("error") is None
+
+
+# ---------------------------------------------------------------------------
+# i_will_plan: pending claim returns None (line 1155)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_i_will_plan_pending_claim_fails() -> None:
+    pm_id = uuid4()
+    task_id = uuid4()
+    task = MagicMock(
+        status="pending",
+        assigned_to=pm_id,
+        plan=None,
+        id=task_id,
+        title="t",
+        team="backend",
+        parent_task_id=None,
+        task_type="planning",
+    )
+    task_svc = AsyncMock()
+    task_svc.get.return_value = task
+    task_svc.agent_for.return_value = MagicMock(role="cell_pm", team="backend")
+    task_svc.list_in_progress_for_agent.return_value = []
+    task_svc.list_paused_for_agent.return_value = []
+    task_svc.get_subtasks.return_value = []
+    task_svc.claim.return_value = None  # claim fails
+    deps = _make_deps(task=task_svc)
+    c = Choreographer(deps)
+    env = await c.i_will_plan(pm_id, task_id, plan="my plan that is long enough")
+    body = env.as_dict()
+    assert body["error"] == "invalid_state"
+
+
+# ---------------------------------------------------------------------------
+# delegate: parent not found (line 1208)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_delegate_parent_not_found() -> None:
+    pm_id = uuid4()
+    parent_id = uuid4()
+    task_svc = AsyncMock()
+    task_svc.get.return_value = None
+    deps = _make_deps(task=task_svc)
+    c = Choreographer(deps)
+    env = await c.delegate(
+        pm_id,
+        parent_id,
+        DelegateInputs(
+            title="x",
+            description="y",
+            assigned_to="be-dev-1",
+            team="backend",
+        ),
+    )
+    body = env.as_dict()
+    assert body["error"] == "not_found"
+
+
+# ---------------------------------------------------------------------------
+# _delegate_role_guards: unknown role rejection (line 1271)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_delegate_unknown_role_rejected() -> None:
+    pm_id = uuid4()
+    parent_id = uuid4()
+    parent = MagicMock(
+        status="in_progress",
+        assigned_to=pm_id,
+        project_id=uuid4(),
+        title="p",
+    )
+    task_svc = AsyncMock()
+    task_svc.get.return_value = parent
+    task_svc.agent_for.return_value = MagicMock(role="developer", team="backend")
+    deps = _make_deps(task=task_svc)
+    c = Choreographer(deps)
+    env = await c.delegate(
+        pm_id,
+        parent_id,
+        DelegateInputs(
+            title="x",
+            description="y",
+            assigned_to="be-dev-1",
+            team="backend",
+        ),
+    )
+    body = env.as_dict()
+    assert body["error"] == "not_authorized"
+
+
+# ---------------------------------------------------------------------------
+# _delegate_static_guards: unknown agent slug → invalid_state (line 1300)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_delegate_static_guard_unknown_slug_via_helper() -> None:
+    """Lines 1299-1304: unknown slug rejection in _delegate_static_guards.
+
+    Reached by calling the private helper directly — the public ``delegate``
+    path is shielded by the chain validator which catches all slugs that
+    are not in the explicit cell_pm/main_pm target sets first.
+    """
+    pm_id = uuid4()
+    parent_id = uuid4()
+    parent = MagicMock(
+        status="in_progress",
+        assigned_to=pm_id,
+        project_id=uuid4(),
+        title="p",
+    )
+    task_svc = AsyncMock()
+    task_svc.get.return_value = parent
+    deps = _make_deps(task=task_svc)
+    c = Choreographer(deps)
+    env = await c._delegate_static_guards(
+        pm_id,
+        parent_id,
+        parent,
+        DelegateInputs(
+            title="x",
+            description="y",
+            assigned_to="ghost-agent",
+            team="backend",
+        ),
+    )
+    body = env.as_dict()
+    assert body["error"] == "invalid_state"
+    assert "unknown agent slug" in body["message"]
+
+
+@pytest.mark.asyncio
+async def test_delegate_parent_no_project_rejected() -> None:
+    """Line 1306: parent.project_id is None → invalid_state."""
+    pm_id = uuid4()
+    parent_id = uuid4()
+    parent = MagicMock(
+        status="in_progress",
+        assigned_to=pm_id,
+        project_id=None,
+        title="p",
+    )
+    task_svc = AsyncMock()
+    task_svc.get.return_value = parent
+    task_svc.agent_for.return_value = MagicMock(role="cell_pm", team="backend")
+    deps = _make_deps(task=task_svc)
+    c = Choreographer(deps)
+    env = await c.delegate(
+        pm_id,
+        parent_id,
+        DelegateInputs(
+            title="x",
+            description="y",
+            assigned_to="be-dev-1",
+            team="backend",
+        ),
+    )
+    body = env.as_dict()
+    assert body["error"] == "invalid_state"
+    assert "no project_id" in body["message"]
+
+
+# ---------------------------------------------------------------------------
+# _validate_delegation_chain: unknown role → "role X cannot delegate" (line 1446)
+# ---------------------------------------------------------------------------
+
+
+def test_validate_delegation_chain_unknown_role() -> None:
+    deps = _make_deps()
+    c = Choreographer(deps)
+    err = c._validate_delegation_chain("auditor", "be-dev-1")
+    assert err is not None
+    assert "auditor" in err
+
+
+# ---------------------------------------------------------------------------
+# submit_up: task not found (line 1458)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_submit_up_task_not_found() -> None:
+    pm_id = uuid4()
+    task_id = uuid4()
+    task_svc = AsyncMock()
+    task_svc.get.return_value = None
+    deps = _make_deps(task=task_svc)
+    c = Choreographer(deps)
+    env = await c.submit_up(pm_id, task_id, notes="x" * 30)
+    body = env.as_dict()
+    assert body["error"] == "not_found"
+
+
+# ---------------------------------------------------------------------------
+# submit_up: submit_pm_review returns None (line 1477)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_submit_up_submit_pm_review_fails() -> None:
+    pm_id = uuid4()
+    task_id = uuid4()
+    task = MagicMock(
+        status="in_progress",
+        assigned_to=pm_id,
+        branch_name="feature/backend/abc",
+        pr_number=None,
+        title="t",
+        team="backend",
+    )
+    task_svc = AsyncMock()
+    task_svc.get.return_value = task
+    task_svc.agent_for.return_value = MagicMock(role="cell_pm", team="backend")
+    task_svc.all_subtasks_terminal.return_value = True
+    task_svc.submit_pm_review.return_value = None  # service returns None
+    journal = AsyncMock()
+    journal.has_decision_for_task.return_value = True
+    git = AsyncMock()
+    git.create_pr = AsyncMock()
+    deps = _make_deps(task=task_svc, journal=journal, git=git)
+    c = Choreographer(deps)
+    env = await c.submit_up(pm_id, task_id, notes="x" * 30)
+    body = env.as_dict()
+    assert body["error"] == "invalid_state"
+
+
+# ---------------------------------------------------------------------------
+# _submit_up_ownership_guard wrong role (line 1520)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_submit_up_wrong_role_rejected() -> None:
+    pm_id = uuid4()
+    task_id = uuid4()
+    task = MagicMock(
+        status="in_progress",
+        assigned_to=pm_id,
+        title="t",
+        team="backend",
+    )
+    task_svc = AsyncMock()
+    task_svc.get.return_value = task
+    task_svc.agent_for.return_value = MagicMock(role="main_pm", team=None)
+    deps = _make_deps(task=task_svc)
+    c = Choreographer(deps)
+    env = await c.submit_up(pm_id, task_id, notes="x" * 30)
+    body = env.as_dict()
+    assert body["error"] == "not_authorized"
+
+
+# ---------------------------------------------------------------------------
+# _submit_up_state_guard: no branch_name (line 1556)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_submit_up_no_branch_rejected() -> None:
+    pm_id = uuid4()
+    task_id = uuid4()
+    task = MagicMock(
+        status="in_progress",
+        assigned_to=pm_id,
+        branch_name=None,
+        pr_number=None,
+        title="t",
+        team="backend",
+    )
+    task_svc = AsyncMock()
+    task_svc.get.return_value = task
+    task_svc.agent_for.return_value = MagicMock(role="cell_pm", team="backend")
+    task_svc.all_subtasks_terminal.return_value = True
+    journal = AsyncMock()
+    journal.has_decision_for_task.return_value = True
+    deps = _make_deps(task=task_svc, journal=journal)
+    c = Choreographer(deps)
+    env = await c.submit_up(pm_id, task_id, notes="x" * 30)
+    body = env.as_dict()
+    assert body["error"] == "invalid_state"
+    assert "no branch" in body["message"]
+
+
+# ---------------------------------------------------------------------------
+# _handoff_to_main_pm: main_pm_agent returns None (line 1567)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_handoff_to_main_pm_no_main_pm_returns_silently() -> None:
+    pm_id = uuid4()
+    task_id = uuid4()
+    task_svc = AsyncMock()
+    task_svc.main_pm_agent.return_value = None  # No main PM in DB
+    deps = _make_deps(task=task_svc)
+    c = Choreographer(deps)
+    # Should silently return without error.
+    await c._handoff_to_main_pm(pm_id, task_id)
+    # reassign + a2a never called.
+    task_svc.reassign.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# _pm_next_hint: each branch (lines 1612-1616)
+# ---------------------------------------------------------------------------
+
+
+def test_pm_next_hint_pending() -> None:
+    deps = _make_deps()
+    c = Choreographer(deps)
+    hint = c._pm_next_hint("pending", "tid")
+    assert "i_will_plan" in hint
+
+
+def test_pm_next_hint_paused() -> None:
+    deps = _make_deps()
+    c = Choreographer(deps)
+    hint = c._pm_next_hint("paused", "tid")
+    assert "subtasks" in hint or "complete" in hint
+
+
+def test_pm_next_hint_blocked() -> None:
+    deps = _make_deps()
+    c = Choreographer(deps)
+    hint = c._pm_next_hint("blocked", "tid")
+    assert "unblock" in hint
+
+
+def test_pm_next_hint_awaiting_pm_review() -> None:
+    deps = _make_deps()
+    c = Choreographer(deps)
+    hint = c._pm_next_hint("awaiting_pm_review", "tid")
+    assert "complete" in hint
+
+
+def test_pm_next_hint_unknown_status() -> None:
+    deps = _make_deps()
+    c = Choreographer(deps)
+    hint = c._pm_next_hint("unknown_status", "tid")
+    assert "unknown_status" in hint
+
+
+# ---------------------------------------------------------------------------
+# triage_all main_pm — awaiting Main PM tasks branch (lines 1662-1663)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_triage_all_returns_awaiting_main_pm_when_no_blocked() -> None:
+    pm_id = uuid4()
+    awaiting_task = MagicMock(
+        id=uuid4(), status="awaiting_pm_review", title="x", team="backend"
+    )
+    task_svc = AsyncMock()
+    task_svc.list_blocked_all_teams.return_value = []
+    task_svc.list_awaiting_main_pm_all.return_value = [awaiting_task]
+    deps = _make_deps(task=task_svc)
+    c = Choreographer(deps)
+    env = await c.triage_all(pm_id)
+    body = env.as_dict()
+    assert body["task_id"] == str(awaiting_task.id)
+    assert "complete" in body["next"]
+
+
+# ---------------------------------------------------------------------------
+# unblock: task not found (line 1682)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_unblock_task_not_found() -> None:
+    pm_id = uuid4()
+    task_id = uuid4()
+    task_svc = AsyncMock()
+    task_svc.get.return_value = None
+    deps = _make_deps(task=task_svc)
+    c = Choreographer(deps)
+    env = await c.unblock(pm_id, task_id)
+    body = env.as_dict()
+    assert body["error"] == "not_found"
+
+
+# ---------------------------------------------------------------------------
+# _cell_pm_complete_guard: wrong status (line 1743)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_cell_pm_complete_wrong_status() -> None:
+    """Line 1743: status not awaiting_pm_review."""
+    pm_id = uuid4()
+    task_id = uuid4()
+    task = MagicMock(
+        status="in_progress",
+        assigned_to=pm_id,
+        title="t",
+        team="backend",
+    )
+    task_svc = AsyncMock()
+    task_svc.get.return_value = task
+    task_svc.agent_for.return_value = MagicMock(role="cell_pm", team="backend")
+    deps = _make_deps(task=task_svc)
+    c = Choreographer(deps)
+    env = await c.cell_pm_complete(pm_id, task_id, notes="x" * 30)
+    body = env.as_dict()
+    assert body["error"] == "invalid_state"
+
+
+# ---------------------------------------------------------------------------
+# cell_pm_complete: task not found (line 1782)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_cell_pm_complete_not_found() -> None:
+    pm_id = uuid4()
+    task_id = uuid4()
+    task_svc = AsyncMock()
+    task_svc.get.return_value = None
+    deps = _make_deps(task=task_svc)
+    c = Choreographer(deps)
+    env = await c.cell_pm_complete(pm_id, task_id, notes="x" * 30)
+    body = env.as_dict()
+    assert body["error"] == "not_found"
+
+
+# ---------------------------------------------------------------------------
+# _maybe_advance_parent_to_pm_review: silent skips (lines 1834, 1840, 1843)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_maybe_advance_parent_skips_when_parent_missing() -> None:
+    parent_id = uuid4()
+    task_svc = AsyncMock()
+    task_svc.get.return_value = None
+    deps = _make_deps(task=task_svc)
+    c = Choreographer(deps)
+    await c._maybe_advance_parent_to_pm_review(parent_id, "backend")
+    task_svc.reassign.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_maybe_advance_parent_skips_when_subtasks_not_terminal() -> None:
+    parent_id = uuid4()
+    task_svc = AsyncMock()
+    task_svc.get.return_value = MagicMock(team="backend")
+    task_svc.all_subtasks_terminal.return_value = False
+    deps = _make_deps(task=task_svc)
+    c = Choreographer(deps)
+    await c._maybe_advance_parent_to_pm_review(parent_id, "backend")
+    task_svc.reassign.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_maybe_advance_parent_skips_when_no_team() -> None:
+    parent_id = uuid4()
+    task_svc = AsyncMock()
+    task_svc.get.return_value = MagicMock(team=None)
+    task_svc.all_subtasks_terminal.return_value = True
+    deps = _make_deps(task=task_svc)
+    c = Choreographer(deps)
+    # leaf_team also None → triggers line 1840 short-circuit.
+    await c._maybe_advance_parent_to_pm_review(parent_id, None)
+    task_svc.reassign.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_maybe_advance_parent_skips_when_no_pm_for_team() -> None:
+    parent_id = uuid4()
+    task_svc = AsyncMock()
+    task_svc.get.return_value = MagicMock(team="backend")
+    task_svc.all_subtasks_terminal.return_value = True
+    task_svc.cell_pm_for_team.return_value = None
+    deps = _make_deps(task=task_svc)
+    c = Choreographer(deps)
+    await c._maybe_advance_parent_to_pm_review(parent_id, "backend")
+    task_svc.reassign.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# _main_pm_complete_guard: not assigned (1851), wrong status (1859)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_main_pm_complete_not_assigned() -> None:
+    main_pm_id = uuid4()
+    other_id = uuid4()
+    task_id = uuid4()
+    task = MagicMock(
+        status="awaiting_pm_review",
+        assigned_to=other_id,
+        parent_task_id=None,
+        title="t",
+    )
+    task_svc = AsyncMock()
+    task_svc.get.return_value = task
+    deps = _make_deps(task=task_svc)
+    c = Choreographer(deps)
+    env = await c.main_pm_complete(main_pm_id, task_id, notes="x" * 30)
+    body = env.as_dict()
+    assert body["error"] == "not_authorized"
+
+
+@pytest.mark.asyncio
+async def test_main_pm_complete_wrong_status() -> None:
+    main_pm_id = uuid4()
+    task_id = uuid4()
+    task = MagicMock(
+        status="in_progress",
+        assigned_to=main_pm_id,
+        parent_task_id=None,
+        title="t",
+    )
+    task_svc = AsyncMock()
+    task_svc.get.return_value = task
+    deps = _make_deps(task=task_svc)
+    c = Choreographer(deps)
+    env = await c.main_pm_complete(main_pm_id, task_id, notes="x" * 30)
+    body = env.as_dict()
+    assert body["error"] == "invalid_state"
+
+
+# ---------------------------------------------------------------------------
+# _main_pm_complete_guard: missing decision journal (lines 1885-1889)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_main_pm_complete_missing_journal_decision() -> None:
+    main_pm_id = uuid4()
+    task_id = uuid4()
+    task = MagicMock(
+        status="awaiting_pm_review",
+        assigned_to=main_pm_id,
+        parent_task_id=None,
+        title="t",
+    )
+    task_svc = AsyncMock()
+    task_svc.get.return_value = task
+    journal = AsyncMock()
+    journal.has_decision_for_task.return_value = False
+    deps = _make_deps(task=task_svc, journal=journal)
+    c = Choreographer(deps)
+    env = await c.main_pm_complete(main_pm_id, task_id, notes="x" * 30)
+    body = env.as_dict()
+    assert body["error"] == "tracing_gap"
+
+
+# ---------------------------------------------------------------------------
+# main_pm_complete: not_found (line 1908)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_main_pm_complete_not_found() -> None:
+    main_pm_id = uuid4()
+    task_id = uuid4()
+    task_svc = AsyncMock()
+    task_svc.get.return_value = None
+    deps = _make_deps(task=task_svc)
+    c = Choreographer(deps)
+    env = await c.main_pm_complete(main_pm_id, task_id, notes="x" * 30)
+    body = env.as_dict()
+    assert body["error"] == "not_found"
+
+
+# ---------------------------------------------------------------------------
+# _emit_rejection: correlation_id from contextvars (line 170)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_emit_rejection_includes_correlation_id() -> None:
+    """When structlog contextvars holds a correlation_id, it gets stamped."""
+    deps = _make_deps()
+    c = Choreographer(deps)
+    rejection = Envelope.invalid_state(message="m", remediate="r", context_briefing={})
+    structlog.contextvars.bind_contextvars(correlation_id="cid-123")
+    try:
+        await c._emit_rejection(rejection, agent_id=uuid4(), task_id=None, verb="x")
+    finally:
+        structlog.contextvars.unbind_contextvars("correlation_id")
+    deps.audit.log_event.assert_awaited()
+    call_kwargs = deps.audit.log_event.await_args.kwargs
+    assert call_kwargs["details"]["correlation_id"] == "cid-123"
+
+
+# ---------------------------------------------------------------------------
+# _i_will_work_on_claimed: guard returns (line 451) — already-active blocker
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_claimed_branch_already_active_guard() -> None:
+    """Line 451: in_progress task elsewhere blocks claim of another."""
+    agent_id = uuid4()
+    task_id = uuid4()
+    other_id = uuid4()
+    in_prog = MagicMock(id=other_id, status="in_progress", title="other")
+    task_svc = _wire_dev_task_svc(
+        task_id, status="claimed", assigned_to=agent_id, plan="p"
+    )
+    task_svc.list_in_progress_for_agent.return_value = [in_prog]
+    deps = _make_deps(task=task_svc)
+    c = Choreographer(deps)
+    env = await c.i_will_work_on(agent_id, task_id, plan="ok")
+    body = env.as_dict()
+    assert body["error"] == "invalid_state"
+
+
+# ---------------------------------------------------------------------------
+# Pure helper: skill matching string entries (lines 802-803)
+# ---------------------------------------------------------------------------
+
+
+def test_resolve_skill_string_entries() -> None:
+    deps = _make_deps()
+    c = Choreographer(deps)
+    agent = MagicMock(skills=["python", "rust"], capabilities=None)
+    result = c._resolve_skill(agent, ["go", "python"])
+    assert result == "python"
+
+
+# ---------------------------------------------------------------------------
+# i_will_plan: claim returns None for pending task (line 1155 — emit_rejection)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_i_will_plan_pending_claim_returns_none_emit_rejection() -> None:
+    """Forces the await self._emit_rejection in the failed-claim branch."""
+    pm_id = uuid4()
+    task_id = uuid4()
+    task = MagicMock(
+        status="pending",
+        assigned_to=pm_id,
+        plan=None,
+        id=task_id,
+        title="t",
+        team="backend",
+        parent_task_id=None,
+        task_type="planning",
+    )
+    task_svc = AsyncMock()
+    task_svc.get.return_value = task
+    task_svc.agent_for.return_value = MagicMock(role="cell_pm", team="backend")
+    task_svc.list_in_progress_for_agent.return_value = []
+    task_svc.list_paused_for_agent.return_value = []
+    task_svc.get_subtasks.return_value = []
+    task_svc.claim.return_value = None
+    deps = _make_deps(task=task_svc)
+    c = Choreographer(deps)
+    env = await c.i_will_plan(pm_id, task_id, plan="my plan that is long enough")
+    body = env.as_dict()
+    assert body["error"] == "invalid_state"
+    assert "claim failed" in body["message"]
+
+
+# ---------------------------------------------------------------------------
+# _submit_up_ownership_guard: not_assigned (line 1520)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_submit_up_not_assigned_rejected() -> None:
+    """Line 1520: cell_pm calling submit_up but task assigned to another agent."""
+    pm_id = uuid4()
+    task_id = uuid4()
+    other_id = uuid4()
+    task = MagicMock(
+        status="in_progress",
+        assigned_to=other_id,
+        title="t",
+        team="backend",
+    )
+    task_svc = AsyncMock()
+    task_svc.get.return_value = task
+    task_svc.agent_for.return_value = MagicMock(role="cell_pm", team="backend")
+    deps = _make_deps(task=task_svc)
+    c = Choreographer(deps)
+    env = await c.submit_up(pm_id, task_id, notes="x" * 30)
+    body = env.as_dict()
+    assert body["error"] == "not_authorized"
+    assert "not assigned" in body["message"]

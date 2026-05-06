@@ -234,4 +234,51 @@ async def test_delegate_to_cell_pm_dispatches_inputs_bundle() -> None:
     )
 
     assert resp.status_code == _HTTP_200
-    mock_chore.delegate.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_escalate_to_ceo_dispatches() -> None:
+    mock_chore = MagicMock()
+    mock_chore.escalate_to_ceo = AsyncMock(
+        return_value=_make_envelope(status="awaiting_ceo_approval", task_id=_TASK_ID)
+    )
+    client = TestClient(_build_app(mock_chore))
+    resp = client.post(
+        "/api/v2/flow/main_pm/escalate_to_ceo",
+        json={"task_id": _TASK_ID, "reason": "needs CEO sign-off"},
+        headers=_HEADERS,
+    )
+    assert resp.status_code == _HTTP_200
+    mock_chore.escalate_to_ceo.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_unclaim_dispatches() -> None:
+    mock_chore = MagicMock()
+    mock_chore.unclaim = AsyncMock(
+        return_value=_make_envelope(status="awaiting_pm_review", task_id=_TASK_ID)
+    )
+    client = TestClient(_build_app(mock_chore))
+    resp = client.post(
+        "/api/v2/flow/main_pm/unclaim",
+        json={"task_id": _TASK_ID},
+        headers=_HEADERS,
+    )
+    assert resp.status_code == _HTTP_200
+    mock_chore.unclaim.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_resume_dispatches() -> None:
+    mock_chore = MagicMock()
+    mock_chore.resume = AsyncMock(
+        return_value=_make_envelope(status="in_progress", task_id=_TASK_ID)
+    )
+    client = TestClient(_build_app(mock_chore))
+    resp = client.post(
+        "/api/v2/flow/main_pm/resume",
+        json={"task_id": _TASK_ID},
+        headers=_HEADERS,
+    )
+    assert resp.status_code == _HTTP_200
+    mock_chore.resume.assert_awaited_once()
