@@ -18,6 +18,7 @@ from typing import TYPE_CHECKING, Any
 from roboco.services.gateway.commit_validator import validate_commit_message
 from roboco.services.gateway.envelope import Envelope
 from roboco.services.gateway.evidence_builder import build_evidence_for_task
+from roboco.services.gateway.verb_gates import is_verb_allowed
 
 if TYPE_CHECKING:
     from uuid import UUID
@@ -59,19 +60,24 @@ class ContentActionsDeps:
     notifications: Any
 
 
-# Roles authorized to issue formal ack-required notifications via `notify`.
-# Pre-gateway, NotificationService callers were gated by the same set
-# (PMs and Board members); the gateway re-asserts that gate at the verb
-# layer because the do.py router is shared by all roles.
-_NOTIFY_ALLOWED_ROLES: frozenset[str] = frozenset(
-    {"cell_pm", "main_pm", "product_owner", "head_marketing"}
-)
+# Notification authorization is sourced from verb_gates._ALWAYS_AVAILABLE
+# (which lists `notify` for cell_pm, main_pm, product_owner, head_marketing).
+# Pre-gateway this lived as a `_NOTIFY_ALLOWED_ROLES` constant here; merging
+# into verb_gates removes the risk that the two sets disagree.
 _VALID_NOTIFY_PRIORITIES: frozenset[str] = frozenset({"normal", "high", "urgent"})
 
-# Only roles whose manifest includes "commit" should reach the verb body.
-# Server-side gate is defense-in-depth in case the MCP manifest filter ever
-# misroutes the call (smoke 2026-05-03 saw main-pm hit the git layer).
-_COMMIT_ALLOWED_ROLES: frozenset[str] = frozenset({"developer", "documenter"})
+# Synthetic task probe for role-only gate checks: when the verb body
+# wants to fast-fail on role BEFORE loading the agent's active task,
+# we hand verb_gates an in-progress code-typed shape so it consults
+# the same _STATE_VERBS row a real in-progress task would.
+class _RoleProbeTask:
+    """Minimal task-shaped object for role-only is_verb_allowed checks."""
+
+    status: str = "in_progress"
+    task_type: str = "code"
+
+
+_ROLE_PROBE = _RoleProbeTask()
 
 
 class ContentActions:
@@ -119,8 +125,8 @@ class ContentActions:
         records progress entry from the commit message.
         """
         agent = await self.task.agent_for(agent_id)
-        caller_role = agent.role if agent is not None else None
-        if caller_role not in _COMMIT_ALLOWED_ROLES:
+        caller_role = str(agent.role) if agent is not None else ""
+        if not is_verb_allowed(caller_role, "commit", _ROLE_PROBE):
             return Envelope.not_authorized(
                 message=(
                     f"role '{caller_role}' may not commit code; only"
@@ -347,8 +353,8 @@ class ContentActions:
                 context_briefing={},
             )
         agent = await self.task.agent_for(agent_id)
-        caller_role = agent.role if agent is not None else None
-        if caller_role not in _NOTIFY_ALLOWED_ROLES:
+        caller_role = str(agent.role) if agent is not None else ""
+        if not is_verb_allowed(caller_role, "notify", _ROLE_PROBE):
             return Envelope.not_authorized(
                 message=(
                     f"role {caller_role!r} cannot send formal notifications; "
