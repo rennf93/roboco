@@ -995,3 +995,57 @@ async def test_submit_up_not_assigned_rejected() -> None:
     body = env.as_dict()
     assert body["error"] == "not_authorized"
     assert "not assigned" in body["message"]
+
+
+# ---------------------------------------------------------------------------
+# Task 3: Envelope introspection — verb returns carry current_state +
+# valid_next_verbs so agents stop trial-and-erroring.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_i_will_work_on_envelope_carries_introspection_on_success() -> None:
+    """Successful claim+start path stamps current_state + valid_next_verbs."""
+    agent_id = uuid4()
+    task_id = uuid4()
+    task_svc = _wire_dev_task_svc(task_id, status="pending", assigned_to=agent_id)
+    claimed_task = MagicMock(
+        status="in_progress",
+        assigned_to=agent_id,
+        plan="ok plan",
+        id=task_id,
+        title="t",
+        task_type="code",
+    )
+    task_svc.claim.return_value = claimed_task
+    task_svc.set_plan.return_value = claimed_task
+    task_svc.start.return_value = claimed_task
+    deps = _make_deps(task=task_svc)
+    c = Choreographer(deps)
+    env = await c.i_will_work_on(agent_id, task_id, plan="ok plan")
+    body = env.as_dict()
+    assert body["error"] is None
+    assert body["current_state"] == "in_progress"
+    assert isinstance(body["valid_next_verbs"], list)
+    assert "commit" in body["valid_next_verbs"]
+    assert "i_am_done" in body["valid_next_verbs"]
+
+
+@pytest.mark.asyncio
+async def test_i_will_work_on_envelope_carries_introspection_on_rejection() -> None:
+    """A wrong-state rejection still stamps current_state + valid_next_verbs
+    so the agent learns what verbs are actually valid right now."""
+    agent_id = uuid4()
+    task_id = uuid4()
+    task_svc = _wire_dev_task_svc(
+        task_id, status="completed", assigned_to=agent_id
+    )
+    deps = _make_deps(task=task_svc)
+    c = Choreographer(deps)
+    env = await c.i_will_work_on(agent_id, task_id, plan="x")
+    body = env.as_dict()
+    assert body["error"] == "invalid_state"
+    assert body["current_state"] == "completed"
+    assert isinstance(body["valid_next_verbs"], list)
+    # Lifecycle verbs are NOT in the list for a completed task.
+    assert "i_will_work_on" not in body["valid_next_verbs"]
