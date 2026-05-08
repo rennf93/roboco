@@ -2359,7 +2359,7 @@ class AgentOrchestrator:
         """True if a `claimed` task is actually in the doc/PR parallel phase.
 
         The `original_developer:` quick_context marker is set pre-QA by
-        `submit_for_qa`, so it alone cannot distinguish a QA-claimed
+        `open_pr`, so it alone cannot distinguish a QA-claimed
         awaiting_qa task (wrong) from a doc-claimed awaiting_documentation
         task (right). Require the claimant to be a documenter.
         """
@@ -5163,7 +5163,7 @@ Continue development. Required gates before i_am_done() will succeed
    as you make trade-offs.
 
 When acceptance criteria are met, call
-submit_for_qa(task_id="...") to push your branch and open the PR,
+open_pr(task_id="...") to push your branch and open the PR,
 then i_am_done(task_id="...", notes="<self-verification summary>")
 to submit for QA review.
 

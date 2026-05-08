@@ -25,7 +25,7 @@ class RoleConfig:
 _DEV_FLOW = (
     "give_me_work",
     "i_will_work_on",
-    "submit_for_qa",
+    "open_pr",
     "i_am_done",
     "i_am_blocked",
     "unclaim",

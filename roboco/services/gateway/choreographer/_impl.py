@@ -526,7 +526,7 @@ class Choreographer:
             task_id=str(task_id),
             next=(
                 "edit + commit(message) for each meaningful change,"
-                " then submit_for_qa(task_id) and i_am_done(task_id)"
+                " then open_pr(task_id) and i_am_done(task_id)"
             ),
             context_briefing=briefing,
         ).with_introspection(task=t, role=role)
@@ -537,19 +537,22 @@ class Choreographer:
         env.context_briefing = briefing
         return env
 
-    async def submit_for_qa(self, agent_id: UUID, task_id: UUID) -> Envelope:
-        """Push the dev's branch and open a PR. Does NOT submit for QA itself —
-        the dev calls ``i_am_done`` after this verb returns success.
+    async def open_pr(self, agent_id: UUID, task_id: UUID) -> Envelope:
+        """Push the dev's branch and open a PR.
 
-        Gate E made ``i_am_done`` strict: it requires ``pr_number`` set. The
-        catch-up shortcut lives off the dev manifest, so before this verb
-        existed devs had no escape from the NO_PR rejection. ``submit_for_qa``
-        is the explicit push + open-PR step, leaving ``i_am_done`` to do the
-        strict submit.
+        Atomic: validates ALL preconditions (assignee, commits,
+        no-prior-PR) BEFORE running any git side effects. If any check
+        fails, no PR is opened. After success, the dev calls
+        ``i_am_done`` to actually transition the task to awaiting_qa.
 
-        Pre-flight: caller must own the task, have committed at least once,
-        and not already have a PR open. If a PR is already open, this verb
-        is idempotent — it points the dev at ``i_am_done``.
+        Renamed from ``submit_for_qa`` (2026-05-08): the old name
+        suggested this verb advanced the lifecycle, but it only opens
+        the PR. Agents misread the name, called it expecting a QA
+        handoff, then never called i_am_done — orphaning PRs (e.g.
+        PR #12 in the smoke-test trace).
+
+        Idempotent on re-call: if a PR is already open, returns OK
+        pointing the dev at ``i_am_done`` without opening another.
         """
         t = await self.task.get(task_id)
         if t is None:
@@ -557,7 +560,7 @@ class Choreographer:
                 Envelope.not_found(message=f"task {task_id} not found"),
                 agent_id=agent_id,
                 task_id=task_id,
-                verb="submit_for_qa",
+                verb="open_pr",
             )
         briefing = await self._briefing_for(agent_id, task_id)
         agent = await self.task.agent_for(agent_id)
@@ -571,7 +574,7 @@ class Choreographer:
                 ).with_introspection(task=t, role=role),
                 agent_id=agent_id,
                 task_id=task_id,
-                verb="submit_for_qa",
+                verb="open_pr",
             )
         if not t.commits:
             return await self._emit_rejection(
@@ -585,7 +588,7 @@ class Choreographer:
                 ).with_introspection(task=t, role=role),
                 agent_id=agent_id,
                 task_id=task_id,
-                verb="submit_for_qa",
+                verb="open_pr",
             )
         if t.pr_number is not None:
             return Envelope.ok(
@@ -620,7 +623,7 @@ class Choreographer:
           - tracing: progress entry, journal:reflect, acceptance criteria
           - field-level: at least one commit, PR open
         The dev must have called ``commit()`` (do_server) at least once and
-        ``submit_for_qa(task_id)`` to push + open the PR. Calling i_am_done
+        ``open_pr(task_id)`` to push + open the PR. Calling i_am_done
         is the dev's explicit attestation that the work is complete; it
         auto-runs the in_progress → verifying transition (which seeds
         ``self_verified``) and then verifying → awaiting_qa.
@@ -723,7 +726,7 @@ class Choreographer:
         if t.pr_number is None:
             missing.append("NO_PR")
             hints.append(
-                "no PR open — call submit_for_qa(task_id) to push your"
+                "no PR open — call open_pr(task_id) to push your"
                 " branch and open the PR, then retry i_am_done"
             )
         if not missing:

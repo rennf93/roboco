@@ -426,22 +426,23 @@ TRACEABILITY_REMINDERS: dict[str, tuple[str, str]] = {
         "journal",
         "Document cancellation reason with roboco_journal_entry()",
     ),
-    # === GIT TOOLS ===
-    "roboco_git_commit": (
+    # === GIT / WRITE TOOLS ===
+    # Devs/Documenters write code via the roboco-do `commit` verb;
+    # the choreographer auto-pushes and opens/merges PRs as part of the
+    # lifecycle transitions. There is no separate roboco_git_commit /
+    # _push / _create_pr / _merge_pr tool — keys below match what the
+    # SDK actually receives.
+    "commit": (
         "journal",
         "Significant change? Capture insights with roboco_journal_learning()",
     ),
-    "roboco_git_push": (
-        "verify",
-        "Ensure commits describe changes clearly",
-    ),
-    "roboco_git_create_pr": (
+    "open_pr": (
         "reflect",
-        "Reflect on all changes with roboco_journal_reflect()",
+        "PR opens here — reflect on the change with roboco_journal_reflect()",
     ),
-    "roboco_git_merge_pr": (
+    "complete": (
         "verify",
-        "Verify all CI checks pass before merging",
+        "Verify all CI checks pass and QA + docs signed off before merging",
     ),
     # === A2A TOOLS ===
     "roboco_agent_request": (

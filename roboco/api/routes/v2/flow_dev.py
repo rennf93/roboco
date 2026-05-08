@@ -13,8 +13,8 @@ from roboco.api.schemas.v2.flow import (
     IAmDoneRequest,
     IAmIdleRequest,
     IWillWorkOnRequest,
+    OpenPrRequest,
     ResumeRequest,
-    SubmitForQaRequest,
     UnclaimRequest,
 )
 from roboco.services.gateway.choreographer import Choreographer
@@ -52,14 +52,14 @@ async def i_will_work_on(
     return envelope_to_response(env, request)
 
 
-@router.post("/submit_for_qa")
-async def submit_for_qa(
+@router.post("/open_pr")
+async def open_pr(
     request: Request,
-    body: SubmitForQaRequest,
+    body: OpenPrRequest,
     x_agent_id: _AgentIdHeader,
     choreographer: _ChoreographerDep,
 ) -> dict:
-    env = await choreographer.submit_for_qa(x_agent_id, body.task_id)
+    env = await choreographer.open_pr(x_agent_id, body.task_id)
     return envelope_to_response(env, request)
 
 

@@ -118,13 +118,20 @@ def i_will_work_on(task_id: str, plan: str | None = None) -> dict[str, Any]:
     return _post(_role_path("i_will_work_on"), {"task_id": task_id, "plan": plan})
 
 
-def submit_for_qa(task_id: str) -> dict[str, Any]:
-    """Push your branch and open a PR. Run after your last commit, before i_am_done."""
-    return _post(_role_path("submit_for_qa"), {"task_id": task_id})
+def open_pr(task_id: str) -> dict[str, Any]:
+    """Push your branch and open a PR.
+
+    Atomic: validates ALL preconditions (assignee, commits, no-prior-PR)
+    BEFORE running any git side effects. After this verb returns success,
+    call ``i_am_done(task_id, notes='...')`` to actually submit for QA.
+    Renamed from ``submit_for_qa`` (2026-05-08) — the old name suggested
+    this verb advanced the lifecycle, but it only opens the PR.
+    """
+    return _post(_role_path("open_pr"), {"task_id": task_id})
 
 
 def i_am_done(task_id: str, notes: str = "") -> dict[str, Any]:
-    """Submit for QA. Strict — PR must be open (call submit_for_qa first)."""
+    """Submit for QA. Strict — PR must be open (call open_pr first)."""
     return _post(_role_path("i_am_done"), {"task_id": task_id, "notes": notes})
 
 
@@ -264,7 +271,7 @@ _TOOLS: dict[str, Any] = {
     # dev
     "give_me_work": give_me_work,
     "i_will_work_on": i_will_work_on,
-    "submit_for_qa": submit_for_qa,
+    "open_pr": open_pr,
     "i_am_done": i_am_done,
     "i_am_blocked": i_am_blocked,
     "unclaim": unclaim,

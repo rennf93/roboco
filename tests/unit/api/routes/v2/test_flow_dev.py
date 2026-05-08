@@ -157,20 +157,20 @@ def test_i_am_blocked_rejects_empty_reason() -> None:
 
 
 @pytest.mark.asyncio
-async def test_submit_for_qa_dispatches_task_id() -> None:
-    """POST submit_for_qa forwards task_id."""
+async def test_open_pr_dispatches_task_id() -> None:
+    """POST open_pr forwards task_id."""
     mock_chore = MagicMock()
-    mock_chore.submit_for_qa = AsyncMock(
+    mock_chore.open_pr = AsyncMock(
         return_value=_make_envelope(status="awaiting_qa", task_id=_TASK_ID)
     )
     client = TestClient(_build_app(mock_chore))
     resp = client.post(
-        "/api/v2/flow/developer/submit_for_qa",
+        "/api/v2/flow/developer/open_pr",
         json={"task_id": _TASK_ID},
         headers=_HEADERS,
     )
     assert resp.status_code == _HTTP_200
-    mock_chore.submit_for_qa.assert_awaited_once()
+    mock_chore.open_pr.assert_awaited_once()
 
 
 @pytest.mark.asyncio

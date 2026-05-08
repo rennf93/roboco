@@ -1049,3 +1049,38 @@ async def test_i_will_work_on_envelope_carries_introspection_on_rejection() -> N
     assert isinstance(body["valid_next_verbs"], list)
     # Lifecycle verbs are NOT in the list for a completed task.
     assert "i_will_work_on" not in body["valid_next_verbs"]
+
+
+@pytest.mark.asyncio
+async def test_open_pr_does_not_create_pr_if_no_commits() -> None:
+    """Atomic invariant: if commits[] is empty, open_pr must NOT call
+    git.create_pr. Pre-fix this was already true at the verb level, but
+    this test pins it as a regression: any future refactor that
+    re-orders precondition vs side effect breaks the test."""
+    dev_id = uuid4()
+    task_id = uuid4()
+    task = MagicMock(
+        status="in_progress",
+        assigned_to=dev_id,
+        commits=[],
+        pr_number=None,
+        branch_name="feature/backend/abc",
+        id=task_id,
+        title="t",
+        team="backend",
+        task_type="code",
+    )
+    task_svc = AsyncMock()
+    task_svc.get.return_value = task
+    task_svc.agent_for.return_value = MagicMock(role="developer", team="backend")
+    git_svc = AsyncMock()
+    git_svc.create_pr = AsyncMock()
+    git_svc.push_branch = AsyncMock()
+    deps = _make_deps(task=task_svc, git=git_svc)
+    c = Choreographer(deps)
+    env = await c.open_pr(dev_id, task_id)
+    body = env.as_dict()
+    assert body["error"] == "invalid_state"
+    assert "no commits" in body["message"]
+    git_svc.create_pr.assert_not_called()
+    git_svc.push_branch.assert_not_called()

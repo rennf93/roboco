@@ -14,7 +14,7 @@ class IWillWorkOnRequest(BaseModel):
     plan: str | None = None
 
 
-class SubmitForQaRequest(BaseModel):
+class OpenPrRequest(BaseModel):
     task_id: UUID
 
 

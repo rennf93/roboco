@@ -15,7 +15,7 @@ as the source of truth for verb signatures.
 |------|-------------|
 | `give_me_work` | `give_me_work()` |
 | `i_will_work_on` | `i_will_work_on(task_id: UUID, plan: str | None = None)` |
-| `submit_for_qa` | `submit_for_qa(task_id: UUID)` |
+| `open_pr` | `open_pr(task_id: UUID)` |
 | `i_am_done` | `i_am_done(task_id: UUID, notes: str = '')` |
 | `i_am_blocked` | `i_am_blocked(task_id: UUID, reason: str)` |
 | `unclaim` | `unclaim(task_id: UUID)` |

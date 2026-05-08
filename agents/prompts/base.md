@@ -38,7 +38,7 @@ Read the `missing` array literally. Each entry below names what to do; the `reme
 | `qa_notes>=min` | QA `notes` argument must be ≥80 chars; review the diff and write a substantive note. | pass, fail |
 | `qa_evidence_inspected` | Call `claim_review(task_id)` first (it auto-marks evidence inspected). | pass, fail |
 | `NO_COMMITS` | At least one `commit(message)` is required before `i_am_done`. | i_am_done |
-| `NO_PR` | Call `submit_for_qa(task_id)` to push the branch and open the PR, then retry. | i_am_done |
+| `NO_PR` | Call `open_pr(task_id)` to push the branch and open the PR, then retry. | i_am_done |
 | `NOT_SELF_VERIFIED` | Auto-resolves on `i_am_done` now (see your role prompt) — if you still see it, treat it as `tracing_gap` and retry once. | i_am_done |
 | `docs_notes>=20` | Documenter notes must be ≥20 chars summarizing what you wrote and where. | i_documented |
 | `files` | Call `i_documented` with `files=['<path>', ...]` listing each doc file written. | i_documented |

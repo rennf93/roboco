@@ -1,4 +1,4 @@
-"""submit_for_qa pushes the current branch and opens a PR.
+"""open_pr pushes the current branch and opens a PR.
 
 Gate E (commit c5c2016) made `i_am_done` strict — requires `pr_number` set.
 The catch-up flow is off the dev manifest. Devs need an explicit verb that
@@ -44,7 +44,7 @@ def _make_deps(**overrides: AsyncMock) -> ChoreographerDeps:
 
 
 @pytest.mark.asyncio
-async def test_submit_for_qa_pushes_and_opens_pr() -> None:
+async def test_open_pr_pushes_and_opens_pr() -> None:
     aid = uuid4()
     tid = uuid4()
     t = MagicMock(
@@ -69,7 +69,7 @@ async def test_submit_for_qa_pushes_and_opens_pr() -> None:
     deps = _make_deps(task=task_svc, git=git_svc, work_session=work_session_svc)
     c = Choreographer(deps)
 
-    env = await c.submit_for_qa(aid, tid)
+    env = await c.open_pr(aid, tid)
 
     git_svc.push_branch.assert_awaited()
     git_svc.create_pr.assert_awaited()
@@ -79,7 +79,7 @@ async def test_submit_for_qa_pushes_and_opens_pr() -> None:
 
 
 @pytest.mark.asyncio
-async def test_submit_for_qa_rejects_when_not_assigned() -> None:
+async def test_open_pr_rejects_when_not_assigned() -> None:
     aid = uuid4()
     other = uuid4()
     tid = uuid4()
@@ -98,7 +98,7 @@ async def test_submit_for_qa_rejects_when_not_assigned() -> None:
     deps = _make_deps(task=task_svc, git=git_svc)
     c = Choreographer(deps)
 
-    env = await c.submit_for_qa(aid, tid)
+    env = await c.open_pr(aid, tid)
 
     git_svc.push_branch.assert_not_awaited()
     git_svc.create_pr.assert_not_awaited()
@@ -106,7 +106,7 @@ async def test_submit_for_qa_rejects_when_not_assigned() -> None:
 
 
 @pytest.mark.asyncio
-async def test_submit_for_qa_rejects_when_no_commits() -> None:
+async def test_open_pr_rejects_when_no_commits() -> None:
     aid = uuid4()
     tid = uuid4()
     t = MagicMock(
@@ -124,7 +124,7 @@ async def test_submit_for_qa_rejects_when_no_commits() -> None:
     deps = _make_deps(task=task_svc, git=git_svc)
     c = Choreographer(deps)
 
-    env = await c.submit_for_qa(aid, tid)
+    env = await c.open_pr(aid, tid)
 
     git_svc.push_branch.assert_not_awaited()
     git_svc.create_pr.assert_not_awaited()
@@ -134,7 +134,7 @@ async def test_submit_for_qa_rejects_when_no_commits() -> None:
 
 
 @pytest.mark.asyncio
-async def test_submit_for_qa_idempotent_when_pr_already_open() -> None:
+async def test_open_pr_idempotent_when_pr_already_open() -> None:
     aid = uuid4()
     tid = uuid4()
     t = MagicMock(
@@ -152,7 +152,7 @@ async def test_submit_for_qa_idempotent_when_pr_already_open() -> None:
     deps = _make_deps(task=task_svc, git=git_svc)
     c = Choreographer(deps)
 
-    env = await c.submit_for_qa(aid, tid)
+    env = await c.open_pr(aid, tid)
 
     git_svc.push_branch.assert_not_awaited()
     git_svc.create_pr.assert_not_awaited()
@@ -162,7 +162,7 @@ async def test_submit_for_qa_idempotent_when_pr_already_open() -> None:
 
 
 @pytest.mark.asyncio
-async def test_submit_for_qa_returns_not_found_for_unknown_task() -> None:
+async def test_open_pr_returns_not_found_for_unknown_task() -> None:
     aid = uuid4()
     tid = uuid4()
     task_svc = AsyncMock()
@@ -170,6 +170,6 @@ async def test_submit_for_qa_returns_not_found_for_unknown_task() -> None:
     deps = _make_deps(task=task_svc)
     c = Choreographer(deps)
 
-    env = await c.submit_for_qa(aid, tid)
+    env = await c.open_pr(aid, tid)
 
     assert env.error == "not_found"

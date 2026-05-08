@@ -322,10 +322,10 @@ async def test_dev_can_claim_pending_task_via_gateway(
 async def test_dev_full_chain_through_awaiting_qa(
     db_session: AsyncSession, lifecycle_setup: dict[str, Any]
 ) -> None:
-    """claim → commit → submit_for_qa → i_am_done lands in awaiting_qa.
+    """claim → commit → open_pr → i_am_done lands in awaiting_qa.
 
     Drives the full developer-side closure path. Verifies:
-      - submit_for_qa records pr_number on the task (commits + PR pre-flight)
+      - open_pr records pr_number on the task (commits + PR pre-flight)
       - i_am_done auto-runs submit_verification (P1-3) → verifying → awaiting_qa
       - Heartbeat refreshes after each verb (`_touch`)
       - active_claimant_id remains set through dev's tenure
@@ -353,7 +353,7 @@ async def test_dev_full_chain_through_awaiting_qa(
 
     # 2. Commit (via stub git directly + record progress on task — the gateway
     # path through ContentActions.commit calls task.add_progress, which we
-    # simulate here so submit_for_qa's commits-precondition is satisfied).
+    # simulate here so open_pr's commits-precondition is satisfied).
     await stub_git.commit(
         branch_name=_BRANCH,
         message=f"[{str(task.id)[:8]}] feat(api): add /healthz",
@@ -361,9 +361,9 @@ async def test_dev_full_chain_through_awaiting_qa(
     )
     await task_service.add_progress(task.id, dev_agent.id, "implemented /healthz")
 
-    # 3. submit_for_qa — push + open PR. After this, task.pr_number is set.
-    env = await c.submit_for_qa(dev_agent.id, task.id)
-    assert env.error is None, f"submit_for_qa failed: {env.message}"
+    # 3. open_pr — push + open PR. After this, task.pr_number is set.
+    env = await c.open_pr(dev_agent.id, task.id)
+    assert env.error is None, f"open_pr failed: {env.message}"
     refreshed = await task_service.get(task.id)
     assert refreshed is not None
     assert refreshed.pr_number == _PR_NUMBER, "P0-7 / S-02: PR recorded on task"
@@ -418,7 +418,7 @@ async def test_full_chain_through_doc_handoff(
         task_id=task.id,
     )
     await task_service.add_progress(task.id, dev_agent.id, "implemented /healthz")
-    await c.submit_for_qa(dev_agent.id, task.id)
+    await c.open_pr(dev_agent.id, task.id)
     env = await c.i_am_done(dev_agent.id, task.id, "tests pass; route works")
     assert env.error is None
     assert env.status == "awaiting_qa"

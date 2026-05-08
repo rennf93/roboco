@@ -33,7 +33,7 @@ def test_developer_pending_task_can_claim() -> None:
 def test_developer_in_progress_task_can_commit_and_finish() -> None:
     verbs = valid_next_verbs("developer", _task("in_progress"))
     assert "commit" in verbs
-    assert "submit_for_qa" in verbs
+    assert "open_pr" in verbs
     assert "i_am_done" in verbs
     assert "i_am_blocked" in verbs
 
@@ -140,7 +140,7 @@ def test_completed_task_offers_no_lifecycle_verbs() -> None:
     # Idle / observation verbs may still be offered; lifecycle verbs aren't.
     assert "i_will_work_on" not in verbs
     assert "commit" not in verbs
-    assert "submit_for_qa" not in verbs
+    assert "open_pr" not in verbs
 
 
 def test_unknown_role_returns_empty_list() -> None:
