@@ -171,3 +171,37 @@ def test_is_verb_allowed_false_for_blocked_verb() -> None:
 
 def test_is_verb_allowed_false_for_unknown_role() -> None:
     assert is_verb_allowed("nope", "i_am_idle", _task("pending")) is False
+
+
+# ---------------------------------------------------------------------
+# Task 4: verb_gates is the single source of truth for content tools too
+# ---------------------------------------------------------------------
+
+
+def test_commit_allowed_for_developer_and_documenter_only() -> None:
+    """Was a hardcoded set in content_actions; now lives in verb_gates."""
+    task = _task("in_progress", task_type="code")
+    assert is_verb_allowed("developer", "commit", task) is True
+    assert is_verb_allowed("documenter", "commit", task) is True
+    assert is_verb_allowed("qa", "commit", task) is False
+    assert is_verb_allowed("cell_pm", "commit", task) is False
+    assert is_verb_allowed("main_pm", "commit", task) is False
+
+
+def test_commit_not_offered_when_task_is_not_in_progress() -> None:
+    """commit is a per-state verb — not offered when state forbids it."""
+    task = _task("completed", task_type="code")
+    assert is_verb_allowed("developer", "commit", task) is False
+
+
+def test_notify_allowed_for_pm_and_board_only() -> None:
+    """Was a hardcoded set in content_actions; now lives in verb_gates."""
+    task = _task("in_progress", task_type="code")
+    assert is_verb_allowed("cell_pm", "notify", task) is True
+    assert is_verb_allowed("main_pm", "notify", task) is True
+    assert is_verb_allowed("product_owner", "notify", task) is True
+    assert is_verb_allowed("head_marketing", "notify", task) is True
+    assert is_verb_allowed("developer", "notify", task) is False
+    assert is_verb_allowed("qa", "notify", task) is False
+    assert is_verb_allowed("documenter", "notify", task) is False
+    assert is_verb_allowed("auditor", "notify", task) is False

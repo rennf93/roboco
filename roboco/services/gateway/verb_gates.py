@@ -19,14 +19,18 @@ from typing import Any
 _PM_ROLES: frozenset[str] = frozenset({"cell_pm", "main_pm"})
 
 # Always-available verbs (don't depend on task state).
+#
+# `notify` (formal acked notifications) is on the PM/Board roles only —
+# pre-gateway it was gated by `_NOTIFY_ALLOWED_ROLES` in
+# `content_actions.py`; now consolidated here.
 _ALWAYS_AVAILABLE: dict[str, frozenset[str]] = {
     "developer": frozenset({"i_am_idle", "give_me_work"}),
     "qa": frozenset({"i_am_idle", "give_me_work"}),
     "documenter": frozenset({"i_am_idle", "give_me_work"}),
-    "cell_pm": frozenset({"i_am_idle", "give_me_work", "triage"}),
-    "main_pm": frozenset({"i_am_idle", "give_me_work", "triage_all"}),
-    "product_owner": frozenset({"i_am_idle", "triage"}),
-    "head_marketing": frozenset({"i_am_idle", "triage"}),
+    "cell_pm": frozenset({"i_am_idle", "give_me_work", "triage", "notify"}),
+    "main_pm": frozenset({"i_am_idle", "give_me_work", "triage_all", "notify"}),
+    "product_owner": frozenset({"i_am_idle", "triage", "notify"}),
+    "head_marketing": frozenset({"i_am_idle", "triage", "notify"}),
     "auditor": frozenset({"i_am_idle", "triage"}),
 }
 

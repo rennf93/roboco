@@ -1087,12 +1087,17 @@ class Choreographer:
         producing the cycle smoke 2026-05-04 captured.
         """
         agent = await self.task.agent_for(pm_agent_id)
-        if agent is None or agent.role not in ("cell_pm", "main_pm"):
+        role = str(agent.role) if agent is not None else ""
+        # Role-only gate: i_will_plan is principle-level reserved for PMs.
+        # The status check below ((pending → in_progress) is a separate gate
+        # whose rejection must surface as `invalid_state`, not
+        # `not_authorized` — agents react to those two errors differently.
+        if role not in ("cell_pm", "main_pm"):
             return Envelope.not_authorized(
                 message="only cell_pm or main_pm may call i_will_plan",
                 remediate="this verb is reserved for PMs",
                 context_briefing=await self._briefing_for(pm_agent_id, task_id),
-            )
+            ).with_introspection(task=t, role=role)
         status = str(t.status)
         if status != "pending":
             # Idempotent re-entry: caller already owns this task in a
@@ -1295,7 +1300,8 @@ class Choreographer:
         if guard := await self._delegate_role_guards(
             pm_agent_id, parent_task_id, agent, inputs
         ):
-            return guard
+            role = str(agent.role) if agent is not None else ""
+            return guard.with_introspection(task=parent, role=role)
         if guard := await self._delegate_static_guards(
             pm_agent_id, parent_task_id, parent, inputs
         ):
@@ -1312,7 +1318,13 @@ class Choreographer:
         agent: Any,
         inputs: DelegateInputs,
     ) -> Envelope | None:
-        """Role + delegation-chain guards (the original two)."""
+        """Role + delegation-chain guards (the original two).
+
+        Role gate stays role-only here (not via is_verb_allowed) — the
+        parent-status check is a separate gate that must surface as
+        `invalid_state`, not `not_authorized`. See _i_will_plan_preflight
+        for the same rationale.
+        """
         if agent is None or agent.role not in ("cell_pm", "main_pm"):
             return Envelope.not_authorized(
                 message="only cell_pm or main_pm may delegate",
