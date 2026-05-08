@@ -53,6 +53,7 @@ def _delegate_inputs() -> DelegateInputs:
         description="Add /v1/foo endpoint with tests",
         assigned_to="be-dev-1",
         team="backend",
+        task_type="code",
     )
 
 

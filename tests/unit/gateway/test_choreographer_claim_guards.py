@@ -336,7 +336,15 @@ async def test_main_pm_cannot_claim_code_task_via_i_will_work_on() -> None:
 
 
 @pytest.mark.asyncio
-async def test_cell_pm_cannot_claim_code_task_via_i_will_plan() -> None:
+async def test_cell_pm_can_plan_code_typed_parent_via_i_will_plan() -> None:
+    """Rule change (2026-05-08): the PM-cannot-execute-code guard belongs
+    on `i_will_work_on` (the EXECUTION verb), not on `i_will_plan` (the
+    PLANNING verb). PMs decompose code-typed parent tasks into
+    developer-claimable subtasks all the time; that's planning, not
+    executing. Pre-fix this rejection deadlocked every code-typed parent
+    in the smoke test (see PRE_GATEWAY_LIFECYCLE.md and the 2026-05-08
+    audit-log analysis).
+    """
     pm_id = uuid4()
     task_id = uuid4()
     target = MagicMock(
@@ -353,10 +361,12 @@ async def test_cell_pm_cannot_claim_code_task_via_i_will_plan() -> None:
     deps = _make_deps(task=task_svc)
     c = Choreographer(deps)
 
-    env = await c.i_will_plan(pm_id, task_id, plan="x")
+    env = await c.i_will_plan(pm_id, task_id, plan="Decompose into 2 dev subtasks.")
     body = env.as_dict()
-    assert body["error"] == "not_authorized"
-    assert "code" in body["message"].lower() or "execute" in body["message"].lower()
+    # The PM-cannot-execute-code rejection must NOT fire on i_will_plan.
+    assert body.get("error") != "not_authorized", (
+        f"i_will_plan was rejected for a code-typed parent; envelope: {body}"
+    )
 
 
 @pytest.mark.asyncio

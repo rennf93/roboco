@@ -25,6 +25,22 @@ from roboco.exceptions import (
     RobocoError,
     ValidationError,
 )
+from roboco.services.base import (
+    ConflictError as ServiceConflictError,
+)
+from roboco.services.base import (
+    NotFoundError as ServiceNotFoundError,
+)
+from roboco.services.base import (
+    ServiceError,
+    ServiceUnavailableError,
+)
+from roboco.services.base import (
+    UnauthorizedError as ServiceUnauthorizedError,
+)
+from roboco.services.base import (
+    ValidationError as ServiceValidationError,
+)
 
 logger = structlog.get_logger()
 
@@ -164,6 +180,53 @@ async def roboco_exception_handler(request: Request, exc: Exception) -> JSONResp
     )
 
 
+# `roboco.services.base.ServiceError` is a parallel exception hierarchy that
+# does NOT inherit from `RobocoError` (it extends `Exception` directly), so
+# `roboco_exception_handler` never sees it and the requests fall through to
+# `generic_exception_handler` as 500s. Map its subclasses to the same status
+# codes used in the RobocoError handler so route-layer try/except blocks can
+# surface clean 4xx codes whether the service raises from `roboco.exceptions`
+# or `roboco.services.base`.
+_SERVICE_ERROR_STATUS: dict[type[ServiceError], int] = {
+    ServiceNotFoundError: 404,
+    ServiceValidationError: 422,
+    ServiceConflictError: 409,
+    ServiceUnauthorizedError: 403,
+    ServiceUnavailableError: 503,
+}
+
+
+async def service_exception_handler(request: Request, exc: Exception) -> JSONResponse:
+    """Handle `roboco.services.base.ServiceError` and subclasses."""
+    svc_exc = cast("ServiceError", exc)
+    status_code = 500
+    for exc_type, mapped_status in _SERVICE_ERROR_STATUS.items():
+        if isinstance(svc_exc, exc_type):
+            status_code = mapped_status
+            break
+
+    correlation_id = getattr(request.state, "correlation_id", None)
+    details = dict(svc_exc.details)
+    if correlation_id:
+        details["correlation_id"] = correlation_id
+
+    logger.warning(
+        "Handled exception",
+        error_type=type(svc_exc).__name__,
+        error_message=svc_exc.message,
+        status_code=status_code,
+    )
+
+    return JSONResponse(
+        status_code=status_code,
+        content={
+            "error": type(svc_exc).__name__,
+            "message": svc_exc.message,
+            "details": details,
+        },
+    )
+
+
 async def generic_exception_handler(request: Request, exc: Exception) -> JSONResponse:
     """Handle unexpected exceptions."""
     correlation_id = getattr(request.state, "correlation_id", None)
@@ -281,6 +344,7 @@ def setup_middleware(app: FastAPI) -> None:
     app.add_exception_handler(RequestValidationError, request_validation_handler)
     app.add_exception_handler(HTTPException, http_exception_handler)
     app.add_exception_handler(RobocoError, roboco_exception_handler)
+    app.add_exception_handler(ServiceError, service_exception_handler)
     app.add_exception_handler(Exception, generic_exception_handler)
 
     # Middleware (added in reverse order due to LIFO)

@@ -19,6 +19,18 @@ from roboco.exceptions import (
     RobocoError,
     ValidationError,
 )
+from roboco.services.base import (
+    ConflictError as ServiceConflictError,
+)
+from roboco.services.base import (
+    NotFoundError as ServiceNotFoundError,
+)
+from roboco.services.base import (
+    UnauthorizedError as ServiceUnauthorizedError,
+)
+from roboco.services.base import (
+    ValidationError as ServiceValidationError,
+)
 
 # ---------------------------------------------------------------------------
 # get_status_code
@@ -76,6 +88,23 @@ def _make_app() -> FastAPI:
     async def _he():
         raise HTTPException(status_code=403, detail="nope")
 
+    # service-layer errors (parallel hierarchy from roboco.services.base)
+    @app.get("/svc-notfound")
+    async def _svc_nf():
+        raise ServiceNotFoundError("Channel", "main-pm")
+
+    @app.get("/svc-validation")
+    async def _svc_v():
+        raise ServiceValidationError("invalid input", field="title")
+
+    @app.get("/svc-conflict")
+    async def _svc_c():
+        raise ServiceConflictError("duplicate", resource_type="task")
+
+    @app.get("/svc-unauth")
+    async def _svc_u():
+        raise ServiceUnauthorizedError("merge_pr", reason="not your PR")
+
     setup_middleware(app)
     return app
 
@@ -112,6 +141,48 @@ def test_http_exception_handler_returns_standardized_format() -> None:
     assert response.status_code == HTTPStatus.FORBIDDEN
     body = response.json()
     assert "error" in body
+
+
+# `roboco.services.base.ServiceError` is a parallel exception hierarchy
+# (it does NOT inherit from RobocoError), so a separate handler maps it
+# to clean 4xx codes instead of letting the generic 500 handler eat it.
+
+
+def test_service_notfound_translates_to_404() -> None:
+    client = TestClient(_make_app(), raise_server_exceptions=False)
+    response = client.get("/svc-notfound")
+    assert response.status_code == HTTPStatus.NOT_FOUND
+    body = response.json()
+    assert body["error"] == "NotFoundError"
+    assert "main-pm" in body["message"]
+
+
+def test_service_validation_translates_to_422() -> None:
+    client = TestClient(_make_app(), raise_server_exceptions=False)
+    response = client.get("/svc-validation")
+    assert response.status_code == HTTPStatus.UNPROCESSABLE_ENTITY
+    body = response.json()
+    assert body["error"] == "ValidationError"
+
+
+def test_service_conflict_translates_to_409() -> None:
+    client = TestClient(_make_app(), raise_server_exceptions=False)
+    response = client.get("/svc-conflict")
+    assert response.status_code == HTTPStatus.CONFLICT
+
+
+def test_service_unauthorized_translates_to_403() -> None:
+    client = TestClient(_make_app(), raise_server_exceptions=False)
+    response = client.get("/svc-unauth")
+    assert response.status_code == HTTPStatus.FORBIDDEN
+
+
+def test_service_handler_carries_correlation_id() -> None:
+    client = TestClient(_make_app(), raise_server_exceptions=False)
+    cid = "test-svc-correlation-987"
+    response = client.get("/svc-notfound", headers={"X-Correlation-ID": cid})
+    body = response.json()
+    assert body["details"]["correlation_id"] == cid
 
 
 def test_generic_exception_returns_500() -> None:

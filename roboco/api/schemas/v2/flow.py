@@ -99,7 +99,11 @@ class DelegateRequest(BaseModel):
     description: str = Field(..., min_length=1)
     assigned_to: str = Field(..., min_length=1)
     team: str = Field(..., min_length=1)
-    task_type: str = "code"
+    # task_type is REQUIRED. The 2026-05-08 trace showed agents omitting
+    # it and the old default of 'code' deadlocking the lifecycle. Force
+    # callers to declare intent: code | documentation | research |
+    # planning | design | administrative.
+    task_type: str = Field(..., min_length=1)
     acceptance_criteria: list[str] | None = None
     estimated_complexity: str = "medium"
 

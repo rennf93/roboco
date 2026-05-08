@@ -66,13 +66,19 @@ class ChoreographerDeps:
 
 @dataclass(frozen=True)
 class DelegateInputs:
-    """Bundle of fields the ``delegate`` verb receives from the route layer."""
+    """Bundle of fields the ``delegate`` verb receives from the route layer.
+
+    `task_type` has no default — the v2 schema enforces this at the HTTP
+    boundary, but defaulting here too would let direct callers (tests,
+    other internal code) silently pick 'code' and recreate the
+    2026-05-08 deadlock.
+    """
 
     title: str
     description: str
     assigned_to: str
     team: str
-    task_type: str = "code"
+    task_type: str
     acceptance_criteria: list[str] | None = None
     estimated_complexity: str = "medium"
 
@@ -279,7 +285,7 @@ class Choreographer:
         """
         agent = await self.task.agent_for(agent_id)
         role = agent.role if agent is not None else "developer"
-        task_type = str(getattr(task, "task_type", "code") or "code")
+        task_type = str(task.task_type)
 
         if guard := self._run_role_guards(
             role,
@@ -1084,12 +1090,23 @@ class Choreographer:
                 ),
                 context_briefing=await self._briefing_for(pm_agent_id, task_id),
             )
-        # Gate Set A: PM_CANNOT_EXECUTE_CODE — cell_pm/main_pm can only plan
-        # non-code tasks. role_typed_claim_guard is skipped here because
-        # i_will_plan only services PM roles, which fall into the PM-code
-        # branch. ALREADY_ACTIVE/PAUSED still apply.
+        # Gate Set A: ALREADY_ACTIVE / PAUSED guards only.
+        #
+        # `pm_cannot_execute_code_guard` is INTENTIONALLY skipped here:
+        # PMs PLAN code-typed parent tasks all the time (they decompose
+        # the work into developer-claimable subtasks via delegate).
+        # The "PMs cannot execute code" rule belongs to the EXECUTION
+        # verb (`i_will_work_on`), not the PLANNING verb (`i_will_plan`).
+        # Pre-fix this guard fired on i_will_plan and deadlocked any
+        # code-typed parent task — see the 2026-05-08 smoke-test trace.
+        #
+        # `role_typed_claim_guard` is also skipped because i_will_plan
+        # services only PM roles which aren't in its allow-table.
         guard = await self._run_claim_guards(
-            agent_id=pm_agent_id, task=t, skip_role_typed=True
+            agent_id=pm_agent_id,
+            task=t,
+            skip_role_typed=True,
+            skip_pm_code=True,
         )
         if guard:
             return self._with_briefing(

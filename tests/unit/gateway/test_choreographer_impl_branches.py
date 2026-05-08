@@ -15,6 +15,7 @@ import pytest
 import structlog
 from roboco.services.gateway.choreographer import Choreographer, ChoreographerDeps
 from roboco.services.gateway.choreographer._impl import DelegateInputs
+from roboco.services.gateway.claim_guards import pm_cannot_execute_code_guard
 from roboco.services.gateway.envelope import Envelope
 
 
@@ -250,6 +251,99 @@ async def test_i_will_work_on_in_progress_assigned_to_self_idempotent() -> None:
 # ---------------------------------------------------------------------------
 
 
+def test_pm_cannot_execute_code_guard_passes_for_non_code_task() -> None:
+    """Direct guard unit test: PM + non-code task → no rejection.
+    Covers claim_guards.py:98 (the early-return for non-code task_type).
+    """
+    assert pm_cannot_execute_code_guard("cell_pm", "planning") is None
+    assert pm_cannot_execute_code_guard("main_pm", "documentation") is None
+
+
+@pytest.mark.asyncio
+async def test_i_will_plan_pm_with_already_active_task_rejects() -> None:
+    """The already_active_guard still fires on i_will_plan even though
+    pm_cannot_execute_code is skipped. Covers _impl.py:1106-1108
+    (with-briefing wrap of the guard rejection).
+    """
+    pm_id = uuid4()
+    task_id = uuid4()
+    other_task_id = uuid4()
+    target = MagicMock(
+        status="pending",
+        assigned_to=pm_id,
+        plan=None,
+        id=task_id,
+        title="t",
+        team="backend",
+        parent_task_id=None,
+        task_type="planning",
+    )
+    busy_task = MagicMock(id=other_task_id, status="in_progress")
+    task_svc = AsyncMock()
+    task_svc.get.return_value = target
+    task_svc.agent_for.return_value = MagicMock(role="cell_pm", team="backend")
+    task_svc.list_in_progress_for_agent.return_value = [busy_task]
+    task_svc.list_paused_for_agent.return_value = []
+    deps = _make_deps(task=task_svc)
+    c = Choreographer(deps)
+    env = await c.i_will_plan(pm_id, task_id, plan="x" * 30)
+    body = env.as_dict()
+    assert body["error"] == "invalid_state"
+    assert "in_progress task" in body["message"]
+
+
+@pytest.mark.asyncio
+async def test_i_will_plan_cell_pm_on_code_typed_parent_succeeds() -> None:
+    """Regression for the smoke-test deadlock (2026-05-08 trace).
+
+    When a cell PM tries to plan a code-typed parent task, the verb must
+    succeed — PMs PLAN code work and DELEGATE the execution; they don't
+    execute. The pre-fix `pm_cannot_execute_code_guard` was wrongly fired
+    on `i_will_plan` (the planning verb) instead of being scoped to
+    `i_will_work_on` (the execution verb), causing a deadlock: cell PM
+    couldn't plan → couldn't transition parent to in_progress → couldn't
+    delegate (delegate requires parent in_progress).
+    """
+    pm_id = uuid4()
+    task_id = uuid4()
+    task = MagicMock(
+        status="pending",
+        assigned_to=pm_id,
+        plan=None,
+        id=task_id,
+        title="Backend slice: Git workflow smoke test",
+        team="backend",
+        parent_task_id=uuid4(),  # subtask of the main_pm root
+        task_type="code",  # ← the trigger; pre-fix this rejected with
+        #                    "Cell Pm cannot claim code tasks"
+    )
+    task_svc = AsyncMock()
+    task_svc.get.return_value = task
+    task_svc.agent_for.return_value = MagicMock(role="cell_pm", team="backend")
+    task_svc.list_in_progress_for_agent.return_value = []
+    task_svc.list_paused_for_agent.return_value = []
+    task_svc.get_subtasks.return_value = []
+    # Claim + start succeed so we can verify the verb runs end-to-end.
+    started_task = MagicMock(
+        status="in_progress",
+        assigned_to=pm_id,
+        id=task_id,
+        title=task.title,
+        team="backend",
+        task_type="code",
+    )
+    task_svc.claim.return_value = task
+    task_svc.start.return_value = started_task
+    deps = _make_deps(task=task_svc)
+    c = Choreographer(deps)
+    env = await c.i_will_plan(pm_id, task_id, plan="Decompose into 2 dev subtasks.")
+    body = env.as_dict()
+    # The PM-cannot-execute-code rejection must NOT fire on i_will_plan.
+    assert body.get("error") != "not_authorized", (
+        f"i_will_plan was rejected for a code-typed parent; envelope: {body}"
+    )
+
+
 @pytest.mark.asyncio
 async def test_i_will_plan_pending_claim_fails() -> None:
     pm_id = uuid4()
@@ -299,6 +393,7 @@ async def test_delegate_parent_not_found() -> None:
             description="y",
             assigned_to="be-dev-1",
             team="backend",
+            task_type="code",
         ),
     )
     body = env.as_dict()
@@ -333,6 +428,7 @@ async def test_delegate_unknown_role_rejected() -> None:
             description="y",
             assigned_to="be-dev-1",
             team="backend",
+            task_type="code",
         ),
     )
     body = env.as_dict()
@@ -368,6 +464,7 @@ async def test_delegate_parent_no_project_rejected() -> None:
             description="y",
             assigned_to="be-dev-1",
             team="backend",
+            task_type="code",
         ),
     )
     body = env.as_dict()

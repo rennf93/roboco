@@ -258,12 +258,15 @@ async def test_delegate_dispatches_inputs_bundle() -> None:
             "description": "Add the foo endpoint with tests.",
             "assigned_to": "be-dev-1",
             "team": "backend",
+            "task_type": "code",
         },
         headers=_HEADERS,
     )
 
     assert resp.status_code == _HTTP_200
     mock_chore.delegate.assert_awaited_once()
+    inputs = mock_chore.delegate.await_args.args[2]
+    assert inputs.task_type == "code"
 
 
 @pytest.mark.asyncio

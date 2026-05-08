@@ -379,6 +379,7 @@ async def test_delegate_main_pm_to_cell_pm_creates_subtask() -> None:
             description="Plan backend work for feature X",
             assigned_to="be-pm",
             team="backend",
+            task_type="planning",
         ),
     )
     assert env.error is None
@@ -417,6 +418,7 @@ async def test_delegate_cell_pm_to_team_dev_creates_subtask() -> None:
             description="Add /v1/foo endpoint with tests",
             assigned_to="be-dev-1",
             team="backend",
+            task_type="code",
         ),
     )
     assert env.error is None
@@ -438,7 +440,11 @@ async def test_delegate_main_pm_to_dev_is_rejected() -> None:
         main_pm_id,
         parent_id,
         DelegateInputs(
-            title="x", description="y", assigned_to="be-dev-1", team="backend"
+            title="x",
+            description="y",
+            assigned_to="be-dev-1",
+            team="backend",
+            task_type="code",
         ),
     )
     body = env.as_dict()
@@ -460,7 +466,13 @@ async def test_delegate_cell_pm_to_other_pm_rejected() -> None:
     env = await c.delegate(
         cell_pm_id,
         parent_id,
-        DelegateInputs(title="x", description="y", assigned_to="be-pm", team="backend"),
+        DelegateInputs(
+            title="x",
+            description="y",
+            assigned_to="be-pm",
+            team="backend",
+            task_type="code",
+        ),
     )
     body = env.as_dict()
     assert body["error"] == "not_authorized"
@@ -481,7 +493,11 @@ async def test_delegate_unknown_assignee_returns_invalid_state() -> None:
         pm_id,
         parent_id,
         DelegateInputs(
-            title="x", description="y", assigned_to="nope-pm", team="backend"
+            title="x",
+            description="y",
+            assigned_to="nope-pm",
+            team="backend",
+            task_type="code",
         ),
     )
     body = env.as_dict()
@@ -503,7 +519,11 @@ async def test_delegate_invalid_team_enum_rejected() -> None:
         pm_id,
         parent_id,
         DelegateInputs(
-            title="x", description="y", assigned_to="be-dev-1", team="not-a-team"
+            title="x",
+            description="y",
+            assigned_to="be-dev-1",
+            team="not-a-team",
+            task_type="code",
         ),
     )
     assert env.as_dict()["error"] == "invalid_state"

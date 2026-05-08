@@ -229,11 +229,15 @@ async def test_delegate_to_cell_pm_dispatches_inputs_bundle() -> None:
             "description": "Plan + drive backend work for feature X.",
             "assigned_to": "be-pm",
             "team": "backend",
+            "task_type": "planning",
         },
         headers=_HEADERS,
     )
 
     assert resp.status_code == _HTTP_200
+    mock_chore.delegate.assert_awaited_once()
+    inputs = mock_chore.delegate.await_args.args[2]
+    assert inputs.task_type == "planning"
 
 
 @pytest.mark.asyncio
