@@ -560,13 +560,15 @@ class Choreographer:
                 verb="submit_for_qa",
             )
         briefing = await self._briefing_for(agent_id, task_id)
+        agent = await self.task.agent_for(agent_id)
+        role = str(agent.role) if agent is not None else "developer"
         if t.assigned_to != agent_id:
             return await self._emit_rejection(
                 Envelope.not_authorized(
                     message=f"task {task_id} is not assigned to you",
                     remediate="call give_me_work() to find your work",
                     context_briefing=briefing,
-                ),
+                ).with_introspection(task=t, role=role),
                 agent_id=agent_id,
                 task_id=task_id,
                 verb="submit_for_qa",
@@ -580,7 +582,7 @@ class Choreographer:
                         "call commit(message='<subject>')"
                     ),
                     context_briefing=briefing,
-                ),
+                ).with_introspection(task=t, role=role),
                 agent_id=agent_id,
                 task_id=task_id,
                 verb="submit_for_qa",
@@ -594,7 +596,7 @@ class Choreographer:
                     f"i_am_done(task_id, notes='...') when self-verified"
                 ),
                 context_briefing=briefing,
-            )
+            ).with_introspection(task=t, role=role)
 
         await self._touch(task_id)
         await self.git.push_branch(t.branch_name)
@@ -609,7 +611,7 @@ class Choreographer:
                 f"i_am_done(task_id, notes='...') when self-verified"
             ),
             context_briefing=briefing,
-        )
+        ).with_introspection(task=t, role=role)
 
     async def i_am_done(self, agent_id: UUID, task_id: UUID, notes: str) -> Envelope:
         """Submit work for QA.
@@ -636,13 +638,15 @@ class Choreographer:
                 task_id=task_id,
                 verb="i_am_done",
             )
+        agent = await self.task.agent_for(agent_id)
+        role = str(agent.role) if agent is not None else "developer"
         if t.assigned_to != agent_id:
             return await self._emit_rejection(
                 Envelope.not_authorized(
                     message="not assigned to you",
                     remediate="claim it via i_will_work_on(task_id) first",
                     context_briefing=await self._briefing_for(agent_id, task_id),
-                ),
+                ).with_introspection(task=t, role=role),
                 agent_id=agent_id,
                 task_id=task_id,
                 verb="i_am_done",
@@ -650,6 +654,7 @@ class Choreographer:
 
         # 1. Tracing-gate preconditions (progress / reflect / acceptance)
         if rejection := await self._check_tracing_gates(agent_id, task_id, t):
+            rejection.with_introspection(task=t, role=role)
             return await self._emit_rejection(
                 rejection, agent_id=agent_id, task_id=task_id, verb="i_am_done"
             )
@@ -657,6 +662,7 @@ class Choreographer:
         # 2. Field-level gates (Gate Set E) — commits + PR (self_verified
         # auto-set in step 3, so it's not a precondition the dev must satisfy).
         if rejection := await self._check_submit_qa_field_gates(agent_id, task_id, t):
+            rejection.with_introspection(task=t, role=role)
             return await self._emit_rejection(
                 rejection, agent_id=agent_id, task_id=task_id, verb="i_am_done"
             )
@@ -743,13 +749,15 @@ class Choreographer:
             journal_highlights=journal_highlights,
             files_changed=files_changed,
         )
+        agent = await self.task.agent_for(agent_id)
+        role = str(agent.role) if agent is not None else "developer"
         return Envelope.ok(
             status=str(t.status),
             task_id=str(task_id),
             next="idle until QA responds",
             evidence=evidence.as_dict(),
             context_briefing=await self._briefing_for(agent_id, task_id),
-        )
+        ).with_introspection(task=t, role=role)
 
     async def _build_tracing_gap(
         self, agent_id: UUID, task_id: UUID, missing: list[str]
