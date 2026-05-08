@@ -45,7 +45,7 @@ class DocMixin(_Base):
                     ),
                     remediate="call give_me_work() to find an actionable doc task",
                     context_briefing=await self._briefing_for(doc_agent_id, task_id),
-                ),
+                ).with_introspection(task=t, role="documenter"),
                 agent_id=doc_agent_id,
                 task_id=task_id,
                 verb="claim_doc_task",
@@ -59,6 +59,7 @@ class DocMixin(_Base):
             skip_sequence=True,
         )
         if guard:
+            guard.with_introspection(task=t, role="documenter")
             return await self._emit_rejection(
                 self._with_briefing(
                     guard,
@@ -94,7 +95,7 @@ class DocMixin(_Base):
             ),
             evidence=ev.as_dict(),
             context_briefing=await self._briefing_for(doc_agent_id, task_id),
-        )
+        ).with_introspection(task=t, role="documenter")
 
     async def _verify_doc_owner(
         self, doc_agent_id: UUID, task_id: UUID
@@ -114,7 +115,7 @@ class DocMixin(_Base):
                     message="not assigned to you",
                     remediate="claim it via claim_doc_task(task_id) first",
                     context_briefing=await self._briefing_for(doc_agent_id, task_id),
-                ),
+                ).with_introspection(task=t, role="documenter"),
                 agent_id=doc_agent_id,
                 task_id=task_id,
                 verb="i_documented",
@@ -122,7 +123,12 @@ class DocMixin(_Base):
         return None, t
 
     async def _check_i_documented_inputs(
-        self, doc_agent_id: UUID, task_id: UUID, notes: str, files: list[str]
+        self,
+        doc_agent_id: UUID,
+        task_id: UUID,
+        notes: str,
+        files: list[str],
+        task: Any,
     ) -> Envelope | None:
         """Validate notes length + files non-empty. Returns rejection or None."""
         if not notes or len(notes) < settings.docs_notes_min_chars:
@@ -135,7 +141,7 @@ class DocMixin(_Base):
                         " Include each file in `files=...`."
                     ),
                     context_briefing=await self._briefing_for(doc_agent_id, task_id),
-                ),
+                ).with_introspection(task=task, role="documenter"),
                 agent_id=doc_agent_id,
                 task_id=task_id,
                 verb="i_documented",
@@ -149,7 +155,7 @@ class DocMixin(_Base):
                         " listing the doc files written."
                     ),
                     context_briefing=await self._briefing_for(doc_agent_id, task_id),
-                ),
+                ).with_introspection(task=task, role="documenter"),
                 agent_id=doc_agent_id,
                 task_id=task_id,
                 verb="i_documented",
@@ -167,11 +173,11 @@ class DocMixin(_Base):
 
         Transitions awaiting_documentation → awaiting_pm_review.
         """
-        rejection, _ = await self._verify_doc_owner(doc_agent_id, task_id)
+        rejection, owned_task = await self._verify_doc_owner(doc_agent_id, task_id)
         if rejection is not None:
             return rejection
         input_rejection = await self._check_i_documented_inputs(
-            doc_agent_id, task_id, notes, files
+            doc_agent_id, task_id, notes, files, owned_task
         )
         if input_rejection is not None:
             return input_rejection
@@ -199,4 +205,4 @@ class DocMixin(_Base):
             task_id=str(task_id),
             next="idle until PM completes",
             context_briefing=await self._briefing_for(doc_agent_id, task_id),
-        )
+        ).with_introspection(task=t, role="documenter")

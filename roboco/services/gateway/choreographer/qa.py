@@ -55,7 +55,7 @@ class QAMixin(_Base):
                     ),
                     remediate="call give_me_work() to find an actionable QA task",
                     context_briefing=await self._briefing_for(qa_agent_id, task_id),
-                ),
+                ).with_introspection(task=t, role="qa"),
                 agent_id=qa_agent_id,
                 task_id=task_id,
                 verb="claim_review",
@@ -69,6 +69,7 @@ class QAMixin(_Base):
             skip_sequence=True,
         )
         if guard:
+            guard.with_introspection(task=t, role="qa")
             return await self._emit_rejection(
                 self._with_briefing(
                     guard,
@@ -106,7 +107,7 @@ class QAMixin(_Base):
             ),
             evidence=ev.as_dict(),
             context_briefing=await self._briefing_for(qa_agent_id, task_id),
-        )
+        ).with_introspection(task=t, role="qa")
 
     async def _verify_qa_owner(
         self, qa_agent_id: UUID, task_id: UUID, verb: str
@@ -126,7 +127,7 @@ class QAMixin(_Base):
                     message="not assigned to you",
                     remediate="claim it via claim_review(task_id) first",
                     context_briefing=await self._briefing_for(qa_agent_id, task_id),
-                ),
+                ).with_introspection(task=t, role="qa"),
                 agent_id=qa_agent_id,
                 task_id=task_id,
                 verb=verb,
@@ -150,7 +151,7 @@ class QAMixin(_Base):
                 missing,
                 task_id,
                 await self._briefing_for(qa_agent_id, task_id),
-            ),
+            ).with_introspection(task=t, role="qa"),
             agent_id=qa_agent_id,
             task_id=task_id,
             verb=verb,
@@ -186,7 +187,7 @@ class QAMixin(_Base):
             task_id=str(task_id),
             next="idle until next QA work arrives",
             context_briefing=await self._briefing_for(qa_agent_id, task_id),
-        )
+        ).with_introspection(task=t, role="qa")
 
     @staticmethod
     def _check_qa_pass_gates(
@@ -240,7 +241,7 @@ class QAMixin(_Base):
                     message="fail_review requires at least one issue",
                     remediate="pass issues=['<concrete actionable issue>', ...]",
                     context_briefing=await self._briefing_for(qa_agent_id, task_id),
-                ),
+                ).with_introspection(task=t, role="qa"),
                 agent_id=qa_agent_id,
                 task_id=task_id,
                 verb="fail_review",
@@ -267,4 +268,4 @@ class QAMixin(_Base):
             task_id=str(task_id),
             next="idle — dev will revise and re-submit",
             context_briefing=await self._briefing_for(qa_agent_id, task_id),
-        )
+        ).with_introspection(task=t, role="qa")
