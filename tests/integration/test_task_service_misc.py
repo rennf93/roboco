@@ -27,7 +27,7 @@ from __future__ import annotations
 import asyncio
 from typing import TYPE_CHECKING, Any
 from unittest.mock import AsyncMock, MagicMock
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 import pytest
 import pytest_asyncio
@@ -1211,3 +1211,48 @@ async def test_resolve_pm_for_review_returns_none_when_chain_broken(
     monkeypatch.setattr(svc, "get", _stub_get)
     out = await svc._resolve_pm_for_review(child)
     assert out is None
+
+
+@pytest.mark.asyncio
+async def test_unclaim_for_agent_works_with_uuid_round_trip(
+    task_setup: dict,
+    db_session: AsyncSession,
+) -> None:
+    """Regression for 2026-05-08: main-pm got 'not your claim' on its OWN
+    claim. Pin the UUID-comparator behavior: same agent_id in (whether
+    fresh UUID or string-coerced UUID round-trip), unclaim succeeds.
+    """
+    svc = task_setup["svc"]
+    task = await svc.create(_req(task_setup))
+    task.status = TaskStatus.CLAIMED
+    task.assigned_to = task_setup["agent_id"]
+    await db_session.flush()
+
+    # Round-trip the UUID through string → UUID to mirror what an HTTP
+    # request body / header would do via Pydantic. The comparator must
+    # treat both the freshly-constructed and the round-tripped UUID as
+    # equal (which Python's UUID class does — pinning so a future move
+    # to a custom comparator can't silently break it).
+    same_uuid_via_str = UUID(str(task_setup["agent_id"]))
+    out = await svc.unclaim_for_agent(task.id, agent_id=same_uuid_via_str)
+    assert out is not None, "round-tripped UUID rejected — comparator broken"
+    assert out.assigned_to is None
+    assert out.status == TaskStatus.PENDING
+
+
+@pytest.mark.asyncio
+async def test_resume_for_agent_works_with_uuid_round_trip(
+    task_setup: dict,
+    db_session: AsyncSession,
+) -> None:
+    """Mirror of the unclaim regression for resume_for_agent."""
+    svc = task_setup["svc"]
+    task = await svc.create(_req(task_setup))
+    task.status = TaskStatus.PAUSED
+    task.assigned_to = task_setup["agent_id"]
+    await db_session.flush()
+
+    same_uuid_via_str = UUID(str(task_setup["agent_id"]))
+    out = await svc.resume_for_agent(task.id, agent_id=same_uuid_via_str)
+    assert out is not None, "round-tripped UUID rejected — comparator broken"
+    assert out.status == TaskStatus.IN_PROGRESS

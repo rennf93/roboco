@@ -881,10 +881,26 @@ class Choreographer:
         agent = await self.task.agent_for(agent_id)
         role = str(agent.role) if agent is not None else "developer"
         if t.assigned_to != agent_id:
+            # The task was reassigned out from under this agent — most
+            # commonly by an upstream verb that legitimately changed
+            # ownership (cell_pm_complete propagating to the parent,
+            # main_pm_complete clearing assigned_to to None when
+            # escalating to CEO, or a PM unblocking with restore=True).
+            # The agent's local state is stale; tell it concretely.
+            current_owner = (
+                str(t.assigned_to) if t.assigned_to is not None else "<unassigned>"
+            )
             return await self._emit_rejection(
                 Envelope.not_authorized(
-                    message="not your claim",
-                    remediate="only the current claimant can unclaim",
+                    message=(
+                        f"task {task_id} is no longer assigned to you "
+                        f"(current owner: {current_owner})"
+                    ),
+                    remediate=(
+                        "the task was reassigned by an upstream verb "
+                        "(cell_pm_complete / main_pm_complete / unblock). "
+                        "call give_me_work() to find your current work."
+                    ),
                     context_briefing=briefing,
                 ).with_introspection(task=t, role=role),
                 agent_id=agent_id,
@@ -938,10 +954,23 @@ class Choreographer:
         agent = await self.task.agent_for(agent_id)
         role = str(agent.role) if agent is not None else "developer"
         if t.assigned_to != agent_id:
+            # See unclaim's matching branch for the rationale: the task
+            # was reassigned by an upstream verb. Surface the actual
+            # current owner so the agent can stop looping on a stale
+            # task_id and call give_me_work() instead.
+            current_owner = (
+                str(t.assigned_to) if t.assigned_to is not None else "<unassigned>"
+            )
             return await self._emit_rejection(
                 Envelope.not_authorized(
-                    message="not your claim",
-                    remediate="only the current claimant can resume",
+                    message=(
+                        f"task {task_id} is no longer assigned to you "
+                        f"(current owner: {current_owner})"
+                    ),
+                    remediate=(
+                        "the task was reassigned by an upstream verb. "
+                        "call give_me_work() to find your current work."
+                    ),
                     context_briefing=briefing,
                 ).with_introspection(task=t, role=role),
                 agent_id=agent_id,
