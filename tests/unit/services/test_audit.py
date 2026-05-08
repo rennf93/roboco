@@ -191,3 +191,38 @@ def test_get_audit_service_returns_singleton() -> None:
     a = get_audit_service()
     b = get_audit_service()
     assert a is b
+
+
+# ---------------------------------------------------------------------------
+# _resolve_actor_role_from_db — Task 7 of the gateway introspection plan.
+# Pre-fix, denial-log calls trusted the caller-supplied agent_role string.
+# The 2026-05-08 trace caught actor=main-pm with agent_role=cell_pm because
+# the supplied role was the verb's expected role, not the actor's actual
+# role. Fix: read agents.role at write time, fall back to the supplied
+# string only when the DB lookup fails.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_resolve_actor_role_returns_none_for_none(svc: AuditService) -> None:
+    assert await svc._resolve_actor_role_from_db(None) is None
+
+
+@pytest.mark.asyncio
+async def test_resolve_actor_role_returns_none_for_invalid_uuid(
+    svc: AuditService,
+) -> None:
+    """A slug or malformed UUID coerces to None and short-circuits."""
+    assert await svc._resolve_actor_role_from_db("be-dev-1") is None
+
+
+@pytest.mark.asyncio
+async def test_resolve_actor_role_returns_none_when_db_unavailable(
+    svc: AuditService,
+) -> None:
+    """No DB session factory configured -> best-effort returns None."""
+    # `get_session_factory()` will raise without a configured engine.
+    # The helper catches the error and returns None so audit writes
+    # still proceed with the caller-supplied role as fallback.
+    result = await svc._resolve_actor_role_from_db(uuid4())
+    assert result is None

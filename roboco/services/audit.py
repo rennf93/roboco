@@ -184,12 +184,19 @@ class AuditService(SingletonService):
         action: str,
         reason: str | None = None,
     ) -> None:
-        """Log a task action denial."""
+        """Log a task action denial.
+
+        The persisted ``agent_role`` is the actor's actual role read from
+        ``agents.role`` at write time, not the caller-supplied param.
+        Pre-fix the supplied param could disagree with the DB (verb's
+        expected role vs caller's actual role); the DB is authoritative.
+        """
+        actual_role = await self._resolve_actor_role_from_db(agent_id) or agent_role
         self.log.warning(
             "Task action denied",
             event_type=AuditEventType.TASK_ACTION_DENIED.value,
             agent_id=str(agent_id),
-            agent_role=agent_role,
+            agent_role=actual_role,
             task_id=str(task_id),
             action=action,
             reason=reason,
@@ -203,7 +210,7 @@ class AuditService(SingletonService):
                 target_id=task_id,
                 severity="warning",
                 details={
-                    "agent_role": agent_role,
+                    "agent_role": actual_role,
                     "action": action,
                     "reason": reason,
                 },
@@ -214,12 +221,20 @@ class AuditService(SingletonService):
         self,
         ctx: StateTransitionDenialContext,
     ) -> None:
-        """Log a state transition denial."""
+        """Log a state transition denial.
+
+        See log_task_action_denial: the persisted role is the actor's
+        actual role read from agents.role at write time, falling back
+        to ctx.agent_role only when the DB lookup fails.
+        """
+        actual_role = (
+            await self._resolve_actor_role_from_db(ctx.agent_id) or ctx.agent_role
+        )
         self.log.warning(
             "State transition denied",
             event_type=AuditEventType.STATE_TRANSITION_DENIED.value,
             agent_id=str(ctx.agent_id),
-            agent_role=ctx.agent_role,
+            agent_role=actual_role,
             task_id=str(ctx.task_id),
             current_status=ctx.current_status,
             target_status=ctx.target_status,
@@ -234,7 +249,7 @@ class AuditService(SingletonService):
                 target_id=ctx.task_id,
                 severity="warning",
                 details={
-                    "agent_role": ctx.agent_role,
+                    "agent_role": actual_role,
                     "current_status": ctx.current_status,
                     "target_status": ctx.target_status,
                     "reason": ctx.reason,
@@ -249,12 +264,18 @@ class AuditService(SingletonService):
         notification_type: str,
         reason: str | None = None,
     ) -> None:
-        """Log a notification permission denial."""
+        """Log a notification permission denial.
+
+        See log_task_action_denial: the persisted role is the actor's
+        actual role read from agents.role at write time, falling back
+        to the supplied param only when the DB lookup fails.
+        """
+        actual_role = await self._resolve_actor_role_from_db(agent_id) or agent_role
         self.log.warning(
             "Notification permission denied",
             event_type=AuditEventType.NOTIFICATION_DENIED.value,
             agent_id=str(agent_id),
-            agent_role=agent_role,
+            agent_role=actual_role,
             notification_type=notification_type,
             reason=reason,
             timestamp=datetime.now(UTC).isoformat(),
@@ -266,7 +287,7 @@ class AuditService(SingletonService):
                 target_type="notification",
                 severity="warning",
                 details={
-                    "agent_role": agent_role,
+                    "agent_role": actual_role,
                     "notification_type": notification_type,
                     "reason": reason,
                 },
@@ -445,6 +466,46 @@ class AuditService(SingletonService):
                 details=payload,
             )
         )
+
+    async def _resolve_actor_role_from_db(
+        self, agent_id: str | UUID | None
+    ) -> str | None:
+        """Read the actor's actual role from agents.role at write time.
+
+        Pre-2026-05-08, every denial-log call took an `agent_role` string
+        from the caller. The trace caught a row where actor=main-pm but
+        agent_role=cell_pm — caller had passed the verb's *expected*
+        role rather than the actor's actual role. This helper looks up
+        the truth at write time. Best-effort: returns None on any
+        failure so the caller's supplied role can be used as a fallback.
+        """
+        actor_uuid = _coerce_uuid(agent_id)
+        if actor_uuid is None:
+            return None
+        try:
+            from sqlalchemy import select
+
+            from roboco.db.base import get_session_factory
+            from roboco.db.tables import AgentTable
+
+            session_factory = get_session_factory()
+            async with session_factory() as db:
+                result = await db.execute(
+                    select(AgentTable.role).where(AgentTable.id == actor_uuid)
+                )
+                value = result.scalar_one_or_none()
+                if value is None:
+                    return None
+                # AgentTable.role is an enum; .value gives the canonical string
+                # (e.g. "main_pm"). Defensive: handle plain str too.
+                return getattr(value, "value", None) or str(value)
+        except Exception as e:
+            self.log.debug(
+                "DB actor-role lookup failed for audit row",
+                agent_id=str(agent_id),
+                error=str(e),
+            )
+            return None
 
     async def _resolve_agent_id_by_slug(self, agent_slug: str) -> UUID | None:
         """Resolve an agent slug to its UUID for ``audit_log.agent_id``.

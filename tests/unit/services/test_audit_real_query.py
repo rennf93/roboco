@@ -33,10 +33,11 @@ import pytest
 import pytest_asyncio
 from roboco.db import base as db_base
 from roboco.db import base as roboco_db_base
-from roboco.db.tables import AgentTable
+from roboco.db.tables import AgentTable, AuditLogTable
 from roboco.models.base import AgentRole, AgentStatus
 from roboco.seeds import initial_data as seeds
 from roboco.services.audit import AuditService
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import async_sessionmaker
 
 if TYPE_CHECKING:
@@ -394,3 +395,65 @@ async def test_resolve_agent_id_by_slug_db_lookup_exception(
     audit = AuditService()
     resolved = await audit._resolve_agent_id_by_slug("nope-not-real")
     assert resolved is None
+
+
+@pytest.mark.asyncio
+async def test_log_task_action_denial_records_actual_db_role(
+    patched_session_factory: AsyncSession,
+) -> None:
+    """Task 7: audit row's agent_role comes from agents.role, not the param.
+
+    Pre-fix the caller-supplied agent_role landed in the persisted row
+    verbatim. The 2026-05-08 trace caught actor=main-pm with
+    agent_role=cell_pm because the verb's expected role had been
+    supplied. Post-fix the writer reads agents.role at write time and
+    uses that as the source of truth.
+    """
+    # Seed agent with role=CELL_PM. We then call the denial logger with
+    # a deliberately-wrong agent_role param ("main_pm") and verify the
+    # persisted row reflects the DB role, not the param.
+    agent_id = await _seed_agent(patched_session_factory)
+    audit = AuditService()
+    task_id = uuid4()
+
+    await audit.log_task_action_denial(
+        agent_id=agent_id,
+        agent_role="main_pm",  # WRONG on purpose
+        task_id=task_id,
+        action="delegate",
+        reason="state mismatch",
+    )
+
+    rows = (
+        (
+            await patched_session_factory.execute(
+                select(AuditLogTable).where(AuditLogTable.agent_id == agent_id)
+            )
+        )
+        .scalars()
+        .all()
+    )
+    assert len(rows) == 1, f"expected exactly 1 audit row, got {len(rows)}"
+    assert rows[0].details["agent_role"] == "cell_pm", (
+        f"expected DB role 'cell_pm', got "
+        f"{rows[0].details['agent_role']!r} — Task 7 fix is broken"
+    )
+
+
+@pytest.mark.asyncio
+async def test_resolve_actor_role_returns_none_when_agent_not_found(
+    patched_session_factory: AsyncSession,
+) -> None:
+    """DB session works but no row matches the agent_id -> returns None.
+
+    `patched_session_factory` is required for its side effect: it
+    monkeypatches `roboco.db.base.get_session_factory` to bind to the
+    test DB. Without it, the helper would hit the no-DB path instead
+    of the no-row path we want to cover.
+    """
+    assert patched_session_factory is not None  # fixture used for monkeypatch
+    audit = AuditService()
+    # Random UUID with no seeded agent — query returns scalar_one_or_none()
+    # = None, which the helper translates to None.
+    result = await audit._resolve_actor_role_from_db(uuid4())
+    assert result is None
