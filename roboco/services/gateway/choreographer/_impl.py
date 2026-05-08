@@ -196,6 +196,8 @@ class Choreographer:
 
     async def give_me_work(self, agent_id: UUID) -> Envelope:
         """Return the agent's most-actionable task or signal idle."""
+        agent = await self._deps.task.agent_for(agent_id)
+        role = str(agent.role) if agent is not None else "developer"
         assigned = await self._deps.task.list_assigned_for_agent(agent_id)
         if assigned:
             t = assigned[0]
@@ -204,7 +206,7 @@ class Choreographer:
                 task_id=str(t.id),
                 next=f"call i_will_work_on(task_id='{t.id}', plan='<plan>') to start",
                 context_briefing=await self._briefing_for(agent_id, t.id),
-            )
+            ).with_introspection(task=t, role=role)
         paused = await self._deps.task.list_paused_for_agent(agent_id)
         if paused:
             t = paused[0]
@@ -213,7 +215,7 @@ class Choreographer:
                 task_id=str(t.id),
                 next=f"call resume(task_id='{t.id}') to continue paused work",
                 context_briefing=await self._briefing_for(agent_id, t.id),
-            )
+            ).with_introspection(task=t, role=role)
         return Envelope.ok(
             status="idle",
             task_id=None,
@@ -1139,8 +1141,11 @@ class Choreographer:
                 task_id=task_id,
                 verb="i_will_plan",
             )
+        agent = await self.task.agent_for(pm_agent_id)
+        role = str(agent.role) if agent is not None else "cell_pm"
         rejection = await self._i_will_plan_preflight(pm_agent_id, task_id, t, plan)
         if rejection is not None:
+            rejection.with_introspection(task=t, role=role)
             return await self._emit_rejection(
                 rejection,
                 agent_id=pm_agent_id,
@@ -1166,7 +1171,7 @@ class Choreographer:
                     " each subtask, then i_am_idle"
                 ),
                 context_briefing=await self._briefing_for(pm_agent_id, task_id),
-            )
+            ).with_introspection(task=t, role=role)
 
         # Always call claim() when status is pending — even if the PM is
         # already in assigned_to (CEO pre-assigns root tasks at creation).
@@ -1214,7 +1219,7 @@ class Choreographer:
                 " for each subtask, then i_am_idle"
             ),
             context_briefing=await self._briefing_for(pm_agent_id, task_id),
-        )
+        ).with_introspection(task=t, role=role)
 
     async def delegate(
         self,
@@ -1237,10 +1242,12 @@ class Choreographer:
                 verb="delegate",
             )
         agent = await self.task.agent_for(pm_agent_id)
+        role = str(agent.role) if agent is not None else "cell_pm"
         guard = await self._delegate_guard(
             pm_agent_id, parent_task_id, parent, agent, inputs
         )
         if guard is not None:
+            guard.with_introspection(task=parent, role=role)
             return await self._emit_rejection(
                 guard,
                 agent_id=pm_agent_id,
@@ -1256,7 +1263,7 @@ class Choreographer:
             task_id=str(new_task.id),
             next="continue delegating subtasks, or i_am_idle when done",
             context_briefing=await self._briefing_for(pm_agent_id, parent_task_id),
-        )
+        ).with_introspection(task=new_task, role=role)
 
     # Gate Set B subtask cap (pre-gateway implicit, made explicit here).
     # Soft warn at 8, hard block at 13. Cap enforced by ``_subtask_cap_guard``.
