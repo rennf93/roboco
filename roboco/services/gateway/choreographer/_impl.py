@@ -1825,6 +1825,7 @@ class Choreographer:
             )
         guard = await self._cell_pm_complete_guard(pm_agent_id, task_id, t)
         if guard is not None:
+            guard.with_introspection(task=t, role="cell_pm")
             return await self._emit_rejection(
                 guard,
                 agent_id=pm_agent_id,
@@ -1854,7 +1855,7 @@ class Choreographer:
             task_id=str(task_id),
             next=f"merged into {target}; triage() for next item",
             context_briefing=await self._briefing_for(pm_agent_id, task_id),
-        )
+        ).with_introspection(task=t, role="cell_pm")
 
     async def _maybe_advance_parent_to_pm_review(
         self, parent_task_id: UUID, leaf_team: Any
@@ -1951,6 +1952,7 @@ class Choreographer:
             )
         guard = await self._main_pm_complete_guard(main_pm_agent_id, root_task_id, t)
         if guard is not None:
+            guard.with_introspection(task=t, role="main_pm")
             return await self._emit_rejection(
                 guard,
                 agent_id=main_pm_agent_id,
@@ -1980,7 +1982,7 @@ class Choreographer:
             task_id=str(root_task_id),
             next="idle until CEO approves (or rejects) via UI",
             context_briefing=await self._briefing_for(main_pm_agent_id, root_task_id),
-        )
+        ).with_introspection(task=t, role="main_pm")
 
     async def complete(self, agent_id: UUID, task_id: UUID, notes: str) -> Envelope:
         """Dispatch to cell_pm_complete or main_pm_complete based on agent role."""
@@ -1989,12 +1991,16 @@ class Choreographer:
             return await self.cell_pm_complete(agent_id, task_id, notes)
         if agent.role == "main_pm":
             return await self.main_pm_complete(agent_id, task_id, notes)
+        t = await self.task.get(task_id)
+        rejection = Envelope.not_authorized(
+            message=f"role {agent.role} cannot complete tasks via this verb",
+            remediate="only cell_pm and main_pm can call complete",
+            context_briefing=await self._briefing_for(agent_id, task_id),
+        )
+        if t is not None:
+            rejection.with_introspection(task=t, role=str(agent.role))
         return await self._emit_rejection(
-            Envelope.not_authorized(
-                message=f"role {agent.role} cannot complete tasks via this verb",
-                remediate="only cell_pm and main_pm can call complete",
-                context_briefing=await self._briefing_for(agent_id, task_id),
-            ),
+            rejection,
             agent_id=agent_id,
             task_id=task_id,
             verb="complete",
