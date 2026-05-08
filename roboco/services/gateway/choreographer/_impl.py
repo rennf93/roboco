@@ -842,6 +842,8 @@ class Choreographer:
                 task_id=task_id,
                 verb="i_am_blocked",
             )
+        agent = await self.task.agent_for(agent_id)
+        role = str(agent.role) if agent is not None else "developer"
         await self.journal.write_struggle(
             agent_id=agent_id, task_id=task_id, content=reason
         )
@@ -852,7 +854,7 @@ class Choreographer:
             task_id=str(task_id),
             next="idle — PM will resolve and notify",
             context_briefing=await self._briefing_for(agent_id, task_id),
-        )
+        ).with_introspection(task=t, role=role)
 
     async def unclaim(self, agent_id: UUID, task_id: UUID) -> Envelope:
         """Voluntarily release a claimed/in_progress task back to pending.
@@ -873,13 +875,15 @@ class Choreographer:
                 task_id=task_id,
                 verb="unclaim",
             )
+        agent = await self.task.agent_for(agent_id)
+        role = str(agent.role) if agent is not None else "developer"
         if t.assigned_to != agent_id:
             return await self._emit_rejection(
                 Envelope.not_authorized(
                     message="not your claim",
                     remediate="only the current claimant can unclaim",
                     context_briefing=briefing,
-                ),
+                ).with_introspection(task=t, role=role),
                 agent_id=agent_id,
                 task_id=task_id,
                 verb="unclaim",
@@ -891,7 +895,7 @@ class Choreographer:
                     message=f"cannot unclaim from status {t.status}",
                     remediate="only claimed/in_progress tasks can be unclaimed",
                     context_briefing=briefing,
-                ),
+                ).with_introspection(task=t, role=role),
                 agent_id=agent_id,
                 task_id=task_id,
                 verb="unclaim",
@@ -904,7 +908,7 @@ class Choreographer:
             task_id=str(task_id),
             next="task returned to pending; another agent (or you, fresh) can claim",
             context_briefing=briefing,
-        )
+        ).with_introspection(task=after, role=role)
 
     async def resume(self, agent_id: UUID, task_id: UUID) -> Envelope:
         """Resume a paused task this agent owns; transitions paused → in_progress.
@@ -928,13 +932,15 @@ class Choreographer:
                 task_id=task_id,
                 verb="resume",
             )
+        agent = await self.task.agent_for(agent_id)
+        role = str(agent.role) if agent is not None else "developer"
         if t.assigned_to != agent_id:
             return await self._emit_rejection(
                 Envelope.not_authorized(
                     message="not your claim",
                     remediate="only the current claimant can resume",
                     context_briefing=briefing,
-                ),
+                ).with_introspection(task=t, role=role),
                 agent_id=agent_id,
                 task_id=task_id,
                 verb="resume",
@@ -946,7 +952,7 @@ class Choreographer:
                     message=f"cannot resume from status {t.status}",
                     remediate="only paused tasks can be resumed",
                     context_briefing=briefing,
-                ),
+                ).with_introspection(task=t, role=role),
                 agent_id=agent_id,
                 task_id=task_id,
                 verb="resume",
@@ -958,7 +964,7 @@ class Choreographer:
             task_id=str(task_id),
             next="resumed; continue working — call commit() when ready",
             context_briefing=briefing,
-        )
+        ).with_introspection(task=after, role=role)
 
     async def i_am_idle(self, agent_id: UUID) -> Envelope:
         """Report no more work. Soft-block if there are unread A2As or @mentions.
@@ -1499,8 +1505,11 @@ class Choreographer:
                 task_id=task_id,
                 verb="submit_up",
             )
+        agent = await self.task.agent_for(pm_agent_id)
+        role = str(agent.role) if agent is not None else "cell_pm"
         guard = await self._submit_up_guard(pm_agent_id, task_id, t, notes)
         if guard is not None:
+            guard.with_introspection(task=t, role=role)
             return await self._emit_rejection(
                 guard,
                 agent_id=pm_agent_id,
@@ -1528,7 +1537,7 @@ class Choreographer:
             task_id=str(task_id),
             next="idle until Main PM reviews",
             context_briefing=await self._briefing_for(pm_agent_id, task_id),
-        )
+        ).with_introspection(task=t, role=role)
 
     async def _submit_up_guard(
         self, pm_agent_id: UUID, task_id: UUID, t: Any, notes: str
@@ -1723,6 +1732,8 @@ class Choreographer:
                 task_id=task_id,
                 verb="unblock",
             )
+        agent = await self.task.agent_for(pm_agent_id)
+        role = str(agent.role) if agent is not None else "cell_pm"
         if str(t.status) != "blocked":
             return await self._emit_rejection(
                 Envelope.invalid_state(
@@ -1731,7 +1742,7 @@ class Choreographer:
                         "this task is not blocked; call triage() to find blocked tasks"
                     ),
                     context_briefing=await self._briefing_for(pm_agent_id, task_id),
-                ),
+                ).with_introspection(task=t, role=role),
                 agent_id=pm_agent_id,
                 task_id=task_id,
                 verb="unblock",
@@ -1748,7 +1759,7 @@ class Choreographer:
                     missing=["journal:decision"],
                     remediate=hint_for_missing_journal_decision(),
                     context_briefing=await self._briefing_for(pm_agent_id, task_id),
-                ),
+                ).with_introspection(task=t, role=role),
                 agent_id=pm_agent_id,
                 task_id=task_id,
                 verb="unblock",
@@ -1765,7 +1776,7 @@ class Choreographer:
             task_id=str(task_id),
             next=next_msg,
             context_briefing=await self._briefing_for(pm_agent_id, task_id),
-        )
+        ).with_introspection(task=t, role=role)
 
     async def _cell_pm_complete_guard(
         self, pm_agent_id: UUID, task_id: UUID, t: Any
@@ -2018,6 +2029,8 @@ class Choreographer:
                 task_id=task_id,
                 verb="escalate_up",
             )
+        me = await self.task.agent_for(pm_agent_id)
+        role = str(me.role) if me is not None else "cell_pm"
 
         has_decision = await self.journal.has_decision_for_task(pm_agent_id, task_id)
         if not has_decision:
@@ -2030,13 +2043,12 @@ class Choreographer:
                     missing=["journal:decision"],
                     remediate=hint_for_missing_journal_decision(),
                     context_briefing=await self._briefing_for(pm_agent_id, task_id),
-                ),
+                ).with_introspection(task=t, role=role),
                 agent_id=pm_agent_id,
                 task_id=task_id,
                 verb="escalate_up",
             )
 
-        me = await self.task.agent_for(pm_agent_id)
         target_slug = me.escalation_target if me else None
         if not target_slug:
             return await self._emit_rejection(
@@ -2044,7 +2056,7 @@ class Choreographer:
                     message="no escalation target configured for your role",
                     remediate="check agents_config.py ESCALATION_CHAIN for your slug",
                     context_briefing=await self._briefing_for(pm_agent_id, task_id),
-                ),
+                ).with_introspection(task=t, role=role),
                 agent_id=pm_agent_id,
                 task_id=task_id,
                 verb="escalate_up",
@@ -2073,7 +2085,7 @@ class Choreographer:
             task_id=str(task_id),
             next=f"escalated to {target_slug}; idle until they respond",
             context_briefing=await self._briefing_for(pm_agent_id, task_id),
-        )
+        ).with_introspection(task=t, role=role)
 
     # --- Phase 4 (board) verbs ---
 
@@ -2090,13 +2102,14 @@ class Choreographer:
                 verb="escalate_to_ceo",
             )
         me = await self.task.agent_for(agent_id)
+        role = str(me.role) if me is not None else "main_pm"
         if me.role not in ("main_pm", "product_owner", "head_marketing"):
             return await self._emit_rejection(
                 Envelope.not_authorized(
                     message=f"role {me.role} cannot escalate to CEO directly",
                     remediate="use escalate_up() to go through your escalation chain",
                     context_briefing=await self._briefing_for(agent_id, task_id),
-                ),
+                ).with_introspection(task=t, role=role),
                 agent_id=agent_id,
                 task_id=task_id,
                 verb="escalate_to_ceo",
@@ -2109,7 +2122,7 @@ class Choreographer:
                     ),
                     remediate="this task is not at the gate for CEO approval",
                     context_briefing=await self._briefing_for(agent_id, task_id),
-                ),
+                ).with_introspection(task=t, role=role),
                 agent_id=agent_id,
                 task_id=task_id,
                 verb="escalate_to_ceo",
@@ -2125,7 +2138,7 @@ class Choreographer:
                     missing=["journal:decision"],
                     remediate=hint_for_missing_journal_decision(),
                     context_briefing=await self._briefing_for(agent_id, task_id),
-                ),
+                ).with_introspection(task=t, role=role),
                 agent_id=agent_id,
                 task_id=task_id,
                 verb="escalate_to_ceo",
@@ -2138,7 +2151,7 @@ class Choreographer:
             task_id=str(task_id),
             next="idle until CEO acts via UI",
             context_briefing=await self._briefing_for(agent_id, task_id),
-        )
+        ).with_introspection(task=t, role=role)
 
     # board_triage + auditor_triage moved to ``board.py`` as the first
     # per-role mixin extraction (audit P2-2). The Choreographer class is
