@@ -38,6 +38,13 @@ class Envelope:
     # Carried back to the agent so the same id flows MCP -> API -> agent
     # and ops can join logs across the full hop.
     correlation_id: str | None = None
+    # Introspection — populated by `with_introspection(task, role)` so
+    # agents can see the task's current status and the verbs they can
+    # usefully call next without trial-and-error against the gateway.
+    # Both default to None when no task context is available (e.g. for
+    # tool-discovery envelopes).
+    current_state: str | None = None
+    valid_next_verbs: list[str] | None = None
 
     @classmethod
     def ok(
@@ -106,6 +113,18 @@ class Envelope:
     def not_found(cls, *, message: str) -> Envelope:
         return cls(error="not_found", message=message, context_briefing={})
 
+    def with_introspection(self, *, task: Any, role: str) -> Envelope:
+        """Populate `current_state` and `valid_next_verbs` from a task + role.
+
+        Returns self for chaining. Imports verb_gates lazily so envelope.py
+        stays importable from any layer without dragging in the gates table.
+        """
+        from roboco.services.gateway.verb_gates import valid_next_verbs
+
+        self.current_state = str(getattr(task, "status", "") or "") or None
+        self.valid_next_verbs = valid_next_verbs(role, task)
+        return self
+
     def as_dict(self) -> dict[str, Any]:
         """Wire-format dict. Drops None fields except `error` (always present)."""
         out: dict[str, Any] = {
@@ -116,6 +135,8 @@ class Envelope:
             "context_briefing": self.context_briefing,
             "error": self.error,
             "correlation_id": self.correlation_id,
+            "current_state": self.current_state,
+            "valid_next_verbs": self.valid_next_verbs,
         }
         if self.error is not None:
             out["message"] = self.message

@@ -152,6 +152,11 @@ class Choreographer:
         failures must NEVER block the verb (the agent's response is the
         contract; the audit row is observability-only).
 
+        Introspection (`current_state` + `valid_next_verbs`) is applied
+        at the call site via `Envelope.with_introspection(task, role)`
+        rather than here — this keeps the rejection path's signature
+        narrow and lets the helper stay framework-clean.
+
         Stashes ``correlation_id`` from the structlog contextvars (bound
         by ``CorrelationIdMiddleware`` for the inbound request) and a
         per-attempt id into the audit row's ``details`` JSONB. The
@@ -472,6 +477,8 @@ class Choreographer:
                 task_id=task_id,
                 verb="i_will_work_on",
             )
+        agent = await self.task.agent_for(agent_id)
+        role = str(agent.role) if agent is not None else "developer"
         status = str(t.status)
         briefing = await self._briefing_for(agent_id, task_id)
 
@@ -503,6 +510,7 @@ class Choreographer:
             )
 
         if rejection is not None:
+            rejection.with_introspection(task=t, role=role)
             return await self._emit_rejection(
                 rejection,
                 agent_id=agent_id,
@@ -519,7 +527,7 @@ class Choreographer:
                 " then submit_for_qa(task_id) and i_am_done(task_id)"
             ),
             context_briefing=briefing,
-        )
+        ).with_introspection(task=t, role=role)
 
     @staticmethod
     def _with_briefing(env: Envelope, briefing: dict[str, Any]) -> Envelope:
