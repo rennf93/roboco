@@ -2,6 +2,13 @@
 
 from roboco.lifecycle import spec
 from roboco.lifecycle.spec import (
+    CLAIM_RULES,
+    PRECONDITION_COMMITS,
+    PRECONDITION_NO_PR,
+    PRECONDITION_OWNERSHIP,
+    PRECONDITION_PLAN,
+    ROLE_TEAM_RULES,
+    STATUS_GRAPH,
     Context,
     Decision,
     Role,
@@ -17,6 +24,13 @@ from roboco.lifecycle.spec import (
 )
 
 __all__ = [
+    "CLAIM_RULES",
+    "PRECONDITION_COMMITS",
+    "PRECONDITION_NO_PR",
+    "PRECONDITION_OWNERSHIP",
+    "PRECONDITION_PLAN",
+    "ROLE_TEAM_RULES",
+    "STATUS_GRAPH",
     "Context",
     "Decision",
     "Role",

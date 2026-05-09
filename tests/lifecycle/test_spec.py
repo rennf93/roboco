@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from types import SimpleNamespace
+from uuid import uuid4
 
 import pytest
 from roboco.lifecycle import spec
@@ -561,3 +562,42 @@ def test_status_after_returns_target_status() -> None:
     assert (
         spec.status_after("set_plan", spec.Status.IN_PROGRESS) is None
     )  # no transition
+
+
+def test_can_invoke_intent_open_pr_passes_when_owner_with_commits() -> None:
+    """Green path for open_pr: owner + commits + no prior PR → allow."""
+    owner_id = uuid4()
+    task = _stub_task(
+        status="in_progress",
+        commits=["abc"],
+        pr_number=None,
+        assigned_to=owner_id,
+    )
+    d = spec.can_invoke_intent(
+        spec.Role.DEVELOPER,
+        "open_pr",
+        task,
+        context=spec.Context(actor_id=owner_id),
+    )
+    assert d.allowed is True, f"expected allow, got {d}"
+
+
+def test_can_invoke_intent_open_pr_rejects_non_owner() -> None:
+    """Non-owner trying open_pr → tracing_gap with owns_task missing."""
+    owner_id = uuid4()
+    intruder_id = uuid4()
+    task = _stub_task(
+        status="in_progress",
+        commits=["abc"],
+        pr_number=None,
+        assigned_to=owner_id,
+    )
+    d = spec.can_invoke_intent(
+        spec.Role.DEVELOPER,
+        "open_pr",
+        task,
+        context=spec.Context(actor_id=intruder_id),
+    )
+    assert d.allowed is False
+    assert d.rejection_kind == "tracing_gap"
+    assert "owns_task" in d.missing

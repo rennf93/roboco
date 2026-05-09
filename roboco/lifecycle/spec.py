@@ -28,6 +28,7 @@ from typing import TYPE_CHECKING, Any, Literal
 
 if TYPE_CHECKING:
     from collections.abc import Callable
+    from uuid import UUID
 
 
 class Role(StrEnum):
@@ -681,6 +682,7 @@ class Context:
     request before calling spec.can_invoke_intent.
     """
 
+    actor_id: UUID | None = None
     plan: str | None = None
     has_journal_decision: bool = False
     has_journal_reflect: bool = False
@@ -711,8 +713,8 @@ def _p_no_pr_yet(task: Any, _agent: Any, _ctx: Any) -> bool:
     return getattr(task, "pr_number", None) is None
 
 
-def _p_owns_task(task: Any, agent: Any, _ctx: Any) -> bool:
-    return getattr(task, "assigned_to", None) == getattr(agent, "id", object())
+def _p_owns_task(task: Any, _agent: Any, ctx: Any) -> bool:
+    return getattr(task, "assigned_to", None) == getattr(ctx, "actor_id", None)
 
 
 PRECONDITION_PLAN = Precondition(
