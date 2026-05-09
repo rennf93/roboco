@@ -31,6 +31,19 @@ def _make_deps(**overrides: Any) -> ChoreographerDeps:
         "evidence_repo": AsyncMock(),
     }
     base.update(overrides)
+    # VerbRunner wraps composed atomic actions in
+    # ``task.session.begin_nested()``. AsyncMock auto-attribute access
+    # would return an unawaitable coroutine, breaking the
+    # ``async with`` protocol. Overwrite session with a MagicMock that
+    # implements the async-context-manager protocol explicitly.
+    task_dep = base["task"]
+    task_dep.session = MagicMock()
+    task_dep.session.begin_nested = MagicMock(
+        return_value=MagicMock(
+            __aenter__=AsyncMock(return_value=None),
+            __aexit__=AsyncMock(return_value=False),
+        )
+    )
     repo = base["evidence_repo"]
     for method in (
         "list_unread_a2a",

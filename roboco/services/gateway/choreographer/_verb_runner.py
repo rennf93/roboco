@@ -118,10 +118,14 @@ class VerbRunner:
         )
 
     async def _do_escalate_to_ceo(
-        self, task: Any, _agent: Any, ctx: spec.Context
+        self, task: Any, agent: Any, ctx: spec.Context
     ) -> Any:
+        # Use the actor's real role — escalate_to_ceo is allow-listed for
+        # main_pm, product_owner, head_marketing in the spec, and the task
+        # service stamps the escalator's role into the audit trail.
+        agent_role = str(agent.role) if agent is not None else "main_pm"
         return await self.task_service.escalate_to_ceo(
-            task_id=task.id, agent_role="main_pm", notes=ctx.notes or ""
+            task_id=task.id, agent_role=agent_role, notes=ctx.notes or ""
         )
 
     async def _do_block(self, task: Any, agent: Any, ctx: spec.Context) -> Any:

@@ -907,3 +907,288 @@ async def test_complete_matches_spec(role: str, status: str) -> None:
             f"role={role} status={status}: can_invoke_intent rejected with "
             f"{expected.rejection_kind}, got {body['error']!r}; full body: {body}"
         )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "role, status",
+    list(
+        product(
+            [r.value for r in spec.Role if r != spec.Role.AUDITOR],
+            [s.value for s in spec.Status],
+        )
+    ),
+)
+async def test_escalate_up_matches_spec(role: str, status: str) -> None:
+    """Spec parity for escalate_up's role gate.
+
+    escalate_up's IntentSpec has ``composes=()`` — no atomic action runs,
+    so the spec gate enforces only role membership (cell_pm or main_pm),
+    no source-status constraint. The verb body owns dispatch via
+    ``task.escalate(...)`` and keeps two verb-specific preflight guards
+    the spec does not model: ``journal:decision`` presence, and
+    ``escalation_target`` configuration on the agent record. Both are
+    satisfied here so the spec gate is the load-bearing rejector.
+    """
+    agent_id = uuid4()
+    task_id = uuid4()
+    task = MagicMock(
+        id=task_id,
+        status=status,
+        task_type="code",
+        assigned_to=agent_id,
+        commits=[],
+        pr_number=None,
+        branch_name="feature/backend/abc",
+        parent_task_id=None,
+        sequence=0,
+        team="backend",
+        title="t",
+        quick_context=None,
+    )
+    after = MagicMock(
+        id=task_id, status="blocked", assigned_to=agent_id, team="backend"
+    )
+    task_svc = AsyncMock()
+    task_svc.get.return_value = task
+    # escalation_target is not on the spec — set it so the verb-specific
+    # preflight does not surface a non-spec invalid_state on the allowed
+    # branch and mask the spec-layer outcome.
+    task_svc.agent_for.return_value = MagicMock(
+        id=agent_id, role=role, team="backend", slug=None, escalation_target="main-pm"
+    )
+    task_svc.escalate.return_value = after
+    journal_svc = AsyncMock()
+    # journal:decision is not on the spec — satisfy it so the verb-specific
+    # preflight does not surface a non-spec tracing_gap on the allowed branch.
+    journal_svc.has_decision_for_task.return_value = True
+    deps = _make_deps(task_svc=task_svc)
+    deps = ChoreographerDeps(
+        task=task_svc,
+        work_session=deps.work_session,
+        git=deps.git,
+        a2a=deps.a2a,
+        journal=journal_svc,
+        audit=deps.audit,
+        evidence_repo=deps.evidence_repo,
+    )
+    c = Choreographer(deps)
+
+    ctx = spec.Context(actor_id=agent_id, notes="please help")
+    expected = spec.can_invoke_intent(spec.Role(role), "escalate_up", task, ctx)
+
+    env = await c.escalate_up(agent_id, task_id, reason="please help")
+    body = env.as_dict()
+    if expected.allowed:
+        # Spec allows. Verb-specific preflight (journal:decision +
+        # escalation_target) is wired to pass; the verb may still surface
+        # OK or a downstream invalid_state if task.escalate returns None,
+        # but the spec gate itself must NOT be the source of any
+        # not_authorized rejection.
+        assert body["error"] != "not_authorized", (
+            f"role={role} status={status}: spec.can_invoke_intent allowed "
+            f"but envelope surfaced not_authorized at the spec layer: {body}"
+        )
+    else:
+        assert body["error"] == expected.rejection_kind, (
+            f"role={role} status={status}: can_invoke_intent rejected with "
+            f"{expected.rejection_kind}, got {body['error']!r}; full body: {body}"
+        )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "role, status",
+    list(
+        product(
+            [r.value for r in spec.Role if r != spec.Role.AUDITOR],
+            [s.value for s in spec.Status],
+        )
+    ),
+)
+async def test_escalate_to_ceo_matches_spec(role: str, status: str) -> None:
+    """Spec parity for escalate_to_ceo's role + state gate.
+
+    escalate_to_ceo's IntentSpec composes ``("escalate_to_ceo",)``. The
+    spec gate enforces:
+
+      - role in {main_pm, product_owner, head_marketing},
+      - composed ``escalate_to_ceo`` action's source_status
+        (AWAITING_PM_REVIEW only).
+
+    The verb body keeps the journal:decision preflight (the spec doesn't
+    model journal side effects); satisfied here so the spec gate is the
+    load-bearing rejector. After the runner returns the verb body
+    reassigns to None (CEO acts via UI).
+    """
+    agent_id = uuid4()
+    task_id = uuid4()
+    task = MagicMock(
+        id=task_id,
+        status=status,
+        task_type="code",
+        # Ownership doesn't gate escalate_to_ceo (no PRECONDITION_OWNERSHIP).
+        assigned_to=agent_id,
+        commits=[],
+        pr_number=None,
+        branch_name="feature/backend/abc",
+        parent_task_id=None,
+        sequence=0,
+        team="backend",
+        title="t",
+        quick_context=None,
+    )
+    after = MagicMock(
+        id=task_id,
+        status="awaiting_ceo_approval",
+        assigned_to=None,
+        team="backend",
+    )
+    task_svc = AsyncMock()
+    task_svc.get.return_value = task
+    task_svc.agent_for.return_value = MagicMock(
+        id=agent_id, role=role, team="backend", slug=None
+    )
+    task_svc.escalate_to_ceo.return_value = after
+    task_svc.session = MagicMock()
+    task_svc.session.begin_nested = MagicMock(
+        return_value=MagicMock(
+            __aenter__=AsyncMock(return_value=None),
+            __aexit__=AsyncMock(return_value=False),
+        )
+    )
+    journal_svc = AsyncMock()
+    journal_svc.has_decision_for_task.return_value = True
+    deps = _make_deps(task_svc=task_svc)
+    deps = ChoreographerDeps(
+        task=task_svc,
+        work_session=deps.work_session,
+        git=deps.git,
+        a2a=deps.a2a,
+        journal=journal_svc,
+        audit=deps.audit,
+        evidence_repo=deps.evidence_repo,
+    )
+    c = Choreographer(deps)
+
+    ctx = spec.Context(actor_id=agent_id, notes="ready for CEO sign-off")
+    expected = spec.can_invoke_intent(spec.Role(role), "escalate_to_ceo", task, ctx)
+
+    env = await c.escalate_to_ceo(agent_id, task_id, reason="ready for CEO sign-off")
+    body = env.as_dict()
+    if expected.allowed:
+        # Spec allows. Verb may still surface a non-error envelope (OK)
+        # or a downstream tracing_gap from journal:decision absence (we
+        # wire it to pass); the spec gate itself must NOT be the source
+        # of any not_authorized rejection.
+        assert body["error"] != "not_authorized", (
+            f"role={role} status={status}: spec.can_invoke_intent allowed "
+            f"but envelope surfaced not_authorized at the spec layer: {body}"
+        )
+    else:
+        assert body["error"] == expected.rejection_kind, (
+            f"role={role} status={status}: can_invoke_intent rejected with "
+            f"{expected.rejection_kind}, got {body['error']!r}; full body: {body}"
+        )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "role, status",
+    list(
+        product(
+            [r.value for r in spec.Role if r != spec.Role.AUDITOR],
+            [s.value for s in spec.Status],
+        )
+    ),
+)
+async def test_submit_up_matches_spec(role: str, status: str) -> None:
+    """Spec parity for submit_up's role + state gate.
+
+    submit_up's IntentSpec composes ``("submit_pm_review",)`` with side
+    effects ``("create_pr",)``. The spec gate enforces:
+
+      - role == cell_pm,
+      - composed ``submit_pm_review`` action's source_status
+        (IN_PROGRESS only).
+
+    The verb body keeps ``_submit_up_guard`` (ownership + notes-length +
+    journal:decision + subtasks-terminal + branch-present). All of those
+    are satisfied here so the spec gate is the load-bearing rejector.
+    """
+    agent_id = uuid4()
+    task_id = uuid4()
+    task = MagicMock(
+        id=task_id,
+        status=status,
+        task_type="code",
+        # Owned by caller so the verb-specific ownership preflight does
+        # not surface a non-spec rejection on the allowed branch.
+        assigned_to=agent_id,
+        commits=[],
+        pr_number=None,
+        branch_name="feature/backend/abc",
+        parent_task_id=None,
+        sequence=0,
+        team="backend",
+        title="t",
+        quick_context=None,
+    )
+    after = MagicMock(
+        id=task_id,
+        status="awaiting_pm_review",
+        assigned_to=agent_id,
+        branch_name="feature/backend/abc",
+        team="backend",
+    )
+    task_svc = AsyncMock()
+    task_svc.get.return_value = task
+    task_svc.agent_for.return_value = MagicMock(
+        id=agent_id, role=role, team="backend", slug=None
+    )
+    task_svc.submit_pm_review.return_value = after
+    task_svc.all_subtasks_terminal.return_value = True
+    task_svc.main_pm_agent.return_value = MagicMock(id=uuid4())
+    task_svc.session = MagicMock()
+    task_svc.session.begin_nested = MagicMock(
+        return_value=MagicMock(
+            __aenter__=AsyncMock(return_value=None),
+            __aexit__=AsyncMock(return_value=False),
+        )
+    )
+    git_svc = AsyncMock()
+    git_svc.create_pr.return_value = {"pr_number": 12, "pr_url": "x"}
+    journal_svc = AsyncMock()
+    journal_svc.has_decision_for_task.return_value = True
+    deps = _make_deps(task_svc=task_svc)
+    deps = ChoreographerDeps(
+        task=task_svc,
+        work_session=deps.work_session,
+        git=git_svc,
+        a2a=deps.a2a,
+        journal=journal_svc,
+        audit=deps.audit,
+        evidence_repo=deps.evidence_repo,
+    )
+    c = Choreographer(deps)
+
+    notes = "cell completed all subtasks; ready for main pm review"
+    ctx = spec.Context(actor_id=agent_id, notes=notes)
+    expected = spec.can_invoke_intent(spec.Role(role), "submit_up", task, ctx)
+
+    env = await c.submit_up(agent_id, task_id, notes=notes)
+    body = env.as_dict()
+    if expected.allowed:
+        # Spec allows. Verb may still surface a non-error envelope (OK)
+        # or a downstream tracing_gap from one of the _submit_up_guard
+        # preconditions (which we wire to pass); the spec gate itself
+        # must NOT be the source of any not_authorized rejection.
+        assert body["error"] != "not_authorized", (
+            f"role={role} status={status}: spec.can_invoke_intent allowed "
+            f"but envelope surfaced not_authorized at the spec layer: {body}"
+        )
+    else:
+        assert body["error"] == expected.rejection_kind, (
+            f"role={role} status={status}: can_invoke_intent rejected with "
+            f"{expected.rejection_kind}, got {body['error']!r}; full body: {body}"
+        )

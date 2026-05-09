@@ -1932,12 +1932,19 @@ class Choreographer:
     async def submit_up(self, pm_agent_id: UUID, task_id: UUID, notes: str) -> Envelope:
         """Cell PM bubbles a finished cell-scope task up to the Main PM.
 
-        Opens a cell-level PR into the parent (Main PM) branch, transitions
-        the task to ``awaiting_pm_review``, and reassigns to the Main PM.
-        Required preconditions: caller owns the task, all subtasks
-        terminal, journal:decision logged, notes >= 20 chars.
+        Spec gate runs first and enforces role membership (cell_pm only)
+        plus the composed ``submit_pm_review`` action's source-status
+        constraint (IN_PROGRESS only). After the gate accepts, the
+        verb-specific ``_submit_up_guard`` runs the rest of the
+        preflight checks the spec doesn't model: ownership, notes
+        length, journal:decision presence, subtasks-terminal, branch
+        present. Then ``VerbRunner.run_intent("submit_up", ...)``
+        dispatches the (submit_pm_review,) atomic chain plus the
+        (create_pr,) side effect inside a savepoint. After the runner
+        returns, the task is handed off to the Main PM (reassign + a2a).
         """
         t = await self.task.get(task_id)
+        briefing = await self._briefing_for(pm_agent_id, task_id)
         if t is None:
             return await self._emit_rejection(
                 Envelope.not_found(message=f"task {task_id} not found"),
@@ -1946,10 +1953,43 @@ class Choreographer:
                 verb="submit_up",
             )
         agent = await self.task.agent_for(pm_agent_id)
-        role = str(agent.role) if agent is not None else "cell_pm"
+        role_str = str(agent.role) if agent is not None else "cell_pm"
+        try:
+            role = spec_module.Role(role_str)
+        except ValueError:
+            return await self._emit_rejection(
+                Envelope.not_authorized(
+                    message=f"unknown role '{role_str}'",
+                    remediate="role is not declared in the lifecycle spec",
+                    context_briefing=briefing,
+                ).with_introspection(task=t, role=role_str),
+                agent_id=pm_agent_id,
+                task_id=task_id,
+                verb="submit_up",
+            )
+        spec_ctx = spec_module.Context(
+            actor_id=pm_agent_id,
+            actor_slug=getattr(agent, "slug", None) if agent is not None else None,
+            original_developer_slug=_extract_original_developer(t),
+            notes=notes,
+        )
+        decision = spec_module.can_invoke_intent(role, "submit_up", t, spec_ctx)
+        if not decision.allowed:
+            return await self._emit_rejection(
+                Envelope.from_decision(decision, briefing=briefing).with_introspection(
+                    task=t, role=role_str
+                ),
+                agent_id=pm_agent_id,
+                task_id=task_id,
+                verb="submit_up",
+            )
+
+        # Verb-specific preflight: ownership + notes-length + journal:decision
+        # + subtasks-terminal + branch-present. None of these are modelled by
+        # the spec yet — keep them in the verb body.
         guard = await self._submit_up_guard(pm_agent_id, task_id, t, notes)
         if guard is not None:
-            guard.with_introspection(task=t, role=role)
+            guard.with_introspection(task=t, role=role_str)
             return await self._emit_rejection(
                 guard,
                 agent_id=pm_agent_id,
@@ -1957,27 +1997,55 @@ class Choreographer:
                 verb="submit_up",
             )
 
-        parent_branch = parent_branch_for(t.branch_name)
-        await self.git.create_pr(t.branch_name, parent=parent_branch, is_root_pr=False)
-        t = await self.task.submit_pm_review(pm_agent_id, task_id, notes)
-        if t is None:
+        outcome = await self._submit_up_run_intent(
+            t, agent, spec_ctx, briefing, role_str
+        )
+        if isinstance(outcome, Envelope):
             return await self._emit_rejection(
-                Envelope.invalid_state(
-                    message="could not transition to awaiting_pm_review",
-                    remediate="check task state — must be in_progress with PR ready",
-                    context_briefing=await self._briefing_for(pm_agent_id, task_id),
-                ),
+                outcome,
                 agent_id=pm_agent_id,
                 task_id=task_id,
                 verb="submit_up",
             )
+        t = outcome
         await self._handoff_to_main_pm(pm_agent_id, task_id)
         return Envelope.ok(
-            status="awaiting_pm_review",
+            status=str(t.status),
             task_id=str(task_id),
-            next="idle until Main PM reviews",
-            context_briefing=await self._briefing_for(pm_agent_id, task_id),
-        ).with_introspection(task=t, role=role)
+            next=spec_module._INTENT_VERBS["submit_up"].next_hint(t),
+            context_briefing=briefing,
+        ).with_introspection(task=t, role=role_str)
+
+    async def _submit_up_run_intent(
+        self,
+        t: Any,
+        agent: Any,
+        spec_ctx: spec_module.Context,
+        briefing: dict[str, Any],
+        role_str: str,
+    ) -> Any:
+        """Dispatch the submit_up composition through VerbRunner.
+
+        Returns the post-composition task on success, or an
+        ``invalid_state`` Envelope when the runner raises or the
+        underlying ``submit_pm_review`` returns ``None``.
+        """
+        runner = self._verb_runner()
+        try:
+            after = await runner.run_intent("submit_up", t, agent, spec_ctx)
+        except Exception as exc:
+            return Envelope.invalid_state(
+                message=f"verb runner failed: {exc}",
+                remediate="check workspace + retry; if persistent, escalate",
+                context_briefing=briefing,
+            ).with_introspection(task=t, role=role_str)
+        if after is None:
+            return Envelope.invalid_state(
+                message="could not transition to awaiting_pm_review",
+                remediate="check task state — must be in_progress with PR ready",
+                context_briefing=briefing,
+            )
+        return after
 
     async def _submit_up_guard(
         self, pm_agent_id: UUID, task_id: UUID, t: Any, notes: str
@@ -2501,8 +2569,20 @@ class Choreographer:
     async def escalate_up(
         self, pm_agent_id: UUID, task_id: UUID, reason: str
     ) -> Envelope:
-        """Escalate a task to the agent's escalation_target role."""
+        """Escalate a task to the agent's escalation_target role.
+
+        Spec gate runs first and enforces role membership (cell_pm or
+        main_pm only — escalate_up's IntentSpec has ``composes=()``, so
+        the spec does not enforce a source-status constraint). After the
+        gate accepts, the verb-specific preflight guards stay:
+        ``journal:decision`` presence (the spec doesn't model journal
+        side effects) and ``escalation_target`` configuration on the
+        actor's agent record (also out of the spec's scope). Then the
+        verb body owns dispatch via ``task.escalate(...)`` because
+        ``composes=()`` (no atomic action for the runner to run).
+        """
         t = await self.task.get(task_id)
+        briefing = await self._briefing_for(pm_agent_id, task_id)
         if t is None:
             return await self._emit_rejection(
                 Envelope.not_found(message=f"task {task_id} not found"),
@@ -2511,38 +2591,51 @@ class Choreographer:
                 verb="escalate_up",
             )
         me = await self.task.agent_for(pm_agent_id)
-        role = str(me.role) if me is not None else "cell_pm"
-
-        has_decision = await self.journal.has_decision_for_task(pm_agent_id, task_id)
-        if not has_decision:
-            from roboco.services.gateway.remediation import (
-                hint_for_missing_journal_decision,
-            )
-
+        role_str = str(me.role) if me is not None else "cell_pm"
+        try:
+            role = spec_module.Role(role_str)
+        except ValueError:
             return await self._emit_rejection(
-                Envelope.tracing_gap(
-                    missing=["journal:decision"],
-                    remediate=hint_for_missing_journal_decision(),
-                    context_briefing=await self._briefing_for(pm_agent_id, task_id),
-                ).with_introspection(task=t, role=role),
+                Envelope.not_authorized(
+                    message=f"unknown role '{role_str}'",
+                    remediate="role is not declared in the lifecycle spec",
+                    context_briefing=briefing,
+                ).with_introspection(task=t, role=role_str),
+                agent_id=pm_agent_id,
+                task_id=task_id,
+                verb="escalate_up",
+            )
+        spec_ctx = spec_module.Context(
+            actor_id=pm_agent_id,
+            actor_slug=getattr(me, "slug", None) if me is not None else None,
+            original_developer_slug=_extract_original_developer(t),
+            notes=reason,
+        )
+        decision = spec_module.can_invoke_intent(role, "escalate_up", t, spec_ctx)
+        if not decision.allowed:
+            return await self._emit_rejection(
+                Envelope.from_decision(decision, briefing=briefing).with_introspection(
+                    task=t, role=role_str
+                ),
                 agent_id=pm_agent_id,
                 task_id=task_id,
                 verb="escalate_up",
             )
 
+        preflight = await self._escalate_up_preflight(
+            pm_agent_id, t, me, briefing, role_str
+        )
+        if preflight is not None:
+            return await self._emit_rejection(
+                preflight,
+                agent_id=pm_agent_id,
+                task_id=task_id,
+                verb="escalate_up",
+            )
+
+        # Verb body owns dispatch — escalate_up's IntentSpec has
+        # composes=(), so VerbRunner has no atomic action to run.
         target_slug = me.escalation_target if me else None
-        if not target_slug:
-            return await self._emit_rejection(
-                Envelope.invalid_state(
-                    message="no escalation target configured for your role",
-                    remediate="check agents_config.py ESCALATION_CHAIN for your slug",
-                    context_briefing=await self._briefing_for(pm_agent_id, task_id),
-                ).with_introspection(task=t, role=role),
-                agent_id=pm_agent_id,
-                task_id=task_id,
-                verb="escalate_up",
-            )
-
         t = await self.task.escalate(pm_agent_id, task_id, reason)
         if t is None:
             return await self._emit_rejection(
@@ -2555,7 +2648,7 @@ class Choreographer:
                         f"verify {target_slug} exists in agents table and that the "
                         "task is still present"
                     ),
-                    context_briefing=await self._briefing_for(pm_agent_id, task_id),
+                    context_briefing=briefing,
                 ),
                 agent_id=pm_agent_id,
                 task_id=task_id,
@@ -2565,16 +2658,65 @@ class Choreographer:
             status=str(t.status),
             task_id=str(task_id),
             next=f"escalated to {target_slug}; idle until they respond",
-            context_briefing=await self._briefing_for(pm_agent_id, task_id),
-        ).with_introspection(task=t, role=role)
+            context_briefing=briefing,
+        ).with_introspection(task=t, role=role_str)
+
+    async def _escalate_up_preflight(
+        self,
+        pm_agent_id: UUID,
+        t: Any,
+        me: Any,
+        briefing: dict[str, Any],
+        role_str: str,
+    ) -> Envelope | None:
+        """Verb-specific preflight gates for escalate_up.
+
+        Returns a rejection envelope when the gate fires; ``None`` to
+        proceed. The spec doesn't model journal side effects or agent
+        metadata (escalation_target slug), so these gates stay in the
+        verb body.
+        """
+        has_decision = await self.journal.has_decision_for_task(pm_agent_id, t.id)
+        if not has_decision:
+            from roboco.services.gateway.remediation import (
+                hint_for_missing_journal_decision,
+            )
+
+            return Envelope.tracing_gap(
+                missing=["journal:decision"],
+                remediate=hint_for_missing_journal_decision(),
+                context_briefing=briefing,
+            ).with_introspection(task=t, role=role_str)
+        target_slug = me.escalation_target if me else None
+        if not target_slug:
+            return Envelope.invalid_state(
+                message="no escalation target configured for your role",
+                remediate="check agents_config.py ESCALATION_CHAIN for your slug",
+                context_briefing=briefing,
+            ).with_introspection(task=t, role=role_str)
+        return None
 
     # --- Phase 4 (board) verbs ---
 
     async def escalate_to_ceo(
         self, agent_id: UUID, task_id: UUID, reason: str
     ) -> Envelope:
-        """Board/Main PM escalates task_id to CEO with reason."""
+        """Board/Main PM escalates task_id to CEO with reason.
+
+        Spec gate runs first and enforces role membership (main_pm,
+        product_owner, head_marketing) plus the composed
+        ``escalate_to_ceo`` action's source-status constraint
+        (AWAITING_PM_REVIEW only). After the gate accepts, the
+        verb-specific preflight guard stays: ``journal:decision``
+        presence (the spec doesn't model journal side effects). Then
+        ``VerbRunner.run_intent("escalate_to_ceo", ...)`` dispatches the
+        (escalate_to_ceo,) atomic chain wrapped in a savepoint. After
+        the runner returns, the task is reassigned to None — the CEO
+        acts via the UI, not as a spawnable agent (mirrors
+        main_pm_complete).
+        """
         t = await self.task.get(task_id)
+        briefing = await self._briefing_for(agent_id, task_id)
         if t is None:
             return await self._emit_rejection(
                 Envelope.not_found(message=f"task {task_id} not found"),
@@ -2583,31 +2725,38 @@ class Choreographer:
                 verb="escalate_to_ceo",
             )
         me = await self.task.agent_for(agent_id)
-        role = str(me.role) if me is not None else "main_pm"
-        if me.role not in ("main_pm", "product_owner", "head_marketing"):
+        role_str = str(me.role) if me is not None else "main_pm"
+        try:
+            role = spec_module.Role(role_str)
+        except ValueError:
             return await self._emit_rejection(
                 Envelope.not_authorized(
-                    message=f"role {me.role} cannot escalate to CEO directly",
-                    remediate="use escalate_up() to go through your escalation chain",
-                    context_briefing=await self._briefing_for(agent_id, task_id),
-                ).with_introspection(task=t, role=role),
+                    message=f"unknown role '{role_str}'",
+                    remediate="role is not declared in the lifecycle spec",
+                    context_briefing=briefing,
+                ).with_introspection(task=t, role=role_str),
                 agent_id=agent_id,
                 task_id=task_id,
                 verb="escalate_to_ceo",
             )
-        if str(t.status) != "awaiting_pm_review":
+        spec_ctx = spec_module.Context(
+            actor_id=agent_id,
+            actor_slug=getattr(me, "slug", None) if me is not None else None,
+            original_developer_slug=_extract_original_developer(t),
+            notes=reason,
+        )
+        decision = spec_module.can_invoke_intent(role, "escalate_to_ceo", t, spec_ctx)
+        if not decision.allowed:
             return await self._emit_rejection(
-                Envelope.invalid_state(
-                    message=(
-                        f"task {task_id} is in {t.status}, expected awaiting_pm_review"
-                    ),
-                    remediate="this task is not at the gate for CEO approval",
-                    context_briefing=await self._briefing_for(agent_id, task_id),
-                ).with_introspection(task=t, role=role),
+                Envelope.from_decision(decision, briefing=briefing).with_introspection(
+                    task=t, role=role_str
+                ),
                 agent_id=agent_id,
                 task_id=task_id,
                 verb="escalate_to_ceo",
             )
+
+        # Verb-specific preflight: journal:decision presence (out of spec scope).
         has_decision = await self.journal.has_decision_for_task(agent_id, task_id)
         if not has_decision:
             from roboco.services.gateway.remediation import (
@@ -2618,21 +2767,35 @@ class Choreographer:
                 Envelope.tracing_gap(
                     missing=["journal:decision"],
                     remediate=hint_for_missing_journal_decision(),
-                    context_briefing=await self._briefing_for(agent_id, task_id),
-                ).with_introspection(task=t, role=role),
+                    context_briefing=briefing,
+                ).with_introspection(task=t, role=role_str),
                 agent_id=agent_id,
                 task_id=task_id,
                 verb="escalate_to_ceo",
             )
-        t = await self.task.escalate_to_ceo(task_id, agent_role=me.role, notes=reason)
+
+        runner = self._verb_runner()
+        try:
+            t = await runner.run_intent("escalate_to_ceo", t, me, spec_ctx)
+        except Exception as exc:
+            return await self._emit_rejection(
+                Envelope.invalid_state(
+                    message=f"verb runner failed: {exc}",
+                    remediate="check workspace + retry; if persistent, escalate",
+                    context_briefing=briefing,
+                ).with_introspection(task=t, role=role_str),
+                agent_id=agent_id,
+                task_id=task_id,
+                verb="escalate_to_ceo",
+            )
         # Same as main_pm_complete: CEO acts via UI, not as a spawnable agent.
         await self.task.reassign(task_id, None)
         return Envelope.ok(
             status=str(t.status),
             task_id=str(task_id),
-            next="idle until CEO acts via UI",
-            context_briefing=await self._briefing_for(agent_id, task_id),
-        ).with_introspection(task=t, role=role)
+            next=spec_module._INTENT_VERBS["escalate_to_ceo"].next_hint(t),
+            context_briefing=briefing,
+        ).with_introspection(task=t, role=role_str)
 
     # board_triage + auditor_triage moved to ``board.py`` as the first
     # per-role mixin extraction (audit P2-2). The Choreographer class is

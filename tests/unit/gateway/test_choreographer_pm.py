@@ -601,6 +601,12 @@ async def test_escalate_up_blocks_without_journal_decision() -> None:
     t = MagicMock(id=task_id, status="blocked")
     task_svc = AsyncMock()
     task_svc.get.return_value = t
+    # Spec gate runs before the journal:decision preflight; provide a
+    # valid PM role so the gate passes and the preflight is the
+    # load-bearing rejector.
+    task_svc.agent_for.return_value = MagicMock(
+        role="cell_pm", escalation_target="main-pm"
+    )
     journal_svc = AsyncMock()
     journal_svc.has_decision_for_task.return_value = False
     deps = _make_deps(task=task_svc, journal=journal_svc)
@@ -614,13 +620,20 @@ async def test_escalate_up_blocks_without_journal_decision() -> None:
 
 @pytest.mark.asyncio
 async def test_escalate_up_no_target_returns_invalid_state() -> None:
+    """Verb-specific preflight: PM whose escalation_target is unconfigured.
+
+    The spec allows cell_pm/main_pm to call escalate_up regardless of
+    target slug presence (target metadata lives on the agent record, not
+    the lifecycle). The verb body's preflight is what surfaces the
+    invalid_state when no target is configured.
+    """
     pm_id = uuid4()
     task_id = uuid4()
     t = MagicMock(id=task_id, status="blocked")
     task_svc = AsyncMock()
     task_svc.get.return_value = t
     task_svc.agent_for.return_value = MagicMock(
-        role="auditor",
+        role="cell_pm",
         escalation_target=None,
     )
     journal_svc = AsyncMock()
