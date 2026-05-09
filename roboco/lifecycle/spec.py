@@ -890,7 +890,7 @@ _INTENT_VERBS: dict[str, IntentSpec] = {
         name="claim_review",
         allowed_roles=_QA_ROLES,
         description="Claim a task in awaiting_qa for review. Returns evidence inline.",
-        composes=("claim", "start"),
+        composes=(),
         extra_preconditions=(),
         side_effects=(),
         next_hint=_next_hint_qa_review,
@@ -918,7 +918,7 @@ _INTENT_VERBS: dict[str, IntentSpec] = {
         name="claim_doc_task",
         allowed_roles=_DOC_ROLES,
         description="Claim awaiting_documentation. Returns evidence inline.",
-        composes=("claim", "start"),
+        composes=(),
         extra_preconditions=(),
         side_effects=(),
         next_hint=_next_hint_doc_after_claim,
@@ -1234,6 +1234,13 @@ def can_invoke_intent(
         d = can_invoke_action(role, first_action, task, ctx)
         if not d.allowed:
             return d
+    # Special handling for claim-like verbs with empty composition (claim_review,
+    # claim_doc_task). These verbs don't compose "claim" action, but still need
+    # to enforce claim-status rules via CLAIM_RULES narrowing.
+    elif intent in ("claim_review", "claim_doc_task"):
+        rejection = _check_claim_rules_narrow(role, task)
+        if rejection is not None:
+            return rejection
     return Decision.allow()
 
 
