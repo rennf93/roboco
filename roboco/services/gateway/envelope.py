@@ -113,6 +113,47 @@ class Envelope:
     def not_found(cls, *, message: str) -> Envelope:
         return cls(error="not_found", message=message, context_briefing={})
 
+    @classmethod
+    def from_decision(
+        cls, decision: Any, *, briefing: dict[str, Any] | None = None
+    ) -> Envelope:
+        """Map a lifecycle.spec.Decision rejection onto the right envelope flavor.
+
+        Allow Decisions are a programming error here — call sites must
+        check `decision.allowed` before invoking this.
+        """
+        if decision.allowed:
+            raise ValueError("cannot build rejection from allow Decision")
+        ctx = briefing or {}
+        kind = decision.rejection_kind
+        if kind == "tracing_gap":
+            return cls(
+                error="tracing_gap",
+                missing=list(decision.missing),
+                remediate=decision.remediate or "",
+                context_briefing=ctx,
+            )
+        if kind == "self_review":
+            return cls(
+                error="not_authorized",
+                message=(decision.message or "") + " (self-review blocked)",
+                remediate=decision.remediate,
+                context_briefing=ctx,
+            )
+        if kind == "not_found":
+            return cls(
+                error="not_found",
+                message=decision.message,
+                context_briefing=ctx,
+            )
+        # not_authorized | invalid_state — direct map
+        return cls(
+            error=kind,
+            message=decision.message,
+            remediate=decision.remediate,
+            context_briefing=ctx,
+        )
+
     def with_introspection(self, *, task: Any, role: str) -> Envelope:
         """Populate `current_state` and `valid_next_verbs` from a task + role.
 
