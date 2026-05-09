@@ -224,7 +224,11 @@ class StatusTransition:
 _STATUS_TRANSITIONS: tuple[StatusTransition, ...] = (
     # PM setup
     StatusTransition(Status.BACKLOG, Status.PENDING, "activate", None),
-    # Claim path (any role; specific role-vs-status checks live in CLAIM_RULES)
+    # Claim path. role_constraint=None on rows below means "any role —
+    # the per-role-vs-status filtering is in CLAIM_RULES (Task 5)".
+    # A None here is NOT an oversight; it is the explicit handoff
+    # point between the StatusTransition table (state machine) and
+    # CLAIM_RULES (per-role claim authority).
     StatusTransition(Status.PENDING, Status.CLAIMED, "claim", None),
     StatusTransition(Status.AWAITING_QA, Status.CLAIMED, "claim", frozenset({Role.QA})),
     StatusTransition(

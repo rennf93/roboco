@@ -256,3 +256,71 @@ def test_status_graph_lookup_returns_targets() -> None:
     assert spec.Status.CLAIMED in spec.STATUS_GRAPH[spec.Status.PENDING]
     assert spec.Status.AWAITING_QA in spec.STATUS_GRAPH[spec.Status.VERIFYING]
     assert spec.STATUS_GRAPH[spec.Status.COMPLETED] == frozenset()
+
+
+def test_status_transitions_role_constraints_match_canon() -> None:
+    """role_constraint must encode the per-row role gates from
+    PERMISSIONS.md / STATUS_TRANSITIONS.md exactly. Tests that look only
+    at (source, target) pairs miss role-typo regressions; this test
+    pins the gates explicitly.
+    """
+    by_pair = {
+        (t.source, t.target, t.triggered_by_action): t.role_constraint
+        for t in spec._STATUS_TRANSITIONS
+    }
+    # QA is the only role that can claim awaiting_qa
+    assert by_pair[
+        (spec.Status.AWAITING_QA, spec.Status.CLAIMED, "claim")
+    ] == frozenset({spec.Role.QA})
+    # Documenter is the only role that can claim awaiting_documentation
+    assert by_pair[
+        (spec.Status.AWAITING_DOCUMENTATION, spec.Status.CLAIMED, "claim")
+    ] == frozenset({spec.Role.DOCUMENTER})
+    # qa_pass / qa_fail: QA only
+    assert by_pair[
+        (spec.Status.AWAITING_QA, spec.Status.AWAITING_DOCUMENTATION, "qa_pass")
+    ] == frozenset({spec.Role.QA})
+    assert by_pair[
+        (spec.Status.AWAITING_QA, spec.Status.NEEDS_REVISION, "qa_fail")
+    ] == frozenset({spec.Role.QA})
+    # docs_complete: documenter only
+    assert by_pair[
+        (
+            spec.Status.AWAITING_DOCUMENTATION,
+            spec.Status.AWAITING_PM_REVIEW,
+            "docs_complete",
+        )
+    ] == frozenset({spec.Role.DOCUMENTER})
+    # PM complete: cell + main PM (not board, not CEO)
+    assert by_pair[
+        (spec.Status.AWAITING_PM_REVIEW, spec.Status.COMPLETED, "complete")
+    ] == frozenset({spec.Role.CELL_PM, spec.Role.MAIN_PM})
+    # escalate_to_ceo: main_pm + product_owner + head_marketing
+    assert by_pair[
+        (
+            spec.Status.AWAITING_PM_REVIEW,
+            spec.Status.AWAITING_CEO_APPROVAL,
+            "escalate_to_ceo",
+        )
+    ] == frozenset(
+        {
+            spec.Role.MAIN_PM,
+            spec.Role.PRODUCT_OWNER,
+            spec.Role.HEAD_MARKETING,
+        }
+    )
+    # CEO actions: CEO only
+    assert by_pair[
+        (spec.Status.AWAITING_CEO_APPROVAL, spec.Status.COMPLETED, "ceo_approve")
+    ] == frozenset({spec.Role.CEO})
+    assert by_pair[
+        (spec.Status.AWAITING_CEO_APPROVAL, spec.Status.NEEDS_REVISION, "ceo_reject")
+    ] == frozenset({spec.Role.CEO})
+    # Cancel: PM + CEO from any non-terminal status
+    cancel_constraint = frozenset({spec.Role.CELL_PM, spec.Role.MAIN_PM, spec.Role.CEO})
+    for src in spec.Status:
+        if src in (spec.Status.COMPLETED, spec.Status.CANCELLED):
+            continue
+        assert by_pair[(src, spec.Status.CANCELLED, "cancel")] == cancel_constraint, (
+            f"cancel from {src.value} has wrong role_constraint"
+        )
