@@ -92,6 +92,14 @@ def test_decision_tracing_gap_carries_missing_list() -> None:
     assert d.remediate == "provide plan and a journal:decision entry"
 
 
+def test_decision_tracing_gap_defensively_copies_missing() -> None:
+    """tracing_gap must isolate the stored list from the caller's source."""
+    src = ["plan"]
+    d = spec.Decision.tracing_gap(missing=src, remediate="r")
+    src.append("mutated")
+    assert d.missing == ["plan"]
+
+
 def test_decision_invariants_enforced_at_construction() -> None:
     """allowed=True ⇒ rejection_kind None; allowed=False ⇒ kind set."""
     with pytest.raises(ValueError, match="allowed=True requires rejection_kind=None"):
@@ -109,4 +117,29 @@ def test_decision_invariants_enforced_at_construction() -> None:
             message="x",
             missing=[],
             remediate="x",
+        )
+
+
+def test_decision_invariant_rejects_allowed_with_missing_or_remediate() -> None:
+    """allowed=True with missing or remediate set raises (Fix 1 lock-in)."""
+    with pytest.raises(
+        ValueError, match="allowed=True requires missing=\\[\\] and remediate=None"
+    ):
+        spec.Decision(
+            allowed=True,
+            rejection_kind=None,
+            message=None,
+            missing=["plan"],
+            remediate=None,
+        )
+    with pytest.raises(
+        ValueError,
+        match="allowed=True requires missing=\\[\\] and remediate=None",
+    ):
+        spec.Decision(
+            allowed=True,
+            rejection_kind=None,
+            message=None,
+            missing=[],
+            remediate="oops",
         )

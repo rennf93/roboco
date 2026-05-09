@@ -103,6 +103,8 @@ class Decision:
             raise ValueError(
                 "Decision invariant: allowed=False requires rejection_kind set"
             )
+        if self.allowed and (self.missing or self.remediate is not None):
+            raise ValueError("allowed=True requires missing=[] and remediate=None")
 
     @classmethod
     def allow(cls) -> Decision:
