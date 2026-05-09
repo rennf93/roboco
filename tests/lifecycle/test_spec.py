@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from types import SimpleNamespace
+
 import pytest
 from roboco.lifecycle import spec
 from roboco.models.base import TaskType as ModelTaskType
@@ -143,3 +145,61 @@ def test_decision_invariant_rejects_allowed_with_missing_or_remediate() -> None:
             missing=[],
             remediate="oops",
         )
+
+
+def test_precondition_check_returns_bool() -> None:
+    """A Precondition.check() is the gate-table evaluator."""
+    p = spec.Precondition(
+        key="commits>=1",
+        check=lambda task, _agent, _ctx: bool(getattr(task, "commits", None)),
+        remediate="commit at least once before opening a PR",
+        missing_token="commits>=1",
+    )
+
+    task_with = SimpleNamespace(commits=["abc"])
+    task_without = SimpleNamespace(commits=[])
+    assert p.check(task_with, None, None) is True
+    assert p.check(task_without, None, None) is False
+
+
+def test_action_spec_holds_role_status_and_precondition_data() -> None:
+    a = spec.ActionSpec(
+        name="claim",
+        allowed_roles=frozenset({spec.Role.DEVELOPER}),
+        source_statuses=frozenset({spec.Status.PENDING, spec.Status.NEEDS_REVISION}),
+        target_status=spec.Status.CLAIMED,
+        allowed_task_types=None,
+        preconditions=(),
+        self_review_block=False,
+        needs_team_match=True,
+    )
+    assert a.name == "claim"
+    assert spec.Role.DEVELOPER in a.allowed_roles
+    assert a.target_status == spec.Status.CLAIMED
+
+
+def test_intent_spec_composes_atomic_actions() -> None:
+    i = spec.IntentSpec(
+        name="i_will_work_on",
+        allowed_roles=frozenset({spec.Role.DEVELOPER}),
+        description="Claim a task and start work on it.",
+        composes=("claim", "set_plan", "start"),
+        extra_preconditions=(),
+        side_effects=(),
+        next_hint=lambda _t: "edit + commit, then open_pr",
+    )
+    assert i.composes == ("claim", "set_plan", "start")
+    assert i.next_hint(None) == "edit + commit, then open_pr"
+
+
+def test_status_transition_carries_role_constraint_optional() -> None:
+    t = spec.StatusTransition(
+        source=spec.Status.AWAITING_QA,
+        target=spec.Status.AWAITING_DOCUMENTATION,
+        triggered_by_action="qa_pass",
+        role_constraint=frozenset({spec.Role.QA}),
+    )
+    assert t.source == spec.Status.AWAITING_QA
+    assert t.target == spec.Status.AWAITING_DOCUMENTATION
+    assert t.triggered_by_action == "qa_pass"
+    assert t.role_constraint == frozenset({spec.Role.QA})

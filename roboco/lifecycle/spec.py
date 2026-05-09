@@ -24,7 +24,10 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from enum import StrEnum
-from typing import Literal
+from typing import TYPE_CHECKING, Any, Literal
+
+if TYPE_CHECKING:
+    from collections.abc import Callable
 
 
 class Role(StrEnum):
@@ -141,3 +144,74 @@ class Decision:
             missing=list(missing),
             remediate=remediate,
         )
+
+
+@dataclass(frozen=True)
+class Precondition:
+    """Declarative gate-table row.
+
+    `check` returns True if the precondition holds. `remediate` is the
+    human-readable hint surfaced verbatim on rejection. `missing_token`
+    is what shows up in the `tracing_gap.missing[]` field of the
+    envelope (so agents can do exact-string checks).
+    """
+
+    key: str
+    check: Callable[[Any, Any, Any], bool]
+    remediate: str
+    missing_token: str
+
+
+@dataclass(frozen=True)
+class ActionSpec:
+    """Atomic, pre-gateway-style action (claim, start, submit_qa, ...).
+
+    `target_status=None` means the action does not transition the task
+    (e.g. progress-recording actions). `allowed_task_types=None` means
+    no restriction. `needs_team_match` is the agent.team == task.team
+    rule from PERMISSIONS.md (Team-Based Restrictions).
+    """
+
+    name: str
+    allowed_roles: frozenset[Role]
+    source_statuses: frozenset[Status]
+    target_status: Status | None
+    allowed_task_types: frozenset[TaskType] | None
+    preconditions: tuple[Precondition, ...]
+    self_review_block: bool
+    needs_team_match: bool
+
+
+@dataclass(frozen=True)
+class IntentSpec:
+    """Gateway intent verb — a named, atomic composition of ActionSpecs.
+
+    `composes` lists the atomic action names in the order they execute.
+    `extra_preconditions` are verb-level checks the composing actions
+    don't cover (e.g. open_pr's "no PR already open" check).
+    `side_effects` is a tuple of named git/branch/PR operations the
+    runner invokes after the DB savepoint commits.
+    """
+
+    name: str
+    allowed_roles: frozenset[Role]
+    description: str
+    composes: tuple[str, ...]
+    extra_preconditions: tuple[Precondition, ...]
+    side_effects: tuple[str, ...]
+    next_hint: Callable[[Any], str]
+
+
+@dataclass(frozen=True)
+class StatusTransition:
+    """A row from STATUS_TRANSITIONS.md, machine-readable.
+
+    `role_constraint=None` means: inherit whatever the
+    `triggered_by_action`'s ActionSpec.allowed_roles says. Set explicitly
+    only when the transition's role gate differs from the action's.
+    """
+
+    source: Status
+    target: Status
+    triggered_by_action: str
+    role_constraint: frozenset[Role] | None
