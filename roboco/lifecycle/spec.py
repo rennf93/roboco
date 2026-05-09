@@ -324,3 +324,279 @@ def _build_status_graph() -> dict[Status, frozenset[Status]]:
 
 
 STATUS_GRAPH: dict[Status, frozenset[Status]] = _build_status_graph()
+
+
+# ---------------------------------------------------------------------------
+# Atomic actions (predecessor canon: PERMISSIONS.md "Task Management Tools")
+# ---------------------------------------------------------------------------
+
+_PM_ROLES: frozenset[Role] = frozenset({Role.CELL_PM, Role.MAIN_PM})
+_DEV_ROLES: frozenset[Role] = frozenset({Role.DEVELOPER})
+_QA_ROLES: frozenset[Role] = frozenset({Role.QA})
+_DOC_ROLES: frozenset[Role] = frozenset({Role.DOCUMENTER})
+
+
+_ATOMIC_ACTIONS: dict[str, ActionSpec] = {
+    "activate": ActionSpec(
+        name="activate",
+        allowed_roles=_PM_ROLES,
+        source_statuses=frozenset({Status.BACKLOG}),
+        target_status=Status.PENDING,
+        allowed_task_types=None,
+        preconditions=(),
+        self_review_block=False,
+        needs_team_match=False,
+    ),
+    "claim": ActionSpec(
+        name="claim",
+        allowed_roles=frozenset(_DEV_ROLES | _QA_ROLES | _DOC_ROLES | _PM_ROLES),
+        source_statuses=frozenset(
+            {
+                Status.PENDING,
+                Status.NEEDS_REVISION,
+                Status.AWAITING_QA,
+                Status.AWAITING_DOCUMENTATION,
+                Status.BACKLOG,
+            }
+        ),
+        target_status=Status.CLAIMED,
+        allowed_task_types=None,
+        preconditions=(),
+        self_review_block=False,
+        needs_team_match=True,
+    ),
+    "start": ActionSpec(
+        name="start",
+        allowed_roles=frozenset(_DEV_ROLES | _QA_ROLES | _DOC_ROLES | _PM_ROLES),
+        source_statuses=frozenset({Status.CLAIMED}),
+        target_status=Status.IN_PROGRESS,
+        allowed_task_types=None,
+        preconditions=(),
+        self_review_block=False,
+        needs_team_match=False,
+    ),
+    "set_plan": ActionSpec(
+        name="set_plan",
+        allowed_roles=frozenset(_DEV_ROLES | _PM_ROLES),
+        source_statuses=frozenset({Status.CLAIMED, Status.IN_PROGRESS}),
+        target_status=None,
+        allowed_task_types=None,
+        preconditions=(),
+        self_review_block=False,
+        needs_team_match=False,
+    ),
+    "block": ActionSpec(
+        name="block",
+        allowed_roles=frozenset(_DEV_ROLES | _PM_ROLES),
+        source_statuses=frozenset({Status.IN_PROGRESS}),
+        target_status=Status.BLOCKED,
+        allowed_task_types=None,
+        preconditions=(),
+        self_review_block=False,
+        needs_team_match=False,
+    ),
+    "unblock": ActionSpec(
+        name="unblock",
+        allowed_roles=_PM_ROLES,
+        source_statuses=frozenset({Status.BLOCKED}),
+        target_status=Status.IN_PROGRESS,
+        allowed_task_types=None,
+        preconditions=(),
+        self_review_block=False,
+        needs_team_match=False,
+    ),
+    "pause": ActionSpec(
+        name="pause",
+        allowed_roles=frozenset(_DEV_ROLES | _PM_ROLES),
+        source_statuses=frozenset({Status.IN_PROGRESS}),
+        target_status=Status.PAUSED,
+        allowed_task_types=None,
+        preconditions=(),
+        self_review_block=False,
+        needs_team_match=False,
+    ),
+    "resume": ActionSpec(
+        name="resume",
+        allowed_roles=frozenset(_DEV_ROLES | _QA_ROLES | _DOC_ROLES | _PM_ROLES),
+        source_statuses=frozenset({Status.PAUSED}),
+        target_status=Status.IN_PROGRESS,
+        allowed_task_types=None,
+        preconditions=(),
+        self_review_block=False,
+        needs_team_match=False,
+    ),
+    "submit_verification": ActionSpec(
+        name="submit_verification",
+        allowed_roles=_DEV_ROLES,
+        source_statuses=frozenset({Status.IN_PROGRESS}),
+        target_status=Status.VERIFYING,
+        allowed_task_types=None,
+        preconditions=(),
+        self_review_block=False,
+        needs_team_match=False,
+    ),
+    "submit_qa": ActionSpec(
+        name="submit_qa",
+        allowed_roles=_DEV_ROLES,
+        source_statuses=frozenset({Status.VERIFYING, Status.IN_PROGRESS}),
+        target_status=Status.AWAITING_QA,
+        allowed_task_types=None,
+        preconditions=(),
+        self_review_block=False,
+        needs_team_match=False,
+    ),
+    "qa_pass": ActionSpec(
+        name="qa_pass",
+        allowed_roles=_QA_ROLES,
+        source_statuses=frozenset({Status.AWAITING_QA}),
+        target_status=Status.AWAITING_DOCUMENTATION,
+        allowed_task_types=None,
+        preconditions=(),
+        self_review_block=True,
+        needs_team_match=True,
+    ),
+    "qa_fail": ActionSpec(
+        name="qa_fail",
+        allowed_roles=_QA_ROLES,
+        source_statuses=frozenset({Status.AWAITING_QA}),
+        target_status=Status.NEEDS_REVISION,
+        allowed_task_types=None,
+        preconditions=(),
+        self_review_block=True,
+        needs_team_match=True,
+    ),
+    "docs_complete": ActionSpec(
+        name="docs_complete",
+        allowed_roles=_DOC_ROLES,
+        source_statuses=frozenset({Status.AWAITING_DOCUMENTATION}),
+        target_status=Status.AWAITING_PM_REVIEW,
+        allowed_task_types=None,
+        preconditions=(),
+        self_review_block=True,
+        needs_team_match=True,
+    ),
+    "complete": ActionSpec(
+        name="complete",
+        allowed_roles=_PM_ROLES,
+        source_statuses=frozenset({Status.AWAITING_PM_REVIEW}),
+        target_status=Status.COMPLETED,
+        allowed_task_types=None,
+        preconditions=(),
+        self_review_block=False,
+        needs_team_match=False,
+    ),
+    "submit_pm_review": ActionSpec(
+        name="submit_pm_review",
+        allowed_roles=frozenset(_PM_ROLES | _QA_ROLES | _DOC_ROLES | _DEV_ROLES),
+        source_statuses=frozenset({Status.IN_PROGRESS}),
+        target_status=Status.AWAITING_PM_REVIEW,
+        allowed_task_types=None,
+        preconditions=(),
+        self_review_block=False,
+        needs_team_match=False,
+    ),
+    "escalate_to_ceo": ActionSpec(
+        name="escalate_to_ceo",
+        allowed_roles=frozenset(
+            {
+                Role.MAIN_PM,
+                Role.PRODUCT_OWNER,
+                Role.HEAD_MARKETING,
+            }
+        ),
+        source_statuses=frozenset({Status.AWAITING_PM_REVIEW}),
+        target_status=Status.AWAITING_CEO_APPROVAL,
+        allowed_task_types=None,
+        preconditions=(),
+        self_review_block=False,
+        needs_team_match=False,
+    ),
+    "ceo_approve": ActionSpec(
+        name="ceo_approve",
+        allowed_roles=frozenset({Role.CEO}),
+        source_statuses=frozenset({Status.AWAITING_CEO_APPROVAL}),
+        target_status=Status.COMPLETED,
+        allowed_task_types=None,
+        preconditions=(),
+        self_review_block=False,
+        needs_team_match=False,
+    ),
+    "ceo_reject": ActionSpec(
+        name="ceo_reject",
+        allowed_roles=frozenset({Role.CEO}),
+        source_statuses=frozenset({Status.AWAITING_CEO_APPROVAL}),
+        target_status=Status.NEEDS_REVISION,
+        allowed_task_types=None,
+        preconditions=(),
+        self_review_block=False,
+        needs_team_match=False,
+    ),
+    "cancel": ActionSpec(
+        name="cancel",
+        allowed_roles=frozenset(_PM_ROLES | {Role.CEO}),
+        source_statuses=frozenset(
+            s for s in Status if s not in (Status.COMPLETED, Status.CANCELLED)
+        ),
+        target_status=Status.CANCELLED,
+        allowed_task_types=None,
+        preconditions=(),
+        self_review_block=False,
+        needs_team_match=False,
+    ),
+    "create_subtask": ActionSpec(
+        name="create_subtask",
+        allowed_roles=_PM_ROLES,
+        source_statuses=frozenset({Status.IN_PROGRESS}),  # parent must be in_progress
+        target_status=None,  # creates a NEW task; doesn't transition the parent
+        allowed_task_types=None,
+        preconditions=(),
+        self_review_block=False,
+        needs_team_match=False,
+    ),
+}
+
+
+# ---------------------------------------------------------------------------
+# Claim rules (predecessor canon: PERMISSIONS.md "Claim Restrictions by Role")
+# ---------------------------------------------------------------------------
+
+CLAIM_RULES: dict[Role, frozenset[Status]] = {
+    Role.DEVELOPER: frozenset({Status.PENDING, Status.NEEDS_REVISION}),
+    Role.QA: frozenset({Status.AWAITING_QA}),
+    Role.DOCUMENTER: frozenset({Status.PENDING, Status.AWAITING_DOCUMENTATION}),
+    Role.CELL_PM: frozenset({Status.PENDING, Status.BACKLOG}),
+    Role.MAIN_PM: frozenset({Status.PENDING, Status.BACKLOG}),
+    Role.PRODUCT_OWNER: frozenset(),
+    Role.HEAD_MARKETING: frozenset(),
+    Role.AUDITOR: frozenset(),
+    Role.CEO: frozenset(),
+}
+
+
+# ---------------------------------------------------------------------------
+# Team rules (predecessor canon: PERMISSIONS.md "Team-Based Restrictions")
+# Per-slug. None means "any team" (cross-cell or board roles).
+# ---------------------------------------------------------------------------
+
+ROLE_TEAM_RULES: dict[str, str | None] = {
+    "be-dev-1": "backend",
+    "be-dev-2": "backend",
+    "be-qa": "backend",
+    "be-pm": "backend",
+    "be-doc": "backend",
+    "fe-dev-1": "frontend",
+    "fe-dev-2": "frontend",
+    "fe-qa": "frontend",
+    "fe-pm": "frontend",
+    "fe-doc": "frontend",
+    "ux-dev-1": "ux_ui",
+    "ux-dev-2": "ux_ui",
+    "ux-qa": "ux_ui",
+    "ux-pm": "ux_ui",
+    "ux-doc": "ux_ui",
+    "main-pm": None,
+    "product-owner": None,
+    "head-marketing": None,
+    "auditor": None,
+    "ceo": None,
+}

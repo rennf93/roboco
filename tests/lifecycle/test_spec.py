@@ -324,3 +324,70 @@ def test_status_transitions_role_constraints_match_canon() -> None:
         assert by_pair[(src, spec.Status.CANCELLED, "cancel")] == cancel_constraint, (
             f"cancel from {src.value} has wrong role_constraint"
         )
+
+
+def test_atomic_action_table_has_pre_gateway_actions() -> None:
+    """Every task tool from PERMISSIONS.md must have an ActionSpec."""
+    expected = {
+        "activate",
+        "claim",
+        "start",
+        "set_plan",
+        "block",
+        "unblock",
+        "pause",
+        "resume",
+        "submit_verification",
+        "submit_qa",
+        "qa_pass",
+        "qa_fail",
+        "docs_complete",
+        "complete",
+        "submit_pm_review",
+        "escalate_to_ceo",
+        "ceo_approve",
+        "ceo_reject",
+        "cancel",
+        "create_subtask",
+    }
+    assert expected <= set(spec._ATOMIC_ACTIONS), (
+        f"Missing ActionSpec entries: {expected - set(spec._ATOMIC_ACTIONS)}"
+    )
+
+
+def test_claim_action_allows_developer_from_pending() -> None:
+    a = spec._ATOMIC_ACTIONS["claim"]
+    assert spec.Role.DEVELOPER in a.allowed_roles
+    assert spec.Status.PENDING in a.source_statuses
+    assert a.target_status == spec.Status.CLAIMED
+
+
+def test_qa_pass_self_review_blocks() -> None:
+    """A QA cannot qa_pass a task they themselves committed to."""
+    assert spec._ATOMIC_ACTIONS["qa_pass"].self_review_block is True
+    assert spec._ATOMIC_ACTIONS["qa_fail"].self_review_block is True
+    assert spec._ATOMIC_ACTIONS["docs_complete"].self_review_block is True
+
+
+def test_claim_rules_match_pre_gateway_table() -> None:
+    """PERMISSIONS.md "What Each Role Can Claim From" — exact match."""
+    assert spec.CLAIM_RULES[spec.Role.DEVELOPER] == frozenset(
+        {spec.Status.PENDING, spec.Status.NEEDS_REVISION}
+    )
+    assert spec.CLAIM_RULES[spec.Role.QA] == frozenset({spec.Status.AWAITING_QA})
+    assert spec.CLAIM_RULES[spec.Role.DOCUMENTER] == frozenset(
+        {spec.Status.PENDING, spec.Status.AWAITING_DOCUMENTATION}
+    )
+    assert spec.CLAIM_RULES[spec.Role.CELL_PM] == frozenset(
+        {spec.Status.PENDING, spec.Status.BACKLOG}
+    )
+    assert spec.CLAIM_RULES[spec.Role.MAIN_PM] == frozenset(
+        {spec.Status.PENDING, spec.Status.BACKLOG}
+    )
+
+
+def test_team_rules_pin_team_for_seeded_agents() -> None:
+    assert spec.ROLE_TEAM_RULES["be-dev-1"] == "backend"
+    assert spec.ROLE_TEAM_RULES["be-pm"] == "backend"
+    assert spec.ROLE_TEAM_RULES["fe-qa"] == "frontend"
+    assert spec.ROLE_TEAM_RULES["main-pm"] is None  # cross-cell
