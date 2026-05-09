@@ -390,7 +390,7 @@ _ATOMIC_ACTIONS: dict[str, ActionSpec] = {
     ),
     "block": ActionSpec(
         name="block",
-        allowed_roles=frozenset(_DEV_ROLES | _PM_ROLES),
+        allowed_roles=frozenset(_DEV_ROLES | _QA_ROLES | _DOC_ROLES | _PM_ROLES),
         source_statuses=frozenset({Status.IN_PROGRESS}),
         target_status=Status.BLOCKED,
         allowed_task_types=None,
