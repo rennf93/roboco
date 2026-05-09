@@ -17,6 +17,7 @@ from roboco.services.gateway.choreographer import (
     Choreographer,
     ChoreographerDeps,
 )
+from roboco.services.gateway.choreographer._impl import DelegateInputs
 
 
 def _make_deps(task_svc=None) -> ChoreographerDeps:
@@ -231,4 +232,84 @@ async def test_i_will_plan_matches_spec(role: str, status: str, task_type: str) 
             f"role={role} status={status} task_type={task_type}: "
             f"can_invoke_intent rejected with {expected.rejection_kind}, "
             f"got {body['error']!r}; full body: {body}"
+        )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "role, status",
+    list(
+        product(
+            [r.value for r in spec.Role if r != spec.Role.AUDITOR],
+            [s.value for s in spec.Status],
+        )
+    ),
+)
+async def test_delegate_matches_spec(role: str, status: str) -> None:
+    """Spec parity for delegate's role+state gate.
+
+    delegate composes ``create_subtask`` (PM-only, parent must be
+    in_progress). The verb body has additional gates the spec doesn't
+    model (delegation chain, assignee-vs-task_type, parent-ownership,
+    subtask cap), so this parity test only asserts the spec's role+state
+    rejection is correctly mirrored. Chain/assignee/lifecycle-guard
+    rejections are pinned by separate unit tests in
+    test_choreographer_pm_extras / test_choreographer_delegate_guards.
+
+    Inputs use a valid main_pm -> be-pm planning chain so when the spec
+    gate passes, downstream chain/assignee guards pass for main_pm; for
+    other roles the spec gate is what rejects.
+    """
+    pm_id = uuid4()
+    parent_id = uuid4()
+    project_id = uuid4()
+    parent = MagicMock(
+        id=parent_id,
+        project_id=project_id,
+        status=status,
+        # Parent owned by the caller so _delegate_lifecycle_guards's
+        # ownership check passes when the spec gate allows.
+        assigned_to=pm_id,
+        title="parent",
+        team="backend",
+    )
+    new_task = MagicMock(id=uuid4())
+    task_svc = AsyncMock()
+    task_svc.get.return_value = parent
+    task_svc.agent_for.return_value = MagicMock(
+        id=pm_id, role=role, team="backend", slug=None
+    )
+    task_svc.get_subtasks.return_value = []
+    task_svc.create_subtask.return_value = new_task
+    deps = _make_deps(task_svc=task_svc)
+    c = Choreographer(deps)
+
+    ctx = spec.Context(actor_id=pm_id)
+    expected = spec.can_invoke_intent(spec.Role(role), "delegate", parent, ctx)
+
+    env = await c.delegate(
+        pm_id,
+        parent_id,
+        DelegateInputs(
+            title="Backend planning",
+            description="Plan backend slice for feature X",
+            assigned_to="be-pm",
+            team="backend",
+            task_type="planning",
+        ),
+    )
+    body = env.as_dict()
+    if expected.allowed:
+        # Spec allows; chain (main_pm -> be-pm planning) is also valid for
+        # role=main_pm. For other PM roles, downstream chain/assignee guards
+        # may still reject — but never with the spec's role-only message.
+        spec_role_msg = f"role '{role}' may not call 'delegate'"
+        assert body.get("message") != spec_role_msg, (
+            f"role={role} status={status}: spec.can_invoke_intent allowed "
+            f"but envelope surfaced the spec's role-rejection message: {body}"
+        )
+    else:
+        assert body["error"] == expected.rejection_kind, (
+            f"role={role} status={status}: can_invoke_intent rejected with "
+            f"{expected.rejection_kind}, got {body['error']!r}; full body: {body}"
         )

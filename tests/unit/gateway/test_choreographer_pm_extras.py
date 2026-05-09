@@ -473,10 +473,16 @@ async def test_delegate_cell_pm_to_team_dev_creates_subtask() -> None:
 async def test_delegate_main_pm_to_dev_is_rejected() -> None:
     main_pm_id = uuid4()
     parent_id = uuid4()
-    parent = MagicMock(id=parent_id, project_id=uuid4())
+    parent = MagicMock(
+        id=parent_id,
+        project_id=uuid4(),
+        status="in_progress",
+        assigned_to=main_pm_id,
+    )
     task_svc = AsyncMock()
     task_svc.get.return_value = parent
     task_svc.agent_for.return_value = MagicMock(role="main_pm", team="main_pm")
+    task_svc.get_subtasks.return_value = []
     deps = _make_deps(task=task_svc)
     c = Choreographer(deps)
 
@@ -500,10 +506,16 @@ async def test_delegate_main_pm_to_dev_is_rejected() -> None:
 async def test_delegate_cell_pm_to_other_pm_rejected() -> None:
     cell_pm_id = uuid4()
     parent_id = uuid4()
-    parent = MagicMock(id=parent_id, project_id=uuid4())
+    parent = MagicMock(
+        id=parent_id,
+        project_id=uuid4(),
+        status="in_progress",
+        assigned_to=cell_pm_id,
+    )
     task_svc = AsyncMock()
     task_svc.get.return_value = parent
     task_svc.agent_for.return_value = MagicMock(role="cell_pm", team="backend")
+    task_svc.get_subtasks.return_value = []
     deps = _make_deps(task=task_svc)
     c = Choreographer(deps)
 
@@ -526,10 +538,16 @@ async def test_delegate_cell_pm_to_other_pm_rejected() -> None:
 async def test_delegate_unknown_assignee_returns_invalid_state() -> None:
     pm_id = uuid4()
     parent_id = uuid4()
-    parent = MagicMock(id=parent_id, project_id=uuid4())
+    parent = MagicMock(
+        id=parent_id,
+        project_id=uuid4(),
+        status="in_progress",
+        assigned_to=pm_id,
+    )
     task_svc = AsyncMock()
     task_svc.get.return_value = parent
     task_svc.agent_for.return_value = MagicMock(role="main_pm", team="main_pm")
+    task_svc.get_subtasks.return_value = []
     deps = _make_deps(task=task_svc)
     c = Choreographer(deps)
 
@@ -552,10 +570,16 @@ async def test_delegate_unknown_assignee_returns_invalid_state() -> None:
 async def test_delegate_invalid_team_enum_rejected() -> None:
     pm_id = uuid4()
     parent_id = uuid4()
-    parent = MagicMock(id=parent_id, project_id=uuid4())
+    parent = MagicMock(
+        id=parent_id,
+        project_id=uuid4(),
+        status="in_progress",
+        assigned_to=pm_id,
+    )
     task_svc = AsyncMock()
     task_svc.get.return_value = parent
     task_svc.agent_for.return_value = MagicMock(role="cell_pm", team="backend")
+    task_svc.get_subtasks.return_value = []
     deps = _make_deps(task=task_svc)
     c = Choreographer(deps)
 

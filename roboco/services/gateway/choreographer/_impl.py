@@ -1333,9 +1333,14 @@ class Choreographer:
     ) -> Envelope:
         """Create a subtask under parent_task_id with delegation-chain validation.
 
-        Main PM may delegate to a Cell PM slug; a Cell PM may delegate to
-        its own team's developers. Anything else is rejected with an
-        explicit hint about the chain.
+        Atomic: spec.can_invoke_intent runs first for the role+state gate.
+        Delegate-specific gates the spec doesn't model (chain validation,
+        assignee-vs-task_type, enum coercion, parent-ownership, subtask
+        cap) run after the spec gate. Main PM may delegate to a Cell PM
+        slug; a Cell PM may delegate to its own team's developers. The
+        atomic ``create_subtask`` action is special — its handler raises
+        NotImplementedError because it requires DelegateInputs — so the
+        verb body owns the dispatch to ``_create_subtask_from_inputs``.
         """
         parent = await self.task.get(parent_task_id)
         if parent is None:
@@ -1346,76 +1351,81 @@ class Choreographer:
                 verb="delegate",
             )
         agent = await self.task.agent_for(pm_agent_id)
-        role = str(agent.role) if agent is not None else "cell_pm"
-        guard = await self._delegate_guard(
-            pm_agent_id, parent_task_id, parent, agent, inputs
-        )
-        if guard is not None:
-            guard.with_introspection(task=parent, role=role)
+        role_str = str(agent.role) if agent is not None else "cell_pm"
+        briefing = await self._briefing_for(pm_agent_id, parent_task_id)
+        try:
+            role = spec_module.Role(role_str)
+        except ValueError:
             return await self._emit_rejection(
-                guard,
+                Envelope.not_authorized(
+                    message=f"unknown role '{role_str}'",
+                    remediate="role is not declared in the lifecycle spec",
+                    context_briefing=briefing,
+                ).with_introspection(task=parent, role=role_str),
                 agent_id=pm_agent_id,
                 task_id=parent_task_id,
                 verb="delegate",
             )
-
+        spec_ctx = spec_module.Context(
+            actor_id=pm_agent_id,
+            actor_slug=getattr(agent, "slug", None) if agent is not None else None,
+            original_developer_slug=_extract_original_developer(parent),
+        )
+        decision = spec_module.can_invoke_intent(role, "delegate", parent, spec_ctx)
+        if not decision.allowed:
+            return await self._emit_rejection(
+                Envelope.from_decision(decision, briefing=briefing).with_introspection(
+                    task=parent, role=role_str
+                ),
+                agent_id=pm_agent_id,
+                task_id=parent_task_id,
+                verb="delegate",
+            )
+        # Spec gate passed. Run delegate-specific guards the spec doesn't
+        # model: chain validation, enum coercion + assignee-vs-task_type,
+        # and parent-ownership/subtask-cap.
+        guard = await self._delegate_extra_guards(
+            pm_agent_id, parent_task_id, parent, role_str, inputs
+        )
+        if guard is not None:
+            return await self._emit_rejection(
+                guard.with_introspection(task=parent, role=role_str),
+                agent_id=pm_agent_id,
+                task_id=parent_task_id,
+                verb="delegate",
+            )
         new_task = await self._create_subtask_from_inputs(
             pm_agent_id, parent_task_id, parent, inputs
         )
         return Envelope.ok(
             status="created",
             task_id=str(new_task.id),
-            next="continue delegating subtasks, or i_am_idle when done",
-            context_briefing=await self._briefing_for(pm_agent_id, parent_task_id),
-        ).with_introspection(task=new_task, role=role)
+            next=spec_module._INTENT_VERBS["delegate"].next_hint(new_task),
+            context_briefing=briefing,
+        ).with_introspection(task=new_task, role=role_str)
 
     # Gate Set B subtask cap (pre-gateway implicit, made explicit here).
     # Soft warn at 8, hard block at 13. Cap enforced by ``_subtask_cap_guard``.
     _SUBTASK_HARD_CAP: int = 12
 
-    async def _delegate_guard(
+    async def _delegate_extra_guards(
         self,
         pm_agent_id: UUID,
         parent_task_id: UUID,
         parent: Any,
-        agent: Any,
+        role_str: str,
         inputs: DelegateInputs,
     ) -> Envelope | None:
-        """Return rejection Envelope if a delegate precondition fails; else None."""
-        if guard := await self._delegate_role_guards(
-            pm_agent_id, parent_task_id, agent, inputs
-        ):
-            role = str(agent.role) if agent is not None else ""
-            return guard.with_introspection(task=parent, role=role)
-        if guard := await self._delegate_static_guards(
-            pm_agent_id, parent_task_id, parent, inputs
-        ):
-            return guard
-        # Gate Set B: PARENT_NOT_CLAIMED + SUBTASK_CAP
-        return await self._delegate_lifecycle_guards(
-            pm_agent_id, parent_task_id, parent
-        )
+        """Delegate-specific guards the spec doesn't model.
 
-    async def _delegate_role_guards(
-        self,
-        pm_agent_id: UUID,
-        parent_task_id: UUID,
-        agent: Any,
-        inputs: DelegateInputs,
-    ) -> Envelope | None:
-        """Role + delegation-chain guards (the original two).
+        Order: chain validation -> static (project_id, enum coercion,
+        assignee-vs-task_type) -> lifecycle (parent ownership + subtask
+        cap). Each returns an Envelope rejection or None to allow.
 
-        Role gate stays role-only here (not via is_verb_allowed) — the
-        parent-status check is a separate gate that must surface as
-        `invalid_state`, not `not_authorized`.
+        The role-only check is no longer here — ``spec.can_invoke_intent``
+        handles role+state in the verb body before this is called.
         """
-        if agent is None or agent.role not in ("cell_pm", "main_pm"):
-            return Envelope.not_authorized(
-                message="only cell_pm or main_pm may delegate",
-                remediate="this verb is reserved for PMs",
-                context_briefing=await self._briefing_for(pm_agent_id, parent_task_id),
-            )
-        chain_error = self._validate_delegation_chain(agent.role, inputs.assigned_to)
+        chain_error = self._validate_delegation_chain(role_str, inputs.assigned_to)
         if chain_error is not None:
             return Envelope.not_authorized(
                 message=chain_error,
@@ -1426,7 +1436,14 @@ class Choreographer:
                 ),
                 context_briefing=await self._briefing_for(pm_agent_id, parent_task_id),
             )
-        return None
+        if guard := await self._delegate_static_guards(
+            pm_agent_id, parent_task_id, parent, inputs
+        ):
+            return guard
+        # Gate Set B: PARENT_NOT_CLAIMED + SUBTASK_CAP
+        return await self._delegate_lifecycle_guards(
+            pm_agent_id, parent_task_id, parent
+        )
 
     async def _delegate_static_guards(
         self,
@@ -1437,10 +1454,11 @@ class Choreographer:
     ) -> Envelope | None:
         """project_id / enum guards. Pure data-shape checks.
 
-        The slug-validity check used to live here, but `_delegate_role_guards`
-        runs first and `_validate_delegation_chain` rejects any slug outside
-        the allowed delegation targets — which is a strict subset of
-        `AGENT_UUIDS` — so any AGENT_UUIDS check here was unreachable.
+        The slug-validity check used to live here, but
+        `_validate_delegation_chain` runs first (in `_delegate_extra_guards`)
+        and rejects any slug outside the allowed delegation targets —
+        which is a strict subset of `AGENT_UUIDS` — so any AGENT_UUIDS
+        check here was unreachable.
         """
         if parent.project_id is None:
             return Envelope.invalid_state(
