@@ -1069,7 +1069,10 @@ async def test_i_will_work_on_envelope_carries_introspection_on_success() -> Non
     assert body["error"] is None
     assert body["current_state"] == "in_progress"
     assert isinstance(body["valid_next_verbs"], list)
-    assert "commit" in body["valid_next_verbs"]
+    # `valid_next_verbs` lists lifecycle INTENT verbs; `commit` is a
+    # content tool (do_server), not an intent, so the canonical spec
+    # excludes it. `open_pr` and `i_am_done` are the in_progress intents.
+    assert "open_pr" in body["valid_next_verbs"]
     assert "i_am_done" in body["valid_next_verbs"]
 
 

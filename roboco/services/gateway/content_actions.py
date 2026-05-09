@@ -18,7 +18,6 @@ from typing import TYPE_CHECKING, Any
 from roboco.services.gateway.commit_validator import validate_commit_message
 from roboco.services.gateway.envelope import Envelope
 from roboco.services.gateway.evidence_builder import build_evidence_for_task
-from roboco.services.gateway.verb_gates import is_verb_allowed
 
 if TYPE_CHECKING:
     from uuid import UUID
@@ -28,6 +27,18 @@ _VALID_NOTE_SCOPES: frozenset[str] = frozenset(
     {"note", "decision", "reflect", "learning", "struggle"}
 )
 _TASK_ID_PREFIX_RE = re.compile(r"^\s*\[[a-zA-Z0-9_-]+\]\s*")
+
+# Content-tool RBAC. These are the same role sets that drive the spawn
+# manifest in `role_config.py` (`_DEV_DO`/`_DOC_DO` include "commit";
+# `_CELL_PM_DO`/`_MAIN_PM_DO`/`_BOARD_DO` include "notify"). Pre-2026-05-10
+# this lookup went through `verb_gates.is_verb_allowed`; the verb-gates
+# table has been folded into `roboco.lifecycle.spec`, but `commit` and
+# `notify` are content tools (not lifecycle intents) so they live here as
+# explicit role frozensets — not in `_INTENT_VERBS`.
+_COMMIT_ALLOWED_ROLES: frozenset[str] = frozenset({"developer", "documenter"})
+_NOTIFY_ALLOWED_ROLES: frozenset[str] = frozenset(
+    {"cell_pm", "main_pm", "product_owner", "head_marketing"}
+)
 
 
 def _ownership_violation(task_id: UUID) -> Envelope:
@@ -60,25 +71,7 @@ class ContentActionsDeps:
     notifications: Any
 
 
-# Notification authorization is sourced from verb_gates._ALWAYS_AVAILABLE
-# (which lists `notify` for cell_pm, main_pm, product_owner, head_marketing).
-# Pre-gateway this lived as a `_NOTIFY_ALLOWED_ROLES` constant here; merging
-# into verb_gates removes the risk that the two sets disagree.
 _VALID_NOTIFY_PRIORITIES: frozenset[str] = frozenset({"normal", "high", "urgent"})
-
-
-# Synthetic task probe for role-only gate checks: when the verb body
-# wants to fast-fail on role BEFORE loading the agent's active task,
-# we hand verb_gates an in-progress code-typed shape so it consults
-# the same _STATE_VERBS row a real in-progress task would.
-class _RoleProbeTask:
-    """Minimal task-shaped object for role-only is_verb_allowed checks."""
-
-    status: str = "in_progress"
-    task_type: str = "code"
-
-
-_ROLE_PROBE = _RoleProbeTask()
 
 
 class ContentActions:
@@ -127,7 +120,7 @@ class ContentActions:
         """
         agent = await self.task.agent_for(agent_id)
         caller_role = str(agent.role) if agent is not None else ""
-        if not is_verb_allowed(caller_role, "commit", _ROLE_PROBE):
+        if caller_role not in _COMMIT_ALLOWED_ROLES:
             return Envelope.not_authorized(
                 message=(
                     f"role '{caller_role}' may not commit code; only"
@@ -355,7 +348,7 @@ class ContentActions:
             )
         agent = await self.task.agent_for(agent_id)
         caller_role = str(agent.role) if agent is not None else ""
-        if not is_verb_allowed(caller_role, "notify", _ROLE_PROBE):
+        if caller_role not in _NOTIFY_ALLOWED_ROLES:
             return Envelope.not_authorized(
                 message=(
                     f"role {caller_role!r} cannot send formal notifications; "

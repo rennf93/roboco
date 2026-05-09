@@ -16,7 +16,10 @@ def test_envelope_ok_carries_introspection_when_task_supplied() -> None:
     ).with_introspection(task=task, role="developer")
     body = env.as_dict()
     assert body["current_state"] == "in_progress"
-    assert "commit" in body["valid_next_verbs"]
+    # `valid_next_verbs` lists lifecycle INTENT verbs; `commit` is a
+    # content tool (do_server), not an intent, and is intentionally
+    # excluded under the canonical spec.
+    assert "open_pr" in body["valid_next_verbs"]
     assert "i_am_done" in body["valid_next_verbs"]
 
 

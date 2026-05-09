@@ -157,13 +157,23 @@ class Envelope:
     def with_introspection(self, *, task: Any, role: str) -> Envelope:
         """Populate `current_state` and `valid_next_verbs` from a task + role.
 
-        Returns self for chaining. Imports verb_gates lazily so envelope.py
-        stays importable from any layer without dragging in the gates table.
+        Returns self for chaining. Imports the lifecycle spec lazily so
+        envelope.py stays importable from any layer without dragging in
+        the canonical spec module. Unknown roles or malformed task
+        statuses yield `[]` — preserves the legacy verb_gates contract
+        of "introspection is best-effort and never raises".
         """
-        from roboco.services.gateway.verb_gates import valid_next_verbs
+        from roboco.lifecycle import spec
 
         self.current_state = str(getattr(task, "status", "") or "") or None
-        self.valid_next_verbs = valid_next_verbs(role, task)
+        try:
+            role_enum = spec.Role(role)
+            self.valid_next_verbs = spec.valid_next_verbs(role_enum, task)
+        except (ValueError, TypeError):
+            # Unknown role string OR task.status not a Status enum value
+            # (e.g. AsyncMock in tests, partial fixtures). Match legacy
+            # verb_gates semantics: best-effort, never raise.
+            self.valid_next_verbs = []
         return self
 
     def as_dict(self) -> dict[str, Any]:
