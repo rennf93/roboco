@@ -18,10 +18,12 @@ from itertools import pairwise
 from roboco.lifecycle.spec import (
     _ATOMIC_ACTIONS,
     _INTENT_VERBS,
+    _KNOWN_UNMIGRATED_CONSUMERS,
     _STATUS_TRANSITIONS,
     CLAIM_RULES,
     ROLE_TEAM_RULES,
     STATUS_GRAPH,
+    UNMIGRATED,
     Role,
     Status,
 )
@@ -217,6 +219,19 @@ def _check_role_team_rules_team_match() -> None:
             )
 
 
+def _check_unmigrated_is_subset() -> None:
+    """UNMIGRATED must be a strict subset of _KNOWN_UNMIGRATED_CONSUMERS.
+
+    New entries not in the known set fail import — prevents silently
+    extending the known-debt set without documentation.
+    """
+    extras = UNMIGRATED - _KNOWN_UNMIGRATED_CONSUMERS
+    if extras:
+        raise LifecycleSpecError(
+            f"UNMIGRATED contains unknown entries: {sorted(extras)}"
+        )
+
+
 _VALIDATORS = (
     _check_status_enum_coverage,
     _check_status_reachability,
@@ -230,6 +245,7 @@ _VALIDATORS = (
     _check_role_team_rules_team_match,
     _check_status_transitions_actions,
     _check_action_target_reachable_from_source,
+    _check_unmigrated_is_subset,
 )
 
 

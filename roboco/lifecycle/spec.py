@@ -1296,3 +1296,30 @@ def status_after(action: str, current: Status) -> Status | None:
     if current not in spec_action.source_statuses:
         return None
     return spec_action.target_status
+
+
+# ---------------------------------------------------------------------------
+# Known-debt tracking — Phase 3 invariant
+# ---------------------------------------------------------------------------
+
+UNMIGRATED: frozenset[str] = frozenset(
+    {
+        "enforcement.task_lifecycle._LEGACY_OPERATIONAL_EDGES",
+        "enforcement.task_lifecycle._LEGACY_ROLE_GATES",
+    }
+)
+"""Names of consumers / data still NOT migrated to the spec.
+
+Each entry represents a real production path the spec doesn't yet cover.
+Validator (`_check_unmigrated_is_subset`) asserts UNMIGRATED is a subset
+of _KNOWN_UNMIGRATED_CONSUMERS — adding an entry not in the known set
+fails import. Phase 3's terminal invariant is `UNMIGRATED == frozenset()`,
+locked in as a permanent test once the last entry moves to the spec.
+"""
+
+_KNOWN_UNMIGRATED_CONSUMERS: frozenset[str] = frozenset(
+    {
+        "enforcement.task_lifecycle._LEGACY_OPERATIONAL_EDGES",
+        "enforcement.task_lifecycle._LEGACY_ROLE_GATES",
+    }
+)

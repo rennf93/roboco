@@ -668,3 +668,16 @@ def test_run_all_validators_raises_on_unknown_intent_action(
     monkeypatch.setattr(_validate, "_INTENT_VERBS", patched_intents)
     with pytest.raises(_validate.LifecycleSpecError, match="ZZZ_FAKE_ACTION"):
         _validate.run_all_validators()
+
+
+def test_unmigrated_is_pinned() -> None:
+    """The known-debt set; remove an entry once that consumer is migrated."""
+    assert (
+        frozenset(
+            {
+                "enforcement.task_lifecycle._LEGACY_OPERATIONAL_EDGES",
+                "enforcement.task_lifecycle._LEGACY_ROLE_GATES",
+            }
+        )
+        == spec.UNMIGRATED
+    )
