@@ -25,7 +25,7 @@ from roboco.lifecycle.spec import (
     Role,
     Status,
 )
-from roboco.seeds.initial_data import AGENT_UUIDS
+from roboco.seeds.initial_data import AGENT_UUIDS, DEFAULT_AGENTS
 
 
 class LifecycleSpecError(RuntimeError):
@@ -169,6 +169,54 @@ def _check_status_transitions_actions() -> None:
             )
 
 
+def _check_action_target_reachable_from_source() -> None:
+    """For every ActionSpec with target_status set, the target must be in
+    STATUS_GRAPH[source] for every source in source_statuses.
+
+    Catches the case where an ActionSpec declares a transition the
+    state-machine graph doesn't actually support — e.g. action says
+    `pending → cancelled` but STATUS_GRAPH[pending] doesn't include
+    cancelled. Without this, a misconfigured ActionSpec would silently
+    fail at runtime when TaskService.transition() rejects the move.
+    """
+    for action_name, spec_action in _ATOMIC_ACTIONS.items():
+        if spec_action.target_status is None:
+            continue
+        for source in spec_action.source_statuses:
+            if spec_action.target_status not in STATUS_GRAPH.get(source, frozenset()):
+                raise LifecycleSpecError(
+                    f"Action '{action_name}': transition"
+                    f" {source.value}→{spec_action.target_status.value}"
+                    f" not in STATUS_GRAPH"
+                )
+
+
+def _check_role_team_rules_team_match() -> None:
+    """For each slug in ROLE_TEAM_RULES with a non-None team, that team
+    must match the seed agent record's team. None entries (cross-cell
+    roles like main-pm, board members, auditor, CEO) are intentionally
+    exempt — None means 'skip team-match enforcement for this slug',
+    not 'this slug has no team in the org chart'. The two tables encode
+    different concepts (enforcement vs descriptive); they only need to
+    agree on the cell-bound rows.
+    """
+    seed_team: dict[str, str | None] = {}
+    for agent in DEFAULT_AGENTS:
+        slug = agent.get("slug")
+        if slug is None:
+            continue
+        seed_team[slug] = agent.get("team")
+    for slug, declared_team in ROLE_TEAM_RULES.items():
+        if declared_team is None:
+            continue  # cross-cell exemption — no agreement required
+        seed = seed_team.get(slug)
+        if seed != declared_team:
+            raise LifecycleSpecError(
+                f"ROLE_TEAM_RULES[{slug!r}]={declared_team!r} disagrees"
+                f" with seed team={seed!r}"
+            )
+
+
 _VALIDATORS = (
     _check_status_enum_coverage,
     _check_status_reachability,
@@ -179,7 +227,9 @@ _VALIDATORS = (
     _check_claim_rules_status_coverage,
     _check_self_review_symmetry,
     _check_role_team_rules_slugs,
+    _check_role_team_rules_team_match,
     _check_status_transitions_actions,
+    _check_action_target_reachable_from_source,
 )
 
 

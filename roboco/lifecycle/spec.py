@@ -360,7 +360,6 @@ _ATOMIC_ACTIONS: dict[str, ActionSpec] = {
                 Status.NEEDS_REVISION,
                 Status.AWAITING_QA,
                 Status.AWAITING_DOCUMENTATION,
-                Status.BACKLOG,
             }
         ),
         target_status=Status.CLAIMED,
@@ -442,7 +441,7 @@ _ATOMIC_ACTIONS: dict[str, ActionSpec] = {
     "submit_qa": ActionSpec(
         name="submit_qa",
         allowed_roles=_DEV_ROLES,
-        source_statuses=frozenset({Status.VERIFYING, Status.IN_PROGRESS}),
+        source_statuses=frozenset({Status.VERIFYING}),
         target_status=Status.AWAITING_QA,
         allowed_task_types=None,
         preconditions=(),
@@ -568,8 +567,8 @@ CLAIM_RULES: dict[Role, frozenset[Status]] = {
     Role.DEVELOPER: frozenset({Status.PENDING, Status.NEEDS_REVISION}),
     Role.QA: frozenset({Status.AWAITING_QA}),
     Role.DOCUMENTER: frozenset({Status.PENDING, Status.AWAITING_DOCUMENTATION}),
-    Role.CELL_PM: frozenset({Status.PENDING, Status.BACKLOG}),
-    Role.MAIN_PM: frozenset({Status.PENDING, Status.BACKLOG}),
+    Role.CELL_PM: frozenset({Status.PENDING}),
+    Role.MAIN_PM: frozenset({Status.PENDING}),
     Role.PRODUCT_OWNER: frozenset(),
     Role.HEAD_MARKETING: frozenset(),
     Role.AUDITOR: frozenset(),

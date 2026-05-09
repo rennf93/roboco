@@ -7,8 +7,9 @@ from uuid import uuid4
 
 import pytest
 import roboco.lifecycle as lifecycle_pkg
-from roboco.lifecycle import spec
+from roboco.lifecycle import _validate, spec
 from roboco.lifecycle._validate import reachable_from
+from roboco.lifecycle.spec import _INTENT_VERBS, IntentSpec
 from roboco.models.base import TaskType as ModelTaskType
 
 
@@ -373,7 +374,11 @@ def test_qa_pass_self_review_blocks() -> None:
 
 
 def test_claim_rules_match_pre_gateway_table() -> None:
-    """PERMISSIONS.md "What Each Role Can Claim From" — exact match."""
+    """PERMISSIONS.md "What Each Role Can Claim From" — exact match.
+
+    PMs claim from PENDING only; BACKLOG → PENDING is a separate `activate`
+    action (strict transitions; no implicit activate-on-claim).
+    """
     assert spec.CLAIM_RULES[spec.Role.DEVELOPER] == frozenset(
         {spec.Status.PENDING, spec.Status.NEEDS_REVISION}
     )
@@ -381,12 +386,8 @@ def test_claim_rules_match_pre_gateway_table() -> None:
     assert spec.CLAIM_RULES[spec.Role.DOCUMENTER] == frozenset(
         {spec.Status.PENDING, spec.Status.AWAITING_DOCUMENTATION}
     )
-    assert spec.CLAIM_RULES[spec.Role.CELL_PM] == frozenset(
-        {spec.Status.PENDING, spec.Status.BACKLOG}
-    )
-    assert spec.CLAIM_RULES[spec.Role.MAIN_PM] == frozenset(
-        {spec.Status.PENDING, spec.Status.BACKLOG}
-    )
+    assert spec.CLAIM_RULES[spec.Role.CELL_PM] == frozenset({spec.Status.PENDING})
+    assert spec.CLAIM_RULES[spec.Role.MAIN_PM] == frozenset({spec.Status.PENDING})
 
 
 def test_team_rules_pin_team_for_seeded_agents() -> None:
@@ -641,3 +642,29 @@ def test_self_review_symmetry() -> None:
     assert qp == qf == dc, (
         "self_review_block asymmetry between qa_pass/qa_fail/docs_complete"
     )
+
+
+def test_run_all_validators_raises_on_unknown_intent_action(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """If an IntentSpec.composes references a non-existent action, the
+    validator must raise LifecycleSpecError. Pins the gate's actual
+    behavior — without this test, refactors that move run_all_validators()
+    out of the import path could silently disable the gate.
+    """
+    iv = _INTENT_VERBS["delegate"]
+    broken = IntentSpec(
+        name=iv.name,
+        allowed_roles=iv.allowed_roles,
+        description=iv.description,
+        composes=("create_subtask", "ZZZ_FAKE_ACTION_DOES_NOT_EXIST"),
+        extra_preconditions=iv.extra_preconditions,
+        side_effects=iv.side_effects,
+        next_hint=iv.next_hint,
+    )
+    patched_intents = dict(_INTENT_VERBS)
+    patched_intents["delegate"] = broken
+    monkeypatch.setattr("roboco.lifecycle.spec._INTENT_VERBS", patched_intents)
+    monkeypatch.setattr(_validate, "_INTENT_VERBS", patched_intents)
+    with pytest.raises(_validate.LifecycleSpecError, match="ZZZ_FAKE_ACTION"):
+        _validate.run_all_validators()
