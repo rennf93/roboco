@@ -666,6 +666,88 @@ def _next_hint_pm_idle(_t: Any) -> str:
     return "idle until subtasks finish"
 
 
+# ---------------------------------------------------------------------------
+# Context — the third arg to Precondition.check (caller-supplied state)
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class Context:
+    """Carrier for caller-supplied state the spec needs to evaluate
+    preconditions (e.g. the agent's `plan` argument on i_will_work_on,
+    the journal:decision presence flag).
+
+    Pure data; no behavior. The choreographer builds one of these per
+    request before calling spec.can_invoke_intent.
+    """
+
+    plan: str | None = None
+    has_journal_decision: bool = False
+    has_journal_reflect: bool = False
+    has_journal_learning: bool = False
+    progress_count: int = 0
+    qa_evidence_inspected: bool = False
+    actor_slug: str | None = None
+    original_developer_slug: str | None = None
+    notes: str | None = None
+    issues: tuple[str, ...] = ()
+    files: tuple[str, ...] = ()
+
+
+# ---------------------------------------------------------------------------
+# Pre-defined preconditions wired into IntentSpecs
+# ---------------------------------------------------------------------------
+
+
+def _p_has_plan_or_supplied(task: Any, _agent: Any, ctx: Any) -> bool:
+    return bool(getattr(task, "plan", None)) or bool(getattr(ctx, "plan", None))
+
+
+def _p_has_commits(task: Any, _agent: Any, _ctx: Any) -> bool:
+    return bool(getattr(task, "commits", None))
+
+
+def _p_no_pr_yet(task: Any, _agent: Any, _ctx: Any) -> bool:
+    return getattr(task, "pr_number", None) is None
+
+
+def _p_owns_task(task: Any, agent: Any, _ctx: Any) -> bool:
+    return getattr(task, "assigned_to", None) == getattr(agent, "id", object())
+
+
+PRECONDITION_PLAN = Precondition(
+    key="plan",
+    check=_p_has_plan_or_supplied,
+    remediate=(
+        "call again with plan='<one-paragraph plan describing what you will do>'"
+    ),
+    missing_token="plan",
+)
+
+PRECONDITION_COMMITS = Precondition(
+    key="commits>=1",
+    check=_p_has_commits,
+    remediate=(
+        "commit at least one change before opening a PR — call commit(message='...')"
+    ),
+    missing_token="commits>=1",
+)
+
+PRECONDITION_NO_PR = Precondition(
+    key="no_prior_pr",
+    check=_p_no_pr_yet,
+    remediate="a PR is already open for this task; call i_am_done(task_id, notes=...)",
+    missing_token="no_prior_pr",
+)
+
+PRECONDITION_OWNERSHIP = Precondition(
+    key="owns_task",
+    check=_p_owns_task,
+    remediate="task is not assigned to you; call give_me_work() to find your work",
+    missing_token="owns_task",
+)
+
+
 _INTENT_VERBS: dict[str, IntentSpec] = {
     # Phase 1: developer verbs
     "give_me_work": IntentSpec(
@@ -693,7 +775,7 @@ _INTENT_VERBS: dict[str, IntentSpec] = {
             " Atomic - preconditions checked before any state mutation."
         ),
         composes=("claim", "set_plan", "start"),
-        extra_preconditions=(),
+        extra_preconditions=(PRECONDITION_PLAN,),
         side_effects=(),
         next_hint=_next_hint_after_claim,
     ),
@@ -705,7 +787,7 @@ _INTENT_VERBS: dict[str, IntentSpec] = {
             " transition to in_progress; from there delegate subtasks."
         ),
         composes=("claim", "set_plan", "start"),
-        extra_preconditions=(),
+        extra_preconditions=(PRECONDITION_PLAN,),
         side_effects=(),
         next_hint=_next_hint_after_plan,
     ),
@@ -732,7 +814,11 @@ _INTENT_VERBS: dict[str, IntentSpec] = {
             " operation. After success, call i_am_done."
         ),
         composes=(),
-        extra_preconditions=(),
+        extra_preconditions=(
+            PRECONDITION_OWNERSHIP,
+            PRECONDITION_COMMITS,
+            PRECONDITION_NO_PR,
+        ),
         side_effects=("push_branch", "create_pr"),
         next_hint=_next_hint_open_pr,
     ),
@@ -745,7 +831,7 @@ _INTENT_VERBS: dict[str, IntentSpec] = {
             " open_pr first) and >=1 commit."
         ),
         composes=("submit_verification", "submit_qa"),
-        extra_preconditions=(),
+        extra_preconditions=(PRECONDITION_OWNERSHIP, PRECONDITION_COMMITS),
         side_effects=(),
         next_hint=_next_hint_idle,
     ),
@@ -923,3 +1009,269 @@ _INTENT_VERBS: dict[str, IntentSpec] = {
         next_hint=lambda _t: "act on a listed task or i_am_idle",
     ),
 }
+
+
+# ---------------------------------------------------------------------------
+# Public lookups
+# ---------------------------------------------------------------------------
+
+
+def can_claim(role: Role, task: Any) -> Decision:
+    """Return Decision for whether `role` can claim `task` right now.
+
+    Rejection-kind disambiguation:
+      * `not_authorized` — the status belongs to a DIFFERENT role's claim
+        domain (e.g. dev tries to claim awaiting_qa, which is QA-only),
+        OR the role has no claim privileges at all.
+      * `invalid_state` — the role principally CAN claim, but the task is
+        in a terminal/non-claimable state (e.g. completed, in_progress).
+    """
+    status = Status(getattr(task, "status", ""))
+    allowed_statuses = CLAIM_RULES.get(role, frozenset())
+    if not allowed_statuses:
+        return Decision.reject(
+            kind="not_authorized",
+            message=f"role '{role.value}' has no claim privileges",
+            remediate="this role does not claim tasks",
+        )
+    if status not in allowed_statuses:
+        # If some OTHER role can claim from this status, this is a role
+        # mismatch (not_authorized). Otherwise it's a state issue.
+        other_role_owns_status = any(
+            status in statuses for r, statuses in CLAIM_RULES.items() if r != role
+        )
+        if other_role_owns_status:
+            return Decision.reject(
+                kind="not_authorized",
+                message=(
+                    f"role '{role.value}' may not claim from status"
+                    f" '{status.value}'; that status is reserved for another role"
+                ),
+                remediate=(
+                    f"call give_me_work() to find a task in one of:"
+                    f" {sorted(s.value for s in allowed_statuses)}"
+                ),
+            )
+        return Decision.reject(
+            kind="invalid_state",
+            message=(
+                f"role '{role.value}' cannot claim from status '{status.value}'"
+                f"; allowed: {sorted(s.value for s in allowed_statuses)}"
+            ),
+            remediate=(
+                f"call give_me_work() to find a task in one of:"
+                f" {sorted(s.value for s in allowed_statuses)}"
+            ),
+        )
+    return Decision.allow()
+
+
+def _check_role_status_type(
+    role: Role, action: str, spec_action: ActionSpec, task: Any
+) -> Decision | None:
+    """Role + source-status + task_type gate. Returns rejection or None."""
+    if role not in spec_action.allowed_roles:
+        return Decision.reject(
+            kind="not_authorized",
+            message=f"role '{role.value}' may not call '{action}'",
+            remediate=(
+                f"action '{action}' is restricted to:"
+                f" {sorted(r.value for r in spec_action.allowed_roles)}"
+            ),
+        )
+    status = Status(getattr(task, "status", ""))
+    if status not in spec_action.source_statuses:
+        return Decision.reject(
+            kind="invalid_state",
+            message=(
+                f"task is in '{status.value}', '{action}' requires:"
+                f" {sorted(s.value for s in spec_action.source_statuses)}"
+            ),
+            remediate=(
+                f"call give_me_work() to find a task in"
+                f" {sorted(s.value for s in spec_action.source_statuses)}"
+            ),
+        )
+    if (
+        spec_action.allowed_task_types is not None
+        and TaskType(getattr(task, "task_type", "code"))
+        not in spec_action.allowed_task_types
+    ):
+        return Decision.reject(
+            kind="invalid_state",
+            message=(
+                f"task_type='{task.task_type}' invalid for '{action}'; allowed:"
+                f" {sorted(t.value for t in spec_action.allowed_task_types)}"
+            ),
+            remediate="adjust task_type or pick a different verb",
+        )
+    return None
+
+
+def _check_self_review_and_preconditions(
+    action: str, spec_action: ActionSpec, task: Any, ctx: Context
+) -> Decision | None:
+    """self_review + declarative preconditions. Returns rejection or None."""
+    if spec_action.self_review_block:
+        original = ctx.original_developer_slug
+        actor = ctx.actor_slug
+        if original is not None and actor is not None and original == actor:
+            return Decision.reject(
+                kind="self_review",
+                message=(
+                    f"'{action}' blocked: you are the original developer of"
+                    f" this task ({actor})"
+                ),
+                remediate=(
+                    "another agent of this role must perform the review;"
+                    " self-review is not permitted"
+                ),
+            )
+    missing = [
+        p.missing_token
+        for p in spec_action.preconditions
+        if not p.check(task, None, ctx)
+    ]
+    if missing:
+        first_missing = next(
+            p for p in spec_action.preconditions if p.missing_token == missing[0]
+        )
+        return Decision.tracing_gap(missing=missing, remediate=first_missing.remediate)
+    return None
+
+
+def can_invoke_action(
+    role: Role, action: str, task: Any, context: Context | None = None
+) -> Decision:
+    """Decide whether `role` can invoke atomic `action` on `task`.
+
+    Order: action exists -> role allowed -> source status allowed ->
+    task_type allowed -> self_review check -> preconditions.
+    """
+    spec_action = _ATOMIC_ACTIONS.get(action)
+    if spec_action is None:
+        return Decision.reject(
+            kind="invalid_state",
+            message=f"unknown action '{action}'",
+            remediate="action is not declared in the lifecycle spec",
+        )
+    rejection = _check_role_status_type(role, action, spec_action, task)
+    if rejection is not None:
+        return rejection
+    ctx = context or Context()
+    rejection = _check_self_review_and_preconditions(action, spec_action, task, ctx)
+    if rejection is not None:
+        return rejection
+    return Decision.allow()
+
+
+def _check_intent_preconditions(
+    spec_intent: IntentSpec, task: Any, ctx: Context
+) -> Decision | None:
+    """Verb-level extra_preconditions gate. Returns rejection or None."""
+    missing = [
+        p.missing_token
+        for p in spec_intent.extra_preconditions
+        if not p.check(task, None, ctx)
+    ]
+    if not missing:
+        return None
+    first_missing = next(
+        p for p in spec_intent.extra_preconditions if p.missing_token == missing[0]
+    )
+    return Decision.tracing_gap(missing=missing, remediate=first_missing.remediate)
+
+
+def can_invoke_intent(
+    role: Role, intent: str, task: Any, context: Context | None = None
+) -> Decision:
+    """Decide whether `role` can invoke gateway intent verb `intent` on `task`.
+
+    Composition: intent's allowed_roles -> task in source statuses of the
+    FIRST composed action (or any of the composed if `composes==()`) ->
+    intent's extra_preconditions -> each composed atomic action's
+    can_invoke_action check.
+    """
+    spec_intent = _INTENT_VERBS.get(intent)
+    if spec_intent is None:
+        return Decision.reject(
+            kind="invalid_state",
+            message=f"unknown intent verb '{intent}'",
+            remediate="verb is not declared in the lifecycle spec",
+        )
+    if role not in spec_intent.allowed_roles:
+        return Decision.reject(
+            kind="not_authorized",
+            message=f"role '{role.value}' may not call '{intent}'",
+            remediate=(
+                f"verb '{intent}' is restricted to:"
+                f" {sorted(r.value for r in spec_intent.allowed_roles)}"
+            ),
+        )
+    ctx = context or Context()
+    rejection = _check_intent_preconditions(spec_intent, task, ctx)
+    if rejection is not None:
+        return rejection
+    # Composed atomic actions: all must be invocable from current state.
+    # For composition, only check the FIRST action's source-status — subsequent
+    # actions transition through their target_status.
+    if spec_intent.composes:
+        first_action = spec_intent.composes[0]
+        d = can_invoke_action(role, first_action, task, ctx)
+        if not d.allowed:
+            return d
+    return Decision.allow()
+
+
+def valid_next_verbs(role: Role, task: Any) -> list[str]:
+    """Return sorted list of verb names `role` can usefully call on `task` now.
+
+    This is the role+state applicability list — caller-supplied
+    preconditions (plan, ownership, commits, etc.) are NOT evaluated
+    here. The agent-facing semantics: "these are the verbs that fit
+    your role and the task's current status; missing preconditions
+    surface as `tracing_gap` when you actually invoke them."
+    """
+    out: list[str] = []
+    for name, iv in _INTENT_VERBS.items():
+        if role not in iv.allowed_roles:
+            continue
+        if iv.composes:
+            first_action = iv.composes[0]
+            d = can_invoke_action(role, first_action, task)
+            # Skip ONLY for state-incompatibility; tracing_gap (missing
+            # action-level preconditions) is also surfaced lazily.
+            if not d.allowed and d.rejection_kind in (
+                "not_authorized",
+                "invalid_state",
+            ):
+                continue
+        out.append(name)
+    return sorted(out)
+
+
+def composed_actions_for(intent: str) -> tuple[str, ...]:
+    spec_intent = _INTENT_VERBS.get(intent)
+    if spec_intent is None:
+        raise KeyError(f"unknown intent verb '{intent}'")
+    return spec_intent.composes
+
+
+def intents_for_role(role: Role) -> tuple[str, ...]:
+    """Sorted tuple of intent verbs declared for `role` (regardless of state).
+
+    Used by role_config.py to build per-role MCP manifests.
+    """
+    return tuple(
+        sorted(name for name, iv in _INTENT_VERBS.items() if role in iv.allowed_roles)
+    )
+
+
+def status_after(action: str, current: Status) -> Status | None:
+    """The post-`action` status, or None if `action` doesn't transition."""
+    spec_action = _ATOMIC_ACTIONS.get(action)
+    if spec_action is None:
+        return None
+    if current not in spec_action.source_statuses:
+        return None
+    return spec_action.target_status

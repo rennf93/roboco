@@ -454,3 +454,110 @@ def test_delegate_composes_create_subtask() -> None:
     iv = spec._INTENT_VERBS["delegate"]
     assert iv.composes == ("create_subtask",)
     assert iv.allowed_roles == frozenset({spec.Role.CELL_PM, spec.Role.MAIN_PM})
+
+
+_STUB_TASK_DEFAULTS = {
+    "status": "pending",
+    "task_type": "code",
+    "commits": [],
+    "plan": None,
+    "assigned_to": None,
+    "pr_number": None,
+}
+
+
+def _stub_task(**overrides):
+    fields = {**_STUB_TASK_DEFAULTS, **overrides}
+    fields["commits"] = fields["commits"] or []
+    return SimpleNamespace(**fields)
+
+
+def test_can_claim_developer_pending_allowed() -> None:
+    d = spec.can_claim(spec.Role.DEVELOPER, _stub_task(status="pending"))
+    assert d.allowed is True
+
+
+def test_can_claim_developer_completed_rejected() -> None:
+    d = spec.can_claim(spec.Role.DEVELOPER, _stub_task(status="completed"))
+    assert d.allowed is False
+    assert d.rejection_kind == "invalid_state"
+
+
+def test_can_claim_developer_awaiting_qa_rejected() -> None:
+    """Devs cannot claim awaiting_qa - that's QA's path."""
+    d = spec.can_claim(spec.Role.DEVELOPER, _stub_task(status="awaiting_qa"))
+    assert d.allowed is False
+    assert d.rejection_kind == "not_authorized"
+
+
+def test_can_invoke_intent_developer_can_call_i_will_work_on() -> None:
+    d = spec.can_invoke_intent(
+        spec.Role.DEVELOPER,
+        "i_will_work_on",
+        _stub_task(status="pending"),
+        context=spec.Context(plan="my plan"),
+    )
+    assert d.allowed is True
+
+
+def test_can_invoke_intent_pm_cannot_call_i_will_work_on() -> None:
+    """PMs use i_will_plan; i_will_work_on is dev-only."""
+    d = spec.can_invoke_intent(
+        spec.Role.CELL_PM,
+        "i_will_work_on",
+        _stub_task(status="pending"),
+        context=spec.Context(plan="x"),
+    )
+    assert d.allowed is False
+    assert d.rejection_kind == "not_authorized"
+
+
+def test_can_invoke_intent_developer_open_pr_no_commits_tracing_gap() -> None:
+    """open_pr requires >=1 commit. Without one -> tracing_gap."""
+    d = spec.can_invoke_intent(
+        spec.Role.DEVELOPER,
+        "open_pr",
+        _stub_task(status="in_progress", commits=[]),
+        context=spec.Context(),
+    )
+    assert d.allowed is False
+    assert d.rejection_kind == "tracing_gap"
+    assert "commits>=1" in d.missing
+
+
+def test_valid_next_verbs_developer_in_progress_includes_open_pr_and_i_am_done() -> (
+    None
+):
+    verbs = spec.valid_next_verbs(spec.Role.DEVELOPER, _stub_task(status="in_progress"))
+    assert "open_pr" in verbs
+    assert "i_am_done" in verbs
+    assert "i_am_blocked" in verbs
+
+
+def test_valid_next_verbs_pm_pending_includes_i_will_plan() -> None:
+    verbs = spec.valid_next_verbs(spec.Role.CELL_PM, _stub_task(status="pending"))
+    assert "i_will_plan" in verbs
+
+
+def test_composed_actions_for_returns_intent_composition() -> None:
+    assert spec.composed_actions_for("i_will_work_on") == ("claim", "set_plan", "start")
+    assert spec.composed_actions_for("open_pr") == ()
+
+
+def test_intents_for_role_returns_role_scoped_verbs() -> None:
+    dev_verbs = spec.intents_for_role(spec.Role.DEVELOPER)
+    assert "i_will_work_on" in dev_verbs
+    assert "open_pr" in dev_verbs
+    assert "i_am_done" in dev_verbs
+    assert "delegate" not in dev_verbs  # PM only
+    assert "claim_review" not in dev_verbs  # QA only
+
+
+def test_status_after_returns_target_status() -> None:
+    assert spec.status_after("claim", spec.Status.PENDING) == spec.Status.CLAIMED
+    assert (
+        spec.status_after("submit_qa", spec.Status.VERIFYING) == spec.Status.AWAITING_QA
+    )
+    assert (
+        spec.status_after("set_plan", spec.Status.IN_PROGRESS) is None
+    )  # no transition
