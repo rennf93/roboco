@@ -787,3 +787,123 @@ async def test_resume_matches_spec(role: str, status: str) -> None:
             f"role={role} status={status}: can_invoke_intent rejected with "
             f"{expected.rejection_kind}, got {body['error']!r}; full body: {body}"
         )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "role, status",
+    list(
+        product(
+            [r.value for r in spec.Role if r != spec.Role.AUDITOR],
+            [s.value for s in spec.Status],
+        )
+    ),
+)
+async def test_complete_matches_spec(role: str, status: str) -> None:
+    """Spec parity for complete's role + state gate (the dispatcher layer).
+
+    complete's IntentSpec composes ``("complete",)``; the spec gate
+    enforces:
+
+      - role in _PM_ROLES (CELL_PM, MAIN_PM),
+      - composed ``complete`` action's source_status (AWAITING_PM_REVIEW only).
+
+    The dispatcher routes to ``cell_pm_complete`` / ``main_pm_complete``
+    after the gate accepts. Both lower-level methods retain their own
+    pre-flight guards (PR mergeability, journal:decision presence,
+    subtasks-terminal) — those model preconditions the spec doesn't
+    cover, and may emit non-spec rejection kinds (tracing_gap,
+    invalid_state). The parity assertion is therefore one-sided: when
+    the spec rejects, the envelope MUST surface that exact
+    rejection_kind; when the spec allows, the envelope may still be
+    rejected by a downstream guard, but the spec gate itself must NOT
+    be the source of any not_authorized rejection.
+
+    Tasks are kept ``assigned_to=agent_id`` so the lower-level guards'
+    "not assigned to you" branch does not fire on the allowed path.
+    """
+    agent_id = uuid4()
+    task_id = uuid4()
+    task = MagicMock(
+        id=task_id,
+        status=status,
+        task_type="code",
+        # Owned by caller so the lower-level _*_pm_complete_guard
+        # "not assigned to you" branch does not fire on the allowed
+        # path; we want the spec gate to be the only rejector here.
+        assigned_to=agent_id,
+        commits=[],
+        pr_number=8,
+        branch_name="feature/backend/abc--def",
+        # Cell-PM path needs a parent_task_id; main-PM path needs None.
+        # Pick parent_task_id=None so main_pm_complete's own non-root
+        # guard doesn't fire on cell_pm. cell_pm_complete doesn't
+        # require parent_task_id either — _maybe_advance_parent_to_pm_review
+        # short-circuits when leaf_parent_id is None.
+        parent_task_id=None,
+        sequence=0,
+        team="backend",
+        title="t",
+        quick_context=None,
+    )
+    after = MagicMock(
+        id=task_id, status="completed", assigned_to=agent_id, team="backend"
+    )
+    task_svc = AsyncMock()
+    task_svc.get.return_value = task
+    task_svc.agent_for.return_value = MagicMock(
+        id=agent_id, role=role, team="backend", slug=None
+    )
+    task_svc.cell_pm_complete.return_value = after
+    task_svc.escalate_to_ceo.return_value = MagicMock(
+        id=task_id, status="awaiting_ceo_approval", assigned_to=None, team="backend"
+    )
+    task_svc.all_subtasks_terminal.return_value = True
+    git_svc = AsyncMock()
+    git_svc.pr_merge.return_value = {"merged": True, "merge_commit_sha": "x"}
+    git_svc.create_pr.return_value = {"pr_number": 99, "pr_url": "x"}
+    git_svc.pr_target.return_value = "master"
+    journal_svc = AsyncMock()
+    journal_svc.has_decision_for_task.return_value = True
+    deps_kwargs = {
+        "task": task_svc,
+        "work_session": AsyncMock(),
+        "git": git_svc,
+        "a2a": AsyncMock(),
+        "journal": journal_svc,
+        "audit": AsyncMock(),
+        "evidence_repo": AsyncMock(),
+    }
+    repo = deps_kwargs["evidence_repo"]
+    for method in (
+        "list_unread_a2a",
+        "list_unread_mentions",
+        "list_pending_notifications",
+        "task_metadata_gaps",
+        "recent_team_activity",
+        "blockers_in_lane",
+        "journal_highlights_for_task",
+    ):
+        getattr(repo, method).return_value = []
+    deps = ChoreographerDeps(**deps_kwargs)
+    c = Choreographer(deps)
+
+    ctx = spec.Context(actor_id=agent_id)
+    expected = spec.can_invoke_intent(spec.Role(role), "complete", task, ctx)
+
+    env = await c.complete(agent_id, task_id, notes="reviewed and approved")
+    body = env.as_dict()
+    if expected.allowed:
+        # Spec allows. The dispatcher routes to cell_pm_complete or
+        # main_pm_complete; downstream guards may still reject (e.g.
+        # tracing_gap on missing journal:decision), but the spec gate
+        # itself must NOT be the source of any not_authorized rejection.
+        assert body["error"] != "not_authorized", (
+            f"role={role} status={status}: spec.can_invoke_intent allowed "
+            f"but envelope surfaced not_authorized at the spec layer: {body}"
+        )
+    else:
+        assert body["error"] == expected.rejection_kind, (
+            f"role={role} status={status}: can_invoke_intent rejected with "
+            f"{expected.rejection_kind}, got {body['error']!r}; full body: {body}"
+        )

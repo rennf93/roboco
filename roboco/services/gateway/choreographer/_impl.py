@@ -2304,7 +2304,7 @@ class Choreographer:
         return Envelope.ok(
             status=str(t.status),
             task_id=str(task_id),
-            next=f"merged into {target}; triage() for next item",
+            next=spec_module._INTENT_VERBS["complete"].next_hint(t),
             context_briefing=await self._briefing_for(pm_agent_id, task_id),
         ).with_introspection(task=t, role="cell_pm")
 
@@ -2431,31 +2431,72 @@ class Choreographer:
         return Envelope.ok(
             status=str(t.status),
             task_id=str(root_task_id),
-            next="idle until CEO approves (or rejects) via UI",
+            next=spec_module._INTENT_VERBS["complete"].next_hint(t),
             context_briefing=await self._briefing_for(main_pm_agent_id, root_task_id),
         ).with_introspection(task=t, role="main_pm")
 
     async def complete(self, agent_id: UUID, task_id: UUID, notes: str) -> Envelope:
-        """Dispatch to cell_pm_complete or main_pm_complete based on agent role."""
-        agent = await self.task.agent_for(agent_id)
-        if agent.role == "cell_pm":
-            return await self.cell_pm_complete(agent_id, task_id, notes)
-        if agent.role == "main_pm":
-            return await self.main_pm_complete(agent_id, task_id, notes)
+        """Dispatch to cell_pm_complete or main_pm_complete based on agent role.
+
+        Spec gate runs first (role membership + composed ``complete``
+        action's source-status constraint, AWAITING_PM_REVIEW only).
+        Both rejections (role not in _PM_ROLES, status not awaiting_pm_review)
+        flow through ``spec.can_invoke_intent`` and surface as the
+        spec-supplied rejection_kind. After the gate accepts, the
+        verb body owns dispatch — ``complete`` has two divergent
+        runtime paths (Cell PM merges leaf into parent branch; Main PM
+        opens master PR + escalates to CEO) that can't be expressed as
+        a single VerbRunner composition. Each lower-level method keeps
+        its own pre-flight guards (``_cell_pm_complete_guard`` /
+        ``_main_pm_complete_guard``) — those model journal:decision
+        presence, subtasks-terminal, and PR-mergeability checks the
+        spec doesn't model yet.
+        """
         t = await self.task.get(task_id)
-        rejection = Envelope.not_authorized(
-            message=f"role {agent.role} cannot complete tasks via this verb",
-            remediate="only cell_pm and main_pm can call complete",
-            context_briefing=await self._briefing_for(agent_id, task_id),
+        briefing = await self._briefing_for(agent_id, task_id)
+        if t is None:
+            return await self._emit_rejection(
+                Envelope.not_found(message=f"task {task_id} not found"),
+                agent_id=agent_id,
+                task_id=task_id,
+                verb="complete",
+            )
+        agent = await self.task.agent_for(agent_id)
+        role_str = str(agent.role) if agent is not None else "developer"
+        try:
+            role = spec_module.Role(role_str)
+        except ValueError:
+            return await self._emit_rejection(
+                Envelope.not_authorized(
+                    message=f"unknown role '{role_str}'",
+                    remediate="role is not declared in the lifecycle spec",
+                    context_briefing=briefing,
+                ).with_introspection(task=t, role=role_str),
+                agent_id=agent_id,
+                task_id=task_id,
+                verb="complete",
+            )
+        spec_ctx = spec_module.Context(
+            actor_id=agent_id,
+            actor_slug=getattr(agent, "slug", None) if agent is not None else None,
+            original_developer_slug=_extract_original_developer(t),
         )
-        if t is not None:
-            rejection.with_introspection(task=t, role=str(agent.role))
-        return await self._emit_rejection(
-            rejection,
-            agent_id=agent_id,
-            task_id=task_id,
-            verb="complete",
-        )
+        decision = spec_module.can_invoke_intent(role, "complete", t, spec_ctx)
+        if not decision.allowed:
+            return await self._emit_rejection(
+                Envelope.from_decision(decision, briefing=briefing).with_introspection(
+                    task=t, role=role_str
+                ),
+                agent_id=agent_id,
+                task_id=task_id,
+                verb="complete",
+            )
+        # Spec gate passed — role is CELL_PM or MAIN_PM, status is
+        # AWAITING_PM_REVIEW. Verb body owns dispatch from here.
+        if role_str == "cell_pm":
+            return await self.cell_pm_complete(agent_id, task_id, notes)
+        # role_str == "main_pm" — _PM_ROLES has only these two members.
+        return await self.main_pm_complete(agent_id, task_id, notes)
 
     async def escalate_up(
         self, pm_agent_id: UUID, task_id: UUID, reason: str
