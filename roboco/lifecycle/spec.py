@@ -603,3 +603,323 @@ ROLE_TEAM_RULES: dict[str, str | None] = {
     "auditor": None,
     "ceo": None,
 }
+
+
+# ---------------------------------------------------------------------------
+# Intent verbs (gateway-facing surface; each composes >=0 atomic actions)
+# ---------------------------------------------------------------------------
+
+
+def _next_hint_idle(_t: Any) -> str:
+    return "idle until next work arrives"
+
+
+def _next_hint_open_pr(_t: Any) -> str:
+    return "PR opened; call i_am_done(task_id, notes='...') when self-verified"
+
+
+def _next_hint_after_claim(_t: Any) -> str:
+    return (
+        "edit + commit(message) for each meaningful change,"
+        " then open_pr(task_id) and i_am_done(task_id)"
+    )
+
+
+def _next_hint_after_plan(_t: Any) -> str:
+    return (
+        "delegate(parent_task_id, title, description, assigned_to,"
+        " team, task_type) for each subtask"
+    )
+
+
+def _next_hint_continue_delegating(_t: Any) -> str:
+    return "continue delegating subtasks, or i_am_idle when done"
+
+
+def _next_hint_qa_review(_t: Any) -> str:
+    return (
+        "review the diff. Then call pass(notes) to accept or fail(issues) to"
+        " request changes."
+    )
+
+
+def _next_hint_dev_revise(_t: Any) -> str:
+    return "idle - dev will revise and re-submit"
+
+
+def _next_hint_doc_after_claim(_t: Any) -> str:
+    return (
+        "write docs in your workspace, commit them, then call"
+        " i_documented(task_id, notes, files)"
+    )
+
+
+def _next_hint_doc_done(_t: Any) -> str:
+    return "idle until PM completes"
+
+
+def _next_hint_pm_complete(_t: Any) -> str:
+    return "merged into target; triage() for next item"
+
+
+def _next_hint_pm_idle(_t: Any) -> str:
+    return "idle until subtasks finish"
+
+
+_INTENT_VERBS: dict[str, IntentSpec] = {
+    # Phase 1: developer verbs
+    "give_me_work": IntentSpec(
+        name="give_me_work",
+        allowed_roles=frozenset(
+            {
+                Role.DEVELOPER,
+                Role.QA,
+                Role.DOCUMENTER,
+                Role.CELL_PM,
+                Role.MAIN_PM,
+            }
+        ),
+        description="Return your most-actionable task or signal idle.",
+        composes=(),
+        extra_preconditions=(),
+        side_effects=(),
+        next_hint=lambda _t: "act on the task returned, or i_am_idle if none",
+    ),
+    "i_will_work_on": IntentSpec(
+        name="i_will_work_on",
+        allowed_roles=_DEV_ROLES,
+        description=(
+            "Claim a task, set the plan, and transition to in_progress."
+            " Atomic - preconditions checked before any state mutation."
+        ),
+        composes=("claim", "set_plan", "start"),
+        extra_preconditions=(),
+        side_effects=(),
+        next_hint=_next_hint_after_claim,
+    ),
+    "i_will_plan": IntentSpec(
+        name="i_will_plan",
+        allowed_roles=_PM_ROLES,
+        description=(
+            "PM mirror of i_will_work_on for parent tasks. Claim, plan,"
+            " transition to in_progress; from there delegate subtasks."
+        ),
+        composes=("claim", "set_plan", "start"),
+        extra_preconditions=(),
+        side_effects=(),
+        next_hint=_next_hint_after_plan,
+    ),
+    "delegate": IntentSpec(
+        name="delegate",
+        allowed_roles=_PM_ROLES,
+        description=(
+            "Create a subtask under the current task. Validates the"
+            " delegation chain (main_pm->cell_pm; cell_pm->its team's devs)"
+            " and the assignee-vs-task_type rule (Cell PMs get planning-typed"
+            " tasks; devs get code/documentation)."
+        ),
+        composes=("create_subtask",),
+        extra_preconditions=(),
+        side_effects=(),
+        next_hint=_next_hint_continue_delegating,
+    ),
+    "open_pr": IntentSpec(
+        name="open_pr",
+        allowed_roles=_DEV_ROLES,
+        description=(
+            "Push the branch and open a PR. Atomic - preconditions"
+            " (assignee, >=1 commit, no prior PR) checked BEFORE any git"
+            " operation. After success, call i_am_done."
+        ),
+        composes=(),
+        extra_preconditions=(),
+        side_effects=("push_branch", "create_pr"),
+        next_hint=_next_hint_open_pr,
+    ),
+    "i_am_done": IntentSpec(
+        name="i_am_done",
+        allowed_roles=_DEV_ROLES,
+        description=(
+            "Submit work for QA. Auto-runs in_progress->verifying then"
+            " verifying->awaiting_qa. Strict - PR must be open (call"
+            " open_pr first) and >=1 commit."
+        ),
+        composes=("submit_verification", "submit_qa"),
+        extra_preconditions=(),
+        side_effects=(),
+        next_hint=_next_hint_idle,
+    ),
+    "i_am_blocked": IntentSpec(
+        name="i_am_blocked",
+        allowed_roles=frozenset(_DEV_ROLES | _QA_ROLES | _DOC_ROLES),
+        description="Escalate to PM. Logs a struggle journal entry.",
+        composes=("block",),
+        extra_preconditions=(),
+        side_effects=(),
+        next_hint=lambda _t: "idle - PM will resolve and notify",
+    ),
+    "unclaim": IntentSpec(
+        name="unclaim",
+        allowed_roles=frozenset(_DEV_ROLES | _QA_ROLES | _DOC_ROLES | _PM_ROLES),
+        description=(
+            "Voluntarily release a claim back to pending. The"
+            " work-in-progress branch is preserved."
+        ),
+        composes=(),  # special - cleared in service layer
+        extra_preconditions=(),
+        side_effects=(),
+        next_hint=lambda _t: (
+            "task returned to pending; another agent (or you, fresh) can claim"
+        ),
+    ),
+    "resume": IntentSpec(
+        name="resume",
+        allowed_roles=frozenset(_DEV_ROLES | _QA_ROLES | _DOC_ROLES | _PM_ROLES),
+        description="Resume a paused task you own. paused -> in_progress.",
+        composes=("resume",),
+        extra_preconditions=(),
+        side_effects=(),
+        next_hint=lambda _t: "resumed; continue working",
+    ),
+    "i_am_idle": IntentSpec(
+        name="i_am_idle",
+        allowed_roles=frozenset(
+            _DEV_ROLES
+            | _QA_ROLES
+            | _DOC_ROLES
+            | _PM_ROLES
+            | {Role.PRODUCT_OWNER, Role.HEAD_MARKETING, Role.AUDITOR}
+        ),
+        description=(
+            "Signal you have no active work. PMs auto-pause owned in_progress tasks."
+        ),
+        composes=(),
+        extra_preconditions=(),
+        side_effects=(),
+        next_hint=_next_hint_idle,
+    ),
+    # Phase 2: QA verbs
+    "claim_review": IntentSpec(
+        name="claim_review",
+        allowed_roles=_QA_ROLES,
+        description="Claim a task in awaiting_qa for review. Returns evidence inline.",
+        composes=("claim", "start"),
+        extra_preconditions=(),
+        side_effects=(),
+        next_hint=_next_hint_qa_review,
+    ),
+    "pass_review": IntentSpec(
+        name="pass_review",
+        allowed_roles=_QA_ROLES,
+        description="Pass QA. Transitions awaiting_qa -> awaiting_documentation.",
+        composes=("qa_pass",),
+        extra_preconditions=(),
+        side_effects=(),
+        next_hint=_next_hint_idle,
+    ),
+    "fail_review": IntentSpec(
+        name="fail_review",
+        allowed_roles=_QA_ROLES,
+        description="Fail QA with concrete issues. Transitions to needs_revision.",
+        composes=("qa_fail",),
+        extra_preconditions=(),
+        side_effects=(),
+        next_hint=_next_hint_dev_revise,
+    ),
+    # Phase 3: documenter verbs
+    "claim_doc_task": IntentSpec(
+        name="claim_doc_task",
+        allowed_roles=_DOC_ROLES,
+        description="Claim awaiting_documentation. Returns evidence inline.",
+        composes=("claim", "start"),
+        extra_preconditions=(),
+        side_effects=(),
+        next_hint=_next_hint_doc_after_claim,
+    ),
+    "i_documented": IntentSpec(
+        name="i_documented",
+        allowed_roles=_DOC_ROLES,
+        description="Signal docs complete. Transitions to awaiting_pm_review.",
+        composes=("docs_complete",),
+        extra_preconditions=(),
+        side_effects=(),
+        next_hint=_next_hint_doc_done,
+    ),
+    # Phase 4: PM verbs
+    "complete": IntentSpec(
+        name="complete",
+        allowed_roles=_PM_ROLES,
+        description=(
+            "Cell PM merges leaf PR + transitions to completed; Main PM"
+            " merges root PR + escalates to CEO."
+        ),
+        composes=("complete",),
+        extra_preconditions=(),
+        side_effects=("pr_merge",),
+        next_hint=_next_hint_pm_complete,
+    ),
+    "escalate_up": IntentSpec(
+        name="escalate_up",
+        allowed_roles=_PM_ROLES,
+        description="Escalate to your role's escalation_target.",
+        composes=(),  # special - uses TaskService.escalate
+        extra_preconditions=(),
+        side_effects=(),
+        next_hint=lambda _t: "idle until escalation target acts",
+    ),
+    "escalate_to_ceo": IntentSpec(
+        name="escalate_to_ceo",
+        allowed_roles=frozenset(
+            {
+                Role.MAIN_PM,
+                Role.PRODUCT_OWNER,
+                Role.HEAD_MARKETING,
+            }
+        ),
+        description=(
+            "Escalate to CEO with reason. Transitions to awaiting_ceo_approval."
+        ),
+        composes=("escalate_to_ceo",),
+        extra_preconditions=(),
+        side_effects=(),
+        next_hint=lambda _t: "idle until CEO acts via UI",
+    ),
+    "submit_up": IntentSpec(
+        name="submit_up",
+        allowed_roles=frozenset({Role.CELL_PM}),
+        description="Cell PM bubbles a finished cell-scope task up to Main PM.",
+        composes=("submit_pm_review",),
+        extra_preconditions=(),
+        side_effects=("create_pr",),
+        next_hint=lambda _t: "idle until Main PM reviews",
+    ),
+    "unblock": IntentSpec(
+        name="unblock",
+        allowed_roles=_PM_ROLES,
+        description="PM unblocks a blocked task; restores pre-block state.",
+        composes=("unblock",),
+        extra_preconditions=(),
+        side_effects=(),
+        next_hint=lambda _t: "task restored; original assignee will resume",
+    ),
+    "triage": IntentSpec(
+        name="triage",
+        allowed_roles=frozenset(
+            _PM_ROLES | {Role.PRODUCT_OWNER, Role.HEAD_MARKETING, Role.AUDITOR}
+        ),
+        description="List actionable tasks in your scope.",
+        composes=(),
+        extra_preconditions=(),
+        side_effects=(),
+        next_hint=lambda _t: "act on a listed task or i_am_idle",
+    ),
+    "triage_all": IntentSpec(
+        name="triage_all",
+        allowed_roles=frozenset({Role.MAIN_PM}),
+        description="List actionable tasks across all teams (Main PM only).",
+        composes=(),
+        extra_preconditions=(),
+        side_effects=(),
+        next_hint=lambda _t: "act on a listed task or i_am_idle",
+    ),
+}

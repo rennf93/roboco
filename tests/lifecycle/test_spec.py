@@ -391,3 +391,66 @@ def test_team_rules_pin_team_for_seeded_agents() -> None:
     assert spec.ROLE_TEAM_RULES["be-pm"] == "backend"
     assert spec.ROLE_TEAM_RULES["fe-qa"] == "frontend"
     assert spec.ROLE_TEAM_RULES["main-pm"] is None  # cross-cell
+
+
+def test_intent_verbs_table_has_every_gateway_verb() -> None:
+    """Every gateway intent verb must have an IntentSpec."""
+    expected = {
+        "give_me_work",
+        "i_will_work_on",
+        "i_will_plan",
+        "delegate",
+        "open_pr",
+        "i_am_done",
+        "i_am_blocked",
+        "unclaim",
+        "resume",
+        "i_am_idle",
+        "claim_review",
+        "pass_review",
+        "fail_review",
+        "claim_doc_task",
+        "i_documented",
+        "complete",
+        "escalate_up",
+        "escalate_to_ceo",
+        "submit_up",
+        "unblock",
+        "triage",
+        "triage_all",
+    }
+    assert expected <= set(spec._INTENT_VERBS), (
+        f"Missing IntentSpec entries: {expected - set(spec._INTENT_VERBS)}"
+    )
+
+
+def test_i_will_work_on_composes_claim_set_plan_start() -> None:
+    iv = spec._INTENT_VERBS["i_will_work_on"]
+    assert iv.composes == ("claim", "set_plan", "start")
+    assert spec.Role.DEVELOPER in iv.allowed_roles
+
+
+def test_i_will_plan_composes_claim_set_plan_start() -> None:
+    """PMs use i_will_plan; the composition mirrors i_will_work_on."""
+    iv = spec._INTENT_VERBS["i_will_plan"]
+    assert iv.composes == ("claim", "set_plan", "start")
+    assert iv.allowed_roles == frozenset({spec.Role.CELL_PM, spec.Role.MAIN_PM})
+
+
+def test_i_am_done_composes_submit_verification_then_submit_qa() -> None:
+    iv = spec._INTENT_VERBS["i_am_done"]
+    assert iv.composes == ("submit_verification", "submit_qa")
+
+
+def test_open_pr_has_git_side_effects() -> None:
+    """open_pr is a side-effect-only verb (no DB transition)."""
+    iv = spec._INTENT_VERBS["open_pr"]
+    assert "push_branch" in iv.side_effects
+    assert "create_pr" in iv.side_effects
+    assert iv.composes == ()  # pure side effect verb
+
+
+def test_delegate_composes_create_subtask() -> None:
+    iv = spec._INTENT_VERBS["delegate"]
+    assert iv.composes == ("create_subtask",)
+    assert iv.allowed_roles == frozenset({spec.Role.CELL_PM, spec.Role.MAIN_PM})
