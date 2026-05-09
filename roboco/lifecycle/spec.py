@@ -347,6 +347,9 @@ _ATOMIC_ACTIONS: dict[str, ActionSpec] = {
         self_review_block=False,
         needs_team_match=False,
     ),
+    # claim's source_statuses is the UNION across all roles — see CLAIM_RULES
+    # for per-role authority. Both tables are authoritative; Task 8 validates
+    # consistency between them.
     "claim": ActionSpec(
         name="claim",
         allowed_roles=frozenset(_DEV_ROLES | _QA_ROLES | _DOC_ROLES | _PM_ROLES),
@@ -373,17 +376,17 @@ _ATOMIC_ACTIONS: dict[str, ActionSpec] = {
         allowed_task_types=None,
         preconditions=(),
         self_review_block=False,
-        needs_team_match=False,
+        needs_team_match=True,
     ),
     "set_plan": ActionSpec(
         name="set_plan",
         allowed_roles=frozenset(_DEV_ROLES | _PM_ROLES),
-        source_statuses=frozenset({Status.CLAIMED, Status.IN_PROGRESS}),
+        source_statuses=frozenset({Status.CLAIMED}),
         target_status=None,
         allowed_task_types=None,
         preconditions=(),
         self_review_block=False,
-        needs_team_match=False,
+        needs_team_match=True,
     ),
     "block": ActionSpec(
         name="block",
@@ -393,7 +396,7 @@ _ATOMIC_ACTIONS: dict[str, ActionSpec] = {
         allowed_task_types=None,
         preconditions=(),
         self_review_block=False,
-        needs_team_match=False,
+        needs_team_match=True,
     ),
     "unblock": ActionSpec(
         name="unblock",
@@ -413,7 +416,7 @@ _ATOMIC_ACTIONS: dict[str, ActionSpec] = {
         allowed_task_types=None,
         preconditions=(),
         self_review_block=False,
-        needs_team_match=False,
+        needs_team_match=True,
     ),
     "resume": ActionSpec(
         name="resume",
@@ -433,7 +436,7 @@ _ATOMIC_ACTIONS: dict[str, ActionSpec] = {
         allowed_task_types=None,
         preconditions=(),
         self_review_block=False,
-        needs_team_match=False,
+        needs_team_match=True,
     ),
     "submit_qa": ActionSpec(
         name="submit_qa",
@@ -443,7 +446,7 @@ _ATOMIC_ACTIONS: dict[str, ActionSpec] = {
         allowed_task_types=None,
         preconditions=(),
         self_review_block=False,
-        needs_team_match=False,
+        needs_team_match=True,
     ),
     "qa_pass": ActionSpec(
         name="qa_pass",
@@ -483,7 +486,7 @@ _ATOMIC_ACTIONS: dict[str, ActionSpec] = {
         allowed_task_types=None,
         preconditions=(),
         self_review_block=False,
-        needs_team_match=False,
+        needs_team_match=True,
     ),
     "submit_pm_review": ActionSpec(
         name="submit_pm_review",
@@ -493,7 +496,7 @@ _ATOMIC_ACTIONS: dict[str, ActionSpec] = {
         allowed_task_types=None,
         preconditions=(),
         self_review_block=False,
-        needs_team_match=False,
+        needs_team_match=True,
     ),
     "escalate_to_ceo": ActionSpec(
         name="escalate_to_ceo",
@@ -551,7 +554,7 @@ _ATOMIC_ACTIONS: dict[str, ActionSpec] = {
         allowed_task_types=None,
         preconditions=(),
         self_review_block=False,
-        needs_team_match=False,
+        needs_team_match=True,
     ),
 }
 
