@@ -366,13 +366,28 @@ class Choreographer:
         plan: str | None,
         briefing: dict[str, Any],
     ) -> tuple[Envelope | None, Any]:
-        """Pending-branch dispatch for i_will_work_on. Extracted to keep
-        the parent's return count under PLR0911. Returns (rejection|None,
-        task). Caller emits rejection via _emit_rejection and falls
-        through to the OK envelope when rejection is None.
+        """Pending-branch dispatch for i_will_work_on. Atomic: validates
+        the plan precondition BEFORE calling claim() so a missing-plan
+        rejection doesn't leave the task in `claimed` with no plan.
+
+        Pre-fix (2026-05-09 smoke Bug A): claim() ran first, then the
+        plan check failed → task was stuck in `claimed` because the
+        `_i_will_work_on_claimed` branch (the natural retry path) had
+        no plan-recovery logic. Now ordering is: guards → plan check →
+        claim → set_plan → start.
         """
         if guard := await self._run_claim_guards(agent_id=agent_id, task=t):
             return self._with_briefing(guard, briefing), t
+        # Plan precondition BEFORE any state mutation. Atomic invariant.
+        if not t.plan and not plan:
+            return Envelope.tracing_gap(
+                missing=["plan"],
+                remediate=(
+                    f"call i_will_work_on(task_id='{task_id}',"
+                    f" plan='<one-paragraph plan describing what you will do>')"
+                ),
+                context_briefing=briefing,
+            ), t
         # claim() transitions pending → claimed; idempotent for same assignee.
         # Branch creation runs inside _finalize_claim and rolls back on
         # failure (audit P0-7 / S-01); we surface the failure as an envelope
@@ -393,15 +408,6 @@ class Choreographer:
             return Envelope.invalid_state(
                 message="claim failed",
                 remediate="task may already be claimed by another agent",
-                context_briefing=briefing,
-            ), t
-        if not t.plan and not plan:
-            return Envelope.tracing_gap(
-                missing=["plan"],
-                remediate=(
-                    f"call i_will_work_on(task_id='{task_id}',"
-                    f" plan='<one-paragraph plan describing what you will do>')"
-                ),
                 context_briefing=briefing,
             ), t
         if plan:
@@ -454,14 +460,34 @@ class Choreographer:
         agent_id: UUID,
         task_id: UUID,
         t: Any,
+        plan: str | None,
         briefing: dict[str, Any],
     ) -> tuple[Envelope | None, Any]:
-        """claimed branch for i_will_work_on. Returns (rejection|None, task)."""
+        """claimed branch for i_will_work_on. Returns (rejection|None, task).
+
+        Recovery path (Bug A from 2026-05-09 smoke): if the task is in
+        `claimed` without a plan (e.g. orchestrator restart, prior
+        partial-claim race) and the caller now supplies one, set it
+        before start() instead of failing with "no plan recorded". If
+        the task still has no plan and none is supplied, surface the
+        same tracing_gap shape `_i_will_work_on_pending` uses.
+        """
         guard = await self._run_claim_guards(
             agent_id=agent_id, task=t, skip_sequence=True
         )
         if guard:
             return self._with_briefing(guard, briefing), None
+        if not t.plan and not plan:
+            return Envelope.tracing_gap(
+                missing=["plan"],
+                remediate=(
+                    f"call i_will_work_on(task_id='{task_id}',"
+                    f" plan='<one-paragraph plan describing what you will do>')"
+                ),
+                context_briefing=briefing,
+            ), None
+        if plan and not t.plan:
+            t = await self.task.set_plan(task_id, plan)
         t = await self.task.start(task_id, agent_id)
         if t is None:
             return self._start_failed_envelope(task_id, briefing), None
@@ -495,7 +521,7 @@ class Choreographer:
             )
         elif status == "claimed" and t.assigned_to == agent_id:
             rejection, t = await self._i_will_work_on_claimed(
-                agent_id, task_id, t, briefing
+                agent_id, task_id, t, plan, briefing
             )
         elif status == "in_progress" and t.assigned_to == agent_id:
             # Idempotent re-entry: respawned dev re-calling i_will_work_on

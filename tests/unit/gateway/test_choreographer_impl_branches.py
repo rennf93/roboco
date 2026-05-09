@@ -1084,3 +1084,57 @@ async def test_open_pr_does_not_create_pr_if_no_commits() -> None:
     assert "no commits" in body["message"]
     git_svc.create_pr.assert_not_called()
     git_svc.push_branch.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_i_will_work_on_missing_plan_does_not_claim_pending_task() -> None:
+    """Atomic invariant (Task 5 pattern, Bug A from 2026-05-09 smoke):
+    if `plan` is missing on the FIRST i_will_work_on call against a
+    pending task, the task must NOT be claimed. Pre-fix the verb ran
+    claim() BEFORE checking plan, leaving the task in `claimed` with
+    no plan — and `_i_will_work_on_claimed` had no recovery path so
+    the agent looped forever on `start failed`.
+    """
+    agent_id = uuid4()
+    task_id = uuid4()
+    task_svc = _wire_dev_task_svc(task_id, status="pending")
+    deps = _make_deps(task=task_svc)
+    c = Choreographer(deps)
+    env = await c.i_will_work_on(agent_id, task_id, plan=None)
+    body = env.as_dict()
+    assert body["error"] == "tracing_gap"
+    assert "plan" in body["missing"]
+    task_svc.claim.assert_not_called(), (
+        "claim() ran before plan precondition was satisfied — atomicity broken"
+    )
+
+
+@pytest.mark.asyncio
+async def test_i_will_work_on_claimed_with_no_plan_accepts_recovery_plan() -> None:
+    """Recovery path (Bug A from 2026-05-09 smoke): if the task is in
+    `claimed` state without a plan (e.g. from a prior partial-claim race
+    or an orchestrator restart), a fresh i_will_work_on call WITH plan
+    must set the plan and then start, not just call start() against a
+    plan-less task.
+    """
+    agent_id = uuid4()
+    task_id = uuid4()
+    task_svc = _wire_dev_task_svc(
+        task_id, status="claimed", assigned_to=agent_id, plan=None
+    )
+    started = MagicMock(
+        status="in_progress",
+        assigned_to=agent_id,
+        plan="recovery plan",
+        id=task_id,
+        title="t",
+        task_type="code",
+    )
+    task_svc.set_plan.return_value = started
+    task_svc.start.return_value = started
+    deps = _make_deps(task=task_svc)
+    c = Choreographer(deps)
+    env = await c.i_will_work_on(agent_id, task_id, plan="recovery plan")
+    body = env.as_dict()
+    assert body["error"] is None, f"expected success, got {body}"
+    task_svc.set_plan.assert_awaited_once()
