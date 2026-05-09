@@ -15,7 +15,6 @@ import pytest
 import structlog
 from roboco.services.gateway.choreographer import Choreographer, ChoreographerDeps
 from roboco.services.gateway.choreographer._impl import DelegateInputs
-from roboco.services.gateway.claim_guards import pm_cannot_execute_code_guard
 from roboco.services.gateway.envelope import Envelope
 
 
@@ -284,14 +283,6 @@ async def test_i_will_work_on_in_progress_assigned_to_self_idempotent() -> None:
 # ---------------------------------------------------------------------------
 # i_will_plan: pending claim returns None (line 1155)
 # ---------------------------------------------------------------------------
-
-
-def test_pm_cannot_execute_code_guard_passes_for_non_code_task() -> None:
-    """Direct guard unit test: PM + non-code task → no rejection.
-    Covers claim_guards.py:98 (the early-return for non-code task_type).
-    """
-    assert pm_cannot_execute_code_guard("cell_pm", "planning") is None
-    assert pm_cannot_execute_code_guard("main_pm", "documentation") is None
 
 
 @pytest.mark.asyncio

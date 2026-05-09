@@ -22,8 +22,6 @@ from roboco.services.gateway.choreographer._verb_runner import VerbRunner
 from roboco.services.gateway.claim_guards import (
     already_active_guard,
     paused_tasks_guard,
-    pm_cannot_execute_code_guard,
-    role_typed_claim_guard,
     sibling_sequence_guard,
 )
 from roboco.services.gateway.envelope import Envelope
@@ -343,23 +341,27 @@ class Choreographer:
         )
         return build_context_briefing(inputs)
 
-    @staticmethod
-    def _run_role_guards(
-        role: str, task_type: str, *, skip_pm_code: bool, skip_role_typed: bool
+    async def _run_claim_guards(
+        self,
+        *,
+        agent_id: UUID,
+        task: Any,
+        skip_sequence: bool = False,
     ) -> Envelope | None:
-        """Sync role-based guards (pm_cannot_execute_code, role_typed)."""
-        if not skip_pm_code and (
-            guard := pm_cannot_execute_code_guard(role, task_type)
-        ):
-            return guard
-        if not skip_role_typed and (guard := role_typed_claim_guard(role, task_type)):
-            return guard
-        return None
+        """Run concurrency-invariant claim guards. Returns rejection or None.
 
-    async def _run_claim_concurrency_guards(
-        self, agent_id: UUID, task: Any, *, skip_sequence: bool
-    ) -> Envelope | None:
-        """Async concurrency-based guards (already_active, paused, sequence)."""
+        Scope: only system-level concurrency invariants the lifecycle spec
+        does NOT model. Role/state/task_type checks now route through
+        ``spec.can_invoke_action`` (CLAIM_RULES + ActionSpec.allowed_task_types)
+        in the verb's spec gate; the former role-typed and
+        pm_cannot_execute_code guards have been deleted (Task 27, 2026-05-10).
+
+        Pre-gateway location: _helpers.py:124-204 + claim.py:121-180.
+
+        ``skip_sequence`` lets resumption-of-already-claimed-task call sites
+        skip the sibling-sequence check (the sequence was already validated
+        on the original claim).
+        """
         in_progress = await self.task.list_in_progress_for_agent(agent_id)
         if guard := already_active_guard(in_progress, task.id):
             return guard
@@ -371,42 +373,6 @@ class Choreographer:
             if guard := sibling_sequence_guard(task, siblings):
                 return guard
         return None
-
-    async def _run_claim_guards(
-        self,
-        *,
-        agent_id: UUID,
-        task: Any,
-        skip_role_typed: bool = False,
-        skip_pm_code: bool = False,
-        skip_sequence: bool = False,
-    ) -> Envelope | None:
-        """Run claim-time guards (Gate Set A). Returns rejection or None.
-
-        Pre-gateway location: _helpers.py:124-204 + claim.py:121-180.
-
-        Optional skip flags isolate guards that don't apply to a given verb:
-        - skip_role_typed: i_will_plan/claim_review/claim_doc_task have their
-          own role checks; only i_will_work_on uses role_typed_claim_guard.
-        - skip_pm_code: claim_review/claim_doc_task call sites cannot be PMs
-          to begin with; pm_cannot_execute_code is meaningless there.
-        - skip_sequence: some verbs (resumption of an already-claimed task)
-          do not need to re-validate sibling order.
-        """
-        agent = await self.task.agent_for(agent_id)
-        role = agent.role if agent is not None else "developer"
-        task_type = str(task.task_type)
-
-        if guard := self._run_role_guards(
-            role,
-            task_type,
-            skip_pm_code=skip_pm_code,
-            skip_role_typed=skip_role_typed,
-        ):
-            return guard
-        return await self._run_claim_concurrency_guards(
-            agent_id, task, skip_sequence=skip_sequence
-        )
 
     async def _fetch_siblings(self, task: Any) -> list[Any]:
         """Fetch sibling tasks for the sequence-order guard.
@@ -510,8 +476,6 @@ class Choreographer:
         if guard := await self._run_claim_guards(
             agent_id=agent_id,
             task=t,
-            skip_role_typed=True,
-            skip_pm_code=True,
             skip_sequence=True,
         ):
             return await self._emit_rejection(
@@ -592,14 +556,12 @@ class Choreographer:
         # - paused_tasks: agent has a paused task they should resume first
         # - sibling_sequence: an earlier-numbered sibling is still open
         # The role/state/task_type checks already passed via the spec gate
-        # above, so we skip the spec-redundant flags. These migrate into
-        # spec.extra_preconditions in a later task; until then, keep them
-        # imperative so concurrency invariants stay enforced.
+        # above. These migrate into spec.extra_preconditions in a later
+        # task; until then, keep them imperative so concurrency invariants
+        # stay enforced.
         if guard := await self._run_claim_guards(
             agent_id=ctx.agent_id,
             task=t,
-            skip_role_typed=True,
-            skip_pm_code=True,
         ):
             return await self._emit_rejection(
                 self._with_briefing(guard, briefing).with_introspection(
@@ -2508,7 +2470,7 @@ class Choreographer:
 
         Spec gate runs first (role membership + composed ``complete``
         action's source-status constraint, AWAITING_PM_REVIEW only).
-        Both rejections (role not in _PM_ROLES, status not awaiting_pm_review)
+        Both rejections (role not in spec._PM_ROLES, status not awaiting_pm_review)
         flow through ``spec.can_invoke_intent`` and surface as the
         spec-supplied rejection_kind. After the gate accepts, the
         verb body owns dispatch — ``complete`` has two divergent
@@ -2563,7 +2525,7 @@ class Choreographer:
         # AWAITING_PM_REVIEW. Verb body owns dispatch from here.
         if role_str == "cell_pm":
             return await self.cell_pm_complete(agent_id, task_id, notes)
-        # role_str == "main_pm" — _PM_ROLES has only these two members.
+        # role_str == "main_pm" — spec._PM_ROLES has only these two members.
         return await self.main_pm_complete(agent_id, task_id, notes)
 
     async def escalate_up(

@@ -142,8 +142,6 @@ class DocMixin(_Base):
         guard = await self._run_claim_guards(
             agent_id=doc_agent_id,
             task=t,
-            skip_role_typed=True,
-            skip_pm_code=True,
             skip_sequence=True,
         )
         if guard:

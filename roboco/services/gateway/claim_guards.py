@@ -1,9 +1,15 @@
-"""Claim-time predicates restored from pre-gateway _helpers.py:124-204.
+"""Concurrency-invariant claim-time predicates.
 
 These guards run BEFORE any task-status mutation in the claim verbs
 (``i_will_work_on``, ``i_will_plan``, ``claim_review``, ``claim_doc_task``).
 Each predicate returns a rejection ``Envelope`` if it fires; ``None`` if it
 passes. The first non-None return short-circuits the claim.
+
+Scope: only system-level concurrency invariants the lifecycle spec does
+NOT model live here. Role/state/task_type checks (the former
+``role_typed_claim_guard`` and ``pm_cannot_execute_code_guard``) now route
+through ``spec.can_invoke_action``'s CLAIM_RULES + ``ActionSpec
+.allowed_task_types`` and have been deleted (Task 27, 2026-05-10).
 
 Pre-gateway location at commit 0c3d15a:
     roboco/mcp/tasks/handlers/_helpers.py:124-204
@@ -19,9 +25,6 @@ from roboco.services.gateway.envelope import Envelope
 if TYPE_CHECKING:
     from uuid import UUID
 
-# Roles that may NOT claim a code task — pre-gateway _helpers.py:181-204.
-_PM_ROLES: frozenset[str] = frozenset({"cell_pm", "main_pm"})
-
 # Statuses that count as "still actively worked" — pre-gateway
 # _helpers.py:check_blocking_tasks 134-152.
 _ACTIVE_BLOCKING_STATUSES: frozenset[str] = frozenset(
@@ -31,15 +34,6 @@ _ACTIVE_BLOCKING_STATUSES: frozenset[str] = frozenset(
 # Terminal statuses that satisfy the sibling-sequence check —
 # pre-gateway claim.py:153.
 _TERMINAL_STATUSES: frozenset[str] = frozenset({"completed", "cancelled"})
-
-# Allowed task_types per role for the claim verb. Mirrors the role-typed
-# claim policy: developers do code-like work; QA reviews; documenters
-# document.  PMs cannot claim code (see pm_cannot_execute_code).
-_ROLE_TASK_TYPE_ALLOW: dict[str, frozenset[str]] = {
-    "developer": frozenset({"code", "research", "design"}),
-    "qa": frozenset(),  # QA never enters via i_will_work_on
-    "documenter": frozenset(),  # Doc never enters via i_will_work_on
-}
 
 
 def already_active_guard(
@@ -87,56 +81,18 @@ def paused_tasks_guard(paused_tasks: list[Any]) -> Envelope | None:
     )
 
 
-def pm_cannot_execute_code_guard(role: str, task_type: str) -> Envelope | None:
-    """Refuse cell_pm/main_pm from claiming a code task.
-
-    Pre-gateway: _helpers.py:_guard_pm_from_code_tasks 181-204.
-    """
-    if role not in _PM_ROLES:
-        return None
-    if task_type != "code":
-        return None
-    nice_role = role.replace("_", " ").title()
-    return Envelope.not_authorized(
-        message=(
-            f"{nice_role} cannot claim code tasks. PMs coordinate, never execute code."
-        ),
-        remediate=(
-            "PMs coordinate, never execute code. Delegate this to a "
-            "developer in your cell via delegate(parent_task_id, "
-            "title=..., description=..., assigned_to='be-dev-1', "
-            "team='backend')."
-        ),
-    )
-
-
-def role_typed_claim_guard(role: str, task_type: str) -> Envelope | None:
-    """Refuse cross-role claim attempts (developer claiming doc/qa, etc).
-
-    Pre-gateway: _helpers.py:_CLAIMABLE_STATUSES + the per-role status mapping
-    at lines 144-150 plus the implicit task_type cohesion.  The pre-gateway
-    code routed by status; here we route by ``task_type`` because the verbs
-    already split by status (claim_review, claim_doc_task vs i_will_work_on).
-
-    Only runs for non-PM roles; PMs route through pm_cannot_execute_code_guard
-    and i_will_plan instead.
-    """
-    if role in _PM_ROLES:
-        return None
-    if role not in _ROLE_TASK_TYPE_ALLOW:
-        # Unknown roles default to developer-like — silently allowed; the
-        # service-layer enforcement catches misuse downstream.
-        return None
-    allowed = _ROLE_TASK_TYPE_ALLOW[role]
-    if task_type in allowed:
-        return None
-    return Envelope.not_authorized(
-        message=(f"role {role!r} cannot claim a {task_type!r} task via i_will_work_on"),
-        remediate=(
-            "developer claims code/research/design; qa uses claim_review; "
-            "documenter uses claim_doc_task"
-        ),
-    )
+def _earlier_blocking_sibling(
+    target_task: Any, siblings: list[Any], my_sequence: int
+) -> Any | None:
+    """Return the first non-terminal sibling with a lower sequence, else None."""
+    for sib in siblings:
+        if sib.id == target_task.id:
+            continue
+        sib_seq = getattr(sib, "sequence", 0) or 0
+        sib_status = str(getattr(sib, "status", ""))
+        if sib_seq < my_sequence and sib_status not in _TERMINAL_STATUSES:
+            return sib
+    return None
 
 
 def sibling_sequence_guard(target_task: Any, siblings: list[Any]) -> Envelope | None:
@@ -154,20 +110,18 @@ def sibling_sequence_guard(target_task: Any, siblings: list[Any]) -> Envelope | 
     my_sequence = getattr(target_task, "sequence", 0) or 0
     if my_sequence == 0:
         return None
-    for sib in siblings:
-        if sib.id == target_task.id:
-            continue
-        sib_seq = getattr(sib, "sequence", 0) or 0
-        sib_status = str(getattr(sib, "status", ""))
-        if sib_seq < my_sequence and sib_status not in _TERMINAL_STATUSES:
-            return Envelope.invalid_state(
-                message=(
-                    f"sequence {my_sequence} blocked: earlier sibling "
-                    f"{sib.id} (sequence {sib_seq}) is in {sib_status}"
-                ),
-                remediate=(
-                    f"wait for sibling {sib.id} (sequence {sib_seq}) to "
-                    "reach completed/cancelled before claiming this task"
-                ),
-            )
-    return None
+    blocker = _earlier_blocking_sibling(target_task, siblings, my_sequence)
+    if blocker is None:
+        return None
+    sib_seq = getattr(blocker, "sequence", 0) or 0
+    sib_status = str(getattr(blocker, "status", ""))
+    return Envelope.invalid_state(
+        message=(
+            f"sequence {my_sequence} blocked: earlier sibling "
+            f"{blocker.id} (sequence {sib_seq}) is in {sib_status}"
+        ),
+        remediate=(
+            f"wait for sibling {blocker.id} (sequence {sib_seq}) to "
+            "reach completed/cancelled before claiming this task"
+        ),
+    )
