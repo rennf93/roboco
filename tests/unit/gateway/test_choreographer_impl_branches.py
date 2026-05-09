@@ -71,6 +71,19 @@ def _make_deps(**overrides: Any) -> ChoreographerDeps:
         "evidence_repo": AsyncMock(),
     }
     base.update(overrides)
+    # VerbRunner wraps composed atomic actions in
+    # ``task.session.begin_nested()``. AsyncMock auto-attribute access
+    # would return an unawaitable coroutine, breaking the
+    # ``async with`` protocol. Overwrite session with a MagicMock that
+    # implements the async-context-manager protocol explicitly.
+    task_dep = base["task"]
+    task_dep.session = MagicMock()
+    task_dep.session.begin_nested = MagicMock(
+        return_value=MagicMock(
+            __aenter__=AsyncMock(return_value=None),
+            __aexit__=AsyncMock(return_value=False),
+        )
+    )
     repo = base["evidence_repo"]
     for method in (
         "list_unread_a2a",
@@ -963,7 +976,11 @@ def test_resolve_skill_string_entries() -> None:
 
 @pytest.mark.asyncio
 async def test_i_will_plan_pending_claim_returns_none_emit_rejection() -> None:
-    """Forces the await self._emit_rejection in the failed-claim branch."""
+    """When claim() returns None inside the runner, the savepoint rolls
+    back and the runner-failure path surfaces as invalid_state. Pre-spec
+    this branched into a hand-rolled "claim failed" message; now it is
+    emitted via _claim_plan_start_run's exception handler.
+    """
     pm_id = uuid4()
     task_id = uuid4()
     task = MagicMock(
@@ -975,10 +992,13 @@ async def test_i_will_plan_pending_claim_returns_none_emit_rejection() -> None:
         team="backend",
         parent_task_id=None,
         task_type="planning",
+        quick_context=None,
     )
     task_svc = AsyncMock()
     task_svc.get.return_value = task
-    task_svc.agent_for.return_value = MagicMock(role="cell_pm", team="backend")
+    task_svc.agent_for.return_value = MagicMock(
+        id=pm_id, role="cell_pm", team="backend", slug=None
+    )
     task_svc.list_in_progress_for_agent.return_value = []
     task_svc.list_paused_for_agent.return_value = []
     task_svc.get_subtasks.return_value = []
@@ -988,7 +1008,7 @@ async def test_i_will_plan_pending_claim_returns_none_emit_rejection() -> None:
     env = await c.i_will_plan(pm_id, task_id, plan="my plan that is long enough")
     body = env.as_dict()
     assert body["error"] == "invalid_state"
-    assert "claim failed" in body["message"]
+    assert "verb runner failed" in body["message"]
 
 
 # ---------------------------------------------------------------------------

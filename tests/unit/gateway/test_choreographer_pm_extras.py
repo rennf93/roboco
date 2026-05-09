@@ -30,6 +30,19 @@ def _make_deps(**overrides: Any) -> ChoreographerDeps:
         "evidence_repo": AsyncMock(),
     }
     base.update(overrides)
+    # VerbRunner wraps composed atomic actions in
+    # ``task.session.begin_nested()``. AsyncMock auto-attribute access
+    # would return an unawaitable coroutine, breaking the
+    # ``async with`` protocol. Overwrite session with a MagicMock that
+    # implements the async-context-manager protocol explicitly.
+    task = base["task"]
+    task.session = MagicMock()
+    task.session.begin_nested = MagicMock(
+        return_value=MagicMock(
+            __aenter__=AsyncMock(return_value=None),
+            __aexit__=AsyncMock(return_value=False),
+        )
+    )
     repo = base["evidence_repo"]
     for method in (
         "list_unread_a2a",
@@ -78,9 +91,12 @@ async def test_i_will_plan_claims_starts_and_sets_plan() -> None:
     )
     task_svc = AsyncMock()
     task_svc.get.return_value = pending
-    task_svc.agent_for.return_value = MagicMock(role="cell_pm", team="backend")
+    task_svc.agent_for.return_value = MagicMock(
+        id=pm_id, role="cell_pm", team="backend", slug=None
+    )
     task_svc.list_in_progress_for_agent.return_value = []
     task_svc.list_paused_for_agent.return_value = []
+    task_svc.get_subtasks.return_value = []
     task_svc.claim.return_value = claimed
     task_svc.set_plan.return_value = claimed
     task_svc.start.return_value = started
@@ -160,9 +176,12 @@ async def test_i_will_plan_calls_claim_when_pre_assigned_and_pending() -> None:
     )
     task_svc = AsyncMock()
     task_svc.get.return_value = pending_pre_assigned
-    task_svc.agent_for.return_value = MagicMock(role="main_pm", team="main_pm")
+    task_svc.agent_for.return_value = MagicMock(
+        id=pm_id, role="main_pm", team="main_pm", slug=None
+    )
     task_svc.list_in_progress_for_agent.return_value = []
     task_svc.list_paused_for_agent.return_value = []
+    task_svc.get_subtasks.return_value = []
     task_svc.claim.return_value = claimed
     task_svc.set_plan.return_value = claimed
     task_svc.start.return_value = started
@@ -207,9 +226,12 @@ async def test_i_will_plan_surfaces_start_failure_instead_of_faking_ok() -> None
     )
     task_svc = AsyncMock()
     task_svc.get.return_value = pending
-    task_svc.agent_for.return_value = MagicMock(role="main_pm", team="main_pm")
+    task_svc.agent_for.return_value = MagicMock(
+        id=pm_id, role="main_pm", team="main_pm", slug=None
+    )
     task_svc.list_in_progress_for_agent.return_value = []
     task_svc.list_paused_for_agent.return_value = []
+    task_svc.get_subtasks.return_value = []
     task_svc.claim.return_value = claimed
     task_svc.set_plan.return_value = claimed
     task_svc.start.return_value = None  # the bug: start fails silently
@@ -260,8 +282,14 @@ async def test_i_will_plan_idempotent_when_already_in_progress_for_caller() -> N
 
 
 @pytest.mark.asyncio
-async def test_i_will_plan_idempotent_when_already_claimed_for_caller() -> None:
-    """Same regression but task is in claimed (post-claim, pre-start)."""
+async def test_i_will_plan_recovery_when_already_claimed_for_caller() -> None:
+    """Same regression but task is in claimed (post-claim, pre-start).
+
+    Recovery semantics (Task 12 spec migration): when the caller already
+    owns the task in `claimed`, the verb runs only set_plan + start
+    (skipping re-claim, which the spec gate would reject because CLAIMED
+    is not a source state for `claim`). End state is `in_progress`.
+    """
     pm_id = uuid4()
     task_id = uuid4()
     claimed = MagicMock(
@@ -273,19 +301,35 @@ async def test_i_will_plan_idempotent_when_already_claimed_for_caller() -> None:
         parent_task_id=None,
         sequence=0,
     )
+    started = MagicMock(
+        id=task_id,
+        status="in_progress",
+        plan="re-entry plan",
+        assigned_to=pm_id,
+        task_type="planning",
+    )
     task_svc = AsyncMock()
     task_svc.get.return_value = claimed
-    task_svc.agent_for.return_value = MagicMock(role="main_pm", team="main_pm")
+    task_svc.agent_for.return_value = MagicMock(
+        id=pm_id, role="main_pm", team="main_pm", slug=None
+    )
     task_svc.list_in_progress_for_agent.return_value = []
     task_svc.list_paused_for_agent.return_value = []
+    task_svc.get_subtasks.return_value = []
+    task_svc.set_plan.return_value = claimed
+    task_svc.start.return_value = started
     deps = _make_deps(task=task_svc)
     c = Choreographer(deps)
 
     env = await c.i_will_plan(pm_id, task_id, plan="re-entry plan")
 
     assert env.error is None
-    assert env.status == "claimed"
+    assert env.status == "in_progress"
     task_svc.heartbeat.assert_awaited()
+    # Recovery does NOT re-call claim — CLAIMED is not a claim source state.
+    task_svc.claim.assert_not_awaited()
+    # Recovery DOES call start to push claimed → in_progress.
+    task_svc.start.assert_awaited_once_with(task_id, pm_id)
 
 
 @pytest.mark.asyncio

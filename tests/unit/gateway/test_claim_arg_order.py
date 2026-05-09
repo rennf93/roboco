@@ -248,9 +248,12 @@ async def test_i_will_plan_calls_claim_and_start_with_task_id_first() -> None:
     )
     task_svc = AsyncMock()
     task_svc.get.return_value = pending
-    task_svc.agent_for.return_value = MagicMock(role="cell_pm", team="backend")
+    task_svc.agent_for.return_value = MagicMock(
+        id=pm_id, role="cell_pm", team="backend", slug=None
+    )
     task_svc.list_in_progress_for_agent.return_value = []
     task_svc.list_paused_for_agent.return_value = []
+    task_svc.get_subtasks.return_value = []
     task_svc.claim.return_value = claimed
     task_svc.set_plan.return_value = claimed
     task_svc.start.return_value = started

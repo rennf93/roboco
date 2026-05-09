@@ -85,12 +85,14 @@ class ChoreographerDeps:
 
 
 @dataclass(frozen=True)
-class _IWillWorkOnContext:
-    """Bundle of fields ``i_will_work_on`` threads into its sub-helpers.
+class _ClaimPlanStartContext:
+    """Bundle of fields shared by ``i_will_work_on`` / ``i_will_plan`` helpers.
 
-    Frozen so the helper sites can't mutate caller state and to keep
-    PLR0913 (too many positional args) at bay. Internal — not part of
-    the verb's public surface.
+    Both verbs compose the same (claim, set_plan, start) sequence and
+    share gating + recovery branches; they only differ in role gate
+    (DEV vs PM) and verb name on rejections / next_hint. Frozen so the
+    helper sites can't mutate caller state and to keep PLR0913 (too
+    many positional args) at bay.
     """
 
     agent_id: UUID
@@ -99,6 +101,7 @@ class _IWillWorkOnContext:
     role_str: str
     briefing: dict[str, Any]
     plan: str | None
+    verb_name: str
 
 
 @dataclass(frozen=True)
@@ -405,7 +408,7 @@ class Choreographer:
 
     async def _resume_from_claimed(
         self,
-        ctx: _IWillWorkOnContext,
+        ctx: _ClaimPlanStartContext,
     ) -> Envelope:
         """Recover from a stuck `claimed` state owned by the same agent.
 
@@ -414,7 +417,8 @@ class Choreographer:
         already-owned task. This branch keeps the spec contract intact
         (we never call `claim` again) but lets the agent recover by
         running just set_plan (if a plan was supplied or stored) and
-        start. Mirrors the pre-spec ``_i_will_work_on_claimed`` helper.
+        start. Shared between ``i_will_work_on`` and ``i_will_plan`` —
+        ``ctx.verb_name`` selects the verb-specific labels / next_hint.
         """
         agent_id = ctx.agent_id
         task_id = ctx.task_id
@@ -422,19 +426,20 @@ class Choreographer:
         briefing = ctx.briefing
         role_str = ctx.role_str
         plan = ctx.plan
+        verb_name = ctx.verb_name
         if not t.plan and not plan:
             return await self._emit_rejection(
                 Envelope.tracing_gap(
                     missing=["plan"],
                     remediate=(
-                        f"call i_will_work_on(task_id='{task_id}',"
+                        f"call {verb_name}(task_id='{task_id}',"
                         f" plan='<one-paragraph plan describing what you will do>')"
                     ),
                     context_briefing=briefing,
                 ).with_introspection(task=t, role=role_str),
                 agent_id=agent_id,
                 task_id=task_id,
-                verb="i_will_work_on",
+                verb=verb_name,
             )
         # Concurrency guards still apply (paused / already-active in another
         # task). Sibling sequence is skipped on resumption — see
@@ -452,7 +457,7 @@ class Choreographer:
                 ),
                 agent_id=agent_id,
                 task_id=task_id,
-                verb="i_will_work_on",
+                verb=verb_name,
             )
         try:
             if plan and not t.plan:
@@ -467,7 +472,7 @@ class Choreographer:
                 ).with_introspection(task=t, role=role_str),
                 agent_id=agent_id,
                 task_id=task_id,
-                verb="i_will_work_on",
+                verb=verb_name,
             )
         if t is None:
             return await self._emit_rejection(
@@ -481,34 +486,35 @@ class Choreographer:
                 ).with_introspection(task=None, role=role_str),
                 agent_id=agent_id,
                 task_id=task_id,
-                verb="i_will_work_on",
+                verb=verb_name,
             )
         await self._touch(task_id)
         return Envelope.ok(
             status=str(t.status),
             task_id=str(task_id),
-            next=spec_module._INTENT_VERBS["i_will_work_on"].next_hint(t),
+            next=spec_module._INTENT_VERBS[verb_name].next_hint(t),
             context_briefing=briefing,
         ).with_introspection(task=t, role=role_str)
 
-    async def _i_will_work_on_gate(
+    async def _claim_plan_start_gate(
         self,
-        ctx: _IWillWorkOnContext,
+        ctx: _ClaimPlanStartContext,
         role: spec_module.Role,
         spec_ctx: spec_module.Context,
     ) -> Envelope | None:
-        """Run all gates for ``i_will_work_on``. Returns rejection or None.
+        """Run all gates for an ``i_will_work_on`` / ``i_will_plan`` call.
 
         Order: spec.can_invoke_intent -> behavioral claim guards
         (already_active / paused / sibling_sequence). Any rejection
         short-circuits with the appropriate envelope.
 
-        Per-role claim authority (CLAIM_RULES) is now enforced inside
+        Per-role claim authority (CLAIM_RULES) is enforced inside
         spec.can_invoke_action when action == "claim", called by
         can_invoke_intent, so no separate spec.can_claim call is needed.
         """
         t, briefing, role_str = ctx.task, ctx.briefing, ctx.role_str
-        decision = spec_module.can_invoke_intent(role, "i_will_work_on", t, spec_ctx)
+        verb_name = ctx.verb_name
+        decision = spec_module.can_invoke_intent(role, verb_name, t, spec_ctx)
         if not decision.allowed:
             return await self._emit_rejection(
                 Envelope.from_decision(decision, briefing=briefing).with_introspection(
@@ -516,7 +522,7 @@ class Choreographer:
                 ),
                 agent_id=ctx.agent_id,
                 task_id=ctx.task_id,
-                verb="i_will_work_on",
+                verb=verb_name,
             )
         # Behavioral pre-flight guards the spec doesn't yet model:
         # - already_active: agent has another in_progress task elsewhere
@@ -538,23 +544,25 @@ class Choreographer:
                 ),
                 agent_id=ctx.agent_id,
                 task_id=ctx.task_id,
-                verb="i_will_work_on",
+                verb=verb_name,
             )
         return None
 
-    async def _i_will_work_on_run(
-        self, ctx: _IWillWorkOnContext, agent: Any, spec_ctx: spec_module.Context
+    async def _claim_plan_start_run(
+        self, ctx: _ClaimPlanStartContext, agent: Any, spec_ctx: spec_module.Context
     ) -> Envelope:
         """Execute composed (claim, set_plan, start) via the verb runner.
 
         Caller has already validated all gates. Translates runner
         exceptions and ``None`` returns into invalid_state envelopes
-        so the agent gets a remediation instead of a 500.
+        so the agent gets a remediation instead of a 500. Shared
+        between ``i_will_work_on`` and ``i_will_plan``.
         """
         t, briefing, role_str = ctx.task, ctx.briefing, ctx.role_str
+        verb_name = ctx.verb_name
         runner = self._verb_runner()
         try:
-            t = await runner.run_intent("i_will_work_on", t, agent, spec_ctx)
+            t = await runner.run_intent(verb_name, t, agent, spec_ctx)
         except Exception as exc:
             return await self._emit_rejection(
                 Envelope.invalid_state(
@@ -564,7 +572,7 @@ class Choreographer:
                 ).with_introspection(task=t, role=role_str),
                 agent_id=ctx.agent_id,
                 task_id=ctx.task_id,
-                verb="i_will_work_on",
+                verb=verb_name,
             )
         if t is None:
             # A composed atomic action returned None (e.g. start() rejected
@@ -582,13 +590,13 @@ class Choreographer:
                 ).with_introspection(task=None, role=role_str),
                 agent_id=ctx.agent_id,
                 task_id=ctx.task_id,
-                verb="i_will_work_on",
+                verb=verb_name,
             )
         await self._touch(ctx.task_id)
         return Envelope.ok(
             status=str(t.status),
             task_id=str(ctx.task_id),
-            next=spec_module._INTENT_VERBS["i_will_work_on"].next_hint(t),
+            next=spec_module._INTENT_VERBS[verb_name].next_hint(t),
             context_briefing=briefing,
         ).with_introspection(task=t, role=role_str)
 
@@ -633,13 +641,14 @@ class Choreographer:
             actor_slug=getattr(agent, "slug", None) if agent is not None else None,
             original_developer_slug=_extract_original_developer(t),
         )
-        ctx = _IWillWorkOnContext(
+        ctx = _ClaimPlanStartContext(
             agent_id=agent_id,
             task_id=task_id,
             task=t,
             role_str=role_str,
             briefing=briefing,
             plan=plan,
+            verb_name="i_will_work_on",
         )
         # Idempotent re-entry: agent already owns the task in_progress.
         # Touch heartbeat and short-circuit before the spec gate (which
@@ -662,9 +671,9 @@ class Choreographer:
         # smoke test).
         if str(t.status) == "claimed" and t.assigned_to == agent_id:
             return await self._resume_from_claimed(ctx)
-        if rejection := await self._i_will_work_on_gate(ctx, role, spec_ctx):
+        if rejection := await self._claim_plan_start_gate(ctx, role, spec_ctx):
             return rejection
-        return await self._i_will_work_on_run(ctx, agent, spec_ctx)
+        return await self._claim_plan_start_run(ctx, agent, spec_ctx)
 
     @staticmethod
     def _with_briefing(env: Envelope, briefing: dict[str, Any]) -> Envelope:
@@ -1241,83 +1250,17 @@ class Choreographer:
 
     # claim_doc_task + i_documented moved to ``doc.py`` (audit P2-2).
 
-    async def _i_will_plan_preflight(
-        self, pm_agent_id: UUID, task_id: UUID, t: Any, plan: str
-    ) -> Envelope | None:
-        """Run i_will_plan's role / status / plan / claim guards. None = pass.
-
-        Idempotent on re-entry: if the caller already owns the task in
-        claimed/in_progress (their previous spawn moved it forward), the
-        verb returns OK with current state instead of rejecting. Without
-        this, a respawned PM hits 'task in in_progress, expected pending'
-        and loops until the reaper drops the claim back to pending —
-        producing the cycle smoke 2026-05-04 captured.
-        """
-        agent = await self.task.agent_for(pm_agent_id)
-        role = str(agent.role) if agent is not None else ""
-        # Role-only gate: i_will_plan is principle-level reserved for PMs.
-        # The status check below ((pending → in_progress) is a separate gate
-        # whose rejection must surface as `invalid_state`, not
-        # `not_authorized` — agents react to those two errors differently.
-        if role not in ("cell_pm", "main_pm"):
-            return Envelope.not_authorized(
-                message="only cell_pm or main_pm may call i_will_plan",
-                remediate="this verb is reserved for PMs",
-                context_briefing=await self._briefing_for(pm_agent_id, task_id),
-            ).with_introspection(task=t, role=role)
-        status = str(t.status)
-        if status != "pending":
-            # Idempotent re-entry: caller already owns this task in a
-            # post-claim state. Don't reject; the i_will_plan body will
-            # short-circuit on the same condition and return OK.
-            if status in ("claimed", "in_progress") and t.assigned_to == pm_agent_id:
-                return None
-            return Envelope.invalid_state(
-                message=f"task {task_id} is in {t.status}, expected pending",
-                remediate="call give_me_work() to find a pending task to plan",
-                context_briefing=await self._briefing_for(pm_agent_id, task_id),
-            )
-        if not plan or not plan.strip():
-            return Envelope.tracing_gap(
-                missing=["plan"],
-                remediate=(
-                    f"call i_will_plan(task_id='{task_id}',"
-                    " plan='<one-paragraph plan describing the breakdown>')"
-                ),
-                context_briefing=await self._briefing_for(pm_agent_id, task_id),
-            )
-        # Gate Set A: ALREADY_ACTIVE / PAUSED guards only.
-        #
-        # `pm_cannot_execute_code_guard` is INTENTIONALLY skipped here:
-        # PMs PLAN code-typed parent tasks all the time (they decompose
-        # the work into developer-claimable subtasks via delegate).
-        # The "PMs cannot execute code" rule belongs to the EXECUTION
-        # verb (`i_will_work_on`), not the PLANNING verb (`i_will_plan`).
-        # Pre-fix this guard fired on i_will_plan and deadlocked any
-        # code-typed parent task — see the 2026-05-08 smoke-test trace.
-        #
-        # `role_typed_claim_guard` is also skipped because i_will_plan
-        # services only PM roles which aren't in its allow-table.
-        guard = await self._run_claim_guards(
-            agent_id=pm_agent_id,
-            task=t,
-            skip_role_typed=True,
-            skip_pm_code=True,
-        )
-        if guard:
-            return self._with_briefing(
-                guard, await self._briefing_for(pm_agent_id, task_id)
-            )
-        return None
-
     async def i_will_plan(
         self, pm_agent_id: UUID, task_id: UUID, plan: str
     ) -> Envelope:
         """PM mirror of i_will_work_on for parent tasks.
 
-        Transitions a pending task owned (or claimable by) this PM into
-        in_progress with the supplied plan. Required before a PM can call
-        ``delegate`` to spawn subtasks.
+        Atomic: spec.can_invoke_intent runs before any state mutation;
+        the composed (claim, set_plan, start) sequence is wrapped in a
+        savepoint by the runner so a mid-sequence failure rolls back
+        the DB. Idempotent re-entry: a respawned PM re-calling on a
+        task they already own in claimed/in_progress just refreshes
+        the heartbeat.
         """
         t = await self.task.get(task_id)
         if t is None:
@@ -1328,84 +1271,59 @@ class Choreographer:
                 verb="i_will_plan",
             )
         agent = await self.task.agent_for(pm_agent_id)
-        role = str(agent.role) if agent is not None else "cell_pm"
-        rejection = await self._i_will_plan_preflight(pm_agent_id, task_id, t, plan)
-        if rejection is not None:
-            rejection.with_introspection(task=t, role=role)
+        role_str = str(agent.role) if agent is not None else "cell_pm"
+        briefing = await self._briefing_for(pm_agent_id, task_id)
+        try:
+            role = spec_module.Role(role_str)
+        except ValueError:
             return await self._emit_rejection(
-                rejection,
+                Envelope.not_authorized(
+                    message=f"unknown role '{role_str}'",
+                    remediate="role is not declared in the lifecycle spec",
+                    context_briefing=briefing,
+                ).with_introspection(task=t, role=role_str),
                 agent_id=pm_agent_id,
                 task_id=task_id,
                 verb="i_will_plan",
             )
-
-        # Idempotent re-entry: respawned PM that already owns this task in
-        # claimed/in_progress short-circuits with the current state. Touch
-        # the heartbeat so the reaper sees fresh activity, then return OK
-        # pointing at delegate as the next call. Without this short-circuit
-        # the body would reach start() — which rejects because status is
-        # not 'claimed' on the in_progress branch — and emit a misleading
-        # invalid_state envelope.
-        status = str(t.status)
-        if status in ("claimed", "in_progress") and t.assigned_to == pm_agent_id:
+        spec_ctx = spec_module.Context(
+            plan=plan,
+            actor_id=pm_agent_id,
+            actor_slug=getattr(agent, "slug", None) if agent is not None else None,
+            original_developer_slug=_extract_original_developer(t),
+        )
+        ctx = _ClaimPlanStartContext(
+            agent_id=pm_agent_id,
+            task_id=task_id,
+            task=t,
+            role_str=role_str,
+            briefing=briefing,
+            plan=plan,
+            verb_name="i_will_plan",
+        )
+        # Idempotent re-entry: PM already owns the task in_progress.
+        # Touch heartbeat and short-circuit before the spec gate (which
+        # would otherwise reject because in_progress is not a source state
+        # for the composed `claim` action).
+        if str(t.status) == "in_progress" and t.assigned_to == pm_agent_id:
             await self._touch(task_id)
             return Envelope.ok(
-                status=status,
+                status=str(t.status),
                 task_id=str(task_id),
-                next=(
-                    "task already claimed; delegate(parent_task_id, ...) for"
-                    " each subtask, then i_am_idle"
-                ),
-                context_briefing=await self._briefing_for(pm_agent_id, task_id),
-            ).with_introspection(task=t, role=role)
-
-        # Always call claim() when status is pending — even if the PM is
-        # already in assigned_to (CEO pre-assigns root tasks at creation).
-        # claim() transitions pending → claimed; without that, start() below
-        # would refuse the claimed → in_progress transition and silently
-        # return None, leaving the task stuck in pending under a misleading
-        # OK envelope. claim() is idempotent for the same assignee.
-        if str(t.status) == "pending":
-            t = await self.task.claim(task_id, pm_agent_id)
-            if t is None:
-                return await self._emit_rejection(
-                    Envelope.invalid_state(
-                        message="claim failed",
-                        remediate="task may already be claimed by another agent",
-                        context_briefing=await self._briefing_for(pm_agent_id, task_id),
-                    ),
-                    agent_id=pm_agent_id,
-                    task_id=task_id,
-                    verb="i_will_plan",
-                )
-        await self.task.set_plan(task_id, plan)
-        t = await self.task.start(task_id, pm_agent_id)
-        if t is None:
-            # start() returns None on invalid status / ownership / missing
-            # plan. Surface the failure instead of pretending success.
-            return await self._emit_rejection(
-                Envelope.invalid_state(
-                    message=f"start failed for task {task_id}",
-                    remediate=(
-                        "task not in a startable state"
-                        " (claimed/paused/needs_revision) or no plan recorded"
-                    ),
-                    context_briefing=await self._briefing_for(pm_agent_id, task_id),
-                ),
-                agent_id=pm_agent_id,
-                task_id=task_id,
-                verb="i_will_plan",
-            )
-        await self._touch(task_id)
-        return Envelope.ok(
-            status=str(t.status),
-            task_id=str(task_id),
-            next=(
-                "delegate(parent_task_id, title, description, assigned_to, team)"
-                " for each subtask, then i_am_idle"
-            ),
-            context_briefing=await self._briefing_for(pm_agent_id, task_id),
-        ).with_introspection(task=t, role=role)
+                next=spec_module._INTENT_VERBS["i_will_plan"].next_hint(t),
+                context_briefing=briefing,
+            ).with_introspection(task=t, role=role_str)
+        # Recovery re-entry: task stuck in `claimed` (e.g. orchestrator restart
+        # or a partial-claim race) and the PM already owns it. The spec
+        # `claim` action's source-statuses do NOT include CLAIMED, so the spec
+        # gate would reject. Surface this as a runner call that runs only
+        # set_plan + start. Without this block, a PM reclaiming from a
+        # crashed mid-sequence would loop forever.
+        if str(t.status) == "claimed" and t.assigned_to == pm_agent_id:
+            return await self._resume_from_claimed(ctx)
+        if rejection := await self._claim_plan_start_gate(ctx, role, spec_ctx):
+            return rejection
+        return await self._claim_plan_start_run(ctx, agent, spec_ctx)
 
     async def delegate(
         self,
@@ -1489,8 +1407,7 @@ class Choreographer:
 
         Role gate stays role-only here (not via is_verb_allowed) — the
         parent-status check is a separate gate that must surface as
-        `invalid_state`, not `not_authorized`. See _i_will_plan_preflight
-        for the same rationale.
+        `invalid_state`, not `not_authorized`.
         """
         if agent is None or agent.role not in ("cell_pm", "main_pm"):
             return Envelope.not_authorized(
