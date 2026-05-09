@@ -442,3 +442,14 @@ help:
 show-python-versions:
 	@echo "Supported Python versions: $(PYTHON_VERSIONS)"
 	@echo "Default Python version: $(DEFAULT_PYTHON)"
+
+# =============================================================================
+# LIFECYCLE ARTIFACTS
+# =============================================================================
+
+# Regenerate canonical lifecycle artifacts (markdown / JSON / prompt fragments)
+# from roboco/lifecycle/spec.py. Output is deterministic; CI gates on
+# `make lifecycle && git diff --exit-code`.
+.PHONY: lifecycle
+lifecycle:
+	uv run python scripts/build_lifecycle_artifacts.py

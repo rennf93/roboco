@@ -1,0 +1,558 @@
+{
+  "claim_rules": {
+    "auditor": [],
+    "cell_pm": [
+      "pending"
+    ],
+    "ceo": [],
+    "developer": [
+      "needs_revision",
+      "pending"
+    ],
+    "documenter": [
+      "awaiting_documentation",
+      "pending"
+    ],
+    "head_marketing": [],
+    "main_pm": [
+      "pending"
+    ],
+    "product_owner": [],
+    "qa": [
+      "awaiting_qa"
+    ]
+  },
+  "intents": [
+    {
+      "allowed_roles": [
+        "documenter"
+      ],
+      "composes": [],
+      "description": "Claim awaiting_documentation. Returns evidence inline.",
+      "name": "claim_doc_task",
+      "side_effects": []
+    },
+    {
+      "allowed_roles": [
+        "qa"
+      ],
+      "composes": [],
+      "description": "Claim a task in awaiting_qa for review. Returns evidence inline.",
+      "name": "claim_review",
+      "side_effects": []
+    },
+    {
+      "allowed_roles": [
+        "cell_pm",
+        "main_pm"
+      ],
+      "composes": [
+        "complete"
+      ],
+      "description": "Cell PM merges leaf PR + transitions to completed; Main PM merges root PR + escalates to CEO.",
+      "name": "complete",
+      "side_effects": [
+        "pr_merge"
+      ]
+    },
+    {
+      "allowed_roles": [
+        "cell_pm",
+        "main_pm"
+      ],
+      "composes": [
+        "create_subtask"
+      ],
+      "description": "Create a subtask under the current task. Validates the delegation chain (main_pm->cell_pm; cell_pm->its team's devs) and the assignee-vs-task_type rule (Cell PMs get planning-typed tasks; devs get code/documentation).",
+      "name": "delegate",
+      "side_effects": []
+    },
+    {
+      "allowed_roles": [
+        "head_marketing",
+        "main_pm",
+        "product_owner"
+      ],
+      "composes": [
+        "escalate_to_ceo"
+      ],
+      "description": "Escalate to CEO with reason. Transitions to awaiting_ceo_approval.",
+      "name": "escalate_to_ceo",
+      "side_effects": []
+    },
+    {
+      "allowed_roles": [
+        "cell_pm",
+        "main_pm"
+      ],
+      "composes": [],
+      "description": "Escalate to your role's escalation_target.",
+      "name": "escalate_up",
+      "side_effects": []
+    },
+    {
+      "allowed_roles": [
+        "qa"
+      ],
+      "composes": [
+        "qa_fail"
+      ],
+      "description": "Fail QA with concrete issues. Transitions to needs_revision.",
+      "name": "fail_review",
+      "side_effects": []
+    },
+    {
+      "allowed_roles": [
+        "cell_pm",
+        "developer",
+        "documenter",
+        "main_pm",
+        "qa"
+      ],
+      "composes": [],
+      "description": "Return your most-actionable task or signal idle.",
+      "name": "give_me_work",
+      "side_effects": []
+    },
+    {
+      "allowed_roles": [
+        "developer",
+        "documenter",
+        "qa"
+      ],
+      "composes": [
+        "block"
+      ],
+      "description": "Escalate to PM. Logs a struggle journal entry.",
+      "name": "i_am_blocked",
+      "side_effects": []
+    },
+    {
+      "allowed_roles": [
+        "developer"
+      ],
+      "composes": [
+        "submit_verification",
+        "submit_qa"
+      ],
+      "description": "Submit work for QA. Auto-runs in_progress->verifying then verifying->awaiting_qa. Strict - PR must be open (call open_pr first) and >=1 commit.",
+      "name": "i_am_done",
+      "side_effects": []
+    },
+    {
+      "allowed_roles": [
+        "auditor",
+        "cell_pm",
+        "developer",
+        "documenter",
+        "head_marketing",
+        "main_pm",
+        "product_owner",
+        "qa"
+      ],
+      "composes": [],
+      "description": "Signal you have no active work. PMs auto-pause owned in_progress tasks.",
+      "name": "i_am_idle",
+      "side_effects": []
+    },
+    {
+      "allowed_roles": [
+        "documenter"
+      ],
+      "composes": [
+        "docs_complete"
+      ],
+      "description": "Signal docs complete. Transitions to awaiting_pm_review.",
+      "name": "i_documented",
+      "side_effects": []
+    },
+    {
+      "allowed_roles": [
+        "cell_pm",
+        "main_pm"
+      ],
+      "composes": [
+        "claim",
+        "set_plan",
+        "start"
+      ],
+      "description": "PM mirror of i_will_work_on for parent tasks. Claim, plan, transition to in_progress; from there delegate subtasks.",
+      "name": "i_will_plan",
+      "side_effects": []
+    },
+    {
+      "allowed_roles": [
+        "developer"
+      ],
+      "composes": [
+        "claim",
+        "set_plan",
+        "start"
+      ],
+      "description": "Claim a task, set the plan, and transition to in_progress. Atomic - preconditions checked before any state mutation.",
+      "name": "i_will_work_on",
+      "side_effects": []
+    },
+    {
+      "allowed_roles": [
+        "developer"
+      ],
+      "composes": [],
+      "description": "Push the branch and open a PR. Atomic - preconditions (assignee, >=1 commit, no prior PR) checked BEFORE any git operation. After success, call i_am_done.",
+      "name": "open_pr",
+      "side_effects": [
+        "push_branch",
+        "create_pr"
+      ]
+    },
+    {
+      "allowed_roles": [
+        "qa"
+      ],
+      "composes": [
+        "qa_pass"
+      ],
+      "description": "Pass QA. Transitions awaiting_qa -> awaiting_documentation.",
+      "name": "pass_review",
+      "side_effects": []
+    },
+    {
+      "allowed_roles": [
+        "cell_pm",
+        "developer",
+        "documenter",
+        "main_pm",
+        "qa"
+      ],
+      "composes": [
+        "resume"
+      ],
+      "description": "Resume a paused task you own. paused -> in_progress.",
+      "name": "resume",
+      "side_effects": []
+    },
+    {
+      "allowed_roles": [
+        "cell_pm"
+      ],
+      "composes": [
+        "submit_pm_review"
+      ],
+      "description": "Cell PM bubbles a finished cell-scope task up to Main PM.",
+      "name": "submit_up",
+      "side_effects": [
+        "create_pr"
+      ]
+    },
+    {
+      "allowed_roles": [
+        "auditor",
+        "cell_pm",
+        "head_marketing",
+        "main_pm",
+        "product_owner"
+      ],
+      "composes": [],
+      "description": "List actionable tasks in your scope.",
+      "name": "triage",
+      "side_effects": []
+    },
+    {
+      "allowed_roles": [
+        "main_pm"
+      ],
+      "composes": [],
+      "description": "List actionable tasks across all teams (Main PM only).",
+      "name": "triage_all",
+      "side_effects": []
+    },
+    {
+      "allowed_roles": [
+        "cell_pm",
+        "main_pm"
+      ],
+      "composes": [
+        "unblock"
+      ],
+      "description": "PM unblocks a blocked task; restores pre-block state.",
+      "name": "unblock",
+      "side_effects": []
+    },
+    {
+      "allowed_roles": [
+        "cell_pm",
+        "developer",
+        "documenter",
+        "main_pm",
+        "qa"
+      ],
+      "composes": [],
+      "description": "Voluntarily release a claim back to pending. The work-in-progress branch is preserved.",
+      "name": "unclaim",
+      "side_effects": []
+    }
+  ],
+  "transitions": [
+    {
+      "action": "cancel",
+      "roles": [
+        "cell_pm",
+        "ceo",
+        "main_pm"
+      ],
+      "source": "awaiting_ceo_approval",
+      "target": "cancelled"
+    },
+    {
+      "action": "ceo_approve",
+      "roles": [
+        "ceo"
+      ],
+      "source": "awaiting_ceo_approval",
+      "target": "completed"
+    },
+    {
+      "action": "ceo_reject",
+      "roles": [
+        "ceo"
+      ],
+      "source": "awaiting_ceo_approval",
+      "target": "needs_revision"
+    },
+    {
+      "action": "docs_complete",
+      "roles": [
+        "documenter"
+      ],
+      "source": "awaiting_documentation",
+      "target": "awaiting_pm_review"
+    },
+    {
+      "action": "cancel",
+      "roles": [
+        "cell_pm",
+        "ceo",
+        "main_pm"
+      ],
+      "source": "awaiting_documentation",
+      "target": "cancelled"
+    },
+    {
+      "action": "claim",
+      "roles": [
+        "documenter"
+      ],
+      "source": "awaiting_documentation",
+      "target": "claimed"
+    },
+    {
+      "action": "escalate_to_ceo",
+      "roles": [
+        "head_marketing",
+        "main_pm",
+        "product_owner"
+      ],
+      "source": "awaiting_pm_review",
+      "target": "awaiting_ceo_approval"
+    },
+    {
+      "action": "cancel",
+      "roles": [
+        "cell_pm",
+        "ceo",
+        "main_pm"
+      ],
+      "source": "awaiting_pm_review",
+      "target": "cancelled"
+    },
+    {
+      "action": "complete",
+      "roles": [
+        "cell_pm",
+        "main_pm"
+      ],
+      "source": "awaiting_pm_review",
+      "target": "completed"
+    },
+    {
+      "action": "qa_pass",
+      "roles": [
+        "qa"
+      ],
+      "source": "awaiting_qa",
+      "target": "awaiting_documentation"
+    },
+    {
+      "action": "cancel",
+      "roles": [
+        "cell_pm",
+        "ceo",
+        "main_pm"
+      ],
+      "source": "awaiting_qa",
+      "target": "cancelled"
+    },
+    {
+      "action": "claim",
+      "roles": [
+        "qa"
+      ],
+      "source": "awaiting_qa",
+      "target": "claimed"
+    },
+    {
+      "action": "qa_fail",
+      "roles": [
+        "qa"
+      ],
+      "source": "awaiting_qa",
+      "target": "needs_revision"
+    },
+    {
+      "action": "cancel",
+      "roles": [
+        "cell_pm",
+        "ceo",
+        "main_pm"
+      ],
+      "source": "backlog",
+      "target": "cancelled"
+    },
+    {
+      "action": "activate",
+      "roles": null,
+      "source": "backlog",
+      "target": "pending"
+    },
+    {
+      "action": "cancel",
+      "roles": [
+        "cell_pm",
+        "ceo",
+        "main_pm"
+      ],
+      "source": "blocked",
+      "target": "cancelled"
+    },
+    {
+      "action": "unblock",
+      "roles": null,
+      "source": "blocked",
+      "target": "in_progress"
+    },
+    {
+      "action": "cancel",
+      "roles": [
+        "cell_pm",
+        "ceo",
+        "main_pm"
+      ],
+      "source": "claimed",
+      "target": "cancelled"
+    },
+    {
+      "action": "start",
+      "roles": null,
+      "source": "claimed",
+      "target": "in_progress"
+    },
+    {
+      "action": "submit_pm_review",
+      "roles": null,
+      "source": "in_progress",
+      "target": "awaiting_pm_review"
+    },
+    {
+      "action": "block",
+      "roles": null,
+      "source": "in_progress",
+      "target": "blocked"
+    },
+    {
+      "action": "cancel",
+      "roles": [
+        "cell_pm",
+        "ceo",
+        "main_pm"
+      ],
+      "source": "in_progress",
+      "target": "cancelled"
+    },
+    {
+      "action": "pause",
+      "roles": null,
+      "source": "in_progress",
+      "target": "paused"
+    },
+    {
+      "action": "submit_verification",
+      "roles": null,
+      "source": "in_progress",
+      "target": "verifying"
+    },
+    {
+      "action": "cancel",
+      "roles": [
+        "cell_pm",
+        "ceo",
+        "main_pm"
+      ],
+      "source": "needs_revision",
+      "target": "cancelled"
+    },
+    {
+      "action": "claim",
+      "roles": null,
+      "source": "needs_revision",
+      "target": "claimed"
+    },
+    {
+      "action": "cancel",
+      "roles": [
+        "cell_pm",
+        "ceo",
+        "main_pm"
+      ],
+      "source": "paused",
+      "target": "cancelled"
+    },
+    {
+      "action": "resume",
+      "roles": null,
+      "source": "paused",
+      "target": "in_progress"
+    },
+    {
+      "action": "cancel",
+      "roles": [
+        "cell_pm",
+        "ceo",
+        "main_pm"
+      ],
+      "source": "pending",
+      "target": "cancelled"
+    },
+    {
+      "action": "claim",
+      "roles": null,
+      "source": "pending",
+      "target": "claimed"
+    },
+    {
+      "action": "submit_qa",
+      "roles": null,
+      "source": "verifying",
+      "target": "awaiting_qa"
+    },
+    {
+      "action": "cancel",
+      "roles": [
+        "cell_pm",
+        "ceo",
+        "main_pm"
+      ],
+      "source": "verifying",
+      "target": "cancelled"
+    }
+  ]
+}
