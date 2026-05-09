@@ -544,3 +544,86 @@ async def test_i_am_done_matches_spec(
             f"owned={owned}: can_invoke_intent rejected with "
             f"{expected.rejection_kind}, got {body['error']!r}; full body: {body}"
         )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "role, status",
+    list(
+        product(
+            [r.value for r in spec.Role if r != spec.Role.AUDITOR],
+            [s.value for s in spec.Status],
+        )
+    ),
+)
+async def test_i_am_blocked_matches_spec(role: str, status: str) -> None:
+    """Spec parity for i_am_blocked's role + state gate.
+
+    i_am_blocked's IntentSpec composes ``(block,)`` with no
+    ``extra_preconditions``. The spec gate enforces:
+
+      - role in (_DEV_ROLES | _QA_ROLES | _DOC_ROLES),
+      - composed ``block`` action's source_status (IN_PROGRESS only).
+
+    The verb body has no idempotent / recovery short-circuits, so every
+    combo flows through the spec gate. The journal:struggle write is a
+    side effect outside the lifecycle action and lives in the verb body
+    after the spec gate accepts; it does not affect parity outcomes.
+    """
+    agent_id = uuid4()
+    task_id = uuid4()
+    task = MagicMock(
+        id=task_id,
+        status=status,
+        task_type="code",
+        # Ownership doesn't gate i_am_blocked (no PRECONDITION_OWNERSHIP),
+        # but assigning the task to the caller keeps the downstream
+        # task_service.escalate mock realistic.
+        assigned_to=agent_id,
+        commits=[],
+        pr_number=None,
+        branch_name="feature/x",
+        parent_task_id=None,
+        sequence=0,
+        team="backend",
+        title="t",
+        quick_context=None,
+        pre_block_state=None,
+    )
+    task_svc = AsyncMock()
+    task_svc.get.return_value = task
+    task_svc.agent_for.return_value = MagicMock(
+        id=agent_id, role=role, team="backend", slug=None
+    )
+    task_svc.escalate.return_value = MagicMock(
+        id=task_id, status="blocked", assigned_to=agent_id
+    )
+    task_svc.session = MagicMock()
+    task_svc.session.begin_nested = MagicMock(
+        return_value=MagicMock(
+            __aenter__=AsyncMock(return_value=None),
+            __aexit__=AsyncMock(return_value=False),
+        )
+    )
+    deps = _make_deps(task_svc=task_svc)
+    c = Choreographer(deps)
+
+    ctx = spec.Context(actor_id=agent_id, notes="external API down")
+    expected = spec.can_invoke_intent(spec.Role(role), "i_am_blocked", task, ctx)
+
+    env = await c.i_am_blocked(agent_id, task_id, "external API down")
+    body = env.as_dict()
+    if expected.allowed:
+        # Spec allows. Verb may still surface a non-error envelope (OK)
+        # or a downstream invalid_state if the runner hits an exception
+        # we didn't fully wire in this test mock. The spec gate itself
+        # must NOT be the source of any not_authorized rejection.
+        assert body["error"] != "not_authorized", (
+            f"role={role} status={status}: spec.can_invoke_intent allowed "
+            f"but envelope surfaced not_authorized at the spec layer: {body}"
+        )
+    else:
+        assert body["error"] == expected.rejection_kind, (
+            f"role={role} status={status}: can_invoke_intent rejected with "
+            f"{expected.rejection_kind}, got {body['error']!r}; full body: {body}"
+        )

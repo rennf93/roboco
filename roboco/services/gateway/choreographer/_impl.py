@@ -1102,7 +1102,18 @@ class Choreographer:
     async def i_am_blocked(
         self, agent_id: UUID, task_id: UUID, reason: str
     ) -> Envelope:
-        """Escalate task_id and write a struggle journal entry; idle the agent."""
+        """Escalate task_id and write a struggle journal entry; idle the agent.
+
+        Atomic: ``spec.can_invoke_intent`` runs first and enforces role
+        membership (developer/qa/documenter) and the source-status
+        constraint of the composed ``block`` action (in_progress only).
+        After the spec gate accepts, the journal:struggle entry is
+        written from the verb body — the runner does NOT model journal
+        side effects, and a struggle log is a side effect outside the
+        lifecycle action. Then ``VerbRunner.run_intent("i_am_blocked",
+        ...)`` dispatches the (block,) atomic chain wrapped in a
+        savepoint so a mid-sequence failure rolls back the DB.
+        """
         t = await self.task.get(task_id)
         if t is None:
             return await self._emit_rejection(
@@ -1112,18 +1123,66 @@ class Choreographer:
                 verb="i_am_blocked",
             )
         agent = await self.task.agent_for(agent_id)
-        role = str(agent.role) if agent is not None else "developer"
+        role_str = str(agent.role) if agent is not None else "developer"
+        briefing = await self._briefing_for(agent_id, task_id)
+        try:
+            role = spec_module.Role(role_str)
+        except ValueError:
+            return await self._emit_rejection(
+                Envelope.not_authorized(
+                    message=f"unknown role '{role_str}'",
+                    remediate="role is not declared in the lifecycle spec",
+                    context_briefing=briefing,
+                ).with_introspection(task=t, role=role_str),
+                agent_id=agent_id,
+                task_id=task_id,
+                verb="i_am_blocked",
+            )
+        spec_ctx = spec_module.Context(
+            actor_id=agent_id,
+            actor_slug=getattr(agent, "slug", None) if agent is not None else None,
+            original_developer_slug=_extract_original_developer(t),
+            notes=reason,
+        )
+        decision = spec_module.can_invoke_intent(role, "i_am_blocked", t, spec_ctx)
+        if not decision.allowed:
+            return await self._emit_rejection(
+                Envelope.from_decision(decision, briefing=briefing).with_introspection(
+                    task=t, role=role_str
+                ),
+                agent_id=agent_id,
+                task_id=task_id,
+                verb="i_am_blocked",
+            )
+        # Journal:struggle is a side effect outside the lifecycle action;
+        # the runner does NOT model journal effects, so it stays in the
+        # verb body. Written before the runner dispatches `block` so a
+        # later runner failure still leaves an audit trail of the agent's
+        # struggle.
         await self.journal.write_struggle(
             agent_id=agent_id, task_id=task_id, content=reason
         )
-        t = await self.task.escalate(agent_id, task_id, reason)
+        runner = self._verb_runner()
+        try:
+            t = await runner.run_intent("i_am_blocked", t, agent, spec_ctx)
+        except Exception as exc:
+            return await self._emit_rejection(
+                Envelope.invalid_state(
+                    message=f"verb runner failed: {exc}",
+                    remediate="check workspace + retry; if persistent, escalate",
+                    context_briefing=briefing,
+                ).with_introspection(task=t, role=role_str),
+                agent_id=agent_id,
+                task_id=task_id,
+                verb="i_am_blocked",
+            )
         await self._touch(task_id)
         return Envelope.ok(
             status=str(t.status),
             task_id=str(task_id),
-            next="idle — PM will resolve and notify",
-            context_briefing=await self._briefing_for(agent_id, task_id),
-        ).with_introspection(task=t, role=role)
+            next=spec_module._INTENT_VERBS["i_am_blocked"].next_hint(t),
+            context_briefing=briefing,
+        ).with_introspection(task=t, role=role_str)
 
     async def unclaim(self, agent_id: UUID, task_id: UUID) -> Envelope:
         """Voluntarily release a claimed/in_progress task back to pending.

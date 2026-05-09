@@ -153,10 +153,19 @@ async def test_i_am_done_calls_heartbeat() -> None:
 async def test_i_am_blocked_calls_heartbeat() -> None:
     aid = uuid4()
     tid = uuid4()
-    t = MagicMock(id=tid, status="in_progress", assigned_to=aid)
+    t = MagicMock(
+        id=tid,
+        status="in_progress",
+        assigned_to=aid,
+        task_type="code",
+        team="backend",
+    )
     blocked = MagicMock(id=tid, status="blocked", assigned_to=aid)
     task_svc = AsyncMock()
     task_svc.get.return_value = t
+    task_svc.agent_for.return_value = MagicMock(
+        id=aid, role="developer", team="backend", slug=None
+    )
     task_svc.escalate.return_value = blocked
     journal_svc = AsyncMock()
     deps = _make_deps(task=task_svc, journal=journal_svc)

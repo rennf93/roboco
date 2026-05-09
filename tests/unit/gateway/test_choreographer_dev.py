@@ -430,11 +430,19 @@ async def test_i_am_blocked_escalates_and_journals() -> None:
     agent_id = uuid4()
     task_id = uuid4()
     t = MagicMock(
-        id=task_id, status="in_progress", assigned_to=agent_id, pre_block_state=None
+        id=task_id,
+        status="in_progress",
+        assigned_to=agent_id,
+        pre_block_state=None,
+        task_type="code",
+        team="backend",
     )
-    after = MagicMock(id=task_id, status="blocked")
+    after = MagicMock(id=task_id, status="blocked", assigned_to=agent_id)
     task_svc = AsyncMock()
     task_svc.get.return_value = t
+    task_svc.agent_for.return_value = MagicMock(
+        id=agent_id, role="developer", team="backend", slug=None
+    )
     task_svc.escalate.return_value = after
     journal_svc = AsyncMock()
     deps = _make_deps(task=task_svc, journal=journal_svc)
