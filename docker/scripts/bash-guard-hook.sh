@@ -40,12 +40,30 @@ low=$(printf '%s' "$cmd" | tr "[:upper:]" "[:lower:]")
 if echo "$low" | grep -qE '(^|[[:space:];&|])git[[:space:]]+(fetch|pull|push|clone|remote|ls-remote|checkout|commit|merge|rebase|reset|cherry-pick|revert|tag[[:space:]]+-d|update-ref|reflog[[:space:]]+delete)'; then
     cat <<'EOF' >&2
 Denied: shell git for network / auth / branch-mutating ops is blocked.
-Use the roboco-git MCP tools instead:
-  - roboco_git_status / _log / _diff / _branch_list  (read-only local)
-  - roboco_git_commit / _push / _create_pr           (write ops)
-They route through the orchestrator which injects the GitHub PAT and
-tracks commits against the task. Raw `git fetch` etc. don't have auth
-and will fail with "could not read Username for 'https://github.com'".
+
+Read-only inspection (any role):
+  - roboco-git-readonly MCP: roboco_git_status / _log / _diff / _branch_list
+
+Write paths — there is NO direct shell-git or "roboco_git_commit" tool.
+Use the verb that matches your role; the choreographer handles git for you:
+
+  - developer / documenter: roboco-do `commit(message, files)`
+      → auto-prefixes [task-id], pushes to your branch, opens a PR via
+        the choreographer when the task transitions out of in_progress.
+        Your branch is auto-created when you call i_will_work_on().
+
+  - cell_pm / main_pm: roboco-flow `complete(task_id, notes)`
+      → cell_pm merges the leaf PR; main_pm opens the master PR and
+        escalates to CEO. PMs never run git directly — they delegate
+        code work to devs and complete to merge.
+
+  - any role: branches are NOT something you set up. They are created
+    on claim/i_will_work_on. If you don't see your branch, check that
+    you're actually claimed on the task.
+
+Raw `git fetch` etc. don't have auth (the PAT is injected only inside
+the MCP layer) and will fail with "could not read Username for
+'https://github.com'".
 EOF
     exit 2
 fi
@@ -57,7 +75,7 @@ fi
 # post-clone so the file is uninteresting, but a leaked PAT is unrecoverable
 # so belt + suspenders applies.
 if echo "$low" | grep -qE '(\.git/config|\.gitconfig|\.git-credentials|\.netrc|\.ssh/|id_rsa|id_ed25519|id_ecdsa|known_hosts)'; then
-    echo "Denied: command references a credential file or SSH key. Use roboco_git_* MCP tools — the PAT is injected subprocess-side and never lands in these files." >&2
+    echo "Denied: command references a credential file or SSH key. Don't read git credentials — the PAT is injected subprocess-side by the MCP layer (commit / complete verbs) and never lands in these files." >&2
     exit 2
 fi
 
@@ -68,7 +86,7 @@ if echo "$low" | grep -qE '/proc/(self|[0-9]+|\$\$|\$\{.*\})/(environ|cmdline|cw
 fi
 
 if echo "$low" | grep -qE '(^|[[:space:];&|])(curl|wget|http|https)[[:space:]][^|]*(github\.com|api\.github\.com)'; then
-    echo "Denied: direct GitHub HTTP calls bypass the PAT handler. Use roboco_git_* MCP tools." >&2
+    echo "Denied: direct GitHub HTTP calls bypass the PAT handler. Use the role-appropriate MCP verb: roboco-do commit (devs/docs), roboco-flow complete (PMs), or roboco-git-readonly status/log/diff/branch_list (any role)." >&2
     exit 2
 fi
 

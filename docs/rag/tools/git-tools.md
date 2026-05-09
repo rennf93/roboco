@@ -1,6 +1,10 @@
 # Git Tools
 
-## Read Operations
+There is **no** "roboco_git_commit / _push / _create_pr / _merge_pr / _checkout"
+MCP tool. Anything mutating the repo goes through one of two role-scoped
+verbs and the choreographer handles git for you.
+
+## Read Operations (any role) — `roboco-git-readonly`
 
 | Tool | Purpose |
 |------|---------|
@@ -9,83 +13,55 @@
 | `roboco_git_branch_list` | List branches |
 | `roboco_git_diff` | View changes |
 
-## Status and Diff
-
 ```python
-# Check status
 status = roboco_git_status(project_slug="roboco")
-
-# View changes
 diff = roboco_git_diff(project_slug="roboco")
-
-# View history
-log = roboco_git_log(
-    project_slug="roboco",
-    branch="feature/backend/a1b2c3d4"
-)
-```
-
-## Branch Operations
-
-**Branches are auto-created when tasks are claimed:**
-- Root task claim → `feature/team/ROOT_ID`
-- Subtask claim → `feature/team/ROOT_ID/SUB_ID`
-- Sub-subtask claim → `feature/team/ROOT_ID/SUB_ID/SUBSUB_ID`
-
-No manual branch creation needed.
-
-```python
-# List branches
+log = roboco_git_log(project_slug="roboco", branch="feature/backend/a1b2c3d4")
 branches = roboco_git_branch_list(project_slug="roboco")
-
-# Checkout branch (if needed)
-roboco_git_checkout(
-    project_slug="roboco",
-    branch="feature/backend/a1b2c3d4"
-)
 ```
 
-## Commit and Push
+## Branch Lifecycle — automatic
+
+Branches are auto-created when an agent transitions a task to `in_progress`:
+
+- Root task → `feature/team/ROOT_ID`
+- Subtask → `feature/team/ROOT_ID--SUB_ID`
+- Sub-subtask → `feature/team/ROOT_ID--SUB_ID--SUBSUB_ID`
+
+You never run `git checkout` or `git branch` yourself; calling
+`i_will_work_on(task_id)` (developers) or `i_will_plan(task_id, plan)` (PMs)
+creates the branch and switches your workspace to it.
+
+## Write Path — by role
+
+### Developers and Documenters → `commit` (roboco-do)
 
 ```python
-# Commit with task link
-roboco_git_commit(
-    project_slug="roboco",
-    task_id=task_id,
-    message="Add rate limiting endpoint",
-    commit_type="feat"  # Required
-)
-# Creates: [a1b2c3d4] feat: Add rate limiting endpoint
-
-# Push to remote
-roboco_git_push(project_slug="roboco", task_id=task_id)
+# Commit on your active task's branch. The choreographer:
+#  - prefixes the message with [task-id]
+#  - validates against commit_validator
+#  - pushes to the remote branch
+#  - opens a PR when the task transitions out of in_progress
+commit(message="Add rate limiting endpoint", files=["roboco/api/routes/rate.py"])
 ```
 
-## Pull Requests
+There is no separate `push` step and no separate `create_pr` step. Both are
+side-effects of the lifecycle transitions the verbs already drive.
+
+### PMs → `complete` (roboco-flow)
 
 ```python
-# Create PR
-roboco_git_create_pr(
-    project_slug="roboco",
-    task_id=task_id,
-    title="[TASK-a1b2c3d4] Add rate limiting",
-    body="## Summary\n..."
-)
-
-# Merge PR (PM only)
-roboco_git_merge_pr(
-    project_slug="roboco",
-    pr_number=123,
-    task_id=task_id,
-    merge_method="squash"  # squash, merge, rebase
-)
+# Cell PM completing a leaf task: merges the leaf PR.
+# Main PM completing a parent task: opens the master PR + escalates to CEO.
+complete(task_id="a1b2c3d4-...", notes="QA passed; docs complete; ready to ship.")
 ```
 
-## Branch Naming
+PMs never run `git` directly and have no commit/push tools. PMs `delegate`
+code work to devs, then `complete` to merge once QA + docs sign off.
 
-```
-{type}/{team}/{task-id-prefix}
-```
+## Branch Naming Convention
+
+`{type}/{team}/{task-hierarchy}`
 
 | Type | Use |
 |------|-----|
@@ -94,3 +70,7 @@ roboco_git_merge_pr(
 | `chore/` | Maintenance |
 | `docs/` | Documentation |
 | `hotfix/` | Urgent fixes |
+
+Hierarchy uses `--` (two hyphens) as the separator, not `/`, so a hierarchy
+slug like `ABC12345--DEF67890--GHI11111` is one git branch segment, not
+three nested directories.

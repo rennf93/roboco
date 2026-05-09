@@ -378,7 +378,9 @@ def validate_git_requirements(
                 message=(
                     "Blocked: PR not yet created. "
                     "In awaiting_documentation, Documenter and Developer work in "
-                    "parallel. Wait for Developer to call roboco_git_create_pr()."
+                    "parallel. Wait for the Developer's submit_for_qa(task_id) "
+                    "call to complete — the choreographer opens the PR as part "
+                    "of that transition."
                 ),
             )
 

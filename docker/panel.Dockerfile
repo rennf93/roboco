@@ -15,12 +15,25 @@ RUN corepack enable pnpm
 FROM base AS builder
 WORKDIR /app
 
+# pnpm 11 prompts for confirmation on modules-purge unless told this is CI.
+ENV CI=true
+
 # Copy package manifests first (for layer caching)
 COPY panel/package.json panel/pnpm-lock.yaml ./
 
 # Install dependencies with shamefully-hoist to flatten node_modules
-# This prevents symlink issues with styled-jsx and other peer deps
-RUN pnpm install --frozen-lockfile --shamefully-hoist
+# (prevents symlink issues with styled-jsx and other peer deps).
+#
+# pnpm 11 hard-errors on packages with install scripts unless explicitly
+# approved. `sharp` and `unrs-resolver` both ship platform-specific
+# prebuilt binaries via @img/sharp-* and napi-postinstall, so the install
+# scripts are verification-only — skipping them is safe at runtime.
+# `strictDepBuilds=false` downgrades the hard error to a warning while
+# keeping the install reproducible against the frozen lockfile.
+RUN pnpm install \
+    --frozen-lockfile \
+    --shamefully-hoist \
+    --config.strictDepBuilds=false
 
 # Copy panel source code
 COPY panel/ ./
