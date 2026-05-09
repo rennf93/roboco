@@ -3,11 +3,19 @@
 Source of truth for which verbs and content tools each role gets at spawn
 time. The spawn manifest builder reads from here. The MCP servers (Phase 1+)
 also reference this catalog to scope their tool registration per role.
+
+Flow-tool tuples (`_DEV_FLOW`, `_QA_FLOW`, ...) are derived from
+`roboco.lifecycle.spec.intents_for_role`. The spec is canon — adding or
+removing a role from an `IntentSpec.allowed_roles` automatically updates
+the MCP manifest. This module is a thin shim that adds the do-tool /
+write / subagent / description metadata the spec does not carry.
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass
+
+from roboco.lifecycle import spec
 
 
 @dataclass(frozen=True)
@@ -22,80 +30,26 @@ class RoleConfig:
     description: str
 
 
-_DEV_FLOW = (
-    "give_me_work",
-    "i_will_work_on",
-    "open_pr",
-    "i_am_done",
-    "i_am_blocked",
-    "unclaim",
-    "resume",
-    "i_am_idle",
-)
+_DEV_FLOW = spec.intents_for_role(spec.Role.DEVELOPER)
 _DEV_DO = ("commit", "note", "say", "dm", "evidence")
 
-_QA_FLOW = (
-    "give_me_work",
-    "claim_review",
-    "pass",
-    "fail",
-    "unclaim",
-    "resume",
-    "i_am_idle",
-)
+_QA_FLOW = spec.intents_for_role(spec.Role.QA)
 _QA_DO = ("note", "say", "dm", "evidence")
 
-_DOC_FLOW = (
-    "give_me_work",
-    "claim_doc_task",
-    "i_documented",
-    "unclaim",
-    "resume",
-    "i_am_idle",
-)
+_DOC_FLOW = spec.intents_for_role(spec.Role.DOCUMENTER)
 _DOC_DO = ("commit", "note", "say", "dm", "evidence")
 
-_CELL_PM_FLOW = (
-    "give_me_work",
-    "i_will_plan",
-    "delegate",
-    "submit_up",
-    "triage",
-    "unblock",
-    "complete",
-    "escalate_up",
-    "unclaim",
-    "resume",
-    "i_am_idle",
-)
+_CELL_PM_FLOW = spec.intents_for_role(spec.Role.CELL_PM)
 _CELL_PM_DO = ("note", "say", "dm", "notify", "evidence")
 
-_MAIN_PM_FLOW = (
-    "give_me_work",
-    "i_will_plan",
-    "delegate",
-    "triage_all",
-    "unblock",
-    "complete",
-    "escalate_up",
-    "escalate_to_ceo",
-    "unclaim",
-    "resume",
-    "i_am_idle",
-)
+_MAIN_PM_FLOW = spec.intents_for_role(spec.Role.MAIN_PM)
 _MAIN_PM_DO = ("note", "say", "dm", "notify", "evidence")
 
-_BOARD_FLOW = (
-    "triage",
-    "escalate_to_ceo",
-    "i_am_idle",
-)
+_PRODUCT_OWNER_FLOW = spec.intents_for_role(spec.Role.PRODUCT_OWNER)
+_HEAD_MARKETING_FLOW = spec.intents_for_role(spec.Role.HEAD_MARKETING)
 _BOARD_DO = ("note", "say", "dm", "notify", "evidence")
 
-_AUDITOR_FLOW = (
-    "triage",
-    "i_am_idle",
-)
+_AUDITOR_FLOW = spec.intents_for_role(spec.Role.AUDITOR)
 _AUDITOR_DO = ("note", "evidence")  # auditor reads, does not chat or escalate
 
 
@@ -142,7 +96,7 @@ ROLE_CONFIGS: dict[str, RoleConfig] = {
     ),
     "product_owner": RoleConfig(
         role="product_owner",
-        flow_tools=_BOARD_FLOW,
+        flow_tools=_PRODUCT_OWNER_FLOW,
         do_tools=_BOARD_DO,
         allows_write=False,
         allows_subagent=True,
@@ -150,7 +104,7 @@ ROLE_CONFIGS: dict[str, RoleConfig] = {
     ),
     "head_marketing": RoleConfig(
         role="head_marketing",
-        flow_tools=_BOARD_FLOW,
+        flow_tools=_HEAD_MARKETING_FLOW,
         do_tools=_BOARD_DO,
         allows_write=False,
         allows_subagent=True,

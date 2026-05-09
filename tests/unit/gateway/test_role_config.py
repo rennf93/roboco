@@ -3,7 +3,10 @@
 from __future__ import annotations
 
 import pytest
+from roboco.lifecycle import spec
 from roboco.services.gateway.role_config import (
+    _DEV_FLOW,
+    _QA_FLOW,
     ROLE_CONFIGS,
     get_role_config,
 )
@@ -24,8 +27,10 @@ class TestRoleConfigCatalog:
     def test_qa_config(self) -> None:
         cfg = get_role_config("qa")
         assert "claim_review" in cfg.flow_tools
-        assert "pass" in cfg.flow_tools
-        assert "fail" in cfg.flow_tools
+        # Spec canon: pass_review / fail_review (the legacy `pass`/`fail`
+        # MCP-facing aliases live in flow_server's _TOOLS map, not here).
+        assert "pass_review" in cfg.flow_tools
+        assert "fail_review" in cfg.flow_tools
         # QA does NOT have i_am_done / commit
         assert "i_am_done" not in cfg.flow_tools
         assert "commit" not in cfg.do_tools
@@ -61,3 +66,13 @@ class TestRoleConfigCatalog:
         for cfg in ROLE_CONFIGS.values():
             assert "ToolSearch" not in cfg.flow_tools
             assert "ToolSearch" not in cfg.do_tools
+
+
+def test_dev_flow_matches_spec_intents_for_role() -> None:
+    """role_config._DEV_FLOW must equal spec.intents_for_role(Role.DEVELOPER)."""
+    assert tuple(_DEV_FLOW) == spec.intents_for_role(spec.Role.DEVELOPER)
+
+
+def test_qa_flow_matches_spec_intents_for_role() -> None:
+    """role_config._QA_FLOW must equal spec.intents_for_role(Role.QA)."""
+    assert tuple(_QA_FLOW) == spec.intents_for_role(spec.Role.QA)
