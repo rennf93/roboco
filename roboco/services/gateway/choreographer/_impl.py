@@ -17,6 +17,8 @@ from uuid import UUID
 
 import structlog
 
+from roboco.lifecycle import spec as spec_module
+from roboco.services.gateway.choreographer._verb_runner import VerbRunner
 from roboco.services.gateway.claim_guards import (
     already_active_guard,
     paused_tasks_guard,
@@ -45,6 +47,24 @@ from roboco.services.gateway.tracing_gate import (
 logger = structlog.get_logger()
 
 
+def _extract_original_developer(task: Any) -> str | None:
+    """Pull the original_developer slug out of a task's quick_context, if any.
+
+    The ``quick_context`` blob carries handoff hints written by prior
+    actors; "original_developer:<slug>" is one such hint. Used by the
+    spec's self-review precondition (a documenter who is also the
+    original developer cannot self-doc).
+    """
+    qc = getattr(task, "quick_context", None) or ""
+    marker = "original_developer:"
+    if marker not in qc:
+        return None
+    tail = qc.split(marker, 1)[1].strip()
+    if not tail:
+        return None
+    return tail.split()[0] or None
+
+
 @dataclass(frozen=True)
 class ChoreographerDeps:
     """All service dependencies bundled for Choreographer.
@@ -62,6 +82,23 @@ class ChoreographerDeps:
     journal: Any
     audit: Any
     evidence_repo: Any
+
+
+@dataclass(frozen=True)
+class _IWillWorkOnContext:
+    """Bundle of fields ``i_will_work_on`` threads into its sub-helpers.
+
+    Frozen so the helper sites can't mutate caller state and to keep
+    PLR0913 (too many positional args) at bay. Internal — not part of
+    the verb's public surface.
+    """
+
+    agent_id: UUID
+    task_id: UUID
+    task: Any
+    role_str: str
+    briefing: dict[str, Any]
+    plan: str | None
 
 
 @dataclass(frozen=True)
@@ -358,145 +395,225 @@ class Choreographer:
             context_briefing=await self._briefing_for(agent_id, task_id),
         )
 
-    async def _i_will_work_on_pending(
-        self,
-        agent_id: UUID,
-        task_id: UUID,
-        t: Any,
-        plan: str | None,
-        briefing: dict[str, Any],
-    ) -> tuple[Envelope | None, Any]:
-        """Pending-branch dispatch for i_will_work_on. Atomic: validates
-        the plan precondition BEFORE calling claim() so a missing-plan
-        rejection doesn't leave the task in `claimed` with no plan.
+    def _verb_runner(self) -> VerbRunner:
+        """Construct a VerbRunner bound to this Choreographer's services.
 
-        Pre-fix (2026-05-09 smoke Bug A): claim() ran first, then the
-        plan check failed → task was stuck in `claimed` because the
-        `_i_will_work_on_claimed` branch (the natural retry path) had
-        no plan-recovery logic. Now ordering is: guards → plan check →
-        claim → set_plan → start.
+        Cheap to allocate; one per verb invocation keeps the runner
+        stateless across requests.
         """
-        if guard := await self._run_claim_guards(agent_id=agent_id, task=t):
-            return self._with_briefing(guard, briefing), t
-        # Plan precondition BEFORE any state mutation. Atomic invariant.
+        return VerbRunner(task_service=self.task, git_service=self.git)
+
+    async def _resume_from_claimed(
+        self,
+        ctx: _IWillWorkOnContext,
+    ) -> Envelope:
+        """Recover from a stuck `claimed` state owned by the same agent.
+
+        spec's composed `claim` action's source-statuses do not include
+        CLAIMED, so the spec gate would reject re-claiming an
+        already-owned task. This branch keeps the spec contract intact
+        (we never call `claim` again) but lets the agent recover by
+        running just set_plan (if a plan was supplied or stored) and
+        start. Mirrors the pre-spec ``_i_will_work_on_claimed`` helper.
+        """
+        agent_id = ctx.agent_id
+        task_id = ctx.task_id
+        t = ctx.task
+        briefing = ctx.briefing
+        role_str = ctx.role_str
+        plan = ctx.plan
         if not t.plan and not plan:
-            return Envelope.tracing_gap(
-                missing=["plan"],
-                remediate=(
-                    f"call i_will_work_on(task_id='{task_id}',"
-                    f" plan='<one-paragraph plan describing what you will do>')"
-                ),
-                context_briefing=briefing,
-            ), t
-        # claim() transitions pending → claimed; idempotent for same assignee.
-        # Branch creation runs inside _finalize_claim and rolls back on
-        # failure (audit P0-7 / S-01); we surface the failure as an envelope
-        # so the agent gets remediate instead of a 500.
-        try:
-            t = await self.task.claim(task_id, agent_id)
-        except Exception as exc:
-            return Envelope.invalid_state(
-                message=f"claim failed during finalization: {exc}",
-                remediate=(
-                    "branch or workspace setup failed; the claim was rolled"
-                    " back. Check workspace + token, then retry"
-                    " i_will_work_on(task_id, plan)."
-                ),
-                context_briefing=briefing,
-            ), None
-        if t is None:
-            return Envelope.invalid_state(
-                message="claim failed",
-                remediate="task may already be claimed by another agent",
-                context_briefing=briefing,
-            ), t
-        if plan:
-            t = await self.task.set_plan(task_id, plan)
-        t = await self.task.start(task_id, agent_id)
-        if t is None:
-            return self._start_failed_envelope(task_id, briefing), t
-        return None, t
-
-    @staticmethod
-    def _start_failed_envelope(task_id: UUID, briefing: dict[str, Any]) -> Envelope:
-        """Rejection envelope when ``task.start()`` returns None.
-
-        ``start()`` returns None on invalid status, ownership mismatch, or
-        missing plan. Surface the failure rather than fall through to an
-        OK envelope that dereferences ``None.status``.
-        """
-        return Envelope.invalid_state(
-            message=f"start failed for task {task_id}",
-            remediate=(
-                "task not in a startable state"
-                " (claimed/paused/needs_revision) or no plan recorded"
-            ),
-            context_briefing=briefing,
-        )
-
-    async def _i_will_work_on_needs_revision(
-        self,
-        agent_id: UUID,
-        task_id: UUID,
-        t: Any,
-        briefing: dict[str, Any],
-    ) -> tuple[Envelope | None, Any]:
-        """needs_revision branch for i_will_work_on. Returns (rejection|None, task)."""
-        if t.assigned_to != agent_id:
-            t = await self.task.claim(task_id, agent_id)
-            if t is None:
-                return Envelope.invalid_state(
-                    message="claim failed",
-                    remediate="task may already be claimed by another agent",
+            return await self._emit_rejection(
+                Envelope.tracing_gap(
+                    missing=["plan"],
+                    remediate=(
+                        f"call i_will_work_on(task_id='{task_id}',"
+                        f" plan='<one-paragraph plan describing what you will do>')"
+                    ),
                     context_briefing=briefing,
-                ), None
-        t = await self.task.start(task_id, agent_id)
-        if t is None:
-            return self._start_failed_envelope(task_id, briefing), None
-        return None, t
-
-    async def _i_will_work_on_claimed(
-        self,
-        agent_id: UUID,
-        task_id: UUID,
-        t: Any,
-        plan: str | None,
-        briefing: dict[str, Any],
-    ) -> tuple[Envelope | None, Any]:
-        """claimed branch for i_will_work_on. Returns (rejection|None, task).
-
-        Recovery path (Bug A from 2026-05-09 smoke): if the task is in
-        `claimed` without a plan (e.g. orchestrator restart, prior
-        partial-claim race) and the caller now supplies one, set it
-        before start() instead of failing with "no plan recorded". If
-        the task still has no plan and none is supplied, surface the
-        same tracing_gap shape `_i_will_work_on_pending` uses.
-        """
-        guard = await self._run_claim_guards(
-            agent_id=agent_id, task=t, skip_sequence=True
-        )
-        if guard:
-            return self._with_briefing(guard, briefing), None
-        if not t.plan and not plan:
-            return Envelope.tracing_gap(
-                missing=["plan"],
-                remediate=(
-                    f"call i_will_work_on(task_id='{task_id}',"
-                    f" plan='<one-paragraph plan describing what you will do>')"
+                ).with_introspection(task=t, role=role_str),
+                agent_id=agent_id,
+                task_id=task_id,
+                verb="i_will_work_on",
+            )
+        # Concurrency guards still apply (paused / already-active in another
+        # task). Sibling sequence is skipped on resumption — see
+        # _run_claim_guards docstring.
+        if guard := await self._run_claim_guards(
+            agent_id=agent_id,
+            task=t,
+            skip_role_typed=True,
+            skip_pm_code=True,
+            skip_sequence=True,
+        ):
+            return await self._emit_rejection(
+                self._with_briefing(guard, briefing).with_introspection(
+                    task=t, role=role_str
                 ),
-                context_briefing=briefing,
-            ), None
-        if plan and not t.plan:
-            t = await self.task.set_plan(task_id, plan)
-        t = await self.task.start(task_id, agent_id)
+                agent_id=agent_id,
+                task_id=task_id,
+                verb="i_will_work_on",
+            )
+        try:
+            if plan and not t.plan:
+                t = await self.task.set_plan(task_id, plan)
+            t = await self.task.start(task_id, agent_id)
+        except Exception as exc:
+            return await self._emit_rejection(
+                Envelope.invalid_state(
+                    message=f"verb runner failed: {exc}",
+                    remediate="check workspace + retry; if persistent, escalate",
+                    context_briefing=briefing,
+                ).with_introspection(task=t, role=role_str),
+                agent_id=agent_id,
+                task_id=task_id,
+                verb="i_will_work_on",
+            )
         if t is None:
-            return self._start_failed_envelope(task_id, briefing), None
-        return None, t
+            return await self._emit_rejection(
+                Envelope.invalid_state(
+                    message=f"start failed for task {task_id}",
+                    remediate=(
+                        "task not in a startable state"
+                        " (claimed/paused/needs_revision) or no plan recorded"
+                    ),
+                    context_briefing=briefing,
+                ).with_introspection(task=None, role=role_str),
+                agent_id=agent_id,
+                task_id=task_id,
+                verb="i_will_work_on",
+            )
+        await self._touch(task_id)
+        return Envelope.ok(
+            status=str(t.status),
+            task_id=str(task_id),
+            next=spec_module._INTENT_VERBS["i_will_work_on"].next_hint(t),
+            context_briefing=briefing,
+        ).with_introspection(task=t, role=role_str)
+
+    async def _i_will_work_on_gate(
+        self,
+        ctx: _IWillWorkOnContext,
+        role: spec_module.Role,
+        spec_ctx: spec_module.Context,
+    ) -> Envelope | None:
+        """Run all gates for ``i_will_work_on``. Returns rejection or None.
+
+        Order: spec.can_invoke_intent -> spec.can_claim -> behavioral
+        claim guards (already_active / paused / sibling_sequence). Any
+        rejection short-circuits with the appropriate envelope.
+        """
+        t, briefing, role_str = ctx.task, ctx.briefing, ctx.role_str
+        decision = spec_module.can_invoke_intent(role, "i_will_work_on", t, spec_ctx)
+        if not decision.allowed:
+            return await self._emit_rejection(
+                Envelope.from_decision(decision, briefing=briefing).with_introspection(
+                    task=t, role=role_str
+                ),
+                agent_id=ctx.agent_id,
+                task_id=ctx.task_id,
+                verb="i_will_work_on",
+            )
+        # Per-role claim authority (CLAIM_RULES): can_invoke_intent passes
+        # `claim` because the atomic action's source_statuses include the
+        # union of all claim-eligible states. CLAIM_RULES then narrows by
+        # role (developer claims PENDING/NEEDS_REVISION; documenter also
+        # claims AWAITING_DOCUMENTATION; etc.). Surface its rejection.
+        claim_decision = spec_module.can_claim(role, t)
+        if not claim_decision.allowed:
+            return await self._emit_rejection(
+                Envelope.from_decision(
+                    claim_decision, briefing=briefing
+                ).with_introspection(task=t, role=role_str),
+                agent_id=ctx.agent_id,
+                task_id=ctx.task_id,
+                verb="i_will_work_on",
+            )
+        # Behavioral pre-flight guards the spec doesn't yet model:
+        # - already_active: agent has another in_progress task elsewhere
+        # - paused_tasks: agent has a paused task they should resume first
+        # - sibling_sequence: an earlier-numbered sibling is still open
+        # The role/state/task_type checks already passed via the spec gate
+        # above, so we skip the spec-redundant flags. These migrate into
+        # spec.extra_preconditions in a later task; until then, keep them
+        # imperative so concurrency invariants stay enforced.
+        if guard := await self._run_claim_guards(
+            agent_id=ctx.agent_id,
+            task=t,
+            skip_role_typed=True,
+            skip_pm_code=True,
+        ):
+            return await self._emit_rejection(
+                self._with_briefing(guard, briefing).with_introspection(
+                    task=t, role=role_str
+                ),
+                agent_id=ctx.agent_id,
+                task_id=ctx.task_id,
+                verb="i_will_work_on",
+            )
+        return None
+
+    async def _i_will_work_on_run(
+        self, ctx: _IWillWorkOnContext, agent: Any, spec_ctx: spec_module.Context
+    ) -> Envelope:
+        """Execute composed (claim, set_plan, start) via the verb runner.
+
+        Caller has already validated all gates. Translates runner
+        exceptions and ``None`` returns into invalid_state envelopes
+        so the agent gets a remediation instead of a 500.
+        """
+        t, briefing, role_str = ctx.task, ctx.briefing, ctx.role_str
+        runner = self._verb_runner()
+        try:
+            t = await runner.run_intent("i_will_work_on", t, agent, spec_ctx)
+        except Exception as exc:
+            return await self._emit_rejection(
+                Envelope.invalid_state(
+                    message=f"verb runner failed: {exc}",
+                    remediate="check workspace + retry; if persistent, escalate",
+                    context_briefing=briefing,
+                ).with_introspection(task=t, role=role_str),
+                agent_id=ctx.agent_id,
+                task_id=ctx.task_id,
+                verb="i_will_work_on",
+            )
+        if t is None:
+            # A composed atomic action returned None (e.g. start() rejected
+            # because of an ownership/state mismatch the spec gate could not
+            # see). Surface as invalid_state so the agent gets a remediation
+            # rather than a 500.
+            return await self._emit_rejection(
+                Envelope.invalid_state(
+                    message=f"start failed for task {ctx.task_id}",
+                    remediate=(
+                        "task not in a startable state"
+                        " (claimed/paused/needs_revision) or no plan recorded"
+                    ),
+                    context_briefing=briefing,
+                ).with_introspection(task=None, role=role_str),
+                agent_id=ctx.agent_id,
+                task_id=ctx.task_id,
+                verb="i_will_work_on",
+            )
+        await self._touch(ctx.task_id)
+        return Envelope.ok(
+            status=str(t.status),
+            task_id=str(ctx.task_id),
+            next=spec_module._INTENT_VERBS["i_will_work_on"].next_hint(t),
+            context_briefing=briefing,
+        ).with_introspection(task=t, role=role_str)
 
     async def i_will_work_on(
         self, agent_id: UUID, task_id: UUID, plan: str | None = None
     ) -> Envelope:
-        """Claim/start/recover any actionable state of agent_id's task_id."""
+        """Claim a task and start work on it.
+
+        Atomic: spec.can_invoke_intent runs before any state mutation;
+        the composed (claim, set_plan, start) sequence is wrapped in a
+        savepoint by the runner so a mid-sequence failure rolls back
+        the DB. Idempotent re-entry: a respawned dev re-calling on a
+        task they already own in_progress just refreshes the heartbeat.
+        """
         t = await self.task.get(task_id)
         if t is None:
             return await self._emit_rejection(
@@ -506,56 +623,59 @@ class Choreographer:
                 verb="i_will_work_on",
             )
         agent = await self.task.agent_for(agent_id)
-        role = str(agent.role) if agent is not None else "developer"
-        status = str(t.status)
+        role_str = str(agent.role) if agent is not None else "developer"
         briefing = await self._briefing_for(agent_id, task_id)
-
-        rejection: Envelope | None = None
-        if status == "needs_revision":
-            rejection, t = await self._i_will_work_on_needs_revision(
-                agent_id, task_id, t, briefing
-            )
-        elif status == "pending":
-            rejection, t = await self._i_will_work_on_pending(
-                agent_id, task_id, t, plan, briefing
-            )
-        elif status == "claimed" and t.assigned_to == agent_id:
-            rejection, t = await self._i_will_work_on_claimed(
-                agent_id, task_id, t, plan, briefing
-            )
-        elif status == "in_progress" and t.assigned_to == agent_id:
-            # Idempotent re-entry: respawned dev re-calling i_will_work_on
-            # on a task they already own in_progress. Skip start() (would
-            # reject — wrong source state) but fall through to the OK
-            # envelope at the end. Heartbeat fires there too, refreshing
-            # reaper activity.
-            pass
-        else:
-            rejection = Envelope.invalid_state(
-                message=f"task {task_id} is in {status}; cannot start work",
-                remediate="call give_me_work() to find an actionable task",
-                context_briefing=briefing,
-            )
-
-        if rejection is not None:
-            rejection.with_introspection(task=t, role=role)
+        try:
+            role = spec_module.Role(role_str)
+        except ValueError:
             return await self._emit_rejection(
-                rejection,
+                Envelope.not_authorized(
+                    message=f"unknown role '{role_str}'",
+                    remediate="role is not declared in the lifecycle spec",
+                    context_briefing=briefing,
+                ).with_introspection(task=t, role=role_str),
                 agent_id=agent_id,
                 task_id=task_id,
                 verb="i_will_work_on",
             )
-
-        await self._touch(task_id)
-        return Envelope.ok(
-            status=str(t.status),
-            task_id=str(task_id),
-            next=(
-                "edit + commit(message) for each meaningful change,"
-                " then open_pr(task_id) and i_am_done(task_id)"
-            ),
-            context_briefing=briefing,
-        ).with_introspection(task=t, role=role)
+        spec_ctx = spec_module.Context(
+            plan=plan,
+            actor_id=agent_id,
+            actor_slug=getattr(agent, "slug", None) if agent is not None else None,
+            original_developer_slug=_extract_original_developer(t),
+        )
+        ctx = _IWillWorkOnContext(
+            agent_id=agent_id,
+            task_id=task_id,
+            task=t,
+            role_str=role_str,
+            briefing=briefing,
+            plan=plan,
+        )
+        # Idempotent re-entry: agent already owns the task in_progress.
+        # Touch heartbeat and short-circuit before the spec gate (which
+        # would otherwise reject because in_progress is not a source state
+        # for the composed `claim` action).
+        if str(t.status) == "in_progress" and t.assigned_to == agent_id:
+            await self._touch(task_id)
+            return Envelope.ok(
+                status=str(t.status),
+                task_id=str(task_id),
+                next=spec_module._INTENT_VERBS["i_will_work_on"].next_hint(t),
+                context_briefing=briefing,
+            ).with_introspection(task=t, role=role_str)
+        # Recovery re-entry: task stuck in `claimed` (e.g. orchestrator restart
+        # or a partial-claim race) and the agent already owns it. The spec
+        # `claim` action's source-statuses do NOT include CLAIMED, so the spec
+        # gate would reject. Surface this as a runner call that runs only
+        # set_plan + start. Without this block, an agent reclaiming from a
+        # crashed mid-sequence would loop forever (Bug A from the 2026-05-09
+        # smoke test).
+        if str(t.status) == "claimed" and t.assigned_to == agent_id:
+            return await self._resume_from_claimed(ctx)
+        if rejection := await self._i_will_work_on_gate(ctx, role, spec_ctx):
+            return rejection
+        return await self._i_will_work_on_run(ctx, agent, spec_ctx)
 
     @staticmethod
     def _with_briefing(env: Envelope, briefing: dict[str, Any]) -> Envelope:

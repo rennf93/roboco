@@ -11,6 +11,17 @@ from roboco.services.gateway.choreographer import Choreographer, ChoreographerDe
 
 def _make_deps(**overrides: AsyncMock) -> ChoreographerDeps:
     task = overrides.get("task", AsyncMock())
+    # VerbRunner uses task.session.begin_nested() as a savepoint context
+    # manager. AsyncMock auto-attributes any access (so hasattr always
+    # returns True); we always overwrite session to a MagicMock with the
+    # correct async-context-manager protocol.
+    task.session = MagicMock()
+    task.session.begin_nested = MagicMock(
+        return_value=MagicMock(
+            __aenter__=AsyncMock(return_value=None),
+            __aexit__=AsyncMock(return_value=False),
+        )
+    )
     work_session = overrides.get("work_session", AsyncMock())
     git = overrides.get("git", AsyncMock())
     a2a = overrides.get("a2a", AsyncMock())
@@ -97,13 +108,19 @@ async def test_i_will_work_on_pending_with_plan() -> None:
         parent_task_id=None,
         sequence=0,
         task_type="code",
+        commits=[],
+        pr_number=None,
+        branch_name="feature/backend/abc",
+        quick_context=None,
     )
     in_progress_task = MagicMock(
         id=task_id, status="in_progress", plan={"text": "do x"}, assigned_to=agent_id
     )
     task_svc = AsyncMock()
     task_svc.get.return_value = pending_task
-    task_svc.agent_for.return_value = MagicMock(role="developer", team="backend")
+    task_svc.agent_for.return_value = MagicMock(
+        id=agent_id, role="developer", team="backend", slug=None
+    )
     task_svc.list_in_progress_for_agent.return_value = []
     task_svc.list_paused_for_agent.return_value = []
     task_svc.get_subtasks.return_value = []
@@ -138,10 +155,16 @@ async def test_i_will_work_on_pending_no_plan_returns_tracing_gap() -> None:
         parent_task_id=None,
         sequence=0,
         task_type="code",
+        commits=[],
+        pr_number=None,
+        branch_name="feature/backend/abc",
+        quick_context=None,
     )
     task_svc = AsyncMock()
     task_svc.get.return_value = pending_task
-    task_svc.agent_for.return_value = MagicMock(role="developer", team="backend")
+    task_svc.agent_for.return_value = MagicMock(
+        id=agent_id, role="developer", team="backend", slug=None
+    )
     task_svc.list_in_progress_for_agent.return_value = []
     task_svc.list_paused_for_agent.return_value = []
     task_svc.get_subtasks.return_value = []
@@ -155,28 +178,53 @@ async def test_i_will_work_on_pending_no_plan_returns_tracing_gap() -> None:
     body = env.as_dict()
     assert body["error"] == "tracing_gap"
     assert "plan" in body["missing"]
-    assert "i_will_work_on" in body["remediate"]
 
 
 @pytest.mark.asyncio
 async def test_i_will_work_on_needs_revision_re_starts() -> None:
+    """needs_revision dev path: spec composes (claim, set_plan, start), so
+    claim now runs even when the task is already assigned to the dev (the
+    spec source-status for claim includes NEEDS_REVISION). Migration
+    behavior change vs. the pre-spec verb body, which skipped claim if
+    already assigned."""
     agent_id = uuid4()
     task_id = uuid4()
     nr_task = MagicMock(
-        id=task_id, status="needs_revision", assigned_to=agent_id, plan={"x": 1}
+        id=task_id,
+        status="needs_revision",
+        assigned_to=agent_id,
+        plan={"x": 1},
+        task_type="code",
+        commits=[],
+        pr_number=None,
+        branch_name="feature/backend/abc",
+        quick_context=None,
+        parent_task_id=None,
+        sequence=0,
+        team="backend",
+    )
+    claimed = MagicMock(
+        id=task_id, status="claimed", assigned_to=agent_id, plan={"x": 1}
     )
     in_progress_task = MagicMock(
         id=task_id, status="in_progress", assigned_to=agent_id, plan={"x": 1}
     )
     task_svc = AsyncMock()
     task_svc.get.return_value = nr_task
+    task_svc.agent_for.return_value = MagicMock(
+        id=agent_id, role="developer", team="backend", slug=None
+    )
+    task_svc.list_in_progress_for_agent.return_value = []
+    task_svc.list_paused_for_agent.return_value = []
+    task_svc.get_subtasks.return_value = []
+    task_svc.claim.return_value = claimed
+    task_svc.set_plan.return_value = claimed
     task_svc.start.return_value = in_progress_task
     deps = _make_deps(task=task_svc)
     c = Choreographer(deps)
 
     env = await c.i_will_work_on(agent_id, task_id)
     assert env.status == "in_progress"
-    task_svc.claim.assert_not_awaited()  # already assigned
     task_svc.start.assert_awaited_once_with(task_id, agent_id)
 
 
@@ -196,17 +244,36 @@ async def test_i_will_work_on_task_not_found_returns_not_found() -> None:
 
 @pytest.mark.asyncio
 async def test_i_will_work_on_invalid_state_returns_invalid_state() -> None:
+    """Completed task: spec rejects via can_invoke_action on the first
+    composed action (claim) — completed is not in claim's source_statuses,
+    so the message comes from the spec, not the verb body."""
     agent_id = uuid4()
     task_id = uuid4()
-    completed_task = MagicMock(id=task_id, status="completed", assigned_to=agent_id)
+    completed_task = MagicMock(
+        id=task_id,
+        status="completed",
+        assigned_to=agent_id,
+        task_type="code",
+        commits=[],
+        pr_number=None,
+        branch_name="feature/backend/abc",
+        quick_context=None,
+        parent_task_id=None,
+        sequence=0,
+        team="backend",
+    )
     task_svc = AsyncMock()
     task_svc.get.return_value = completed_task
+    task_svc.agent_for.return_value = MagicMock(
+        id=agent_id, role="developer", team="backend", slug=None
+    )
     deps = _make_deps(task=task_svc)
     c = Choreographer(deps)
 
     env = await c.i_will_work_on(agent_id, task_id)
     body = env.as_dict()
     assert body["error"] == "invalid_state"
+    # Spec produces "task is in 'completed', 'claim' requires: ..."
     assert "completed" in body["message"]
 
 

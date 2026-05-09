@@ -26,6 +26,8 @@ def _wire_dev_task_svc(
 
     Defaults `agent_for` → developer/backend and the three list-* methods to
     empty lists so claim-guard short-circuits never fire unintentionally.
+    Also wires ``session.begin_nested()`` so VerbRunner's savepoint context
+    manager works against the mock.
     """
     task_svc = AsyncMock()
     task_svc.get.return_value = MagicMock(
@@ -37,11 +39,24 @@ def _wire_dev_task_svc(
         task_type="code",
         parent_task_id=parent_task_id,
         team="backend",
+        commits=[],
+        pr_number=None,
+        branch_name="feature/backend/abc",
+        quick_context=None,
     )
-    task_svc.agent_for.return_value = MagicMock(role="developer", team="backend")
+    task_svc.agent_for.return_value = MagicMock(
+        role="developer", team="backend", slug=None
+    )
     task_svc.list_in_progress_for_agent.return_value = []
     task_svc.list_paused_for_agent.return_value = []
     task_svc.get_subtasks.return_value = []
+    task_svc.session = MagicMock()
+    task_svc.session.begin_nested = MagicMock(
+        return_value=MagicMock(
+            __aenter__=AsyncMock(return_value=None),
+            __aexit__=AsyncMock(return_value=False),
+        )
+    )
     return task_svc
 
 
@@ -92,6 +107,12 @@ async def test_emit_rejection_passes_through_ok_envelope() -> None:
 
 @pytest.mark.asyncio
 async def test_i_will_work_on_pending_claim_raises_returns_invalid_state() -> None:
+    """When the runner re-raises a RuntimeError from claim(), the verb body
+    catches it and surfaces an invalid_state envelope with the runner's
+    message. Pre-spec the verb body produced "claim failed during
+    finalization"; the spec-driven body produces "verb runner failed:
+    <exc>" so the agent still gets a remediation hint instead of a 500.
+    """
     agent_id = uuid4()
     task_id = uuid4()
     task_svc = _wire_dev_task_svc(task_id, status="pending")
@@ -101,7 +122,8 @@ async def test_i_will_work_on_pending_claim_raises_returns_invalid_state() -> No
     env = await c.i_will_work_on(agent_id, task_id, plan="plan")
     body = env.as_dict()
     assert body["error"] == "invalid_state"
-    assert "claim failed during finalization" in body["message"]
+    assert "verb runner failed" in body["message"]
+    assert "workspace down" in body["message"]
 
 
 @pytest.mark.asyncio

@@ -11,6 +11,15 @@ from roboco.services.gateway.choreographer import Choreographer, ChoreographerDe
 
 def _make_deps(**overrides: AsyncMock) -> ChoreographerDeps:
     task = overrides.get("task", AsyncMock())
+    # VerbRunner uses task.session.begin_nested() as a savepoint context
+    # manager; ensure the mock satisfies that protocol.
+    task.session = MagicMock()
+    task.session.begin_nested = MagicMock(
+        return_value=MagicMock(
+            __aenter__=AsyncMock(return_value=None),
+            __aexit__=AsyncMock(return_value=False),
+        )
+    )
     work_session = overrides.get("work_session", AsyncMock())
     git = overrides.get("git", AsyncMock())
     a2a = overrides.get("a2a", AsyncMock())
@@ -49,13 +58,20 @@ async def test_i_will_work_on_calls_heartbeat() -> None:
         parent_task_id=None,
         sequence=0,
         task_type="code",
+        commits=[],
+        pr_number=None,
+        branch_name="feature/backend/abc",
+        quick_context=None,
+        team="backend",
     )
     in_progress = MagicMock(
         id=tid, status="in_progress", plan={"text": "go"}, assigned_to=aid
     )
     task_svc = AsyncMock()
     task_svc.get.return_value = pending
-    task_svc.agent_for.return_value = MagicMock(role="developer", team="backend")
+    task_svc.agent_for.return_value = MagicMock(
+        id=aid, role="developer", team="backend", slug=None
+    )
     task_svc.list_in_progress_for_agent.return_value = []
     task_svc.list_paused_for_agent.return_value = []
     task_svc.get_subtasks.return_value = []
