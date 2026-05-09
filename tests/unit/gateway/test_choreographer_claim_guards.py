@@ -467,7 +467,14 @@ async def test_developer_cannot_claim_qa_status_task() -> None:
 
 @pytest.mark.asyncio
 async def test_qa_cannot_claim_code_task_via_claim_review() -> None:
-    """QA calling claim_review on non-awaiting_qa task is rejected by status check."""
+    """QA calling claim_review on PENDING task is rejected by claim-rules.
+
+    QA's CLAIM_RULES is {AWAITING_QA}. PENDING is owned by dev/pm — so
+    ``_check_claim_rules_narrow`` returns ``not_authorized`` (the
+    "other_role_owns_status" branch). Pre-spec the verb body's status
+    pre-check returned invalid_state; post-migration the spec gate
+    drives the rejection kind.
+    """
     qa_id = uuid4()
     task_id = uuid4()
     target = MagicMock(
@@ -479,6 +486,7 @@ async def test_qa_cannot_claim_code_task_via_claim_review() -> None:
         sequence=0,
         task_type="code",
         team="backend",
+        quick_context=None,
     )
     task_svc = _task_svc_with(target, role="qa")
     deps = _make_deps(task=task_svc)
@@ -486,23 +494,31 @@ async def test_qa_cannot_claim_code_task_via_claim_review() -> None:
 
     env = await c.claim_review(qa_id, task_id)
     body = env.as_dict()
-    assert body["error"] == "invalid_state"
+    assert body["error"] == "not_authorized"
 
 
 @pytest.mark.asyncio
 async def test_documenter_cannot_claim_code_task_via_claim_doc_task() -> None:
-    """Documenter calling claim_doc_task on non-awaiting-doc task is rejected."""
+    """Documenter calling claim_doc_task on AWAITING_QA task is rejected by claim-rules.
+
+    Documenter's CLAIM_RULES is {PENDING, AWAITING_DOCUMENTATION}. A
+    documenter calling claim_doc_task on AWAITING_QA hits the
+    "other_role_owns_status" branch and returns ``not_authorized``.
+    Pre-spec the verb body returned invalid_state on the status check;
+    post-migration the spec gate drives the rejection kind.
+    """
     doc_id = uuid4()
     task_id = uuid4()
     target = MagicMock(
         id=task_id,
-        status="pending",
+        status="awaiting_qa",
         plan=None,
         assigned_to=None,
         parent_task_id=None,
         sequence=0,
         task_type="code",
         team="backend",
+        quick_context=None,
     )
     task_svc = _task_svc_with(target, role="documenter")
     deps = _make_deps(task=task_svc)
@@ -510,7 +526,7 @@ async def test_documenter_cannot_claim_code_task_via_claim_doc_task() -> None:
 
     env = await c.claim_doc_task(doc_id, task_id)
     body = env.as_dict()
-    assert body["error"] == "invalid_state"
+    assert body["error"] == "not_authorized"
 
 
 @pytest.mark.asyncio

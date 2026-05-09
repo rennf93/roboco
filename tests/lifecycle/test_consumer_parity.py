@@ -1192,3 +1192,458 @@ async def test_submit_up_matches_spec(role: str, status: str) -> None:
             f"role={role} status={status}: can_invoke_intent rejected with "
             f"{expected.rejection_kind}, got {body['error']!r}; full body: {body}"
         )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "role, status",
+    list(
+        product(
+            [r.value for r in spec.Role if r != spec.Role.AUDITOR],
+            [s.value for s in spec.Status],
+        )
+    ),
+)
+async def test_claim_review_matches_spec(role: str, status: str) -> None:
+    """Spec parity for claim_review's role + claim source-status gate.
+
+    claim_review's IntentSpec composes ``("claim", "start")`` and is
+    restricted to QA. The spec gate enforces:
+
+      - role == qa,
+      - claim's source_statuses (PENDING / NEEDS_REVISION / AWAITING_QA
+        / AWAITING_DOCUMENTATION),
+      - CLAIM_RULES narrowing (qa only allowed from PENDING / AWAITING_QA).
+
+    The verb body owns dispatch via ``task.qa_claim`` (not the runner's
+    claim+start chain) because the runtime semantic is "QA inspects,
+    status stays at awaiting_qa" — see qa.py module docstring. The
+    behavioral claim guards (already_active / paused / sibling_sequence
+    skipped) run after the spec gate; they're not modelled by the spec.
+    """
+    agent_id = uuid4()
+    task_id = uuid4()
+    task = MagicMock(
+        id=task_id,
+        status=status,
+        task_type="code",
+        assigned_to=None,
+        commits=[],
+        pr_number=None,
+        branch_name="feature/backend/abc",
+        parent_task_id=None,
+        sequence=0,
+        team="backend",
+        title="t",
+        quick_context=None,
+        work_session_id=None,
+    )
+    after = MagicMock(
+        id=task_id,
+        status=status,
+        assigned_to=agent_id,
+        team="backend",
+        branch_name="feature/backend/abc",
+        work_session_id=None,
+    )
+    task_svc = AsyncMock()
+    task_svc.get.return_value = task
+    task_svc.agent_for.return_value = MagicMock(
+        id=agent_id, role=role, team="backend", slug=None
+    )
+    task_svc.qa_claim.return_value = after
+    task_svc.list_in_progress_for_agent.return_value = []
+    task_svc.list_paused_for_agent.return_value = []
+    deps = _make_deps(task_svc=task_svc)
+    c = Choreographer(deps)
+
+    ctx = spec.Context(actor_id=agent_id)
+    expected = spec.can_invoke_intent(spec.Role(role), "claim_review", task, ctx)
+
+    env = await c.claim_review(agent_id, task_id)
+    body = env.as_dict()
+    if expected.allowed:
+        # Spec allows. Verb may still surface a non-error envelope (OK)
+        # or a downstream behavioral guard rejection; the spec gate itself
+        # must NOT be the source of any not_authorized rejection.
+        assert body["error"] != "not_authorized", (
+            f"role={role} status={status}: spec.can_invoke_intent allowed "
+            f"but envelope surfaced not_authorized at the spec layer: {body}"
+        )
+    else:
+        assert body["error"] == expected.rejection_kind, (
+            f"role={role} status={status}: can_invoke_intent rejected with "
+            f"{expected.rejection_kind}, got {body['error']!r}; full body: {body}"
+        )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "role, status",
+    list(
+        product(
+            [r.value for r in spec.Role if r != spec.Role.AUDITOR],
+            [s.value for s in spec.Status],
+        )
+    ),
+)
+async def test_pass_review_matches_spec(role: str, status: str) -> None:
+    """Spec parity for pass_review's role + state gate.
+
+    pass_review's IntentSpec composes ``("qa_pass",)`` and is QA-only.
+    The spec gate enforces:
+
+      - role == qa,
+      - composed ``qa_pass`` action's source_status (AWAITING_QA),
+      - self-review block (qa_pass.self_review_block=True; the verb body
+        builds a Context with actor_slug + original_developer_slug so the
+        spec naturally rejects self-review).
+
+    The verb-specific gates (notes-length / journal:learning /
+    qa_evidence_inspected) live in the verb body — none are modelled by
+    the spec. They're wired to pass here so the spec gate is the load-
+    bearing rejector. ``_verify_qa_owner`` runs FIRST (before the spec
+    gate), so the parity check uses ``assigned_to=agent_id`` to keep
+    that pre-spec ownership check passing.
+    """
+    agent_id = uuid4()
+    task_id = uuid4()
+    task = MagicMock(
+        id=task_id,
+        status=status,
+        task_type="code",
+        # Owned by caller so _verify_qa_owner does not surface a non-spec
+        # not_authorized before the spec gate runs.
+        assigned_to=agent_id,
+        qa_evidence_inspected=True,
+        commits=[],
+        pr_number=None,
+        branch_name="feature/backend/abc",
+        parent_task_id=None,
+        sequence=0,
+        team="backend",
+        title="t",
+        quick_context=None,
+        pr_url="https://x/pr/8",
+        work_session_id=None,
+    )
+    after = MagicMock(
+        id=task_id,
+        status="awaiting_documentation",
+        assigned_to=agent_id,
+        team="backend",
+        pr_url="https://x/pr/8",
+        qa_evidence_inspected=True,
+    )
+    task_svc = AsyncMock()
+    task_svc.get.return_value = task
+    task_svc.agent_for.return_value = MagicMock(
+        id=agent_id, role=role, team="backend", slug=None
+    )
+    task_svc.qa_pass.return_value = after
+    task_svc.documenter_for_team.return_value = None
+    task_svc.session = MagicMock()
+    task_svc.session.begin_nested = MagicMock(
+        return_value=MagicMock(
+            __aenter__=AsyncMock(return_value=None),
+            __aexit__=AsyncMock(return_value=False),
+        )
+    )
+    deps = _make_deps(task_svc=task_svc)
+    journal_svc = deps.journal
+    journal_svc.has_learning_for_task.return_value = True
+    c = Choreographer(deps)
+
+    notes = (
+        "Reviewed PR carefully. Branch convention correct. Commit prefix "
+        "verified. README diff matches spec. All acceptance criteria met."
+    )
+    ctx = spec.Context(actor_id=agent_id, notes=notes)
+    expected = spec.can_invoke_intent(spec.Role(role), "pass_review", task, ctx)
+
+    env = await c.pass_review(agent_id, task_id, notes=notes)
+    body = env.as_dict()
+    if expected.allowed:
+        # Spec allows. Verb-specific notes-length / journal:learning /
+        # qa_evidence_inspected are wired to pass; the spec gate itself
+        # must NOT be the source of any not_authorized rejection.
+        assert body["error"] != "not_authorized", (
+            f"role={role} status={status}: spec.can_invoke_intent allowed "
+            f"but envelope surfaced not_authorized at the spec layer: {body}"
+        )
+    else:
+        assert body["error"] == expected.rejection_kind, (
+            f"role={role} status={status}: can_invoke_intent rejected with "
+            f"{expected.rejection_kind}, got {body['error']!r}; full body: {body}"
+        )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "role, status",
+    list(
+        product(
+            [r.value for r in spec.Role if r != spec.Role.AUDITOR],
+            [s.value for s in spec.Status],
+        )
+    ),
+)
+async def test_fail_review_matches_spec(role: str, status: str) -> None:
+    """Spec parity for fail_review's role + state gate.
+
+    fail_review's IntentSpec composes ``("qa_fail",)`` and is QA-only.
+    The spec gate enforces:
+
+      - role == qa,
+      - composed ``qa_fail`` action's source_status (AWAITING_QA),
+      - self-review block (qa_fail.self_review_block=True).
+
+    Same shape as pass_review: ownership precedes the spec gate, and
+    the verb-specific notes-length / journal:learning /
+    qa_evidence_inspected gates live in the verb body.
+    """
+    agent_id = uuid4()
+    task_id = uuid4()
+    task = MagicMock(
+        id=task_id,
+        status=status,
+        task_type="code",
+        # Owned by caller so _verify_qa_owner does not surface a non-spec
+        # not_authorized before the spec gate runs.
+        assigned_to=agent_id,
+        qa_evidence_inspected=True,
+        commits=[],
+        pr_number=None,
+        branch_name="feature/backend/abc",
+        parent_task_id=None,
+        sequence=0,
+        team="backend",
+        title="t",
+        quick_context=None,
+        work_session_id=None,
+    )
+    dev_id = uuid4()
+    after = MagicMock(
+        id=task_id,
+        status="needs_revision",
+        assigned_to=dev_id,
+        team="backend",
+    )
+    task_svc = AsyncMock()
+    task_svc.get.return_value = task
+    task_svc.agent_for.return_value = MagicMock(
+        id=agent_id, role=role, team="backend", slug=None
+    )
+    task_svc.qa_fail.return_value = after
+    task_svc.session = MagicMock()
+    task_svc.session.begin_nested = MagicMock(
+        return_value=MagicMock(
+            __aenter__=AsyncMock(return_value=None),
+            __aexit__=AsyncMock(return_value=False),
+        )
+    )
+    deps = _make_deps(task_svc=task_svc)
+    journal_svc = deps.journal
+    journal_svc.has_learning_for_task.return_value = True
+    c = Choreographer(deps)
+
+    issues = [
+        "Missing unit test coverage for /healthz endpoint — add at least one",
+        "Lint errors in /api/foo.py: unused import and missing return type",
+    ]
+    notes = "Issues:\n" + "\n".join(f"- {i}" for i in issues)
+    ctx = spec.Context(actor_id=agent_id, notes=notes, issues=tuple(issues))
+    expected = spec.can_invoke_intent(spec.Role(role), "fail_review", task, ctx)
+
+    env = await c.fail_review(agent_id, task_id, issues=issues)
+    body = env.as_dict()
+    if expected.allowed:
+        # Spec allows. Verb-specific gates wired to pass; the spec gate
+        # itself must NOT be the source of any not_authorized rejection.
+        assert body["error"] != "not_authorized", (
+            f"role={role} status={status}: spec.can_invoke_intent allowed "
+            f"but envelope surfaced not_authorized at the spec layer: {body}"
+        )
+    else:
+        assert body["error"] == expected.rejection_kind, (
+            f"role={role} status={status}: can_invoke_intent rejected with "
+            f"{expected.rejection_kind}, got {body['error']!r}; full body: {body}"
+        )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "role, status",
+    list(
+        product(
+            [r.value for r in spec.Role if r != spec.Role.AUDITOR],
+            [s.value for s in spec.Status],
+        )
+    ),
+)
+async def test_claim_doc_task_matches_spec(role: str, status: str) -> None:
+    """Spec parity for claim_doc_task's role + claim source-status gate.
+
+    claim_doc_task's IntentSpec composes ``("claim", "start")`` and is
+    restricted to documenter. The spec gate enforces:
+
+      - role == documenter,
+      - claim's source_statuses,
+      - CLAIM_RULES narrowing (documenter only from PENDING /
+        AWAITING_DOCUMENTATION).
+
+    The verb body owns dispatch via ``task.doc_claim`` (not the runner's
+    claim+start chain) because the runtime semantic is "documenter
+    inspects, status stays at awaiting_documentation" — see doc.py
+    module docstring.
+    """
+    agent_id = uuid4()
+    task_id = uuid4()
+    task = MagicMock(
+        id=task_id,
+        status=status,
+        task_type="code",
+        assigned_to=None,
+        commits=[],
+        pr_number=None,
+        branch_name="feature/backend/abc",
+        parent_task_id=None,
+        sequence=0,
+        team="backend",
+        title="t",
+        quick_context=None,
+        work_session_id=None,
+    )
+    after = MagicMock(
+        id=task_id,
+        status=status,
+        assigned_to=agent_id,
+        team="backend",
+        branch_name="feature/backend/abc",
+        work_session_id=None,
+    )
+    task_svc = AsyncMock()
+    task_svc.get.return_value = task
+    task_svc.agent_for.return_value = MagicMock(
+        id=agent_id, role=role, team="backend", slug=None
+    )
+    task_svc.doc_claim.return_value = after
+    task_svc.list_in_progress_for_agent.return_value = []
+    task_svc.list_paused_for_agent.return_value = []
+    deps = _make_deps(task_svc=task_svc)
+    c = Choreographer(deps)
+
+    ctx = spec.Context(actor_id=agent_id)
+    expected = spec.can_invoke_intent(spec.Role(role), "claim_doc_task", task, ctx)
+
+    env = await c.claim_doc_task(agent_id, task_id)
+    body = env.as_dict()
+    if expected.allowed:
+        # Spec allows. Verb may still surface a non-error envelope or a
+        # downstream behavioral guard rejection; the spec gate itself
+        # must NOT be the source of any not_authorized rejection.
+        assert body["error"] != "not_authorized", (
+            f"role={role} status={status}: spec.can_invoke_intent allowed "
+            f"but envelope surfaced not_authorized at the spec layer: {body}"
+        )
+    else:
+        assert body["error"] == expected.rejection_kind, (
+            f"role={role} status={status}: can_invoke_intent rejected with "
+            f"{expected.rejection_kind}, got {body['error']!r}; full body: {body}"
+        )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "role, status",
+    list(
+        product(
+            [r.value for r in spec.Role if r != spec.Role.AUDITOR],
+            [s.value for s in spec.Status],
+        )
+    ),
+)
+async def test_i_documented_matches_spec(role: str, status: str) -> None:
+    """Spec parity for i_documented's role + state gate.
+
+    i_documented's IntentSpec composes ``("docs_complete",)`` and is
+    documenter-only. The spec gate enforces:
+
+      - role == documenter,
+      - composed ``docs_complete`` action's source_status
+        (AWAITING_DOCUMENTATION),
+      - self-review block (docs_complete.self_review_block=True; the
+        verb body builds a Context with actor_slug +
+        original_developer_slug so the spec naturally rejects
+        self-review).
+
+    The verb-specific gates (notes-length / files-list) live in the
+    verb body — not modelled by the spec. They're wired to pass here so
+    the spec gate is the load-bearing rejector. ``_verify_doc_owner``
+    runs FIRST (before the spec gate), so the parity check uses
+    ``assigned_to=agent_id`` to keep that pre-spec ownership check
+    passing.
+    """
+    agent_id = uuid4()
+    task_id = uuid4()
+    task = MagicMock(
+        id=task_id,
+        status=status,
+        task_type="code",
+        # Owned by caller so _verify_doc_owner does not surface a non-spec
+        # not_authorized before the spec gate runs.
+        assigned_to=agent_id,
+        commits=[],
+        pr_number=None,
+        branch_name="feature/backend/abc",
+        parent_task_id=None,
+        sequence=0,
+        team="backend",
+        title="t",
+        quick_context=None,
+        documents=[],
+    )
+    after = MagicMock(
+        id=task_id,
+        status="awaiting_pm_review",
+        assigned_to=agent_id,
+        team="backend",
+    )
+    task_svc = AsyncMock()
+    task_svc.get.return_value = task
+    task_svc.agent_for.return_value = MagicMock(
+        id=agent_id, role=role, team="backend", slug=None
+    )
+    task_svc.docs_complete.return_value = after
+    task_svc.cell_pm_for_team.return_value = None
+    task_svc.session = MagicMock()
+    task_svc.session.flush = AsyncMock()
+    task_svc.session.begin_nested = MagicMock(
+        return_value=MagicMock(
+            __aenter__=AsyncMock(return_value=None),
+            __aexit__=AsyncMock(return_value=False),
+        )
+    )
+    deps = _make_deps(task_svc=task_svc)
+    c = Choreographer(deps)
+
+    notes = "Wrote backend/guides/feature-x.md with usage examples + config notes."
+    files = ["backend/guides/feature-x.md"]
+    ctx = spec.Context(actor_id=agent_id, notes=notes, files=tuple(files))
+    expected = spec.can_invoke_intent(spec.Role(role), "i_documented", task, ctx)
+
+    env = await c.i_documented(agent_id, task_id, notes=notes, files=files)
+    body = env.as_dict()
+    if expected.allowed:
+        # Spec allows. Verb-specific notes-length / files-list are wired
+        # to pass; the spec gate itself must NOT be the source of any
+        # not_authorized rejection.
+        assert body["error"] != "not_authorized", (
+            f"role={role} status={status}: spec.can_invoke_intent allowed "
+            f"but envelope surfaced not_authorized at the spec layer: {body}"
+        )
+    else:
+        assert body["error"] == expected.rejection_kind, (
+            f"role={role} status={status}: can_invoke_intent rejected with "
+            f"{expected.rejection_kind}, got {body['error']!r}; full body: {body}"
+        )

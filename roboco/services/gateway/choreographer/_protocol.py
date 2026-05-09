@@ -24,6 +24,7 @@ from typing import TYPE_CHECKING, Any
 if TYPE_CHECKING:
     from uuid import UUID
 
+    from roboco.services.gateway.choreographer._verb_runner import VerbRunner
     from roboco.services.gateway.envelope import Envelope
 
 
@@ -78,4 +79,7 @@ class ChoreographerHelpers:
         raise NotImplementedError
 
     async def _touch(self, task_id: UUID | None) -> None:
+        raise NotImplementedError
+
+    def _verb_runner(self) -> VerbRunner:
         raise NotImplementedError
