@@ -313,3 +313,114 @@ async def test_delegate_matches_spec(role: str, status: str) -> None:
             f"role={role} status={status}: can_invoke_intent rejected with "
             f"{expected.rejection_kind}, got {body['error']!r}; full body: {body}"
         )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "role, status, commits_count, has_pr, owned",
+    list(
+        product(
+            [r.value for r in spec.Role if r != spec.Role.AUDITOR],
+            [s.value for s in spec.Status],
+            [0, 1],
+            [False, True],
+            [False, True],
+        )
+    ),
+)
+async def test_open_pr_matches_spec(
+    role: str, status: str, commits_count: int, has_pr: bool, owned: bool
+) -> None:
+    """Spec parity for open_pr's role + extra-preconditions gate.
+
+    open_pr's IntentSpec has ``composes=()`` — it's a side-effect-only
+    verb (push_branch + create_pr). The spec gate enforces:
+
+      - role in _DEV_ROLES (DEVELOPER only),
+      - PRECONDITION_OWNERSHIP (task.assigned_to == ctx.actor_id),
+      - PRECONDITION_COMMITS (>=1 commit),
+      - PRECONDITION_NO_PR (pr_number is None).
+
+    The verb's idempotent re-entry path (owner + pr_number set returns OK)
+    intentionally bypasses the spec gate, since the spec would otherwise
+    reject with `tracing_gap` on `no_prior_pr`. That branch is pinned by
+    test_choreographer_dev / test_open_pr unit tests; here we exercise
+    the non-idempotent combos so the spec gate is the load-bearing check.
+    """
+    agent_id = uuid4()
+    task_id = uuid4()
+    other_agent_id = uuid4()
+    assigned_to = agent_id if owned else other_agent_id
+    # Skip the verb's idempotent shortcut: owner-with-PR returns OK
+    # without invoking the spec gate. That's a behavioral concession the
+    # spec doesn't model, pinned by separate unit tests.
+    if owned and has_pr:
+        pytest.skip("idempotent re-entry path bypasses spec gate by design")
+    task = MagicMock(
+        id=task_id,
+        status=status,
+        task_type="code",
+        assigned_to=assigned_to,
+        commits=[{"sha": f"abc{i}"} for i in range(commits_count)],
+        pr_number=7 if has_pr else None,
+        pr_url="https://gh/x/7" if has_pr else None,
+        branch_name="feature/backend/abc12345",
+        parent_task_id=None,
+        sequence=0,
+        team="backend",
+        title="t",
+        quick_context=None,
+    )
+    task_svc = AsyncMock()
+    task_svc.get.return_value = task
+    task_svc.agent_for.return_value = MagicMock(
+        id=agent_id, role=role, team="backend", slug=None
+    )
+    task_svc.session = MagicMock()
+    task_svc.session.begin_nested = MagicMock(
+        return_value=MagicMock(
+            __aenter__=AsyncMock(return_value=None),
+            __aexit__=AsyncMock(return_value=False),
+        )
+    )
+    git_svc = AsyncMock()
+    git_svc.push_branch.return_value = ("feature/backend/abc12345", 1)
+    git_svc.create_pr.return_value = {
+        "pr_number": 42,
+        "pr_url": "https://gh/x/42",
+        "is_root_pr": False,
+    }
+    deps = _make_deps(task_svc=task_svc)
+    deps = ChoreographerDeps(
+        task=task_svc,
+        work_session=deps.work_session,
+        git=git_svc,
+        a2a=deps.a2a,
+        journal=deps.journal,
+        audit=deps.audit,
+        evidence_repo=deps.evidence_repo,
+    )
+    c = Choreographer(deps)
+
+    ctx = spec.Context(actor_id=agent_id)
+    expected = spec.can_invoke_intent(spec.Role(role), "open_pr", task, ctx)
+
+    env = await c.open_pr(agent_id, task_id)
+    body = env.as_dict()
+    if expected.allowed:
+        # Spec allows. Verb may still surface a non-error envelope (OK)
+        # OR a downstream invalid_state if the runner hits an exception
+        # we didn't fully wire in this test mock. The spec gate itself
+        # must NOT be the source of any not_authorized / tracing_gap.
+        assert body["error"] not in ("not_authorized", "tracing_gap"), (
+            f"role={role} status={status} commits={commits_count} "
+            f"has_pr={has_pr} owned={owned}: spec.can_invoke_intent "
+            f"allowed but envelope rejected at the spec layer: {body}"
+        )
+    else:
+        assert body["error"] == expected.rejection_kind, (
+            f"role={role} status={status} commits={commits_count} "
+            f"has_pr={has_pr} owned={owned}: can_invoke_intent rejected "
+            f"with {expected.rejection_kind}, got {body['error']!r}; "
+            f"full body: {body}"
+        )

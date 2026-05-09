@@ -1120,8 +1120,11 @@ async def test_open_pr_does_not_create_pr_if_no_commits() -> None:
     c = Choreographer(deps)
     env = await c.open_pr(dev_id, task_id)
     body = env.as_dict()
-    assert body["error"] == "invalid_state"
-    assert "no commits" in body["message"]
+    # Spec's PRECONDITION_COMMITS now produces tracing_gap rather than the
+    # previous bespoke invalid_state. The atomicity invariant the test
+    # pins (no git side effect when commits=[]) is unchanged.
+    assert body["error"] == "tracing_gap"
+    assert body["missing"] == ["commits>=1"]
     git_svc.create_pr.assert_not_called()
     git_svc.push_branch.assert_not_called()
 

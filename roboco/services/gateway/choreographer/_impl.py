@@ -684,8 +684,9 @@ class Choreographer:
     async def open_pr(self, agent_id: UUID, task_id: UUID) -> Envelope:
         """Push the dev's branch and open a PR.
 
-        Atomic: validates ALL preconditions (assignee, commits,
-        no-prior-PR) BEFORE running any git side effects. If any check
+        Atomic: spec.can_invoke_intent runs first and enforces ALL
+        preconditions (PRECONDITION_OWNERSHIP, PRECONDITION_COMMITS,
+        PRECONDITION_NO_PR) BEFORE any git side effect. If any check
         fails, no PR is opened. After success, the dev calls
         ``i_am_done`` to actually transition the task to awaiting_qa.
 
@@ -695,8 +696,10 @@ class Choreographer:
         handoff, then never called i_am_done — orphaning PRs (e.g.
         PR #12 in the smoke-test trace).
 
-        Idempotent on re-call: if a PR is already open, returns OK
-        pointing the dev at ``i_am_done`` without opening another.
+        Idempotent on re-call: if the caller already owns the task and
+        a PR is already open, return OK pointing at ``i_am_done`` rather
+        than the spec's ``tracing_gap`` for ``no_prior_pr``. Two calls
+        in a row should not surface a misleading "open a PR" hint.
         """
         t = await self.task.get(task_id)
         if t is None:
@@ -708,33 +711,12 @@ class Choreographer:
             )
         briefing = await self._briefing_for(agent_id, task_id)
         agent = await self.task.agent_for(agent_id)
-        role = str(agent.role) if agent is not None else "developer"
-        if t.assigned_to != agent_id:
-            return await self._emit_rejection(
-                Envelope.not_authorized(
-                    message=f"task {task_id} is not assigned to you",
-                    remediate="call give_me_work() to find your work",
-                    context_briefing=briefing,
-                ).with_introspection(task=t, role=role),
-                agent_id=agent_id,
-                task_id=task_id,
-                verb="open_pr",
-            )
-        if not t.commits:
-            return await self._emit_rejection(
-                Envelope.invalid_state(
-                    message="no commits on this task yet",
-                    remediate=(
-                        "commit at least one change before submitting for QA — "
-                        "call commit(message='<subject>')"
-                    ),
-                    context_briefing=briefing,
-                ).with_introspection(task=t, role=role),
-                agent_id=agent_id,
-                task_id=task_id,
-                verb="open_pr",
-            )
-        if t.pr_number is not None:
+        role_str = str(agent.role) if agent is not None else "developer"
+        # Idempotent re-entry: caller owns the task and a PR is already
+        # open. The spec would otherwise reject with PRECONDITION_NO_PR
+        # tracing_gap, but agents calling open_pr twice should get the
+        # existing PR's i_am_done hint, not a misleading "open a PR" remediate.
+        if t.pr_number is not None and t.assigned_to == agent_id:
             return Envelope.ok(
                 status=str(t.status),
                 task_id=str(task_id),
@@ -743,22 +725,62 @@ class Choreographer:
                     f"i_am_done(task_id, notes='...') when self-verified"
                 ),
                 context_briefing=briefing,
-            ).with_introspection(task=t, role=role)
-
+            ).with_introspection(task=t, role=role_str)
+        try:
+            role = spec_module.Role(role_str)
+        except ValueError:
+            return await self._emit_rejection(
+                Envelope.not_authorized(
+                    message=f"unknown role '{role_str}'",
+                    remediate="role is not declared in the lifecycle spec",
+                    context_briefing=briefing,
+                ).with_introspection(task=t, role=role_str),
+                agent_id=agent_id,
+                task_id=task_id,
+                verb="open_pr",
+            )
+        spec_ctx = spec_module.Context(
+            actor_id=agent_id,
+            actor_slug=getattr(agent, "slug", None) if agent is not None else None,
+            original_developer_slug=_extract_original_developer(t),
+        )
+        decision = spec_module.can_invoke_intent(role, "open_pr", t, spec_ctx)
+        if not decision.allowed:
+            return await self._emit_rejection(
+                Envelope.from_decision(decision, briefing=briefing).with_introspection(
+                    task=t, role=role_str
+                ),
+                agent_id=agent_id,
+                task_id=task_id,
+                verb="open_pr",
+            )
         await self._touch(task_id)
-        await self.git.push_branch(t.branch_name)
-        parent = parent_branch_for(t.branch_name)
-        pr = await self.git.create_pr(t.branch_name, parent=parent, is_root_pr=False)
-
+        runner = self._verb_runner()
+        try:
+            await runner.run_intent("open_pr", t, agent, spec_ctx)
+        except Exception as exc:
+            return await self._emit_rejection(
+                Envelope.invalid_state(
+                    message=f"verb runner failed: {exc}",
+                    remediate="check workspace + retry; if persistent, escalate",
+                    context_briefing=briefing,
+                ).with_introspection(task=t, role=role_str),
+                agent_id=agent_id,
+                task_id=task_id,
+                verb="open_pr",
+            )
+        # Re-fetch: git_service.create_pr writes pr_number / pr_url onto
+        # the task row. The runner doesn't bubble that update back, so a
+        # fresh load is the simplest way to surface the new fields in the
+        # OK envelope's next-hint and introspection block.
+        refreshed = await self.task.get(task_id)
+        t = refreshed if refreshed is not None else t
         return Envelope.ok(
             status=str(t.status),
             task_id=str(task_id),
-            next=(
-                f"PR #{pr['pr_number']} opened; call "
-                f"i_am_done(task_id, notes='...') when self-verified"
-            ),
+            next=spec_module._INTENT_VERBS["open_pr"].next_hint(t),
             context_briefing=briefing,
-        ).with_introspection(task=t, role=role)
+        ).with_introspection(task=t, role=role_str)
 
     async def i_am_done(self, agent_id: UUID, task_id: UUID, notes: str) -> Envelope:
         """Submit work for QA.
