@@ -12,7 +12,7 @@ injection so later phases just fill in the bodies.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, ClassVar
 from uuid import UUID
 
 import structlog
@@ -1429,6 +1429,40 @@ class Choreographer:
                 message=f"invalid enum value: {exc}",
                 remediate="check team/task_type/estimated_complexity",
                 context_briefing=await self._briefing_for(pm_agent_id, parent_task_id),
+            )
+        if type_error := self._validate_assignee_task_type(
+            inputs.assigned_to, inputs.task_type
+        ):
+            return Envelope.invalid_state(
+                message=type_error,
+                remediate=(
+                    "Cell PMs (be-pm/fe-pm/ux-pm) own PLANNING tasks — they "
+                    "decompose the slice and delegate code work to devs. Pass "
+                    "task_type='planning' when delegating to a Cell PM."
+                ),
+                context_briefing=await self._briefing_for(pm_agent_id, parent_task_id),
+            )
+        return None
+
+    _CELL_PM_SLUGS: ClassVar[frozenset[str]] = frozenset({"be-pm", "fe-pm", "ux-pm"})
+
+    @staticmethod
+    def _validate_assignee_task_type(
+        assigned_to: str, task_type: str
+    ) -> str | None:
+        """Reject role-vs-type misclassifications.
+
+        Rule (2026-05-09 smoke Bug B): when delegating to a Cell PM, the
+        subtask must be `planning`-typed. The Cell PM owns the planning
+        of the slice and delegates code execution to devs; a code-typed
+        task assigned to a Cell PM conflates the two layers and made
+        the lifecycle harder to reason about (a code task that nobody
+        will execute, just plan).
+        """
+        if assigned_to in Choreographer._CELL_PM_SLUGS and task_type != "planning":
+            return (
+                f"task_type={task_type!r} is invalid for assignee {assigned_to!r}: "
+                f"Cell PMs own planning tasks, not code/documentation/etc."
             )
         return None
 

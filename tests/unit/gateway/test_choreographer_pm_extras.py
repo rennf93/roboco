@@ -749,3 +749,80 @@ async def test_i_am_idle_with_unread_skips_pause_and_idle() -> None:
     assert env.status == "idle_with_unread"
     task_svc.list_in_progress_for_agent.assert_not_awaited()
     task_svc.mark_agent_idle.assert_not_awaited()
+
+
+# ---------------------------------------------------------------------------
+# Bug B from 2026-05-09 smoke: main-pm sent task_type="code" when delegating
+# to be-pm. A Cell PM PLANS the slice; it does not execute code. The
+# delegate verb must reject this misclassification at the gateway so future
+# spawns can't recreate the wrong-type-task condition.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_delegate_main_pm_to_cell_pm_rejects_code_typed_subtask() -> None:
+    main_pm_id = uuid4()
+    parent_id = uuid4()
+    parent = MagicMock(
+        id=parent_id,
+        project_id=uuid4(),
+        status="in_progress",
+        assigned_to=main_pm_id,
+    )
+    task_svc = AsyncMock()
+    task_svc.get.return_value = parent
+    task_svc.agent_for.return_value = MagicMock(role="main_pm", team="main_pm")
+    task_svc.get_subtasks.return_value = []
+    deps = _make_deps(task=task_svc)
+    c = Choreographer(deps)
+
+    env = await c.delegate(
+        main_pm_id,
+        parent_id,
+        DelegateInputs(
+            title="Backend slice",
+            description="Plan + drive backend work",
+            assigned_to="be-pm",
+            team="backend",
+            task_type="code",  # WRONG — Cell PM should get planning
+        ),
+    )
+    body = env.as_dict()
+    assert body["error"] == "invalid_state"
+    assert "planning" in body["message"].lower()
+    assert "be-pm" in body["message"] or "cell_pm" in body["message"].lower()
+
+
+@pytest.mark.asyncio
+async def test_delegate_main_pm_to_cell_pm_accepts_planning_subtask() -> None:
+    """The contract from the test above: planning IS the right type."""
+    main_pm_id = uuid4()
+    parent_id = uuid4()
+    project_id = uuid4()
+    parent = MagicMock(
+        id=parent_id,
+        project_id=project_id,
+        status="in_progress",
+        assigned_to=main_pm_id,
+    )
+    new_task = MagicMock(id=uuid4())
+    task_svc = AsyncMock()
+    task_svc.get.return_value = parent
+    task_svc.agent_for.return_value = MagicMock(role="main_pm", team="main_pm")
+    task_svc.get_subtasks.return_value = []
+    task_svc.create_subtask.return_value = new_task
+    deps = _make_deps(task=task_svc)
+    c = Choreographer(deps)
+
+    env = await c.delegate(
+        main_pm_id,
+        parent_id,
+        DelegateInputs(
+            title="Backend slice",
+            description="Plan + drive backend work",
+            assigned_to="be-pm",
+            team="backend",
+            task_type="planning",
+        ),
+    )
+    assert env.error is None
