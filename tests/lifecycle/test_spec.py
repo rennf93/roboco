@@ -203,3 +203,56 @@ def test_status_transition_carries_role_constraint_optional() -> None:
     assert t.target == spec.Status.AWAITING_DOCUMENTATION
     assert t.triggered_by_action == "qa_pass"
     assert t.role_constraint == frozenset({spec.Role.QA})
+
+
+def test_status_transitions_includes_dev_path() -> None:
+    """The dev happy path: pending → claimed → in_progress → verifying → awaiting_qa."""
+    sources = {(t.source, t.target) for t in spec._STATUS_TRANSITIONS}
+    assert (spec.Status.PENDING, spec.Status.CLAIMED) in sources
+    assert (spec.Status.CLAIMED, spec.Status.IN_PROGRESS) in sources
+    assert (spec.Status.IN_PROGRESS, spec.Status.VERIFYING) in sources
+    assert (spec.Status.VERIFYING, spec.Status.AWAITING_QA) in sources
+
+
+def test_status_transitions_includes_qa_paths() -> None:
+    sources = {(t.source, t.target) for t in spec._STATUS_TRANSITIONS}
+    assert (spec.Status.AWAITING_QA, spec.Status.CLAIMED) in sources  # QA claims
+    assert (spec.Status.AWAITING_QA, spec.Status.AWAITING_DOCUMENTATION) in sources
+    assert (spec.Status.AWAITING_QA, spec.Status.NEEDS_REVISION) in sources
+
+
+def test_status_transitions_includes_ceo_paths() -> None:
+    sources = {(t.source, t.target) for t in spec._STATUS_TRANSITIONS}
+    assert (spec.Status.AWAITING_PM_REVIEW, spec.Status.COMPLETED) in sources
+    assert (
+        spec.Status.AWAITING_PM_REVIEW,
+        spec.Status.AWAITING_CEO_APPROVAL,
+    ) in sources
+    assert (spec.Status.AWAITING_CEO_APPROVAL, spec.Status.COMPLETED) in sources
+    assert (spec.Status.AWAITING_CEO_APPROVAL, spec.Status.NEEDS_REVISION) in sources
+
+
+def test_status_transitions_includes_block_pause_paths() -> None:
+    sources = {(t.source, t.target) for t in spec._STATUS_TRANSITIONS}
+    assert (spec.Status.IN_PROGRESS, spec.Status.BLOCKED) in sources
+    assert (spec.Status.IN_PROGRESS, spec.Status.PAUSED) in sources
+    assert (spec.Status.BLOCKED, spec.Status.IN_PROGRESS) in sources
+    assert (spec.Status.PAUSED, spec.Status.IN_PROGRESS) in sources
+
+
+def test_every_non_terminal_status_can_be_cancelled() -> None:
+    """PERMISSIONS.md says PM/CEO can cancel from any state."""
+    cancellable = {
+        t.source for t in spec._STATUS_TRANSITIONS if t.target == spec.Status.CANCELLED
+    }
+    non_terminal = set(spec.Status) - {spec.Status.COMPLETED, spec.Status.CANCELLED}
+    assert non_terminal <= cancellable, (
+        f"Statuses missing a cancel transition: {non_terminal - cancellable}"
+    )
+
+
+def test_status_graph_lookup_returns_targets() -> None:
+    """STATUS_GRAPH is a quick `source -> {targets}` lookup."""
+    assert spec.Status.CLAIMED in spec.STATUS_GRAPH[spec.Status.PENDING]
+    assert spec.Status.AWAITING_QA in spec.STATUS_GRAPH[spec.Status.VERIFYING]
+    assert spec.STATUS_GRAPH[spec.Status.COMPLETED] == frozenset()
