@@ -66,6 +66,7 @@ class ContentActionsDeps:
 # into verb_gates removes the risk that the two sets disagree.
 _VALID_NOTIFY_PRIORITIES: frozenset[str] = frozenset({"normal", "high", "urgent"})
 
+
 # Synthetic task probe for role-only gate checks: when the verb body
 # wants to fast-fail on role BEFORE loading the agent's active task,
 # we hand verb_gates an in-progress code-typed shape so it consults

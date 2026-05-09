@@ -26,7 +26,7 @@ Create Date: 2026-05-02
 
 from __future__ import annotations
 
-from alembic import op
+from alembic import context, op
 from sqlalchemy import text
 
 revision = "009_enum_reconcile"
@@ -46,7 +46,21 @@ _DESIRED_ADDITIONS: dict[str, tuple[str, ...]] = {
 
 
 def upgrade() -> None:
-    """Add missing values; rebuild any enum found with uppercase members."""
+    """Add missing values; rebuild any enum found with uppercase members.
+
+    This migration is fundamentally introspective — it queries pg_enum at
+    runtime to find drifted types and rebuild them. There is no
+    representable equivalent in offline (--sql) mode, so we emit the
+    additive ALTER TYPE statements only and skip the rebuild branch.
+    Run against a real DB to perform the reconcile.
+    """
+    if context.is_offline_mode():
+        for enum_name, additions in _DESIRED_ADDITIONS.items():
+            for value in additions:
+                op.execute(
+                    f"ALTER TYPE {enum_name} ADD VALUE IF NOT EXISTS '{value}'"
+                )
+        return
     bind = op.get_bind()
 
     # Step 1: find every enum that has at least one uppercase member.

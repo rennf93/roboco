@@ -1447,9 +1447,7 @@ class Choreographer:
     _CELL_PM_SLUGS: ClassVar[frozenset[str]] = frozenset({"be-pm", "fe-pm", "ux-pm"})
 
     @staticmethod
-    def _validate_assignee_task_type(
-        assigned_to: str, task_type: str
-    ) -> str | None:
+    def _validate_assignee_task_type(assigned_to: str, task_type: str) -> str | None:
         """Reject role-vs-type misclassifications.
 
         Rule (2026-05-09 smoke Bug B): when delegating to a Cell PM, the

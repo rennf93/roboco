@@ -1037,9 +1037,7 @@ async def test_i_will_work_on_envelope_carries_introspection_on_rejection() -> N
     so the agent learns what verbs are actually valid right now."""
     agent_id = uuid4()
     task_id = uuid4()
-    task_svc = _wire_dev_task_svc(
-        task_id, status="completed", assigned_to=agent_id
-    )
+    task_svc = _wire_dev_task_svc(task_id, status="completed", assigned_to=agent_id)
     deps = _make_deps(task=task_svc)
     c = Choreographer(deps)
     env = await c.i_will_work_on(agent_id, task_id, plan="x")
@@ -1104,8 +1102,9 @@ async def test_i_will_work_on_missing_plan_does_not_claim_pending_task() -> None
     body = env.as_dict()
     assert body["error"] == "tracing_gap"
     assert "plan" in body["missing"]
-    task_svc.claim.assert_not_called(), (
-        "claim() ran before plan precondition was satisfied — atomicity broken"
+    (
+        task_svc.claim.assert_not_called(),
+        ("claim() ran before plan precondition was satisfied — atomicity broken"),
     )
 
 

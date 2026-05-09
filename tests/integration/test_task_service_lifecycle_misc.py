@@ -232,7 +232,7 @@ async def test_inject_proactive_context_skips_when_claim_rolled_back(
         async def __aenter__(self) -> Any:
             return self._session
 
-        async def __aexit__(self, exc_type, exc, tb) -> None:
+        async def __aexit__(self, exc_type, exc, _tb) -> None:
             return None
 
     factory_instance = _SessionFactory()
@@ -278,7 +278,7 @@ async def test_inject_proactive_context_writes_when_context_nonempty(
         async def __aenter__(self) -> Any:
             return self._session
 
-        async def __aexit__(self, exc_type, exc, tb) -> None:
+        async def __aexit__(self, exc_type, exc, _tb) -> None:
             return None
 
     class _Factory:
