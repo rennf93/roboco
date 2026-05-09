@@ -122,6 +122,23 @@ class _IAmDoneContext:
 
 
 @dataclass(frozen=True)
+class _ReassignedCtx:
+    """Bundle of fields the ``_reassigned_rejection`` helper inspects.
+
+    Shared between ``unclaim`` and ``resume`` (Task 6 fix in commit
+    a5d358d). Frozen so the helper site can't mutate caller state and
+    to keep PLR0913 (too many positional args) at bay.
+    """
+
+    task: Any
+    agent_id: UUID
+    task_id: UUID
+    role_str: str
+    briefing: dict[str, Any]
+    upstream_hint: str
+
+
+@dataclass(frozen=True)
 class DelegateInputs:
     """Bundle of fields the ``delegate`` verb receives from the route layer.
 
@@ -193,6 +210,35 @@ class Choreographer:
         """Best-effort heartbeat write; silent on missing task."""
         if task_id is not None:
             await self.task.heartbeat(task_id)
+
+    @staticmethod
+    def _reassigned_rejection(
+        ctx: _ReassignedCtx,
+    ) -> Envelope | None:
+        """Build the "task reassigned by upstream verb" rejection envelope.
+
+        Shared between ``unclaim`` and ``resume`` (Task 6 fix in commit
+        a5d358d). The spec doesn't model "task got reassigned out from
+        under you by an upstream verb" — when the spec gate accepts but
+        ``task.assigned_to != agent_id``, this helper produces the
+        envelope with the load-bearing "current owner" hint and
+        verb-specific upstream remediate text. Returns ``None`` when the
+        caller still owns the task.
+        """
+        task = ctx.task
+        if task.assigned_to == ctx.agent_id:
+            return None
+        current_owner = (
+            str(task.assigned_to) if task.assigned_to is not None else "<unassigned>"
+        )
+        return Envelope.not_authorized(
+            message=(
+                f"task {ctx.task_id} is no longer assigned to you "
+                f"(current owner: {current_owner})"
+            ),
+            remediate=ctx.upstream_hint,
+            context_briefing=ctx.briefing,
+        ).with_introspection(task=task, role=ctx.role_str)
 
     async def _emit_rejection(
         self,
@@ -1191,8 +1237,17 @@ class Choreographer:
         "or unclaim it first," but the verb didn't exist. This makes that
         promise true. The work-in-progress branch survives; only the claim
         is released so another agent (or the same one, fresh) can pick it
-        up. State and authorization checks live here; the DB write itself
-        is in ``TaskService.unclaim_for_agent``.
+        up.
+
+        Spec gate runs first (role membership only — unclaim's IntentSpec
+        has ``composes=()``, so the spec does not enforce a source-status
+        constraint). After the gate accepts, the reassignment-rejection
+        branch (introduced in commit a5d358d) catches "task was reassigned
+        out from under you by an upstream verb" — the spec doesn't model
+        that case. Then the verb body owns dispatch via
+        ``task.unclaim_for_agent`` because ``composes=()`` (no atomic action
+        for the runner to run); the service-level None return surfaces as
+        invalid_state when the status drifted between get and write.
         """
         t = await self.task.get(task_id)
         briefing = await self._briefing_for(agent_id, task_id)
@@ -1204,34 +1259,55 @@ class Choreographer:
                 verb="unclaim",
             )
         agent = await self.task.agent_for(agent_id)
-        role = str(agent.role) if agent is not None else "developer"
-        if t.assigned_to != agent_id:
-            # The task was reassigned out from under this agent — most
-            # commonly by an upstream verb that legitimately changed
-            # ownership (cell_pm_complete propagating to the parent,
-            # main_pm_complete clearing assigned_to to None when
-            # escalating to CEO, or a PM unblocking with restore=True).
-            # The agent's local state is stale; tell it concretely.
-            current_owner = (
-                str(t.assigned_to) if t.assigned_to is not None else "<unassigned>"
-            )
+        role_str = str(agent.role) if agent is not None else "developer"
+        try:
+            role = spec_module.Role(role_str)
+        except ValueError:
             return await self._emit_rejection(
                 Envelope.not_authorized(
-                    message=(
-                        f"task {task_id} is no longer assigned to you "
-                        f"(current owner: {current_owner})"
-                    ),
-                    remediate=(
-                        "the task was reassigned by an upstream verb "
-                        "(cell_pm_complete / main_pm_complete / unblock). "
-                        "call give_me_work() to find your current work."
-                    ),
+                    message=f"unknown role '{role_str}'",
+                    remediate="role is not declared in the lifecycle spec",
                     context_briefing=briefing,
-                ).with_introspection(task=t, role=role),
+                ).with_introspection(task=t, role=role_str),
                 agent_id=agent_id,
                 task_id=task_id,
                 verb="unclaim",
             )
+        spec_ctx = spec_module.Context(
+            actor_id=agent_id,
+            actor_slug=getattr(agent, "slug", None) if agent is not None else None,
+            original_developer_slug=_extract_original_developer(t),
+        )
+        decision = spec_module.can_invoke_intent(role, "unclaim", t, spec_ctx)
+        if not decision.allowed:
+            return await self._emit_rejection(
+                Envelope.from_decision(decision, briefing=briefing).with_introspection(
+                    task=t, role=role_str
+                ),
+                agent_id=agent_id,
+                task_id=task_id,
+                verb="unclaim",
+            )
+        reassigned = self._reassigned_rejection(
+            _ReassignedCtx(
+                task=t,
+                agent_id=agent_id,
+                task_id=task_id,
+                role_str=role_str,
+                briefing=briefing,
+                upstream_hint=(
+                    "the task was reassigned by an upstream verb "
+                    "(cell_pm_complete / main_pm_complete / unblock). "
+                    "call give_me_work() to find your current work."
+                ),
+            )
+        )
+        if reassigned is not None:
+            return await self._emit_rejection(
+                reassigned, agent_id=agent_id, task_id=task_id, verb="unclaim"
+            )
+        # Verb body owns dispatch — unclaim's IntentSpec has composes=(),
+        # so VerbRunner has no atomic action to run.
         after = await self.task.unclaim_for_agent(task_id, agent_id)
         if after is None:
             return await self._emit_rejection(
@@ -1239,7 +1315,7 @@ class Choreographer:
                     message=f"cannot unclaim from status {t.status}",
                     remediate="only claimed/in_progress tasks can be unclaimed",
                     context_briefing=briefing,
-                ).with_introspection(task=t, role=role),
+                ).with_introspection(task=t, role=role_str),
                 agent_id=agent_id,
                 task_id=task_id,
                 verb="unclaim",
@@ -1250,9 +1326,9 @@ class Choreographer:
         return Envelope.ok(
             status=str(after.status),
             task_id=str(task_id),
-            next="task returned to pending; another agent (or you, fresh) can claim",
+            next=spec_module._INTENT_VERBS["unclaim"].next_hint(after),
             context_briefing=briefing,
-        ).with_introspection(task=after, role=role)
+        ).with_introspection(task=after, role=role_str)
 
     async def resume(self, agent_id: UUID, task_id: UUID) -> Envelope:
         """Resume a paused task this agent owns; transitions paused → in_progress.
@@ -1264,8 +1340,14 @@ class Choreographer:
         explicitly limited to needs_revision/pending/claimed; overloading
         it would muddy state-machine intent. ``resume`` keeps it explicit.
 
-        State and authorization checks live here; the DB write itself is
-        in ``TaskService.resume_for_agent``.
+        Spec gate runs first and enforces role membership plus the
+        composed ``resume`` action's source-status constraint (PAUSED
+        only). After the gate accepts, the reassignment-rejection branch
+        catches "task was reassigned by an upstream verb" — the spec
+        doesn't model that case, so the existing envelope text (preserved
+        from commit a5d358d) is the load-bearing hint. Then
+        ``VerbRunner.run_intent("resume", ...)`` dispatches the (resume,)
+        atomic chain wrapped in a savepoint.
         """
         t = await self.task.get(task_id)
         briefing = await self._briefing_for(agent_id, task_id)
@@ -1277,39 +1359,70 @@ class Choreographer:
                 verb="resume",
             )
         agent = await self.task.agent_for(agent_id)
-        role = str(agent.role) if agent is not None else "developer"
-        if t.assigned_to != agent_id:
-            # See unclaim's matching branch for the rationale: the task
-            # was reassigned by an upstream verb. Surface the actual
-            # current owner so the agent can stop looping on a stale
-            # task_id and call give_me_work() instead.
-            current_owner = (
-                str(t.assigned_to) if t.assigned_to is not None else "<unassigned>"
-            )
+        role_str = str(agent.role) if agent is not None else "developer"
+        try:
+            role = spec_module.Role(role_str)
+        except ValueError:
             return await self._emit_rejection(
                 Envelope.not_authorized(
-                    message=(
-                        f"task {task_id} is no longer assigned to you "
-                        f"(current owner: {current_owner})"
-                    ),
-                    remediate=(
-                        "the task was reassigned by an upstream verb. "
-                        "call give_me_work() to find your current work."
-                    ),
+                    message=f"unknown role '{role_str}'",
+                    remediate="role is not declared in the lifecycle spec",
                     context_briefing=briefing,
-                ).with_introspection(task=t, role=role),
+                ).with_introspection(task=t, role=role_str),
                 agent_id=agent_id,
                 task_id=task_id,
                 verb="resume",
             )
-        after = await self.task.resume_for_agent(task_id, agent_id)
+        spec_ctx = spec_module.Context(
+            actor_id=agent_id,
+            actor_slug=getattr(agent, "slug", None) if agent is not None else None,
+            original_developer_slug=_extract_original_developer(t),
+        )
+        decision = spec_module.can_invoke_intent(role, "resume", t, spec_ctx)
+        if not decision.allowed:
+            return await self._emit_rejection(
+                Envelope.from_decision(decision, briefing=briefing).with_introspection(
+                    task=t, role=role_str
+                ),
+                agent_id=agent_id,
+                task_id=task_id,
+                verb="resume",
+            )
+        reassigned = self._reassigned_rejection(
+            _ReassignedCtx(
+                task=t,
+                agent_id=agent_id,
+                task_id=task_id,
+                role_str=role_str,
+                briefing=briefing,
+                upstream_hint=(
+                    "the task was reassigned by an upstream verb. "
+                    "call give_me_work() to find your current work."
+                ),
+            )
+        )
+        if reassigned is not None:
+            return await self._emit_rejection(
+                reassigned, agent_id=agent_id, task_id=task_id, verb="resume"
+            )
+        runner = self._verb_runner()
+        runner_failure_msg: str | None = None
+        try:
+            after = await runner.run_intent("resume", t, agent, spec_ctx)
+        except Exception as exc:
+            after = None
+            runner_failure_msg = f"verb runner failed: {exc}"
         if after is None:
+            # Either the runner raised (recorded above) or the service
+            # returned None despite the spec gate accepting (race: status
+            # drifted between get and write). Both surface as invalid_state.
             return await self._emit_rejection(
                 Envelope.invalid_state(
-                    message=f"cannot resume from status {t.status}",
+                    message=runner_failure_msg
+                    or f"cannot resume from status {t.status} (drift)",
                     remediate="only paused tasks can be resumed",
                     context_briefing=briefing,
-                ).with_introspection(task=t, role=role),
+                ).with_introspection(task=t, role=role_str),
                 agent_id=agent_id,
                 task_id=task_id,
                 verb="resume",
@@ -1319,9 +1432,9 @@ class Choreographer:
         return Envelope.ok(
             status=str(after.status),
             task_id=str(task_id),
-            next="resumed; continue working — call commit() when ready",
+            next=spec_module._INTENT_VERBS["resume"].next_hint(after),
             context_briefing=briefing,
-        ).with_introspection(task=after, role=role)
+        ).with_introspection(task=after, role=role_str)
 
     async def i_am_idle(self, agent_id: UUID) -> Envelope:
         """Report no more work. Soft-block if there are unread A2As or @mentions.

@@ -627,3 +627,163 @@ async def test_i_am_blocked_matches_spec(role: str, status: str) -> None:
             f"role={role} status={status}: can_invoke_intent rejected with "
             f"{expected.rejection_kind}, got {body['error']!r}; full body: {body}"
         )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "role, status",
+    list(
+        product(
+            [r.value for r in spec.Role if r != spec.Role.AUDITOR],
+            [s.value for s in spec.Status],
+        )
+    ),
+)
+async def test_unclaim_matches_spec(role: str, status: str) -> None:
+    """Spec parity for unclaim's role gate.
+
+    unclaim's IntentSpec has ``composes=()`` — no atomic action runs, so
+    the spec gate enforces only role membership (no source-status
+    constraint). The verb body owns dispatch via
+    ``task.unclaim_for_agent``; the service-level guard refuses with
+    None when the status isn't claimed/in_progress, surfacing as
+    invalid_state from the verb body. That service-layer rejection is
+    NOT the spec's concern.
+
+    Tasks are kept ``assigned_to=agent_id`` so the verb's
+    reassignment-rejection branch (Task 6 fix in commit a5d358d) does not
+    fire — that branch is a Choreographer-level guard the spec doesn't
+    model and is pinned by separate unit tests in test_unclaim.py.
+    """
+    agent_id = uuid4()
+    task_id = uuid4()
+    task = MagicMock(
+        id=task_id,
+        status=status,
+        task_type="code",
+        # Owned by caller so the reassignment-rejection branch does not
+        # fire; we want the spec gate to be the only rejector here.
+        assigned_to=agent_id,
+        commits=[],
+        pr_number=None,
+        branch_name="feature/x",
+        parent_task_id=None,
+        sequence=0,
+        team="backend",
+        title="t",
+        quick_context=None,
+    )
+    task_svc = AsyncMock()
+    task_svc.get.return_value = task
+    task_svc.agent_for.return_value = MagicMock(
+        id=agent_id, role=role, team="backend", slug=None
+    )
+    # Service-level guard: returns the post-unclaim task on success, or
+    # None on state drift. For the parity test we always return a stub
+    # so the verb body's None-branch (invalid_state) doesn't mask the
+    # spec-layer outcome on the allowed branch.
+    task_svc.unclaim_for_agent.return_value = MagicMock(
+        id=task_id, status="pending", assigned_to=None
+    )
+    deps = _make_deps(task_svc=task_svc)
+    c = Choreographer(deps)
+
+    ctx = spec.Context(actor_id=agent_id)
+    expected = spec.can_invoke_intent(spec.Role(role), "unclaim", task, ctx)
+
+    env = await c.unclaim(agent_id, task_id)
+    body = env.as_dict()
+    if expected.allowed:
+        # Spec allows. Verb may still surface a non-error envelope (OK)
+        # or a downstream invalid_state if unclaim_for_agent returns
+        # None — but the spec gate itself must NOT be the source of
+        # any not_authorized rejection.
+        assert body["error"] != "not_authorized", (
+            f"role={role} status={status}: spec.can_invoke_intent allowed "
+            f"but envelope surfaced not_authorized at the spec layer: {body}"
+        )
+    else:
+        assert body["error"] == expected.rejection_kind, (
+            f"role={role} status={status}: can_invoke_intent rejected with "
+            f"{expected.rejection_kind}, got {body['error']!r}; full body: {body}"
+        )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "role, status",
+    list(
+        product(
+            [r.value for r in spec.Role if r != spec.Role.AUDITOR],
+            [s.value for s in spec.Status],
+        )
+    ),
+)
+async def test_resume_matches_spec(role: str, status: str) -> None:
+    """Spec parity for resume's role + state gate.
+
+    resume's IntentSpec composes ``("resume",)``. The spec gate enforces:
+
+      - role in (_DEV_ROLES | _QA_ROLES | _DOC_ROLES | _PM_ROLES),
+      - composed ``resume`` action's source_status (PAUSED only).
+
+    Tasks are kept ``assigned_to=agent_id`` so the verb's
+    reassignment-rejection branch (Task 6 fix in commit a5d358d) does not
+    fire — that branch is a Choreographer-level guard the spec doesn't
+    model and is pinned by separate unit tests in test_resume.py.
+    """
+    agent_id = uuid4()
+    task_id = uuid4()
+    task = MagicMock(
+        id=task_id,
+        status=status,
+        task_type="code",
+        # Owned by caller so the reassignment-rejection branch does not
+        # fire; we want the spec gate to be the only rejector here.
+        assigned_to=agent_id,
+        commits=[],
+        pr_number=None,
+        branch_name="feature/x",
+        parent_task_id=None,
+        sequence=0,
+        team="backend",
+        title="t",
+        quick_context=None,
+    )
+    task_svc = AsyncMock()
+    task_svc.get.return_value = task
+    task_svc.agent_for.return_value = MagicMock(
+        id=agent_id, role=role, team="backend", slug=None
+    )
+    task_svc.resume_for_agent.return_value = MagicMock(
+        id=task_id, status="in_progress", assigned_to=agent_id
+    )
+    task_svc.session = MagicMock()
+    task_svc.session.begin_nested = MagicMock(
+        return_value=MagicMock(
+            __aenter__=AsyncMock(return_value=None),
+            __aexit__=AsyncMock(return_value=False),
+        )
+    )
+    deps = _make_deps(task_svc=task_svc)
+    c = Choreographer(deps)
+
+    ctx = spec.Context(actor_id=agent_id)
+    expected = spec.can_invoke_intent(spec.Role(role), "resume", task, ctx)
+
+    env = await c.resume(agent_id, task_id)
+    body = env.as_dict()
+    if expected.allowed:
+        # Spec allows. Verb may still surface a non-error envelope (OK)
+        # or a downstream invalid_state if the runner hits an exception
+        # we didn't fully wire in this test mock. The spec gate itself
+        # must NOT be the source of any not_authorized rejection.
+        assert body["error"] != "not_authorized", (
+            f"role={role} status={status}: spec.can_invoke_intent allowed "
+            f"but envelope surfaced not_authorized at the spec layer: {body}"
+        )
+    else:
+        assert body["error"] == expected.rejection_kind, (
+            f"role={role} status={status}: can_invoke_intent rejected with "
+            f"{expected.rejection_kind}, got {body['error']!r}; full body: {body}"
+        )

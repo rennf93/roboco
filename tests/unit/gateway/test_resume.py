@@ -54,8 +54,20 @@ async def test_resume_transitions_paused_to_in_progress() -> None:
     t = MagicMock(id=tid, status="paused", assigned_to=aid)
     task_svc = AsyncMock()
     task_svc.get.return_value = t
+    task_svc.agent_for.return_value = MagicMock(
+        id=aid, role="developer", team="backend", slug=None
+    )
     task_svc.resume_for_agent.return_value = MagicMock(
         id=tid, status="in_progress", assigned_to=aid
+    )
+    # VerbRunner wraps composed actions in session.begin_nested(); wire up
+    # an async-context-manager mock so the runner doesn't fail on dispatch.
+    task_svc.session = MagicMock()
+    task_svc.session.begin_nested = MagicMock(
+        return_value=MagicMock(
+            __aenter__=AsyncMock(return_value=None),
+            __aexit__=AsyncMock(return_value=False),
+        )
     )
     deps = _make_deps(task=task_svc)
     c = Choreographer(deps)
@@ -91,12 +103,19 @@ async def test_resume_rejects_when_not_claimant() -> None:
     t = MagicMock(id=tid, status="paused", assigned_to=other)
     task_svc = AsyncMock()
     task_svc.get.return_value = t
+    task_svc.agent_for.return_value = MagicMock(
+        id=aid, role="developer", team="backend", slug=None
+    )
     deps = _make_deps(task=task_svc)
     c = Choreographer(deps)
 
     env = await c.resume(aid, tid)
 
+    # The spec gate accepts (developer is in resume's allowed_roles and
+    # status is paused); the reassignment-rejection branch (Task 6 fix in
+    # commit a5d358d) is what rejects with "current owner".
     assert env.error == "not_authorized"
+    assert "current owner" in (env.message or "")
     task_svc.resume_for_agent.assert_not_awaited()
 
 
@@ -104,11 +123,15 @@ async def test_resume_rejects_when_not_claimant() -> None:
 async def test_resume_rejects_invalid_state() -> None:
     aid = uuid4()
     tid = uuid4()
-    # Task is owned but not paused (e.g. status drifted to in_progress between
-    # get and write). Service-level guard refuses by returning None.
+    # Task is owned but not paused. resume's IntentSpec composes=("resume",)
+    # and the resume ActionSpec's source_statuses is {PAUSED}, so the spec
+    # gate rejects with invalid_state — VerbRunner never runs.
     t = MagicMock(id=tid, status="in_progress", assigned_to=aid)
     task_svc = AsyncMock()
     task_svc.get.return_value = t
+    task_svc.agent_for.return_value = MagicMock(
+        id=aid, role="developer", team="backend", slug=None
+    )
     task_svc.resume_for_agent.return_value = None
     deps = _make_deps(task=task_svc)
     c = Choreographer(deps)
@@ -116,7 +139,9 @@ async def test_resume_rejects_invalid_state() -> None:
     env = await c.resume(aid, tid)
 
     assert env.error == "invalid_state"
-    task_svc.resume_for_agent.assert_awaited_once_with(tid, aid)
+    # Spec gate rejects before the runner dispatches, so resume_for_agent
+    # is NOT called.
+    task_svc.resume_for_agent.assert_not_awaited()
 
 
 @pytest.mark.asyncio
@@ -147,8 +172,20 @@ async def test_resume_success_writes_heartbeat() -> None:
     t = MagicMock(id=tid, status="paused", assigned_to=aid)
     task_svc = AsyncMock()
     task_svc.get.return_value = t
+    task_svc.agent_for.return_value = MagicMock(
+        id=aid, role="developer", team="backend", slug=None
+    )
     task_svc.resume_for_agent.return_value = MagicMock(
         id=tid, status="in_progress", assigned_to=aid
+    )
+    # VerbRunner wraps composed actions in session.begin_nested(); wire up
+    # an async-context-manager mock so the runner doesn't fail on dispatch.
+    task_svc.session = MagicMock()
+    task_svc.session.begin_nested = MagicMock(
+        return_value=MagicMock(
+            __aenter__=AsyncMock(return_value=None),
+            __aexit__=AsyncMock(return_value=False),
+        )
     )
     deps = _make_deps(task=task_svc)
     c = Choreographer(deps)

@@ -52,6 +52,9 @@ async def test_unclaim_returns_task_to_pending() -> None:
     t = MagicMock(id=tid, status="claimed", assigned_to=aid)
     task_svc = AsyncMock()
     task_svc.get.return_value = t
+    task_svc.agent_for.return_value = MagicMock(
+        id=aid, role="developer", team="backend", slug=None
+    )
     task_svc.unclaim_for_agent.return_value = MagicMock(
         id=tid, status="pending", assigned_to=None
     )
@@ -89,12 +92,19 @@ async def test_unclaim_rejects_when_not_claimant() -> None:
     t = MagicMock(id=tid, status="claimed", assigned_to=other)
     task_svc = AsyncMock()
     task_svc.get.return_value = t
+    task_svc.agent_for.return_value = MagicMock(
+        id=aid, role="developer", team="backend", slug=None
+    )
     deps = _make_deps(task=task_svc)
     c = Choreographer(deps)
 
     env = await c.unclaim(aid, tid)
 
+    # The spec gate accepts (developer is in unclaim's allowed_roles and
+    # composes=() means no state check); the reassignment-rejection branch
+    # (Task 6 fix in commit a5d358d) is what rejects with "current owner".
     assert env.error == "not_authorized"
+    assert "current owner" in (env.message or "")
     task_svc.unclaim_for_agent.assert_not_awaited()
 
 
@@ -102,11 +112,17 @@ async def test_unclaim_rejects_when_not_claimant() -> None:
 async def test_unclaim_rejects_invalid_state() -> None:
     aid = uuid4()
     tid = uuid4()
-    # Status is claimed (assigned_to matches), but the service-level guard
-    # refuses (e.g. status drifted to verifying between get and write).
+    # unclaim's IntentSpec has composes=(), so the spec gate does NOT
+    # enforce a source-status — the verb body owns dispatch, and the
+    # service-level guard is what refuses (e.g. status drifted between
+    # get and write). Returning None from unclaim_for_agent surfaces as
+    # invalid_state from the verb body.
     t = MagicMock(id=tid, status="verifying", assigned_to=aid)
     task_svc = AsyncMock()
     task_svc.get.return_value = t
+    task_svc.agent_for.return_value = MagicMock(
+        id=aid, role="developer", team="backend", slug=None
+    )
     task_svc.unclaim_for_agent.return_value = None
     deps = _make_deps(task=task_svc)
     c = Choreographer(deps)
