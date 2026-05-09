@@ -1020,6 +1020,10 @@ _INTENT_VERBS: dict[str, IntentSpec] = {
 def can_claim(role: Role, task: Any) -> Decision:
     """Return Decision for whether `role` can claim `task` right now.
 
+    Thin wrapper around can_invoke_action("claim", ...) for backward
+    compatibility. The actual enforcement happens in can_invoke_action
+    when action == "claim", which applies CLAIM_RULES per-role narrowing.
+
     Rejection-kind disambiguation:
       * `not_authorized` — the status belongs to a DIFFERENT role's claim
         domain (e.g. dev tries to claim awaiting_qa, which is QA-only),
@@ -1027,44 +1031,7 @@ def can_claim(role: Role, task: Any) -> Decision:
       * `invalid_state` — the role principally CAN claim, but the task is
         in a terminal/non-claimable state (e.g. completed, in_progress).
     """
-    status = Status(getattr(task, "status", ""))
-    allowed_statuses = CLAIM_RULES.get(role, frozenset())
-    if not allowed_statuses:
-        return Decision.reject(
-            kind="not_authorized",
-            message=f"role '{role.value}' has no claim privileges",
-            remediate="this role does not claim tasks",
-        )
-    if status not in allowed_statuses:
-        # If some OTHER role can claim from this status, this is a role
-        # mismatch (not_authorized). Otherwise it's a state issue.
-        other_role_owns_status = any(
-            status in statuses for r, statuses in CLAIM_RULES.items() if r != role
-        )
-        if other_role_owns_status:
-            return Decision.reject(
-                kind="not_authorized",
-                message=(
-                    f"role '{role.value}' may not claim from status"
-                    f" '{status.value}'; that status is reserved for another role"
-                ),
-                remediate=(
-                    f"call give_me_work() to find a task in one of:"
-                    f" {sorted(s.value for s in allowed_statuses)}"
-                ),
-            )
-        return Decision.reject(
-            kind="invalid_state",
-            message=(
-                f"role '{role.value}' cannot claim from status '{status.value}'"
-                f"; allowed: {sorted(s.value for s in allowed_statuses)}"
-            ),
-            remediate=(
-                f"call give_me_work() to find a task in one of:"
-                f" {sorted(s.value for s in allowed_statuses)}"
-            ),
-        )
-    return Decision.allow()
+    return can_invoke_action(role, "claim", task)
 
 
 def _check_role_status_type(
@@ -1141,13 +1108,55 @@ def _check_self_review_and_preconditions(
     return None
 
 
+def _check_claim_rules_narrow(role: Role, task: Any) -> Decision | None:
+    """Per-role narrowing for the `claim` atomic action.
+
+    The atomic `claim` action's source_statuses is the UNION across all
+    claim-eligible roles (PENDING for dev/doc, NEEDS_REVISION for dev,
+    AWAITING_QA for qa, AWAITING_DOCUMENTATION for doc, etc.).
+    CLAIM_RULES narrows by role. Without this narrowing
+    can_invoke_action("claim", ...) would let a developer claim
+    awaiting_qa just because QA can.
+
+    not_authorized vs invalid_state disambiguation matches `can_claim`:
+    if some other role can claim from this status, the rejection is
+    role-mismatch (not_authorized); else it's a wrong-state issue.
+    """
+    status = Status(getattr(task, "status", ""))
+    role_claim_statuses = CLAIM_RULES.get(role, frozenset())
+    if status in role_claim_statuses:
+        return None
+    allowed_list = sorted(s.value for s in role_claim_statuses)
+    other_role_owns_status = any(
+        status in r_statuses for r, r_statuses in CLAIM_RULES.items() if r != role
+    )
+    if other_role_owns_status:
+        return Decision.reject(
+            kind="not_authorized",
+            message=(
+                f"role '{role.value}' may not claim from status"
+                f" '{status.value}'; that status is reserved for another role"
+            ),
+            remediate=(f"call give_me_work() to find a task in one of: {allowed_list}"),
+        )
+    return Decision.reject(
+        kind="invalid_state",
+        message=(
+            f"role '{role.value}' cannot claim from status '{status.value}'"
+            f"; allowed: {allowed_list}"
+        ),
+        remediate=(f"call give_me_work() to find a task in one of: {allowed_list}"),
+    )
+
+
 def can_invoke_action(
     role: Role, action: str, task: Any, context: Context | None = None
 ) -> Decision:
     """Decide whether `role` can invoke atomic `action` on `task`.
 
     Order: action exists -> role allowed -> source status allowed ->
-    task_type allowed -> self_review check -> preconditions.
+    task_type allowed -> self_review check -> preconditions ->
+    claim rules (if action == "claim").
     """
     spec_action = _ATOMIC_ACTIONS.get(action)
     if spec_action is None:
@@ -1163,6 +1172,10 @@ def can_invoke_action(
     rejection = _check_self_review_and_preconditions(action, spec_action, task, ctx)
     if rejection is not None:
         return rejection
+    if action == "claim":
+        rejection = _check_claim_rules_narrow(role, task)
+        if rejection is not None:
+            return rejection
     return Decision.allow()
 
 

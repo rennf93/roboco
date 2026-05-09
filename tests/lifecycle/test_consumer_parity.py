@@ -118,32 +118,22 @@ async def test_i_will_work_on_matches_spec(
 
     ctx = spec.Context(plan="my plan", actor_id=agent_id)
     expected = spec.can_invoke_intent(spec.Role(role), "i_will_work_on", task, ctx)
-    # `i_will_work_on` also enforces per-role claim authority via
-    # `spec.can_claim`. The atomic `claim` action's source_statuses are
-    # the UNION of all claim-eligible states; CLAIM_RULES narrows by role
-    # (developer = PENDING/NEEDS_REVISION; QA = AWAITING_QA; etc.). So
-    # the verb's effective gate is can_invoke_intent AND can_claim.
-    can_claim_decision = spec.can_claim(spec.Role(role), task)
+    # Per-role claim authority (CLAIM_RULES) is now enforced inside
+    # spec.can_invoke_action when action == "claim", dispatched by
+    # can_invoke_intent. The verb's single gate is can_invoke_intent.
     env = await c.i_will_work_on(agent_id, task_id, plan="my plan")
     body = env.as_dict()
-    if expected.allowed and can_claim_decision.allowed:
+    if expected.allowed:
         # Verb may still fail downstream of the gate (e.g. claim() returns
-        # None, runner exception); but neither gate should reject.
+        # None, runner exception); but the spec gate should not reject.
         assert body["error"] != "not_authorized", (
             f"role={role} status={status} task_type={task_type}: "
-            f"both spec gates allowed but envelope returned not_authorized: {body}"
+            f"spec.can_invoke_intent allowed but envelope returned "
+            f"not_authorized: {body}"
         )
-    elif not expected.allowed:
+    else:
         assert body["error"] == expected.rejection_kind, (
             f"role={role} status={status} task_type={task_type}: "
             f"can_invoke_intent rejected with {expected.rejection_kind}, "
-            f"got {body['error']!r}; full body: {body}"
-        )
-    else:
-        # spec.can_invoke_intent allows but can_claim rejects (per-role
-        # status authority gap).
-        assert body["error"] == can_claim_decision.rejection_kind, (
-            f"role={role} status={status} task_type={task_type}: "
-            f"can_claim rejected with {can_claim_decision.rejection_kind}, "
             f"got {body['error']!r}; full body: {body}"
         )

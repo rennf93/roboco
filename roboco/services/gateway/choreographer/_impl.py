@@ -499,9 +499,13 @@ class Choreographer:
     ) -> Envelope | None:
         """Run all gates for ``i_will_work_on``. Returns rejection or None.
 
-        Order: spec.can_invoke_intent -> spec.can_claim -> behavioral
-        claim guards (already_active / paused / sibling_sequence). Any
-        rejection short-circuits with the appropriate envelope.
+        Order: spec.can_invoke_intent -> behavioral claim guards
+        (already_active / paused / sibling_sequence). Any rejection
+        short-circuits with the appropriate envelope.
+
+        Per-role claim authority (CLAIM_RULES) is now enforced inside
+        spec.can_invoke_action when action == "claim", called by
+        can_invoke_intent, so no separate spec.can_claim call is needed.
         """
         t, briefing, role_str = ctx.task, ctx.briefing, ctx.role_str
         decision = spec_module.can_invoke_intent(role, "i_will_work_on", t, spec_ctx)
@@ -510,21 +514,6 @@ class Choreographer:
                 Envelope.from_decision(decision, briefing=briefing).with_introspection(
                     task=t, role=role_str
                 ),
-                agent_id=ctx.agent_id,
-                task_id=ctx.task_id,
-                verb="i_will_work_on",
-            )
-        # Per-role claim authority (CLAIM_RULES): can_invoke_intent passes
-        # `claim` because the atomic action's source_statuses include the
-        # union of all claim-eligible states. CLAIM_RULES then narrows by
-        # role (developer claims PENDING/NEEDS_REVISION; documenter also
-        # claims AWAITING_DOCUMENTATION; etc.). Surface its rejection.
-        claim_decision = spec_module.can_claim(role, t)
-        if not claim_decision.allowed:
-            return await self._emit_rejection(
-                Envelope.from_decision(
-                    claim_decision, briefing=briefing
-                ).with_introspection(task=t, role=role_str),
                 agent_id=ctx.agent_id,
                 task_id=ctx.task_id,
                 verb="i_will_work_on",
