@@ -1,93 +1,124 @@
 # QA Review Workflow
 
-## When QA Starts
+## Preconditions
 
-Task must be in `awaiting_qa` status.
+- Task is in `awaiting_qa` status
+- The developer's PR is open (the choreographer opened it during their
+  `open_pr(task_id)` call)
+- You are not the original developer of the task (self-review guard)
 
-## QA Review Steps
+## Steps
 
 ```python
-# 1. Claim the task
-roboco_task_claim(task_id)
+# 1. Pick up an awaiting-QA task
+give_me_work()
 
-# 2. Start review
-roboco_task_start(task_id)
+# 2. Claim it for review (auto-checks-out the dev's branch in your
+#    workspace; auto-records original_developer for the self-review
+#    guard at pass/fail time)
+claim_review(task_id="<task>")
 
-# 3. Announce to cell
-roboco_message_send({
-    channel: "backend-cell",
-    content: "Starting QA review of [task title]",
-    task_id: task_id
-})
+# 3. Announce to your cell channel (optional, but helpful when QA pulls
+#    are slow)
+say(channel="backend-cell",
+    text="Starting QA review of <task title>",
+    task_id="<task>")
 
-# 4. Read developer's journey (REQUIRED)
-roboco_journal_read_team(original_developer, task_id=task_id)
+# 4. Inspect the diff
+roboco_git_diff(project_slug="roboco")
+roboco_git_log(project_slug="roboco", branch="<dev's branch>")
 
-# 5. Checkout branch and review
-roboco_git_checkout(project_slug, branch_name)
-roboco_git_diff(project_slug)
+# 5. Run the relevant suite
+# Backend: uv run pytest && uv run ruff check . && uv run mypy roboco/
+# Frontend: pnpm test && pnpm lint && pnpm typecheck
 
-# 6. Run tests
-# Backend: uv run pytest
-# Frontend: pnpm test
+# 6. Capture evidence (survives compaction; PMs can audit later)
+note(text="Verified AC #1 (429 on 101st req), #2 (TTL match), #3 "
+          "(boundary tests). pytest 1635 passed; ruff clean; mypy clean.",
+     scope="evidence",
+     task_id="<task>")
 ```
+
+There is no `roboco_task_claim / _start / _qa_pass / _qa_fail` and no
+`roboco_git_checkout`. The verbs above (`claim_review`, `pass`, `fail`)
+are the actual surface; branch checkout is a side-effect of `claim_review`.
 
 ## Review Checklist
 
-Before making decision:
-- [ ] Read developer's handoff notes
-- [ ] Check all acceptance criteria
-- [ ] Run tests (must pass)
-- [ ] Verify functionality
-- [ ] Check code quality
-- [ ] Review against standards
+Before deciding:
+
+- [ ] Read the dev's notes and journal entries on the task
+- [ ] Walk every acceptance criterion against the diff
+- [ ] Tests pass on the dev's branch
+- [ ] Lint / typecheck clean
+- [ ] No layer-separation regressions (routes/ vs services/ etc.)
+- [ ] No silenced rules (`# noqa`, `# type: ignore`, `# pragma: no cover`)
+- [ ] Code matches project standards in CLAUDE.md
 
 ## Passing QA
 
 ```python
-roboco_task_qa_pass(task_id, {
-    notes: "All acceptance criteria met. Tests pass. Code follows standards."
-})
+pass(
+    task_id="<task>",
+    notes=(
+        "All 3 acceptance criteria verified against the diff. "
+        "pytest 1635 passed; ruff and mypy clean. "
+        "PR #123."
+    ),
+)
 ```
 
-Result: Task advances to `awaiting_documentation`
+Result:
+
+- Task advances to `awaiting_documentation`
+- Documenter and the original dev work in parallel from here
+- The PR stays open; it will be merged later by the Cell PM via
+  `complete(task_id, ...)`
 
 ## Failing QA
 
 ```python
-roboco_task_qa_fail(task_id, {
-    notes: "Issues found during review",
-    issues: [
-        "Bug: X doesn't work",
-        "Missing: Y not implemented"
-    ]
-})
+fail(
+    task_id="<task>",
+    issues=[
+        "Bug: 100th request also returns 429 — boundary off-by-one.",
+        "Missing: tests for Redis-down failover path; AC #3 unmet.",
+    ],
+)
 ```
 
 Result:
+
 - Task returns to `needs_revision`
-- Assigned back to original developer
-- Developer receives notification
+- Re-assigned to the original developer (recorded at submit-for-qa time)
+- Developer receives a notification
 
-## Before Decision
+## Reflect (recommended)
 
-Write reflection (REQUIRED):
+After pass or fail, journal the review for future QA agents to learn from:
+
 ```python
-roboco_journal_reflect({
-    task_id: task_id,
-    what_done: "Reviewed X, Y, Z",
-    what_learned: "Discovered patterns...",
-    what_struggled: "Edge cases unclear"
-})
+note(
+    text=(
+        "Reviewed task <id>. Pattern: rate-limiter boundary tests "
+        "should always assert the off-by-one — caught it in this "
+        "review and last week's. Worth a regression checklist item."
+    ),
+    scope="reflect",
+    task_id="<task>",
+)
 ```
 
 ## Self-Review Prevention
 
-QA CANNOT review tasks they originally developed.
+The system blocks QA from reviewing their own dev work. The original
+developer is recorded in `quick_context` at submit-for-qa time. If
+`qa_agent_id == original_developer_id`, **all** QA actions on the task
+return `not_authorized`:
 
-System tracks `original_developer` in `quick_context`. If QA == original_developer:
-- **Claim**: FORBIDDEN
-- **Pass**: FORBIDDEN
-- **Fail**: FORBIDDEN
+- `claim_review` — FORBIDDEN
+- `pass` — FORBIDDEN (defence-in-depth even if claim somehow succeeded)
+- `fail` — FORBIDDEN (same)
 
-This applies to ALL QA actions on the task, not just claiming. The system enforces this at both the API and MCP tool level.
+Enforced at the gateway layer in
+`roboco/services/gateway/choreographer/_impl.py`.

@@ -2698,7 +2698,8 @@ class TaskService(BaseService):
         """
         Mark that developer has created a PR for the task.
 
-        Called when developer uses roboco_git_create_pr(). This method:
+        Called by the choreographer when the developer's submit_for_qa()
+        flow opens the PR. This method:
         1. Sets pr_created=True, pr_number, pr_url on the task
         2. Checks if docs_complete is also True
         3. If both complete, transitions to awaiting_pm_review

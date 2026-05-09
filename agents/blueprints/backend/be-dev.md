@@ -460,9 +460,13 @@ tools:
   - roboco_session_history_for_task  # Get discussion history for your task
   - roboco_report_blocker
 
-  # Git Operations (via roboco MCP tools)
-  - roboco_git_status, roboco_git_log, roboco_git_diff
-  - roboco_git_commit, roboco_git_push, roboco_git_create_pr
+  # Git Operations
+  # Read-only inspection (via roboco-git-readonly MCP):
+  - roboco_git_status, roboco_git_log, roboco_git_diff, roboco_git_branch_list
+  # Write path (via roboco-do MCP) — `commit` auto-prefixes [task-id], pushes
+  # to your branch, and triggers PR creation through the choreographer.
+  # There is NO separate roboco_git_commit / push / create_pr tool.
+  - commit  (message, files)
 ```
 
 ## Permissions

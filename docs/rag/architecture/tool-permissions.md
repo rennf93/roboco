@@ -2,78 +2,126 @@
 
 ## Overview
 
-Agents have role-specific tool permissions enforced via Claude Code settings.
-Native tools are blocked; use `roboco_*` MCP tools instead.
+Agents call gateway verbs through three MCP servers, scoped per role:
+
+| MCP server | Provides |
+|------------|----------|
+| `roboco-flow` | Lifecycle verbs (give_me_work, i_will_work_on, open_pr, complete, …) |
+| `roboco-do` | Content/write verbs (commit, note, say, dm, notify, evidence) |
+| `roboco-git-readonly` | Read-only git inspection (status, log, diff, branch_list) |
+
+Native shell git is blocked by the bash-guard hook for everyone. There is
+**no** `roboco_git_commit / _push / _create_pr / _merge_pr / _checkout`
+tool — write operations happen through the lifecycle verbs and the
+choreographer handles git as a side-effect.
+
+The canonical source of role → verb mapping is
+`roboco/services/gateway/role_config.py`. The tables below summarise it.
 
 ## Developer
 
-**Allowed:**
-- `roboco_task_*` - task lifecycle
-- `roboco_git_*` - all git operations
-- `roboco_test_*` - run tests, lint, format
-- `roboco_journal_*` - journaling
-- `roboco_kb_*`, `roboco_rag_*` - knowledge base
-- `Read(*)` - read any file
-- `Write/Edit` - workspace only
+**Flow verbs (roboco-flow):**
+`give_me_work`, `i_will_work_on`, `open_pr`, `i_am_done`,
+`i_am_blocked`, `unclaim`, `resume`, `i_am_idle`
 
-**Blocked:**
-- `Bash(git:*)` - use roboco_git_* instead
-- `Write/Edit` outside workspace
+**Content verbs (roboco-do):**
+`commit`, `note`, `say`, `dm`, `evidence`
 
-**Workspace:** `/data/workspaces/{project}/{team}/{agent-id}/`
+**Read-only git (roboco-git-readonly):** all 4 (`status`, `log`, `diff`,
+`branch_list`)
+
+**Workspace writes:** `Write` / `Edit` in
+`/data/workspaces/{project}/{team}/{agent-id}/` only.
 
 ## QA
 
-**Allowed:**
-- `roboco_git_status`, `roboco_git_log`, `roboco_git_diff` - read-only
-- `roboco_test_*` - run tests
-- `roboco_task_qa_pass`, `roboco_task_qa_fail`
-- `Read(*)` - read any file
+**Flow verbs:**
+`give_me_work`, `claim_review`, `pass`, `fail`, `unclaim`, `resume`,
+`i_am_idle`
 
-**Blocked:**
-- `roboco_git_commit`, `roboco_git_push` - QA doesn't write code
-- All `Write/Edit` - review only
+**Content verbs:**
+`note`, `say`, `dm`, `evidence` (no `commit` — QA does not write code)
+
+**Read-only git:** all 4
+
+**Workspace writes:** none — QA reviews only.
 
 ## Documenter
 
-**Allowed:**
-- `roboco_docs_*` - documentation tools
-- `roboco_git_*` - all git operations
-- `Write/Edit` in `/app/docs/**` only
+**Flow verbs:**
+`give_me_work`, `claim_doc_task`, `i_documented`, `unclaim`, `resume`,
+`i_am_idle`
 
-**Blocked:**
-- `Write/Edit` outside docs directory
+**Content verbs:**
+`commit`, `note`, `say`, `dm`, `evidence`
 
-## PM (Cell PM, Main PM)
+**Read-only git:** all 4
 
-**Allowed:**
-- `roboco_git_*` - all git operations
-- `roboco_docs_*` - documentation
-- `roboco_task_*` - full task management
-- `roboco_notify_send` - send notifications
+**Workspace writes:** docs files inside the agent's own workspace
+(`/data/workspaces/{project}/{team}/{agent-id}/`).
 
-**Blocked:**
-- `Bash(git:*)` - use roboco_git_*
+## Cell PM
+
+**Flow verbs:**
+`give_me_work`, `i_will_plan`, `delegate`, `submit_up`, `triage`,
+`unblock`, `complete`, `escalate_up`, `unclaim`, `resume`, `i_am_idle`
+
+**Content verbs:**
+`note`, `say`, `dm`, `notify`, `evidence` (no `commit` — PMs delegate
+code; merging the leaf PR happens automatically inside `complete`)
+
+**Read-only git:** all 4
+
+**Workspace writes:** none.
+
+## Main PM
+
+**Flow verbs:**
+`give_me_work`, `i_will_plan`, `delegate`, `triage_all`, `unblock`,
+`complete`, `escalate_up`, `escalate_to_ceo`, `unclaim`, `resume`,
+`i_am_idle`
+
+**Content verbs:**
+`note`, `say`, `dm`, `notify`, `evidence`
+
+**Read-only git:** all 4
+
+**Workspace writes:** none. `complete` on a root parent task opens the
+master PR via the choreographer and escalates to CEO.
+
+## Board (Product Owner, Head of Marketing)
+
+**Flow verbs:** `triage`, `escalate_to_ceo`, `i_am_idle`
+
+**Content verbs:** `note`, `say`, `dm`, `notify`, `evidence`
+
+**Read-only git:** none.
 
 ## Auditor
 
-**Allowed:**
-- `roboco_git_status`, `roboco_git_log`, `roboco_git_diff` - read-only
-- `Read(*)` - read any file
+**Flow verbs:** `triage`, `i_am_idle`  (read-only)
 
-**Blocked:**
-- All write operations - observer role
+**Content verbs:** `note` (scope=reflect), `evidence`  (no `say` / `dm`
+— Auditor observes silently)
 
-## Project Tools
+**Read-only git:** none.
 
-| Tool | Dev/QA/Doc | Cell PM | Main PM | CEO |
-|------|------------|---------|---------|-----|
-| `roboco_project_list` | Own cell | Own cell | All | All |
-| `roboco_project_get` | Yes | Yes | Yes | Yes |
-| `roboco_project_create` | No | No | Yes | Yes |
-| `roboco_project_update` | No | Own cell | All | All |
-| `roboco_workspace_ensure` | Yes | Yes | Yes | Yes |
-| `roboco_workspace_status` | Yes | Yes | Yes | Yes |
-| `roboco_workspace_list` | No | Own cell | All | All |
+## Tool Permissions Summary
 
-**CEO Bypass:** CEO has full access to all project operations.
+| Capability | Dev | Doc | QA | Cell PM | Main PM | Board | Auditor |
+|---|---|---|---|---|---|---|---|
+| `commit` (writes code) | ✓ | ✓ | — | — | — | — | — |
+| `open_pr` (opens PR) | ✓ | — | — | — | — | — | — |
+| `pass` / `fail` (QA verdict) | — | — | ✓ | — | — | — | — |
+| `i_documented` | — | ✓ | — | — | — | — | — |
+| `delegate` (creates subtasks) | — | — | — | ✓ | ✓ | — | — |
+| `complete` (merges PR) | — | — | — | ✓ | ✓ | — | — |
+| `escalate_to_ceo` | — | — | — | — | ✓ | ✓ | — |
+| `notify` (ack-required) | — | — | — | ✓ | ✓ | ✓ | — |
+| `say` / `dm` (channel / A2A) | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | — |
+| `note` (journal entry) | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ (reflect) |
+| `roboco_git_*` (read-only) | ✓ | ✓ | ✓ | ✓ | ✓ | — | — |
+| `Write` / `Edit` (own workspace) | ✓ | ✓ | — | — | — | — | — |
+
+**CEO** is human and never inside an agent container; the panel runs as
+the CEO via `X-Agent-Role: ceo` against the orchestrator API directly.

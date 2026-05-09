@@ -532,8 +532,11 @@ class GitService(BaseService):
         if current_branch and current_branch != task_branch:
             raise ValidationError(
                 f"BRANCH_MISMATCH: Workspace is on '{current_branch}' but "
-                f"task requires '{task_branch}'. Use roboco_git_checkout("
-                f"branch=task_branch) first."
+                f"task requires '{task_branch}'. Branches are auto-checked-"
+                f"out when you call `i_will_work_on(task_id)` (devs) or "
+                f"`i_will_plan(task_id, plan)` (PMs) — call your role's "
+                f"verb on the right task instead of switching branches by "
+                f"hand."
             )
 
     async def _link_commit_to_task(
@@ -933,8 +936,9 @@ class GitService(BaseService):
                 action="force_push",
                 reason=(
                     "FORCE_PUSH_FORBIDDEN: Force-push is CEO-only. If your "
-                    "branch diverged, roboco_git_checkout a fresh branch "
-                    "and replay your commits."
+                    "branch diverged, `unclaim` the task and re-`claim` it — "
+                    "the choreographer will rebuild the branch and you can "
+                    "replay your commits via `commit(...)`."
                 ),
             )
 

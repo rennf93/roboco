@@ -643,8 +643,15 @@ async def enrich_task_with_context(
     task_dict = task_response.model_dump()
 
     if include_work_session and hasattr(task_response, "id"):
-        query = select(WorkSessionTable).where(
-            WorkSessionTable.task_id == task_response.id
+        # A task can have multiple work sessions over its lifetime
+        # (one per claim/unclaim cycle). Pick the most recent so we
+        # don't crash with MultipleResultsFound on tasks that have
+        # been re-claimed.
+        query = (
+            select(WorkSessionTable)
+            .where(WorkSessionTable.task_id == task_response.id)
+            .order_by(WorkSessionTable.created_at.desc())
+            .limit(1)
         )
         result = await db.execute(query)
         work_session = result.scalar_one_or_none()

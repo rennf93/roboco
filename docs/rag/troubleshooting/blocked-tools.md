@@ -2,18 +2,25 @@
 
 ## Native Git Commands Blocked
 
-**Symptom:** `Bash(git commit)` or similar git command denied
+**Symptom:** `Bash(git commit)`, `Bash(git push)`, `Bash(git checkout)`, etc.
+denied by the bash-guard hook.
 
-**Cause:** Native git commands are blocked for all agents
+**Cause:** Shell git for network / auth / branch-mutating ops bypasses the
+PAT injection done by the MCP layer; raw `git fetch` etc. would fail with
+`could not read Username for 'https://github.com'` anyway.
 
-**Solution:** Use MCP tools instead:
-| Blocked | Use Instead |
-|---------|-------------|
-| `git commit` | `roboco_git_commit()` |
-| `git push` | `roboco_git_push()` |
-| `git status` | `roboco_git_status()` |
-| `git diff` | `roboco_git_diff()` |
-| `git log` | `roboco_git_log()` |
+**Solution:** Use the role-scoped MCP verb that matches what you're trying
+to do. There is **no** `roboco_git_commit / _push / _create_pr / _merge_pr
+/ _checkout` MCP tool — the surface is smaller than that:
+
+| Blocked shell command | Use instead |
+|-----------------------|-------------|
+| `git status` / `git diff` / `git log` / `git branch` | `roboco_git_status` / `roboco_git_diff` / `roboco_git_log` / `roboco_git_branch_list` (roboco-git-readonly) |
+| `git commit` + `git push` (devs / docs) | `commit(message, files)` (roboco-do) — auto-prefixes [task-id], pushes |
+| `git checkout` of a task branch | None — branch is auto-checked-out by `i_will_work_on(task_id)` (devs) or `i_will_plan(task_id, plan)` (PMs) |
+| Open a PR | None — PR is opened by the choreographer when the dev calls `open_pr(task_id)` |
+| Merge a PR | `complete(task_id, notes)` (PMs only) — Cell PM merges leaf PR; Main PM merges parent and escalates to CEO |
+| `git fetch` / `git pull` / `git rebase` | None at the agent layer — task branches are short-lived; if yours diverged, `unclaim` and re-`claim` |
 
 ## Write/Edit Outside Workspace
 
@@ -22,36 +29,40 @@
 **Cause:** Write operations restricted to your workspace
 
 **Solution:**
+
 - Developers: Only write in `/data/workspaces/{project}/{team}/{agent-id}/`
 - Documenters: Only write in `/app/docs/`
 - QA: No write access (review only)
 
 ## QA Cannot Commit
 
-**Symptom:** `roboco_git_commit()` denied for QA agent
+**Symptom:** `commit()` returns `not_authorized` for a QA agent
 
-**Cause:** QA role is read-only, cannot modify code
+**Cause:** QA role is read-only — cannot modify code or open PRs.
 
-**Solution:** QA reviews and provides feedback. Developers make fixes.
+**Solution:** QA `pass(task_id, notes)` or `fail(task_id, issues)` only.
+Developers fix issues and re-submit.
 
-## NO_PLAN Error
+## NO_PLAN Error on Start
 
-**Symptom:** `roboco_task_start()` returns NO_PLAN error
+**Symptom:** Lifecycle transition rejected with NO_PLAN
 
-**Cause:** Task has no plan submitted
+**Cause:** Parent tasks require a plan before they can leave `pending`.
 
-**Solution:** Call `roboco_task_plan()` before `roboco_task_start()`
-
-See: `roboco_kb_search("task planning workflow")`
+**Solution:** PMs call `i_will_plan(task_id, plan)`; the verb both records
+the plan and transitions the task into `in_progress`.
 
 ## Parent Branch Required
 
 **Symptom:** Can't claim subtask, error "Parent task must be claimed first"
 
-**Cause:** Parent task hasn't been claimed yet, so it has no branch
+**Cause:** Parent task hasn't been claimed/started yet, so it has no
+branch for the subtask's branch to fork from.
 
 **Solution:**
-1. Parent task must be claimed first (branch auto-creates on claim)
-2. Then subtask can be claimed (its branch forks from parent's)
 
-Note: Branches are auto-created hierarchically. No manual creation needed.
+1. Parent task must transition to `in_progress` first (PMs:
+   `i_will_plan(parent_id, plan)`; devs: `i_will_work_on(parent_id)`).
+2. Then the subtask's branch will auto-fork from the parent's on claim.
+
+Branches are auto-created hierarchically. No manual creation needed.

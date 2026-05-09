@@ -904,17 +904,20 @@ async def submit_for_qa(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=(
                 "NO_COMMITS: Cannot submit for QA without at least one "
-                "commit on this task. Use roboco_git_commit() before "
-                "i_am_done() via gateway, or POST /api/tasks/{id}/submit-qa."
+                "commit on this task. Use the roboco-do `commit(message, "
+                "files)` verb before `i_am_done()` via gateway, or POST "
+                "/api/tasks/{id}/submit-qa."
             ),
         )
     if task.pr_number is None:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=(
-                "NO_PR: Cannot submit for QA without a PR. Run "
-                "roboco_git_push() then roboco_git_create_pr() so QA can "
-                "review the diff on GitHub."
+                "NO_PR: Cannot submit for QA without a PR. The PR is "
+                "opened automatically by the choreographer when you call "
+                "`submit_for_qa(task_id)` (gateway flow verb) — make sure "
+                "you have at least one `commit(...)` on this task first "
+                "so the choreographer has something to push."
             ),
         )
     if not task.progress_updates:
