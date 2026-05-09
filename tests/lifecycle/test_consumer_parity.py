@@ -424,3 +424,123 @@ async def test_open_pr_matches_spec(
             f"with {expected.rejection_kind}, got {body['error']!r}; "
             f"full body: {body}"
         )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "role, status, commits_count, owned",
+    list(
+        product(
+            [r.value for r in spec.Role if r != spec.Role.AUDITOR],
+            [s.value for s in spec.Status],
+            [0, 1],
+            [False, True],
+        )
+    ),
+)
+async def test_i_am_done_matches_spec(
+    role: str, status: str, commits_count: int, owned: bool
+) -> None:
+    """Spec parity for i_am_done's role + extra-preconditions gate.
+
+    i_am_done's IntentSpec composes ``(submit_verification, submit_qa)``
+    with ``extra_preconditions=(PRECONDITION_OWNERSHIP, PRECONDITION_COMMITS)``.
+    The spec gate enforces:
+
+      - role in _DEV_ROLES (DEVELOPER only),
+      - PRECONDITION_OWNERSHIP (task.assigned_to == ctx.actor_id),
+      - PRECONDITION_COMMITS (>=1 commit),
+      - first composed action submit_verification's source_status (IN_PROGRESS).
+
+    The verb's recovery branch (owner + status==verifying runs submit_qa
+    directly, bypassing the spec gate) intentionally short-circuits — the
+    spec doesn't model partial-progress recovery. We skip that single combo
+    so the parity check is honest about what the spec gate evaluates.
+    """
+    agent_id = uuid4()
+    task_id = uuid4()
+    other_agent_id = uuid4()
+    assigned_to = agent_id if owned else other_agent_id
+    # Skip the verb's recovery shortcut: owner-with-status==verifying runs
+    # submit_qa directly without invoking the spec gate. Pinned by separate
+    # unit tests; here we exercise the non-recovery combos so the spec gate
+    # is the load-bearing check.
+    if owned and status == "verifying":
+        pytest.skip("recovery re-entry path bypasses spec gate by design")
+    task = MagicMock(
+        id=task_id,
+        status=status,
+        task_type="code",
+        assigned_to=assigned_to,
+        commits=[{"sha": f"abc{i}"} for i in range(commits_count)],
+        pr_number=7,
+        pr_url="https://gh/x/7",
+        branch_name="feature/backend/abc12345",
+        parent_task_id=None,
+        sequence=0,
+        team="backend",
+        title="t",
+        quick_context=None,
+        # Tracing-gate fields satisfied so a downstream tracing_gap doesn't
+        # mask the spec-layer outcome on the allowed branch.
+        plan={"x": 1},
+        progress_updates=[{"message": "p"}],
+        acceptance_criteria=[],
+        acceptance_criteria_status=[],
+        documents=[],
+        dev_notes="",
+        work_session_id=None,
+        self_verified=False,
+    )
+    task_svc = AsyncMock()
+    task_svc.get.return_value = task
+    task_svc.agent_for.return_value = MagicMock(
+        id=agent_id, role=role, team="backend", slug=None
+    )
+    task_svc.submit_verification.return_value = MagicMock(
+        id=task_id, status="verifying", assigned_to=agent_id
+    )
+    task_svc.submit_qa.return_value = MagicMock(
+        id=task_id,
+        status="awaiting_qa",
+        assigned_to=None,
+        team="backend",
+        pr_url="https://gh/x/7",
+        work_session_id=None,
+    )
+    task_svc.qa_agent_for_team.return_value = None
+    task_svc.session = MagicMock()
+    task_svc.session.begin_nested = MagicMock(
+        return_value=MagicMock(
+            __aenter__=AsyncMock(return_value=None),
+            __aexit__=AsyncMock(return_value=False),
+        )
+    )
+    deps = _make_deps(task_svc=task_svc)
+    journal_svc = deps.journal
+    journal_svc.has_reflect_for_task.return_value = True
+    work_svc = deps.work_session
+    work_svc.files_changed.return_value = []
+    c = Choreographer(deps)
+
+    ctx = spec.Context(actor_id=agent_id, notes="done")
+    expected = spec.can_invoke_intent(spec.Role(role), "i_am_done", task, ctx)
+
+    env = await c.i_am_done(agent_id, task_id, "done")
+    body = env.as_dict()
+    if expected.allowed:
+        # Spec allows. Verb may still surface a non-error envelope (OK)
+        # OR a downstream tracing_gap from defense-in-depth gates (PR/commits/
+        # progress) — but the spec gate itself must NOT be the source of any
+        # not_authorized rejection.
+        assert body["error"] != "not_authorized", (
+            f"role={role} status={status} commits={commits_count} "
+            f"owned={owned}: spec.can_invoke_intent allowed but envelope "
+            f"surfaced not_authorized at the spec layer: {body}"
+        )
+    else:
+        assert body["error"] == expected.rejection_kind, (
+            f"role={role} status={status} commits={commits_count} "
+            f"owned={owned}: can_invoke_intent rejected with "
+            f"{expected.rejection_kind}, got {body['error']!r}; full body: {body}"
+        )

@@ -105,6 +105,23 @@ class _ClaimPlanStartContext:
 
 
 @dataclass(frozen=True)
+class _IAmDoneContext:
+    """Bundle of fields the ``i_am_done`` helper sites all need.
+
+    Frozen so the helper sites can't mutate caller state and to keep
+    PLR0913 (too many positional args) at bay across the dispatcher
+    body and its recovery branch.
+    """
+
+    agent_id: UUID
+    task_id: UUID
+    task: Any
+    role_str: str
+    briefing: dict[str, Any]
+    notes: str
+
+
+@dataclass(frozen=True)
 class DelegateInputs:
     """Bundle of fields the ``delegate`` verb receives from the route layer.
 
@@ -785,14 +802,26 @@ class Choreographer:
     async def i_am_done(self, agent_id: UUID, task_id: UUID, notes: str) -> Envelope:
         """Submit work for QA.
 
-        Preconditions enforced by gates:
-          - tracing: progress entry, journal:reflect, acceptance criteria
-          - field-level: at least one commit, PR open
-        The dev must have called ``commit()`` (do_server) at least once and
-        ``open_pr(task_id)`` to push + open the PR. Calling i_am_done
-        is the dev's explicit attestation that the work is complete; it
-        auto-runs the in_progress → verifying transition (which seeds
-        ``self_verified``) and then verifying → awaiting_qa.
+        Atomic: ``spec.can_invoke_intent`` runs first and enforces the
+        intent's role membership and the ``PRECONDITION_OWNERSHIP`` /
+        ``PRECONDITION_COMMITS`` extra preconditions BEFORE any state
+        mutation. After the spec gate accepts, two additional gate sets
+        run as defense-in-depth (the spec doesn't yet model them):
+
+          - tracing-gate preconditions (progress entry, journal:reflect,
+            acceptance criteria addressed)
+          - field-level submit-qa gates (currently: PR open; commits and
+            ownership are already covered by the spec extras above)
+
+        Once all gates pass, ``VerbRunner.run_intent("i_am_done", ...)``
+        dispatches the (submit_verification, submit_qa) atomic chain
+        wrapped in a savepoint so a mid-sequence failure rolls back the
+        DB. Recovery re-entry: a task already in ``verifying`` owned by
+        the caller has its first composed action (submit_verification,
+        source IN_PROGRESS) rejected by the spec gate. We short-circuit
+        before the spec gate and run only ``submit_qa`` — the spec
+        doesn't model partial-progress recovery, so that branch lives
+        in the verb body.
 
         The previous strict path required a separate ``submit_for_verification``
         verb that wasn't on any manifest, making i_am_done unreachable
@@ -808,47 +837,118 @@ class Choreographer:
                 verb="i_am_done",
             )
         agent = await self.task.agent_for(agent_id)
-        role = str(agent.role) if agent is not None else "developer"
-        if t.assigned_to != agent_id:
-            return await self._emit_rejection(
+        role_str = str(agent.role) if agent is not None else "developer"
+        briefing = await self._briefing_for(agent_id, task_id)
+        ctx = _IAmDoneContext(
+            agent_id=agent_id,
+            task_id=task_id,
+            task=t,
+            role_str=role_str,
+            briefing=briefing,
+            notes=notes,
+        )
+        try:
+            role = spec_module.Role(role_str)
+        except ValueError:
+            return await self._reject_i_am_done(
+                ctx,
                 Envelope.not_authorized(
-                    message="not assigned to you",
-                    remediate="claim it via i_will_work_on(task_id) first",
-                    context_briefing=await self._briefing_for(agent_id, task_id),
-                ).with_introspection(task=t, role=role),
-                agent_id=agent_id,
-                task_id=task_id,
-                verb="i_am_done",
+                    message=f"unknown role '{role_str}'",
+                    remediate="role is not declared in the lifecycle spec",
+                    context_briefing=briefing,
+                ),
             )
-
-        # 1. Tracing-gate preconditions (progress / reflect / acceptance)
-        if rejection := await self._check_tracing_gates(agent_id, task_id, t):
-            rejection.with_introspection(task=t, role=role)
-            return await self._emit_rejection(
-                rejection, agent_id=agent_id, task_id=task_id, verb="i_am_done"
+        spec_ctx = spec_module.Context(
+            actor_id=agent_id,
+            actor_slug=getattr(agent, "slug", None) if agent is not None else None,
+            original_developer_slug=_extract_original_developer(t),
+            notes=notes,
+        )
+        # Recovery re-entry: task already in `verifying` owned by the caller
+        # (e.g. orchestrator restart between submit_verification and
+        # submit_qa). The spec gate would reject because the first composed
+        # action `submit_verification` requires source IN_PROGRESS. Run only
+        # submit_qa via the runner-equivalent path, then continue with the
+        # standard tracing/field gates beforehand.
+        if str(t.status) == "verifying" and t.assigned_to == agent_id:
+            return await self._i_am_done_resume_from_verifying(ctx)
+        decision = spec_module.can_invoke_intent(role, "i_am_done", t, spec_ctx)
+        if not decision.allowed:
+            return await self._reject_i_am_done(
+                ctx, Envelope.from_decision(decision, briefing=briefing)
             )
+        if gate_rejection := await self._i_am_done_gate(ctx):
+            return gate_rejection
+        return await self._i_am_done_run(ctx, agent, spec_ctx)
 
-        # 2. Field-level gates (Gate Set E) — commits + PR (self_verified
-        # auto-set in step 3, so it's not a precondition the dev must satisfy).
-        if rejection := await self._check_submit_qa_field_gates(agent_id, task_id, t):
-            rejection.with_introspection(task=t, role=role)
-            return await self._emit_rejection(
-                rejection, agent_id=agent_id, task_id=task_id, verb="i_am_done"
+    async def _reject_i_am_done(self, ctx: _IAmDoneContext, env: Envelope) -> Envelope:
+        """Stamp introspection + emit audit row for an i_am_done rejection."""
+        env.with_introspection(task=ctx.task, role=ctx.role_str)
+        return await self._emit_rejection(
+            env, agent_id=ctx.agent_id, task_id=ctx.task_id, verb="i_am_done"
+        )
+
+    async def _i_am_done_gate(self, ctx: _IAmDoneContext) -> Envelope | None:
+        """Run defense-in-depth tracing + field-level gates the spec doesn't model.
+
+        Returns the rejection envelope if any gate fails; None on pass.
+        """
+        if rejection := await self._check_tracing_gates(
+            ctx.agent_id, ctx.task_id, ctx.task
+        ):
+            return await self._reject_i_am_done(ctx, rejection)
+        if rejection := await self._check_submit_qa_field_gates(
+            ctx.agent_id, ctx.task_id, ctx.task
+        ):
+            return await self._reject_i_am_done(ctx, rejection)
+        return None
+
+    async def _i_am_done_run(
+        self, ctx: _IAmDoneContext, agent: Any, spec_ctx: spec_module.Context
+    ) -> Envelope:
+        """Dispatch the spec-composed (submit_verification, submit_qa) chain."""
+        runner = self._verb_runner()
+        try:
+            t = await runner.run_intent("i_am_done", ctx.task, agent, spec_ctx)
+        except Exception as exc:
+            return await self._reject_i_am_done(
+                ctx,
+                Envelope.invalid_state(
+                    message=f"verb runner failed: {exc}",
+                    remediate="check workspace + retry; if persistent, escalate",
+                    context_briefing=ctx.briefing,
+                ),
             )
+        await self._notify_qa(ctx.agent_id, ctx.task_id, t)
+        await self._touch(ctx.task_id)
+        return await self._build_i_am_done_ok(ctx.agent_id, ctx.task_id, t)
 
-        # 3. Auto-run in_progress → verifying (sets self_verified) if needed.
-        if str(t.status) == "in_progress":
-            verified = await self.task.submit_verification(agent_id, task_id, notes)
-            if verified is not None:
-                t = verified
+    async def _i_am_done_resume_from_verifying(self, ctx: _IAmDoneContext) -> Envelope:
+        """Recovery path: task is already in `verifying` owned by caller.
 
-        # 4. Submit verifying → awaiting_qa.
-        submitted = await self.task.submit_qa(agent_id, task_id, notes)
-        if submitted is not None:
-            t = submitted
-        await self._notify_qa(agent_id, task_id, t)
-        await self._touch(task_id)
-        return await self._build_i_am_done_ok(agent_id, task_id, t)
+        The spec's i_am_done composes (submit_verification, submit_qa) and
+        the runner dispatches the FIRST action; submit_verification's
+        source_status is IN_PROGRESS so a `verifying` task hits invalid_state
+        through the spec gate. Run submit_qa directly, plus the same tracing
+        + field-level gates the standard path enforces.
+        """
+        if gate_rejection := await self._i_am_done_gate(ctx):
+            return gate_rejection
+        try:
+            submitted = await self.task.submit_qa(ctx.agent_id, ctx.task_id, ctx.notes)
+        except Exception as exc:
+            return await self._reject_i_am_done(
+                ctx,
+                Envelope.invalid_state(
+                    message=f"submit_qa failed: {exc}",
+                    remediate="check workspace + retry; if persistent, escalate",
+                    context_briefing=ctx.briefing,
+                ),
+            )
+        t = submitted if submitted is not None else ctx.task
+        await self._notify_qa(ctx.agent_id, ctx.task_id, t)
+        await self._touch(ctx.task_id)
+        return await self._build_i_am_done_ok(ctx.agent_id, ctx.task_id, t)
 
     async def _check_tracing_gates(
         self, agent_id: UUID, task_id: UUID, t: Any

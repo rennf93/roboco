@@ -117,6 +117,9 @@ async def test_i_am_done_calls_heartbeat() -> None:
     )
     task_svc = AsyncMock()
     task_svc.get.return_value = t
+    task_svc.agent_for.return_value = MagicMock(
+        id=aid, role="developer", team="backend", slug=None
+    )
     task_svc.submit_qa.return_value = submitted
     task_svc.qa_agent_for_team.return_value = None
     journal_svc = AsyncMock()

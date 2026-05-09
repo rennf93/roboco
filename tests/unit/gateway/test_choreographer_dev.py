@@ -284,6 +284,8 @@ async def test_i_will_work_on_invalid_state_returns_invalid_state() -> None:
 
 @pytest.mark.asyncio
 async def test_i_am_done_blocks_when_acceptance_criteria_unaddressed() -> None:
+    """Tracing-gate (acceptance criteria) fires after the spec gate
+    accepts ownership/commits."""
     agent_id = uuid4()
     task_id = uuid4()
     t = MagicMock(
@@ -299,12 +301,21 @@ async def test_i_am_done_blocks_when_acceptance_criteria_unaddressed() -> None:
         acceptance_criteria_status=[
             {"criterion": "AC1", "referencing_artifact_id": "c1"}
         ],
-        commits=[],
+        # Spec's PRECONDITION_COMMITS now runs before the tracing gate;
+        # supply a commit so the tracing gap (acceptance criteria) is
+        # the load-bearing rejection.
+        commits=[{"sha": "abc"}],
+        pr_number=8,
+        pr_url="https://x/pr/8",
+        team="backend",
         documents=[],
         dev_notes="",
     )
     task_svc = AsyncMock()
     task_svc.get.return_value = t
+    task_svc.agent_for.return_value = MagicMock(
+        id=agent_id, role="developer", team="backend", slug=None
+    )
     journal_svc = AsyncMock()
     journal_svc.has_reflect_for_task.return_value = True
     deps = _make_deps(task=task_svc, journal=journal_svc)
@@ -318,6 +329,7 @@ async def test_i_am_done_blocks_when_acceptance_criteria_unaddressed() -> None:
 
 @pytest.mark.asyncio
 async def test_i_am_done_blocks_when_journal_reflect_missing() -> None:
+    """Tracing-gate (journal:reflect) fires after the spec gate accepts."""
     agent_id = uuid4()
     task_id = uuid4()
     t = MagicMock(
@@ -333,12 +345,20 @@ async def test_i_am_done_blocks_when_journal_reflect_missing() -> None:
         acceptance_criteria_status=[
             {"criterion": "AC1", "referencing_artifact_id": "c1"}
         ],
-        commits=[],
+        # Spec's PRECONDITION_COMMITS runs before the tracing gate; supply
+        # a commit so the missing journal:reflect is the load-bearing gap.
+        commits=[{"sha": "abc"}],
+        pr_number=8,
+        pr_url="https://x/pr/8",
+        team="backend",
         documents=[],
         dev_notes="",
     )
     task_svc = AsyncMock()
     task_svc.get.return_value = t
+    task_svc.agent_for.return_value = MagicMock(
+        id=agent_id, role="developer", team="backend", slug=None
+    )
     journal_svc = AsyncMock()
     journal_svc.has_reflect_for_task.return_value = False  # no reflect
     deps = _make_deps(task=task_svc, journal=journal_svc)
@@ -351,19 +371,36 @@ async def test_i_am_done_blocks_when_journal_reflect_missing() -> None:
 
 
 @pytest.mark.asyncio
-async def test_i_am_done_not_assigned_returns_not_authorized() -> None:
+async def test_i_am_done_not_assigned_returns_tracing_gap() -> None:
+    """Spec's PRECONDITION_OWNERSHIP rejects with tracing_gap (owns_task).
+
+    Pre-spec migration the verb returned not_authorized via an inline
+    ownership check; that's now driven by the spec's extra precondition
+    so the rejection_kind is tracing_gap.
+    """
     agent_id = uuid4()
     other_agent = uuid4()
     task_id = uuid4()
-    t = MagicMock(id=task_id, status="in_progress", assigned_to=other_agent)
+    t = MagicMock(
+        id=task_id,
+        status="in_progress",
+        assigned_to=other_agent,
+        commits=[{"sha": "abc"}],
+        team="backend",
+        quick_context=None,
+    )
     task_svc = AsyncMock()
     task_svc.get.return_value = t
+    task_svc.agent_for.return_value = MagicMock(
+        id=agent_id, role="developer", team="backend", slug=None
+    )
     deps = _make_deps(task=task_svc)
     c = Choreographer(deps)
 
     env = await c.i_am_done(agent_id, task_id, "x")
     body = env.as_dict()
-    assert body["error"] == "not_authorized"
+    assert body["error"] == "tracing_gap"
+    assert "owns_task" in body["missing"]
 
 
 @pytest.mark.asyncio

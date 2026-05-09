@@ -39,6 +39,17 @@ def _make_deps(**overrides: Any) -> ChoreographerDeps:
         "evidence_repo": AsyncMock(),
     }
     base.update(overrides)
+    # VerbRunner uses task.session.begin_nested() as a savepoint context
+    # manager. Keep `session` itself an AsyncMock so other awaited methods
+    # (e.g. flush) still work, and override begin_nested with a sync
+    # MagicMock that returns the async-context-manager protocol.
+    task = base["task"]
+    task.session.begin_nested = MagicMock(
+        return_value=MagicMock(
+            __aenter__=AsyncMock(return_value=None),
+            __aexit__=AsyncMock(return_value=False),
+        )
+    )
     repo = base["evidence_repo"]
     for method in (
         "list_unread_a2a",
@@ -99,6 +110,9 @@ async def test_i_am_done_auto_runs_submit_verification_when_in_progress() -> Non
     after_submit = MagicMock(**{**after_verify.__dict__, "status": "awaiting_qa"})
     task_svc = AsyncMock()
     task_svc.get.return_value = t
+    task_svc.agent_for.return_value = MagicMock(
+        id=agent_id, role="developer", team="backend", slug=None
+    )
     task_svc.submit_verification.return_value = after_verify
     task_svc.submit_qa.return_value = after_submit
     task_svc.qa_agent_for_team.return_value = MagicMock(
@@ -125,12 +139,17 @@ async def test_i_am_done_auto_runs_submit_verification_when_in_progress() -> Non
 
 @pytest.mark.asyncio
 async def test_i_am_done_blocks_when_no_commits() -> None:
+    """Spec's PRECONDITION_COMMITS rejects with the canonical
+    `commits>=1` missing token before any state mutation."""
     agent_id = uuid4()
     task_id = uuid4()
     t = _ready_task(task_id, agent_id)
     t.commits = []
     task_svc = AsyncMock()
     task_svc.get.return_value = t
+    task_svc.agent_for.return_value = MagicMock(
+        id=agent_id, role="developer", team="backend", slug=None
+    )
     journal_svc = AsyncMock()
     journal_svc.has_reflect_for_task.return_value = True
     deps = _make_deps(task=task_svc, journal=journal_svc)
@@ -139,7 +158,8 @@ async def test_i_am_done_blocks_when_no_commits() -> None:
     env = await c.i_am_done(agent_id, task_id, "done")
     body = env.as_dict()
     assert body["error"] == "tracing_gap"
-    assert "NO_COMMITS" in body["missing"] or "commits" in body["missing"]
+    # Spec emits "commits>=1" via PRECONDITION_COMMITS.
+    assert "commits>=1" in body["missing"] or "NO_COMMITS" in body["missing"]
     task_svc.submit_qa.assert_not_awaited()
 
 
@@ -150,12 +170,20 @@ async def test_i_am_done_blocks_when_no_commits() -> None:
 
 @pytest.mark.asyncio
 async def test_i_am_done_blocks_when_no_pr() -> None:
+    """Defense-in-depth field gate fires NO_PR after the spec gate accepts.
+
+    The spec doesn't yet model PR-existence; the field-gate helper still
+    enforces it post-spec.
+    """
     agent_id = uuid4()
     task_id = uuid4()
     t = _ready_task(task_id, agent_id)
     t.pr_number = None
     task_svc = AsyncMock()
     task_svc.get.return_value = t
+    task_svc.agent_for.return_value = MagicMock(
+        id=agent_id, role="developer", team="backend", slug=None
+    )
     journal_svc = AsyncMock()
     journal_svc.has_reflect_for_task.return_value = True
     deps = _make_deps(task=task_svc, journal=journal_svc)
@@ -181,6 +209,9 @@ async def test_i_am_done_blocks_when_no_progress() -> None:
     t.progress_updates = []
     task_svc = AsyncMock()
     task_svc.get.return_value = t
+    task_svc.agent_for.return_value = MagicMock(
+        id=agent_id, role="developer", team="backend", slug=None
+    )
     journal_svc = AsyncMock()
     journal_svc.has_reflect_for_task.return_value = True
     deps = _make_deps(task=task_svc, journal=journal_svc)
@@ -214,6 +245,9 @@ async def test_i_am_done_proceeds_when_all_gates_pass() -> None:
     )
     task_svc = AsyncMock()
     task_svc.get.return_value = t
+    task_svc.agent_for.return_value = MagicMock(
+        id=agent_id, role="developer", team="backend", slug=None
+    )
     task_svc.submit_qa.return_value = after_submit
     task_svc.qa_agent_for_team.return_value = MagicMock(
         id=uuid4(), skills=[{"id": "code_review"}]
@@ -230,7 +264,8 @@ async def test_i_am_done_proceeds_when_all_gates_pass() -> None:
     assert body["error"] is None
     assert body["status"] == "awaiting_qa"
     task_svc.submit_qa.assert_awaited_once()
-    # Already-verifying status: no auto-call to submit_verification.
+    # Already-verifying status: recovery path runs only submit_qa, never
+    # the composed submit_verification action.
     task_svc.submit_verification.assert_not_awaited()
 
 
@@ -243,16 +278,27 @@ async def test_i_am_done_proceeds_when_all_gates_pass() -> None:
 
 @pytest.mark.asyncio
 async def test_i_am_done_blocks_unauthorized() -> None:
-    """Existing not_authorized check still applies."""
+    """Spec's PRECONDITION_OWNERSHIP rejects with tracing_gap when the
+    caller does not own the task.
+
+    Pre-spec migration the verb returned a separate not_authorized
+    envelope from an inline ownership check; the spec now drives this
+    decision via PRECONDITION_OWNERSHIP, which surfaces as tracing_gap
+    with the `owns_task` missing token.
+    """
     agent_id = uuid4()
     other_id = uuid4()
     task_id = uuid4()
     t = _ready_task(task_id, other_id)
     task_svc = AsyncMock()
     task_svc.get.return_value = t
+    task_svc.agent_for.return_value = MagicMock(
+        id=agent_id, role="developer", team="backend", slug=None
+    )
     deps = _make_deps(task=task_svc)
     c = Choreographer(deps)
 
     env = await c.i_am_done(agent_id, task_id, "done")
     body = env.as_dict()
-    assert body["error"] == "not_authorized"
+    assert body["error"] == "tracing_gap"
+    assert "owns_task" in body["missing"]

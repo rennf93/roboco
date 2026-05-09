@@ -30,6 +30,19 @@ def _make_deps(**overrides: Any) -> ChoreographerDeps:
         "evidence_repo": AsyncMock(),
     }
     base.update(overrides)
+    # VerbRunner uses task.session.begin_nested() as a savepoint context
+    # manager for spec-driven verbs (i_am_done, i_will_work_on, etc.).
+    # Other choreographer codepaths (doc.py:i_documented) await
+    # task.session.flush(), so keep the session itself an AsyncMock and
+    # only override begin_nested with a sync MagicMock that returns the
+    # async-context-manager protocol the runner expects.
+    task = base["task"]
+    task.session.begin_nested = MagicMock(
+        return_value=MagicMock(
+            __aenter__=AsyncMock(return_value=None),
+            __aexit__=AsyncMock(return_value=False),
+        )
+    )
     repo = base["evidence_repo"]
     for method in (
         "list_unread_a2a",
@@ -78,6 +91,9 @@ async def test_i_am_done_reassigns_task_to_qa_agent() -> None:
         documents=[],
         dev_notes="",
     )
+    after_verify = MagicMock(
+        **{**initial.__dict__, "status": "verifying", "self_verified": True},
+    )
     after_submit = MagicMock(
         **{**initial.__dict__, "status": "awaiting_qa", "assigned_to": None},
     )
@@ -85,6 +101,10 @@ async def test_i_am_done_reassigns_task_to_qa_agent() -> None:
 
     task_svc = AsyncMock()
     task_svc.get.return_value = initial
+    task_svc.agent_for.return_value = MagicMock(
+        id=dev_id, role="developer", team="backend", slug=None
+    )
+    task_svc.submit_verification.return_value = after_verify
     task_svc.submit_qa.return_value = after_submit
     task_svc.qa_agent_for_team.return_value = qa_agent
 
@@ -130,12 +150,19 @@ async def test_i_am_done_skips_reassign_when_no_qa_agent() -> None:
         documents=[],
         dev_notes="",
     )
+    after_verify = MagicMock(
+        **{**initial.__dict__, "status": "verifying", "self_verified": True},
+    )
     after_submit = MagicMock(
         **{**initial.__dict__, "status": "awaiting_qa", "assigned_to": None},
     )
 
     task_svc = AsyncMock()
     task_svc.get.return_value = initial
+    task_svc.agent_for.return_value = MagicMock(
+        id=dev_id, role="developer", team="backend", slug=None
+    )
+    task_svc.submit_verification.return_value = after_verify
     task_svc.submit_qa.return_value = after_submit
     task_svc.qa_agent_for_team.return_value = None  # no QA found
 
