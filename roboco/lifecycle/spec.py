@@ -22,7 +22,9 @@ recorded in the spec design doc:
 
 from __future__ import annotations
 
+from dataclasses import dataclass, field
 from enum import StrEnum
+from typing import Literal
 
 
 class Role(StrEnum):
@@ -61,3 +63,79 @@ class TaskType(StrEnum):
     PLANNING = "planning"
     DESIGN = "design"
     ADMINISTRATIVE = "administrative"
+
+
+RejectionKind = Literal[
+    "not_authorized",
+    "invalid_state",
+    "tracing_gap",
+    "self_review",
+    "not_found",
+]
+
+
+@dataclass(frozen=True)
+class Decision:
+    """Single shape every consumer maps onto its native rejection format.
+
+    `allow()`, `reject(kind, ...)`, and `tracing_gap(missing, remediate)`
+    are the three canonical constructors. Direct __init__ is supported
+    but enforces the invariants below so callers can't build a malformed
+    Decision.
+
+    Invariants (enforced in __post_init__):
+      * allowed=True  ⇒ rejection_kind is None and missing == []
+      * allowed=False ⇒ rejection_kind is not None
+    """
+
+    allowed: bool
+    rejection_kind: RejectionKind | None
+    message: str | None
+    missing: list[str] = field(default_factory=list)
+    remediate: str | None = None
+
+    def __post_init__(self) -> None:
+        if self.allowed and self.rejection_kind is not None:
+            raise ValueError(
+                "Decision invariant: allowed=True requires rejection_kind=None"
+            )
+        if not self.allowed and self.rejection_kind is None:
+            raise ValueError(
+                "Decision invariant: allowed=False requires rejection_kind set"
+            )
+
+    @classmethod
+    def allow(cls) -> Decision:
+        return cls(
+            allowed=True,
+            rejection_kind=None,
+            message=None,
+            missing=[],
+            remediate=None,
+        )
+
+    @classmethod
+    def reject(
+        cls,
+        *,
+        kind: RejectionKind,
+        message: str,
+        remediate: str,
+    ) -> Decision:
+        return cls(
+            allowed=False,
+            rejection_kind=kind,
+            message=message,
+            missing=[],
+            remediate=remediate,
+        )
+
+    @classmethod
+    def tracing_gap(cls, *, missing: list[str], remediate: str) -> Decision:
+        return cls(
+            allowed=False,
+            rejection_kind="tracing_gap",
+            message=None,
+            missing=list(missing),
+            remediate=remediate,
+        )
