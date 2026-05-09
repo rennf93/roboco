@@ -260,6 +260,8 @@ quality:
 	@uv run alembic upgrade head --sql > /dev/null
 	@echo "==> import-linter (architectural boundaries)"
 	@uv run lint-imports
+	@echo "==> lifecycle artifacts up to date"
+	@$(MAKE) ci-lifecycle-check
 	@echo ""
 	@echo "All quality gates passed."
 
@@ -453,3 +455,13 @@ show-python-versions:
 .PHONY: lifecycle
 lifecycle:
 	uv run python scripts/build_lifecycle_artifacts.py
+
+# CI drift gate: regenerate lifecycle artifacts and fail if anything
+# changed. Run on every PR — drift between roboco/lifecycle/spec.py and
+# the committed artifacts (docs/lifecycle/*, agents/prompts/_generated/
+# lifecycle-*.md) cannot land on master.
+.PHONY: ci-lifecycle-check
+ci-lifecycle-check:
+	@uv run python scripts/build_lifecycle_artifacts.py
+	@git diff --exit-code -- docs/rag/lifecycle panel/lib/lifecycle.json agents/prompts/_generated/lifecycle-*.md \
+		|| (echo "Lifecycle artifacts are out of date. Run 'make lifecycle' and commit the diff." && exit 1)
