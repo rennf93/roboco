@@ -6,7 +6,9 @@ from types import SimpleNamespace
 from uuid import uuid4
 
 import pytest
+import roboco.lifecycle as lifecycle_pkg
 from roboco.lifecycle import spec
+from roboco.lifecycle._validate import reachable_from
 from roboco.models.base import TaskType as ModelTaskType
 
 
@@ -601,3 +603,41 @@ def test_can_invoke_intent_open_pr_rejects_non_owner() -> None:
     assert d.allowed is False
     assert d.rejection_kind == "tracing_gap"
     assert "owns_task" in d.missing
+
+
+# ---------------------------------------------------------------------------
+# Task 8 — self-consistency validators (`_validate.py`)
+# ---------------------------------------------------------------------------
+
+
+def test_validators_pass_on_real_spec() -> None:
+    """Importing roboco.lifecycle must not raise — module-level import IS the test."""
+    assert lifecycle_pkg.spec is spec
+
+
+def test_every_status_reachable_from_pending() -> None:
+    """Reachability — except CANCELLED is its own thing and BACKLOG predates pending."""
+    reachable = reachable_from(spec.Status.PENDING)
+    expected_reachable = set(spec.Status) - {spec.Status.BACKLOG, spec.Status.CANCELLED}
+    assert expected_reachable <= reachable, (
+        f"Unreachable from pending: {expected_reachable - reachable}"
+    )
+
+
+def test_every_intent_verb_composes_known_actions() -> None:
+    """Every IntentSpec.composes must reference declared atomic actions."""
+    for name, iv in spec._INTENT_VERBS.items():
+        for action_name in iv.composes:
+            assert action_name in spec._ATOMIC_ACTIONS, (
+                f"Intent '{name}' composes unknown action '{action_name}'"
+            )
+
+
+def test_self_review_symmetry() -> None:
+    """If qa_pass blocks, qa_fail and docs_complete must too."""
+    qp = spec._ATOMIC_ACTIONS["qa_pass"].self_review_block
+    qf = spec._ATOMIC_ACTIONS["qa_fail"].self_review_block
+    dc = spec._ATOMIC_ACTIONS["docs_complete"].self_review_block
+    assert qp == qf == dc, (
+        "self_review_block asymmetry between qa_pass/qa_fail/docs_complete"
+    )

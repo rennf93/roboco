@@ -45,3 +45,9 @@ __all__ = [
     "status_after",
     "valid_next_verbs",
 ]
+
+# Validate the spec at import time. A LifecycleSpecError here means the
+# orchestrator container will fail to start — by design.
+from roboco.lifecycle._validate import run_all_validators
+
+run_all_validators()
