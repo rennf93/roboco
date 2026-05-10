@@ -5457,16 +5457,30 @@ Your job:
 """
 
     def _build_a2a_prompt(self, notification: dict[str, Any]) -> str:
-        """Build initial prompt for handling an A2A (Agent-to-Agent) request."""
+        """Build initial prompt for handling an A2A (Agent-to-Agent) request.
+
+        Reads `priority` directly off the notification row (set by
+        NotificationService.send_a2a_notification). Pre-Phase-3 this
+        consumed a non-existent `metadata.urgent` and always rendered
+        urgency_note=False; the column-level priority is now the source
+        of truth.
+        """
         notif_id = notification.get("id", "unknown")
         from_agent = notification.get("from_agent", "unknown")
         body = notification.get("body", "No message provided")
         related_task_id = notification.get("related_task_id")
         metadata = notification.get("metadata", {})
         skill = metadata.get("skill", "general")
-        urgent = metadata.get("urgent", False)
+        priority_raw = notification.get("priority", "normal")
 
-        urgency_note = "**URGENT** - This request has priority.\n\n" if urgent else ""
+        # URGENT gets the bold attention-grabber; HIGH gets a quieter
+        # "higher priority" hint; NORMAL gets no prefix.
+        if priority_raw == "urgent":
+            urgency_note = "**URGENT** - This request has priority.\n\n"
+        elif priority_raw == "high":
+            urgency_note = "**HIGH PRIORITY** - Please handle promptly.\n\n"
+        else:
+            urgency_note = ""
         task_note = f"RELATED TASK: {related_task_id}\n" if related_task_id else ""
 
         return f"""You have received an A2A (Agent-to-Agent) REQUEST.

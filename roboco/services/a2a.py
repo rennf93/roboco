@@ -646,8 +646,25 @@ class A2AService:
             if not allowed:
                 hint = get_a2a_route_hint(from_agent, target_agent)
                 raise ValueError(f"{error_msg} Hint: {hint}")
-        urgent_from_config = config.urgent if config else False
-        urgent = urgent_from_config or metadata.get("urgent", False)
+        # Priority parsing: full tristate (NORMAL/HIGH/URGENT) survives
+        # end-to-end after P3 Task 9. Precedence:
+        #   1. metadata["priority"] (preferred — string value matching
+        #      the Priority enum: "normal" | "high" | "urgent")
+        #   2. SendMessageConfiguration.urgent (legacy bool — URGENT only)
+        #   3. metadata["urgent"] (legacy bool from agent_sdk fallback)
+        # Unknown values fall back to NORMAL rather than crashing.
+        from roboco.foundation.policy.communications import Priority
+
+        raw_priority = metadata.get("priority")
+        if raw_priority is not None:
+            try:
+                priority = Priority(str(raw_priority))
+            except ValueError:
+                priority = Priority.NORMAL
+        elif (config and config.urgent) or metadata.get("urgent", False):
+            priority = Priority.URGENT
+        else:
+            priority = Priority.NORMAL
 
         # Extract message content
         _, _, message_text = self.extract_message_text(message)
@@ -658,7 +675,7 @@ class A2AService:
             from_agent=from_agent,
             target_agent=target_agent,
             skill=skill,
-            urgent=urgent,
+            priority=priority.value,
         )
 
         # Create notification - orchestrator dispatcher will handle spawning
@@ -670,7 +687,7 @@ class A2AService:
                 "to_agent": target_agent or "",
                 "skill": skill,
                 "message": message_text,
-                "urgent": urgent,
+                "priority": priority,
             },
         )
 

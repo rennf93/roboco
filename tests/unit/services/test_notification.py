@@ -196,6 +196,13 @@ async def test_send_qa_failed_notification(svc: NotificationService) -> None:
 
 @pytest.mark.asyncio
 async def test_send_a2a_notification(svc: NotificationService) -> None:
+    """priority=URGENT writes the row + the [URGENT] cosmetic prefix.
+
+    Pre-P3-Task-9 this used `urgent: True`; the contract is now a
+    tristate `priority` so HIGH can survive end-to-end. See
+    tests/integration/test_a2a_priority_tristate.py for the full
+    HIGH/NORMAL coverage.
+    """
     aid = uuid4()
     db = _FakeDb(agent_uuid=aid)
     with _patch_db_context(db):
@@ -206,11 +213,12 @@ async def test_send_a2a_notification(svc: NotificationService) -> None:
                 "to_agent": "fe-dev-1",
                 "skill": "react",
                 "message": "hi",
-                "urgent": True,
+                "priority": NotificationPriority.URGENT,
             },
         )
     # Urgent prefix appears in subject.
     assert any("URGENT" in row.subject for row in db.added)
+    assert any(row.priority == NotificationPriority.URGENT for row in db.added)
 
 
 @pytest.mark.asyncio
