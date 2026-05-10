@@ -16,6 +16,7 @@ import os
 import time
 from collections import Counter, deque
 from pathlib import Path
+from typing import Literal
 
 import httpx
 import structlog
@@ -535,6 +536,8 @@ _LOOP_THRESHOLD = int(
     os.environ.get("ROBOCO_AGENT_LOOP_THRESHOLD", str(_BUDGET.loop_threshold))
 )
 _LOOP_WINDOW = int(os.environ.get("ROBOCO_AGENT_LOOP_WINDOW", str(_BUDGET.loop_window)))
+_LOOP_ACTION_RAW = os.environ.get("ROBOCO_AGENT_LOOP_ACTION", _BUDGET.loop_action)
+_LOOP_ACTION: Literal["warn", "halt"] = "halt" if _LOOP_ACTION_RAW == "halt" else "warn"
 _STOP_ALLOWANCE = int(os.environ.get("ROBOCO_AGENT_STOP_ATTEMPT_ALLOWANCE", "1"))
 _RECENT_TOOL_WINDOW = 5  # not in foundation — keep local
 
@@ -629,6 +632,7 @@ def _budget_snapshot() -> BudgetStatus:
         halt_threshold=_HALT_THRESHOLD,
         loop_threshold=_LOOP_THRESHOLD,
         loop_window=_LOOP_WINDOW,
+        loop_action=_LOOP_ACTION,
     )
 
 

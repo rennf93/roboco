@@ -6,6 +6,7 @@ Pydantic models for A2A messaging between agents.
 
 from datetime import UTC, datetime
 from enum import StrEnum
+from typing import Literal
 from uuid import UUID, uuid4
 
 from pydantic import BaseModel, Field
@@ -95,6 +96,16 @@ class BudgetStatus(BaseModel):
     halt_threshold: int = Field(default=0)
     loop_threshold: int = Field(default=0)
     loop_window: int = Field(default=0)
+    loop_action: Literal["warn", "halt"] = Field(
+        default="halt",
+        description=(
+            "What the post-tool hook should do when loop=True. "
+            "'halt' -> hook exits 1 to deny the wrapping tool call; "
+            "'warn' -> hook prints [Loop] and exits 0 (legacy behaviour). "
+            "Sourced from foundation.BudgetPolicy.loop_action; env-overridable "
+            "via ROBOCO_AGENT_LOOP_ACTION."
+        ),
+    )
 
 
 class TerminalToolRecordRequest(BaseModel):
