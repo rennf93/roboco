@@ -21,7 +21,7 @@ from dataclasses import dataclass
 
 from roboco.config import settings
 from roboco.exceptions import TaskLifecycleError
-from roboco.lifecycle.spec import _STATUS_TRANSITIONS, STATUS_GRAPH, Status
+from roboco.foundation.policy.lifecycle import _STATUS_TRANSITIONS, STATUS_GRAPH, Status
 
 __all__ = [
     "ROLE_RESTRICTED_TRANSITIONS",
