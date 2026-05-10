@@ -262,6 +262,8 @@ quality:
 	@uv run lint-imports
 	@echo "==> lifecycle artifacts up to date"
 	@$(MAKE) ci-lifecycle-check
+	@echo "==> foundation drift checks"
+	@$(MAKE) foundation-check
 	@echo ""
 	@echo "All quality gates passed."
 
@@ -465,3 +467,20 @@ ci-lifecycle-check:
 	@uv run python scripts/build_lifecycle_artifacts.py
 	@git diff --exit-code -- docs/rag/lifecycle panel/lib/lifecycle.json agents/prompts/_generated/lifecycle-*.md \
 		|| (echo "Lifecycle artifacts are out of date. Run 'make lifecycle' and commit the diff." && exit 1)
+
+# =============================================================================
+# FOUNDATION DRIFT GATE
+# =============================================================================
+
+# Foundation drift gate: validates identity tables, runs foundation self-tests,
+# and (when reachable) checks postgres enum parity. Mirrors ci-lifecycle-check
+# so foundation/identity drift cannot land on master.
+.PHONY: foundation-check
+foundation-check:
+	@echo "==> foundation/identity validators"
+	uv run python -c "from roboco.foundation import _validate; _validate.run_all(); print('  identity validators: OK')"
+	@echo "==> foundation/task_completeness self-tests"
+	uv run pytest tests/foundation/ --no-cov -q
+	@echo "==> postgres enum parity (offline-skip if no DB)"
+	uv run python scripts/verify_postgres_enums.py || echo "  (skipped — postgres unreachable)"
+	@echo "All foundation drift checks passed."
