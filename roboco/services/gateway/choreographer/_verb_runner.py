@@ -21,7 +21,7 @@ from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from typing import Any
 
-from roboco.lifecycle import spec
+from roboco.foundation.policy import lifecycle as spec
 
 _AtomicHandler = Callable[[Any, Any, Any, spec.Context], Awaitable[Any]]
 _SideEffectHandler = Callable[[Any, Any, Any], Awaitable[Any]]

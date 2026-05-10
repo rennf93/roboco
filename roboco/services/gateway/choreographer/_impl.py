@@ -17,7 +17,7 @@ from uuid import UUID
 
 import structlog
 
-from roboco.lifecycle import spec as spec_module
+from roboco.foundation.policy import lifecycle as spec_module
 from roboco.services.gateway.choreographer._verb_runner import VerbRunner
 from roboco.services.gateway.claim_guards import (
     already_active_guard,

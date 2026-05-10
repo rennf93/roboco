@@ -217,7 +217,7 @@ class Envelope:
         statuses yield `[]` — preserves the legacy verb_gates contract
         of "introspection is best-effort and never raises".
         """
-        from roboco.lifecycle import spec
+        from roboco.foundation.policy import lifecycle as spec
 
         self.current_state = str(getattr(task, "status", "") or "") or None
         try:

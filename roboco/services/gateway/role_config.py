@@ -15,7 +15,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from roboco.lifecycle import spec
+from roboco.foundation.policy import lifecycle as spec
 
 
 @dataclass(frozen=True)

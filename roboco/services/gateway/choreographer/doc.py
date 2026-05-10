@@ -35,8 +35,8 @@ from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any
 
 from roboco.config import settings
+from roboco.foundation.policy import lifecycle as spec_module
 from roboco.foundation.policy import tracing as _tr
-from roboco.lifecycle import spec as spec_module
 from roboco.services.gateway.envelope import Envelope
 from roboco.services.gateway.evidence_builder import build_evidence_for_task
 
