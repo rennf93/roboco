@@ -770,6 +770,17 @@ class JournalService(BaseService):
             agent_id, task_id, JournalEntryType.DECISION_LOG
         )
 
+    async def has_note_for_task(self, agent_id: UUID, task_id: UUID) -> bool:
+        """True iff a GENERAL (scope='note') entry exists for (agent, task).
+
+        Backs the JOURNAL_NOTE_AT_CLAIM tracing requirement on
+        i_will_work_on (pre-gateway parity P1: developers wrote a
+        work_log/note entry on every claim).
+        """
+        return await self._has_entry_of_type(
+            agent_id, task_id, JournalEntryType.GENERAL
+        )
+
     async def has_learning_for_task(self, agent_id: UUID, task_id: UUID) -> bool:
         """True iff a LEARNING entry exists for (agent, task)."""
         return await self._has_entry_of_type(

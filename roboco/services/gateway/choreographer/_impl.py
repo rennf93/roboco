@@ -704,10 +704,16 @@ class Choreographer:
         # crashed mid-sequence would loop forever (Bug A from the 2026-05-09
         # smoke test).
         if str(t.status) == "claimed" and t.assigned_to == agent_id:
-            return await self._resume_from_claimed(ctx)
+            envelope = await self._resume_from_claimed(ctx)
+            return await self._post_claim_journal_gate(
+                "i_will_work_on", agent_id, task_id, envelope
+            )
         if rejection := await self._claim_plan_start_gate(ctx, role, spec_ctx):
             return rejection
-        return await self._claim_plan_start_run(ctx, agent, spec_ctx)
+        envelope = await self._claim_plan_start_run(ctx, agent, spec_ctx)
+        return await self._post_claim_journal_gate(
+            "i_will_work_on", agent_id, task_id, envelope
+        )
 
     @staticmethod
     def _with_briefing(env: Envelope, briefing: dict[str, Any]) -> Envelope:
@@ -1008,6 +1014,74 @@ class Choreographer:
             return None
         return await self._build_tracing_gap(agent_id, task_id, result.missing)
 
+    async def _post_claim_journal_gate(
+        self,
+        verb: str,
+        agent_id: UUID,
+        task_id: UUID,
+        envelope: Envelope,
+    ) -> Envelope:
+        """Apply the claim-time journal tracing gate AFTER a successful claim.
+
+        Pre-gateway parity (spec §11 P1, P3): the (claim, set_plan, start)
+        sequence is allowed to commit so the agent owns the task, then we
+        verify the matching journal entry exists. If absent, the agent
+        gets a tracing_gap with a remediation hint — they journal and
+        retry the verb (idempotent re-entry shortcuts back to OK once the
+        entry is present).
+
+        If `envelope` is already an error (claim failed or the runner
+        rejected), we pass it through untouched — no point demanding a
+        journal note when the claim itself didn't stick.
+        """
+        if envelope.error is not None:
+            return envelope
+        t = await self.task.get(task_id)
+        if t is None:
+            return envelope
+        gap = await self._check_claim_journal_at_claim(verb, agent_id, task_id, t)
+        return gap if gap is not None else envelope
+
+    async def _check_claim_journal_at_claim(
+        self, verb: str, agent_id: UUID, task_id: UUID, t: Any
+    ) -> Envelope | None:
+        """Post-claim tracing gate for i_will_work_on / i_will_plan.
+
+        Pre-gateway parity (spec §11 P1, P3): developers wrote a
+        journal:note on every claim; PMs wrote a journal:decision on
+        plan. The check runs AFTER the composed (claim, set_plan, start)
+        sequence has succeeded — the claim itself stays. If the journal
+        entry is missing, the agent receives a tracing_gap envelope and
+        must journal then retry the verb (similar to how i_am_done's
+        post-claim gates work).
+
+        ``PLAN`` is filtered out of the required-set because the spec's
+        composed action has already enforced PRECONDITION_PLAN before
+        reaching this point — re-asserting it here would be redundant
+        and produce a misleading hint when the only real failure is the
+        missing journal entry.
+        """
+        from roboco.foundation.policy import tracing as _tr
+
+        ctx = _tr.GateContext()
+        if verb == "i_will_work_on":
+            has_note = await self.journal.has_note_for_task(agent_id, task_id)
+            ctx = _tr.GateContext(journal_note_at_claim_present=has_note)
+        elif verb == "i_will_plan":
+            has_decision = await self.journal.has_decision_for_task(agent_id, task_id)
+            ctx = _tr.GateContext(journal_decision_present=has_decision)
+        requirements: list[_tr.Requirement] = [
+            r for r in _tr.requirements_for(verb) if r is not _tr.Requirement.PLAN
+        ]
+        result = _tr.check_requirements(
+            task=t,
+            requirements=requirements,
+            ctx=ctx,
+        )
+        if result.passed:
+            return None
+        return await self._build_tracing_gap(agent_id, task_id, result.missing)
+
     async def _check_pm_decision_required(
         self, verb: str, agent_id: UUID, task_id: UUID, t: Any
     ) -> Envelope | None:
@@ -1188,6 +1262,18 @@ class Choreographer:
                 min_chars=_roboco_settings.docs_notes_min_chars
             ),
             "docs_files_non_empty": hint_for_missing_doc_files(),
+            "journal:note_at_claim": (
+                "pre-gateway parity P1: write a journal:note at claim. "
+                f"Call note(scope='note', task_id='{tid}', "
+                "text='<initial assessment>') describing your read of the "
+                "task, then retry i_will_work_on."
+            ),
+            "journal:decision_at_claim": (
+                "pre-gateway parity P3: PMs write a journal:decision on plan. "
+                f"Call note(scope='decision', task_id='{tid}', "
+                "text='<delegation rationale>') with your planning rationale, "
+                "then retry i_will_plan."
+            ),
             "notes>=min": (
                 f"`notes` must be at least {notes_min} chars describing the "
                 "merge / escalation rationale; pass a longer notes argument "
@@ -1741,10 +1827,16 @@ class Choreographer:
         # set_plan + start. Without this block, a PM reclaiming from a
         # crashed mid-sequence would loop forever.
         if str(t.status) == "claimed" and t.assigned_to == pm_agent_id:
-            return await self._resume_from_claimed(ctx)
+            envelope = await self._resume_from_claimed(ctx)
+            return await self._post_claim_journal_gate(
+                "i_will_plan", pm_agent_id, task_id, envelope
+            )
         if rejection := await self._claim_plan_start_gate(ctx, role, spec_ctx):
             return rejection
-        return await self._claim_plan_start_run(ctx, agent, spec_ctx)
+        envelope = await self._claim_plan_start_run(ctx, agent, spec_ctx)
+        return await self._post_claim_journal_gate(
+            "i_will_plan", pm_agent_id, task_id, envelope
+        )
 
     async def delegate(
         self,

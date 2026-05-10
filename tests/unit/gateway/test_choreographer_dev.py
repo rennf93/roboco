@@ -277,6 +277,68 @@ async def test_i_will_work_on_invalid_state_returns_invalid_state() -> None:
     assert "completed" in body["message"]
 
 
+@pytest.mark.asyncio
+async def test_i_will_work_on_blocks_when_journal_note_at_claim_missing() -> None:
+    """Pre-gateway parity P1: i_will_work_on requires a journal:note at claim.
+
+    The composed (claim, set_plan, start) sequence runs first — the claim
+    sticks. Then the post-claim tracing gate fires because no journal:note
+    exists for (agent, task), and the agent gets a tracing_gap with a
+    remediation hint to write a note and retry.
+    """
+    agent_id = uuid4()
+    task_id = uuid4()
+    pending_task = MagicMock(
+        id=task_id,
+        status="pending",
+        plan=None,
+        assigned_to=None,
+        parent_task_id=None,
+        sequence=0,
+        task_type="code",
+        commits=[],
+        pr_number=None,
+        branch_name="feature/backend/abc",
+        quick_context=None,
+    )
+    in_progress_task = MagicMock(
+        id=task_id,
+        status="in_progress",
+        plan={"text": "do x"},
+        assigned_to=agent_id,
+    )
+    task_svc = AsyncMock()
+    # `get` is called twice: once at verb entry, once by _post_claim_journal_gate.
+    task_svc.get.side_effect = [pending_task, in_progress_task]
+    task_svc.agent_for.return_value = MagicMock(
+        id=agent_id, role="developer", team="backend", slug=None
+    )
+    task_svc.list_in_progress_for_agent.return_value = []
+    task_svc.list_paused_for_agent.return_value = []
+    task_svc.get_subtasks.return_value = []
+    task_svc.claim.return_value = MagicMock(
+        id=task_id, status="claimed", plan=None, assigned_to=agent_id
+    )
+    task_svc.set_plan.return_value = MagicMock(
+        id=task_id, status="claimed", plan={"text": "do x"}, assigned_to=agent_id
+    )
+    task_svc.start.return_value = in_progress_task
+    journal_svc = AsyncMock()
+    journal_svc.has_note_for_task.return_value = False
+    deps = _make_deps(task=task_svc, journal=journal_svc)
+    c = Choreographer(deps)
+
+    env = await c.i_will_work_on(agent_id, task_id, plan="do x then y")
+    body = env.as_dict()
+    assert body["error"] == "tracing_gap"
+    assert "journal:note_at_claim" in body["missing"]
+    assert "note(scope='note'" in body["remediate"]
+    # The composed action ran — claim+set_plan+start were called even though
+    # the post-claim gate failed.
+    task_svc.claim.assert_awaited_once_with(task_id, agent_id)
+    task_svc.start.assert_awaited_once_with(task_id, agent_id)
+
+
 # test_i_am_done_with_catchup_full_chain removed (audit P2-5/D-16):
 # i_am_done_with_catchup verb deleted. submit_for_qa now does push + PR
 # explicitly; i_am_done auto-runs submit_verification + submit_qa.
