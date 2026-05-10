@@ -1,9 +1,8 @@
 """QA verbs (audit P2-2 third per-role split).
 
 Mixin for ``claim_review``, ``pass_review``, ``fail_review`` and the
-two QA-specific helpers ``_check_qa_pass_gates`` / ``_qa_tracing_gap``.
-Helpers stay together with the verbs that use them — they're not used
-by any other role.
+verb-specific helper ``_qa_pass_gate_check``. The helper stays with
+the verbs that use it — it's not used by any other role.
 
 Inherits from ``ChoreographerHelpers`` under ``TYPE_CHECKING`` only so
 mypy resolves ``self.task`` etc. as typed; at runtime the composed
@@ -19,6 +18,12 @@ action layer (``_ATOMIC_ACTIONS["qa_pass" | "qa_fail"]
 builds a Context with ``actor_slug == original_developer_slug``; no
 verb-body retrofits needed.
 
+P2 Task 9: ``_qa_pass_gate_check`` delegates the actual requirement
+checking to ``foundation.policy.tracing.check_requirements`` — the
+verb→required-set mapping lives in ``VERB_REQUIREMENTS`` (single
+source of truth). The hint translation lives in the shared
+``_build_tracing_gap`` on Choreographer.
+
 ``claim_review`` composes ``("claim", "start")`` in the spec, but the
 runtime semantic is "QA inspects, status stays at awaiting_qa". The
 verb body therefore owns dispatch via ``task.qa_claim`` (mirroring the
@@ -31,9 +36,11 @@ still validates role + claim source-status + task_type before dispatch.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any
 
 from roboco.config import settings
+from roboco.foundation.policy import tracing as _tr
 from roboco.lifecycle import spec as spec_module
 from roboco.services.gateway.envelope import Envelope
 from roboco.services.gateway.evidence_builder import build_evidence_for_task
@@ -163,6 +170,22 @@ class QAMixin(_Base):
         t = await self.task.qa_claim(qa_agent_id, task_id)
         await self.task.mark_evidence_inspected(task_id)
 
+        ev = await self._build_qa_claim_evidence(t, task_id)
+        return Envelope.ok(
+            status=str(t.status),
+            task_id=str(task_id),
+            next=spec_module._INTENT_VERBS["claim_review"].next_hint(t),
+            evidence=ev.as_dict(),
+            context_briefing=briefing,
+        ).with_introspection(task=t, role=role_str)
+
+    async def _build_qa_claim_evidence(self, t: Any, task_id: UUID) -> Any:
+        """Assemble the inline evidence payload returned by claim_review.
+
+        Bundles files_changed (from work_session) + pr_diff_summary (from
+        git) + journal_highlights so the QA agent has the full PR
+        context up-front and can't miss a piece.
+        """
         files_changed: list[str] = []
         if t.work_session_id:
             files_changed = await self.work_session.files_changed(t.work_session_id)
@@ -172,19 +195,12 @@ class QAMixin(_Base):
         journal_highlights = await self.evidence_repo.journal_highlights_for_task(
             task_id
         )
-        ev = build_evidence_for_task(
+        return build_evidence_for_task(
             t,
             journal_highlights=journal_highlights,
             files_changed=files_changed,
             pr_diff_summary=diff_summary,
         )
-        return Envelope.ok(
-            status=str(t.status),
-            task_id=str(task_id),
-            next=spec_module._INTENT_VERBS["claim_review"].next_hint(t),
-            evidence=ev.as_dict(),
-            context_briefing=briefing,
-        ).with_introspection(task=t, role=role_str)
 
     async def _verify_qa_owner(
         self, qa_agent_id: UUID, task_id: UUID, verb: str
@@ -214,20 +230,41 @@ class QAMixin(_Base):
     async def _qa_pass_gate_check(
         self, qa_agent_id: UUID, task_id: UUID, notes: str, t: Any, verb: str
     ) -> Envelope | None:
-        """QA pass-gate evaluation. Returns rejection envelope or None on pass."""
+        """QA pass/fail-gate evaluation via foundation.policy.tracing.
+
+        Returns rejection envelope or None on pass. The required-set
+        for ``pass_review`` and ``fail_review`` is identical (both need
+        QA_NOTES_MIN_CHARS + QA_EVIDENCE_INSPECTED + JOURNAL_LEARNING),
+        so a single helper handles both — the caller just passes the
+        verb name through for VERB_REQUIREMENTS lookup.
+
+        The verb's ``notes`` argument hasn't been persisted to the task
+        yet (the spec runner writes it via the atomic action), so we
+        thread it through a SimpleNamespace shim with the minimal
+        attributes the foundation checkers read off the task object
+        (qa_notes + qa_evidence_inspected — see
+        foundation.policy.tracing._check_qa_notes_min_chars and
+        _check_qa_evidence_inspected).
+        """
         has_learning = await self.journal.has_learning_for_task(qa_agent_id, task_id)
-        missing = self._check_qa_pass_gates(
-            notes=notes,
-            has_learning=has_learning,
-            evidence_inspected=t.qa_evidence_inspected,
+        task_view = SimpleNamespace(
+            qa_notes=notes,
+            qa_evidence_inspected=getattr(t, "qa_evidence_inspected", False),
         )
-        if not missing:
+        ctx = _tr.GateContext(
+            journal_learning_present=has_learning,
+            qa_notes_min_chars=settings.qa_notes_min_chars,
+        )
+        result = _tr.check_requirements(
+            task=task_view,
+            requirements=list(_tr.requirements_for(verb)),
+            ctx=ctx,
+        )
+        if result.passed:
             return None
         return await self._emit_rejection(
-            self._qa_tracing_gap(
-                missing,
-                task_id,
-                await self._briefing_for(qa_agent_id, task_id),
+            (
+                await self._build_tracing_gap(qa_agent_id, task_id, result.missing)
             ).with_introspection(task=t, role="qa"),
             agent_id=qa_agent_id,
             task_id=task_id,
@@ -366,45 +403,6 @@ class QAMixin(_Base):
             next=spec_module._INTENT_VERBS["pass_review"].next_hint(t),
             context_briefing=briefing,
         ).with_introspection(task=t, role=role_str)
-
-    @staticmethod
-    def _check_qa_pass_gates(
-        *, notes: str, has_learning: bool, evidence_inspected: bool
-    ) -> list[str]:
-        """Return list of missing gate keys; empty list if all pass."""
-        missing: list[str] = []
-        if not notes or len(notes) < settings.qa_notes_min_chars:
-            missing.append("qa_notes>=min")
-        if not has_learning:
-            missing.append("journal:learning")
-        if not evidence_inspected:
-            missing.append("qa_evidence_inspected")
-        return missing
-
-    @staticmethod
-    def _qa_tracing_gap(
-        missing: list[str], task_id: UUID, briefing: dict[str, Any]
-    ) -> Envelope:
-        """Build a tracing_gap envelope with role-appropriate hints."""
-        from roboco.services.gateway.remediation import (
-            hint_for_evidence_not_inspected,
-            hint_for_missing_journal_learning,
-            hint_for_missing_qa_notes,
-        )
-
-        hint_map = {
-            "qa_notes>=min": hint_for_missing_qa_notes(),
-            "journal:learning": hint_for_missing_journal_learning(),
-            "qa_evidence_inspected": hint_for_evidence_not_inspected(
-                task_id=str(task_id)
-            ),
-        }
-        hints = [hint_map[m] for m in missing if m in hint_map]
-        return Envelope.tracing_gap(
-            missing=missing,
-            remediate=" ; ".join(hints),
-            context_briefing=briefing,
-        )
 
     async def fail_review(
         self, qa_agent_id: UUID, task_id: UUID, issues: list[str]

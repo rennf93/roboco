@@ -81,3 +81,11 @@ class ChoreographerHelpers:
 
     def _verb_runner(self) -> VerbRunner:
         raise NotImplementedError
+
+    async def _build_tracing_gap(
+        self,
+        agent_id: UUID,
+        task_id: UUID,
+        missing: list[str],
+    ) -> Envelope:
+        raise NotImplementedError

@@ -32,7 +32,10 @@ from roboco.services.gateway.evidence_builder import (
 )
 from roboco.services.gateway.merge_chain import parent_branch_for
 from roboco.services.gateway.remediation import (
+    hint_for_evidence_not_inspected,
+    hint_for_missing_journal_learning,
     hint_for_missing_progress,
+    hint_for_missing_qa_notes,
     hint_for_missing_reflect,
     hint_for_unaddressed_acceptance_criteria,
 )
@@ -1072,6 +1075,12 @@ class Choreographer:
                 hints.append(hint_for_missing_progress())
             elif m == "journal:reflect":
                 hints.append(hint_for_missing_reflect(task_id=str(task_id)))
+            elif m == "qa_notes>=min":
+                hints.append(hint_for_missing_qa_notes())
+            elif m == "journal:learning":
+                hints.append(hint_for_missing_journal_learning())
+            elif m == "qa_evidence_inspected":
+                hints.append(hint_for_evidence_not_inspected(task_id=str(task_id)))
             elif m.startswith("acceptance_criterion:"):
                 unaddressed.append(m.split(":", 1)[1])
         if unaddressed:
