@@ -363,7 +363,9 @@ async def test_main_pm_complete_clears_assignment_for_ceo() -> None:
     deps = _make_deps(task=task_svc, git=git_svc, journal=journal_svc)
     c = Choreographer(deps)
 
-    env = await c.main_pm_complete(main_pm_id, root_task_id, notes="ready")
+    env = await c.main_pm_complete(
+        main_pm_id, root_task_id, notes="root scope reviewed and ready"
+    )
     assert env.error is None
     task_svc.reassign.assert_awaited_once_with(root_task_id, None)
 
@@ -440,7 +442,9 @@ async def test_cell_pm_complete_reassigns_parent_when_all_subtasks_done() -> Non
     deps = _make_deps(task=task_svc, git=git_svc, journal=journal_svc)
     c = Choreographer(deps)
 
-    env = await c.cell_pm_complete(pm_id, leaf_id, notes="reviewed and merged")
+    env = await c.cell_pm_complete(
+        pm_id, leaf_id, notes="cell scope reviewed and merged into parent"
+    )
     assert env.error is None
     # Parent reassignment should have been issued, and only for the parent.
     task_svc.reassign.assert_awaited_once_with(parent_id, new_pm_id)

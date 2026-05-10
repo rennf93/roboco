@@ -34,6 +34,7 @@ from roboco.services.gateway.merge_chain import parent_branch_for
 from roboco.services.gateway.remediation import (
     hint_for_evidence_not_inspected,
     hint_for_missing_doc_files,
+    hint_for_missing_journal_decision,
     hint_for_missing_journal_learning,
     hint_for_missing_progress,
     hint_for_missing_qa_notes,
@@ -1007,6 +1008,104 @@ class Choreographer:
             return None
         return await self._build_tracing_gap(agent_id, task_id, result.missing)
 
+    async def _check_pm_decision_required(
+        self, verb: str, agent_id: UUID, task_id: UUID, t: Any
+    ) -> Envelope | None:
+        """Standard PM-verb tracing gate driven by VERB_REQUIREMENTS.
+
+        Used by ``unblock``, ``escalate_up``, ``escalate_to_ceo``, and
+        ``delegate`` — each declares only ``JOURNAL_DECISION`` in the
+        foundation table. Verbs requiring more (``complete``,
+        ``submit_up``) use the verb-specific helpers below which thread
+        the additional state (reflect, notes, subtasks) into GateContext.
+        """
+        from roboco.foundation.policy import tracing as _tr
+
+        has_decision = await self.journal.has_decision_for_task(agent_id, task_id)
+        ctx = _tr.GateContext(journal_decision_present=has_decision)
+        result = _tr.check_requirements(
+            task=t,
+            requirements=list(_tr.requirements_for(verb)),
+            ctx=ctx,
+        )
+        if result.passed:
+            return None
+        return await self._build_tracing_gap(agent_id, task_id, result.missing)
+
+    async def _check_complete_gates(
+        self, agent_id: UUID, task_id: UUID, notes: str
+    ) -> Envelope | None:
+        """Tracing gate for cell-PM and main-PM ``complete`` verbs.
+
+        VERB_REQUIREMENTS["complete"] = JOURNAL_DECISION + JOURNAL_REFLECT
+        + NOTES_MIN_CHARS. ``SUBTASKS_TERMINAL`` is enforced separately by
+        ``_subtasks_not_terminal_envelope`` in the cell/main complete
+        guards because that gate emits a richer remediation message
+        listing the non-terminal subtasks; keeping it inline preserves
+        that UX.
+        """
+        from types import SimpleNamespace
+
+        from roboco.config import settings as _settings
+        from roboco.foundation.policy import tracing as _tr
+
+        has_decision = await self.journal.has_decision_for_task(agent_id, task_id)
+        has_reflect = await self.journal.has_reflect_for_task(agent_id, task_id)
+        task_view = SimpleNamespace(notes=notes)
+        ctx = _tr.GateContext(
+            journal_decision_present=has_decision,
+            journal_reflect_present=has_reflect,
+            notes_min_chars=getattr(_settings, "notes_min_chars", 20),
+        )
+        result = _tr.check_requirements(
+            task=task_view,
+            requirements=list(_tr.requirements_for("complete")),
+            ctx=ctx,
+        )
+        if result.passed:
+            return None
+        return await self._build_tracing_gap(agent_id, task_id, result.missing)
+
+    async def _check_submit_up_gates(
+        self, agent_id: UUID, task_id: UUID, notes: str
+    ) -> Envelope | None:
+        """Tracing gate for ``submit_up`` (cell PM bubble-up).
+
+        VERB_REQUIREMENTS["submit_up"] = SUBTASKS_TERMINAL + JOURNAL_DECISION
+        + JOURNAL_REFLECT + NOTES_MIN_CHARS. The notes value is threaded
+        through a SimpleNamespace shim because the verb hasn't persisted
+        it to the task yet. ``SUBTASKS_TERMINAL`` is filtered out here
+        because the inline ``_subtasks_not_terminal_envelope`` that
+        follows enumerates the non-terminal subtask ids — strictly richer
+        remediation than the generic foundation hint.
+        """
+        from types import SimpleNamespace
+
+        from roboco.config import settings as _settings
+        from roboco.foundation.policy import tracing as _tr
+
+        has_decision = await self.journal.has_decision_for_task(agent_id, task_id)
+        has_reflect = await self.journal.has_reflect_for_task(agent_id, task_id)
+        task_view = SimpleNamespace(notes=notes)
+        ctx = _tr.GateContext(
+            journal_decision_present=has_decision,
+            journal_reflect_present=has_reflect,
+            notes_min_chars=getattr(_settings, "notes_min_chars", 20),
+        )
+        requirements: list[_tr.Requirement] = [
+            r
+            for r in _tr.requirements_for("submit_up")
+            if r is not _tr.Requirement.SUBTASKS_TERMINAL
+        ]
+        result = _tr.check_requirements(
+            task=task_view,
+            requirements=requirements,
+            ctx=ctx,
+        )
+        if result.passed:
+            return None
+        return await self._build_tracing_gap(agent_id, task_id, result.missing)
+
     async def _check_submit_qa_field_gates(
         self, agent_id: UUID, task_id: UUID, t: Any
     ) -> Envelope | None:
@@ -1066,35 +1165,55 @@ class Choreographer:
             context_briefing=await self._briefing_for(agent_id, task_id),
         ).with_introspection(task=t, role=role)
 
+    @staticmethod
+    def _hint_for_missing_key(missing_key: str, task_id: UUID) -> str | None:
+        """Map a single tracing-requirement key to its agent-facing hint.
+
+        Returns ``None`` for keys that need composite handling (i.e.,
+        ``acceptance_criterion:<name>``, which the caller batches into
+        a single multi-criterion hint).
+        """
+        from roboco.config import settings as _roboco_settings
+
+        tid = str(task_id)
+        notes_min = getattr(_roboco_settings, "notes_min_chars", 20)
+        simple_hints: dict[str, str] = {
+            "progress>=1": hint_for_missing_progress(),
+            "journal:reflect": hint_for_missing_reflect(task_id=tid),
+            "journal:decision": hint_for_missing_journal_decision(),
+            "qa_notes>=min": hint_for_missing_qa_notes(),
+            "journal:learning": hint_for_missing_journal_learning(),
+            "qa_evidence_inspected": hint_for_evidence_not_inspected(task_id=tid),
+            "docs_notes>=min": hint_for_short_doc_notes(
+                min_chars=_roboco_settings.docs_notes_min_chars
+            ),
+            "docs_files_non_empty": hint_for_missing_doc_files(),
+            "notes>=min": (
+                f"`notes` must be at least {notes_min} chars describing the "
+                "merge / escalation rationale; pass a longer notes argument "
+                "and retry."
+            ),
+            "subtasks_terminal": (
+                "all subtasks must be in a terminal state (completed or "
+                "cancelled) before this transition; wait for the closure "
+                "dispatcher to bring you back when ready."
+            ),
+        }
+        return simple_hints.get(missing_key)
+
     async def _build_tracing_gap(
         self, agent_id: UUID, task_id: UUID, missing: list[str]
     ) -> Envelope:
         """Translate missing requirement keys into agent-facing hints."""
-        from roboco.config import settings as _roboco_settings
-
         hints: list[str] = []
         unaddressed: list[str] = []
         for m in missing:
-            if m == "progress>=1":
-                hints.append(hint_for_missing_progress())
-            elif m == "journal:reflect":
-                hints.append(hint_for_missing_reflect(task_id=str(task_id)))
-            elif m == "qa_notes>=min":
-                hints.append(hint_for_missing_qa_notes())
-            elif m == "journal:learning":
-                hints.append(hint_for_missing_journal_learning())
-            elif m == "qa_evidence_inspected":
-                hints.append(hint_for_evidence_not_inspected(task_id=str(task_id)))
-            elif m == "docs_notes>=min":
-                hints.append(
-                    hint_for_short_doc_notes(
-                        min_chars=_roboco_settings.docs_notes_min_chars
-                    )
-                )
-            elif m == "docs_files_non_empty":
-                hints.append(hint_for_missing_doc_files())
-            elif m.startswith("acceptance_criterion:"):
+            if m.startswith("acceptance_criterion:"):
                 unaddressed.append(m.split(":", 1)[1])
+                continue
+            hint = self._hint_for_missing_key(m, task_id)
+            if hint is not None:
+                hints.append(hint)
         if unaddressed:
             hints.append(
                 hint_for_unaddressed_acceptance_criteria(
@@ -1700,8 +1819,8 @@ class Choreographer:
                 verb="delegate",
             )
         # Spec gate passed. Run delegate-specific guards the spec doesn't
-        # model: chain validation, enum coercion + assignee-vs-task_type,
-        # and parent-ownership/subtask-cap.
+        # model: tracing (journal:decision), chain validation, enum
+        # coercion + assignee-vs-task_type, and parent-ownership/subtask-cap.
         guard = await self._delegate_extra_guards(
             pm_agent_id, parent_task_id, parent, role_str, inputs
         )
@@ -1736,13 +1855,19 @@ class Choreographer:
     ) -> Envelope | None:
         """Delegate-specific guards the spec doesn't model.
 
-        Order: chain validation -> static (project_id, enum coercion,
+        Order: tracing (journal:decision per VERB_REQUIREMENTS) ->
+        chain validation -> static (project_id, enum coercion,
         assignee-vs-task_type) -> lifecycle (parent ownership + subtask
         cap). Each returns an Envelope rejection or None to allow.
 
         The role-only check is no longer here — ``spec.can_invoke_intent``
         handles role+state in the verb body before this is called.
         """
+        # Pre-gateway PM.md required journal:decision before each delegate.
+        if env := await self._check_pm_decision_required(
+            "delegate", pm_agent_id, parent_task_id, parent
+        ):
+            return env
         chain_error = self._validate_delegation_chain(role_str, inputs.assigned_to)
         if chain_error is not None:
             return Envelope.not_authorized(
@@ -2191,7 +2316,7 @@ class Choreographer:
         )
         if ownership is not None:
             return ownership
-        return await self._submit_up_state_guard(pm_agent_id, task_id, t)
+        return await self._submit_up_state_guard(pm_agent_id, task_id, t, notes)
 
     async def _submit_up_ownership_guard(
         self, pm_agent_id: UUID, task_id: UUID, t: Any, notes: str
@@ -2224,20 +2349,19 @@ class Choreographer:
         return None
 
     async def _submit_up_state_guard(
-        self, pm_agent_id: UUID, task_id: UUID, t: Any
+        self, pm_agent_id: UUID, task_id: UUID, t: Any, notes: str
     ) -> Envelope | None:
-        """Journal + subtask-closure + branch guards for submit_up."""
-        has_decision = await self.journal.has_decision_for_task(pm_agent_id, task_id)
-        if not has_decision:
-            from roboco.services.gateway.remediation import (
-                hint_for_missing_journal_decision,
-            )
+        """Journal + subtask-closure + branch guards for submit_up.
 
-            return Envelope.tracing_gap(
-                missing=["journal:decision"],
-                remediate=hint_for_missing_journal_decision(),
-                context_briefing=await self._briefing_for(pm_agent_id, task_id),
-            )
+        Tracing gates (journal:decision, journal:reflect, notes>=min,
+        subtasks_terminal) are evaluated by ``_check_submit_up_gates``
+        which consumes ``VERB_REQUIREMENTS["submit_up"]``. The
+        ``_subtasks_not_terminal_envelope`` call is kept as a fallback
+        because its remediation enumerates the non-terminal subtask ids
+        — strictly richer than the foundation hint.
+        """
+        if env := await self._check_submit_up_gates(pm_agent_id, task_id, notes):
+            return env
         if env := await self._subtasks_not_terminal_envelope(
             pm_agent_id, task_id, context_phrase="bubbling up"
         ):
@@ -2391,18 +2515,11 @@ class Choreographer:
                 verb="unblock",
             )
 
-        has_decision = await self.journal.has_decision_for_task(pm_agent_id, task_id)
-        if not has_decision:
-            from roboco.services.gateway.remediation import (
-                hint_for_missing_journal_decision,
-            )
-
+        if env := await self._check_pm_decision_required(
+            "unblock", pm_agent_id, task_id, t
+        ):
             return await self._emit_rejection(
-                Envelope.tracing_gap(
-                    missing=["journal:decision"],
-                    remediate=hint_for_missing_journal_decision(),
-                    context_briefing=await self._briefing_for(pm_agent_id, task_id),
-                ).with_introspection(task=t, role=role),
+                env.with_introspection(task=t, role=role),
                 agent_id=pm_agent_id,
                 task_id=task_id,
                 verb="unblock",
@@ -2422,9 +2539,17 @@ class Choreographer:
         ).with_introspection(task=t, role=role)
 
     async def _cell_pm_complete_guard(
-        self, pm_agent_id: UUID, task_id: UUID, t: Any
+        self, pm_agent_id: UUID, task_id: UUID, t: Any, notes: str
     ) -> Envelope | None:
-        """Return a rejection Envelope if pre-merge guards fail; else None."""
+        """Return a rejection Envelope if pre-merge guards fail; else None.
+
+        Tracing gates (journal:decision, journal:reflect, notes>=min) are
+        evaluated by ``_check_complete_gates`` which consumes
+        ``VERB_REQUIREMENTS["complete"]``. The
+        ``_subtasks_not_terminal_envelope`` call is kept inline because
+        its remediation enumerates the non-terminal subtask ids — strictly
+        richer than the foundation hint.
+        """
         if t.assigned_to != pm_agent_id:
             return Envelope.not_authorized(
                 message="not assigned to you",
@@ -2439,17 +2564,8 @@ class Choreographer:
                 remediate="this task is not ready for completion",
                 context_briefing=await self._briefing_for(pm_agent_id, task_id),
             )
-        has_decision = await self.journal.has_decision_for_task(pm_agent_id, task_id)
-        if not has_decision:
-            from roboco.services.gateway.remediation import (
-                hint_for_missing_journal_decision,
-            )
-
-            return Envelope.tracing_gap(
-                missing=["journal:decision"],
-                remediate=hint_for_missing_journal_decision(),
-                context_briefing=await self._briefing_for(pm_agent_id, task_id),
-            )
+        if env := await self._check_complete_gates(pm_agent_id, task_id, notes):
+            return env
         if env := await self._subtasks_not_terminal_envelope(
             pm_agent_id, task_id, context_phrase="completing parent"
         ):
@@ -2477,7 +2593,7 @@ class Choreographer:
                 task_id=task_id,
                 verb="cell_pm_complete",
             )
-        guard = await self._cell_pm_complete_guard(pm_agent_id, task_id, t)
+        guard = await self._cell_pm_complete_guard(pm_agent_id, task_id, t, notes)
         if guard is not None:
             guard.with_introspection(task=t, role="cell_pm")
             return await self._emit_rejection(
@@ -2537,9 +2653,17 @@ class Choreographer:
         await self.task.reassign(parent_task_id, pm_agent.id)
 
     async def _main_pm_complete_guard(
-        self, main_pm_agent_id: UUID, root_task_id: UUID, t: Any
+        self, main_pm_agent_id: UUID, root_task_id: UUID, t: Any, notes: str
     ) -> Envelope | None:
-        """Return a rejection Envelope if pre-escalation guards fail; else None."""
+        """Return a rejection Envelope if pre-escalation guards fail; else None.
+
+        Tracing gates (journal:decision, journal:reflect, notes>=min) are
+        evaluated by ``_check_complete_gates`` which consumes
+        ``VERB_REQUIREMENTS["complete"]``. The
+        ``_subtasks_not_terminal_envelope`` call is kept inline because
+        its remediation enumerates the non-terminal subtask ids — strictly
+        richer than the foundation hint.
+        """
         if t.assigned_to != main_pm_agent_id:
             return Envelope.not_authorized(
                 message="not assigned to you",
@@ -2571,21 +2695,10 @@ class Choreographer:
                     main_pm_agent_id, root_task_id
                 ),
             )
-        has_decision = await self.journal.has_decision_for_task(
-            main_pm_agent_id, root_task_id
-        )
-        if not has_decision:
-            from roboco.services.gateway.remediation import (
-                hint_for_missing_journal_decision,
-            )
-
-            return Envelope.tracing_gap(
-                missing=["journal:decision"],
-                remediate=hint_for_missing_journal_decision(),
-                context_briefing=await self._briefing_for(
-                    main_pm_agent_id, root_task_id
-                ),
-            )
+        if env := await self._check_complete_gates(
+            main_pm_agent_id, root_task_id, notes
+        ):
+            return env
         if env := await self._subtasks_not_terminal_envelope(
             main_pm_agent_id, root_task_id, context_phrase="escalating to CEO"
         ):
@@ -2604,7 +2717,9 @@ class Choreographer:
                 task_id=root_task_id,
                 verb="main_pm_complete",
             )
-        guard = await self._main_pm_complete_guard(main_pm_agent_id, root_task_id, t)
+        guard = await self._main_pm_complete_guard(
+            main_pm_agent_id, root_task_id, t, notes
+        )
         if guard is not None:
             guard.with_introspection(task=t, role="main_pm")
             return await self._emit_rejection(
@@ -2809,19 +2924,14 @@ class Choreographer:
         Returns a rejection envelope when the gate fires; ``None`` to
         proceed. The spec doesn't model journal side effects or agent
         metadata (escalation_target slug), so these gates stay in the
-        verb body.
+        verb body. The journal-decision check is delegated to
+        ``_check_pm_decision_required`` which consumes
+        ``VERB_REQUIREMENTS["escalate_up"]``.
         """
-        has_decision = await self.journal.has_decision_for_task(pm_agent_id, t.id)
-        if not has_decision:
-            from roboco.services.gateway.remediation import (
-                hint_for_missing_journal_decision,
-            )
-
-            return Envelope.tracing_gap(
-                missing=["journal:decision"],
-                remediate=hint_for_missing_journal_decision(),
-                context_briefing=briefing,
-            ).with_introspection(task=t, role=role_str)
+        if env := await self._check_pm_decision_required(
+            "escalate_up", pm_agent_id, t.id, t
+        ):
+            return env.with_introspection(task=t, role=role_str)
         target_slug = me.escalation_target if me else None
         if not target_slug:
             return Envelope.invalid_state(
@@ -2892,18 +3002,13 @@ class Choreographer:
             )
 
         # Verb-specific preflight: journal:decision presence (out of spec scope).
-        has_decision = await self.journal.has_decision_for_task(agent_id, task_id)
-        if not has_decision:
-            from roboco.services.gateway.remediation import (
-                hint_for_missing_journal_decision,
-            )
-
+        # Delegates to _check_pm_decision_required which consumes
+        # VERB_REQUIREMENTS["escalate_to_ceo"].
+        if env := await self._check_pm_decision_required(
+            "escalate_to_ceo", agent_id, task_id, t
+        ):
             return await self._emit_rejection(
-                Envelope.tracing_gap(
-                    missing=["journal:decision"],
-                    remediate=hint_for_missing_journal_decision(),
-                    context_briefing=briefing,
-                ).with_introspection(task=t, role=role_str),
+                env.with_introspection(task=t, role=role_str),
                 agent_id=agent_id,
                 task_id=task_id,
                 verb="escalate_to_ceo",
