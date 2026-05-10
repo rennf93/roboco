@@ -6,7 +6,7 @@ Pydantic models for A2A messaging between agents.
 
 from datetime import UTC, datetime
 from enum import StrEnum
-from typing import Literal
+from typing import Any, Literal
 from uuid import UUID, uuid4
 
 from pydantic import BaseModel, Field
@@ -143,3 +143,62 @@ class PostMortemRequest(BaseModel):
     loop_triggered: bool = Field(default=False)
     halt_triggered: bool = Field(default=False)
     reason: str = Field(default="stopped")
+
+
+class VerbAttemptRequest(BaseModel):
+    """Per-verb circuit-breaker attempt record (Phase 3 Task 14).
+
+    Posted by the agent's response-handling layer when a gateway verb
+    call returns a rejection envelope (`tracing_gap`, `invalid_state`,
+    `not_authorized`, `incomplete_input`). Successful (`ok`) calls must
+    NOT be posted — only rejections count toward the circuit breaker.
+    """
+
+    verb: str = Field(..., description="Gateway verb name, e.g. i_am_done")
+    task_id: str | None = Field(
+        default=None,
+        description=(
+            "Task this verb call was scoped to. None for verbs that operate "
+            "without a task — those track per-verb only."
+        ),
+    )
+    rejection_kind: str = Field(
+        ...,
+        description=(
+            "Envelope error kind: tracing_gap | invalid_state | "
+            "not_authorized | incomplete_input"
+        ),
+    )
+
+
+class VerbCircuitStatus(BaseModel):
+    """Response from /verb/attempted — breaker state for this (verb, task_id) key."""
+
+    verb: str = Field(..., description="Verb that was recorded")
+    task_id: str | None = Field(default=None)
+    attempts: int = Field(
+        default=0,
+        description="Rejections counted in the current 60s window for this key",
+    )
+    limit: int | None = Field(
+        default=None,
+        description=(
+            "Per-verb cap from foundation.retry_limit_for(verb). None means "
+            "the verb is in UNLIMITED_RETRY_VERBS — the breaker never trips."
+        ),
+    )
+    window_seconds: int = Field(
+        default=60, description="Sliding-window size used by the tracker"
+    )
+    open: bool = Field(
+        default=False,
+        description="True if attempts >= limit — agent must stop calling this verb",
+    )
+    circuit_envelope: dict[str, Any] | None = Field(
+        default=None,
+        description=(
+            "Populated only when open=True. Wire-format Envelope.circuit_open "
+            "the SDK consumer should return to the agent in place of the "
+            "next gateway call."
+        ),
+    )

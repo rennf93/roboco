@@ -14,9 +14,9 @@ Features:
 import json
 import os
 import time
-from collections import Counter, deque
+from collections import Counter, defaultdict, deque
 from pathlib import Path
-from typing import Literal
+from typing import Any, Literal
 
 import httpx
 import structlog
@@ -36,8 +36,12 @@ from roboco.agent_sdk.models import (
     SendResponse,
     TerminalStatus,
     TerminalToolRecordRequest,
+    VerbAttemptRequest,
+    VerbCircuitStatus,
 )
 from roboco.foundation.policy.agent_loop import DEFAULT_BUDGET as _BUDGET
+from roboco.foundation.policy.agent_loop import retry_limit_for
+from roboco.services.gateway.envelope import Envelope
 
 logger = structlog.get_logger()
 
@@ -540,6 +544,15 @@ _LOOP_ACTION_RAW = os.environ.get("ROBOCO_AGENT_LOOP_ACTION", _BUDGET.loop_actio
 _LOOP_ACTION: Literal["warn", "halt"] = "halt" if _LOOP_ACTION_RAW == "halt" else "warn"
 _STOP_ALLOWANCE = int(os.environ.get("ROBOCO_AGENT_STOP_ATTEMPT_ALLOWANCE", "1"))
 _RECENT_TOOL_WINDOW = 5  # not in foundation — keep local
+# Sliding-window for the per-verb retry circuit breaker (Phase 3 Task 14).
+# 60s matches the docstring on foundation.VERB_RETRY_LIMITS — cap is "N
+# rejections in 60s", not "N rejections since session start".
+_VERB_ATTEMPT_WINDOW_S: int = 60
+# Rejection envelope kinds that COUNT toward the breaker. Successful (ok)
+# calls do not count, by design.
+_CIRCUIT_REJECTION_KINDS: frozenset[str] = frozenset(
+    {"tracing_gap", "invalid_state", "not_authorized", "incomplete_input"}
+)
 
 _TERMINAL_TOOLS: frozenset[str] = frozenset(
     {
@@ -573,6 +586,15 @@ class _SessionState:
         self.stop_attempts: int = 0
         self.loop_triggered: bool = False
         self.halt_triggered: bool = False
+        # Per-verb circuit breaker: maps (verb, task_id) → deque[monotonic
+        # timestamp]. Pruned to a 60s window on every record/check. Only
+        # rejection envelopes (tracing_gap / invalid_state / not_authorized
+        # / incomplete_input) feed into this — successful calls never count.
+        # task_id may be None for verbs that operate without one (e.g.
+        # give_me_work) — those keys collapse to (verb, None).
+        self.verb_attempts: dict[tuple[str, str | None], deque[float]] = defaultdict(
+            deque
+        )
 
     def reset(self) -> None:
         self._init_fields()
@@ -597,6 +619,134 @@ class _SessionState:
 
 
 _state = _SessionState()
+
+
+# =============================================================================
+# PER-VERB CIRCUIT BREAKER (Phase 3 Task 14)
+# =============================================================================
+# Pre-Phase-3 the gateway had no per-verb retry cap. The 2026-05-10 smoke
+# showed i_am_done retried 5+ times in 2 minutes within the global 150-tool
+# budget — the agent never hit a real wall. The tracker here closes that gap:
+# (verb, task_id) → deque[timestamp] over a 60s sliding window. When the
+# count exceeds foundation.retry_limit_for(verb), the next attempt receives
+# Envelope.circuit_open with a remediate hint pointing to i_am_blocked /
+# i_am_idle as graceful exits.
+#
+# Helpers are module-private (leading _) but exported for test access; they
+# operate on the live _state singleton, mirroring the budget-tracker pattern.
+
+
+def _prune_verb_window(window: deque[float], now: float) -> None:
+    """Drop entries older than _VERB_ATTEMPT_WINDOW_S from the deque (in place)."""
+    cutoff = now - _VERB_ATTEMPT_WINDOW_S
+    while window and window[0] < cutoff:
+        window.popleft()
+
+
+def _record_verb_attempt(verb: str, task_id: str | None) -> None:
+    """Record a verb-level rejection.
+
+    Append the current monotonic timestamp to the (verb, task_id) deque and
+    prune entries older than the window. Caller must only invoke this for
+    REJECTION envelopes — counting successful calls would defeat the
+    breaker's purpose (the agent is allowed to call i_am_done once it
+    succeeds; only stuck retries should accumulate).
+    """
+    key = (verb, task_id)
+    now = time.monotonic()
+    window = _state.verb_attempts[key]
+    window.append(now)
+    _prune_verb_window(window, now)
+
+
+def _verb_attempt_count(verb: str, task_id: str | None) -> int:
+    """Count rejections in the last _VERB_ATTEMPT_WINDOW_S seconds.
+
+    Prunes the underlying deque on read so external observers always see a
+    fresh count. Returns 0 for keys that have never been recorded.
+    """
+    key = (verb, task_id)
+    window = _state.verb_attempts.get(key)
+    if window is None:
+        return 0
+    _prune_verb_window(window, time.monotonic())
+    return len(window)
+
+
+def _check_verb_circuit(verb: str, task_id: str | None) -> dict[str, Any] | None:
+    """Return a circuit_open envelope dict if the breaker should open, else None.
+
+    Lookup order matches foundation.retry_limit_for():
+      - Verb in UNLIMITED_RETRY_VERBS → None (never trips)
+      - Verb in VERB_RETRY_LIMITS     → cap is the explicit value
+      - Otherwise                     → cap is verb_retry_max_per_minute
+    """
+    limit = retry_limit_for(verb)
+    if limit is None:
+        return None
+    count = _verb_attempt_count(verb, task_id)
+    if count < limit:
+        return None
+    env = Envelope.circuit_open(
+        verb=verb,
+        attempts=count,
+        window_seconds=_VERB_ATTEMPT_WINDOW_S,
+        remediate=(
+            f"verb {verb!r} has been rejected {count} times in "
+            f"{_VERB_ATTEMPT_WINDOW_S}s. Stop retrying. Call "
+            "i_am_blocked(reason='unable to satisfy gate after N attempts') "
+            "or i_am_idle() to release the claim. The PM will pick it up."
+        ),
+    )
+    return env.as_dict()
+
+
+@app.post("/verb/attempted", response_model=VerbCircuitStatus)
+async def verb_attempted(req: VerbAttemptRequest) -> VerbCircuitStatus:
+    """Record a verb-level rejection and report breaker state.
+
+    Posted by the agent's response-handling layer after every gateway call
+    that returned a rejection envelope. Rejections of unknown kind are
+    ignored (they don't count) — the catalog of counted kinds lives in
+    `_CIRCUIT_REJECTION_KINDS`. The response carries the live breaker state
+    plus, when open, the wire-format `Envelope.circuit_open` to surface to
+    the agent in place of the next gateway call.
+    """
+    if req.rejection_kind in _CIRCUIT_REJECTION_KINDS:
+        _record_verb_attempt(req.verb, req.task_id)
+    limit = retry_limit_for(req.verb)
+    count = _verb_attempt_count(req.verb, req.task_id)
+    is_open = limit is not None and count >= limit
+    envelope_dict = _check_verb_circuit(req.verb, req.task_id) if is_open else None
+    return VerbCircuitStatus(
+        verb=req.verb,
+        task_id=req.task_id,
+        attempts=count,
+        limit=limit,
+        window_seconds=_VERB_ATTEMPT_WINDOW_S,
+        open=is_open,
+        circuit_envelope=envelope_dict,
+    )
+
+
+@app.get("/verb/circuit_status", response_model=VerbCircuitStatus)
+async def verb_circuit_status(
+    verb: str, task_id: str | None = None
+) -> VerbCircuitStatus:
+    """Read-only breaker state for (verb, task_id) — does NOT record an attempt."""
+    limit = retry_limit_for(verb)
+    count = _verb_attempt_count(verb, task_id)
+    is_open = limit is not None and count >= limit
+    envelope_dict = _check_verb_circuit(verb, task_id) if is_open else None
+    return VerbCircuitStatus(
+        verb=verb,
+        task_id=task_id,
+        attempts=count,
+        limit=limit,
+        window_seconds=_VERB_ATTEMPT_WINDOW_S,
+        open=is_open,
+        circuit_envelope=envelope_dict,
+    )
 
 
 @app.post("/budget/tool_called", response_model=BudgetStatus)

@@ -140,6 +140,34 @@ class Envelope:
         return cls(error="not_found", message=message, context_briefing={})
 
     @classmethod
+    def circuit_open(
+        cls,
+        *,
+        verb: str,
+        attempts: int,
+        window_seconds: int,
+        remediate: str,
+        context_briefing: dict[str, Any] | None = None,
+    ) -> Envelope:
+        """Per-verb retry circuit-breaker tripped — too many attempts in a window.
+
+        Distinct from `tracing_gap` and `incomplete_input`. The agent receives
+        a structured "stop hammering this verb" signal with a remediate hint
+        pointing to i_am_blocked() / i_am_idle() as graceful exits. Wired by
+        the agent_sdk runtime tracker (Phase 3 Task 14) — the gateway itself
+        does not raise this.
+        """
+        return cls(
+            error="circuit_open",
+            message=(
+                f"verb {verb!r} rejected {attempts} times in last "
+                f"{window_seconds}s — circuit breaker open"
+            ),
+            remediate=remediate,
+            context_briefing=context_briefing or {},
+        )
+
+    @classmethod
     def from_decision(
         cls, decision: Any, *, briefing: dict[str, Any] | None = None
     ) -> Envelope:
