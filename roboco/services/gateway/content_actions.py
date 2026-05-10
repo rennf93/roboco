@@ -15,6 +15,7 @@ import re
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
+from roboco.foundation.policy.journaling import Scope as _Scope
 from roboco.services.gateway.commit_validator import validate_commit_message
 from roboco.services.gateway.envelope import Envelope
 from roboco.services.gateway.evidence_builder import build_evidence_for_task
@@ -23,9 +24,10 @@ if TYPE_CHECKING:
     from uuid import UUID
 
 
-_VALID_NOTE_SCOPES: frozenset[str] = frozenset(
-    {"note", "decision", "reflect", "learning", "struggle"}
-)
+# Scope catalog is canonical in foundation.policy.journaling.
+# Derived here as a string frozenset for the existing call sites that
+# compare strings rather than the Scope enum.
+_VALID_NOTE_SCOPES: frozenset[str] = frozenset(s.value for s in _Scope)
 _TASK_ID_PREFIX_RE = re.compile(r"^\s*\[[a-zA-Z0-9_-]+\]\s*")
 
 # Content-tool RBAC. These are the same role sets that drive the spawn
