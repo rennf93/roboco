@@ -14,7 +14,9 @@ Every consumer imports from here. Adding an agent edits exactly this file.
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from enum import IntEnum, StrEnum
+from uuid import UUID
 
 
 class Role(StrEnum):
@@ -51,3 +53,132 @@ class RoleLevel(IntEnum):
     BOARD = 6
     AUDITOR = 7  # observer override — sees everything
     CEO = 8
+
+
+@dataclass(frozen=True)
+class AgentRow:
+    """Identity record for one agent. Single source of truth."""
+
+    slug: str
+    role: Role
+    team: Team
+    uuid: UUID
+    is_human: bool = False  # True only for ceo
+
+
+def _u(s: str) -> UUID:
+    """Shorthand for UUID literals in the AGENTS table."""
+    return UUID(s)
+
+
+AGENTS: dict[str, AgentRow] = {
+    # System sentinel — used as from_agent for orchestrator-generated rows.
+    "system": AgentRow(
+        "system", Role.SYSTEM, Team.SYSTEM, _u("00000000-0000-0000-0000-000000000000")
+    ),
+    # CEO (Human)
+    "ceo": AgentRow(
+        "ceo",
+        Role.CEO,
+        Team.BOARD,
+        _u("00000000-0000-0000-0000-000000000001"),
+        is_human=True,
+    ),
+    # Backend cell
+    "be-dev-1": AgentRow(
+        "be-dev-1",
+        Role.DEVELOPER,
+        Team.BACKEND,
+        _u("00000000-0000-0000-0001-000000000001"),
+    ),
+    "be-dev-2": AgentRow(
+        "be-dev-2",
+        Role.DEVELOPER,
+        Team.BACKEND,
+        _u("00000000-0000-0000-0001-000000000002"),
+    ),
+    "be-qa": AgentRow(
+        "be-qa", Role.QA, Team.BACKEND, _u("00000000-0000-0000-0001-000000000003")
+    ),
+    "be-pm": AgentRow(
+        "be-pm", Role.CELL_PM, Team.BACKEND, _u("00000000-0000-0000-0001-000000000004")
+    ),
+    "be-doc": AgentRow(
+        "be-doc",
+        Role.DOCUMENTER,
+        Team.BACKEND,
+        _u("00000000-0000-0000-0001-000000000005"),
+    ),
+    # Frontend cell
+    "fe-dev-1": AgentRow(
+        "fe-dev-1",
+        Role.DEVELOPER,
+        Team.FRONTEND,
+        _u("00000000-0000-0000-0002-000000000001"),
+    ),
+    "fe-dev-2": AgentRow(
+        "fe-dev-2",
+        Role.DEVELOPER,
+        Team.FRONTEND,
+        _u("00000000-0000-0000-0002-000000000002"),
+    ),
+    "fe-qa": AgentRow(
+        "fe-qa", Role.QA, Team.FRONTEND, _u("00000000-0000-0000-0002-000000000003")
+    ),
+    "fe-pm": AgentRow(
+        "fe-pm", Role.CELL_PM, Team.FRONTEND, _u("00000000-0000-0000-0002-000000000004")
+    ),
+    "fe-doc": AgentRow(
+        "fe-doc",
+        Role.DOCUMENTER,
+        Team.FRONTEND,
+        _u("00000000-0000-0000-0002-000000000005"),
+    ),
+    # UX/UI cell
+    "ux-dev-1": AgentRow(
+        "ux-dev-1",
+        Role.DEVELOPER,
+        Team.UX_UI,
+        _u("00000000-0000-0000-0003-000000000001"),
+    ),
+    "ux-dev-2": AgentRow(
+        "ux-dev-2",
+        Role.DEVELOPER,
+        Team.UX_UI,
+        _u("00000000-0000-0000-0003-000000000002"),
+    ),
+    "ux-qa": AgentRow(
+        "ux-qa", Role.QA, Team.UX_UI, _u("00000000-0000-0000-0003-000000000003")
+    ),
+    "ux-pm": AgentRow(
+        "ux-pm", Role.CELL_PM, Team.UX_UI, _u("00000000-0000-0000-0003-000000000004")
+    ),
+    "ux-doc": AgentRow(
+        "ux-doc",
+        Role.DOCUMENTER,
+        Team.UX_UI,
+        _u("00000000-0000-0000-0003-000000000005"),
+    ),
+    # Board / Management
+    "main-pm": AgentRow(
+        "main-pm",
+        Role.MAIN_PM,
+        Team.MAIN_PM,
+        _u("00000000-0000-0000-0004-000000000001"),
+    ),
+    "product-owner": AgentRow(
+        "product-owner",
+        Role.PRODUCT_OWNER,
+        Team.BOARD,
+        _u("00000000-0000-0000-0004-000000000002"),
+    ),
+    "head-marketing": AgentRow(
+        "head-marketing",
+        Role.HEAD_MARKETING,
+        Team.BOARD,
+        _u("00000000-0000-0000-0004-000000000003"),
+    ),
+    "auditor": AgentRow(
+        "auditor", Role.AUDITOR, Team.BOARD, _u("00000000-0000-0000-0004-000000000004")
+    ),
+}
