@@ -33,6 +33,9 @@ class Envelope:
     message: str | None = None
     remediate: str | None = None
     missing: list[str] | None = None
+    # Populated only by `incomplete_input` envelopes — the literal
+    # answer-key the agent uses to re-issue the call (spec §5.2.1).
+    field_hints: dict[str, str] | None = None
     # Stamped post-construction by the route layer from
     # ``request.state.correlation_id`` (set by ``CorrelationIdMiddleware``).
     # Carried back to the agent so the same id flows MCP -> API -> agent
@@ -75,6 +78,29 @@ class Envelope:
         return cls(
             error="tracing_gap",
             missing=missing,
+            remediate=remediate,
+            context_briefing=context_briefing or {},
+        )
+
+    @classmethod
+    def incomplete_input(
+        cls,
+        *,
+        missing: list[str],
+        field_hints: dict[str, str],
+        remediate: str,
+        context_briefing: dict[str, Any] | None = None,
+    ) -> Envelope:
+        """Structured rejection for under-filled inputs (spec §5.2.1).
+
+        Distinct from `tracing_gap`. The agent receives a literal
+        answer-key (`field_hints`) and re-issues the call with each
+        missing field filled.
+        """
+        return cls(
+            error="incomplete_input",
+            missing=missing,
+            field_hints=field_hints,
             remediate=remediate,
             context_briefing=context_briefing or {},
         )
@@ -194,4 +220,6 @@ class Envelope:
             out["remediate"] = self.remediate
             if self.missing is not None:
                 out["missing"] = self.missing
+            if self.field_hints is not None:
+                out["field_hints"] = self.field_hints
         return out
