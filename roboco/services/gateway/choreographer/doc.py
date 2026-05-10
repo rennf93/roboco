@@ -6,13 +6,19 @@ class is the composed ``Choreographer``.
 
 Tasks 22 (lifecycle canonical spec): both verbs route their role/state
 gate through ``spec.can_invoke_intent``. The verb-specific helpers
-(``_verify_doc_owner``, ``_check_i_documented_inputs``) STAY — they
-encode notes-length / files-list gates the spec doesn't model. The
-self-review block on ``docs_complete`` lives at the atomic-action
-layer (``_ATOMIC_ACTIONS["docs_complete"].self_review_block=True``)
+(``_verify_doc_owner``, ``_check_doc_gates``) STAY — they encode the
+notes-length / files-list / journal:reflect gates the spec doesn't
+model. The self-review block on ``docs_complete`` lives at the atomic-
+action layer (``_ATOMIC_ACTIONS["docs_complete"].self_review_block=True``)
 and naturally fires when the verb body builds a Context with
 ``actor_slug == original_developer_slug``; no verb-body retrofits
 needed.
+
+P2 Task 10: ``_check_doc_gates`` delegates the actual requirement
+checking to ``foundation.policy.tracing.check_requirements`` — the
+verb→required-set mapping lives in ``VERB_REQUIREMENTS`` (single
+source of truth). The hint translation lives in the shared
+``_build_tracing_gap`` on Choreographer.
 
 ``claim_doc_task`` composes ``("claim", "start")`` in the spec, but
 the runtime semantic is "documenter inspects, status stays at
@@ -25,9 +31,11 @@ requires.
 
 from __future__ import annotations
 
+from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any
 
 from roboco.config import settings
+from roboco.foundation.policy import tracing as _tr
 from roboco.lifecycle import spec as spec_module
 from roboco.services.gateway.envelope import Envelope
 from roboco.services.gateway.evidence_builder import build_evidence_for_task
@@ -209,7 +217,7 @@ class DocMixin(_Base):
             ), None
         return None, t
 
-    async def _check_i_documented_inputs(
+    async def _check_doc_gates(
         self,
         doc_agent_id: UUID,
         task_id: UUID,
@@ -217,37 +225,44 @@ class DocMixin(_Base):
         files: list[str],
         task: Any,
     ) -> Envelope | None:
-        """Validate notes length + files non-empty. Returns rejection or None."""
-        if not notes or len(notes) < settings.docs_notes_min_chars:
-            return await self._emit_rejection(
-                Envelope.tracing_gap(
-                    missing=["docs_notes>=20"],
-                    remediate=(
-                        "i_documented requires notes>=20 chars summarizing what you "
-                        "documented and where (file paths)."
-                        " Include each file in `files=...`."
-                    ),
-                    context_briefing=await self._briefing_for(doc_agent_id, task_id),
-                ).with_introspection(task=task, role="documenter"),
-                agent_id=doc_agent_id,
-                task_id=task_id,
-                verb="i_documented",
-            )
-        if not files:
-            return await self._emit_rejection(
-                Envelope.tracing_gap(
-                    missing=["files"],
-                    remediate=(
-                        "i_documented requires files=['<path>', ...]"
-                        " listing the doc files written."
-                    ),
-                    context_briefing=await self._briefing_for(doc_agent_id, task_id),
-                ).with_introspection(task=task, role="documenter"),
-                agent_id=doc_agent_id,
-                task_id=task_id,
-                verb="i_documented",
-            )
-        return None
+        """i_documented field + journal gates via foundation.policy.tracing.
+
+        Returns rejection envelope or None on pass. The required-set for
+        ``i_documented`` (DOCS_FILES_NON_EMPTY + DOCS_NOTES_MIN_CHARS +
+        JOURNAL_REFLECT) lives in ``VERB_REQUIREMENTS``.
+
+        The verb's ``notes`` argument and ``files`` list haven't been
+        persisted to the task yet (the spec runner / verb body writes
+        them via the atomic action / pre-dispatch stamp), so we thread
+        them through a SimpleNamespace shim with the minimal attributes
+        the foundation checkers read off the task object (dev_notes +
+        documents — see foundation.policy.tracing._check_docs_notes_min_chars
+        and _check_docs_files_non_empty).
+        """
+        has_reflect = await self.journal.has_reflect_for_task(doc_agent_id, task_id)
+        task_view = SimpleNamespace(
+            dev_notes=notes,
+            documents=list(files),
+        )
+        ctx = _tr.GateContext(
+            journal_reflect_present=has_reflect,
+            docs_notes_min_chars=settings.docs_notes_min_chars,
+        )
+        result = _tr.check_requirements(
+            task=task_view,
+            requirements=list(_tr.requirements_for("i_documented")),
+            ctx=ctx,
+        )
+        if result.passed:
+            return None
+        return await self._emit_rejection(
+            (
+                await self._build_tracing_gap(doc_agent_id, task_id, result.missing)
+            ).with_introspection(task=task, role="documenter"),
+            agent_id=doc_agent_id,
+            task_id=task_id,
+            verb="i_documented",
+        )
 
     async def _i_documented_spec_gate(
         self,
@@ -320,8 +335,8 @@ class DocMixin(_Base):
         atomic action's ``self_review_block=True`` rejects when the
         documenter is the original developer of the task). After the
         spec gate accepts, the verb-specific gates stay (ownership via
-        ``_verify_doc_owner`` and notes-length / files-list via
-        ``_check_i_documented_inputs``); none are modelled by the spec.
+        ``_verify_doc_owner`` and field + journal gates via
+        ``_check_doc_gates``); none are modelled by the spec.
         Files are stamped onto ``task.documents`` before the runner
         dispatches ``docs_complete`` so the indexer sees them, then the
         verb body reassigns to the cell PM for handoff.
@@ -341,11 +356,11 @@ class DocMixin(_Base):
         if spec_rejection is not None:
             return spec_rejection
 
-        input_rejection = await self._check_i_documented_inputs(
+        gate_rejection = await self._check_doc_gates(
             doc_agent_id, task_id, notes, files, owned_task
         )
-        if input_rejection is not None:
-            return input_rejection
+        if gate_rejection is not None:
+            return gate_rejection
 
         # TaskService.docs_complete signature is (task_id, doc_notes); it
         # reads task.documents for indexing. Stamp the file list onto the

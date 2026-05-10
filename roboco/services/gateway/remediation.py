@@ -71,3 +71,18 @@ def hint_for_missing_qa_notes() -> str:
 
 def hint_for_evidence_not_inspected(*, task_id: str) -> str:
     return f"call evidence(task_id='{task_id}') to inspect the PR before pass/fail"
+
+
+def hint_for_short_doc_notes(*, min_chars: int) -> str:
+    return (
+        f"i_documented requires notes>="
+        f"{min_chars} chars summarizing what you "
+        "documented and where (file paths); pass a longer `notes` argument"
+    )
+
+
+def hint_for_missing_doc_files() -> str:
+    return (
+        "i_documented(files=[...]) requires the list of doc-file paths you "
+        "committed; pass at least one path"
+    )

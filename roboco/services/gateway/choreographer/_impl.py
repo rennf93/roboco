@@ -33,10 +33,12 @@ from roboco.services.gateway.evidence_builder import (
 from roboco.services.gateway.merge_chain import parent_branch_for
 from roboco.services.gateway.remediation import (
     hint_for_evidence_not_inspected,
+    hint_for_missing_doc_files,
     hint_for_missing_journal_learning,
     hint_for_missing_progress,
     hint_for_missing_qa_notes,
     hint_for_missing_reflect,
+    hint_for_short_doc_notes,
     hint_for_unaddressed_acceptance_criteria,
 )
 
@@ -1068,6 +1070,8 @@ class Choreographer:
         self, agent_id: UUID, task_id: UUID, missing: list[str]
     ) -> Envelope:
         """Translate missing requirement keys into agent-facing hints."""
+        from roboco.config import settings as _roboco_settings
+
         hints: list[str] = []
         unaddressed: list[str] = []
         for m in missing:
@@ -1081,6 +1085,14 @@ class Choreographer:
                 hints.append(hint_for_missing_journal_learning())
             elif m == "qa_evidence_inspected":
                 hints.append(hint_for_evidence_not_inspected(task_id=str(task_id)))
+            elif m == "docs_notes>=min":
+                hints.append(
+                    hint_for_short_doc_notes(
+                        min_chars=_roboco_settings.docs_notes_min_chars
+                    )
+                )
+            elif m == "docs_files_non_empty":
+                hints.append(hint_for_missing_doc_files())
             elif m.startswith("acceptance_criterion:"):
                 unaddressed.append(m.split(":", 1)[1])
         if unaddressed:

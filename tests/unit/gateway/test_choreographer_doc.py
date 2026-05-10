@@ -145,13 +145,15 @@ async def test_i_documented_requires_min_notes() -> None:
     task_svc = AsyncMock()
     task_svc.get.return_value = t
     task_svc.agent_for.return_value = _doc_agent_mock(doc_id)
-    deps = _make_deps(task=task_svc)
+    journal_svc = AsyncMock()
+    journal_svc.has_reflect_for_task.return_value = True
+    deps = _make_deps(task=task_svc, journal=journal_svc)
     c = Choreographer(deps)
 
     env = await c.i_documented(doc_id, task_id, notes="short", files=["a.md"])
     body = env.as_dict()
     assert body["error"] == "tracing_gap"
-    assert "docs_notes>=20" in body["missing"]
+    assert "docs_notes>=min" in body["missing"]
 
 
 @pytest.mark.asyncio
@@ -175,14 +177,16 @@ async def test_i_documented_requires_files() -> None:
     task_svc = AsyncMock()
     task_svc.get.return_value = t
     task_svc.agent_for.return_value = _doc_agent_mock(doc_id)
-    deps = _make_deps(task=task_svc)
+    journal_svc = AsyncMock()
+    journal_svc.has_reflect_for_task.return_value = True
+    deps = _make_deps(task=task_svc, journal=journal_svc)
     c = Choreographer(deps)
 
     notes = "Wrote backend/guides/feature-x.md with usage examples."
     env = await c.i_documented(doc_id, task_id, notes=notes, files=[])
     body = env.as_dict()
     assert body["error"] == "tracing_gap"
-    assert "files" in body["missing"]
+    assert "docs_files_non_empty" in body["missing"]
 
 
 @pytest.mark.asyncio
@@ -210,7 +214,9 @@ async def test_i_documented_succeeds_and_transitions() -> None:
         )
     )
     a2a_svc = AsyncMock()
-    deps = _make_deps(task=task_svc, a2a=a2a_svc)
+    journal_svc = AsyncMock()
+    journal_svc.has_reflect_for_task.return_value = True
+    deps = _make_deps(task=task_svc, a2a=a2a_svc, journal=journal_svc)
     c = Choreographer(deps)
 
     notes = "Wrote backend/guides/feature-x.md with usage examples and config notes."
