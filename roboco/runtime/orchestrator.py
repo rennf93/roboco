@@ -4406,15 +4406,22 @@ Never `commit`, never write code, never run `git`. PMs coordinate.
         # would silently spawn the dev. Reject the dispatch if the
         # assignee's role doesn't match the task type — the PM that
         # mis-assigned needs to fix it before any agent runs.
-        if agent_slug and not self._dev_dispatch_role_matches(task, agent_slug):
-            logger.warning(
-                "dev dispatch: role/task_type mismatch — skipping spawn",
-                task_id=task.get("id"),
-                task_type=task.get("task_type"),
-                assignee_slug=agent_slug,
-                assignee_role=get_agent_role(agent_slug),
-            )
-            return
+        # Tasks owned by PM/board/QA roles aren't this dispatcher's lane;
+        # `_dispatch_pm_work` and the QA-pool path own them. Silently skip
+        # so the warning only fires on actual dev/doc misassignments.
+        if agent_slug:
+            assignee_role = get_agent_role(agent_slug)
+            if assignee_role not in ("developer", "documenter", "unknown"):
+                return
+            if not self._dev_dispatch_role_matches(task, agent_slug):
+                logger.warning(
+                    "dev dispatch: role/task_type mismatch — skipping spawn",
+                    task_id=task.get("id"),
+                    task_type=task.get("task_type"),
+                    assignee_slug=agent_slug,
+                    assignee_role=assignee_role,
+                )
+                return
 
         if agent_slug and status in (
             "needs_revision",
