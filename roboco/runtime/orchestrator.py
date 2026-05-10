@@ -39,6 +39,7 @@ from roboco.agents_config import (
     get_escalation_target,
 )
 from roboco.config import settings
+from roboco.foundation import identity as _foundation
 from roboco.models import AgentRole, Team
 from roboco.models.runtime import (
     MODEL_MAP,
@@ -2312,29 +2313,20 @@ class AgentOrchestrator:
         }
         return role_map.get(agent_id, agent_id)
 
-    # Static team mappings for management agents (ROUTING purposes)
-    # NOTE: This differs from agents_config.get_agent_team() intentionally.
-    # agents_config returns None for management (no team for permissions).
-    # This map returns routing categories for dispatcher task assignment.
+    # Slug -> team string for ROUTING purposes. Derived from
+    # foundation.AGENTS so adding/renaming an agent edits exactly one
+    # file (foundation/identity.py). The dispatcher relies on this for
+    # task assignment routing categories.
     _AGENT_TEAM_MAP: ClassVar[dict[str, str]] = {
-        "main-pm": "main_pm",
-        "product-owner": "board",
-        "auditor": "board",
-        "head-marketing": "marketing",
+        slug: row.team.value for slug, row in _foundation.AGENTS.items()
     }
 
     def _get_agent_team(self, agent_id: str) -> str | None:
-        """Get team from agent_id."""
-        # Check static mappings first
-        if agent_id in self._AGENT_TEAM_MAP:
-            return self._AGENT_TEAM_MAP[agent_id]
-
-        # Check cell prefixes
-        prefix_map = {"be-": "backend", "fe-": "frontend", "ux-": "ux_ui"}
-        for prefix, team in prefix_map.items():
-            if agent_id.startswith(prefix):
-                return team
-        return None
+        """Get team from agent_id. Returns None for unknown slugs."""
+        try:
+            return _foundation.team_for_slug(agent_id).value
+        except KeyError:
+            return None
 
     def _resolve_agent_slug(self, agent_id_or_uuid: str) -> str:
         """Resolve agent UUID to slug. Returns input if already a slug."""

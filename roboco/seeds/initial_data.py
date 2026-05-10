@@ -7,6 +7,8 @@ Separates data definitions from bootstrap logic.
 
 from typing import Any
 
+from roboco.foundation import identity as _foundation
+
 # =============================================================================
 # DEFAULT CHANNELS
 # =============================================================================
@@ -93,206 +95,89 @@ DEFAULT_CHANNELS = [
 # - Task assignments
 # - Container orchestration
 #
-# UUID scheme:
-# - 0000-0000: CEO (human)
+# UUID scheme (encoded in roboco/foundation/identity.py:AGENTS):
+# - 0000-0000: System sentinel + CEO (human)
 # - 0001-000X: Backend cell
 # - 0002-000X: Frontend cell
 # - 0003-000X: UX/UI cell
 # - 0004-000X: Board/Management
+#
+# UUIDs, role, and team are all sourced from foundation.AGENTS so that
+# adding/renaming an agent is a single-file edit. Per-agent presentation
+# (display name) lives below in _AGENT_PRESENTATION because it is the
+# only field foundation does not (and should not) own.
 # =============================================================================
 
-# Static agent UUIDs - NEVER change these after initial deployment
-AGENT_UUIDS = {
-    # System sentinel — used as `from_agent` for orchestrator-generated
-    # notifications (blocker escalations, QA-fail notices, doc-ready,
-    # handoff, etc.). The notifications.from_agent column is NOT NULL +
-    # FK to agents.id, so these system-originated notifications need a
-    # real agent row or the INSERT fails. Keep the UUID as all-zeros as
-    # a clear "this is not a person" sentinel.
-    "system": "00000000-0000-0000-0000-000000000000",
-    # CEO (Human)
-    "ceo": "00000000-0000-0000-0000-000000000001",
-    # Backend Cell
-    "be-dev-1": "00000000-0000-0000-0001-000000000001",
-    "be-dev-2": "00000000-0000-0000-0001-000000000002",
-    "be-qa": "00000000-0000-0000-0001-000000000003",
-    "be-pm": "00000000-0000-0000-0001-000000000004",
-    "be-doc": "00000000-0000-0000-0001-000000000005",
-    # Frontend Cell
-    "fe-dev-1": "00000000-0000-0000-0002-000000000001",
-    "fe-dev-2": "00000000-0000-0000-0002-000000000002",
-    "fe-qa": "00000000-0000-0000-0002-000000000003",
-    "fe-pm": "00000000-0000-0000-0002-000000000004",
-    "fe-doc": "00000000-0000-0000-0002-000000000005",
-    # UX/UI Cell
-    "ux-dev-1": "00000000-0000-0000-0003-000000000001",
-    "ux-dev-2": "00000000-0000-0000-0003-000000000002",
-    "ux-qa": "00000000-0000-0000-0003-000000000003",
-    "ux-pm": "00000000-0000-0000-0003-000000000004",
-    "ux-doc": "00000000-0000-0000-0003-000000000005",
-    # Board / Management
-    "main-pm": "00000000-0000-0000-0004-000000000001",
-    "product-owner": "00000000-0000-0000-0004-000000000002",
-    "head-marketing": "00000000-0000-0000-0004-000000000003",
-    "auditor": "00000000-0000-0000-0004-000000000004",
+# Derived AGENT_UUIDS — string-keyed for backward compat with consumers
+# that index by slug and read string-typed UUIDs.
+AGENT_UUIDS: dict[str, str] = {
+    slug: str(row.uuid) for slug, row in _foundation.AGENTS.items()
 }
 
-DEFAULT_AGENTS: list[dict[str, Any]] = [
-    # System sentinel (not a spawnable agent; used as sender for
-    # orchestrator-generated notifications and audit events).
-    {
-        "id": AGENT_UUIDS["system"],
-        "slug": "system",
-        "name": "System",
-        "role": "system",
-        "team": None,
-    },
-    # Backend Cell
-    {
-        "id": AGENT_UUIDS["be-dev-1"],
-        "slug": "be-dev-1",
-        "name": "Backend Developer 1",
-        "role": "developer",
-        "team": "backend",
-    },
-    {
-        "id": AGENT_UUIDS["be-dev-2"],
-        "slug": "be-dev-2",
-        "name": "Backend Developer 2",
-        "role": "developer",
-        "team": "backend",
-    },
-    {
-        "id": AGENT_UUIDS["be-qa"],
-        "slug": "be-qa",
-        "name": "Backend QA",
-        "role": "qa",
-        "team": "backend",
-    },
-    {
-        "id": AGENT_UUIDS["be-pm"],
-        "slug": "be-pm",
-        "name": "Backend PM",
-        "role": "cell_pm",
-        "team": "backend",
-    },
-    {
-        "id": AGENT_UUIDS["be-doc"],
-        "slug": "be-doc",
-        "name": "Backend Documenter",
-        "role": "documenter",
-        "team": "backend",
-    },
-    # Frontend Cell
-    {
-        "id": AGENT_UUIDS["fe-dev-1"],
-        "slug": "fe-dev-1",
-        "name": "Frontend Developer 1",
-        "role": "developer",
-        "team": "frontend",
-    },
-    {
-        "id": AGENT_UUIDS["fe-dev-2"],
-        "slug": "fe-dev-2",
-        "name": "Frontend Developer 2",
-        "role": "developer",
-        "team": "frontend",
-    },
-    {
-        "id": AGENT_UUIDS["fe-qa"],
-        "slug": "fe-qa",
-        "name": "Frontend QA",
-        "role": "qa",
-        "team": "frontend",
-    },
-    {
-        "id": AGENT_UUIDS["fe-pm"],
-        "slug": "fe-pm",
-        "name": "Frontend PM",
-        "role": "cell_pm",
-        "team": "frontend",
-    },
-    {
-        "id": AGENT_UUIDS["fe-doc"],
-        "slug": "fe-doc",
-        "name": "Frontend Documenter",
-        "role": "documenter",
-        "team": "frontend",
-    },
-    # UX/UI Cell
-    {
-        "id": AGENT_UUIDS["ux-dev-1"],
-        "slug": "ux-dev-1",
-        "name": "UX/UI Developer 1",
-        "role": "developer",
-        "team": "ux_ui",
-    },
-    {
-        "id": AGENT_UUIDS["ux-dev-2"],
-        "slug": "ux-dev-2",
-        "name": "UX/UI Developer 2",
-        "role": "developer",
-        "team": "ux_ui",
-    },
-    {
-        "id": AGENT_UUIDS["ux-qa"],
-        "slug": "ux-qa",
-        "name": "UX/UI QA",
-        "role": "qa",
-        "team": "ux_ui",
-    },
-    {
-        "id": AGENT_UUIDS["ux-pm"],
-        "slug": "ux-pm",
-        "name": "UX/UI PM",
-        "role": "cell_pm",
-        "team": "ux_ui",
-    },
-    {
-        "id": AGENT_UUIDS["ux-doc"],
-        "slug": "ux-doc",
-        "name": "UX/UI Documenter",
-        "role": "documenter",
-        "team": "ux_ui",
-    },
-    # Board / Management
-    {
-        "id": AGENT_UUIDS["main-pm"],
-        "slug": "main-pm",
-        "name": "Main PM",
-        "role": "main_pm",
-        "team": "main_pm",  # Cross-cell coordination
-    },
-    {
-        "id": AGENT_UUIDS["product-owner"],
-        "slug": "product-owner",
-        "name": "Product Owner",
-        "role": "product_owner",
-        "team": "board",
-    },
-    {
-        "id": AGENT_UUIDS["head-marketing"],
-        "slug": "head-marketing",
-        "name": "Head of Marketing",
-        "role": "head_marketing",
-        "team": "marketing",
-    },
-    {
-        "id": AGENT_UUIDS["auditor"],
-        "slug": "auditor",
-        "name": "Auditor",
-        "role": "auditor",
-        "team": "board",  # Silent observer, board-level access
-    },
-    # CEO (Human)
-    {
-        "id": AGENT_UUIDS["ceo"],
-        "slug": "ceo",
-        "name": "Renzo",
-        "role": "ceo",
-        "team": None,
-    },
-]
+# Per-agent display names. Anything role/team/uuid is sourced from
+# foundation; this dict only carries presentation strings.
+_AGENT_PRESENTATION: dict[str, dict[str, Any]] = {
+    "ceo": {"name": "Renzo"},
+    "be-dev-1": {"name": "Backend Developer 1"},
+    "be-dev-2": {"name": "Backend Developer 2"},
+    "be-qa": {"name": "Backend QA"},
+    "be-pm": {"name": "Backend PM"},
+    "be-doc": {"name": "Backend Documenter"},
+    "fe-dev-1": {"name": "Frontend Developer 1"},
+    "fe-dev-2": {"name": "Frontend Developer 2"},
+    "fe-qa": {"name": "Frontend QA"},
+    "fe-pm": {"name": "Frontend PM"},
+    "fe-doc": {"name": "Frontend Documenter"},
+    "ux-dev-1": {"name": "UX/UI Developer 1"},
+    "ux-dev-2": {"name": "UX/UI Developer 2"},
+    "ux-qa": {"name": "UX/UI QA"},
+    "ux-pm": {"name": "UX/UI PM"},
+    "ux-doc": {"name": "UX/UI Documenter"},
+    "main-pm": {"name": "Main PM"},
+    "product-owner": {"name": "Product Owner"},
+    "head-marketing": {"name": "Head of Marketing"},
+    "auditor": {"name": "Auditor"},
+}
+
+
+def _build_default_agents() -> list[dict[str, Any]]:
+    """Compose DEFAULT_AGENTS rows from foundation + presentation metadata.
+
+    The system sentinel is appended as a literal because:
+      1. The postgres `team` enum does not include 'system' — only
+         'backend|frontend|ux_ui|board|main_pm|fullstack|marketing'.
+         Seeding with team='system' would fail at INSERT.
+      2. The system row is a from_agent FK target, never a participant.
+    """
+    rows: list[dict[str, Any]] = []
+    for slug, row in _foundation.AGENTS.items():
+        if slug == "system":
+            continue
+        rows.append(
+            {
+                "id": str(row.uuid),
+                "slug": slug,
+                "role": row.role.value,
+                "team": row.team.value,
+                **_AGENT_PRESENTATION[slug],
+            }
+        )
+    # System sentinel — kept as a literal so we can pass team=None into the
+    # DB without colliding with the postgres `team` enum (which does not
+    # have a 'system' value).
+    rows.append(
+        {
+            "id": str(_foundation.AGENTS["system"].uuid),
+            "slug": "system",
+            "name": "System",
+            "role": _foundation.AGENTS["system"].role.value,
+            "team": None,
+        }
+    )
+    return rows
+
+
+DEFAULT_AGENTS: list[dict[str, Any]] = _build_default_agents()
 
 
 # =============================================================================
