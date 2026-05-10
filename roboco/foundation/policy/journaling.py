@@ -14,6 +14,7 @@ from __future__ import annotations
 
 from enum import StrEnum
 
+from roboco.foundation.identity import Role
 from roboco.models.base import JournalEntryType
 
 
@@ -35,3 +36,32 @@ SCOPE_TO_TYPE: dict[Scope, JournalEntryType] = {
     Scope.LEARNING: JournalEntryType.LEARNING,
     Scope.STRUGGLE: JournalEntryType.STRUGGLE,
 }
+
+
+class ReadTier(StrEnum):
+    """How widely a role can read other agents' journals."""
+
+    OWN = "own"  # only my own
+    CELL = "cell"  # my cell only
+    CELL_AND_PMS = "cell_and_pms"  # my cell + PM chain
+    ALL_CELLS = "all_cells"  # every cell (for cross-cell roles)
+    ALL = "all"  # every journal (auditor / CEO)
+
+
+ROLE_READ_TIERS: dict[Role, ReadTier] = {
+    Role.SYSTEM: ReadTier.OWN,
+    Role.DEVELOPER: ReadTier.CELL,
+    Role.QA: ReadTier.CELL,
+    Role.DOCUMENTER: ReadTier.CELL,
+    Role.CELL_PM: ReadTier.CELL_AND_PMS,
+    Role.MAIN_PM: ReadTier.ALL_CELLS,
+    Role.PRODUCT_OWNER: ReadTier.ALL_CELLS,
+    Role.HEAD_MARKETING: ReadTier.ALL_CELLS,
+    Role.AUDITOR: ReadTier.ALL,
+    Role.CEO: ReadTier.ALL,
+}
+
+
+# Slugs whose journals are "protected" — only the agent themselves can read.
+# Pre-gateway: enforcement/journal_perms.PROTECTED_JOURNALS.
+PROTECTED_JOURNALS: frozenset[str] = frozenset({"ceo", "auditor"})
