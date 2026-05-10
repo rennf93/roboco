@@ -40,6 +40,7 @@ from roboco.agents_config import (
 )
 from roboco.config import settings
 from roboco.foundation import identity as _foundation
+from roboco.foundation.policy.agent_loop import DEFAULT_BUDGET as _AGENT_LOOP_BUDGET
 from roboco.models import AgentRole, Team
 from roboco.models.runtime import (
     MODEL_MAP,
@@ -3796,7 +3797,8 @@ Start now: evidence(task_id="{task_id}")
         }
     )
 
-    _PM_RESPAWN_MAX_UNPRODUCTIVE = 3
+    # Use foundation's default; keep the local name for back-compat.
+    _PM_RESPAWN_MAX_UNPRODUCTIVE = _AGENT_LOOP_BUDGET.pm_respawn_max_unproductive
 
     async def _pm_respawn_should_gate(
         self, agent_slug: str, task: dict[str, Any]
