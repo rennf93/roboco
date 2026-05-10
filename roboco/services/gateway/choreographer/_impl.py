@@ -140,10 +140,17 @@ class _ReassignedCtx:
 class DelegateInputs:
     """Bundle of fields the ``delegate`` verb receives from the route layer.
 
-    `task_type` has no default — the v2 schema enforces this at the HTTP
-    boundary, but defaulting here too would let direct callers (tests,
-    other internal code) silently pick 'code' and recreate the
-    2026-05-08 deadlock.
+    Mirrors :data:`roboco.foundation.policy.task_completeness.TASK_AT_CREATE`:
+    `task_type` and `nature` have no defaults — the v2 schema enforces both at
+    the HTTP boundary (Task 15), and defaulting here too would let direct
+    callers (tests, internal code) silently pick `'code'`/`'technical'` and
+    recreate the 2026-05-08 deadlock.
+
+    Optional fields (`acceptance_criteria=None`, `nature=None`) survive the
+    construction step and are then rejected by the gateway-side
+    `task_completeness.check` before reaching `_create_subtask_from_inputs`
+    (Task 19): the rejection takes the form of `Envelope.incomplete_input`
+    so the agent receives a structured field-by-field guide.
     """
 
     title: str
@@ -151,6 +158,7 @@ class DelegateInputs:
     assigned_to: str
     team: str
     task_type: str
+    nature: str | None = None
     acceptance_criteria: list[str] | None = None
     estimated_complexity: str = "medium"
 
@@ -1637,6 +1645,22 @@ class Choreographer:
                 task_id=parent_task_id,
                 verb="delegate",
             )
+        # Task 19: foundation/policy/task_completeness gate runs BEFORE the
+        # static/lifecycle guards. Auto-fill helpers patch unambiguous fields
+        # (team-from-slug, priority-from-parent), then `check(TASK_AT_CREATE,
+        # ...)` rejects under-filled payloads with `Envelope.incomplete_input`
+        # — the spec §5.2.1 interrogation pattern. Defense-in-depth: the
+        # service-layer raise from Task 18 still catches non-gateway callers.
+        completeness_env = self._delegate_completeness_check(
+            inputs, parent, briefing, role_str
+        )
+        if completeness_env is not None:
+            return await self._emit_rejection(
+                completeness_env,
+                agent_id=pm_agent_id,
+                task_id=parent_task_id,
+                verb="delegate",
+            )
         # Spec gate passed. Run delegate-specific guards the spec doesn't
         # model: chain validation, enum coercion + assignee-vs-task_type,
         # and parent-ownership/subtask-cap.
@@ -1833,6 +1857,69 @@ class Choreographer:
             Complexity(inputs.estimated_complexity),
         )
 
+    def _delegate_completeness_check(
+        self,
+        inputs: DelegateInputs,
+        parent: Any,
+        briefing: dict[str, Any],
+        role_str: str,
+    ) -> Envelope | None:
+        """Task 19: foundation/policy/task_completeness gate for delegate.
+
+        Auto-fills unambiguous fields (team-from-slug, priority-from-parent)
+        without overwriting explicit values, then runs `check(TASK_AT_CREATE,
+        ...)` against the payload. Returns:
+
+        - ``None`` when every TASK_AT_CREATE requirement is satisfied (the
+          verb continues into the static/lifecycle guards).
+        - ``Envelope.incomplete_input`` (with `with_introspection` applied)
+          when any field is missing — the agent gets a structured
+          field-by-field guide (spec §5.2.1 interrogation pattern).
+
+        The `acceptance_criteria=inputs.acceptance_criteria or []` collapse
+        at `_create_subtask_from_inputs` was removed alongside this gate,
+        so under-filled payloads now hit the service-layer raise (Task 18)
+        instead of being silently substituted. This method is the
+        gateway-side defense; the service raise is defense-in-depth for
+        non-gateway callers.
+        """
+        from types import SimpleNamespace
+
+        from roboco.foundation.policy import task_completeness as tc
+
+        payload: dict[str, Any] = {
+            "title": inputs.title,
+            "description": inputs.description,
+            "assigned_to": inputs.assigned_to,
+            "team": inputs.team,
+            "task_type": inputs.task_type,
+            "nature": inputs.nature,
+            "estimated_complexity": inputs.estimated_complexity,
+            "acceptance_criteria": inputs.acceptance_criteria,
+        }
+        # Auto-fill (spec §5.2.1 (a)) — never overwrites explicit values.
+        # team-from-slug is harmless when the caller already supplied team;
+        # priority-from-parent records `__priority_inherited=True` for
+        # post-create journal:note (best-effort observability).
+        payload = tc.fill_team_from_assignee(payload)
+        payload = tc.fill_priority_from_parent(payload, parent)
+        completeness_input = SimpleNamespace(
+            **{k: v for k, v in payload.items() if not k.startswith("__")}
+        )
+        result = tc.check(tc.TASK_AT_CREATE, completeness_input)
+        if result.passed:
+            return None
+        return Envelope.incomplete_input(
+            missing=result.missing,
+            field_hints=result.field_hints,
+            remediate=(
+                "re-issue delegate(...) with these fields filled: "
+                f"{', '.join(result.missing)}. Each field's required shape "
+                "is in `field_hints`."
+            ),
+            context_briefing=briefing,
+        ).with_introspection(task=parent, role=role_str)
+
     async def _create_subtask_from_inputs(
         self,
         pm_agent_id: UUID,
@@ -1840,27 +1927,70 @@ class Choreographer:
         parent: Any,
         inputs: DelegateInputs,
     ) -> Any:
-        """Resolve enums + AGENT_UUIDS slug and call TaskService.create_subtask."""
+        """Resolve enums + AGENT_UUIDS slug and call TaskService.create_subtask.
+
+        By contract, callers (the `delegate` verb body) MUST run
+        `_delegate_completeness_check` first, so `inputs.acceptance_criteria`
+        and `inputs.nature` are guaranteed non-None / non-empty here. The
+        defensive `TaskCompletenessError` raises preserve correctness if
+        a future caller bypasses the gateway path — defense-in-depth in
+        line with Task 18's service-layer raise.
+        """
+        from roboco.foundation.policy.task_completeness import TaskCompletenessError
         from roboco.models.base import TaskNature
         from roboco.models.task import TaskCreateRequest
         from roboco.seeds.initial_data import AGENT_UUIDS
 
         team_enum, type_enum, complexity_enum = self._resolve_delegate_enums(inputs)
         assignee_id = UUID(AGENT_UUIDS[inputs.assigned_to])
-        # nature is required on TaskCreateRequest (TASK_AT_CREATE). Task 19
-        # threads it through DelegateInputs from the HTTP boundary; for now
-        # we pass TECHNICAL to preserve the prior implicit default.
+        # Task 19: the `or []` collapse was removed. The gateway runs
+        # `_delegate_completeness_check` BEFORE this helper, so empty/None
+        # acceptance_criteria here means a non-gateway caller bypassed the
+        # check. Raise so the service-layer raise (Task 18) can attach the
+        # field hints — never silently substitute.
+        if not inputs.acceptance_criteria:
+            raise TaskCompletenessError(
+                missing=["acceptance_criteria"],
+                field_hints={
+                    "acceptance_criteria": (
+                        "non-empty list[str]; each item describes a verifiable outcome"
+                    )
+                },
+                message=(
+                    "_create_subtask_from_inputs called with empty "
+                    "acceptance_criteria — completeness check must run first"
+                ),
+            )
+        if inputs.nature is None:
+            raise TaskCompletenessError(
+                missing=["nature"],
+                field_hints={
+                    "nature": "one of: technical | non_technical",
+                },
+                message=(
+                    "_create_subtask_from_inputs called with no nature — "
+                    "completeness check must run first"
+                ),
+            )
+        try:
+            nature_enum = TaskNature(inputs.nature)
+        except ValueError as exc:
+            raise TaskCompletenessError(
+                missing=["nature"],
+                field_hints={"nature": "one of: technical | non_technical"},
+                message=f"invalid nature {inputs.nature!r}: {exc}",
+            ) from exc
         req = TaskCreateRequest(
             title=inputs.title,
             description=inputs.description,
-            acceptance_criteria=inputs.acceptance_criteria or [],
+            acceptance_criteria=inputs.acceptance_criteria,
             team=team_enum,
             created_by=pm_agent_id,
             project_id=UUID(str(parent.project_id)),
             parent_task_id=parent_task_id,
             assigned_to=assignee_id,
             task_type=type_enum,
-            nature=TaskNature.TECHNICAL,
+            nature=nature_enum,
             estimated_complexity=complexity_enum,
         )
         return await self.task.create_subtask(req)

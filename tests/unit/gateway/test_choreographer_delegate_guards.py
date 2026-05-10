@@ -54,6 +54,8 @@ def _delegate_inputs() -> DelegateInputs:
         assigned_to="be-dev-1",
         team="backend",
         task_type="code",
+        nature="technical",
+        acceptance_criteria=["GET /v1/foo returns 200 with body"],
     )
 
 

@@ -424,6 +424,8 @@ async def test_delegate_main_pm_to_cell_pm_creates_subtask() -> None:
             assigned_to="be-pm",
             team="backend",
             task_type="planning",
+            nature="technical",
+            acceptance_criteria=["all backend subtasks defined with criteria"],
         ),
     )
     assert env.error is None
@@ -463,6 +465,8 @@ async def test_delegate_cell_pm_to_team_dev_creates_subtask() -> None:
             assigned_to="be-dev-1",
             team="backend",
             task_type="code",
+            nature="technical",
+            acceptance_criteria=["GET /v1/foo returns 200 with body"],
         ),
     )
     assert env.error is None
@@ -490,11 +494,13 @@ async def test_delegate_main_pm_to_dev_is_rejected() -> None:
         main_pm_id,
         parent_id,
         DelegateInputs(
-            title="x",
-            description="y",
+            title="Implement endpoint",
+            description="Add /v1/foo endpoint with passing tests please",
             assigned_to="be-dev-1",
             team="backend",
             task_type="code",
+            nature="technical",
+            acceptance_criteria=["GET /v1/foo returns 200 with body"],
         ),
     )
     body = env.as_dict()
@@ -523,11 +529,13 @@ async def test_delegate_cell_pm_to_other_pm_rejected() -> None:
         cell_pm_id,
         parent_id,
         DelegateInputs(
-            title="x",
-            description="y",
+            title="Implement endpoint",
+            description="Add /v1/foo endpoint with passing tests please",
             assigned_to="be-pm",
             team="backend",
             task_type="code",
+            nature="technical",
+            acceptance_criteria=["GET /v1/foo returns 200 with body"],
         ),
     )
     body = env.as_dict()
@@ -555,11 +563,13 @@ async def test_delegate_unknown_assignee_returns_invalid_state() -> None:
         pm_id,
         parent_id,
         DelegateInputs(
-            title="x",
-            description="y",
+            title="Implement endpoint",
+            description="Add /v1/foo endpoint with passing tests please",
             assigned_to="nope-pm",
             team="backend",
             task_type="code",
+            nature="technical",
+            acceptance_criteria=["GET /v1/foo returns 200 with body"],
         ),
     )
     body = env.as_dict()
@@ -587,11 +597,13 @@ async def test_delegate_invalid_team_enum_rejected() -> None:
         pm_id,
         parent_id,
         DelegateInputs(
-            title="x",
-            description="y",
+            title="Implement endpoint",
+            description="Add /v1/foo endpoint with passing tests please",
             assigned_to="be-dev-1",
             team="not-a-team",
             task_type="code",
+            nature="technical",
+            acceptance_criteria=["GET /v1/foo returns 200 with body"],
         ),
     )
     assert env.as_dict()["error"] == "invalid_state"
@@ -849,10 +861,12 @@ async def test_delegate_main_pm_to_cell_pm_rejects_code_typed_subtask() -> None:
         parent_id,
         DelegateInputs(
             title="Backend slice",
-            description="Plan + drive backend work",
+            description="Plan + drive backend work end to end please",
             assigned_to="be-pm",
             team="backend",
             task_type="code",  # WRONG — Cell PM should get planning
+            nature="technical",
+            acceptance_criteria=["all subtasks created with criteria"],
         ),
     )
     body = env.as_dict()
@@ -887,10 +901,12 @@ async def test_delegate_main_pm_to_cell_pm_accepts_planning_subtask() -> None:
         parent_id,
         DelegateInputs(
             title="Backend slice",
-            description="Plan + drive backend work",
+            description="Plan + drive backend work end to end please",
             assigned_to="be-pm",
             team="backend",
             task_type="planning",
+            nature="technical",
+            acceptance_criteria=["all subtasks created with criteria"],
         ),
     )
     assert env.error is None

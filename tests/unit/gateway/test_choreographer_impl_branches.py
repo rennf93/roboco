@@ -415,11 +415,13 @@ async def test_delegate_parent_not_found() -> None:
         pm_id,
         parent_id,
         DelegateInputs(
-            title="x",
-            description="y",
+            title="Implement endpoint",
+            description="Add /v1/foo endpoint with passing tests please",
             assigned_to="be-dev-1",
             team="backend",
             task_type="code",
+            nature="technical",
+            acceptance_criteria=["GET /v1/foo returns 200 with body"],
         ),
     )
     body = env.as_dict()
@@ -450,11 +452,13 @@ async def test_delegate_unknown_role_rejected() -> None:
         pm_id,
         parent_id,
         DelegateInputs(
-            title="x",
-            description="y",
+            title="Implement endpoint",
+            description="Add /v1/foo endpoint with passing tests please",
             assigned_to="be-dev-1",
             team="backend",
             task_type="code",
+            nature="technical",
+            acceptance_criteria=["GET /v1/foo returns 200 with body"],
         ),
     )
     body = env.as_dict()
@@ -486,11 +490,13 @@ async def test_delegate_parent_no_project_rejected() -> None:
         pm_id,
         parent_id,
         DelegateInputs(
-            title="x",
-            description="y",
+            title="Implement endpoint",
+            description="Add /v1/foo endpoint with passing tests please",
             assigned_to="be-dev-1",
             team="backend",
             task_type="code",
+            nature="technical",
+            acceptance_criteria=["GET /v1/foo returns 200 with body"],
         ),
     )
     body = env.as_dict()
