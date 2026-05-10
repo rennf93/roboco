@@ -156,14 +156,20 @@ ALL_QA: Final[list[str]] = ["be-qa", "fe-qa", "ux-qa"]
 ALL_DOCS: Final[list[str]] = ["be-doc", "fe-doc", "ux-doc"]
 CELL_PMS: Final[list[str]] = ["be-pm", "fe-pm", "ux-pm"]
 
-# PM-capable roles (can create and assign tasks)
-PM_ROLES: Final[set[str]] = {
-    "cell_pm",
-    "main_pm",
-    "product_owner",
-    "head_marketing",
-    "ceo",
-}
+# `PM_ROLES` is canonical in foundation.identity (CELL_PM + MAIN_PM only).
+# This file's historical 5-role set is renamed to TASK_CREATOR_ROLES — it
+# represents "roles that can call task.create", not the PM hierarchy.
+# StrEnum members hash like their .value strings, so `role_str in TASK_CREATOR_ROLES`
+# still works for str inputs from get_agent_role().
+TASK_CREATOR_ROLES: Final[frozenset[_foundation.Role]] = frozenset(
+    {
+        _foundation.Role.CELL_PM,
+        _foundation.Role.MAIN_PM,
+        _foundation.Role.PRODUCT_OWNER,
+        _foundation.Role.HEAD_MARKETING,
+        _foundation.Role.CEO,
+    }
+)
 
 # Escalation chain - who each agent escalates to
 ESCALATION_CHAIN: Final[dict[str, str]] = {
@@ -265,15 +271,15 @@ def can_send_notifications(agent_id: str) -> bool:
 
 
 def can_create_tasks(agent_id: str) -> bool:
-    """Check if agent can create tasks (PMs and management only)."""
+    """Check if agent can create tasks (PMs, board, and CEO)."""
     role = get_agent_role(agent_id)
-    return role in PM_ROLES
+    return role in TASK_CREATOR_ROLES
 
 
 def can_assign_tasks(agent_id: str) -> bool:
-    """Check if agent can assign tasks (PMs and management only)."""
+    """Check if agent can assign tasks (PMs, board, and CEO)."""
     role = get_agent_role(agent_id)
-    return role in PM_ROLES
+    return role in TASK_CREATOR_ROLES
 
 
 # Cancel roles match task_lifecycle.py - CEO and Auditor cannot cancel (they observe)
@@ -626,10 +632,10 @@ def get_agent_skills(agent_id: str) -> list[dict]:
 # - To board: Must go through Main PM
 # - To CEO: Must go through board
 
-# Roles that can reach each other directly (CEO is human - use notifications)
-_BOARD_ROLES: Final[frozenset[str]] = frozenset(
-    {"product_owner", "head_marketing", "auditor", "main_pm"}
-)
+# Board roles (PO + Head Marketing + Auditor) — derived from foundation.
+# Main PM is intentionally NOT in this set; main_pm is a layer above cells
+# but below the board.
+_BOARD_ROLES: Final[frozenset[_foundation.Role]] = _foundation.BOARD_ROLES
 _MAIN_PM_TARGETS: Final[frozenset[str]] = frozenset(
     {"cell_pm", "main_pm", "product_owner", "head_marketing", "auditor"}
 )
@@ -696,7 +702,7 @@ def can_a2a_direct(from_agent: str, to_agent: str) -> tuple[bool, str | None]:
     if from_role in ("product_owner", "head_marketing", "auditor"):
         return (
             (True, None)
-            if to_role in _BOARD_ROLES
+            if to_role in _BOARD_ROLES or to_role == "main_pm"
             else (False, f"Board cannot A2A {to_role}s. Route through main-pm.")
         )
 

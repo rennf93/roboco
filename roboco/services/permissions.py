@@ -432,8 +432,10 @@ async def has_privileged_access(db: "AsyncSession", agent_id: UUID) -> bool:
     return role in PRIVILEGED_ROLES if role else False
 
 
-# Roles that can manage tasks and sessions (PMs and board)
-PM_ROLES = frozenset({AgentRole.CELL_PM, AgentRole.MAIN_PM})
+# PM_ROLES is canonical in foundation.identity. Re-export for backwards
+# compatibility; new consumers import from foundation directly.
+from roboco.foundation.identity import PM_ROLES  # noqa: F401, E402
+
 MANAGEMENT_ROLES = frozenset(
     {AgentRole.CEO, AgentRole.PRODUCT_OWNER, AgentRole.CELL_PM, AgentRole.MAIN_PM}
 )
