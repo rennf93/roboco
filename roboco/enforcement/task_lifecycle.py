@@ -1,12 +1,13 @@
-"""Backwards-compatibility shim — view of roboco.lifecycle.spec.
+"""Backwards-compatibility shim — view of roboco.foundation.policy.lifecycle.
 
 The canonical lifecycle / permissions tables live in
-:mod:`roboco.lifecycle.spec`. This module is a thin view over that data
-for legacy callers that still import ``VALID_TRANSITIONS`` or
-``ROLE_RESTRICTED_TRANSITIONS`` by name. New code should import from
-:mod:`roboco.lifecycle` directly.
+:mod:`roboco.foundation.policy.lifecycle`. This module is a thin view
+over that data for legacy callers that still import
+``VALID_TRANSITIONS`` or ``ROLE_RESTRICTED_TRANSITIONS`` by name. New
+code should import from :mod:`roboco.foundation.policy.lifecycle`
+directly.
 
-Symbols still owned by this module (not yet absorbed into spec):
+Symbols still owned by this module (not yet absorbed into the spec):
     * Git-workflow gates (:class:`GitContext`,
       :class:`GitRequirementError`, :func:`validate_git_requirements`,
       :func:`check_parallel_completion`).
@@ -49,7 +50,7 @@ __all__ = [
 # `VALID_TRANSITIONS` mirrors the legacy `dict[str, list[str]]` shape
 # (str keys, str-list values) so existing callers keep working without
 # import churn. The data flows from `STATUS_GRAPH` (which is the
-# canonical source of truth in `roboco.lifecycle.spec`).
+# canonical source of truth in `roboco.foundation.policy.lifecycle`).
 #
 # `_LEGACY_OPERATIONAL_EDGES` are transitions the runtime exercises today
 # that the spec has not yet absorbed (unclaim / reaper sweep / PM-direct

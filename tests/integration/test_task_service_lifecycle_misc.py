@@ -783,10 +783,10 @@ async def test_cancel_descendants_cascades_for_authorized_pm(
 
     Predecessor test asserted CEO-only authority over
     `awaiting_ceo_approval` cancels (legacy table behavior). The
-    canonical spec (`roboco.lifecycle.spec`) authorizes cancel from
-    every non-terminal source for {CELL_PM, MAIN_PM, CEO} uniformly, so
-    a PM cancel now sweeps the whole subtree — including descendants
-    parked in `awaiting_ceo_approval`.
+    canonical spec (`roboco.foundation.policy.lifecycle`) authorizes
+    cancel from every non-terminal source for {CELL_PM, MAIN_PM, CEO}
+    uniformly, so a PM cancel now sweeps the whole subtree — including
+    descendants parked in `awaiting_ceo_approval`.
     """
     svc = task_setup["svc"]
     parent = await svc.create(_req(task_setup))

@@ -27,9 +27,9 @@ from enum import StrEnum
 from typing import TYPE_CHECKING, Any, Literal
 
 # Role enum is canonicalized in roboco/foundation/identity.py.
-# This re-export keeps existing imports (`from roboco.lifecycle.spec import Role`)
-# working during the migration. New consumers should import from
-# `roboco.foundation.identity` directly. Removed in Phase 4 housekeeping.
+# Re-exported here so callers can import `Role` from this module alongside
+# the lifecycle tables that depend on it. New consumers may also import
+# from `roboco.foundation.identity` directly.
 from roboco.foundation.identity import Role
 
 if TYPE_CHECKING:

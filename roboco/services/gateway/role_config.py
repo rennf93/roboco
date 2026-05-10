@@ -5,10 +5,11 @@ time. The spawn manifest builder reads from here. The MCP servers (Phase 1+)
 also reference this catalog to scope their tool registration per role.
 
 Flow-tool tuples (`_DEV_FLOW`, `_QA_FLOW`, ...) are derived from
-`roboco.lifecycle.spec.intents_for_role`. The spec is canon — adding or
-removing a role from an `IntentSpec.allowed_roles` automatically updates
-the MCP manifest. This module is a thin shim that adds the do-tool /
-write / subagent / description metadata the spec does not carry.
+`roboco.foundation.policy.lifecycle.intents_for_role`. The spec is canon
+— adding or removing a role from an `IntentSpec.allowed_roles`
+automatically updates the MCP manifest. This module is a thin shim that
+adds the do-tool / write / subagent / description metadata the spec does
+not carry.
 """
 
 from __future__ import annotations

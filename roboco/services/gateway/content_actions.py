@@ -35,9 +35,9 @@ _TASK_ID_PREFIX_RE = re.compile(r"^\s*\[[a-zA-Z0-9_-]+\]\s*")
 # manifest in `role_config.py` (`_DEV_DO`/`_DOC_DO` include "commit";
 # `_CELL_PM_DO`/`_MAIN_PM_DO`/`_BOARD_DO` include "notify"). Pre-2026-05-10
 # this lookup went through `verb_gates.is_verb_allowed`; the verb-gates
-# table has been folded into `roboco.lifecycle.spec`, but `commit` and
-# `notify` are content tools (not lifecycle intents) so they live here as
-# explicit role frozensets — not in `_INTENT_VERBS`.
+# table has been folded into `roboco.foundation.policy.lifecycle`, but
+# `commit` and `notify` are content tools (not lifecycle intents) so they
+# live here as explicit role frozensets — not in `_INTENT_VERBS`.
 #
 # Notification sender + priority allowlists are canonical in
 # foundation.policy.communications. Derived as string frozensets here so

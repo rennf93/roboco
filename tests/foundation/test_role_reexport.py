@@ -1,24 +1,19 @@
-"""Verify that the Role re-export shims point to foundation.identity.Role.
+"""Verify that the Role / Team re-export shims point to foundation.identity.
 
-After migration, lifecycle.spec.Role and models.base.AgentRole MUST be the
-SAME Python object as foundation.identity.Role. Object identity (`is`) is
-the assertion — anything weaker allows silent re-forking.
+After migration, ``models.base.AgentRole`` and ``models.base.Team`` MUST be
+the SAME Python object as the canonical ``foundation.identity.Role`` /
+``foundation.identity.Team``. Object identity (`is`) is the assertion —
+anything weaker allows silent re-forking.
+
+The previous ``roboco.lifecycle.spec`` re-export shim was deleted in
+Phase 4 Task 8; the two tests that asserted ``spec.Role is identity.Role``
+went away with it.
 """
 
 from __future__ import annotations
 
 from roboco.foundation import identity
-from roboco.lifecycle import spec
 from roboco.models.base import AgentRole, Team
-
-
-def test_lifecycle_spec_role_is_foundation_role() -> None:
-    assert spec.Role is identity.Role
-
-
-def test_lifecycle_spec_role_has_system_value() -> None:
-    """The new SYSTEM role added to foundation must be visible via the shim."""
-    assert "system" in {r.value for r in spec.Role}
 
 
 def test_models_base_agentrole_is_foundation_role() -> None:
