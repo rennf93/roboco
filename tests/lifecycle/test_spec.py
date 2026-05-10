@@ -14,7 +14,14 @@ from roboco.models.base import TaskType as ModelTaskType
 
 
 def test_role_enum_has_every_pre_gateway_role() -> None:
-    """Every role from PERMISSIONS.md must be enumerated."""
+    """Every role from PERMISSIONS.md must be enumerated.
+
+    The canonical Role enum is now defined in `roboco.foundation.identity`
+    and re-exported here. It includes the 9 pre-gateway roles plus the
+    SYSTEM sentinel used for orchestrator-generated rows. The pre-gateway
+    PERMISSIONS.md is the historical canon — SYSTEM is the post-foundation
+    addition that doesn't appear in policy tables.
+    """
     expected = {
         "developer",
         "qa",
@@ -25,6 +32,7 @@ def test_role_enum_has_every_pre_gateway_role() -> None:
         "head_marketing",
         "auditor",
         "ceo",
+        "system",
     }
     actual = {r.value for r in spec.Role}
     assert actual == expected, f"Role enum drift: {actual ^ expected}"

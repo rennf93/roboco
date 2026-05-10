@@ -335,8 +335,13 @@ def _assert_spec_introspection(record: dict[str, Any]) -> None:
         # table this test won't catch them, but the import-time
         # validators will - this assertion just pins that the spec
         # itself is internally complete.)
+        # SYSTEM is a sentinel role (orchestrator-generated rows) — it has
+        # no verbs by design. AUDITOR and CEO are excluded because the
+        # original bug was about active developer/qa/pm/doc roles.
         active_roles = [
-            r for r in spec.Role if r not in (spec.Role.AUDITOR, spec.Role.CEO)
+            r
+            for r in spec.Role
+            if r not in (spec.Role.AUDITOR, spec.Role.CEO, spec.Role.SYSTEM)
         ]
         for r in active_roles:
             verbs = spec.intents_for_role(r)

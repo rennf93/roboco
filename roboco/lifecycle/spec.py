@@ -26,21 +26,15 @@ from dataclasses import dataclass, field
 from enum import StrEnum
 from typing import TYPE_CHECKING, Any, Literal
 
+# Role enum is canonicalized in roboco/foundation/identity.py.
+# This re-export keeps existing imports (`from roboco.lifecycle.spec import Role`)
+# working during the migration. New consumers should import from
+# `roboco.foundation.identity` directly. Removed in Phase 4 housekeeping.
+from roboco.foundation.identity import Role
+
 if TYPE_CHECKING:
     from collections.abc import Callable
     from uuid import UUID
-
-
-class Role(StrEnum):
-    DEVELOPER = "developer"
-    QA = "qa"
-    DOCUMENTER = "documenter"
-    CELL_PM = "cell_pm"
-    MAIN_PM = "main_pm"
-    PRODUCT_OWNER = "product_owner"
-    HEAD_MARKETING = "head_marketing"
-    AUDITOR = "auditor"
-    CEO = "ceo"
 
 
 class Status(StrEnum):
