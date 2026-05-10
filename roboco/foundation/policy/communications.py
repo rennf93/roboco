@@ -13,7 +13,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
-from roboco.foundation.identity import Role
+from roboco.foundation.identity import Role, Team
 from roboco.models.base import ChannelType, NotificationPriority, NotificationType
 
 # Re-export the enum so consumers can import a single name.
@@ -78,6 +78,12 @@ class ChannelSpec:
     write_roles: frozenset[Role]
     silent_roles: frozenset[Role] = field(default_factory=frozenset)
     read_only_for_others: bool = False
+    # When set, cell-member roles (DEVELOPER/QA/DOCUMENTER/CELL_PM) are
+    # constrained to agents on this team. Cross-cell roles (MAIN_PM, AUDITOR,
+    # CEO, board) are NOT filtered — they participate regardless of team.
+    # Required for cell channels (backend-cell etc.) to derive correct slug
+    # membership without leaking other cells' members.
+    team_scope: Team | None = None
 
 
 # -- Helper sets (DRY across multiple channels) -------------------------------
@@ -124,6 +130,7 @@ CHANNELS: dict[str, ChannelSpec] = {
         read_roles=_CELL_READ | _AUDITOR_ONLY,
         write_roles=_CELL_WRITE,
         silent_roles=_AUDITOR_ONLY,
+        team_scope=Team.BACKEND,
     ),
     "frontend-cell": ChannelSpec(
         slug="frontend-cell",
@@ -132,6 +139,7 @@ CHANNELS: dict[str, ChannelSpec] = {
         read_roles=_CELL_READ | _AUDITOR_ONLY,
         write_roles=_CELL_WRITE,
         silent_roles=_AUDITOR_ONLY,
+        team_scope=Team.FRONTEND,
     ),
     "uxui-cell": ChannelSpec(
         slug="uxui-cell",
@@ -140,6 +148,7 @@ CHANNELS: dict[str, ChannelSpec] = {
         read_roles=_CELL_READ | _AUDITOR_ONLY,
         write_roles=_CELL_WRITE,
         silent_roles=_AUDITOR_ONLY,
+        team_scope=Team.UX_UI,
     ),
     # -- Cross-cell role channels --------------------------------------------
     # dev-all: all cell-member roles read; only DEVELOPER + CELL_PM + MAIN_PM

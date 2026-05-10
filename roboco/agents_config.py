@@ -31,6 +31,7 @@ import os
 from typing import Final
 
 from roboco.foundation import identity as _foundation
+from roboco.foundation.policy import communications as _comms
 from roboco.models.base import NotificationPriority, NotificationType
 from roboco.seeds.initial_data import AGENT_UUIDS
 
@@ -337,69 +338,66 @@ def get_pm_for_agent(agent_id: str) -> str | None:
 # =============================================================================
 # CHANNEL ACCESS RULES
 # =============================================================================
+#
+# Channel ACL is canonicalized in foundation.policy.communications.CHANNELS.
+# This slug-keyed dict-of-string-lists derives from the role-keyed foundation
+# data. Adding a channel or changing its membership edits foundation.CHANNELS;
+# this dict updates at module load.
+#
+# Derivation rules:
+#   - read:   roles in (read_roles - silent_roles), filtered by team_scope
+#   - write:  roles in write_roles, filtered by team_scope
+#   - silent: roles in silent_roles, filtered by team_scope
+# Cross-cell roles (MAIN_PM, AUDITOR, CEO, board) are not subject to team_scope;
+# only cell-member roles (DEVELOPER/QA/DOCUMENTER/CELL_PM) are filtered.
+
+# Cell-member roles subject to team_scope filtering. Lifted to module scope so
+# tests and downstream consumers can introspect the rule.
+_TEAM_SCOPED_ROLES: Final[frozenset[_foundation.Role]] = frozenset(
+    {
+        _foundation.Role.DEVELOPER,
+        _foundation.Role.QA,
+        _foundation.Role.DOCUMENTER,
+        _foundation.Role.CELL_PM,
+    }
+)
+
+
+def _slugs_for_role_set(
+    role_set: frozenset[_foundation.Role],
+    team_scope: _foundation.Team | None,
+) -> list[str]:
+    """Expand a role-set to sorted agent slugs, honoring optional team_scope.
+
+    A slug qualifies when its role is in `role_set` AND, if its role is in
+    _TEAM_SCOPED_ROLES and team_scope is set, its team matches team_scope.
+    The system sentinel is always excluded.
+    """
+    out: list[str] = []
+    for slug, row in _foundation.AGENTS.items():
+        if slug == "system":
+            continue
+        if row.role not in role_set:
+            continue
+        if (
+            team_scope is not None
+            and row.role in _TEAM_SCOPED_ROLES
+            and row.team != team_scope
+        ):
+            continue
+        out.append(slug)
+    return sorted(out)
+
 
 CHANNEL_ACCESS: Final[dict[str, dict[str, list[str]]]] = {
-    # Cell channels - members + main-pm read/write, auditor silent
-    "backend-cell": {
-        "read": [*CELL_MEMBERS["backend"], "main-pm"],
-        "write": [*CELL_MEMBERS["backend"], "main-pm"],
-        "silent": ["auditor"],
-    },
-    "frontend-cell": {
-        "read": [*CELL_MEMBERS["frontend"], "main-pm"],
-        "write": [*CELL_MEMBERS["frontend"], "main-pm"],
-        "silent": ["auditor"],
-    },
-    "uxui-cell": {
-        "read": [*CELL_MEMBERS["ux_ui"], "main-pm"],
-        "write": [*CELL_MEMBERS["ux_ui"], "main-pm"],
-        "silent": ["auditor"],
-    },
-    # Cross-cell role channels
-    # Cell members read/write their role channel
-    # Cell PMs read/write ALL cross-cell channels for coordination
-    "dev-all": {
-        "read": [*ALL_DEVS, *ALL_QA, *ALL_DOCS, *CELL_PMS, "main-pm"],
-        "write": [*ALL_DEVS, *CELL_PMS, "main-pm"],
-        "silent": ["auditor"],
-    },
-    "qa-all": {
-        "read": [*ALL_QA, *ALL_DEVS, *ALL_DOCS, *CELL_PMS, "main-pm"],
-        "write": [*ALL_QA, *CELL_PMS],
-        "silent": ["auditor"],
-    },
-    "pm-all": {
-        "read": [*CELL_PMS, "main-pm"],
-        "write": [*CELL_PMS, "main-pm"],
-        "silent": ["auditor"],
-    },
-    "doc-all": {
-        "read": [*ALL_DOCS, *CELL_PMS, "main-pm"],
-        "write": [*ALL_DOCS, *CELL_PMS],
-        "silent": ["auditor"],
-    },
-    # Management channels
-    "main-pm-board": {
-        "read": ["main-pm", "product-owner", "head-marketing", "auditor"],
-        "write": ["main-pm", "product-owner", "head-marketing", "auditor"],
-        "silent": [],
-    },
-    "board-private": {
-        "read": ["product-owner", "head-marketing", "auditor", "ceo", "main-pm"],
-        "write": ["product-owner", "head-marketing", "auditor", "ceo"],
-        "silent": [],
-    },
-    # Broadcast channels
-    "announcements": {
-        "read": ALL_AGENTS,
-        "write": ["main-pm", "product-owner", "head-marketing", "ceo"],
-        "silent": [],
-    },
-    "all-hands": {
-        "read": ALL_AGENTS,
-        "write": ALL_AGENTS,
-        "silent": [],
-    },
+    slug: {
+        "read": _slugs_for_role_set(
+            spec.read_roles - spec.silent_roles, spec.team_scope
+        ),
+        "write": _slugs_for_role_set(spec.write_roles, spec.team_scope),
+        "silent": _slugs_for_role_set(spec.silent_roles, spec.team_scope),
+    }
+    for slug, spec in _comms.CHANNELS.items()
 }
 
 
