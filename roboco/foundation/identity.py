@@ -38,7 +38,7 @@ class Team(StrEnum):
     UX_UI = "ux_ui"
     BOARD = "board"
     MAIN_PM = "main_pm"
-    QA = "qa"
+    FULLSTACK = "fullstack"
     MARKETING = "marketing"  # legacy — kept for seed-data parity, no agent declares it
     SYSTEM = "system"
 

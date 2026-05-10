@@ -35,7 +35,7 @@ def test_team_enum_has_marketing_legacy_and_system() -> None:
         "ux_ui",
         "board",
         "main_pm",
-        "qa",
+        "fullstack",
         "marketing",  # legacy — see spec §5.1
         "system",
     }
