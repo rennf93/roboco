@@ -14,6 +14,9 @@ from sqlalchemy import and_, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from roboco.db.tables import JournalEntryTable, JournalTable
+from roboco.foundation.policy.journaling import (
+    SCOPE_TO_TYPE as _FOUNDATION_SCOPE_TO_TYPE,
+)
 from roboco.models.base import JournalEntryType
 from roboco.models.journal import (
     DecisionLogParams,
@@ -36,6 +39,13 @@ from roboco.models.journal import (
 from roboco.models.optimal import IndexJournalEntryParams
 from roboco.services.base import BaseService
 from roboco.utils.converters import require_uuid, to_python_uuid
+
+# Scope mapping is canonical in foundation.policy.journaling.
+# Derived as string-keyed dict here because the service's call sites pass
+# scope strings (from the gateway's content_actions layer) not Scope enums.
+_SCOPE_TO_TYPE: dict[str, JournalEntryType] = {
+    scope.value: entry_type for scope, entry_type in _FOUNDATION_SCOPE_TO_TYPE.items()
+}
 
 
 class JournalService(BaseService):
@@ -794,17 +804,6 @@ class JournalService(BaseService):
         )
         return await self.add_struggle(agent_id, params)
 
-    # Mapping from gateway scope strings (note/decision/reflect/learning/struggle)
-    # to canonical JournalEntryType enum values. Defined as a class-level constant
-    # so the lookup is a single dict access per call.
-    _SCOPE_TO_TYPE: ClassVar[dict[str, JournalEntryType]] = {
-        "note": JournalEntryType.GENERAL,
-        "decision": JournalEntryType.DECISION_LOG,
-        "reflect": JournalEntryType.TASK_REFLECTION,
-        "learning": JournalEntryType.LEARNING,
-        "struggle": JournalEntryType.STRUGGLE,
-    }
-
     async def write_entry(
         self,
         *,
@@ -828,11 +827,10 @@ class JournalService(BaseService):
                 scopes. Caller (gateway) validates the scope set before
                 reaching here, but the guard is kept defensive.
         """
-        entry_type = self._SCOPE_TO_TYPE.get(scope)
+        entry_type = _SCOPE_TO_TYPE.get(scope)
         if entry_type is None:
             raise ValueError(
-                f"unknown scope {scope!r}; "
-                f"expected one of {sorted(self._SCOPE_TO_TYPE)}"
+                f"unknown scope {scope!r}; expected one of {sorted(_SCOPE_TO_TYPE)}"
             )
         journal = await self.get_or_create_journal(agent_id)
         return await self.create_entry(
