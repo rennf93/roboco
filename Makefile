@@ -479,7 +479,11 @@ ci-lifecycle-check:
 foundation-check:
 	@echo "==> foundation/identity validators"
 	uv run python -c "from roboco.foundation import _validate; _validate.run_all(); print('  identity validators: OK')"
-	@echo "==> foundation/task_completeness self-tests"
+	@echo "==> foundation/tracing verb parity"
+	uv run pytest tests/foundation/test_tracing_verb_parity.py --no-cov -q
+	@echo "==> foundation/journaling consumers"
+	uv run pytest tests/foundation/test_journaling_consumers.py --no-cov -q
+	@echo "==> foundation tests (full)"
 	uv run pytest tests/foundation/ --no-cov -q
 	@echo "==> postgres enum parity (offline-skip if no DB)"
 	uv run python scripts/verify_postgres_enums.py || echo "  (skipped — postgres unreachable)"
