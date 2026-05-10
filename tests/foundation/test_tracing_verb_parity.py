@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
+from roboco.foundation.policy import lifecycle as spec
 from roboco.foundation.policy import tracing
-from roboco.lifecycle import spec
 
 
 def test_every_intent_verb_has_a_tracing_decision() -> None:

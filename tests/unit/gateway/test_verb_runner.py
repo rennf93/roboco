@@ -13,7 +13,7 @@ from unittest.mock import AsyncMock, MagicMock
 from uuid import uuid4
 
 import pytest
-from roboco.lifecycle import spec
+from roboco.foundation.policy import lifecycle as spec
 from roboco.services.gateway.choreographer._verb_runner import (
     VerbRunner,
 )

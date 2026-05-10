@@ -7,8 +7,8 @@ import importlib
 from pathlib import Path
 
 import pytest
+from roboco.foundation.policy import lifecycle as spec
 from roboco.foundation.policy import tracing
-from roboco.lifecycle import spec
 
 _GATEWAY_DIR = Path(__file__).resolve().parents[2] / "roboco" / "services" / "gateway"
 

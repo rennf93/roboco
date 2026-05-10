@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import pytest
-from roboco.lifecycle import spec
+from roboco.foundation.policy import lifecycle as spec
 from roboco.services.gateway.role_config import (
     _DEV_FLOW,
     _QA_FLOW,

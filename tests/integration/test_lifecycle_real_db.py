@@ -25,7 +25,7 @@ from uuid import UUID, uuid4
 import pytest
 import pytest_asyncio
 from roboco.db.tables import AgentTable, ProjectTable, TaskTable
-from roboco.lifecycle.spec import Status
+from roboco.foundation.policy.lifecycle import Status
 from roboco.models.base import (
     AgentRole,
     AgentStatus,
