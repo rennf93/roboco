@@ -46,8 +46,8 @@ __all__ = [
     "valid_next_verbs",
 ]
 
-# Validate the spec at import time. A LifecycleSpecError here means the
-# orchestrator container will fail to start — by design.
-from roboco.lifecycle._validate import run_all_validators
-
-run_all_validators()
+# Validation runs at import time of roboco.foundation.policy.lifecycle
+# itself (see the trailing ``_run_all_lifecycle_validators()`` call in
+# that module). Importing the canonical spec via the shim above therefore
+# already validates it; no extra call needed here. This shim is removed
+# in Phase 4 Task 8.

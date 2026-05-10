@@ -6,10 +6,10 @@ from types import SimpleNamespace
 from uuid import uuid4
 
 import pytest
-import roboco.lifecycle as lifecycle_pkg
-from roboco.lifecycle import _validate, spec
-from roboco.lifecycle._validate import reachable_from
-from roboco.lifecycle.spec import _INTENT_VERBS, IntentSpec
+from roboco.foundation import _validate_lifecycle as _validate
+from roboco.foundation._validate_lifecycle import reachable_from
+from roboco.foundation.policy import lifecycle as spec
+from roboco.foundation.policy.lifecycle import _INTENT_VERBS, IntentSpec
 from roboco.models.base import TaskType as ModelTaskType
 
 
@@ -620,8 +620,12 @@ def test_can_invoke_intent_open_pr_rejects_non_owner() -> None:
 
 
 def test_validators_pass_on_real_spec() -> None:
-    """Importing roboco.lifecycle must not raise — module-level import IS the test."""
-    assert lifecycle_pkg.spec is spec
+    """Importing roboco.foundation.policy.lifecycle must not raise —
+    module-level import IS the test. We additionally call the runner
+    directly so a future refactor that detaches it from import doesn't
+    silently skip the gate.
+    """
+    _validate.run_all_lifecycle_validators()
 
 
 def test_every_status_reachable_from_pending() -> None:
@@ -672,10 +676,11 @@ def test_run_all_validators_raises_on_unknown_intent_action(
     )
     patched_intents = dict(_INTENT_VERBS)
     patched_intents["delegate"] = broken
-    monkeypatch.setattr("roboco.lifecycle.spec._INTENT_VERBS", patched_intents)
-    monkeypatch.setattr(_validate, "_INTENT_VERBS", patched_intents)
+    monkeypatch.setattr(
+        "roboco.foundation.policy.lifecycle._INTENT_VERBS", patched_intents
+    )
     with pytest.raises(_validate.LifecycleSpecError, match="ZZZ_FAKE_ACTION"):
-        _validate.run_all_validators()
+        _validate.run_all_lifecycle_validators()
 
 
 def test_unmigrated_is_pinned() -> None:

@@ -3,6 +3,13 @@
 If any validator raises, the orchestrator container won't start —
 which is the correct behavior for a misconfigured foundation.
 
+This module owns the **identity** validators (AGENTS, roles, role
+levels). Lifecycle-spec validators live in
+``roboco.foundation._validate_lifecycle`` because the lifecycle spec
+imports from foundation at module load — placing the lifecycle
+checks alongside the identity checks would create an import cycle
+between ``roboco.foundation`` and ``roboco.foundation.policy.lifecycle``.
+
 Roles excluded from "must have at least one agent": Role.SYSTEM
 (sentinel-only). All other validators apply to every role.
 """
@@ -80,6 +87,6 @@ _VALIDATORS = (
 
 
 def run_all() -> None:
-    """Run every validator. First failure raises IdentityValidationError."""
+    """Run every identity validator. First failure raises IdentityValidationError."""
     for validator in _VALIDATORS:
         validator()

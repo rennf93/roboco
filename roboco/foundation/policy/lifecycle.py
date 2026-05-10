@@ -1317,3 +1317,20 @@ _KNOWN_UNMIGRATED_CONSUMERS: frozenset[str] = frozenset(
         "enforcement.task_lifecycle._LEGACY_ROLE_GATES",
     }
 )
+
+
+# ---------------------------------------------------------------------------
+# Import-time self-consistency checks
+# ---------------------------------------------------------------------------
+#
+# Validating the spec at module-load time means a misconfigured spec
+# prevents the orchestrator container from starting — by design. The
+# validators themselves live in ``roboco.foundation._validate_lifecycle``
+# (a sibling of ``foundation/_validate.py`` for identity); placing them
+# alongside the identity validators would create an import cycle because
+# ``roboco.foundation.__init__`` eagerly imports ``foundation/_validate``.
+from roboco.foundation._validate_lifecycle import (  # noqa: E402
+    run_all_lifecycle_validators as _run_all_lifecycle_validators,
+)
+
+_run_all_lifecycle_validators()

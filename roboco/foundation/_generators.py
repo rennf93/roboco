@@ -12,7 +12,7 @@ from __future__ import annotations
 import json
 from typing import Any
 
-from roboco.lifecycle.spec import (
+from roboco.foundation.policy.lifecycle import (
     _INTENT_VERBS,
     _STATUS_TRANSITIONS,
     CLAIM_RULES,
