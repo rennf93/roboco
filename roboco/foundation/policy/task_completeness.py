@@ -15,10 +15,13 @@ services/task.py:5061-5062 silent fallback.
 
 from __future__ import annotations
 
+import contextlib
 import re
 from dataclasses import dataclass, field
 from enum import StrEnum
 from typing import Any
+
+from roboco.foundation import identity
 
 
 class FieldRule(StrEnum):
@@ -233,3 +236,61 @@ def check(spec: CompletenessSpec, task: Any) -> CompletenessResult:
         missing=missing,
         field_hints=field_hints,
     )
+
+
+def fill_team_from_assignee(payload: dict[str, Any]) -> dict[str, Any]:
+    """Auto-fill `team` from `assigned_to` slug, never overwriting an explicit value.
+
+    Returns a NEW dict (does not mutate input). Auto-fill is best-effort:
+    if `assigned_to` is unknown, returns the payload unchanged. The
+    downstream completeness check then rejects on missing `team`.
+    """
+    out = dict(payload)
+    if out.get("team") is not None and out.get("team") != "":
+        return out  # caller was explicit; don't override
+    slug = out.get("assigned_to")
+    if not isinstance(slug, str):
+        return out
+    # Unknown slug -> leave team unset; downstream completeness check rejects.
+    with contextlib.suppress(KeyError):
+        out["team"] = identity.team_for_slug(slug).value
+    return out
+
+
+def fill_priority_from_parent(
+    payload: dict[str, Any], parent: Any | None
+) -> dict[str, Any]:
+    """Auto-fill `priority` from parent task, falling back to medium (2).
+
+    Sets `__priority_inherited=True` (sentinel for the gateway to log a
+    journal:note about the inheritance — keeps the audit trail clean).
+    """
+    out = dict(payload)
+    if out.get("priority") is not None:
+        return out  # caller was explicit
+    if (
+        parent is not None
+        and hasattr(parent, "priority")
+        and parent.priority is not None
+    ):
+        out["priority"] = parent.priority
+    else:
+        out["priority"] = 2  # medium (default)
+    out["__priority_inherited"] = True
+    return out
+
+
+def fill_parent_from_active_task(
+    payload: dict[str, Any], active_task_id: str | None
+) -> dict[str, Any]:
+    """Auto-fill `parent_task_id` from the caller's active task.
+
+    Used on `delegate(...)` calls where the caller's active task IS the
+    parent. Never overwrites an explicit value.
+    """
+    out = dict(payload)
+    if out.get("parent_task_id"):
+        return out
+    if active_task_id:
+        out["parent_task_id"] = active_task_id
+    return out

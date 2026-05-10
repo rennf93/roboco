@@ -7,6 +7,8 @@ from types import SimpleNamespace
 from roboco.foundation.policy import task_completeness as tc
 
 MIN_HINT_LEN = 20
+PARENT_PRIORITY_HIGH = 4  # parent task priority used for inheritance assertions
+DEFAULT_PRIORITY_MEDIUM = 2  # fill_priority_from_parent default when no parent
 
 
 def _task(**fields):
@@ -93,3 +95,59 @@ def test_field_hints_for_missing_fields_are_actionable() -> None:
         assert len(hint) >= MIN_HINT_LEN, (
             f"hint for {field} too short to be useful: {hint!r}"
         )
+
+
+def test_fill_team_from_assignee_resolves_dev_slug() -> None:
+    payload = {"assigned_to": "be-dev-1"}
+    result = tc.fill_team_from_assignee(payload)
+    assert result["team"] == "backend"
+    assert result["assigned_to"] == "be-dev-1"
+
+
+def test_fill_team_from_assignee_does_not_overwrite_explicit_team() -> None:
+    payload = {"assigned_to": "be-dev-1", "team": "frontend"}
+    result = tc.fill_team_from_assignee(payload)
+    # Auto-fill never silently overwrites; team stays as caller passed it.
+    assert result["team"] == "frontend"
+
+
+def test_fill_team_from_assignee_unknown_slug_returns_unchanged() -> None:
+    payload = {"assigned_to": "notreal-1"}
+    result = tc.fill_team_from_assignee(payload)
+    # Auto-fill is best-effort; unknown slug = no fill, downstream rejects.
+    assert "team" not in result
+
+
+def test_fill_priority_from_parent_inherits() -> None:
+    payload = {}
+    parent = SimpleNamespace(priority=PARENT_PRIORITY_HIGH)
+    result = tc.fill_priority_from_parent(payload, parent)
+    assert result["priority"] == PARENT_PRIORITY_HIGH
+    assert result["__priority_inherited"] is True
+
+
+def test_fill_priority_from_parent_does_not_overwrite_explicit() -> None:
+    payload = {"priority": 1}
+    parent = SimpleNamespace(priority=PARENT_PRIORITY_HIGH)
+    result = tc.fill_priority_from_parent(payload, parent)
+    assert result["priority"] == 1
+    assert "__priority_inherited" not in result
+
+
+def test_fill_priority_from_parent_no_parent_uses_medium_default() -> None:
+    payload = {}
+    result = tc.fill_priority_from_parent(payload, None)
+    assert result["priority"] == DEFAULT_PRIORITY_MEDIUM
+    assert result["__priority_inherited"] is True
+
+
+def test_fill_parent_from_active_task_sets_id() -> None:
+    payload = {}
+    result = tc.fill_parent_from_active_task(payload, "task-id-123")
+    assert result["parent_task_id"] == "task-id-123"
+
+
+def test_fill_parent_from_active_task_does_not_overwrite_explicit() -> None:
+    payload = {"parent_task_id": "explicit-id"}
+    result = tc.fill_parent_from_active_task(payload, "active-id")
+    assert result["parent_task_id"] == "explicit-id"
