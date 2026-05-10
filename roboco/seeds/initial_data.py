@@ -8,83 +8,53 @@ Separates data definitions from bootstrap logic.
 from typing import Any
 
 from roboco.foundation import identity as _foundation
+from roboco.foundation.policy import communications as _comms
 
 # =============================================================================
 # DEFAULT CHANNELS
+#
+# Channel topology (slug, description, type, membership) is canonicalized in
+# `roboco.foundation.policy.communications.CHANNELS`. The DEFAULT_CHANNELS
+# list and CHANNEL_MEMBERSHIPS dict below derive from that catalog at module
+# load. The only seed-only field is `name` — a presentation string the
+# foundation does not (and should not) own. It lives in
+# `_CHANNEL_PRESENTATION` and is the only edit needed to rename a channel
+# label.
 # =============================================================================
 
-DEFAULT_CHANNELS = [
-    # Cell channels
-    {
-        "slug": "backend-cell",
-        "name": "Backend Cell",
-        "description": "Backend development team channel",
-        "channel_type": "cell",
-    },
-    {
-        "slug": "frontend-cell",
-        "name": "Frontend Cell",
-        "description": "Frontend development team channel",
-        "channel_type": "cell",
-    },
-    {
-        "slug": "uxui-cell",
-        "name": "UX/UI Cell",
-        "description": "UX/UI design team channel",
-        "channel_type": "cell",
-    },
-    # Cross-cell role channels
-    {
-        "slug": "dev-all",
-        "name": "All Developers",
-        "description": "Cross-cell developer discussion",
-        "channel_type": "cross_cell",
-    },
-    {
-        "slug": "qa-all",
-        "name": "All QA",
-        "description": "Cross-cell QA discussion",
-        "channel_type": "cross_cell",
-    },
-    {
-        "slug": "pm-all",
-        "name": "All PMs",
-        "description": "Cross-cell PM coordination",
-        "channel_type": "cross_cell",
-    },
-    {
-        "slug": "doc-all",
-        "name": "All Documenters",
-        "description": "Cross-cell documentation discussion",
-        "channel_type": "cross_cell",
-    },
-    # Management channels
-    {
-        "slug": "main-pm-board",
-        "name": "Main PM & Board",
-        "description": "Main PM and Board communication",
-        "channel_type": "management",
-    },
-    {
-        "slug": "board-private",
-        "name": "Board Private",
-        "description": "Board-only discussions",
-        "channel_type": "management",
-    },
-    # Special channels
-    {
-        "slug": "announcements",
-        "name": "Announcements",
-        "description": "Company-wide announcements (read-only for most)",
-        "channel_type": "special",
-    },
-    {
-        "slug": "all-hands",
-        "name": "All Hands",
-        "description": "Company-wide open discussion",
-        "channel_type": "special",
-    },
-]
+# Per-channel display name. Slug, description, type, and membership are all
+# sourced from foundation.CHANNELS; this dict only carries presentation.
+_CHANNEL_PRESENTATION: dict[str, str] = {
+    "backend-cell": "Backend Cell",
+    "frontend-cell": "Frontend Cell",
+    "uxui-cell": "UX/UI Cell",
+    "dev-all": "All Developers",
+    "qa-all": "All QA",
+    "pm-all": "All PMs",
+    "doc-all": "All Documenters",
+    "main-pm-board": "Main PM & Board",
+    "board-private": "Board Private",
+    "announcements": "Announcements",
+    "all-hands": "All Hands",
+}
+
+
+def _build_default_channels() -> list[dict[str, Any]]:
+    """Compose DEFAULT_CHANNELS rows from foundation specs + display names."""
+    return [
+        {
+            "slug": spec.slug,
+            "name": _CHANNEL_PRESENTATION[slug],
+            "description": spec.description,
+            # Legacy DB seeder keys this as `channel_type`; preserve the name
+            # so create_channels(session) keeps working unchanged.
+            "channel_type": spec.type.value,
+        }
+        for slug, spec in _comms.CHANNELS.items()
+    ]
+
+
+DEFAULT_CHANNELS: list[dict[str, Any]] = _build_default_channels()
 
 
 # =============================================================================
@@ -183,66 +153,78 @@ DEFAULT_AGENTS: list[dict[str, Any]] = _build_default_agents()
 # =============================================================================
 # CHANNEL MEMBERSHIP
 #
-# This populates the database channel.members/writers fields for initial setup.
+# Populates the database channel.members / channel.writers / silent_observers
+# fields at seed time. Membership is now derived from
+# foundation.policy.communications.CHANNELS — adding/removing an agent from a
+# channel is a single edit in the foundation catalog.
 #
 # NOTE: This is SEPARATE from roboco/agents_config.py CHANNEL_ACCESS which is
-# the runtime permission source of truth. The relationship is:
-#
-# 1. CHANNEL_MEMBERSHIPS (here) -> populates database channel.members
-# 2. CHANNEL_ACCESS (agents_config) -> used by PermissionService for checks
-# 3. Privileged roles (CEO, Auditor, Main PM) bypass membership via
-#    has_privileged_access() in services/permissions.py
-#
-# This means main-pm isn't listed in board-private here but CAN read it
-# via the privileged role bypass. The seed data is for UI/listing purposes,
-# while CHANNEL_ACCESS is the actual permission enforcement.
+# the runtime permission source of truth. Both derive from the same
+# foundation catalog. Privileged roles (CEO, Auditor, Main PM) still bypass
+# membership at runtime via has_privileged_access() in services/permissions.py.
 # =============================================================================
 
 CEO_AGENT_ID = AGENT_UUIDS["ceo"]
 
-CHANNEL_MEMBERSHIPS = {
-    # Cell channels - cell members + CEO
-    "backend-cell": ["be-dev-1", "be-dev-2", "be-qa", "be-pm", "be-doc", "ceo"],
-    "frontend-cell": ["fe-dev-1", "fe-dev-2", "fe-qa", "fe-pm", "fe-doc", "ceo"],
-    "uxui-cell": ["ux-dev-1", "ux-dev-2", "ux-qa", "ux-pm", "ux-doc", "ceo"],
-    # Role channels + CEO
-    "dev-all": [
-        "be-dev-1",
-        "be-dev-2",
-        "fe-dev-1",
-        "fe-dev-2",
-        "ux-dev-1",
-        "ux-dev-2",
-        "ceo",
-    ],
-    "qa-all": ["be-qa", "fe-qa", "ux-qa", "ceo"],
-    "pm-all": ["be-pm", "fe-pm", "ux-pm", "main-pm", "ceo"],
-    "doc-all": ["be-doc", "fe-doc", "ux-doc", "ceo"],
-    # Management channels + CEO
-    "main-pm-board": [
-        "main-pm",
-        "product-owner",
-        "head-marketing",
-        "auditor",
-        "ceo",
-    ],
-    "board-private": ["product-owner", "head-marketing", "auditor", "ceo"],
-    # Broadcast channels - everyone human-or-agent (system sentinel
-    # excluded — it's a from_agent placeholder, not a participant).
-    "announcements": [a["slug"] for a in DEFAULT_AGENTS if a["slug"] != "system"],
-    "all-hands": [a["slug"] for a in DEFAULT_AGENTS if a["slug"] != "system"],
-}
+# Cell-member roles subject to a channel's team_scope. Cross-cell roles
+# (MAIN_PM, AUDITOR, CEO, board) are NOT filtered by team_scope. Mirrors the
+# rule in agents_config._TEAM_SCOPED_ROLES; duplicated here to avoid a
+# circular import (agents_config already imports AGENT_UUIDS from this
+# module).
+_TEAM_SCOPED_ROLES: frozenset[_foundation.Role] = frozenset(
+    {
+        _foundation.Role.DEVELOPER,
+        _foundation.Role.QA,
+        _foundation.Role.DOCUMENTER,
+        _foundation.Role.CELL_PM,
+    }
+)
 
-# Auditor has silent read access to cell/role channels
-AUDITOR_SILENT_ACCESS = [
-    "backend-cell",
-    "frontend-cell",
-    "uxui-cell",
-    "dev-all",
-    "qa-all",
-    "pm-all",
-    "doc-all",
-]
+
+def _slugs_for_role_set(
+    role_set: frozenset[_foundation.Role],
+    team_scope: _foundation.Team | None,
+) -> list[str]:
+    """Expand a role-set to sorted agent slugs, honoring optional team_scope.
+
+    A slug qualifies when its role is in `role_set` AND, if its role is in
+    _TEAM_SCOPED_ROLES and team_scope is set, its team matches team_scope.
+    The system sentinel is always excluded.
+    """
+    out: list[str] = []
+    for slug, row in _foundation.AGENTS.items():
+        if slug == "system":
+            continue
+        if row.role not in role_set:
+            continue
+        if (
+            team_scope is not None
+            and row.role in _TEAM_SCOPED_ROLES
+            and row.team != team_scope
+        ):
+            continue
+        out.append(slug)
+    return sorted(out)
+
+
+def _build_channel_memberships() -> dict[str, list[str]]:
+    """Per-channel sorted member slugs derived from foundation.CHANNELS."""
+    return {
+        slug: _slugs_for_role_set(spec.read_roles, spec.team_scope)
+        for slug, spec in _comms.CHANNELS.items()
+    }
+
+
+CHANNEL_MEMBERSHIPS: dict[str, list[str]] = _build_channel_memberships()
+
+
+# Auditor silent-read channels — derived from CHANNELS where AUDITOR appears
+# in silent_roles.
+AUDITOR_SILENT_ACCESS: list[str] = sorted(
+    slug
+    for slug, spec in _comms.CHANNELS.items()
+    if _foundation.Role.AUDITOR in spec.silent_roles
+)
 
 
 # =============================================================================
