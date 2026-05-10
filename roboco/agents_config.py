@@ -30,6 +30,7 @@ import hmac
 import os
 from typing import Final
 
+from roboco.foundation import identity as _foundation
 from roboco.models.base import NotificationPriority, NotificationType
 from roboco.seeds.initial_data import AGENT_UUIDS
 
@@ -104,68 +105,32 @@ def _resolve_to_slug(agent_id: str) -> str:
 # AGENT ROLE MAPPINGS
 # =============================================================================
 
-AGENT_ROLE_MAP: Final[dict[str, str]] = {
-    # Backend cell
-    "be-dev-1": "developer",
-    "be-dev-2": "developer",
-    "be-qa": "qa",
-    "be-pm": "cell_pm",
-    "be-doc": "documenter",
-    # Frontend cell
-    "fe-dev-1": "developer",
-    "fe-dev-2": "developer",
-    "fe-qa": "qa",
-    "fe-pm": "cell_pm",
-    "fe-doc": "documenter",
-    # UX/UI cell
-    "ux-dev-1": "developer",
-    "ux-dev-2": "developer",
-    "ux-qa": "qa",
-    "ux-pm": "cell_pm",
-    "ux-doc": "documenter",
-    # Management / Board
-    "main-pm": "main_pm",
-    "product-owner": "product_owner",
-    "head-marketing": "head_marketing",
-    "auditor": "auditor",
-    "ceo": "ceo",
+# Agent catalog data is canonicalized in roboco/foundation/identity.py.
+# These string-keyed maps are kept for backwards compatibility with code
+# that types role/team as `str` rather than the foundation enums.
+# Derived at module load — adding an agent edits foundation/identity.py only.
+AGENT_ROLE_MAP: dict[str, str] = {
+    slug: row.role.value
+    for slug, row in _foundation.AGENTS.items()
+    if row.role != _foundation.Role.SYSTEM  # exclude sentinel from string-keyed map
 }
 
-
-AGENT_TEAM_MAP: Final[dict[str, str]] = {
-    # Backend cell
-    "be-dev-1": "backend",
-    "be-dev-2": "backend",
-    "be-qa": "backend",
-    "be-pm": "backend",
-    "be-doc": "backend",
-    # Frontend cell
-    "fe-dev-1": "frontend",
-    "fe-dev-2": "frontend",
-    "fe-qa": "frontend",
-    "fe-pm": "frontend",
-    "fe-doc": "frontend",
-    # UX/UI cell (matches Team.UX_UI = "ux_ui")
-    "ux-dev-1": "ux_ui",
-    "ux-dev-2": "ux_ui",
-    "ux-qa": "ux_ui",
-    "ux-pm": "ux_ui",
-    "ux-doc": "ux_ui",
-    # Management — main-pm gets its own team folder; board members share `board`.
-    # These match Team.MAIN_PM and Team.BOARD enum values so workspace path
-    # resolution never produces a literal "None" segment.
-    "main-pm": "main_pm",
-    "product-owner": "board",
-    "head-marketing": "board",
-    "auditor": "board",
-    "ceo": "board",
+AGENT_TEAM_MAP: dict[str, str] = {
+    slug: row.team.value
+    for slug, row in _foundation.AGENTS.items()
+    if row.role != _foundation.Role.SYSTEM
 }
 
-
-CELL_MEMBERS: Final[dict[str, list[str]]] = {
-    "backend": ["be-dev-1", "be-dev-2", "be-qa", "be-pm", "be-doc"],
-    "frontend": ["fe-dev-1", "fe-dev-2", "fe-qa", "fe-pm", "fe-doc"],
-    "ux_ui": ["ux-dev-1", "ux-dev-2", "ux-qa", "ux-pm", "ux-doc"],
+CELL_MEMBERS: dict[str, list[str]] = {
+    _foundation.Team.BACKEND.value: sorted(
+        _foundation.slugs_for_team(_foundation.Team.BACKEND)
+    ),
+    _foundation.Team.FRONTEND.value: sorted(
+        _foundation.slugs_for_team(_foundation.Team.FRONTEND)
+    ),
+    _foundation.Team.UX_UI.value: sorted(
+        _foundation.slugs_for_team(_foundation.Team.UX_UI)
+    ),
 }
 
 
