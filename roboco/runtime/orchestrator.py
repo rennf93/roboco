@@ -3029,7 +3029,7 @@ Start by:
         """Block non-trivial root tasks routed to a dev without subtasks."""
         complexity = task.get("estimated_complexity", "low")
         parent_task_id = task.get("parent_task_id")
-        if complexity not in ("medium", "high", "critical") or parent_task_id:
+        if complexity not in ("medium", "high") or parent_task_id:
             return None
         task_id = task.get("id")
         try:
@@ -3328,7 +3328,7 @@ Start by:
 
         if (
             self._has_cross_cell_keywords(text)
-            or complexity in ("high", "critical")
+            or complexity == "high"
             or not team
             or team == "all"
         ):
@@ -5046,7 +5046,7 @@ Never `commit`, never write code, never run `git`. PMs coordinate.
             return []
 
         complexity = task.get("estimated_complexity", "low")
-        is_low_complexity = complexity not in ("medium", "high", "critical")
+        is_low_complexity = complexity not in ("medium", "high")
         if is_low_complexity or task.get("parent_task_id"):
             return []
 
