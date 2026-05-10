@@ -42,6 +42,7 @@ from roboco.api.schemas.tasks import (
     transform_update_data,
 )
 from roboco.exceptions import TaskLifecycleError
+from roboco.foundation.policy import task_completeness as tc
 from roboco.models.base import AgentRole, TaskStatus, Team
 from roboco.models.task import TaskCreate
 from roboco.services.audit import get_audit_service
@@ -118,22 +119,23 @@ async def create_task(
     # `data.project_id` is `UUID` (required) on TaskCreate, so pydantic
     # rejects missing/null values with 422 before this handler runs.
 
-    # Acceptance criteria required — without them, QA has nothing to
-    # verify and the task is structurally unclosable.
-    if not data.acceptance_criteria or not any(
-        (c or "").strip() for c in data.acceptance_criteria
-    ):
+    # Defense-in-depth completeness check. TaskCreate's Pydantic schema
+    # already enforces the structural rules in TASK_AT_CREATE (min_length
+    # on title/description/acceptance_criteria; the discriminator enums
+    # for task_type/nature/estimated_complexity/team are required). What
+    # Pydantic does NOT catch are the denylist phrases — placeholder ACs
+    # like "completed and reviewed by assignee" or stub descriptions —
+    # because those are well-formed strings. Re-running the canonical
+    # checker here catches them at the route boundary, so route, schema,
+    # and service all share one notion of "complete".
+    completeness = tc.check(tc.TASK_AT_CREATE, data)
+    if not completeness.passed:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail={
-                "error": {
-                    "code": "ACCEPTANCE_CRITERIA_REQUIRED",
-                    "message": (
-                        "Tasks must include at least one non-empty "
-                        "acceptance criterion — it's what QA verifies."
-                    ),
-                    "hint": "Pass acceptance_criteria=['...', '...'].",
-                }
+                "error": "incomplete_input",
+                "missing": completeness.missing,
+                "field_hints": completeness.field_hints,
             },
         )
 
