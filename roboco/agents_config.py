@@ -259,16 +259,11 @@ def is_ceo(agent_id: str) -> bool:
 
 
 def can_send_notifications(agent_id: str) -> bool:
-    """Check if agent can send notifications (PMs, Board, Auditor, CEO)."""
-    role = get_agent_role(agent_id)
-    return role in (
-        "cell_pm",
-        "main_pm",
-        "product_owner",
-        "head_marketing",
-        "auditor",
-        "ceo",
-    )
+    """Whether this agent's role may call notify(). Canonical in foundation."""
+    try:
+        return _foundation.Role(get_agent_role(agent_id)) in _comms.NOTIFY_SENDER_ROLES
+    except ValueError:
+        return False
 
 
 def can_create_tasks(agent_id: str) -> bool:
@@ -429,50 +424,9 @@ ROLE_PERMISSION_LEVELS: Final[dict[str, str]] = {
 # =============================================================================
 # NOTIFICATION PERMISSIONS
 # =============================================================================
-
-NOTIFICATION_PERMISSIONS: Final[dict[str, dict]] = {
-    # Cell PMs can notify their own cell members
-    "cell_pm": {
-        "can_send": True,
-        "scope": "cell",
-    },
-    # Main PM can notify anyone
-    "main_pm": {
-        "can_send": True,
-        "scope": "all",
-    },
-    # Board can notify management chain
-    "product_owner": {
-        "can_send": True,
-        "scope": ["main-pm", "head-marketing", "auditor", "ceo"],
-    },
-    "head_marketing": {
-        "can_send": True,
-        "scope": ["main-pm", "product-owner", "auditor", "ceo"],
-    },
-    # Auditor can notify anyone
-    "auditor": {
-        "can_send": True,
-        "scope": "all",
-    },
-    # CEO can notify anyone
-    "ceo": {
-        "can_send": True,
-        "scope": "all",
-    },
-    # Developers CANNOT send notifications
-    "developer": {
-        "can_send": False,
-    },
-    # QA CANNOT send notifications
-    "qa": {
-        "can_send": False,
-    },
-    # Documenters CANNOT send notifications
-    "documenter": {
-        "can_send": False,
-    },
-}
+# Sender allowlist now lives in foundation.policy.communications.NOTIFY_SENDER_ROLES.
+# Scope rules (cell / all / list) live in services/permissions.py since they
+# depend on AgentContext (role + team) — not pure foundation data.
 
 VALID_NOTIFICATION_TYPES: Final[frozenset[str]] = frozenset(
     t.value for t in NotificationType
