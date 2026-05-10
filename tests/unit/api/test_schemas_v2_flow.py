@@ -25,7 +25,7 @@ def test_delegate_request_requires_task_type() -> None:
             description="add the new endpoint plus tests",
             assigned_to="be-dev-1",
             team="backend",
-            nature="feature",
+            nature="technical",
             estimated_complexity="medium",
             acceptance_criteria=["returns 200"],
             # task_type intentionally omitted
@@ -41,7 +41,7 @@ def test_delegate_request_accepts_explicit_task_type() -> None:
         assigned_to="be-dev-1",
         team="backend",
         task_type="code",
-        nature="feature",
+        nature="technical",
         estimated_complexity="medium",
         acceptance_criteria=["returns 200"],
     )

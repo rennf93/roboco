@@ -102,14 +102,16 @@ _HINT_ACCEPTANCE_CRITERIA = (
 _HINT_TASK_TYPE = (
     "one of: code | documentation | research | planning | design | administrative"
 )
-_HINT_NATURE = "one of: technical | bugfix | feature | refactor | docs"
+_HINT_NATURE = "one of: technical | non_technical"
 _HINT_ESTIMATED_COMPLEXITY = (
-    "one of: low | medium | high | critical, based on file count + dependency "
-    "depth + novelty (low = 1-2 files, medium = 3-10 files or new module, "
-    "high = cross-cell or schema-touching, critical = security or migration)"
+    "one of: low | medium | high, based on file count + dependency depth + "
+    "novelty (low = 1-2 files, medium = 3-10 files or new module, high = "
+    "cross-cell, schema-touching, security, or migration)"
 )
 _HINT_TEAM = (
-    "one of: backend | frontend | ux_ui (for cell-routed work) | board | main_pm"
+    "one of: backend | frontend | ux_ui (cell-routed work) | board | main_pm | "
+    "fullstack (cross-cell). Note: 'marketing' is legacy seed-data only — no "
+    "agent declares it; 'system' is an orchestrator sentinel, not for tasks."
 )
 _HINT_TITLE = "single line, <= 200 chars, descriptive"
 

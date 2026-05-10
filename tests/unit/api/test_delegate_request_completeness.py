@@ -19,7 +19,7 @@ def _ok_payload() -> dict:
         "assigned_to": "be-dev-1",
         "team": "backend",
         "task_type": "code",
-        "nature": "feature",
+        "nature": "technical",
         "estimated_complexity": "medium",
         "acceptance_criteria": [
             "returns 404 for unknown user",
