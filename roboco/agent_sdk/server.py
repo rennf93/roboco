@@ -36,6 +36,7 @@ from roboco.agent_sdk.models import (
     TerminalStatus,
     TerminalToolRecordRequest,
 )
+from roboco.foundation.policy.agent_loop import DEFAULT_BUDGET as _BUDGET
 
 logger = structlog.get_logger()
 
@@ -524,12 +525,18 @@ async def traceability_remind(tool: str = "") -> dict:
 # without needing external storage. State resets on container restart, which
 # matches session lifetime.
 
-_WARN_THRESHOLD = int(os.environ.get("ROBOCO_AGENT_TOOL_CALL_WARN", "50"))
-_HALT_THRESHOLD = int(os.environ.get("ROBOCO_AGENT_TOOL_CALL_HALT", "150"))
-_LOOP_THRESHOLD = int(os.environ.get("ROBOCO_AGENT_LOOP_THRESHOLD", "3"))
-_LOOP_WINDOW = int(os.environ.get("ROBOCO_AGENT_LOOP_WINDOW", "10"))
+_WARN_THRESHOLD = int(
+    os.environ.get("ROBOCO_AGENT_TOOL_CALL_WARN", str(_BUDGET.tool_call_warn_at))
+)
+_HALT_THRESHOLD = int(
+    os.environ.get("ROBOCO_AGENT_TOOL_CALL_HALT", str(_BUDGET.tool_call_halt_at))
+)
+_LOOP_THRESHOLD = int(
+    os.environ.get("ROBOCO_AGENT_LOOP_THRESHOLD", str(_BUDGET.loop_threshold))
+)
+_LOOP_WINDOW = int(os.environ.get("ROBOCO_AGENT_LOOP_WINDOW", str(_BUDGET.loop_window)))
 _STOP_ALLOWANCE = int(os.environ.get("ROBOCO_AGENT_STOP_ATTEMPT_ALLOWANCE", "1"))
-_RECENT_TOOL_WINDOW = 5
+_RECENT_TOOL_WINDOW = 5  # not in foundation — keep local
 
 _TERMINAL_TOOLS: frozenset[str] = frozenset(
     {

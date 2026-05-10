@@ -2,6 +2,10 @@
 
 from __future__ import annotations
 
+import os
+
+import pytest
+from roboco.agent_sdk import server
 from roboco.foundation.policy import agent_loop
 
 # Canonical defaults the foundation guarantees. Asserting against named
@@ -70,3 +74,23 @@ def test_retry_limit_for_unknown_verb_returns_default() -> None:
         agent_loop.retry_limit_for("not_a_real_verb")
         == agent_loop.DEFAULT_BUDGET.verb_retry_max_per_minute
     )
+
+
+def test_agent_sdk_thresholds_match_foundation_defaults() -> None:
+    """Without env overrides, the agent_sdk constants equal foundation defaults."""
+    # If a test environment sets ROBOCO_AGENT_*, the env override path is in
+    # effect and this default-parity check no longer applies.
+    if any(
+        k in os.environ
+        for k in (
+            "ROBOCO_AGENT_TOOL_CALL_WARN",
+            "ROBOCO_AGENT_TOOL_CALL_HALT",
+            "ROBOCO_AGENT_LOOP_THRESHOLD",
+            "ROBOCO_AGENT_LOOP_WINDOW",
+        )
+    ):
+        pytest.skip("env override set; skipping default-parity check")
+    assert agent_loop.DEFAULT_BUDGET.tool_call_warn_at == server._WARN_THRESHOLD
+    assert agent_loop.DEFAULT_BUDGET.tool_call_halt_at == server._HALT_THRESHOLD
+    assert agent_loop.DEFAULT_BUDGET.loop_threshold == server._LOOP_THRESHOLD
+    assert agent_loop.DEFAULT_BUDGET.loop_window == server._LOOP_WINDOW
