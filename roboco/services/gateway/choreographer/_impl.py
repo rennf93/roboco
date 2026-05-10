@@ -36,11 +36,6 @@ from roboco.services.gateway.remediation import (
     hint_for_missing_reflect,
     hint_for_unaddressed_acceptance_criteria,
 )
-from roboco.services.gateway.tracing_gate import (
-    GateContext,
-    Requirement,
-    check_requirements,
-)
 
 logger = structlog.get_logger()
 
@@ -969,21 +964,43 @@ class Choreographer:
     async def _check_tracing_gates(
         self, agent_id: UUID, task_id: UUID, t: Any
     ) -> Envelope | None:
-        """Run progress / reflect / acceptance-criteria tracing gates."""
+        """Run progress / reflect / acceptance-criteria / during-work tracing gates.
+
+        The spec composes (submit_verification, submit_qa) for i_am_done and
+        the auto-run submit_verification flips self_verified=True before
+        submit_qa runs. SELF_VERIFIED therefore acts as a defense-in-depth
+        backstop *after* the spec — checking it pre-flight would block the
+        auto-verify path. It is filtered here and re-asserted by the spec
+        action's own preconditions.
+        """
+        from roboco.foundation.policy import tracing as _tr
+
         has_reflect = await self.journal.has_reflect_for_task(agent_id, task_id)
-        gate_ctx = GateContext(journal_reflect_present=has_reflect)
-        gate = check_requirements(
-            t,
-            [
-                Requirement.PROGRESS_AT_LEAST_ONE,
-                Requirement.JOURNAL_REFLECT,
-                Requirement.ACCEPTANCE_CRITERIA_ADDRESSED,
-            ],
-            gate_ctx,
+        has_decision = await self.journal.has_decision_for_task(agent_id, task_id)
+        has_learning = await self.journal.has_learning_for_task(agent_id, task_id)
+        has_struggle = await self.journal.has_struggle_for_task(agent_id, task_id)
+        during_work_count = sum([has_decision, has_learning, has_struggle])
+
+        ctx = _tr.GateContext(
+            journal_reflect_present=has_reflect,
+            journal_decision_present=has_decision,
+            journal_learning_present=has_learning,
+            journal_struggle_present=has_struggle,
+            journal_during_work_count=during_work_count,
         )
-        if gate.passed:
+        requirements: list[_tr.Requirement] = [
+            r
+            for r in _tr.requirements_for("i_am_done")
+            if r is not _tr.Requirement.SELF_VERIFIED
+        ]
+        result = _tr.check_requirements(
+            task=t,
+            requirements=requirements,
+            ctx=ctx,
+        )
+        if result.passed:
             return None
-        return await self._build_tracing_gap(agent_id, task_id, gate.missing)
+        return await self._build_tracing_gap(agent_id, task_id, result.missing)
 
     async def _check_submit_qa_field_gates(
         self, agent_id: UUID, task_id: UUID, t: Any

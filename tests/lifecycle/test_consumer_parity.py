@@ -519,6 +519,10 @@ async def test_i_am_done_matches_spec(
     deps = _make_deps(task_svc=task_svc)
     journal_svc = deps.journal
     journal_svc.has_reflect_for_task.return_value = True
+    # JOURNAL_DURING_WORK_AT_LEAST_ONE: ≥1 decision/learning/struggle.
+    journal_svc.has_decision_for_task.return_value = True
+    journal_svc.has_learning_for_task.return_value = False
+    journal_svc.has_struggle_for_task.return_value = False
     work_svc = deps.work_session
     work_svc.files_changed.return_value = []
     c = Choreographer(deps)

@@ -782,6 +782,12 @@ class JournalService(BaseService):
             agent_id, task_id, JournalEntryType.TASK_REFLECTION
         )
 
+    async def has_struggle_for_task(self, agent_id: UUID, task_id: UUID) -> bool:
+        """True iff a STRUGGLE entry exists for (agent, task)."""
+        return await self._has_entry_of_type(
+            agent_id, task_id, JournalEntryType.STRUGGLE
+        )
+
     async def write_struggle(
         self,
         *,

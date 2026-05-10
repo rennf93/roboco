@@ -114,6 +114,11 @@ async def test_i_am_done_reassigns_task_to_qa_agent() -> None:
 
     journal_svc = AsyncMock()
     journal_svc.has_reflect_for_task.return_value = True
+    # JOURNAL_DURING_WORK_AT_LEAST_ONE: at least one decision/learning/struggle
+    # must exist between claim and submit.
+    journal_svc.has_decision_for_task.return_value = True
+    journal_svc.has_learning_for_task.return_value = False
+    journal_svc.has_struggle_for_task.return_value = False
 
     deps = _make_deps(task=task_svc, work_session=work_svc, journal=journal_svc)
     deps.evidence_repo.journal_highlights_for_task.return_value = []
@@ -172,6 +177,10 @@ async def test_i_am_done_skips_reassign_when_no_qa_agent() -> None:
 
     journal_svc = AsyncMock()
     journal_svc.has_reflect_for_task.return_value = True
+    # JOURNAL_DURING_WORK_AT_LEAST_ONE.
+    journal_svc.has_decision_for_task.return_value = True
+    journal_svc.has_learning_for_task.return_value = False
+    journal_svc.has_struggle_for_task.return_value = False
 
     deps = _make_deps(task=task_svc, work_session=work_svc, journal=journal_svc)
     deps.evidence_repo.journal_highlights_for_task.return_value = []

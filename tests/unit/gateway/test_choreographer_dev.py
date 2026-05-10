@@ -323,6 +323,12 @@ async def test_i_am_done_blocks_when_acceptance_criteria_unaddressed() -> None:
     )
     journal_svc = AsyncMock()
     journal_svc.has_reflect_for_task.return_value = False
+    # JOURNAL_DURING_WORK_AT_LEAST_ONE is satisfied so the load-bearing
+    # rejection here is the unaddressed AC2 criterion, not the new
+    # mid-flight cadence gate.
+    journal_svc.has_decision_for_task.return_value = True
+    journal_svc.has_learning_for_task.return_value = False
+    journal_svc.has_struggle_for_task.return_value = False
     deps = _make_deps(task=task_svc, journal=journal_svc)
     c = Choreographer(deps)
 
@@ -371,6 +377,11 @@ async def test_i_am_done_reflect_note_addresses_acceptance_criteria() -> None:
     task_svc.submit_for_qa.return_value = t
     journal_svc = AsyncMock()
     journal_svc.has_reflect_for_task.return_value = True
+    # Satisfy JOURNAL_DURING_WORK_AT_LEAST_ONE so the test's narrow assertion
+    # (criteria-gap cleared) isn't masked by an unrelated tracing failure.
+    journal_svc.has_decision_for_task.return_value = True
+    journal_svc.has_learning_for_task.return_value = False
+    journal_svc.has_struggle_for_task.return_value = False
     deps = _make_deps(task=task_svc, journal=journal_svc)
     c = Choreographer(deps)
 
@@ -416,6 +427,11 @@ async def test_i_am_done_blocks_when_journal_reflect_missing() -> None:
     )
     journal_svc = AsyncMock()
     journal_svc.has_reflect_for_task.return_value = False  # no reflect
+    # Satisfy JOURNAL_DURING_WORK_AT_LEAST_ONE so journal:reflect is the
+    # load-bearing gap surfaced to the assertion.
+    journal_svc.has_decision_for_task.return_value = True
+    journal_svc.has_learning_for_task.return_value = False
+    journal_svc.has_struggle_for_task.return_value = False
     deps = _make_deps(task=task_svc, journal=journal_svc)
     c = Choreographer(deps)
 

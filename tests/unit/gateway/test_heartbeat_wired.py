@@ -124,6 +124,10 @@ async def test_i_am_done_calls_heartbeat() -> None:
     task_svc.qa_agent_for_team.return_value = None
     journal_svc = AsyncMock()
     journal_svc.has_reflect_for_task.return_value = True
+    # JOURNAL_DURING_WORK_AT_LEAST_ONE: ≥1 decision/learning/struggle entry.
+    journal_svc.has_decision_for_task.return_value = True
+    journal_svc.has_learning_for_task.return_value = False
+    journal_svc.has_struggle_for_task.return_value = False
     evidence_repo = AsyncMock()
     for method in (
         "list_unread_a2a",

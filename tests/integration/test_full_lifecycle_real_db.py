@@ -148,6 +148,7 @@ def _mock_journal_with_reflect() -> Any:
     journal.has_reflect_for_task.return_value = True
     journal.has_learning_for_task.return_value = True
     journal.has_decision_for_task.return_value = True
+    journal.has_struggle_for_task.return_value = False
     return journal
 
 

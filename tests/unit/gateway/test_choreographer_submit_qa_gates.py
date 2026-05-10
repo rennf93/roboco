@@ -98,6 +98,11 @@ async def test_i_am_done_auto_runs_submit_verification_when_in_progress() -> Non
     """Strict i_am_done auto-runs submit_verification (in_progress→verifying)
     so the dev doesn't need a separate verb. The previous NOT_SELF_VERIFIED
     gate required submit_for_verification which wasn't on any manifest.
+
+    The pre-flight tracing gate filters SELF_VERIFIED (it is set by the
+    auto-run submit_verification action and re-asserted by the spec's
+    own preconditions), so an unverified in_progress task can still
+    enter i_am_done.
     """
     agent_id = uuid4()
     task_id = uuid4()
@@ -120,6 +125,10 @@ async def test_i_am_done_auto_runs_submit_verification_when_in_progress() -> Non
     )
     journal_svc = AsyncMock()
     journal_svc.has_reflect_for_task.return_value = True
+    # JOURNAL_DURING_WORK_AT_LEAST_ONE: ≥1 decision/learning/struggle.
+    journal_svc.has_decision_for_task.return_value = True
+    journal_svc.has_learning_for_task.return_value = False
+    journal_svc.has_struggle_for_task.return_value = False
     work_svc = AsyncMock()
     work_svc.files_changed.return_value = ["foo.py"]
     deps = _make_deps(task=task_svc, journal=journal_svc, work_session=work_svc)
@@ -152,6 +161,10 @@ async def test_i_am_done_blocks_when_no_commits() -> None:
     )
     journal_svc = AsyncMock()
     journal_svc.has_reflect_for_task.return_value = True
+    # JOURNAL_DURING_WORK_AT_LEAST_ONE: ≥1 decision/learning/struggle.
+    journal_svc.has_decision_for_task.return_value = True
+    journal_svc.has_learning_for_task.return_value = False
+    journal_svc.has_struggle_for_task.return_value = False
     deps = _make_deps(task=task_svc, journal=journal_svc)
     c = Choreographer(deps)
 
@@ -186,13 +199,24 @@ async def test_i_am_done_blocks_when_no_pr() -> None:
     )
     journal_svc = AsyncMock()
     journal_svc.has_reflect_for_task.return_value = True
+    # JOURNAL_DURING_WORK_AT_LEAST_ONE: ≥1 decision/learning/struggle.
+    journal_svc.has_decision_for_task.return_value = True
+    journal_svc.has_learning_for_task.return_value = False
+    journal_svc.has_struggle_for_task.return_value = False
     deps = _make_deps(task=task_svc, journal=journal_svc)
     c = Choreographer(deps)
 
     env = await c.i_am_done(agent_id, task_id, "done")
     body = env.as_dict()
     assert body["error"] == "tracing_gap"
-    assert "NO_PR" in body["missing"] or "pr_number" in body["missing"]
+    # foundation.policy.tracing emits "pr_open" via PR_OPEN; the legacy
+    # _check_submit_qa_field_gates path emitted "NO_PR" but tracing now
+    # short-circuits before that field gate runs.
+    assert (
+        "pr_open" in body["missing"]
+        or "NO_PR" in body["missing"]
+        or "pr_number" in body["missing"]
+    )
     task_svc.submit_qa.assert_not_awaited()
 
 
@@ -214,6 +238,10 @@ async def test_i_am_done_blocks_when_no_progress() -> None:
     )
     journal_svc = AsyncMock()
     journal_svc.has_reflect_for_task.return_value = True
+    # JOURNAL_DURING_WORK_AT_LEAST_ONE: ≥1 decision/learning/struggle.
+    journal_svc.has_decision_for_task.return_value = True
+    journal_svc.has_learning_for_task.return_value = False
+    journal_svc.has_struggle_for_task.return_value = False
     deps = _make_deps(task=task_svc, journal=journal_svc)
     c = Choreographer(deps)
 
@@ -254,6 +282,10 @@ async def test_i_am_done_proceeds_when_all_gates_pass() -> None:
     )
     journal_svc = AsyncMock()
     journal_svc.has_reflect_for_task.return_value = True
+    # JOURNAL_DURING_WORK_AT_LEAST_ONE: ≥1 decision/learning/struggle.
+    journal_svc.has_decision_for_task.return_value = True
+    journal_svc.has_learning_for_task.return_value = False
+    journal_svc.has_struggle_for_task.return_value = False
     work_svc = AsyncMock()
     work_svc.files_changed.return_value = ["foo.py"]
     deps = _make_deps(task=task_svc, journal=journal_svc, work_session=work_svc)
