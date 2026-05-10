@@ -100,3 +100,44 @@ def test_backend_cell_has_canonical_membership() -> None:
         spec = communications.CHANNELS["backend-cell"]
         assert identity.Role.DEVELOPER in spec.read_roles
         assert identity.Role.AUDITOR in spec.silent_roles
+
+
+# ----- parse_priority -------------------------------------------------------
+
+
+def test_parse_priority_recognizes_string_normal() -> None:
+    assert communications.parse_priority("normal") is communications.Priority.NORMAL
+
+
+def test_parse_priority_recognizes_string_high() -> None:
+    assert communications.parse_priority("high") is communications.Priority.HIGH
+
+
+def test_parse_priority_recognizes_string_urgent() -> None:
+    assert communications.parse_priority("urgent") is communications.Priority.URGENT
+
+
+def test_parse_priority_unknown_string_falls_back_to_normal() -> None:
+    assert (
+        communications.parse_priority("definitely-not-real")
+        is communications.Priority.NORMAL
+    )
+
+
+def test_parse_priority_legacy_urgent_flag_maps_to_urgent() -> None:
+    assert (
+        communications.parse_priority(None, legacy_urgent_flag=True)
+        is communications.Priority.URGENT
+    )
+
+
+def test_parse_priority_default_is_normal() -> None:
+    assert communications.parse_priority(None) is communications.Priority.NORMAL
+
+
+def test_parse_priority_explicit_priority_wins_over_legacy_flag() -> None:
+    """Spec §5.5 precedence: priority string beats legacy urgent bool."""
+    assert (
+        communications.parse_priority("normal", legacy_urgent_flag=True)
+        is communications.Priority.NORMAL
+    )

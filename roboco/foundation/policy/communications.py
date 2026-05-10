@@ -20,6 +20,33 @@ from roboco.models.base import ChannelType, NotificationPriority, NotificationTy
 Priority = NotificationPriority
 
 
+def parse_priority(
+    raw_priority: object | None,
+    legacy_urgent_flag: bool = False,
+) -> NotificationPriority:
+    """Resolve a Priority value from mixed-source A2A inputs.
+
+    Precedence (P3 Task 9 — A2A urgency tristate):
+      1. ``raw_priority`` — string matching the Priority enum
+         ("normal" | "high" | "urgent"). Unknown values fall back to NORMAL.
+      2. ``legacy_urgent_flag`` — legacy bool from
+         ``SendMessageConfiguration.urgent`` or ``metadata['urgent']``;
+         True maps to URGENT.
+      3. Default: NORMAL.
+
+    Centralizing here keeps the tristate single-sourced and the call site
+    branch-light.
+    """
+    if raw_priority is not None:
+        try:
+            return Priority(str(raw_priority))
+        except ValueError:
+            return Priority.NORMAL
+    if legacy_urgent_flag:
+        return Priority.URGENT
+    return Priority.NORMAL
+
+
 # Roles permitted to call notify() (PM/Board/CEO; auditor is silent observer).
 NOTIFY_SENDER_ROLES: frozenset[Role] = frozenset(
     {

@@ -483,6 +483,8 @@ foundation-check:
 	uv run pytest tests/foundation/test_tracing_verb_parity.py --no-cov -q
 	@echo "==> foundation/journaling consumers"
 	uv run pytest tests/foundation/test_journaling_consumers.py --no-cov -q
+	@echo "==> foundation/communications consumers"
+	uv run pytest tests/foundation/test_communications_consumers.py --no-cov -q
 	@echo "==> foundation tests (full)"
 	uv run pytest tests/foundation/ --no-cov -q
 	@echo "==> postgres enum parity (offline-skip if no DB)"

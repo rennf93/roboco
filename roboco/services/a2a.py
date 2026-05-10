@@ -647,24 +647,14 @@ class A2AService:
                 hint = get_a2a_route_hint(from_agent, target_agent)
                 raise ValueError(f"{error_msg} Hint: {hint}")
         # Priority parsing: full tristate (NORMAL/HIGH/URGENT) survives
-        # end-to-end after P3 Task 9. Precedence:
-        #   1. metadata["priority"] (preferred — string value matching
-        #      the Priority enum: "normal" | "high" | "urgent")
-        #   2. SendMessageConfiguration.urgent (legacy bool — URGENT only)
-        #   3. metadata["urgent"] (legacy bool from agent_sdk fallback)
-        # Unknown values fall back to NORMAL rather than crashing.
-        from roboco.foundation.policy.communications import Priority
+        # end-to-end after P3 Task 9. Resolution rules live in
+        # foundation.policy.communications.parse_priority.
+        from roboco.foundation.policy.communications import parse_priority
 
-        raw_priority = metadata.get("priority")
-        if raw_priority is not None:
-            try:
-                priority = Priority(str(raw_priority))
-            except ValueError:
-                priority = Priority.NORMAL
-        elif (config and config.urgent) or metadata.get("urgent", False):
-            priority = Priority.URGENT
-        else:
-            priority = Priority.NORMAL
+        legacy_urgent = bool(
+            (config and config.urgent) or metadata.get("urgent", False)
+        )
+        priority = parse_priority(metadata.get("priority"), legacy_urgent)
 
         # Extract message content
         _, _, message_text = self.extract_message_text(message)
