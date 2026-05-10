@@ -11,6 +11,7 @@ from roboco.seeds.initial_data import (
     CHANNEL_MEMBERSHIPS,
     DEFAULT_CHANNELS,
 )
+from roboco.services.gateway import content_actions
 
 # Cell-member roles that are subject to a channel's team_scope. Cross-cell
 # roles (MAIN_PM, AUDITOR, CEO, board) are NOT filtered — they participate
@@ -140,3 +141,20 @@ def test_auditor_silent_access_derives_from_foundation() -> None:
         f"auditor silent drift: seed={sorted(AUDITOR_SILENT_ACCESS)} "
         f"expected={sorted(expected)}"
     )
+
+
+def test_content_actions_notify_allowed_roles_matches_foundation() -> None:
+    cfg_set = {
+        r if isinstance(r, str) else r.value
+        for r in content_actions._NOTIFY_ALLOWED_ROLES
+    }
+    foundation_set = {r.value for r in communications.NOTIFY_SENDER_ROLES}
+    assert cfg_set == foundation_set, (
+        f"_NOTIFY_ALLOWED_ROLES drift: cfg={cfg_set} foundation={foundation_set}"
+    )
+
+
+def test_content_actions_valid_priorities_matches_foundation() -> None:
+    cfg = set(content_actions._VALID_NOTIFY_PRIORITIES)
+    foundation = {p.value for p in communications.Priority}
+    assert cfg == foundation

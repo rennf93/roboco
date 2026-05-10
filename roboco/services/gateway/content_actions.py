@@ -15,6 +15,7 @@ import re
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
+from roboco.foundation.policy import communications as _comms
 from roboco.foundation.policy.journaling import Scope as _Scope
 from roboco.services.gateway.commit_validator import validate_commit_message
 from roboco.services.gateway.envelope import Envelope
@@ -37,9 +38,13 @@ _TASK_ID_PREFIX_RE = re.compile(r"^\s*\[[a-zA-Z0-9_-]+\]\s*")
 # table has been folded into `roboco.lifecycle.spec`, but `commit` and
 # `notify` are content tools (not lifecycle intents) so they live here as
 # explicit role frozensets — not in `_INTENT_VERBS`.
+#
+# Notification sender + priority allowlists are canonical in
+# foundation.policy.communications. Derived as string frozensets here so
+# the existing call sites that compare strings keep working.
 _COMMIT_ALLOWED_ROLES: frozenset[str] = frozenset({"developer", "documenter"})
 _NOTIFY_ALLOWED_ROLES: frozenset[str] = frozenset(
-    {"cell_pm", "main_pm", "product_owner", "head_marketing"}
+    r.value for r in _comms.NOTIFY_SENDER_ROLES
 )
 
 
@@ -73,7 +78,7 @@ class ContentActionsDeps:
     notifications: Any
 
 
-_VALID_NOTIFY_PRIORITIES: frozenset[str] = frozenset({"normal", "high", "urgent"})
+_VALID_NOTIFY_PRIORITIES: frozenset[str] = frozenset(p.value for p in _comms.Priority)
 
 
 class ContentActions:
