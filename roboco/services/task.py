@@ -5067,6 +5067,7 @@ class TaskService(BaseService):
             assigned_to=req.assigned_to,
             estimated_complexity=req.estimated_complexity,
             task_type=req.task_type,
+            nature=req.nature,
             status=req.status or inferred_status,
         )
         return await self.create(prepared)

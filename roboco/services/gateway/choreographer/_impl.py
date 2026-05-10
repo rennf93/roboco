@@ -1841,11 +1841,15 @@ class Choreographer:
         inputs: DelegateInputs,
     ) -> Any:
         """Resolve enums + AGENT_UUIDS slug and call TaskService.create_subtask."""
+        from roboco.models.base import TaskNature
         from roboco.models.task import TaskCreateRequest
         from roboco.seeds.initial_data import AGENT_UUIDS
 
         team_enum, type_enum, complexity_enum = self._resolve_delegate_enums(inputs)
         assignee_id = UUID(AGENT_UUIDS[inputs.assigned_to])
+        # nature is required on TaskCreateRequest (TASK_AT_CREATE). Task 19
+        # threads it through DelegateInputs from the HTTP boundary; for now
+        # we pass TECHNICAL to preserve the prior implicit default.
         req = TaskCreateRequest(
             title=inputs.title,
             description=inputs.description,
@@ -1856,6 +1860,7 @@ class Choreographer:
             parent_task_id=parent_task_id,
             assigned_to=assignee_id,
             task_type=type_enum,
+            nature=TaskNature.TECHNICAL,
             estimated_complexity=complexity_enum,
         )
         return await self.task.create_subtask(req)

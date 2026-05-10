@@ -26,9 +26,12 @@ from roboco.db.tables import (
 from roboco.models import AgentRole, AgentStatus, Team
 from roboco.models.base import (
     ChannelType,
+    Complexity,
     SessionStatus,
     SubstituteReason,
+    TaskNature,
     TaskStatus,
+    TaskType,
 )
 from roboco.models.permissions import AgentContext
 from roboco.models.task import TaskCreateRequest
@@ -93,6 +96,9 @@ def _req(setup: dict, **overrides) -> TaskCreateRequest:
         team=overrides.pop("team", Team.BACKEND),
         created_by=setup["agent_id"],
         project_id=setup["project_id"],
+        task_type=overrides.pop("task_type", TaskType.CODE),
+        nature=overrides.pop("nature", TaskNature.TECHNICAL),
+        estimated_complexity=overrides.pop("estimated_complexity", Complexity.MEDIUM),
         **overrides,
     )
 
