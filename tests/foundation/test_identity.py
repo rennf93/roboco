@@ -114,3 +114,61 @@ def test_no_agent_declares_marketing_team() -> None:
     assert using_marketing == [], (
         f"agents claiming Team.MARKETING (legacy): {using_marketing}"
     )
+
+
+def test_pm_roles_is_canonical() -> None:
+    """PM_ROLES is exactly {CELL_PM, MAIN_PM} — replaces both forked variants."""
+    assert (
+        frozenset({identity.Role.CELL_PM, identity.Role.MAIN_PM}) == identity.PM_ROLES
+    )
+
+
+def test_board_roles_includes_auditor() -> None:
+    """BOARD_ROLES is the strategic layer (PO + Head Marketing + Auditor)."""
+    assert (
+        frozenset(
+            {
+                identity.Role.PRODUCT_OWNER,
+                identity.Role.HEAD_MARKETING,
+                identity.Role.AUDITOR,
+            }
+        )
+        == identity.BOARD_ROLES
+    )
+
+
+def test_dev_roles_has_developer_only() -> None:
+    """DEV_ROLES intentionally narrow — devs only, no QA/Doc."""
+    assert frozenset({identity.Role.DEVELOPER}) == identity.DEV_ROLES
+
+
+def test_all_roles_covers_enum() -> None:
+    """ALL_ROLES matches the Role enum exactly."""
+    assert frozenset(identity.Role) == identity.ALL_ROLES
+
+
+def test_role_level_covers_every_role() -> None:
+    """Every Role has a RoleLevel. SYSTEM is the sentinel (lowest)."""
+    for role in identity.Role:
+        assert role in identity.ROLE_LEVEL, f"Role.{role.name} missing from ROLE_LEVEL"
+    assert identity.ROLE_LEVEL[identity.Role.SYSTEM] == identity.RoleLevel.SYSTEM
+    assert identity.ROLE_LEVEL[identity.Role.CEO] == identity.RoleLevel.CEO
+
+
+def test_role_level_orders_correctly() -> None:
+    """CEO > AUDITOR > BOARD > MAIN_PM > CELL_PM > DOC > QA > DEV > SYSTEM."""
+    levels = [
+        identity.ROLE_LEVEL[r]
+        for r in (
+            identity.Role.CEO,
+            identity.Role.AUDITOR,
+            identity.Role.PRODUCT_OWNER,  # BOARD level
+            identity.Role.MAIN_PM,
+            identity.Role.CELL_PM,
+            identity.Role.DOCUMENTER,
+            identity.Role.QA,
+            identity.Role.DEVELOPER,
+            identity.Role.SYSTEM,
+        )
+    ]
+    assert levels == sorted(levels, reverse=True)

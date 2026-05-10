@@ -182,3 +182,28 @@ AGENTS: dict[str, AgentRow] = {
         "auditor", Role.AUDITOR, Team.BOARD, _u("00000000-0000-0000-0004-000000000004")
     ),
 }
+
+
+# Role-sets (frozensets so they're hashable + immutable)
+PM_ROLES: frozenset[Role] = frozenset({Role.CELL_PM, Role.MAIN_PM})
+BOARD_ROLES: frozenset[Role] = frozenset(
+    {Role.PRODUCT_OWNER, Role.HEAD_MARKETING, Role.AUDITOR}
+)
+DEV_ROLES: frozenset[Role] = frozenset({Role.DEVELOPER})
+ALL_ROLES: frozenset[Role] = frozenset(Role)
+
+# Hierarchical level for "X or above" checks. SYSTEM is the sentinel below all
+# real roles. Auditor sits above main_pm because the auditor can read
+# everywhere; CEO is the absolute ceiling.
+ROLE_LEVEL: dict[Role, RoleLevel] = {
+    Role.SYSTEM: RoleLevel.SYSTEM,
+    Role.DEVELOPER: RoleLevel.DEV,
+    Role.QA: RoleLevel.QA,
+    Role.DOCUMENTER: RoleLevel.DOCUMENTER,
+    Role.CELL_PM: RoleLevel.CELL_PM,
+    Role.MAIN_PM: RoleLevel.MAIN_PM,
+    Role.PRODUCT_OWNER: RoleLevel.BOARD,
+    Role.HEAD_MARKETING: RoleLevel.BOARD,
+    Role.AUDITOR: RoleLevel.AUDITOR,
+    Role.CEO: RoleLevel.CEO,
+}
