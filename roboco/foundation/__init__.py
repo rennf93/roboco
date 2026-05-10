@@ -42,3 +42,9 @@ __all__ = [
     "slugs_for_team",
     "team_for_slug",
 ]
+
+# Run validators at import. If foundation tables are inconsistent, the
+# orchestrator container won't start — which is correct.
+from roboco.foundation._validate import run_all as _run_foundation_validators
+
+_run_foundation_validators()
