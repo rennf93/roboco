@@ -251,6 +251,20 @@ class ContentActions:
             get_agent_channels,
         )
 
+        # Spec §5.5: auditor is silent — defense-in-depth runtime guard.
+        # The spawn manifest already omits `say` from the auditor's tool
+        # surface, but that is convention-only. This guard refuses any
+        # call that bypassed the manifest (direct verb dispatch, test
+        # harness, future routing change) so the silent-observer rule
+        # holds regardless of how the call arrived.
+        agent = await self.task.agent_for(agent_id)
+        if agent is not None and str(agent.role) == "auditor":
+            return Envelope.not_authorized(
+                message="auditor is a silent observer; say is not permitted",
+                remediate="record observations via note(scope='reflect') instead",
+                context_briefing={},
+            )
+
         if task_id is not None:
             if reject := await self._verify_explicit_task_ownership(agent_id, task_id):
                 return reject
@@ -292,6 +306,17 @@ class ContentActions:
         skill: str | None = None,
     ) -> Envelope:
         """A2A direct message. Requires task_id (active or explicit)."""
+        # Spec §5.5: auditor is silent — defense-in-depth runtime guard.
+        # See say() above for rationale. Mirrored here because dm() is
+        # the other channel through which the auditor could "speak".
+        agent = await self.task.agent_for(agent_id)
+        if agent is not None and str(agent.role) == "auditor":
+            return Envelope.not_authorized(
+                message="auditor is a silent observer; dm is not permitted",
+                remediate="record observations via note(scope='reflect') instead",
+                context_briefing={},
+            )
+
         if task_id is not None:
             if reject := await self._verify_explicit_task_ownership(agent_id, task_id):
                 return reject
