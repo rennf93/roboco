@@ -11,6 +11,18 @@ from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field
 
+# AgentRole and Team are canonicalized in roboco/foundation/identity.py.
+# These bindings keep existing imports (`from roboco.models.base import
+# AgentRole, Team`) working during the migration. SQLAlchemy column types
+# bound as `sa.Enum(AgentRole, name="agentrole")` continue to work because
+# Python identity is preserved — AgentRole IS identity.Role (same class
+# object), so SQLAlchemy maps to the same postgres `agentrole` enum.
+# Removed in Phase 4 housekeeping after every consumer is migrated.
+from roboco.foundation import identity
+
+AgentRole = identity.Role
+Team = identity.Team
+
 # =============================================================================
 # ENUMS
 # =============================================================================
@@ -71,42 +83,6 @@ class Complexity(StrEnum):
     LOW = "low"
     MEDIUM = "medium"
     HIGH = "high"
-
-
-class Team(StrEnum):
-    """Organizational teams/cells."""
-
-    BACKEND = "backend"
-    FRONTEND = "frontend"
-    UX_UI = "ux_ui"
-    FULLSTACK = "fullstack"
-    MAIN_PM = "main_pm"
-    BOARD = "board"
-    MARKETING = "marketing"
-
-
-class AgentRole(StrEnum):
-    """Agent roles in the organization."""
-
-    # System (internal orchestrator operations)
-    SYSTEM = "system"
-
-    # Executive
-    CEO = "ceo"
-
-    # Board
-    PRODUCT_OWNER = "product_owner"
-    HEAD_MARKETING = "head_marketing"
-    AUDITOR = "auditor"
-
-    # Management
-    MAIN_PM = "main_pm"
-    CELL_PM = "cell_pm"
-
-    # Cell Members
-    DEVELOPER = "developer"
-    QA = "qa"
-    DOCUMENTER = "documenter"
 
 
 class AgentStatus(StrEnum):

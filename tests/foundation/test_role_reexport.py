@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from roboco.foundation import identity
 from roboco.lifecycle import spec
+from roboco.models.base import AgentRole, Team
 
 
 def test_lifecycle_spec_role_is_foundation_role() -> None:
@@ -18,3 +19,11 @@ def test_lifecycle_spec_role_is_foundation_role() -> None:
 def test_lifecycle_spec_role_has_system_value() -> None:
     """The new SYSTEM role added to foundation must be visible via the shim."""
     assert "system" in {r.value for r in spec.Role}
+
+
+def test_models_base_agentrole_is_foundation_role() -> None:
+    assert AgentRole is identity.Role
+
+
+def test_models_base_team_is_foundation_team() -> None:
+    assert Team is identity.Team

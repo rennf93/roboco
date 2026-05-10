@@ -420,7 +420,10 @@ async def test_resolve_parent_branch_uses_ancestor(
 def test_resolve_team_dir_fullstack(task_setup: dict) -> None:
     svc = task_setup["svc"]
     fake_project = MagicMock()
-    fake_project.assigned_cell = Team.FULLSTACK
+    # `fullstack` is a legacy assigned_cell value handled by _resolve_team_dir
+    # but is NOT a member of the canonical foundation Team enum. Use the
+    # literal string to exercise the str(...) branch in the source.
+    fake_project.assigned_cell = "fullstack"
     fake_project.slug = "p"
     task = MagicMock()
     task.team = Team.BACKEND
@@ -431,7 +434,7 @@ def test_resolve_team_dir_fullstack(task_setup: dict) -> None:
 def test_resolve_team_dir_fullstack_no_team(task_setup: dict) -> None:
     svc = task_setup["svc"]
     fake_project = MagicMock()
-    fake_project.assigned_cell = Team.FULLSTACK
+    fake_project.assigned_cell = "fullstack"
     fake_project.slug = "p"
     task = MagicMock()
     task.team = None
