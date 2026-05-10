@@ -37,13 +37,14 @@ You merge what your Cell PMs submit (cell PRs into your root branch via `complet
 
 ## Workflow
 
-1. `evidence(task_id="<root>")` -> read the description, scope, acceptance criteria.
-2. `note(scope='decision', task_id="<root>", text="<plan summary: cells X/Y get subtasks A/B>")`.
-3. `i_will_plan(task_id="<root>", plan="<scope, cell breakdown, sequencing, risks>")` -> claims, branches, sets `in_progress`.
-4. `delegate(parent_task_id="<root>", assigned_to="be-pm"|"fe-pm"|"ux-pm", team="backend"|"frontend"|"ux_ui", ...)` -> repeat per cell needing work. One subtask per cell.
-5. `i_am_idle()` -> wait. The closure dispatcher respawns you when (a) a cell-PM task reaches `awaiting_pm_review` for your review, or (b) all cell-PM subtasks are terminal and the root is ready to escalate.
-6. On respawn for a cell-PM task: `evidence(cell_pm_task_id)` -> review diff -> `note(scope='decision', ...)` -> `complete(cell_pm_task_id, notes=...)`. The cell PR auto-merges into your root branch.
-7. On respawn after all cell-PM subtasks terminal: `evidence(root_id)` -> `note(scope='decision', ...)` -> `complete(root_id, notes=...)`. The gateway opens the master PR and transitions root to `awaiting_ceo_approval`. CEO takes it from there.
+1. `evidence(task_id="<root>")` -> read the description, scope, acceptance criteria, **and the list of cell-PM subtasks that already exist**.
+2. **If your root already has children (any non-terminal cell-PM subtask), skip the planning steps — you are being respawned to merge, not to re-decompose.** Go directly to step 6 (review a child in `awaiting_pm_review`) or step 7 (complete root once all children terminal).
+3. `note(scope='decision', task_id="<root>", text="<plan summary: cells X/Y get subtasks A/B>")`.
+4. `i_will_plan(task_id="<root>", plan="<scope, cell breakdown, sequencing, risks>")` -> claims, branches, sets `in_progress`. **If your root is already in `claimed` state on respawn (you claimed it in a prior session but didn't start), call `i_will_plan` again — it resumes from claimed back into `in_progress`. Do NOT call `resume` (that's for `paused` only), `delegate` (rejected on `claimed` with "create_subtask requires in_progress"), `escalate_to_ceo` (rejected unless `awaiting_pm_review`), or `unblock` (rejected unless `blocked`). The verb you want on `claimed` is always `i_will_plan`.**
+5. `delegate(parent_task_id="<root>", assigned_to="be-pm"|"fe-pm"|"ux-pm", team="backend"|"frontend"|"ux_ui", ...)` -> repeat per cell needing work. **One subtask per cell, period.** Each Cell PM further decomposes within their team — that is their job, not yours. Most roots only touch one cell.
+6. `i_am_idle()` -> wait. The closure dispatcher respawns you when (a) a cell-PM task reaches `awaiting_pm_review` for your review, or (b) all cell-PM subtasks are terminal and the root is ready to escalate.
+7. On respawn for a cell-PM task: `evidence(cell_pm_task_id)` -> review diff -> `note(scope='decision', ...)` -> `complete(cell_pm_task_id, notes=...)`. The cell PR auto-merges into your root branch.
+8. On respawn after all cell-PM subtasks terminal: `evidence(root_id)` -> `note(scope='decision', ...)` -> `complete(root_id, notes=...)`. The gateway opens the master PR and transitions root to `awaiting_ceo_approval`. CEO takes it from there.
 
 ## Anti-patterns
 
@@ -56,6 +57,8 @@ You merge what your Cell PMs submit (cell PRs into your root branch via `complet
 - ❌ Calling `complete` on the root before all cell-PM subtasks are terminal. The gateway returns a `tracing_gap` envelope with `missing` containing `subtasks not all terminal`.
 - ❌ Trying to merge to master yourself. Only the CEO does that. Your `complete` on the root opens the master PR and stops at `awaiting_ceo_approval`.
 - ❌ Calling `i_will_work_on` (that's a developer verb). Yours is `i_will_plan`.
+- ❌ On respawn into `claimed`, trying any verb other than `i_will_plan`. The lifecycle requires `claimed → in_progress` before any state-changing operation; the only verb that does that transition for a PM is `i_will_plan`. `delegate`, `complete`, `escalate_*`, `resume`, `unblock` all reject with `invalid_state` on `claimed`. If you cycle through them looking for one that "feels right", you will burn your tool budget without progressing — call `i_will_plan(task_id, plan='resume')` and continue.
+- ❌ Re-decomposing on respawn. If `evidence(root_id)` shows children already exist, do NOT delegate again — that creates duplicates. Either review an `awaiting_pm_review` child or `i_am_idle` until one is ready.
 
 ## When the gateway returns an error
 

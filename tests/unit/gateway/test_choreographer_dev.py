@@ -284,8 +284,13 @@ async def test_i_will_work_on_invalid_state_returns_invalid_state() -> None:
 
 @pytest.mark.asyncio
 async def test_i_am_done_blocks_when_acceptance_criteria_unaddressed() -> None:
-    """Tracing-gate (acceptance criteria) fires after the spec gate
-    accepts ownership/commits."""
+    """Without a reflect note, unaddressed criteria block i_am_done.
+
+    The reflect note is treated as the addressing artifact for any
+    criterion not explicitly cited via acceptance_criteria_status —
+    so this test deliberately omits reflect to surface the criterion
+    rejection.
+    """
     agent_id = uuid4()
     task_id = uuid4()
     t = MagicMock(
@@ -317,7 +322,7 @@ async def test_i_am_done_blocks_when_acceptance_criteria_unaddressed() -> None:
         id=agent_id, role="developer", team="backend", slug=None
     )
     journal_svc = AsyncMock()
-    journal_svc.has_reflect_for_task.return_value = True
+    journal_svc.has_reflect_for_task.return_value = False
     deps = _make_deps(task=task_svc, journal=journal_svc)
     c = Choreographer(deps)
 
@@ -325,6 +330,56 @@ async def test_i_am_done_blocks_when_acceptance_criteria_unaddressed() -> None:
     body = env.as_dict()
     assert body["error"] == "tracing_gap"
     assert any("AC2" in m for m in body["missing"])
+
+
+@pytest.mark.asyncio
+async def test_i_am_done_reflect_note_addresses_acceptance_criteria() -> None:
+    """A reflect note clears the acceptance-criteria gate.
+
+    Per `_check_acceptance_criteria`, the reflect note is the agent's
+    attestation that the work meets every criterion; once it's present,
+    unaddressed criteria no longer block the submission. The other
+    tracing requirements (commits, PR, progress) still apply.
+    """
+    agent_id = uuid4()
+    task_id = uuid4()
+    t = MagicMock(
+        id=task_id,
+        status="in_progress",
+        assigned_to=agent_id,
+        plan={"x": 1},
+        branch_name="feature/backend/abc",
+        work_session_id=uuid4(),
+        self_verified=False,
+        progress_updates=[{"message": "p"}],
+        acceptance_criteria=["AC1", "AC2"],
+        acceptance_criteria_status=[],  # nothing cited explicitly
+        commits=[{"sha": "abc"}],
+        pr_number=8,
+        pr_url="https://x/pr/8",
+        team="backend",
+        documents=[],
+        dev_notes="",
+        qa_notes="",
+    )
+    task_svc = AsyncMock()
+    task_svc.get.return_value = t
+    task_svc.agent_for.return_value = MagicMock(
+        id=agent_id, role="developer", team="backend", slug=None
+    )
+    task_svc.submit_verification.return_value = t
+    task_svc.submit_for_qa.return_value = t
+    journal_svc = AsyncMock()
+    journal_svc.has_reflect_for_task.return_value = True
+    deps = _make_deps(task=task_svc, journal=journal_svc)
+    c = Choreographer(deps)
+
+    env = await c.i_am_done(agent_id, task_id, "done")
+    body = env.as_dict()
+    # criteria gate is cleared by reflect; if anything else fails, it
+    # must NOT be the AC2 criterion.
+    if body.get("error") == "tracing_gap":
+        assert not any("AC2" in m for m in body.get("missing", []))
 
 
 @pytest.mark.asyncio
