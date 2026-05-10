@@ -213,3 +213,125 @@ def check_requirements(
     for req in requirements:
         missing.extend(_CHECKERS[req](task, context))
     return GateResult(passed=len(missing) == 0, missing=missing)
+
+
+# Verb name → required Requirements (single source of truth).
+VERB_REQUIREMENTS: dict[str, frozenset[Requirement]] = {
+    # Developer claim — pre-gateway DEVELOPER.md required a work_log entry on claim.
+    # PLAN mirrors spec.PRECONDITION_PLAN at the tracing layer (single source of truth).
+    "i_will_work_on": frozenset(
+        {
+            Requirement.PLAN,
+            Requirement.JOURNAL_NOTE_AT_CLAIM,
+        }
+    ),
+    # PM claim — pre-gateway PM.md required a journal:decision on plan.
+    "i_will_plan": frozenset(
+        {
+            Requirement.PLAN,
+            Requirement.JOURNAL_DECISION_AT_CLAIM,
+        }
+    ),
+    # PM delegate — pre-gateway PM.md required journal:decision before each delegate.
+    "delegate": frozenset({Requirement.JOURNAL_DECISION}),
+    # Developer submit — adds JOURNAL_DURING_WORK_AT_LEAST_ONE for mid-flight cadence.
+    # SELF_VERIFIED is set by the auto-run in_progress→verifying transition; it
+    # stays in the required-set as a defense-in-depth backstop.
+    "i_am_done": frozenset(
+        {
+            Requirement.COMMITS_AT_LEAST_ONE,
+            Requirement.PR_OPEN,
+            Requirement.PROGRESS_AT_LEAST_ONE,
+            Requirement.SELF_VERIFIED,
+            Requirement.JOURNAL_REFLECT,
+            Requirement.JOURNAL_DURING_WORK_AT_LEAST_ONE,
+            Requirement.ACCEPTANCE_CRITERIA_ADDRESSED,
+        }
+    ),
+    # QA pass/fail.
+    "pass_review": frozenset(
+        {
+            Requirement.QA_NOTES_MIN_CHARS,
+            Requirement.QA_EVIDENCE_INSPECTED,
+            Requirement.JOURNAL_LEARNING,
+        }
+    ),
+    "fail_review": frozenset(
+        {
+            Requirement.QA_NOTES_MIN_CHARS,
+            Requirement.QA_EVIDENCE_INSPECTED,
+            Requirement.JOURNAL_LEARNING,
+        }
+    ),
+    # Doc submit.
+    "i_documented": frozenset(
+        {
+            Requirement.DOCS_FILES_NON_EMPTY,
+            Requirement.DOCS_NOTES_MIN_CHARS,
+            Requirement.JOURNAL_REFLECT,
+        }
+    ),
+    # PM submit-up — adds JOURNAL_REFLECT (pre-gateway required decision AND reflect).
+    "submit_up": frozenset(
+        {
+            Requirement.SUBTASKS_TERMINAL,
+            Requirement.JOURNAL_DECISION,
+            Requirement.JOURNAL_REFLECT,
+            Requirement.NOTES_MIN_CHARS,
+        }
+    ),
+    # PM complete — adds JOURNAL_REFLECT (parity with submit_up).
+    "complete": frozenset(
+        {
+            Requirement.JOURNAL_DECISION,
+            Requirement.JOURNAL_REFLECT,
+            Requirement.NOTES_MIN_CHARS,
+        }
+    ),
+    # PM unblock — was inline at _impl.py:2192-2200; now declared.
+    "unblock": frozenset({Requirement.JOURNAL_DECISION}),
+    # PM escalate up — was inline.
+    "escalate_up": frozenset({Requirement.JOURNAL_DECISION}),
+    # Board/MainPM escalate to CEO.
+    "escalate_to_ceo": frozenset({Requirement.JOURNAL_DECISION}),
+    # Developer block — pre-gateway required journal:struggle.
+    "i_am_blocked": frozenset({Requirement.JOURNAL_STRUGGLE}),
+}
+
+
+# Verbs that intentionally have no tracing requirement (read-only / discovery /
+# pure state moves). Each entry is a deliberate decision, not an oversight.
+VERBS_WITHOUT_TRACING: frozenset[str] = frozenset(
+    {
+        "give_me_work",  # discovery — no state change
+        "triage",  # read-only listing
+        "triage_all",  # read-only listing
+        "evidence",  # read-only evidence dump
+        "i_am_idle",  # signal only
+        "unclaim",  # voluntary release; no rationale required
+        "resume",  # pure state move paused→in_progress
+        # claim_review's tracing applies on pass_review / fail_review.
+        "claim_review",
+        # claim_doc_task's tracing applies on i_documented.
+        "claim_doc_task",
+        # open_pr is a mechanical push+open; preconditions are inline.
+        "open_pr",
+    }
+)
+
+
+def requirements_for(verb: str) -> frozenset[Requirement]:
+    """Lookup the required-set for a verb.
+
+    Raises KeyError when the verb is neither in VERB_REQUIREMENTS nor in
+    VERBS_WITHOUT_TRACING — caller should never reach a verb name unknown to
+    foundation.
+    """
+    if verb in VERB_REQUIREMENTS:
+        return VERB_REQUIREMENTS[verb]
+    if verb in VERBS_WITHOUT_TRACING:
+        return frozenset()
+    raise KeyError(
+        f"unknown verb in tracing table: {verb!r} "
+        f"(known: {sorted(set(VERB_REQUIREMENTS) | VERBS_WITHOUT_TRACING)})"
+    )
