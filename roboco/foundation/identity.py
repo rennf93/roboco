@@ -207,3 +207,30 @@ ROLE_LEVEL: dict[Role, RoleLevel] = {
     Role.AUDITOR: RoleLevel.AUDITOR,
     Role.CEO: RoleLevel.CEO,
 }
+
+
+def agent_for_slug(slug: str) -> AgentRow:
+    """Return the AgentRow for a slug; raises KeyError on unknown."""
+    if slug not in AGENTS:
+        raise KeyError(f"unknown agent slug: {slug!r} (known: {sorted(AGENTS)})")
+    return AGENTS[slug]
+
+
+def slugs_for_role(role: Role) -> frozenset[str]:
+    """Return the frozenset of slugs whose agent has this role."""
+    return frozenset(slug for slug, row in AGENTS.items() if row.role == role)
+
+
+def slugs_for_team(team: Team) -> frozenset[str]:
+    """Return the frozenset of slugs whose agent is on this team."""
+    return frozenset(slug for slug, row in AGENTS.items() if row.team == team)
+
+
+def role_for_slug(slug: str) -> Role:
+    """Shorthand for `agent_for_slug(slug).role`."""
+    return agent_for_slug(slug).role
+
+
+def team_for_slug(slug: str) -> Team:
+    """Shorthand for `agent_for_slug(slug).team`."""
+    return agent_for_slug(slug).team

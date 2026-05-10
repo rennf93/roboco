@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from enum import IntEnum
 
+import pytest
 from roboco.foundation import identity
 from roboco.seeds.initial_data import AGENT_UUIDS
 
@@ -172,3 +173,48 @@ def test_role_level_orders_correctly() -> None:
         )
     ]
     assert levels == sorted(levels, reverse=True)
+
+
+def test_agent_for_slug_returns_row() -> None:
+    row = identity.agent_for_slug("be-dev-1")
+    assert row.slug == "be-dev-1"
+    assert row.role == identity.Role.DEVELOPER
+    assert row.team == identity.Team.BACKEND
+
+
+def test_agent_for_slug_unknown_raises_key_error() -> None:
+    with pytest.raises(KeyError) as exc_info:
+        identity.agent_for_slug("notreal-1")
+    assert "notreal-1" in str(exc_info.value)
+
+
+def test_slugs_for_role_developer() -> None:
+    devs = identity.slugs_for_role(identity.Role.DEVELOPER)
+    assert devs == frozenset(
+        {"be-dev-1", "be-dev-2", "fe-dev-1", "fe-dev-2", "ux-dev-1", "ux-dev-2"}
+    )
+
+
+def test_slugs_for_role_system_returns_singleton() -> None:
+    assert identity.slugs_for_role(identity.Role.SYSTEM) == frozenset({"system"})
+
+
+def test_slugs_for_team_backend() -> None:
+    backend = identity.slugs_for_team(identity.Team.BACKEND)
+    assert backend == frozenset({"be-dev-1", "be-dev-2", "be-qa", "be-pm", "be-doc"})
+
+
+def test_slugs_for_team_marketing_is_empty() -> None:
+    """Team.MARKETING is legacy — no agent declares it."""
+    assert identity.slugs_for_team(identity.Team.MARKETING) == frozenset()
+
+
+def test_role_for_slug() -> None:
+    assert identity.role_for_slug("be-pm") == identity.Role.CELL_PM
+    assert identity.role_for_slug("ceo") == identity.Role.CEO
+
+
+def test_team_for_slug() -> None:
+    assert identity.team_for_slug("be-dev-1") == identity.Team.BACKEND
+    assert identity.team_for_slug("ceo") == identity.Team.BOARD
+    assert identity.team_for_slug("head-marketing") == identity.Team.BOARD
