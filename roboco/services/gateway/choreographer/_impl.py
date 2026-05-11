@@ -1923,15 +1923,9 @@ class Choreographer:
                 task_id=parent_task_id,
                 verb="delegate",
             )
-        new_task = await self._create_subtask_from_inputs(
-            pm_agent_id, parent_task_id, parent, inputs
+        return await self._create_subtask_and_envelope(
+            pm_agent_id, parent, inputs, briefing, role_str
         )
-        return Envelope.ok(
-            status="created",
-            task_id=str(new_task.id),
-            next=spec_module._INTENT_VERBS["delegate"].next_hint(new_task),
-            context_briefing=briefing,
-        ).with_introspection(task=new_task, role=role_str)
 
     # Gate Set B subtask cap (pre-gateway implicit, made explicit here).
     # Soft warn at 8, hard block at 13. Cap enforced by ``_subtask_cap_guard``.
@@ -2174,6 +2168,54 @@ class Choreographer:
             ),
             context_briefing=briefing,
         ).with_introspection(task=parent, role=role_str)
+
+    async def _create_subtask_and_envelope(
+        self,
+        pm_agent_id: UUID,
+        parent: Any,
+        inputs: DelegateInputs,
+        briefing: dict[str, Any],
+        role_str: str,
+    ) -> Envelope:
+        """Run subtask creation and translate completeness raises into envelopes.
+
+        The defensive raises inside `_create_subtask_from_inputs` (Task 18)
+        catch under-filled payloads that slipped past the gateway gate. Without
+        this translator they surface as Starlette 500s — which means the agent
+        never sees `field_hints`, retries indefinitely, and looks like a
+        runaway. Converting to `Envelope.incomplete_input` here closes that
+        loop so the agent gets the same interrogation-pattern reply it would
+        have gotten from the upfront completeness check.
+        """
+        from roboco.foundation.policy.task_completeness import TaskCompletenessError
+
+        parent_task_id = parent.id
+        try:
+            new_task = await self._create_subtask_from_inputs(
+                pm_agent_id, parent_task_id, parent, inputs
+            )
+        except TaskCompletenessError as exc:
+            return await self._emit_rejection(
+                Envelope.incomplete_input(
+                    missing=exc.missing,
+                    field_hints=exc.field_hints,
+                    remediate=(
+                        "re-issue delegate(...) with corrected fields: "
+                        f"{', '.join(exc.missing)}. Each field's required "
+                        "shape is in `field_hints`."
+                    ),
+                    context_briefing=briefing,
+                ).with_introspection(task=parent, role=role_str),
+                agent_id=pm_agent_id,
+                task_id=parent_task_id,
+                verb="delegate",
+            )
+        return Envelope.ok(
+            status="created",
+            task_id=str(new_task.id),
+            next=spec_module._INTENT_VERBS["delegate"].next_hint(new_task),
+            context_briefing=briefing,
+        ).with_introspection(task=new_task, role=role_str)
 
     async def _create_subtask_from_inputs(
         self,
