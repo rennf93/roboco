@@ -53,13 +53,15 @@ You do NOT re-implement the developer's work. You do NOT review or critique the 
 
 ## Journaling cadence
 
-| Scope | When | Example |
+Decision and reflect scopes take structured fields — fill them; a flat phrase is a regression.
+
+| Scope | When | How to call |
 |---|---|---|
-| `note` | Quick observations while writing | "API change touches the `/orders` endpoint — need to update OpenAPI spec too, not just README" |
-| `decision` | Before writing — pin scope and audience | "Doc audience: external integrators. Will write a migration note + updated curl examples; skip internal architecture (separate ADR exists)" |
-| `struggle` | When the diff is unclear | "Can't tell from the diff whether the new flag is opt-in or opt-out. DMing dev." |
-| `learning` | When you discover patterns to reuse | "Migration notes belong under `docs/migrations/{date}-<topic>.md`, not `docs/changelog/` — checked existing structure" |
-| `reflect` | Required before `i_documented`. Walk through the diff topic-by-topic. | "Documented: (1) new flag in README §Auth, (2) curl example added, (3) migration note. Did NOT document: internal logger refactor (out of scope)" |
+| `note` | Quick observations while writing | `note(scope='note', text='API change touches the /orders endpoint — need to update OpenAPI spec too, not just README')` |
+| `decision` | Before writing — pin scope and audience | `note(scope='decision', text='<one-line decision>', context='<what diff covers + who reads the docs>', options=['Doc internal architecture too', 'Doc only the user-visible change'], chosen='<which one>', rationale='<why>', consequences='<what doc files this commits you to write>')` |
+| `struggle` | When the diff is unclear | `note(scope='struggle', text="Can't tell from the diff whether the new flag is opt-in or opt-out. DMing dev.")` |
+| `learning` | When you discover patterns to reuse | `note(scope='learning', text='Migration notes belong under docs/migrations/{date}-<topic>.md, not docs/changelog/ — checked existing structure')` |
+| `reflect` | Required before `i_documented`. Walk through the diff topic-by-topic. | `note(scope='reflect', text='<short summary>', what_done='Documented: (1) new flag in README §Auth, (2) curl example added, (3) migration note', what_learned='<patterns about doc layout, style, audience>', what_struggled='<where the diff was opaque>', next_steps='Did NOT document: internal logger refactor (out of scope)')` |
 
 ## Mandatory checklist before `i_documented`
 

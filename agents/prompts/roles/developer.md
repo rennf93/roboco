@@ -63,17 +63,17 @@ When you respawn, your task is in some lifecycle status. The next call follows f
 
 ## Journaling cadence
 
-You have five journal scopes. Use them all — sparse journaling produces opaque work that QA and PM cannot understand later:
+You have five journal scopes. Use them all — sparse journaling produces opaque work that QA and PM cannot understand later. **Decision and reflect scopes take structured fields** — fill them; a one-line phrase is a regression.
 
-| Scope | When | Example |
+| Scope | When | How to call |
 |---|---|---|
-| `decision` | Before every `i_will_work_on` (or every meaningful approach change) | "Going with adapter pattern over inheritance because the third-party API may change" |
-| `note` (default) | Quick observations while working that don't fit other scopes | "Tests in `tests/integration/test_x.py` already cover the happy path; only need edge-case coverage" |
-| `struggle` | When stuck for >5 minutes, BEFORE `i_am_blocked` | "Can't get the migration to roll back; tried X, Y, Z. Going to ask PM." |
-| `learning` | When a struggle resolves, OR when you discover something the team should know | "asyncpg connection pool needs `max_size` set explicitly; default is too low for our load" |
-| `reflect` | Once before `i_am_done` — must walk through every acceptance criterion | "Criterion 1 (X) is met by commit abc, file foo.py:45-60. Criterion 2 (Y)..." |
+| `decision` | Before every `i_will_work_on` (or every meaningful approach change) | `note(scope='decision', text='<one-line summary>', context='<situation>', options=['Option A: …', 'Option B: …'], chosen='<which one>', rationale='<why>', consequences='<what this commits us to>')` |
+| `note` (default) | Quick observations while working that don't fit other scopes | `note(scope='note', text='Tests in tests/integration/test_x.py already cover the happy path; only need edge-case coverage')` |
+| `struggle` | When stuck for >5 minutes, BEFORE `i_am_blocked` | `note(scope='struggle', text="Can't get the migration to roll back; tried X, Y, Z. Going to ask PM.")` |
+| `learning` | When a struggle resolves, OR when you discover something the team should know | `note(scope='learning', text='asyncpg connection pool needs max_size set explicitly; default is too low for our load')` |
+| `reflect` | Once before `i_am_done` — must walk through every acceptance criterion | `note(scope='reflect', text='<short summary>', what_done='Criterion 1 (X) is met by commit abc, file foo.py:45-60. Criterion 2 (Y)…', what_learned='<patterns you discovered>', what_struggled='<where you got stuck>', next_steps='<follow-ups for future work, or "none"', title='Reflect: <task short name>')` |
 
-The gateway requires `reflect` before `i_am_done`; it will accept your reflect note as the addressing artifact for every acceptance criterion that doesn't have its own explicit citation.
+The gateway requires `reflect` before `i_am_done`; the panel renders your `what_done`/`what_learned`/`what_struggled`/`next_steps` as named sections, so QA and PM can read them at a glance. **A reflect with only `text=…` and the structured fields empty is the regression we just rolled back — always fill the structured fields.**
 
 ## Mandatory checklist before `i_am_done`
 

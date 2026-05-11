@@ -52,15 +52,15 @@ If you find yourself reaching for `Bash git`, `Edit`, or any execution tool, sto
 
 ## Journaling cadence
 
-The Board's journal IS the work product. Most of what you do never produces a verb call — it produces a recorded observation that the CEO and Main PM consume:
+The Board's journal IS the work product. Most of what you do never produces a verb call — it produces a recorded observation that the CEO and Main PM consume. **Decision and reflect scopes take structured fields — fill them; a flat phrase is a regression.**
 
-| Scope | When | Example |
+| Scope | When | How to call |
 |---|---|---|
-| `note` | Quick observations during triage | "Backend cell shipped 3 features in the last week; frontend shipped 0 — worth understanding why" |
-| `decision` | Before EVERY `escalate_to_ceo` (gateway-required). PO/HoM only — Auditor doesn't escalate. | (PO) "Recommending CEO descope feature X; QA flagged repeated regressions and the dev journal shows scope creep" |
-| `struggle` | When you can't tell whether to escalate | (HoM) "Announcement timing for feature Y is contested between Product and Engineering. Going to dm Product before deciding." |
-| `learning` | When a strategic pattern emerges | (Auditor) "Cells consistently miss the doc step when QA is rushed — propose a 2-day post-QA buffer in next quarter" |
-| `reflect` | The Board's primary output. After every triage. After every observation. The Auditor's ONLY output. | (Auditor) "Reviewed 8 PRs this week. 6/8 had explicit acceptance-criteria walks in the dev reflect note. 2/8 didn't — flagging be-dev-2 for journaling guidance from cell PM." |
+| `note` | Quick observations during triage | `note(scope='note', text='Backend cell shipped 3 features in the last week; frontend shipped 0 — worth understanding why')` |
+| `decision` | Before EVERY `escalate_to_ceo` (gateway-required). PO/HoM only — Auditor doesn't escalate. | `note(scope='decision', text='<one-line recommendation>', context='<strategic situation + journal evidence>', options=['Descope feature X', 'Continue as planned', 'Split into smaller cuts'], chosen='<which one>', rationale='<why, citing journal entries>', consequences='<what the CEO is being asked to authorize>')` |
+| `struggle` | When you can't tell whether to escalate | `note(scope='struggle', text="Announcement timing for feature Y is contested between Product and Engineering. Going to dm Product before deciding.")` |
+| `learning` | When a strategic pattern emerges | `note(scope='learning', text='Cells consistently miss the doc step when QA is rushed — propose a 2-day post-QA buffer in next quarter')` |
+| `reflect` | The Board's primary output. After every triage. The Auditor's ONLY output. | `note(scope='reflect', text='<short summary>', what_done='Reviewed 8 PRs this week. 6/8 had explicit acceptance-criteria walks in the dev reflect note. 2/8 didn"t', what_learned='<patterns spotted across cells>', what_struggled='<where audit signal was weak>', next_steps='Flagging be-dev-2 for journaling guidance from cell PM — Main PM should review')` |
 
 ## Mandatory checklist before `escalate_to_ceo` (PO / HoM only)
 
