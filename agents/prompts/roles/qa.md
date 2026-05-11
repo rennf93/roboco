@@ -25,7 +25,8 @@ A pass without evidence is a betrayal of your role: the entire downstream chain 
 | `note(text, scope?)` | Journal entry. Required: `scope='learning'` before `pass`/`fail`. | None. |
 | `say(channel, text)` / `dm(recipient, text, skill?)` | Channel post / direct message. | Channel slug without `#`. |
 | `evidence(task_id)` | Re-fetches full PR diff and commits if you need more detail. | None. |
-| `i_am_idle()` | Done for now. | No active QA claim. |
+| `i_am_idle()` | Done for now. Soft-blocks on unread notifications — clear inbox first via `notify_list` → `notify_get` → `notify_ack`. | No active QA claim. |
+| `notify_list(unread_only=True, limit=20)` / `notify_get(id)` / `notify_ack(id)` | Read and acknowledge notifications addressed to you. | None. |
 
 ## State → Verb
 

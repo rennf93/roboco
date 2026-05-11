@@ -204,6 +204,123 @@ def evidence(task_id: str) -> dict[str, Any]:
     return _post("/api/v2/do/evidence", {"task_id": task_id})
 
 
+# ---------- Wave 1 — pre-gateway parity ----------
+
+
+def progress(task_id: str, message: str, percentage: int) -> dict[str, Any]:
+    """Append a narrative progress update to YOUR active task.
+
+    Args:
+        task_id: UUID of the task you're working on.
+        message: One-paragraph summary of what just landed.
+        percentage: 0..100 inclusive. Rough completion estimate; bump it as
+            you make progress so PM/QA can see velocity.
+
+    Populates the panel's Progress tab. Use this in addition to ``commit``
+    — commits are git refs; progress is narrative.
+    """
+    return _post(
+        "/api/v2/do/progress",
+        {"task_id": task_id, "message": message, "percentage": percentage},
+    )
+
+
+def open_session(
+    task_id: str,
+    channel: str,
+    topic: str,
+    relationship_type: str = "discussion",
+    group_id: str | None = None,
+) -> dict[str, Any]:
+    """PM creates a discussion session linked to a task.
+
+    Args:
+        task_id: UUID of the task this session discusses.
+        channel: Channel slug without `#` (e.g. ``backend-cell``).
+        topic: Short topic for the session (≤200 chars).
+        relationship_type: ``discussion`` | ``planning`` | ``review`` |
+            ``retrospective``.
+        group_id: Optional UUID to place the session under a specific group.
+
+    Populates the panel's Sessions tab. Only PM-or-up roles can open sessions
+    — devs / QA / docs participate via channels and DMs.
+    """
+    return _post(
+        "/api/v2/do/open_session",
+        {
+            "task_id": task_id,
+            "channel": channel,
+            "topic": topic,
+            "relationship_type": relationship_type,
+            "group_id": group_id,
+        },
+    )
+
+
+def link_session(
+    session_id: str,
+    task_id: str,
+    is_primary: bool = False,
+    relationship_type: str = "discussion",
+) -> dict[str, Any]:
+    """Link an existing session to a task (idempotent).
+
+    Use when an existing discussion now covers a new task too. You must
+    own the task you're linking; cross-agent linking is denied.
+    """
+    return _post(
+        "/api/v2/do/link_session",
+        {
+            "session_id": session_id,
+            "task_id": task_id,
+            "is_primary": is_primary,
+            "relationship_type": relationship_type,
+        },
+    )
+
+
+def notify_list(
+    unread_only: bool = True,
+    pending_ack_only: bool = False,
+    limit: int = 20,
+) -> dict[str, Any]:
+    """Read your notification inbox.
+
+    Call this when ``i_am_idle()`` soft-blocks you with an "unread A2A or
+    @mentions" message — list, read each one with ``notify_get``, ack with
+    ``notify_ack``, then idle again.
+    """
+    return _post(
+        "/api/v2/do/notify_list",
+        {
+            "unread_only": unread_only,
+            "pending_ack_only": pending_ack_only,
+            "limit": limit,
+        },
+    )
+
+
+def notify_get(notification_id: str) -> dict[str, Any]:
+    """Read one notification (marks it as read)."""
+    return _post(
+        "/api/v2/do/notify_get",
+        {"notification_id": notification_id},
+    )
+
+
+def notify_ack(notification_id: str) -> dict[str, Any]:
+    """Acknowledge a notification you've handled.
+
+    The gateway tracks who has acked which notification — required for
+    ``requires_ack=true`` notifications before ``i_am_idle`` will let you
+    exit cleanly.
+    """
+    return _post(
+        "/api/v2/do/notify_ack",
+        {"notification_id": notification_id},
+    )
+
+
 # ---------- Tool registry ----------
 #
 # Maps the tool name an agent calls (matches manifest entries and the
@@ -216,6 +333,12 @@ _TOOLS: dict[str, Any] = {
     "dm": dm,
     "notify": notify,
     "evidence": evidence,
+    "progress": progress,
+    "open_session": open_session,
+    "link_session": link_session,
+    "notify_list": notify_list,
+    "notify_get": notify_get,
+    "notify_ack": notify_ack,
 }
 
 

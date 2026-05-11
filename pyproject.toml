@@ -164,6 +164,12 @@ select = [
 # the LLM and bring back invented values like nature='standard'.
 "roboco/mcp/**/*.py" = ["PLC0415", "PLR0913"]
 "roboco/services/*.py" = ["PLC0415"]
+# Gateway methods are typed verb surfaces — agent-facing kwargs reflect the
+# verb contract (session topic, channel, relationship type, etc.). Bundling
+# into a dataclass hides the field-by-field schema the LLM needs at the
+# tool layer; we accept the >5 kwarg signatures here for the same reason
+# they're accepted in `roboco/mcp/**`.
+"roboco/services/gateway/**/*.py" = ["PLC0415", "PLR0913"]
 "roboco/api/routes/*.py" = ["PLC0415"]
 "roboco/runtime/*.py" = ["PLC0415"]
 # Lifecycle validators: foundation/_validate_lifecycle is imported from the

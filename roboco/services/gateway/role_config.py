@@ -31,27 +31,45 @@ class RoleConfig:
     description: str
 
 
+# Wave 1 receivers — every role with inbox access gets notify_list/get/ack
+# so `i_am_idle()` doesn't soft-block forever on unread notifications.
+_NOTIFY_RECEIVER = ("notify_list", "notify_get", "notify_ack")
+
 _DEV_FLOW = spec.intents_for_role(spec.Role.DEVELOPER)
-_DEV_DO = ("commit", "note", "say", "dm", "evidence")
+_DEV_DO = ("commit", "note", "say", "dm", "evidence", "progress", *_NOTIFY_RECEIVER)
 
 _QA_FLOW = spec.intents_for_role(spec.Role.QA)
-_QA_DO = ("note", "say", "dm", "evidence")
+_QA_DO = ("note", "say", "dm", "evidence", *_NOTIFY_RECEIVER)
 
 _DOC_FLOW = spec.intents_for_role(spec.Role.DOCUMENTER)
-_DOC_DO = ("commit", "note", "say", "dm", "evidence")
+_DOC_DO = ("commit", "note", "say", "dm", "evidence", "progress", *_NOTIFY_RECEIVER)
 
 _CELL_PM_FLOW = spec.intents_for_role(spec.Role.CELL_PM)
-_CELL_PM_DO = ("note", "say", "dm", "notify", "evidence")
+_CELL_PM_DO = (
+    "note", "say", "dm", "notify", "evidence",
+    "open_session", "link_session",
+    *_NOTIFY_RECEIVER,
+)
 
 _MAIN_PM_FLOW = spec.intents_for_role(spec.Role.MAIN_PM)
-_MAIN_PM_DO = ("note", "say", "dm", "notify", "evidence")
+_MAIN_PM_DO = (
+    "note", "say", "dm", "notify", "evidence",
+    "open_session", "link_session",
+    *_NOTIFY_RECEIVER,
+)
 
 _PRODUCT_OWNER_FLOW = spec.intents_for_role(spec.Role.PRODUCT_OWNER)
 _HEAD_MARKETING_FLOW = spec.intents_for_role(spec.Role.HEAD_MARKETING)
-_BOARD_DO = ("note", "say", "dm", "notify", "evidence")
+_BOARD_DO = (
+    "note", "say", "dm", "notify", "evidence",
+    "open_session",  # Board can open strategic sessions but not link arbitrary
+    *_NOTIFY_RECEIVER,
+)
 
 _AUDITOR_FLOW = spec.intents_for_role(spec.Role.AUDITOR)
-_AUDITOR_DO = ("note", "evidence")  # auditor reads, does not chat or escalate
+# Auditor reads, does not chat or escalate. notify_list/get for inbox visibility;
+# no ack (silent observer — wouldn't ack notifications).
+_AUDITOR_DO = ("note", "evidence", "notify_list", "notify_get")
 
 
 ROLE_CONFIGS: dict[str, RoleConfig] = {

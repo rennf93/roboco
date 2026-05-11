@@ -11,8 +11,14 @@ from roboco.api.schemas.v2.do import (
     CommitRequest,
     DmRequest,
     EvidenceRequest,
+    LinkSessionRequest,
     NoteRequest,
+    NotifyAckRequest,
+    NotifyGetRequest,
+    NotifyListRequest,
     NotifyRequest,
+    OpenSessionRequest,
+    ProgressRequest,
     SayRequest,
 )
 from roboco.services.gateway.content_actions import ContentActions
@@ -124,4 +130,104 @@ async def do_evidence(
     actions: _ContentActionsDep,
 ) -> dict:
     env = await actions.evidence(agent_id=x_agent_id, task_id=body.task_id)
+    return envelope_to_response(env, request)
+
+
+# ---------------------------------------------------------------------------
+# Wave 1 — pre-gateway parity
+# ---------------------------------------------------------------------------
+
+
+@router.post("/progress")
+async def do_progress(
+    request: Request,
+    body: ProgressRequest,
+    x_agent_id: _AgentIdHeader,
+    actions: _ContentActionsDep,
+) -> dict:
+    env = await actions.progress(
+        agent_id=x_agent_id,
+        task_id=body.task_id,
+        message=body.message,
+        percentage=body.percentage,
+    )
+    return envelope_to_response(env, request)
+
+
+@router.post("/open_session")
+async def do_open_session(
+    request: Request,
+    body: OpenSessionRequest,
+    x_agent_id: _AgentIdHeader,
+    actions: _ContentActionsDep,
+) -> dict:
+    env = await actions.open_session(
+        agent_id=x_agent_id,
+        task_id=body.task_id,
+        channel=body.channel,
+        topic=body.topic,
+        relationship_type=body.relationship_type,
+        group_id=body.group_id,
+    )
+    return envelope_to_response(env, request)
+
+
+@router.post("/link_session")
+async def do_link_session(
+    request: Request,
+    body: LinkSessionRequest,
+    x_agent_id: _AgentIdHeader,
+    actions: _ContentActionsDep,
+) -> dict:
+    env = await actions.link_session(
+        agent_id=x_agent_id,
+        session_id=body.session_id,
+        task_id=body.task_id,
+        is_primary=body.is_primary,
+        relationship_type=body.relationship_type,
+    )
+    return envelope_to_response(env, request)
+
+
+@router.post("/notify_list")
+async def do_notify_list(
+    request: Request,
+    body: NotifyListRequest,
+    x_agent_id: _AgentIdHeader,
+    actions: _ContentActionsDep,
+) -> dict:
+    env = await actions.notify_list(
+        agent_id=x_agent_id,
+        unread_only=body.unread_only,
+        pending_ack_only=body.pending_ack_only,
+        limit=body.limit,
+    )
+    return envelope_to_response(env, request)
+
+
+@router.post("/notify_get")
+async def do_notify_get(
+    request: Request,
+    body: NotifyGetRequest,
+    x_agent_id: _AgentIdHeader,
+    actions: _ContentActionsDep,
+) -> dict:
+    env = await actions.notify_get(
+        agent_id=x_agent_id,
+        notification_id=body.notification_id,
+    )
+    return envelope_to_response(env, request)
+
+
+@router.post("/notify_ack")
+async def do_notify_ack(
+    request: Request,
+    body: NotifyAckRequest,
+    x_agent_id: _AgentIdHeader,
+    actions: _ContentActionsDep,
+) -> dict:
+    env = await actions.notify_ack(
+        agent_id=x_agent_id,
+        notification_id=body.notification_id,
+    )
     return envelope_to_response(env, request)
