@@ -613,7 +613,7 @@ class NotificationDeliveryService(BaseService):
     ) -> None:
         """Notify the task's assignee that CEO rejected and sent back for revision."""
         notification = NotificationTable(
-            type=NotificationType.TASK_ASSIGNMENT,
+            type=NotificationType.APPROVAL,
             priority=NotificationPriority.HIGH,
             from_agent=from_agent_id,
             to_agents=[assignee_agent_id],
@@ -624,7 +624,7 @@ class NotificationDeliveryService(BaseService):
                 "Please address the feedback and resubmit."
             ),
             related_task_id=task_id,
-            requires_ack=ACK_REQUIRED_BY_TYPE[NotificationType.TASK_ASSIGNMENT],
+            requires_ack=ACK_REQUIRED_BY_TYPE[NotificationType.APPROVAL],
         )
         await self._persist_and_deliver(notification)
 
@@ -697,7 +697,7 @@ class NotificationDeliveryService(BaseService):
             return
 
         notification = NotificationTable(
-            type=NotificationType.TASK_ASSIGNMENT,
+            type=NotificationType.APPROVAL,
             priority=NotificationPriority.HIGH,
             from_agent=escalator_agent_id,
             to_agents=[ceo.id],
@@ -709,7 +709,7 @@ class NotificationDeliveryService(BaseService):
                 "Use /ceo-approve or /ceo-reject to respond."
             ),
             related_task_id=task_id,
-            requires_ack=ACK_REQUIRED_BY_TYPE[NotificationType.TASK_ASSIGNMENT],
+            requires_ack=ACK_REQUIRED_BY_TYPE[NotificationType.APPROVAL],
         )
         await self._persist_and_deliver(notification)
 
