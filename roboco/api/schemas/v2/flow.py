@@ -26,6 +26,37 @@ class IAmDoneRequest(BaseModel):
 class IAmBlockedRequest(BaseModel):
     task_id: UUID
     reason: str = Field(..., min_length=1)
+    # Pre-gateway parity (G8 part b). The old TaskBlockInput at
+    # 0c3d15a:roboco/mcp/schemas/__init__.py required blocker_type and
+    # what_needed so PMs could triage by class. Optional here for
+    # back-compat with i_am_blocked(reason) callers; supplied fields are
+    # rendered into the struggle journal entry so the panel surfaces them.
+    blocker_type: str | None = Field(
+        default=None,
+        description=(
+            "external | internal | question | dependency. Required from "
+            "newly-spawned agents (per the developer.md verb table); "
+            "older agents that don't supply it default to 'internal'."
+        ),
+    )
+    what_needed: str | None = Field(
+        default=None,
+        description="Concrete description of what would unblock the task.",
+    )
+
+    @field_validator("blocker_type", mode="before")
+    @classmethod
+    def _blocker_type_enum(cls, v: object) -> object:
+        if v is None:
+            return v
+        if isinstance(v, str) and v.lower() not in {
+            "external", "internal", "question", "dependency",
+        }:
+            raise ValueError(
+                f"blocker_type must be one of: external | internal | "
+                f"question | dependency. Got {v!r}."
+            )
+        return v
 
 
 class UnclaimRequest(BaseModel):

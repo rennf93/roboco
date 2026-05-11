@@ -22,7 +22,7 @@ You write code; you do not coordinate. If you find yourself thinking "let me als
 | `commit(message)` | Makes the git commit, auto-prefixes `[task-id]`, records a progress entry. This is the ONLY way to commit — the gateway covers the actual git operation. | Task in `in_progress`; on your branch. |
 | `open_pr(task_id)` | Push your branch and open a PR. Run after your last commit, before `i_am_done`. | Task assigned to you; at least one commit; no PR yet. |
 | `i_am_done(task_id, notes)` | Submit for QA. Auto-runs in_progress→verifying→awaiting_qa. Requires PR already open — run `open_pr` first. | At least one commit; PR open; progress entry; journal `reflect`; every acceptance criterion addressed. |
-| `i_am_blocked(reason)` | Records the blocker, escalates to your PM, idles you. | Task is yours and active. |
+| `i_am_blocked(task_id, reason, blocker_type?, what_needed?)` | Records the blocker, escalates to your PM, idles you. `blocker_type` ∈ `external` (waiting on a 3rd-party API/service), `internal` (a teammate or process), `question` (need clarification), `dependency` (waiting on another task). `what_needed` is a one-sentence concrete unblock request. Both fields are pre-gateway parity — PMs triage by class. | Task is yours and active. |
 | `unclaim(task_id)` | Release this claim back to pending. Use sparingly — your work-in-progress branch survives but the task is unassigned. | Task assigned to you and in claimed/in_progress. |
 | `resume(task_id)` | Resume a paused task. Transitions paused → in_progress. | Task assigned to you and in paused state. |
 | `note(text, scope?)` | Journal entry (`scope ∈ note|decision|reflect|learning|struggle`). | None. |

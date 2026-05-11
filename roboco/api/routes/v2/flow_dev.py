@@ -81,7 +81,13 @@ async def i_am_blocked(
     x_agent_id: _AgentIdHeader,
     choreographer: _ChoreographerDep,
 ) -> dict:
-    env = await choreographer.i_am_blocked(x_agent_id, body.task_id, body.reason)
+    env = await choreographer.i_am_blocked(
+        x_agent_id,
+        body.task_id,
+        body.reason,
+        blocker_type=body.blocker_type,
+        what_needed=body.what_needed,
+    )
     return envelope_to_response(env, request)
 
 

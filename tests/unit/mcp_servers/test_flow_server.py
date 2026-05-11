@@ -184,7 +184,16 @@ def test_i_am_blocked_sends_reason(flow_module: types.ModuleType) -> None:
 
     assert result == {"status": "blocked"}
     _, kwargs = fake_client.post.call_args
-    assert kwargs["json"] == {"task_id": "task-xyz", "reason": "waiting for env var"}
+    # Pre-gateway parity (G8): i_am_blocked now also carries optional
+    # blocker_type / what_needed — when caller omits them the wrapper
+    # forwards `None` so the backend can fall back to the default
+    # 'internal' classification.
+    assert kwargs["json"] == {
+        "task_id": "task-xyz",
+        "reason": "waiting for env var",
+        "blocker_type": None,
+        "what_needed": None,
+    }
 
 
 def test_i_am_idle_posts_empty_body(flow_module: types.ModuleType) -> None:
