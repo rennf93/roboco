@@ -31,6 +31,7 @@ from roboco.services.git import GitService
 from roboco.services.journal import JournalService
 from roboco.services.messaging import MessagingService
 from roboco.services.notification import NotificationService
+from roboco.services.notification_delivery import NotificationDeliveryService
 from roboco.services.permissions import AgentContext, PermissionService
 from roboco.services.repositories import resolve_agent_identity, resolve_agent_uuid
 from roboco.services.task import TaskService
@@ -528,6 +529,7 @@ async def get_content_actions(
             journal=JournalService(db_session),
             workspace=WorkspaceService(db_session),
             notifications=NotificationService(),
+            notification_delivery=NotificationDeliveryService(db_session),
         )
     )
 

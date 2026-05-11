@@ -35,6 +35,7 @@ def _make_deps(**overrides: AsyncMock) -> ContentActionsDeps:
     journal = overrides.get("journal", AsyncMock())
     workspace = overrides.get("workspace", AsyncMock())
     notifications = overrides.get("notifications", AsyncMock())
+    notification_delivery = overrides.get("notification_delivery", AsyncMock())
     return ContentActionsDeps(
         task=task,
         git=git,
@@ -43,6 +44,7 @@ def _make_deps(**overrides: AsyncMock) -> ContentActionsDeps:
         journal=journal,
         workspace=workspace,
         notifications=notifications,
+        notification_delivery=notification_delivery,
     )
 
 
