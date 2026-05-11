@@ -249,13 +249,29 @@ class NotificationService:
 
         Args:
             task_id: Related task ID
-            a2a_context: Dict with from_agent, to_agent, skill, message, urgent
+            a2a_context: Dict with from_agent, to_agent, skill, message,
+                priority. `priority` is a `NotificationPriority` (full
+                tristate: NORMAL / HIGH / URGENT). Before P3 Task 9 this
+                key was `urgent: bool` which collapsed HIGH to NORMAL —
+                A2AService now sends Priority directly.
         """
         from_agent = a2a_context.get("from_agent", "unknown")
         to_agent = a2a_context.get("to_agent", "")
         skill = a2a_context.get("skill", "general")
         message = a2a_context.get("message", "")
-        urgent = a2a_context.get("urgent", False)
+        priority = a2a_context.get("priority", NotificationPriority.NORMAL)
+        # Defensive coerce — accept enum, str, or a stray bool from a
+        # legacy caller. The point of Task 9 is that HIGH survives, so
+        # only collapse to URGENT/NORMAL if the input is genuinely a bool.
+        if isinstance(priority, bool):
+            priority = (
+                NotificationPriority.URGENT if priority else NotificationPriority.NORMAL
+            )
+        elif not isinstance(priority, NotificationPriority):
+            try:
+                priority = NotificationPriority(str(priority))
+            except ValueError:
+                priority = NotificationPriority.NORMAL
 
         logger.info(
             "Sending A2A notification",
@@ -263,17 +279,18 @@ class NotificationService:
             from_agent=from_agent,
             to_agent=to_agent,
             skill=skill,
-            urgent=urgent,
+            priority=priority.value,
         )
 
-        urgency_label = "[URGENT] " if urgent else ""
+        # Cosmetic [URGENT] prefix stays urgent-only. HIGH is recorded at
+        # the NotificationTable.priority column but gets no body/subject
+        # prefix — the column is the source of truth for routing, the
+        # label is just an attention hint for the human-readable body.
+        urgency_label = "[URGENT] " if priority == NotificationPriority.URGENT else ""
         body = (
             f"{urgency_label}A2A request from {from_agent}.\n\n"
             f"Skill: {skill}\n\n"
             f"Message: {message}"
-        )
-        priority = (
-            NotificationPriority.URGENT if urgent else NotificationPriority.NORMAL
         )
         await self._create_notification(
             CreateNotificationParams(

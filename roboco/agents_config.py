@@ -30,6 +30,8 @@ import hmac
 import os
 from typing import Final
 
+from roboco.foundation import identity as _foundation
+from roboco.foundation.policy import communications as _comms
 from roboco.models.base import NotificationPriority, NotificationType
 from roboco.seeds.initial_data import AGENT_UUIDS
 
@@ -104,68 +106,32 @@ def _resolve_to_slug(agent_id: str) -> str:
 # AGENT ROLE MAPPINGS
 # =============================================================================
 
-AGENT_ROLE_MAP: Final[dict[str, str]] = {
-    # Backend cell
-    "be-dev-1": "developer",
-    "be-dev-2": "developer",
-    "be-qa": "qa",
-    "be-pm": "cell_pm",
-    "be-doc": "documenter",
-    # Frontend cell
-    "fe-dev-1": "developer",
-    "fe-dev-2": "developer",
-    "fe-qa": "qa",
-    "fe-pm": "cell_pm",
-    "fe-doc": "documenter",
-    # UX/UI cell
-    "ux-dev-1": "developer",
-    "ux-dev-2": "developer",
-    "ux-qa": "qa",
-    "ux-pm": "cell_pm",
-    "ux-doc": "documenter",
-    # Management / Board
-    "main-pm": "main_pm",
-    "product-owner": "product_owner",
-    "head-marketing": "head_marketing",
-    "auditor": "auditor",
-    "ceo": "ceo",
+# Agent catalog data is canonicalized in roboco/foundation/identity.py.
+# These string-keyed maps are kept for backwards compatibility with code
+# that types role/team as `str` rather than the foundation enums.
+# Derived at module load — adding an agent edits foundation/identity.py only.
+AGENT_ROLE_MAP: dict[str, str] = {
+    slug: row.role.value
+    for slug, row in _foundation.AGENTS.items()
+    if row.role != _foundation.Role.SYSTEM  # exclude sentinel from string-keyed map
 }
 
-
-AGENT_TEAM_MAP: Final[dict[str, str]] = {
-    # Backend cell
-    "be-dev-1": "backend",
-    "be-dev-2": "backend",
-    "be-qa": "backend",
-    "be-pm": "backend",
-    "be-doc": "backend",
-    # Frontend cell
-    "fe-dev-1": "frontend",
-    "fe-dev-2": "frontend",
-    "fe-qa": "frontend",
-    "fe-pm": "frontend",
-    "fe-doc": "frontend",
-    # UX/UI cell (matches Team.UX_UI = "ux_ui")
-    "ux-dev-1": "ux_ui",
-    "ux-dev-2": "ux_ui",
-    "ux-qa": "ux_ui",
-    "ux-pm": "ux_ui",
-    "ux-doc": "ux_ui",
-    # Management — main-pm gets its own team folder; board members share `board`.
-    # These match Team.MAIN_PM and Team.BOARD enum values so workspace path
-    # resolution never produces a literal "None" segment.
-    "main-pm": "main_pm",
-    "product-owner": "board",
-    "head-marketing": "board",
-    "auditor": "board",
-    "ceo": "board",
+AGENT_TEAM_MAP: dict[str, str] = {
+    slug: row.team.value
+    for slug, row in _foundation.AGENTS.items()
+    if row.role != _foundation.Role.SYSTEM
 }
 
-
-CELL_MEMBERS: Final[dict[str, list[str]]] = {
-    "backend": ["be-dev-1", "be-dev-2", "be-qa", "be-pm", "be-doc"],
-    "frontend": ["fe-dev-1", "fe-dev-2", "fe-qa", "fe-pm", "fe-doc"],
-    "ux_ui": ["ux-dev-1", "ux-dev-2", "ux-qa", "ux-pm", "ux-doc"],
+CELL_MEMBERS: dict[str, list[str]] = {
+    _foundation.Team.BACKEND.value: sorted(
+        _foundation.slugs_for_team(_foundation.Team.BACKEND)
+    ),
+    _foundation.Team.FRONTEND.value: sorted(
+        _foundation.slugs_for_team(_foundation.Team.FRONTEND)
+    ),
+    _foundation.Team.UX_UI.value: sorted(
+        _foundation.slugs_for_team(_foundation.Team.UX_UI)
+    ),
 }
 
 
@@ -191,14 +157,20 @@ ALL_QA: Final[list[str]] = ["be-qa", "fe-qa", "ux-qa"]
 ALL_DOCS: Final[list[str]] = ["be-doc", "fe-doc", "ux-doc"]
 CELL_PMS: Final[list[str]] = ["be-pm", "fe-pm", "ux-pm"]
 
-# PM-capable roles (can create and assign tasks)
-PM_ROLES: Final[set[str]] = {
-    "cell_pm",
-    "main_pm",
-    "product_owner",
-    "head_marketing",
-    "ceo",
-}
+# `PM_ROLES` is canonical in foundation.identity (CELL_PM + MAIN_PM only).
+# This file's historical 5-role set is renamed to TASK_CREATOR_ROLES — it
+# represents "roles that can call task.create", not the PM hierarchy.
+# StrEnum members hash like their .value strings, so `role_str in TASK_CREATOR_ROLES`
+# still works for str inputs from get_agent_role().
+TASK_CREATOR_ROLES: Final[frozenset[_foundation.Role]] = frozenset(
+    {
+        _foundation.Role.CELL_PM,
+        _foundation.Role.MAIN_PM,
+        _foundation.Role.PRODUCT_OWNER,
+        _foundation.Role.HEAD_MARKETING,
+        _foundation.Role.CEO,
+    }
+)
 
 # Escalation chain - who each agent escalates to
 ESCALATION_CHAIN: Final[dict[str, str]] = {
@@ -287,28 +259,23 @@ def is_ceo(agent_id: str) -> bool:
 
 
 def can_send_notifications(agent_id: str) -> bool:
-    """Check if agent can send notifications (PMs, Board, Auditor, CEO)."""
-    role = get_agent_role(agent_id)
-    return role in (
-        "cell_pm",
-        "main_pm",
-        "product_owner",
-        "head_marketing",
-        "auditor",
-        "ceo",
-    )
+    """Whether this agent's role may call notify(). Canonical in foundation."""
+    try:
+        return _foundation.Role(get_agent_role(agent_id)) in _comms.NOTIFY_SENDER_ROLES
+    except ValueError:
+        return False
 
 
 def can_create_tasks(agent_id: str) -> bool:
-    """Check if agent can create tasks (PMs and management only)."""
+    """Check if agent can create tasks (PMs, board, and CEO)."""
     role = get_agent_role(agent_id)
-    return role in PM_ROLES
+    return role in TASK_CREATOR_ROLES
 
 
 def can_assign_tasks(agent_id: str) -> bool:
-    """Check if agent can assign tasks (PMs and management only)."""
+    """Check if agent can assign tasks (PMs, board, and CEO)."""
     role = get_agent_role(agent_id)
-    return role in PM_ROLES
+    return role in TASK_CREATOR_ROLES
 
 
 # Cancel roles match task_lifecycle.py - CEO and Auditor cannot cancel (they observe)
@@ -366,69 +333,66 @@ def get_pm_for_agent(agent_id: str) -> str | None:
 # =============================================================================
 # CHANNEL ACCESS RULES
 # =============================================================================
+#
+# Channel ACL is canonicalized in foundation.policy.communications.CHANNELS.
+# This slug-keyed dict-of-string-lists derives from the role-keyed foundation
+# data. Adding a channel or changing its membership edits foundation.CHANNELS;
+# this dict updates at module load.
+#
+# Derivation rules:
+#   - read:   roles in (read_roles - silent_roles), filtered by team_scope
+#   - write:  roles in write_roles, filtered by team_scope
+#   - silent: roles in silent_roles, filtered by team_scope
+# Cross-cell roles (MAIN_PM, AUDITOR, CEO, board) are not subject to team_scope;
+# only cell-member roles (DEVELOPER/QA/DOCUMENTER/CELL_PM) are filtered.
+
+# Cell-member roles subject to team_scope filtering. Lifted to module scope so
+# tests and downstream consumers can introspect the rule.
+_TEAM_SCOPED_ROLES: Final[frozenset[_foundation.Role]] = frozenset(
+    {
+        _foundation.Role.DEVELOPER,
+        _foundation.Role.QA,
+        _foundation.Role.DOCUMENTER,
+        _foundation.Role.CELL_PM,
+    }
+)
+
+
+def _slugs_for_role_set(
+    role_set: frozenset[_foundation.Role],
+    team_scope: _foundation.Team | None,
+) -> list[str]:
+    """Expand a role-set to sorted agent slugs, honoring optional team_scope.
+
+    A slug qualifies when its role is in `role_set` AND, if its role is in
+    _TEAM_SCOPED_ROLES and team_scope is set, its team matches team_scope.
+    The system sentinel is always excluded.
+    """
+    out: list[str] = []
+    for slug, row in _foundation.AGENTS.items():
+        if slug == "system":
+            continue
+        if row.role not in role_set:
+            continue
+        if (
+            team_scope is not None
+            and row.role in _TEAM_SCOPED_ROLES
+            and row.team != team_scope
+        ):
+            continue
+        out.append(slug)
+    return sorted(out)
+
 
 CHANNEL_ACCESS: Final[dict[str, dict[str, list[str]]]] = {
-    # Cell channels - members + main-pm read/write, auditor silent
-    "backend-cell": {
-        "read": [*CELL_MEMBERS["backend"], "main-pm"],
-        "write": [*CELL_MEMBERS["backend"], "main-pm"],
-        "silent": ["auditor"],
-    },
-    "frontend-cell": {
-        "read": [*CELL_MEMBERS["frontend"], "main-pm"],
-        "write": [*CELL_MEMBERS["frontend"], "main-pm"],
-        "silent": ["auditor"],
-    },
-    "uxui-cell": {
-        "read": [*CELL_MEMBERS["ux_ui"], "main-pm"],
-        "write": [*CELL_MEMBERS["ux_ui"], "main-pm"],
-        "silent": ["auditor"],
-    },
-    # Cross-cell role channels
-    # Cell members read/write their role channel
-    # Cell PMs read/write ALL cross-cell channels for coordination
-    "dev-all": {
-        "read": [*ALL_DEVS, *ALL_QA, *ALL_DOCS, *CELL_PMS, "main-pm"],
-        "write": [*ALL_DEVS, *CELL_PMS, "main-pm"],
-        "silent": ["auditor"],
-    },
-    "qa-all": {
-        "read": [*ALL_QA, *ALL_DEVS, *ALL_DOCS, *CELL_PMS, "main-pm"],
-        "write": [*ALL_QA, *CELL_PMS],
-        "silent": ["auditor"],
-    },
-    "pm-all": {
-        "read": [*CELL_PMS, "main-pm"],
-        "write": [*CELL_PMS, "main-pm"],
-        "silent": ["auditor"],
-    },
-    "doc-all": {
-        "read": [*ALL_DOCS, *CELL_PMS, "main-pm"],
-        "write": [*ALL_DOCS, *CELL_PMS],
-        "silent": ["auditor"],
-    },
-    # Management channels
-    "main-pm-board": {
-        "read": ["main-pm", "product-owner", "head-marketing", "auditor"],
-        "write": ["main-pm", "product-owner", "head-marketing", "auditor"],
-        "silent": [],
-    },
-    "board-private": {
-        "read": ["product-owner", "head-marketing", "auditor", "ceo", "main-pm"],
-        "write": ["product-owner", "head-marketing", "auditor", "ceo"],
-        "silent": [],
-    },
-    # Broadcast channels
-    "announcements": {
-        "read": ALL_AGENTS,
-        "write": ["main-pm", "product-owner", "head-marketing", "ceo"],
-        "silent": [],
-    },
-    "all-hands": {
-        "read": ALL_AGENTS,
-        "write": ALL_AGENTS,
-        "silent": [],
-    },
+    slug: {
+        "read": _slugs_for_role_set(
+            spec.read_roles - spec.silent_roles, spec.team_scope
+        ),
+        "write": _slugs_for_role_set(spec.write_roles, spec.team_scope),
+        "silent": _slugs_for_role_set(spec.silent_roles, spec.team_scope),
+    }
+    for slug, spec in _comms.CHANNELS.items()
 }
 
 
@@ -460,50 +424,9 @@ ROLE_PERMISSION_LEVELS: Final[dict[str, str]] = {
 # =============================================================================
 # NOTIFICATION PERMISSIONS
 # =============================================================================
-
-NOTIFICATION_PERMISSIONS: Final[dict[str, dict]] = {
-    # Cell PMs can notify their own cell members
-    "cell_pm": {
-        "can_send": True,
-        "scope": "cell",
-    },
-    # Main PM can notify anyone
-    "main_pm": {
-        "can_send": True,
-        "scope": "all",
-    },
-    # Board can notify management chain
-    "product_owner": {
-        "can_send": True,
-        "scope": ["main-pm", "head-marketing", "auditor", "ceo"],
-    },
-    "head_marketing": {
-        "can_send": True,
-        "scope": ["main-pm", "product-owner", "auditor", "ceo"],
-    },
-    # Auditor can notify anyone
-    "auditor": {
-        "can_send": True,
-        "scope": "all",
-    },
-    # CEO can notify anyone
-    "ceo": {
-        "can_send": True,
-        "scope": "all",
-    },
-    # Developers CANNOT send notifications
-    "developer": {
-        "can_send": False,
-    },
-    # QA CANNOT send notifications
-    "qa": {
-        "can_send": False,
-    },
-    # Documenters CANNOT send notifications
-    "documenter": {
-        "can_send": False,
-    },
-}
+# Sender allowlist now lives in foundation.policy.communications.NOTIFY_SENDER_ROLES.
+# Scope rules (cell / all / list) live in services/permissions.py since they
+# depend on AgentContext (role + team) — not pure foundation data.
 
 VALID_NOTIFICATION_TYPES: Final[frozenset[str]] = frozenset(
     t.value for t in NotificationType
@@ -661,10 +584,10 @@ def get_agent_skills(agent_id: str) -> list[dict]:
 # - To board: Must go through Main PM
 # - To CEO: Must go through board
 
-# Roles that can reach each other directly (CEO is human - use notifications)
-_BOARD_ROLES: Final[frozenset[str]] = frozenset(
-    {"product_owner", "head_marketing", "auditor", "main_pm"}
-)
+# Board roles (PO + Head Marketing + Auditor) — derived from foundation.
+# Main PM is intentionally NOT in this set; main_pm is a layer above cells
+# but below the board.
+_BOARD_ROLES: Final[frozenset[_foundation.Role]] = _foundation.BOARD_ROLES
 _MAIN_PM_TARGETS: Final[frozenset[str]] = frozenset(
     {"cell_pm", "main_pm", "product_owner", "head_marketing", "auditor"}
 )
@@ -731,7 +654,7 @@ def can_a2a_direct(from_agent: str, to_agent: str) -> tuple[bool, str | None]:
     if from_role in ("product_owner", "head_marketing", "auditor"):
         return (
             (True, None)
-            if to_role in _BOARD_ROLES
+            if to_role in _BOARD_ROLES or to_role == "main_pm"
             else (False, f"Board cannot A2A {to_role}s. Route through main-pm.")
         )
 

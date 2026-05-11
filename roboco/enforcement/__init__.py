@@ -37,11 +37,6 @@ from roboco.enforcement.journal_perms import (
     get_readable_journals,
     validate_journal_access,
 )
-from roboco.enforcement.notification_perms import (
-    NotificationPermissionError,
-    get_notification_scope,
-    validate_notification_permission,
-)
 from roboco.enforcement.task_lifecycle import (
     ROLE_RESTRICTED_TRANSITIONS,
     VALID_TRANSITIONS,
@@ -71,7 +66,6 @@ __all__ = [
     "GitContext",
     "GitRequirementError",
     "JournalAccessDeniedError",
-    "NotificationPermissionError",
     "TaskLifecycleError",
     "TaskOwnershipError",
     "can_agent_transition",
@@ -79,7 +73,6 @@ __all__ = [
     "can_review_task",
     "get_a2a_allowed_targets",
     "get_agent_channels",
-    "get_notification_scope",
     "get_readable_journals",
     "get_valid_transitions",
     "is_active_state",
@@ -89,7 +82,6 @@ __all__ = [
     "validate_channel_access",
     "validate_git_requirements",
     "validate_journal_access",
-    "validate_notification_permission",
     "validate_task_ownership",
     "validate_task_transition",
 ]

@@ -226,10 +226,16 @@ async def test_delegate_to_cell_pm_dispatches_inputs_bundle() -> None:
         json={
             "parent_task_id": _TASK_ID,
             "title": "Backend slice",
-            "description": "Plan + drive backend work for feature X.",
+            "description": "Plan + drive backend work for feature X end to end.",
             "assigned_to": "be-pm",
             "team": "backend",
             "task_type": "planning",
+            "nature": "feature",
+            "estimated_complexity": "high",
+            "acceptance_criteria": [
+                "all subtasks created with acceptance criteria",
+                "branch + PR opened against the slice",
+            ],
         },
         headers=_HEADERS,
     )

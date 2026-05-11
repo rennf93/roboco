@@ -7,12 +7,16 @@
 # Claude sees it in the next turn:
 #
 #   [Budget]  — soft warning (past warn threshold)
-#   [Loop]    — same tool+args ≥ loop_threshold times in the window
+#   [Loop]    — same tool+args ≥ loop_threshold times in the window.
+#               When the SDK reports loop_action="halt" (foundation default
+#               BudgetPolicy.loop_action), the hook exits 1 to deny the
+#               wrapping tool call. Operators can soften with
+#               ROBOCO_AGENT_LOOP_ACTION=warn.
 #   [Halt]    — hard cap breached; orchestrator kill-switch will terminate
 #               the container on its next sweep. Hook also fires the
 #               auto-escalate on the agent's behalf.
 #
-# Non-blocking: exit 0 always (this is a reminder, not a guard).
+# Default: exit 0 (reminder). Exit 1 only on loop+halt.
 
 set -u
 
@@ -46,6 +50,7 @@ total=$(echo "$resp" | jq -r '.total // 0')
 warn=$(echo "$resp" | jq -r '.warn // false')
 halt=$(echo "$resp" | jq -r '.halt // false')
 loop=$(echo "$resp" | jq -r '.loop // false')
+loop_action=$(echo "$resp" | jq -r '.loop_action // "warn"')
 halt_threshold=$(echo "$resp" | jq -r '.halt_threshold // 150')
 
 if [[ "$halt" == "true" ]]; then
@@ -55,6 +60,15 @@ if [[ "$halt" == "true" ]]; then
     # container within agent_budget_sweep_interval_seconds anyway.
     curl -sf -m 2 -X POST "$SDK_URL/terminal/force_substitute" >/dev/null 2>&1 || true
 elif [[ "$loop" == "true" ]]; then
+    if [[ "$loop_action" == "halt" ]]; then
+        # Foundation BudgetPolicy.loop_action="halt": deny the wrapping tool
+        # call so the agent cannot keep retrying the same (tool,args) pair.
+        # Only fires when the SDK explicitly reports loop_action=="halt";
+        # if the field is missing (older SDK / partial deploy), falls
+        # through to the legacy warn-only branch below.
+        echo "[Loop] Same tool+args repeated in window — halting (BudgetPolicy.loop_action=halt). Escalate via roboco_task_escalate() or substitute." >&2
+        exit 1
+    fi
     echo "[Loop] Same tool+args repeated in window. Stop looping — escalate via roboco_task_escalate() or substitute."
 elif [[ "$warn" == "true" ]]; then
     echo "[Budget] ${total}/${halt_threshold} tool calls used. Plan your remaining work carefully."

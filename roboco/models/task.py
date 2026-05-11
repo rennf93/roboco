@@ -303,19 +303,32 @@ class Task(TimestampMixin):
 
 
 class TaskCreate(RobocoBase):
-    """Schema for creating a new task."""
+    """Schema for creating a new task.
+
+    Mirrors :data:`roboco.foundation.policy.task_completeness.TASK_AT_CREATE`
+    so under-filled payloads fail at the request boundary — no silent
+    defaults, no "code"/"technical"/"medium" fallbacks. The 2026-05-08 trace
+    showed agents omitting task_type and the old default of "code"
+    deadlocking the lifecycle; the same silent-default trap existed for
+    nature ("technical") and complexity ("medium"). Force callers to
+    declare intent.
+    """
 
     title: str = Field(..., min_length=1, max_length=200)
-    description: str
+    # 20-char minimum mirrors TASK_AT_CREATE.description (MIN_LENGTH=20).
+    # Forces a real one-line summary instead of "x" or "see title".
+    description: str = Field(..., min_length=20)
     acceptance_criteria: list[str] = Field(..., min_length=1)
-    team: Team
+    team: Team = Field(...)
     priority: int = Field(default=2, ge=0, le=3)
     parent_task_id: UUID | None = None
     # Accepts an agent UUID or an agent slug (e.g. "main-pm", "be-dev-1").
     # The route handler resolves slugs to UUIDs before persisting.
     assigned_to: str | None = None
     target_date: datetime | None = None
-    estimated_complexity: Complexity = Complexity.MEDIUM
+    # task_type, nature, estimated_complexity are EXPLICITLY_DECLARED in
+    # TASK_AT_CREATE — no defaults.
+    estimated_complexity: Complexity = Field(...)
     status: TaskStatus | None = None  # PM can set 'backlog' for subtasks needing setup
 
     # Ordering and dependencies
@@ -328,8 +341,8 @@ class TaskCreate(RobocoBase):
     )
 
     # Git configuration (all tasks follow git workflow)
-    task_type: TaskType = TaskType.CODE
-    nature: TaskNature = TaskNature.TECHNICAL
+    task_type: TaskType = Field(...)
+    nature: TaskNature = Field(...)
     project_id: UUID  # Required - all tasks need a project
 
 
@@ -367,28 +380,32 @@ class TaskUpdate(RobocoBase):
 
 @dataclass
 class TaskCreateRequest:
-    """Request data for creating a task via TaskService."""
+    """Request data for creating a task via TaskService.
 
-    # Required fields (no defaults)
+    Mirrors :data:`roboco.foundation.policy.task_completeness.TASK_AT_CREATE`.
+    `task_type`, `nature`, and `estimated_complexity` are required —
+    no silent "code"/"technical"/"medium" fallbacks. The 2026-05-08 trace
+    showed those defaults deadlocking the lifecycle.
+    """
+
+    # Required fields (no defaults) — all of TASK_AT_CREATE plus owner/project.
     title: str
     description: str
     acceptance_criteria: list[str]
     team: Team
     created_by: UUID
     project_id: UUID  # Required - all tasks need a project for git workflow
+    task_type: TaskType
+    nature: TaskNature
+    estimated_complexity: Complexity
 
     # Optional fields (with defaults)
     priority: int = 2
     parent_task_id: UUID | None = None
     assigned_to: UUID | None = None
     target_date: datetime | None = None
-    estimated_complexity: Complexity = field(default=Complexity.MEDIUM)
     status: TaskStatus | None = None  # PM can set BACKLOG for subtasks
 
     # Ordering and dependencies
     sequence: int = 0  # Order within siblings (lower = first)
     dependency_ids: list[UUID] = field(default_factory=list)
-
-    # Git configuration (all tasks follow git workflow)
-    task_type: TaskType = field(default=TaskType.CODE)
-    nature: TaskNature = field(default=TaskNature.TECHNICAL)

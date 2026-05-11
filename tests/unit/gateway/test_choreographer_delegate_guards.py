@@ -54,6 +54,8 @@ def _delegate_inputs() -> DelegateInputs:
         assigned_to="be-dev-1",
         team="backend",
         task_type="code",
+        nature="technical",
+        acceptance_criteria=["GET /v1/foo returns 200 with body"],
     )
 
 
@@ -77,8 +79,12 @@ async def test_delegate_blocks_when_parent_not_in_progress() -> None:
 
     env = await c.delegate(pm_id, parent_id, _delegate_inputs())
     body = env.as_dict()
+    # The spec's create_subtask gate requires the parent in_progress.
+    # Per Section 6 of the design doc, rejection messages now come from
+    # the spec — the spec rejects with 'invalid_state' citing the
+    # source-status set, not the gateway-specific i_will_plan hint.
     assert body["error"] == "invalid_state"
-    assert "i_will_plan" in body["remediate"]
+    assert "in_progress" in body["message"]
     task_svc.create_subtask.assert_not_awaited()
 
 

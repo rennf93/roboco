@@ -257,6 +257,7 @@ async def test_cell_pm_complete_merges_then_completes() -> None:
     git_svc.pr_merge.return_value = {"merged": True, "merge_commit_sha": "merge-abc"}
     journal_svc = AsyncMock()
     journal_svc.has_decision_for_task.return_value = True
+    journal_svc.has_reflect_for_task.return_value = True
     deps = _make_deps(task=task_svc, git=git_svc, journal=journal_svc)
     c = Choreographer(deps)
 
@@ -283,10 +284,13 @@ async def test_cell_pm_complete_blocks_if_subtasks_unfinished() -> None:
     task_svc.all_subtasks_terminal.return_value = False
     journal_svc = AsyncMock()
     journal_svc.has_decision_for_task.return_value = True
+    journal_svc.has_reflect_for_task.return_value = True
     deps = _make_deps(task=task_svc, journal=journal_svc)
     c = Choreographer(deps)
 
-    env = await c.cell_pm_complete(pm_id, task_id, notes="x")
+    env = await c.cell_pm_complete(
+        pm_id, task_id, notes="reviewed cell scope and approved merge"
+    )
     body = env.as_dict()
     assert body["error"] == "tracing_gap"
     assert "subtasks" in str(body["missing"]).lower()
@@ -333,10 +337,13 @@ async def test_cell_pm_complete_no_pr_returns_invalid_state() -> None:
     task_svc.all_subtasks_terminal.return_value = True
     journal_svc = AsyncMock()
     journal_svc.has_decision_for_task.return_value = True
+    journal_svc.has_reflect_for_task.return_value = True
     deps = _make_deps(task=task_svc, journal=journal_svc)
     c = Choreographer(deps)
 
-    env = await c.cell_pm_complete(pm_id, task_id, notes="x")
+    env = await c.cell_pm_complete(
+        pm_id, task_id, notes="reviewed cell scope and approved merge"
+    )
     assert env.as_dict()["error"] == "invalid_state"
 
 
@@ -377,10 +384,13 @@ async def test_main_pm_complete_opens_master_pr_and_escalates() -> None:
     git_svc.create_pr.return_value = {"pr_number": 99, "pr_url": "https://x/y/pull/99"}
     journal_svc = AsyncMock()
     journal_svc.has_decision_for_task.return_value = True
+    journal_svc.has_reflect_for_task.return_value = True
     deps = _make_deps(task=task_svc, git=git_svc, journal=journal_svc)
     c = Choreographer(deps)
 
-    env = await c.main_pm_complete(main_pm_id, root_task_id, notes="ready for prod")
+    env = await c.main_pm_complete(
+        main_pm_id, root_task_id, notes="root scope reviewed and ready for production"
+    )
     assert env.error is None
     assert env.status == "awaiting_ceo_approval"
     git_svc.create_pr.assert_awaited_once_with(
@@ -413,10 +423,13 @@ async def test_main_pm_complete_skips_pr_creation_if_already_master_targeted() -
     git_svc.pr_target.return_value = "master"
     journal_svc = AsyncMock()
     journal_svc.has_decision_for_task.return_value = True
+    journal_svc.has_reflect_for_task.return_value = True
     deps = _make_deps(task=task_svc, git=git_svc, journal=journal_svc)
     c = Choreographer(deps)
 
-    await c.main_pm_complete(main_pm_id, root_task_id, notes="ready")
+    await c.main_pm_complete(
+        main_pm_id, root_task_id, notes="root scope reviewed and ready"
+    )
     git_svc.create_pr.assert_not_awaited()
     task_svc.escalate_to_ceo.assert_awaited_once()
 
@@ -489,10 +502,13 @@ async def test_complete_dispatches_cell_pm() -> None:
     git_svc.pr_merge.return_value = {"merged": True, "merge_commit_sha": "x"}
     journal_svc = AsyncMock()
     journal_svc.has_decision_for_task.return_value = True
+    journal_svc.has_reflect_for_task.return_value = True
     deps = _make_deps(task=task_svc, git=git_svc, journal=journal_svc)
     c = Choreographer(deps)
 
-    env = await c.complete(pm_id, task_id, notes="ok")
+    env = await c.complete(
+        pm_id, task_id, notes="cell scope reviewed and approved for merge"
+    )
     assert env.status == "completed"
     task_svc.cell_pm_complete.assert_awaited_once()
 
@@ -520,10 +536,13 @@ async def test_complete_dispatches_main_pm() -> None:
     git_svc.create_pr.return_value = {"pr_number": 99, "pr_url": "x"}
     journal_svc = AsyncMock()
     journal_svc.has_decision_for_task.return_value = True
+    journal_svc.has_reflect_for_task.return_value = True
     deps = _make_deps(task=task_svc, git=git_svc, journal=journal_svc)
     c = Choreographer(deps)
 
-    env = await c.complete(main_pm_id, root_task_id, notes="ready")
+    env = await c.complete(
+        main_pm_id, root_task_id, notes="root scope reviewed and ready"
+    )
     assert env.status == "awaiting_ceo_approval"
     task_svc.escalate_to_ceo.assert_awaited_once()
 
@@ -601,6 +620,12 @@ async def test_escalate_up_blocks_without_journal_decision() -> None:
     t = MagicMock(id=task_id, status="blocked")
     task_svc = AsyncMock()
     task_svc.get.return_value = t
+    # Spec gate runs before the journal:decision preflight; provide a
+    # valid PM role so the gate passes and the preflight is the
+    # load-bearing rejector.
+    task_svc.agent_for.return_value = MagicMock(
+        role="cell_pm", escalation_target="main-pm"
+    )
     journal_svc = AsyncMock()
     journal_svc.has_decision_for_task.return_value = False
     deps = _make_deps(task=task_svc, journal=journal_svc)
@@ -614,13 +639,20 @@ async def test_escalate_up_blocks_without_journal_decision() -> None:
 
 @pytest.mark.asyncio
 async def test_escalate_up_no_target_returns_invalid_state() -> None:
+    """Verb-specific preflight: PM whose escalation_target is unconfigured.
+
+    The spec allows cell_pm/main_pm to call escalate_up regardless of
+    target slug presence (target metadata lives on the agent record, not
+    the lifecycle). The verb body's preflight is what surfaces the
+    invalid_state when no target is configured.
+    """
     pm_id = uuid4()
     task_id = uuid4()
     t = MagicMock(id=task_id, status="blocked")
     task_svc = AsyncMock()
     task_svc.get.return_value = t
     task_svc.agent_for.return_value = MagicMock(
-        role="auditor",
+        role="cell_pm",
         escalation_target=None,
     )
     journal_svc = AsyncMock()

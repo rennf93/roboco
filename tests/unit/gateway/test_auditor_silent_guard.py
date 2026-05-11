@@ -1,0 +1,126 @@
+"""Auditor is silent — runtime guard refuses say()/dm().
+
+Spec §5.5: the auditor is a silent observer. The spawn manifest already
+omits `say` and `dm` from the auditor's tool surface, but that is a
+convention-only defense. These tests pin a defense-in-depth runtime guard
+inside ContentActions.say/dm: if the caller's role is "auditor", the
+verb refuses with Envelope.not_authorized regardless of how the call
+arrived.
+"""
+
+from __future__ import annotations
+
+from unittest.mock import AsyncMock, MagicMock
+from uuid import uuid4
+
+import pytest
+from roboco.services.gateway.content_actions import (
+    ContentActions,
+    ContentActionsDeps,
+)
+
+
+def _make_deps(agent_role: str, **overrides: AsyncMock) -> ContentActionsDeps:
+    """Build a ContentActionsDeps whose task.agent_for returns the given role."""
+    if "task" in overrides:
+        task = overrides["task"]
+    else:
+        task = AsyncMock()
+        task.get_active_task_for_agent.return_value = None
+        task.agent_for.return_value = MagicMock(role=agent_role)
+
+    git = overrides.get("git", AsyncMock())
+    messaging = overrides.get("messaging", AsyncMock())
+    a2a = overrides.get("a2a", AsyncMock())
+    journal = overrides.get("journal", AsyncMock())
+    workspace = overrides.get("workspace", AsyncMock())
+    notifications = overrides.get("notifications", AsyncMock())
+    return ContentActionsDeps(
+        task=task,
+        git=git,
+        messaging=messaging,
+        a2a=a2a,
+        journal=journal,
+        workspace=workspace,
+        notifications=notifications,
+    )
+
+
+@pytest.mark.asyncio
+async def test_auditor_say_returns_not_authorized() -> None:
+    """Auditor role calling say() is refused regardless of manifest."""
+    auditor_id = uuid4()
+    deps = _make_deps("auditor")
+    actions = ContentActions(deps)
+
+    env = await actions.say(agent_id=auditor_id, channel="backend-cell", text="hi")
+    body = env.as_dict()
+
+    assert body["error"] == "not_authorized"
+    haystack = (body.get("message") or "") + " " + (body.get("remediate") or "")
+    assert "silent" in haystack.lower() or "auditor" in haystack.lower()
+    # The messaging service must not have been touched — the guard fires
+    # before any downstream call.
+    deps.messaging.post_to_channel.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_auditor_dm_returns_not_authorized() -> None:
+    """Auditor role calling dm() is refused regardless of manifest."""
+    auditor_id = uuid4()
+    deps = _make_deps("auditor")
+    actions = ContentActions(deps)
+
+    env = await actions.dm(
+        agent_id=auditor_id,
+        recipient=str(uuid4()),
+        text="hi",
+        task_id=uuid4(),
+    )
+    body = env.as_dict()
+
+    assert body["error"] == "not_authorized"
+    haystack = (body.get("message") or "") + " " + (body.get("remediate") or "")
+    assert "silent" in haystack.lower() or "auditor" in haystack.lower()
+    deps.a2a.send.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_developer_say_passes_auditor_guard() -> None:
+    """Non-auditor roles are not blocked by the new guard.
+
+    The messaging mock returns None so downstream flow is whatever the
+    happy path is — we only assert that the auditor guard didn't fire
+    (i.e. the response is not the auditor-silent not_authorized envelope).
+    """
+    dev_id = uuid4()
+    deps = _make_deps("developer")
+    actions = ContentActions(deps)
+
+    env = await actions.say(agent_id=dev_id, channel="backend-cell", text="hi")
+    body = env.as_dict()
+
+    # The auditor-silent message is what we explicitly want to NOT see.
+    if body.get("error") == "not_authorized":
+        haystack = (body.get("message") or "") + " " + (body.get("remediate") or "")
+        assert "silent" not in haystack.lower()
+
+
+@pytest.mark.asyncio
+async def test_developer_dm_passes_auditor_guard() -> None:
+    """dm() for a non-auditor role is not blocked by the new guard."""
+    dev_id = uuid4()
+    deps = _make_deps("developer")
+    actions = ContentActions(deps)
+
+    env = await actions.dm(
+        agent_id=dev_id,
+        recipient=str(uuid4()),
+        text="hi",
+        task_id=uuid4(),
+    )
+    body = env.as_dict()
+
+    if body.get("error") == "not_authorized":
+        haystack = (body.get("message") or "") + " " + (body.get("remediate") or "")
+        assert "silent" not in haystack.lower()

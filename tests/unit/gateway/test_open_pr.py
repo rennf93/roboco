@@ -43,6 +43,22 @@ def _make_deps(**overrides: AsyncMock) -> ChoreographerDeps:
     )
 
 
+def _wire_savepoint(task_svc: AsyncMock) -> None:
+    """Stub task_svc.session.begin_nested() as an async context manager.
+
+    The VerbRunner wraps composed atomic actions in `session.begin_nested()`.
+    open_pr has composes=() so the savepoint body is empty, but the
+    context manager is still entered/exited. Tests need a no-op stub.
+    """
+    task_svc.session = MagicMock()
+    task_svc.session.begin_nested = MagicMock(
+        return_value=MagicMock(
+            __aenter__=AsyncMock(return_value=None),
+            __aexit__=AsyncMock(return_value=False),
+        )
+    )
+
+
 @pytest.mark.asyncio
 async def test_open_pr_pushes_and_opens_pr() -> None:
     aid = uuid4()
@@ -56,8 +72,22 @@ async def test_open_pr_pushes_and_opens_pr() -> None:
         pr_number=None,
         branch_name="feature/backend/abc12345",
     )
+    # Re-fetched task post-runner has the new pr_number written by
+    # git_service.create_pr's _record_pr_atomically.
+    t_after = MagicMock(
+        id=tid,
+        status="in_progress",
+        assigned_to=aid,
+        plan="x",
+        commits=[{"sha": "abc"}],
+        pr_number=42,
+        pr_url="https://gh/x/42",
+        branch_name="feature/backend/abc12345",
+    )
     task_svc = AsyncMock()
-    task_svc.get.return_value = t
+    task_svc.get.side_effect = [t, t_after]
+    task_svc.agent_for.return_value = MagicMock(role="developer", team="backend")
+    _wire_savepoint(task_svc)
     git_svc = AsyncMock()
     git_svc.push_branch.return_value = ("feature/backend/abc12345", 1)
     git_svc.create_pr.return_value = {
@@ -75,7 +105,10 @@ async def test_open_pr_pushes_and_opens_pr() -> None:
     git_svc.create_pr.assert_awaited()
     assert env.error is None
     assert env.next is not None
-    assert "42" in env.next  # remediate points to i_am_done with PR ref
+    # spec's next_hint("open_pr") returns the canonical i_am_done remediation;
+    # PR number is surfaced via introspection.with_introspection() rather
+    # than the next-hint string itself.
+    assert "i_am_done" in env.next
 
 
 @pytest.mark.asyncio
@@ -94,6 +127,7 @@ async def test_open_pr_rejects_when_not_assigned() -> None:
     )
     task_svc = AsyncMock()
     task_svc.get.return_value = t
+    task_svc.agent_for.return_value = MagicMock(role="developer", team="backend")
     git_svc = AsyncMock()
     deps = _make_deps(task=task_svc, git=git_svc)
     c = Choreographer(deps)
@@ -102,7 +136,10 @@ async def test_open_pr_rejects_when_not_assigned() -> None:
 
     git_svc.push_branch.assert_not_awaited()
     git_svc.create_pr.assert_not_awaited()
-    assert env.error == "not_authorized"
+    # Spec's PRECONDITION_OWNERSHIP surfaces as tracing_gap (owns_task missing)
+    # rather than the previous bespoke not_authorized message.
+    assert env.error == "tracing_gap"
+    assert env.missing == ["owns_task"]
 
 
 @pytest.mark.asyncio
@@ -120,6 +157,7 @@ async def test_open_pr_rejects_when_no_commits() -> None:
     )
     task_svc = AsyncMock()
     task_svc.get.return_value = t
+    task_svc.agent_for.return_value = MagicMock(role="developer", team="backend")
     git_svc = AsyncMock()
     deps = _make_deps(task=task_svc, git=git_svc)
     c = Choreographer(deps)
@@ -128,7 +166,10 @@ async def test_open_pr_rejects_when_no_commits() -> None:
 
     git_svc.push_branch.assert_not_awaited()
     git_svc.create_pr.assert_not_awaited()
-    assert env.error == "invalid_state"
+    # Spec's PRECONDITION_COMMITS surfaces as tracing_gap; remediate
+    # still mentions committing.
+    assert env.error == "tracing_gap"
+    assert env.missing == ["commits>=1"]
     assert env.remediate is not None
     assert "commit" in env.remediate.lower()
 

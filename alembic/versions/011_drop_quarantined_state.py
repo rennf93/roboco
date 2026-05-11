@@ -35,7 +35,7 @@ Create Date: 2026-05-03
 
 from __future__ import annotations
 
-from alembic import op
+from alembic import context, op
 from sqlalchemy import text
 
 revision = "011_drop_quarantined_state"
@@ -65,7 +65,14 @@ _NEW_TASKSTATUS_MEMBERS: tuple[str, ...] = (
 
 
 def upgrade() -> None:
-    """Drop `quarantined` from taskstatus by rebuilding the type."""
+    """Drop `quarantined` from taskstatus by rebuilding the type.
+
+    Skipped in offline (--sql) mode: the rebuild is fully introspective
+    (queries pg_attrdef / pg_type / etc.) and has no representable
+    offline form. Apply against a live DB.
+    """
+    if context.is_offline_mode():
+        return
     bind = op.get_bind()
 
     # Step 1: pre-flight. Look up every column that references taskstatus,

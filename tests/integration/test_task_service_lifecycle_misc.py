@@ -26,9 +26,12 @@ from roboco.db.tables import (
 from roboco.models import AgentRole, AgentStatus, Team
 from roboco.models.base import (
     ChannelType,
+    Complexity,
     SessionStatus,
     SubstituteReason,
+    TaskNature,
     TaskStatus,
+    TaskType,
 )
 from roboco.models.permissions import AgentContext
 from roboco.models.task import TaskCreateRequest
@@ -93,6 +96,9 @@ def _req(setup: dict, **overrides) -> TaskCreateRequest:
         team=overrides.pop("team", Team.BACKEND),
         created_by=setup["agent_id"],
         project_id=setup["project_id"],
+        task_type=overrides.pop("task_type", TaskType.CODE),
+        nature=overrides.pop("nature", TaskNature.TECHNICAL),
+        estimated_complexity=overrides.pop("estimated_complexity", Complexity.MEDIUM),
         **overrides,
     )
 
@@ -232,7 +238,7 @@ async def test_inject_proactive_context_skips_when_claim_rolled_back(
         async def __aenter__(self) -> Any:
             return self._session
 
-        async def __aexit__(self, exc_type, exc, tb) -> None:
+        async def __aexit__(self, exc_type, exc, _tb) -> None:
             return None
 
     factory_instance = _SessionFactory()
@@ -278,7 +284,7 @@ async def test_inject_proactive_context_writes_when_context_nonempty(
         async def __aenter__(self) -> Any:
             return self._session
 
-        async def __aexit__(self, exc_type, exc, tb) -> None:
+        async def __aexit__(self, exc_type, exc, _tb) -> None:
             return None
 
     class _Factory:
@@ -770,24 +776,29 @@ async def test_cancel_with_branch_and_work_session(
 
 
 @pytest.mark.asyncio
-async def test_cancel_descendants_role_validation_skipped(
+async def test_cancel_descendants_cascades_for_authorized_pm(
     task_setup: dict, db_session: AsyncSession
 ) -> None:
-    """When agent_role is not allowed for a child's status, descendant cancel
-    is skipped but parent still cancels.
+    """A `cell_pm` cancel cascades through descendants in any non-terminal state.
+
+    Predecessor test asserted CEO-only authority over
+    `awaiting_ceo_approval` cancels (legacy table behavior). The
+    canonical spec (`roboco.foundation.policy.lifecycle`) authorizes
+    cancel from every non-terminal source for {CELL_PM, MAIN_PM, CEO}
+    uniformly, so a PM cancel now sweeps the whole subtree — including
+    descendants parked in `awaiting_ceo_approval`.
     """
     svc = task_setup["svc"]
     parent = await svc.create(_req(task_setup))
     child = await svc.create(_req(task_setup, parent_task_id=parent.id))
-    # Put child in awaiting_ceo_approval — only CEO can cancel
     child.status = TaskStatus.AWAITING_CEO_APPROVAL
     await db_session.flush()
     out = await svc.cancel(parent.id, agent_role="cell_pm")
     assert out is not None
     refreshed_child = await svc.get(child.id)
     assert refreshed_child is not None
-    # Child stays in awaiting_ceo_approval (not cancellable by cell_pm)
-    assert refreshed_child.status == TaskStatus.AWAITING_CEO_APPROVAL
+    # Child cascades to cancelled along with the parent.
+    assert refreshed_child.status == TaskStatus.CANCELLED
 
 
 # ---------------------------------------------------------------------------

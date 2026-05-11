@@ -33,6 +33,18 @@ def _make_deps(**overrides: Any) -> ChoreographerDeps:
         "evidence_repo": AsyncMock(),
     }
     base.update(overrides)
+    # VerbRunner uses task.session.begin_nested() as a savepoint context
+    # manager. AsyncMock auto-attributes any access (so hasattr always
+    # returns True); we always overwrite session to a MagicMock with the
+    # correct async-context-manager protocol.
+    task = base["task"]
+    task.session = MagicMock()
+    task.session.begin_nested = MagicMock(
+        return_value=MagicMock(
+            __aenter__=AsyncMock(return_value=None),
+            __aexit__=AsyncMock(return_value=False),
+        )
+    )
     repo = base["evidence_repo"]
     for method in (
         "list_unread_a2a",
@@ -51,17 +63,27 @@ def _task_svc_with(
     target: MagicMock,
     *,
     role: str = "developer",
-    in_progress: list[MagicMock] | None = None,
-    paused: list[MagicMock] | None = None,
-    siblings: list[MagicMock] | None = None,
+    agent_id: object | None = None,
+    lookups: dict[str, list[MagicMock]] | None = None,
 ) -> AsyncMock:
-    """Build a task service mock primed with the active-task and sibling lookups."""
+    """Build a task service mock primed with the active-task and sibling lookups.
+
+    `agent_id` (when supplied) is used as the GatewayAgentView's id so that
+    runner-driven calls like ``task.claim(task.id, agent.id)`` line up
+    with the test's assert_awaited_with(target_id, agent_id).
+
+    `lookups` carries the optional in_progress / paused / siblings lists
+    (defaulting empty). One bag avoids ruff PLR0913 on the helper sig.
+    """
+    lookups = lookups or {}
     task_svc = AsyncMock()
     task_svc.get.return_value = target
-    task_svc.agent_for.return_value = MagicMock(role=role, team="backend")
-    task_svc.list_in_progress_for_agent.return_value = in_progress or []
-    task_svc.list_paused_for_agent.return_value = paused or []
-    task_svc.get_subtasks.return_value = siblings or []
+    task_svc.agent_for.return_value = MagicMock(
+        id=agent_id, role=role, team="backend", slug=None
+    )
+    task_svc.list_in_progress_for_agent.return_value = lookups.get("in_progress", [])
+    task_svc.list_paused_for_agent.return_value = lookups.get("paused", [])
+    task_svc.get_subtasks.return_value = lookups.get("siblings", [])
     return task_svc
 
 
@@ -98,7 +120,7 @@ async def test_i_will_work_on_blocks_when_earlier_sibling_open() -> None:
         status="pending",
         sequence=2,
     )
-    task_svc = _task_svc_with(target, siblings=[earlier, later])
+    task_svc = _task_svc_with(target, lookups={"siblings": [earlier, later]})
     deps = _make_deps(task=task_svc)
     c = Choreographer(deps)
 
@@ -130,7 +152,9 @@ async def test_i_will_work_on_allows_when_earlier_sibling_terminal() -> None:
     earlier_cancelled = MagicMock(id=uuid4(), status="cancelled", sequence=0)
     self_row = MagicMock(id=target_id, status="pending", sequence=2)
     task_svc = _task_svc_with(
-        target, siblings=[earlier_done, earlier_cancelled, self_row]
+        target,
+        agent_id=agent_id,
+        lookups={"siblings": [earlier_done, earlier_cancelled, self_row]},
     )
     task_svc.claim.return_value = MagicMock(
         id=target_id,
@@ -165,7 +189,7 @@ async def test_root_task_no_sequence_check() -> None:
         task_type="code",
         team="backend",
     )
-    task_svc = _task_svc_with(target)
+    task_svc = _task_svc_with(target, agent_id=agent_id)
     task_svc.claim.return_value = MagicMock(
         id=target_id, status="claimed", plan={"x": 1}, assigned_to=agent_id
     )
@@ -202,7 +226,7 @@ async def test_i_will_work_on_blocks_when_agent_has_in_progress_task() -> None:
         team="backend",
     )
     in_progress = MagicMock(id=other_id, status="in_progress")
-    task_svc = _task_svc_with(target, in_progress=[in_progress])
+    task_svc = _task_svc_with(target, lookups={"in_progress": [in_progress]})
     deps = _make_deps(task=task_svc)
     c = Choreographer(deps)
 
@@ -233,7 +257,7 @@ async def test_i_will_work_on_resumption_does_not_self_block() -> None:
     started = MagicMock(
         id=task_id, status="in_progress", plan={"x": 1}, assigned_to=agent_id
     )
-    task_svc = _task_svc_with(target=claimed)
+    task_svc = _task_svc_with(target=claimed, agent_id=agent_id)
     # Even if there's an in_progress task with the SAME id, that's the resumption itself
     task_svc.list_in_progress_for_agent.return_value = []
     task_svc.start.return_value = started
@@ -266,7 +290,7 @@ async def test_i_will_work_on_blocks_when_agent_has_paused_task() -> None:
         team="backend",
     )
     paused = MagicMock(id=paused_id, status="paused")
-    task_svc = _task_svc_with(target, paused=[paused])
+    task_svc = _task_svc_with(target, lookups={"paused": [paused]})
     deps = _make_deps(task=task_svc)
     c = Choreographer(deps)
 
@@ -304,11 +328,9 @@ async def test_cell_pm_cannot_claim_code_task_via_i_will_work_on() -> None:
     env = await c.i_will_work_on(pm_id, task_id, plan="x")
     body = env.as_dict()
     assert body["error"] == "not_authorized"
-    assert "PM" in body["message"] or "code" in body["message"].lower()
-    assert (
-        "delegate" in body["remediate"].lower()
-        or "developer" in body["remediate"].lower()
-    )
+    # Spec produces "role 'cell_pm' may not call 'i_will_work_on'".
+    assert "cell_pm" in body["message"]
+    assert "i_will_work_on" in body["message"]
     task_svc.claim.assert_not_awaited()
 
 
@@ -411,7 +433,15 @@ async def test_pm_can_plan_non_code_parent() -> None:
 
 @pytest.mark.asyncio
 async def test_developer_cannot_claim_qa_status_task() -> None:
-    """Dev calling i_will_work_on on awaiting_qa task gets explicit rejection."""
+    """Dev calling i_will_work_on on awaiting_qa task gets explicit rejection.
+
+    spec.CLAIM_RULES restricts DEVELOPER to PENDING/NEEDS_REVISION; an
+    awaiting_qa task is reserved for QA. spec.can_claim surfaces this as
+    not_authorized (status reserved for another role) which the verb
+    relays via Envelope.from_decision. Pre-spec the verb body produced
+    invalid_state from a custom else-branch; the spec-driven body now
+    returns the more accurate not_authorized.
+    """
     dev_id = uuid4()
     task_id = uuid4()
     target = MagicMock(
@@ -430,13 +460,21 @@ async def test_developer_cannot_claim_qa_status_task() -> None:
 
     env = await c.i_will_work_on(dev_id, task_id)
     body = env.as_dict()
-    # Pre-existing path returns invalid_state with status complaint
-    assert body["error"] == "invalid_state"
+    assert body["error"] == "not_authorized"
+    assert "developer" in body["message"]
+    assert "awaiting_qa" in body["message"]
 
 
 @pytest.mark.asyncio
 async def test_qa_cannot_claim_code_task_via_claim_review() -> None:
-    """QA calling claim_review on non-awaiting_qa task is rejected by status check."""
+    """QA calling claim_review on PENDING task is rejected by claim-rules.
+
+    QA's CLAIM_RULES is {AWAITING_QA}. PENDING is owned by dev/pm — so
+    ``_check_claim_rules_narrow`` returns ``not_authorized`` (the
+    "other_role_owns_status" branch). Pre-spec the verb body's status
+    pre-check returned invalid_state; post-migration the spec gate
+    drives the rejection kind.
+    """
     qa_id = uuid4()
     task_id = uuid4()
     target = MagicMock(
@@ -448,6 +486,7 @@ async def test_qa_cannot_claim_code_task_via_claim_review() -> None:
         sequence=0,
         task_type="code",
         team="backend",
+        quick_context=None,
     )
     task_svc = _task_svc_with(target, role="qa")
     deps = _make_deps(task=task_svc)
@@ -455,23 +494,31 @@ async def test_qa_cannot_claim_code_task_via_claim_review() -> None:
 
     env = await c.claim_review(qa_id, task_id)
     body = env.as_dict()
-    assert body["error"] == "invalid_state"
+    assert body["error"] == "not_authorized"
 
 
 @pytest.mark.asyncio
 async def test_documenter_cannot_claim_code_task_via_claim_doc_task() -> None:
-    """Documenter calling claim_doc_task on non-awaiting-doc task is rejected."""
+    """Documenter calling claim_doc_task on AWAITING_QA task is rejected by claim-rules.
+
+    Documenter's CLAIM_RULES is {PENDING, AWAITING_DOCUMENTATION}. A
+    documenter calling claim_doc_task on AWAITING_QA hits the
+    "other_role_owns_status" branch and returns ``not_authorized``.
+    Pre-spec the verb body returned invalid_state on the status check;
+    post-migration the spec gate drives the rejection kind.
+    """
     doc_id = uuid4()
     task_id = uuid4()
     target = MagicMock(
         id=task_id,
-        status="pending",
+        status="awaiting_qa",
         plan=None,
         assigned_to=None,
         parent_task_id=None,
         sequence=0,
         task_type="code",
         team="backend",
+        quick_context=None,
     )
     task_svc = _task_svc_with(target, role="documenter")
     deps = _make_deps(task=task_svc)
@@ -479,7 +526,7 @@ async def test_documenter_cannot_claim_code_task_via_claim_doc_task() -> None:
 
     env = await c.claim_doc_task(doc_id, task_id)
     body = env.as_dict()
-    assert body["error"] == "invalid_state"
+    assert body["error"] == "not_authorized"
 
 
 @pytest.mark.asyncio
@@ -531,7 +578,7 @@ async def test_claim_review_blocks_when_qa_has_in_progress_task() -> None:
         branch_name="feature/backend/abc",
     )
     in_progress = MagicMock(id=other_id, status="in_progress")
-    task_svc = _task_svc_with(target, role="qa", in_progress=[in_progress])
+    task_svc = _task_svc_with(target, role="qa", lookups={"in_progress": [in_progress]})
     deps = _make_deps(task=task_svc)
     c = Choreographer(deps)
 
@@ -559,7 +606,7 @@ async def test_claim_doc_task_blocks_when_documenter_has_paused_task() -> None:
         branch_name="feature/backend/abc",
     )
     paused = MagicMock(id=paused_id, status="paused")
-    task_svc = _task_svc_with(target, role="documenter", paused=[paused])
+    task_svc = _task_svc_with(target, role="documenter", lookups={"paused": [paused]})
     deps = _make_deps(task=task_svc)
     c = Choreographer(deps)
 

@@ -7,82 +7,54 @@ Separates data definitions from bootstrap logic.
 
 from typing import Any
 
+from roboco.foundation import identity as _foundation
+from roboco.foundation.policy import communications as _comms
+
 # =============================================================================
 # DEFAULT CHANNELS
+#
+# Channel topology (slug, description, type, membership) is canonicalized in
+# `roboco.foundation.policy.communications.CHANNELS`. The DEFAULT_CHANNELS
+# list and CHANNEL_MEMBERSHIPS dict below derive from that catalog at module
+# load. The only seed-only field is `name` — a presentation string the
+# foundation does not (and should not) own. It lives in
+# `_CHANNEL_PRESENTATION` and is the only edit needed to rename a channel
+# label.
 # =============================================================================
 
-DEFAULT_CHANNELS = [
-    # Cell channels
-    {
-        "slug": "backend-cell",
-        "name": "Backend Cell",
-        "description": "Backend development team channel",
-        "channel_type": "cell",
-    },
-    {
-        "slug": "frontend-cell",
-        "name": "Frontend Cell",
-        "description": "Frontend development team channel",
-        "channel_type": "cell",
-    },
-    {
-        "slug": "uxui-cell",
-        "name": "UX/UI Cell",
-        "description": "UX/UI design team channel",
-        "channel_type": "cell",
-    },
-    # Cross-cell role channels
-    {
-        "slug": "dev-all",
-        "name": "All Developers",
-        "description": "Cross-cell developer discussion",
-        "channel_type": "cross_cell",
-    },
-    {
-        "slug": "qa-all",
-        "name": "All QA",
-        "description": "Cross-cell QA discussion",
-        "channel_type": "cross_cell",
-    },
-    {
-        "slug": "pm-all",
-        "name": "All PMs",
-        "description": "Cross-cell PM coordination",
-        "channel_type": "cross_cell",
-    },
-    {
-        "slug": "doc-all",
-        "name": "All Documenters",
-        "description": "Cross-cell documentation discussion",
-        "channel_type": "cross_cell",
-    },
-    # Management channels
-    {
-        "slug": "main-pm-board",
-        "name": "Main PM & Board",
-        "description": "Main PM and Board communication",
-        "channel_type": "management",
-    },
-    {
-        "slug": "board-private",
-        "name": "Board Private",
-        "description": "Board-only discussions",
-        "channel_type": "management",
-    },
-    # Special channels
-    {
-        "slug": "announcements",
-        "name": "Announcements",
-        "description": "Company-wide announcements (read-only for most)",
-        "channel_type": "special",
-    },
-    {
-        "slug": "all-hands",
-        "name": "All Hands",
-        "description": "Company-wide open discussion",
-        "channel_type": "special",
-    },
-]
+# Per-channel display name. Slug, description, type, and membership are all
+# sourced from foundation.CHANNELS; this dict only carries presentation.
+_CHANNEL_PRESENTATION: dict[str, str] = {
+    "backend-cell": "Backend Cell",
+    "frontend-cell": "Frontend Cell",
+    "uxui-cell": "UX/UI Cell",
+    "dev-all": "All Developers",
+    "qa-all": "All QA",
+    "pm-all": "All PMs",
+    "doc-all": "All Documenters",
+    "main-pm-board": "Main PM & Board",
+    "board-private": "Board Private",
+    "announcements": "Announcements",
+    "all-hands": "All Hands",
+}
+
+
+def _build_default_channels() -> list[dict[str, Any]]:
+    """Compose DEFAULT_CHANNELS rows from foundation specs + display names."""
+    return [
+        {
+            "slug": spec.slug,
+            "name": _CHANNEL_PRESENTATION[slug],
+            "description": spec.description,
+            # Legacy DB seeder keys this as `channel_type`; preserve the name
+            # so create_channels(session) keeps working unchanged.
+            "channel_type": spec.type.value,
+        }
+        for slug, spec in _comms.CHANNELS.items()
+    ]
+
+
+DEFAULT_CHANNELS: list[dict[str, Any]] = _build_default_channels()
 
 
 # =============================================================================
@@ -93,271 +65,166 @@ DEFAULT_CHANNELS = [
 # - Task assignments
 # - Container orchestration
 #
-# UUID scheme:
-# - 0000-0000: CEO (human)
+# UUID scheme (encoded in roboco/foundation/identity.py:AGENTS):
+# - 0000-0000: System sentinel + CEO (human)
 # - 0001-000X: Backend cell
 # - 0002-000X: Frontend cell
 # - 0003-000X: UX/UI cell
 # - 0004-000X: Board/Management
+#
+# UUIDs, role, and team are all sourced from foundation.AGENTS so that
+# adding/renaming an agent is a single-file edit. Per-agent presentation
+# (display name) lives below in _AGENT_PRESENTATION because it is the
+# only field foundation does not (and should not) own.
 # =============================================================================
 
-# Static agent UUIDs - NEVER change these after initial deployment
-AGENT_UUIDS = {
-    # System sentinel — used as `from_agent` for orchestrator-generated
-    # notifications (blocker escalations, QA-fail notices, doc-ready,
-    # handoff, etc.). The notifications.from_agent column is NOT NULL +
-    # FK to agents.id, so these system-originated notifications need a
-    # real agent row or the INSERT fails. Keep the UUID as all-zeros as
-    # a clear "this is not a person" sentinel.
-    "system": "00000000-0000-0000-0000-000000000000",
-    # CEO (Human)
-    "ceo": "00000000-0000-0000-0000-000000000001",
-    # Backend Cell
-    "be-dev-1": "00000000-0000-0000-0001-000000000001",
-    "be-dev-2": "00000000-0000-0000-0001-000000000002",
-    "be-qa": "00000000-0000-0000-0001-000000000003",
-    "be-pm": "00000000-0000-0000-0001-000000000004",
-    "be-doc": "00000000-0000-0000-0001-000000000005",
-    # Frontend Cell
-    "fe-dev-1": "00000000-0000-0000-0002-000000000001",
-    "fe-dev-2": "00000000-0000-0000-0002-000000000002",
-    "fe-qa": "00000000-0000-0000-0002-000000000003",
-    "fe-pm": "00000000-0000-0000-0002-000000000004",
-    "fe-doc": "00000000-0000-0000-0002-000000000005",
-    # UX/UI Cell
-    "ux-dev-1": "00000000-0000-0000-0003-000000000001",
-    "ux-dev-2": "00000000-0000-0000-0003-000000000002",
-    "ux-qa": "00000000-0000-0000-0003-000000000003",
-    "ux-pm": "00000000-0000-0000-0003-000000000004",
-    "ux-doc": "00000000-0000-0000-0003-000000000005",
-    # Board / Management
-    "main-pm": "00000000-0000-0000-0004-000000000001",
-    "product-owner": "00000000-0000-0000-0004-000000000002",
-    "head-marketing": "00000000-0000-0000-0004-000000000003",
-    "auditor": "00000000-0000-0000-0004-000000000004",
+# Derived AGENT_UUIDS — string-keyed for backward compat with consumers
+# that index by slug and read string-typed UUIDs.
+AGENT_UUIDS: dict[str, str] = {
+    slug: str(row.uuid) for slug, row in _foundation.AGENTS.items()
 }
 
-DEFAULT_AGENTS: list[dict[str, Any]] = [
-    # System sentinel (not a spawnable agent; used as sender for
-    # orchestrator-generated notifications and audit events).
-    {
-        "id": AGENT_UUIDS["system"],
-        "slug": "system",
-        "name": "System",
-        "role": "system",
-        "team": None,
-    },
-    # Backend Cell
-    {
-        "id": AGENT_UUIDS["be-dev-1"],
-        "slug": "be-dev-1",
-        "name": "Backend Developer 1",
-        "role": "developer",
-        "team": "backend",
-    },
-    {
-        "id": AGENT_UUIDS["be-dev-2"],
-        "slug": "be-dev-2",
-        "name": "Backend Developer 2",
-        "role": "developer",
-        "team": "backend",
-    },
-    {
-        "id": AGENT_UUIDS["be-qa"],
-        "slug": "be-qa",
-        "name": "Backend QA",
-        "role": "qa",
-        "team": "backend",
-    },
-    {
-        "id": AGENT_UUIDS["be-pm"],
-        "slug": "be-pm",
-        "name": "Backend PM",
-        "role": "cell_pm",
-        "team": "backend",
-    },
-    {
-        "id": AGENT_UUIDS["be-doc"],
-        "slug": "be-doc",
-        "name": "Backend Documenter",
-        "role": "documenter",
-        "team": "backend",
-    },
-    # Frontend Cell
-    {
-        "id": AGENT_UUIDS["fe-dev-1"],
-        "slug": "fe-dev-1",
-        "name": "Frontend Developer 1",
-        "role": "developer",
-        "team": "frontend",
-    },
-    {
-        "id": AGENT_UUIDS["fe-dev-2"],
-        "slug": "fe-dev-2",
-        "name": "Frontend Developer 2",
-        "role": "developer",
-        "team": "frontend",
-    },
-    {
-        "id": AGENT_UUIDS["fe-qa"],
-        "slug": "fe-qa",
-        "name": "Frontend QA",
-        "role": "qa",
-        "team": "frontend",
-    },
-    {
-        "id": AGENT_UUIDS["fe-pm"],
-        "slug": "fe-pm",
-        "name": "Frontend PM",
-        "role": "cell_pm",
-        "team": "frontend",
-    },
-    {
-        "id": AGENT_UUIDS["fe-doc"],
-        "slug": "fe-doc",
-        "name": "Frontend Documenter",
-        "role": "documenter",
-        "team": "frontend",
-    },
-    # UX/UI Cell
-    {
-        "id": AGENT_UUIDS["ux-dev-1"],
-        "slug": "ux-dev-1",
-        "name": "UX/UI Developer 1",
-        "role": "developer",
-        "team": "ux_ui",
-    },
-    {
-        "id": AGENT_UUIDS["ux-dev-2"],
-        "slug": "ux-dev-2",
-        "name": "UX/UI Developer 2",
-        "role": "developer",
-        "team": "ux_ui",
-    },
-    {
-        "id": AGENT_UUIDS["ux-qa"],
-        "slug": "ux-qa",
-        "name": "UX/UI QA",
-        "role": "qa",
-        "team": "ux_ui",
-    },
-    {
-        "id": AGENT_UUIDS["ux-pm"],
-        "slug": "ux-pm",
-        "name": "UX/UI PM",
-        "role": "cell_pm",
-        "team": "ux_ui",
-    },
-    {
-        "id": AGENT_UUIDS["ux-doc"],
-        "slug": "ux-doc",
-        "name": "UX/UI Documenter",
-        "role": "documenter",
-        "team": "ux_ui",
-    },
-    # Board / Management
-    {
-        "id": AGENT_UUIDS["main-pm"],
-        "slug": "main-pm",
-        "name": "Main PM",
-        "role": "main_pm",
-        "team": "main_pm",  # Cross-cell coordination
-    },
-    {
-        "id": AGENT_UUIDS["product-owner"],
-        "slug": "product-owner",
-        "name": "Product Owner",
-        "role": "product_owner",
-        "team": "board",
-    },
-    {
-        "id": AGENT_UUIDS["head-marketing"],
-        "slug": "head-marketing",
-        "name": "Head of Marketing",
-        "role": "head_marketing",
-        "team": "marketing",
-    },
-    {
-        "id": AGENT_UUIDS["auditor"],
-        "slug": "auditor",
-        "name": "Auditor",
-        "role": "auditor",
-        "team": "board",  # Silent observer, board-level access
-    },
-    # CEO (Human)
-    {
-        "id": AGENT_UUIDS["ceo"],
-        "slug": "ceo",
-        "name": "Renzo",
-        "role": "ceo",
-        "team": None,
-    },
-]
+# Per-agent display names. Anything role/team/uuid is sourced from
+# foundation; this dict only carries presentation strings.
+_AGENT_PRESENTATION: dict[str, dict[str, Any]] = {
+    "ceo": {"name": "Renzo"},
+    "be-dev-1": {"name": "Backend Developer 1"},
+    "be-dev-2": {"name": "Backend Developer 2"},
+    "be-qa": {"name": "Backend QA"},
+    "be-pm": {"name": "Backend PM"},
+    "be-doc": {"name": "Backend Documenter"},
+    "fe-dev-1": {"name": "Frontend Developer 1"},
+    "fe-dev-2": {"name": "Frontend Developer 2"},
+    "fe-qa": {"name": "Frontend QA"},
+    "fe-pm": {"name": "Frontend PM"},
+    "fe-doc": {"name": "Frontend Documenter"},
+    "ux-dev-1": {"name": "UX/UI Developer 1"},
+    "ux-dev-2": {"name": "UX/UI Developer 2"},
+    "ux-qa": {"name": "UX/UI QA"},
+    "ux-pm": {"name": "UX/UI PM"},
+    "ux-doc": {"name": "UX/UI Documenter"},
+    "main-pm": {"name": "Main PM"},
+    "product-owner": {"name": "Product Owner"},
+    "head-marketing": {"name": "Head of Marketing"},
+    "auditor": {"name": "Auditor"},
+}
+
+
+def _build_default_agents() -> list[dict[str, Any]]:
+    """Compose DEFAULT_AGENTS rows from foundation + presentation metadata.
+
+    The system sentinel is appended as a literal because:
+      1. The postgres `team` enum does not include 'system' — only
+         'backend|frontend|ux_ui|board|main_pm|fullstack|marketing'.
+         Seeding with team='system' would fail at INSERT.
+      2. The system row is a from_agent FK target, never a participant.
+    """
+    rows: list[dict[str, Any]] = []
+    for slug, row in _foundation.AGENTS.items():
+        if slug == "system":
+            continue
+        rows.append(
+            {
+                "id": str(row.uuid),
+                "slug": slug,
+                "role": row.role.value,
+                "team": row.team.value,
+                **_AGENT_PRESENTATION[slug],
+            }
+        )
+    # System sentinel — kept as a literal so we can pass team=None into the
+    # DB without colliding with the postgres `team` enum (which does not
+    # have a 'system' value).
+    rows.append(
+        {
+            "id": str(_foundation.AGENTS["system"].uuid),
+            "slug": "system",
+            "name": "System",
+            "role": _foundation.AGENTS["system"].role.value,
+            "team": None,
+        }
+    )
+    return rows
+
+
+DEFAULT_AGENTS: list[dict[str, Any]] = _build_default_agents()
 
 
 # =============================================================================
 # CHANNEL MEMBERSHIP
 #
-# This populates the database channel.members/writers fields for initial setup.
+# Populates the database channel.members / channel.writers / silent_observers
+# fields at seed time. Membership is now derived from
+# foundation.policy.communications.CHANNELS — adding/removing an agent from a
+# channel is a single edit in the foundation catalog.
 #
 # NOTE: This is SEPARATE from roboco/agents_config.py CHANNEL_ACCESS which is
-# the runtime permission source of truth. The relationship is:
-#
-# 1. CHANNEL_MEMBERSHIPS (here) -> populates database channel.members
-# 2. CHANNEL_ACCESS (agents_config) -> used by PermissionService for checks
-# 3. Privileged roles (CEO, Auditor, Main PM) bypass membership via
-#    has_privileged_access() in services/permissions.py
-#
-# This means main-pm isn't listed in board-private here but CAN read it
-# via the privileged role bypass. The seed data is for UI/listing purposes,
-# while CHANNEL_ACCESS is the actual permission enforcement.
+# the runtime permission source of truth. Both derive from the same
+# foundation catalog. Privileged roles (CEO, Auditor, Main PM) still bypass
+# membership at runtime via has_privileged_access() in services/permissions.py.
 # =============================================================================
 
 CEO_AGENT_ID = AGENT_UUIDS["ceo"]
 
-CHANNEL_MEMBERSHIPS = {
-    # Cell channels - cell members + CEO
-    "backend-cell": ["be-dev-1", "be-dev-2", "be-qa", "be-pm", "be-doc", "ceo"],
-    "frontend-cell": ["fe-dev-1", "fe-dev-2", "fe-qa", "fe-pm", "fe-doc", "ceo"],
-    "uxui-cell": ["ux-dev-1", "ux-dev-2", "ux-qa", "ux-pm", "ux-doc", "ceo"],
-    # Role channels + CEO
-    "dev-all": [
-        "be-dev-1",
-        "be-dev-2",
-        "fe-dev-1",
-        "fe-dev-2",
-        "ux-dev-1",
-        "ux-dev-2",
-        "ceo",
-    ],
-    "qa-all": ["be-qa", "fe-qa", "ux-qa", "ceo"],
-    "pm-all": ["be-pm", "fe-pm", "ux-pm", "main-pm", "ceo"],
-    "doc-all": ["be-doc", "fe-doc", "ux-doc", "ceo"],
-    # Management channels + CEO
-    "main-pm-board": [
-        "main-pm",
-        "product-owner",
-        "head-marketing",
-        "auditor",
-        "ceo",
-    ],
-    "board-private": ["product-owner", "head-marketing", "auditor", "ceo"],
-    # Broadcast channels - everyone human-or-agent (system sentinel
-    # excluded — it's a from_agent placeholder, not a participant).
-    "announcements": [a["slug"] for a in DEFAULT_AGENTS if a["slug"] != "system"],
-    "all-hands": [a["slug"] for a in DEFAULT_AGENTS if a["slug"] != "system"],
-}
+# Cell-member roles subject to a channel's team_scope. Cross-cell roles
+# (MAIN_PM, AUDITOR, CEO, board) are NOT filtered by team_scope. Mirrors the
+# rule in agents_config._TEAM_SCOPED_ROLES; duplicated here to avoid a
+# circular import (agents_config already imports AGENT_UUIDS from this
+# module).
+_TEAM_SCOPED_ROLES: frozenset[_foundation.Role] = frozenset(
+    {
+        _foundation.Role.DEVELOPER,
+        _foundation.Role.QA,
+        _foundation.Role.DOCUMENTER,
+        _foundation.Role.CELL_PM,
+    }
+)
 
-# Auditor has silent read access to cell/role channels
-AUDITOR_SILENT_ACCESS = [
-    "backend-cell",
-    "frontend-cell",
-    "uxui-cell",
-    "dev-all",
-    "qa-all",
-    "pm-all",
-    "doc-all",
-]
+
+def _slugs_for_role_set(
+    role_set: frozenset[_foundation.Role],
+    team_scope: _foundation.Team | None,
+) -> list[str]:
+    """Expand a role-set to sorted agent slugs, honoring optional team_scope.
+
+    A slug qualifies when its role is in `role_set` AND, if its role is in
+    _TEAM_SCOPED_ROLES and team_scope is set, its team matches team_scope.
+    The system sentinel is always excluded.
+    """
+    out: list[str] = []
+    for slug, row in _foundation.AGENTS.items():
+        if slug == "system":
+            continue
+        if row.role not in role_set:
+            continue
+        if (
+            team_scope is not None
+            and row.role in _TEAM_SCOPED_ROLES
+            and row.team != team_scope
+        ):
+            continue
+        out.append(slug)
+    return sorted(out)
+
+
+def _build_channel_memberships() -> dict[str, list[str]]:
+    """Per-channel sorted member slugs derived from foundation.CHANNELS."""
+    return {
+        slug: _slugs_for_role_set(spec.read_roles, spec.team_scope)
+        for slug, spec in _comms.CHANNELS.items()
+    }
+
+
+CHANNEL_MEMBERSHIPS: dict[str, list[str]] = _build_channel_memberships()
+
+
+# Auditor silent-read channels — derived from CHANNELS where AUDITOR appears
+# in silent_roles.
+AUDITOR_SILENT_ACCESS: list[str] = sorted(
+    slug
+    for slug, spec in _comms.CHANNELS.items()
+    if _foundation.Role.AUDITOR in spec.silent_roles
+)
 
 
 # =============================================================================

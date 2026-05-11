@@ -5051,15 +5051,41 @@ class TaskService(BaseService):
         assignee it stays in ``backlog`` and a PM must run ``activate`` later.
         Caller-supplied status takes precedence; otherwise we infer from the
         presence of an assignee.
+
+        Foundation rule: no task without acceptance_criteria. The silent
+        fallback that substituted ``["completed and reviewed by assignee"]``
+        was deleted on 2026-05-10 (spec §5.2) — it was the proximate cause
+        of every skeleton task in the same-day smoke run. Defense-in-depth:
+        the gateway and route-layer schemas reject under-filled tasks
+        earlier, but this service-layer guard remains as a hard backstop
+        for non-gateway / non-route callers.
         """
+        from roboco.foundation.policy.task_completeness import (
+            TASK_AT_CREATE,
+            TaskCompletenessError,
+            check,
+        )
+
         if req.parent_task_id is None:
             raise ValueError("create_subtask requires parent_task_id")
+
+        result = check(TASK_AT_CREATE, req)
+        if not result.passed:
+            raise TaskCompletenessError(
+                missing=result.missing,
+                field_hints=result.field_hints,
+                message=(
+                    "create_subtask: task missing required fields: "
+                    f"{result.missing}. The silent fallback at "
+                    "services/task.py:5061 was removed 2026-05-10 (spec §5.2)."
+                ),
+            )
+
         inferred_status = TaskStatus.PENDING if req.assigned_to else TaskStatus.BACKLOG
         prepared = TaskCreateRequest(
             title=req.title,
             description=req.description,
-            acceptance_criteria=req.acceptance_criteria
-            or ["completed and reviewed by assignee"],
+            acceptance_criteria=req.acceptance_criteria,
             team=req.team,
             created_by=req.created_by,
             project_id=req.project_id,
@@ -5067,6 +5093,7 @@ class TaskService(BaseService):
             assigned_to=req.assigned_to,
             estimated_complexity=req.estimated_complexity,
             task_type=req.task_type,
+            nature=req.nature,
             status=req.status or inferred_status,
         )
         return await self.create(prepared)

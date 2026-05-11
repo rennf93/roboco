@@ -1,21 +1,43 @@
-"""
-Journal Permission Enforcement
+"""Journal Permission Enforcement.
 
-Validates who can read whose journal entries.
-Permission model mirrors notification/channel access:
-- Cell members can read each other's journals (full access including private)
-- Cell PMs can read other cells' journals
-- Main PM can read all cell journals
-- Board can read all journals except CEO/Auditor
-- Auditor has silent read access to all journals
-- CEO can read all journals
+Read-tier rules are canonical in :mod:`roboco.foundation.policy.journaling`.
+This module translates the foundation tiers (`ROLE_READ_TIERS`,
+`PROTECTED_JOURNALS`) onto the project's existing public surface
+(`can_read_journal`, `validate_journal_access`, `get_readable_journals`,
+`JournalAccessDeniedError`).
+
+Permission model (now derived from foundation tiers):
+- Self-read is always allowed.
+- Protected journals (ceo, auditor) can only be read by `ReadTier.ALL`
+  roles (CEO, Auditor) — even other "global" readers are excluded.
+- `ReadTier.ALL_CELLS` (Main PM, Product Owner, Head of Marketing) reads
+  every non-protected journal.
+- `ReadTier.CELL_AND_PMS` (Cell PM) reads same-cell members and other PMs.
+- `ReadTier.CELL` (Developer, QA, Documenter) reads same-cell members only.
+- `ReadTier.OWN` (System sentinel, unknown roles) reads nothing but their own.
 """
+
+from __future__ import annotations
 
 from roboco.agents_config import (
     get_agent_cell,
     get_agent_role,
 )
 from roboco.exceptions import RobocoError
+from roboco.foundation.identity import Role
+from roboco.foundation.policy.journaling import (
+    PROTECTED_JOURNALS,
+    ROLE_READ_TIERS,
+    ReadTier,
+)
+
+__all__ = [
+    "PROTECTED_JOURNALS",
+    "JournalAccessDeniedError",
+    "can_read_journal",
+    "get_readable_journals",
+    "validate_journal_access",
+]
 
 
 class JournalAccessDeniedError(RobocoError):
@@ -39,105 +61,97 @@ class JournalAccessDeniedError(RobocoError):
         )
 
 
-# Protected journals - only readable by CEO/Auditor themselves
-PROTECTED_JOURNALS = frozenset(["ceo", "auditor"])
+def _resolve_role(role_str: str) -> Role | None:
+    """Map a string role (as returned by `get_agent_role`) to the Role enum.
+
+    Returns None for unknown / sentinel roles so callers can deny by default.
+    """
+    try:
+        return Role(role_str)
+    except ValueError:
+        return None
 
 
-def _is_same_cell(agent1: str, agent2: str) -> bool:
-    """Check if two agents are in the same cell."""
-    cell1 = get_agent_cell(agent1)
-    cell2 = get_agent_cell(agent2)
+def _tier_for(role_str: str) -> ReadTier:
+    """Read tier for a given role string. Unknown roles get OWN (deny)."""
+    role = _resolve_role(role_str)
+    if role is None:
+        return ReadTier.OWN
+    return ROLE_READ_TIERS.get(role, ReadTier.OWN)
+
+
+def _is_same_cell(reader_id: str, owner_id: str) -> bool:
+    cell1 = get_agent_cell(reader_id)
+    cell2 = get_agent_cell(owner_id)
     return cell1 is not None and cell1 == cell2
 
 
-# Roles with global read access (can read all non-protected journals)
-GLOBAL_READERS = frozenset(
-    ["ceo", "auditor", "product_owner", "head_marketing", "main_pm"]
-)
-
-# Roles that can read cross-cell PM journals
-PM_ROLES = frozenset(["cell_pm", "main_pm"])
-
-# Cell member roles (can only read same-cell journals)
-CELL_MEMBER_ROLES = frozenset(["developer", "qa", "documenter"])
+def _is_pm_role(role_str: str) -> bool:
+    role = _resolve_role(role_str)
+    return role in (Role.CELL_PM, Role.MAIN_PM)
 
 
-def _check_protected_access(
-    reader_role: str, owner_id: str, owner_role: str
-) -> tuple[bool, str] | None:
-    """Check access to protected journals. Returns None if not protected."""
-    if owner_id not in PROTECTED_JOURNALS and owner_role not in ("ceo", "auditor"):
-        return None  # Not a protected journal
-    if reader_role in ("ceo", "auditor"):
+def _decide_protected(tier: ReadTier, owner_role_str: str) -> tuple[bool, str]:
+    """Access decision when the target journal is protected."""
+    if tier == ReadTier.ALL:
         return True, "OK"
-    return False, f"Cannot read {owner_role}'s journal - protected"
+    return False, f"Cannot read {owner_role_str}'s journal - protected"
 
 
-def _check_cell_pm_access(
-    reader_id: str, owner_id: str, owner_role: str
+def _decide_by_tier(
+    tier: ReadTier,
+    *,
+    same_cell: bool,
+    owner_is_pm: bool,
 ) -> tuple[bool, str]:
-    """Check Cell PM's access to another journal."""
-    if _is_same_cell(reader_id, owner_id):
+    """Access decision for non-protected journals, dispatched by tier."""
+    if tier in (ReadTier.ALL, ReadTier.ALL_CELLS):
         return True, "OK"
-    if owner_role in PM_ROLES:
-        return True, "OK"
-    return False, "Cell PM can only read journals of cell members, other PMs"
-
-
-def _check_cell_member_access(reader_id: str, owner_id: str) -> tuple[bool, str]:
-    """Check cell member's access to another journal."""
-    if _is_same_cell(reader_id, owner_id):
-        return True, "OK"
-    return False, "You can only read journals of your cell members"
+    if tier == ReadTier.CELL_AND_PMS:
+        if same_cell or owner_is_pm:
+            return True, "OK"
+        return False, "Cell PM can only read journals of cell members, other PMs"
+    if tier == ReadTier.CELL:
+        if same_cell:
+            return True, "OK"
+        return False, "You can only read journals of your cell members"
+    return False, "Unknown role - access denied"
 
 
 def can_read_journal(reader_id: str, owner_id: str) -> tuple[bool, str]:
-    """
-    Check if reader can access owner's journal.
+    """Check if `reader_id` can access `owner_id`'s journal.
 
-    Returns:
-        Tuple of (can_read, reason)
+    Returns a `(can_read, reason)` tuple. The reason is a human-readable
+    string suitable for surfacing in error envelopes.
     """
     if reader_id == owner_id:
         return True, "OK"
 
-    reader_role = get_agent_role(reader_id)
-    owner_role = get_agent_role(owner_id)
+    reader_role_str = get_agent_role(reader_id)
+    owner_role_str = get_agent_role(owner_id)
+    tier = _tier_for(reader_role_str)
 
-    # Check protected journals first
-    if (
-        result := _check_protected_access(reader_role, owner_id, owner_role)
-    ) is not None:
-        return result
-
-    # Global readers can access all non-protected journals
-    if reader_role in GLOBAL_READERS:
-        return True, "OK"
-
-    # Cell PM access rules
-    if reader_role == "cell_pm":
-        return _check_cell_pm_access(reader_id, owner_id, owner_role)
-
-    # Cell member access rules
-    if reader_role in CELL_MEMBER_ROLES:
-        return _check_cell_member_access(reader_id, owner_id)
-
-    return False, "Unknown role - access denied"
+    if owner_id in PROTECTED_JOURNALS or owner_role_str in ("ceo", "auditor"):
+        return _decide_protected(tier, owner_role_str)
+    return _decide_by_tier(
+        tier,
+        same_cell=_is_same_cell(reader_id, owner_id),
+        owner_is_pm=_is_pm_role(owner_role_str),
+    )
 
 
 def validate_journal_access(reader_id: str, owner_id: str) -> bool:
-    """
-    Validate reader can access owner's journal.
+    """Validate reader can access owner's journal.
 
     Args:
         reader_id: The agent trying to read (slug)
         owner_id: The journal owner (slug)
 
     Returns:
-        True if allowed
+        True if allowed.
 
     Raises:
-        JournalAccessDeniedError: If access denied
+        JournalAccessDeniedError: If access denied.
     """
     can_read, reason = can_read_journal(reader_id, owner_id)
     if not can_read:
@@ -150,37 +164,34 @@ def validate_journal_access(reader_id: str, owner_id: str) -> bool:
 
 
 def get_readable_journals(reader_id: str) -> dict:
-    """
-    Get information about what journals an agent can read.
+    """Describe what journals an agent can read.
 
-    Returns:
-        Dict with scope information
+    The returned dict's `scope` field is one of `all`, `all_cells`,
+    `cell_plus_pms`, `cell`, or `none` — kept for public API parity
+    with the pre-foundation surface.
     """
-    role = get_agent_role(reader_id)
+    role_str = get_agent_role(reader_id)
     cell = get_agent_cell(reader_id)
+    tier = _tier_for(role_str)
 
-    if role in ("ceo", "auditor"):
+    if tier == ReadTier.ALL:
         return {"scope": "all", "description": "Can read all journals"}
-
-    if role in ("product_owner", "head_marketing", "main_pm"):
+    if tier == ReadTier.ALL_CELLS:
         return {
             "scope": "all_cells",
             "description": "Can read all cell journals",
-            "excludes": ["ceo", "auditor"],
+            "excludes": list(PROTECTED_JOURNALS),
         }
-
-    if role == "cell_pm":
+    if tier == ReadTier.CELL_AND_PMS:
         return {
             "scope": "cell_plus_pms",
             "cell": cell,
             "description": f"Can read {cell} cell journals and other PM journals",
         }
-
-    if role in ("developer", "qa", "documenter"):
+    if tier == ReadTier.CELL:
         return {
             "scope": "cell",
             "cell": cell,
             "description": f"Can read {cell} cell journals only",
         }
-
     return {"scope": "none", "description": "Unknown role"}

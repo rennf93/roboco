@@ -31,6 +31,19 @@ def _make_deps(**overrides: Any) -> ChoreographerDeps:
         "evidence_repo": AsyncMock(),
     }
     base.update(overrides)
+    # VerbRunner wraps composed atomic actions in
+    # ``task.session.begin_nested()``. AsyncMock auto-attribute access
+    # would return an unawaitable coroutine, breaking the
+    # ``async with`` protocol. Overwrite session with a MagicMock that
+    # implements the async-context-manager protocol explicitly.
+    task_dep = base["task"]
+    task_dep.session = MagicMock()
+    task_dep.session.begin_nested = MagicMock(
+        return_value=MagicMock(
+            __aenter__=AsyncMock(return_value=None),
+            __aexit__=AsyncMock(return_value=False),
+        )
+    )
     repo = base["evidence_repo"]
     for method in (
         "list_unread_a2a",
@@ -70,10 +83,13 @@ async def test_cell_pm_complete_blocks_when_subtask_pending() -> None:
     task_svc.get_subtasks.return_value = [sub]
     journal_svc = AsyncMock()
     journal_svc.has_decision_for_task.return_value = True
+    journal_svc.has_reflect_for_task.return_value = True
     deps = _make_deps(task=task_svc, journal=journal_svc)
     c = Choreographer(deps)
 
-    env = await c.cell_pm_complete(pm_id, parent_id, "done")
+    env = await c.cell_pm_complete(
+        pm_id, parent_id, "reviewed cell scope and merge ready"
+    )
     body = env.as_dict()
     assert body["error"] == "tracing_gap"
     # Improvement: non-terminal subtask must be named.
@@ -102,12 +118,13 @@ async def test_cell_pm_complete_allows_when_all_terminal() -> None:
     task_svc.cell_pm_complete.return_value = after
     journal_svc = AsyncMock()
     journal_svc.has_decision_for_task.return_value = True
+    journal_svc.has_reflect_for_task.return_value = True
     git_svc = AsyncMock()
     git_svc.pr_merge.return_value = {"merge_commit_sha": "abc"}
     deps = _make_deps(task=task_svc, journal=journal_svc, git=git_svc)
     c = Choreographer(deps)
 
-    env = await c.cell_pm_complete(pm_id, parent_id, "done")
+    env = await c.cell_pm_complete(pm_id, parent_id, "cell scope reviewed and approved")
     assert env.error is None
     task_svc.cell_pm_complete.assert_awaited_once()
 
@@ -138,10 +155,13 @@ async def test_main_pm_complete_blocks_when_subtask_pending() -> None:
     task_svc.get_subtasks.return_value = [sub]
     journal_svc = AsyncMock()
     journal_svc.has_decision_for_task.return_value = True
+    journal_svc.has_reflect_for_task.return_value = True
     deps = _make_deps(task=task_svc, journal=journal_svc)
     c = Choreographer(deps)
 
-    env = await c.main_pm_complete(pm_id, root_id, "ship it")
+    env = await c.main_pm_complete(
+        pm_id, root_id, "root scope ready to ship to production"
+    )
     body = env.as_dict()
     assert body["error"] == "tracing_gap"
     assert str(sub_id) in body["remediate"]

@@ -9,7 +9,7 @@ from datetime import datetime
 from typing import Any
 from uuid import UUID, uuid4
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 from sqlalchemy import inspect as sa_inspect
 from sqlalchemy import select
 
@@ -177,13 +177,18 @@ class CommitRefInput(BaseModel):
 class TaskUpdate(BaseModel):
     """Request to update a task.
 
-    CEO can update any field. All fields are optional for partial updates.
+    CEO can update any field. All fields are optional for partial updates,
+    but when present they must satisfy the foundation completeness rules
+    appropriate to their lifecycle moment. Notably, acceptance_criteria
+    cannot be set to [] or None — that would blank the criteria post-
+    creation, violating the Golden Rule "no task without acceptance
+    criteria".
     """
 
     # Basic info
-    title: str | None = None
-    description: str | None = None
-    acceptance_criteria: list[str] | None = None
+    title: str | None = Field(default=None, min_length=1, max_length=200)
+    description: str | None = Field(default=None, min_length=20)
+    acceptance_criteria: list[str] | None = Field(default=None, min_length=1)
     priority: int | None = Field(default=None, ge=0, le=3)
     target_date: datetime | None = None
     estimated_complexity: Complexity | None = None
@@ -212,6 +217,27 @@ class TaskUpdate(BaseModel):
     qa_notes: str | None = None
     auditor_notes: str | None = None
     quick_context: str | None = None
+
+    @model_validator(mode="before")
+    @classmethod
+    def _reject_explicit_blank_acceptance_criteria(cls, data: Any) -> Any:
+        """If acceptance_criteria is in the payload at all, it must be non-empty.
+
+        Pydantic's `Field(default=None, min_length=1)` does not reject the
+        explicit `None` case because `None` matches the `Optional` type
+        annotation. This validator fills the gap so PATCH cannot be used
+        to blank the criteria post-creation (Golden Rule preservation).
+        """
+        if isinstance(data, dict) and "acceptance_criteria" in data:
+            value = data["acceptance_criteria"]
+            if value is None or (isinstance(value, list) and len(value) == 0):
+                raise ValueError(
+                    "acceptance_criteria cannot be blanked via PATCH "
+                    "(Golden Rule: no task without acceptance criteria). "
+                    "Omit the field if you don't want to change it; pass "
+                    "a non-empty list to replace it."
+                )
+        return data
 
 
 # =============================================================================

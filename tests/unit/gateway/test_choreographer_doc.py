@@ -79,14 +79,25 @@ async def test_claim_doc_task_returns_evidence() -> None:
 async def test_claim_doc_task_blocks_wrong_state() -> None:
     doc_id = uuid4()
     task_id = uuid4()
-    t = MagicMock(id=task_id, status="in_progress")
+    t = MagicMock(
+        id=task_id,
+        status="in_progress",
+        task_type="code",
+        team="backend",
+        quick_context=None,
+    )
     task_svc = AsyncMock()
     task_svc.get.return_value = t
+    task_svc.agent_for.return_value = MagicMock(
+        id=doc_id, role="documenter", team="backend", slug=None
+    )
     deps = _make_deps(task=task_svc)
     c = Choreographer(deps)
 
     env = await c.claim_doc_task(doc_id, task_id)
     body = env.as_dict()
+    # Spec rejects: in_progress is not in `claim` action's source_statuses
+    # (PENDING, NEEDS_REVISION, AWAITING_QA, AWAITING_DOCUMENTATION).
     assert body["error"] == "invalid_state"
 
 
@@ -103,20 +114,46 @@ async def test_claim_doc_task_not_found() -> None:
     assert env.as_dict()["error"] == "not_found"
 
 
+def _doc_owned_task(task_id: Any, doc_id: Any, **overrides: Any) -> MagicMock:
+    """Build a doc-owned awaiting_documentation task fixture for the spec gate.
+
+    Status defaults to awaiting_documentation (which matches docs_complete's
+    spec source_statuses). task_type / team / quick_context defaulted so
+    the spec gate evaluates against real values.
+    """
+    base = {
+        "id": task_id,
+        "status": "awaiting_documentation",
+        "task_type": "code",
+        "team": "backend",
+        "assigned_to": doc_id,
+        "quick_context": None,
+    }
+    base.update(overrides)
+    return MagicMock(**base)
+
+
+def _doc_agent_mock(doc_id: Any) -> MagicMock:
+    return MagicMock(id=doc_id, role="documenter", team="backend", slug=None)
+
+
 @pytest.mark.asyncio
 async def test_i_documented_requires_min_notes() -> None:
     doc_id = uuid4()
     task_id = uuid4()
-    t = MagicMock(id=task_id, status="claimed", assigned_to=doc_id)
+    t = _doc_owned_task(task_id, doc_id)
     task_svc = AsyncMock()
     task_svc.get.return_value = t
-    deps = _make_deps(task=task_svc)
+    task_svc.agent_for.return_value = _doc_agent_mock(doc_id)
+    journal_svc = AsyncMock()
+    journal_svc.has_reflect_for_task.return_value = True
+    deps = _make_deps(task=task_svc, journal=journal_svc)
     c = Choreographer(deps)
 
     env = await c.i_documented(doc_id, task_id, notes="short", files=["a.md"])
     body = env.as_dict()
     assert body["error"] == "tracing_gap"
-    assert "docs_notes>=20" in body["missing"]
+    assert "docs_notes>=min" in body["missing"]
 
 
 @pytest.mark.asyncio
@@ -136,31 +173,50 @@ async def test_i_documented_task_not_found() -> None:
 async def test_i_documented_requires_files() -> None:
     doc_id = uuid4()
     task_id = uuid4()
-    t = MagicMock(id=task_id, status="claimed", assigned_to=doc_id)
+    t = _doc_owned_task(task_id, doc_id)
     task_svc = AsyncMock()
     task_svc.get.return_value = t
-    deps = _make_deps(task=task_svc)
+    task_svc.agent_for.return_value = _doc_agent_mock(doc_id)
+    journal_svc = AsyncMock()
+    journal_svc.has_reflect_for_task.return_value = True
+    deps = _make_deps(task=task_svc, journal=journal_svc)
     c = Choreographer(deps)
 
     notes = "Wrote backend/guides/feature-x.md with usage examples."
     env = await c.i_documented(doc_id, task_id, notes=notes, files=[])
     body = env.as_dict()
     assert body["error"] == "tracing_gap"
-    assert "files" in body["missing"]
+    assert "docs_files_non_empty" in body["missing"]
 
 
 @pytest.mark.asyncio
 async def test_i_documented_succeeds_and_transitions() -> None:
     doc_id = uuid4()
     task_id = uuid4()
-    t = MagicMock(id=task_id, status="claimed", assigned_to=doc_id, team="backend")
-    after = MagicMock(**{**t.__dict__, "status": "awaiting_pm_review"})
+    t = _doc_owned_task(task_id, doc_id)
+    after = MagicMock(
+        id=task_id,
+        status="awaiting_pm_review",
+        assigned_to=doc_id,
+        team="backend",
+    )
     task_svc = AsyncMock()
     task_svc.get.return_value = t
+    task_svc.agent_for.return_value = _doc_agent_mock(doc_id)
     task_svc.docs_complete.return_value = after
     task_svc.cell_pm_for_team.return_value = MagicMock(id=uuid4())
+    task_svc.session = MagicMock()
+    task_svc.session.flush = AsyncMock()
+    task_svc.session.begin_nested = MagicMock(
+        return_value=MagicMock(
+            __aenter__=AsyncMock(return_value=None),
+            __aexit__=AsyncMock(return_value=False),
+        )
+    )
     a2a_svc = AsyncMock()
-    deps = _make_deps(task=task_svc, a2a=a2a_svc)
+    journal_svc = AsyncMock()
+    journal_svc.has_reflect_for_task.return_value = True
+    deps = _make_deps(task=task_svc, a2a=a2a_svc, journal=journal_svc)
     c = Choreographer(deps)
 
     notes = "Wrote backend/guides/feature-x.md with usage examples and config notes."
@@ -177,9 +233,10 @@ async def test_i_documented_not_assigned_returns_not_authorized() -> None:
     doc_id = uuid4()
     other = uuid4()
     task_id = uuid4()
-    t = MagicMock(id=task_id, status="claimed", assigned_to=other)
+    t = _doc_owned_task(task_id, other)
     task_svc = AsyncMock()
     task_svc.get.return_value = t
+    task_svc.agent_for.return_value = _doc_agent_mock(doc_id)
     deps = _make_deps(task=task_svc)
     c = Choreographer(deps)
 

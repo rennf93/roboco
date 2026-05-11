@@ -11,16 +11,20 @@ from typing import TYPE_CHECKING, Annotated, Any, cast
 
 from fastapi import Depends, Header, HTTPException, params, status
 
+from roboco.foundation.identity import Role
+
 if TYPE_CHECKING:
     from fastapi import Request
 
     from roboco.services.gateway.envelope import Envelope
 
 
-def _require_roles(allowed: frozenset[str]) -> params.Depends:
+def _require_roles(allowed: frozenset[Role]) -> params.Depends:
     def _check(
         x_agent_role: Annotated[str, Header(alias="X-Agent-Role")],
     ) -> None:
+        # `Role` is a StrEnum, so the lowercase header string compares equal
+        # to its matching member.
         if x_agent_role.lower() not in allowed:
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
@@ -30,13 +34,16 @@ def _require_roles(allowed: frozenset[str]) -> params.Depends:
     return cast("params.Depends", Depends(_check))
 
 
-require_dev = _require_roles(frozenset({"developer"}))
-require_qa = _require_roles(frozenset({"qa"}))
-require_doc = _require_roles(frozenset({"documenter"}))
-require_cell_pm = _require_roles(frozenset({"cell_pm"}))
-require_main_pm = _require_roles(frozenset({"main_pm"}))
-require_board = _require_roles(frozenset({"product_owner", "head_marketing"}))
-require_auditor = _require_roles(frozenset({"auditor"}))
+# Role-typed single-role guards — renaming a role edits foundation.identity only.
+# `require_board` is the only multi-role guard (Product Owner + Head of Marketing
+# share the public-facing board endpoints; the auditor has its own guard).
+require_dev = _require_roles(frozenset({Role.DEVELOPER}))
+require_qa = _require_roles(frozenset({Role.QA}))
+require_doc = _require_roles(frozenset({Role.DOCUMENTER}))
+require_cell_pm = _require_roles(frozenset({Role.CELL_PM}))
+require_main_pm = _require_roles(frozenset({Role.MAIN_PM}))
+require_board = _require_roles(frozenset({Role.PRODUCT_OWNER, Role.HEAD_MARKETING}))
+require_auditor = _require_roles(frozenset({Role.AUDITOR}))
 
 
 def envelope_to_response(env: Envelope, request: Request) -> dict[str, Any]:

@@ -33,6 +33,9 @@ class Envelope:
     message: str | None = None
     remediate: str | None = None
     missing: list[str] | None = None
+    # Populated only by `incomplete_input` envelopes — the literal
+    # answer-key the agent uses to re-issue the call (spec §5.2.1).
+    field_hints: dict[str, str] | None = None
     # Stamped post-construction by the route layer from
     # ``request.state.correlation_id`` (set by ``CorrelationIdMiddleware``).
     # Carried back to the agent so the same id flows MCP -> API -> agent
@@ -80,6 +83,29 @@ class Envelope:
         )
 
     @classmethod
+    def incomplete_input(
+        cls,
+        *,
+        missing: list[str],
+        field_hints: dict[str, str],
+        remediate: str,
+        context_briefing: dict[str, Any] | None = None,
+    ) -> Envelope:
+        """Structured rejection for under-filled inputs (spec §5.2.1).
+
+        Distinct from `tracing_gap`. The agent receives a literal
+        answer-key (`field_hints`) and re-issues the call with each
+        missing field filled.
+        """
+        return cls(
+            error="incomplete_input",
+            missing=missing,
+            field_hints=field_hints,
+            remediate=remediate,
+            context_briefing=context_briefing or {},
+        )
+
+    @classmethod
     def invalid_state(
         cls,
         *,
@@ -113,16 +139,95 @@ class Envelope:
     def not_found(cls, *, message: str) -> Envelope:
         return cls(error="not_found", message=message, context_briefing={})
 
+    @classmethod
+    def circuit_open(
+        cls,
+        *,
+        verb: str,
+        attempts: int,
+        window_seconds: int,
+        remediate: str,
+        context_briefing: dict[str, Any] | None = None,
+    ) -> Envelope:
+        """Per-verb retry circuit-breaker tripped — too many attempts in a window.
+
+        Distinct from `tracing_gap` and `incomplete_input`. The agent receives
+        a structured "stop hammering this verb" signal with a remediate hint
+        pointing to i_am_blocked() / i_am_idle() as graceful exits. Wired by
+        the agent_sdk runtime tracker (Phase 3 Task 14) — the gateway itself
+        does not raise this.
+        """
+        return cls(
+            error="circuit_open",
+            message=(
+                f"verb {verb!r} rejected {attempts} times in last "
+                f"{window_seconds}s — circuit breaker open"
+            ),
+            remediate=remediate,
+            context_briefing=context_briefing or {},
+        )
+
+    @classmethod
+    def from_decision(
+        cls, decision: Any, *, briefing: dict[str, Any] | None = None
+    ) -> Envelope:
+        """Map a lifecycle.spec.Decision rejection onto the right envelope flavor.
+
+        Allow Decisions are a programming error here — call sites must
+        check `decision.allowed` before invoking this.
+        """
+        if decision.allowed:
+            raise ValueError("cannot build rejection from allow Decision")
+        ctx = briefing or {}
+        kind = decision.rejection_kind
+        if kind == "tracing_gap":
+            return cls(
+                error="tracing_gap",
+                missing=list(decision.missing),
+                remediate=decision.remediate or "",
+                context_briefing=ctx,
+            )
+        if kind == "self_review":
+            return cls(
+                error="not_authorized",
+                message=(decision.message or "") + " (self-review blocked)",
+                remediate=decision.remediate,
+                context_briefing=ctx,
+            )
+        if kind == "not_found":
+            return cls(
+                error="not_found",
+                message=decision.message,
+                context_briefing=ctx,
+            )
+        # not_authorized | invalid_state — direct map
+        return cls(
+            error=kind,
+            message=decision.message,
+            remediate=decision.remediate,
+            context_briefing=ctx,
+        )
+
     def with_introspection(self, *, task: Any, role: str) -> Envelope:
         """Populate `current_state` and `valid_next_verbs` from a task + role.
 
-        Returns self for chaining. Imports verb_gates lazily so envelope.py
-        stays importable from any layer without dragging in the gates table.
+        Returns self for chaining. Imports the lifecycle spec lazily so
+        envelope.py stays importable from any layer without dragging in
+        the canonical spec module. Unknown roles or malformed task
+        statuses yield `[]` — preserves the legacy verb_gates contract
+        of "introspection is best-effort and never raises".
         """
-        from roboco.services.gateway.verb_gates import valid_next_verbs
+        from roboco.foundation.policy import lifecycle as spec
 
         self.current_state = str(getattr(task, "status", "") or "") or None
-        self.valid_next_verbs = valid_next_verbs(role, task)
+        try:
+            role_enum = spec.Role(role)
+            self.valid_next_verbs = spec.valid_next_verbs(role_enum, task)
+        except (ValueError, TypeError):
+            # Unknown role string OR task.status not a Status enum value
+            # (e.g. AsyncMock in tests, partial fixtures). Match legacy
+            # verb_gates semantics: best-effort, never raise.
+            self.valid_next_verbs = []
         return self
 
     def as_dict(self) -> dict[str, Any]:
@@ -143,4 +248,6 @@ class Envelope:
             out["remediate"] = self.remediate
             if self.missing is not None:
                 out["missing"] = self.missing
+            if self.field_hints is not None:
+                out["field_hints"] = self.field_hints
         return out

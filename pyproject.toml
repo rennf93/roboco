@@ -162,6 +162,10 @@ select = [
 "roboco/services/*.py" = ["PLC0415"]
 "roboco/api/routes/*.py" = ["PLC0415"]
 "roboco/runtime/*.py" = ["PLC0415"]
+# Lifecycle validators: foundation/_validate_lifecycle is imported from the
+# bottom of policy/lifecycle.py at module-load time, so the validators must
+# defer their inverse imports until call time to avoid a cycle.
+"roboco/foundation/_validate_lifecycle.py" = ["PLC0415"]
 # Test fixtures that reload modules to test env-var-at-import-time behavior
 "tests/unit/mcp_servers/*.py" = ["PLC0415"]
 

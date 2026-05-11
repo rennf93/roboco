@@ -28,10 +28,25 @@ ORCHESTRATOR_URL = os.environ.get(
     "ROBOCO_ORCHESTRATOR_URL",
     "http://roboco-orchestrator:8000",
 )
+# Where the per-agent SDK server lives (per-container loopback). The
+# flow server POSTs /verb/attempted here so the per-verb circuit breaker
+# can record rejections and tell us when to substitute circuit_open.
+SDK_URL = os.environ.get("ROBOCO_SDK_URL", "http://localhost:9000")
 AGENT_ID = os.environ["ROBOCO_AGENT_ID"]
 AGENT_ROLE = os.environ["ROBOCO_AGENT_ROLE"]
 
 _TIMEOUT = 30
+# Tight timeout for SDK loopback — the SDK is a local sidecar; anything
+# slower than 2s is unhealthy and the gateway path must not stall on it.
+_SDK_TIMEOUT = 2.0
+
+# Envelope error kinds that count toward the per-verb circuit breaker.
+# Mirrors agent_sdk.server._CIRCUIT_REJECTION_KINDS; the SDK is the
+# authoritative side, but we filter here too so we only emit one POST
+# for kinds the SDK will actually count.
+_CIRCUIT_REJECTION_KINDS: frozenset[str] = frozenset(
+    {"tracing_gap", "invalid_state", "not_authorized", "incomplete_input"}
+)
 
 mcp = FastMCP("roboco-flow")
 log = structlog.get_logger()
@@ -61,6 +76,13 @@ def _post(path: str, body: dict[str, Any]) -> dict[str, Any]:
     in either case so agents see ``remediate`` / ``missing`` even on a
     4xx response. Only raises if the response has no parseable body
     (e.g., a 5xx with HTML error page or a network failure).
+
+    Rejection envelopes (error in _CIRCUIT_REJECTION_KINDS) are forwarded
+    to the local SDK's /verb/attempted so the per-verb circuit breaker
+    can track them. If the SDK reports the breaker is now open, the
+    original rejection is REPLACED with the circuit_open envelope before
+    being returned to the agent — preventing further hammering on a verb
+    that won't succeed. Successful (ok) envelopes never touch the SDK.
     """
     with httpx.Client(timeout=_TIMEOUT) as client:
         response = client.post(
@@ -86,7 +108,77 @@ def _post(path: str, body: dict[str, Any]) -> dict[str, Any]:
                 ),
                 "missing": [],
             }
+    # Outside the orchestrator client context so the SDK call is its own
+    # connection — keeps semantics independent and timeouts separated.
+    return _record_and_check_circuit(path, body, payload)
+
+
+def _verb_from_path(path: str) -> str:
+    """Extract the verb name from a role-scoped flow path.
+
+    ``/api/v2/flow/<role>/<verb>`` → ``<verb>``. Returns the original
+    path if it doesn't match the expected shape (defensive — the breaker
+    falls open downstream when the verb is unrecognized).
+    """
+    return path.rsplit("/", 1)[-1]
+
+
+def _record_and_check_circuit(
+    path: str,
+    body: dict[str, Any],
+    payload: dict[str, Any],
+) -> dict[str, Any]:
+    """Forward a gateway rejection to the SDK breaker; maybe substitute.
+
+    For successful (ok) envelopes this is a no-op — only rejections of
+    kind tracing_gap / invalid_state / not_authorized / incomplete_input
+    are reported. When the SDK responds with ``open=true`` we replace the
+    original rejection with the wire-format ``circuit_open`` envelope so
+    the agent stops retrying.
+
+    Best-effort: SDK unreachable, slow, or malformed response → return
+    the original payload. The breaker is a safety net; it must never
+    break the gateway path.
+    """
+    rejection_kind = payload.get("error")
+    if rejection_kind not in _CIRCUIT_REJECTION_KINDS:
         return payload
+
+    verb = _verb_from_path(path)
+    task_id = body.get("task_id")
+    try:
+        with httpx.Client(timeout=_SDK_TIMEOUT) as client:
+            resp = client.post(
+                f"{SDK_URL}/verb/attempted",
+                json={
+                    "verb": verb,
+                    "task_id": str(task_id) if task_id is not None else None,
+                    "rejection_kind": rejection_kind,
+                },
+            )
+            status = resp.json()
+    except (httpx.HTTPError, OSError, ValueError, json.JSONDecodeError) as exc:
+        # Fail open: agent sees the original rejection. Log so operators
+        # notice an SDK that's down — the gateway keeps working.
+        log.warning(
+            "flow_server: SDK /verb/attempted unreachable; breaker bypassed",
+            verb=verb,
+            task_id=task_id,
+            error=str(exc),
+        )
+        return payload
+
+    if status.get("open") and isinstance(status.get("circuit_envelope"), dict):
+        circuit_env: dict[str, Any] = status["circuit_envelope"]
+        log.info(
+            "flow_server: circuit_open substituted for rejection",
+            verb=verb,
+            task_id=task_id,
+            attempts=status.get("attempts"),
+            limit=status.get("limit"),
+        )
+        return circuit_env
+    return payload
 
 
 # Board route serves Product Owner + Head Marketing under one prefix.

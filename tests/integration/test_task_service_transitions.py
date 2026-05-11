@@ -18,8 +18,10 @@ from roboco.events import EventType
 from roboco.models import AgentRole, AgentStatus, Team
 from roboco.models.base import (
     BlockerResolverType,
+    Complexity,
     TaskNature,
     TaskStatus,
+    TaskType,
 )
 from roboco.models.task import TaskCreateRequest
 from roboco.services.base import NotFoundError
@@ -76,6 +78,9 @@ def _req(setup: dict, **overrides) -> TaskCreateRequest:
         team=overrides.pop("team", Team.BACKEND),
         created_by=setup["agent_id"],
         project_id=setup["project_id"],
+        task_type=overrides.pop("task_type", TaskType.CODE),
+        nature=overrides.pop("nature", TaskNature.TECHNICAL),
+        estimated_complexity=overrides.pop("estimated_complexity", Complexity.MEDIUM),
         **overrides,
     )
 
@@ -1644,11 +1649,14 @@ async def test_create_subtask_requires_parent_task_id(task_setup: dict) -> None:
 async def test_create_subtask_with_assignee_uses_pending(
     task_setup: dict,
 ) -> None:
+    # `create_subtask` enforces TASK_AT_CREATE completeness (Task 18, 2026-05-10),
+    # so we pass a description that meets the 20-char minimum.
     svc = task_setup["svc"]
     parent = await svc.create(_req(task_setup))
     sub = await svc.create_subtask(
         _req(
             task_setup,
+            description="Subtask with explicit description for completeness rule.",
             parent_task_id=parent.id,
             assigned_to=task_setup["agent_id"],
         )
@@ -1660,10 +1668,16 @@ async def test_create_subtask_with_assignee_uses_pending(
 async def test_create_subtask_without_assignee_uses_backlog(
     task_setup: dict,
 ) -> None:
+    # See test above re: completeness rule on description length.
     svc = task_setup["svc"]
     parent = await svc.create(_req(task_setup))
     sub = await svc.create_subtask(
-        _req(task_setup, parent_task_id=parent.id, assigned_to=None)
+        _req(
+            task_setup,
+            description="Subtask with explicit description for completeness rule.",
+            parent_task_id=parent.id,
+            assigned_to=None,
+        )
     )
     assert sub.status == TaskStatus.BACKLOG
 

@@ -68,6 +68,7 @@ async def delegate(
         assigned_to=body.assigned_to,
         team=body.team,
         task_type=body.task_type,
+        nature=body.nature,
         acceptance_criteria=body.acceptance_criteria,
         estimated_complexity=body.estimated_complexity,
     )

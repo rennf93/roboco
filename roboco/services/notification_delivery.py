@@ -24,6 +24,7 @@ from roboco.agents_config import (
 )
 from roboco.db.tables import AgentTable, NotificationTable, TaskTable
 from roboco.events import Event, EventType, get_event_bus
+from roboco.foundation.policy.communications import ACK_REQUIRED_BY_TYPE
 from roboco.models.base import AgentRole, NotificationPriority, NotificationType
 from roboco.services.base import BaseService, NotFoundError
 from roboco.utils.converters import require_uuid
@@ -496,8 +497,8 @@ class NotificationDeliveryService(BaseService):
         task_title = task.title or "Untitled"
 
         notification = NotificationTable(
-            type="blocker_escalation",
-            priority="high",
+            type=NotificationType.BLOCKER_ESCALATION,
+            priority=NotificationPriority.HIGH,
             from_agent=blocker_agent_id,
             to_agents=[pm.id],
             subject=f"ACTION REQUIRED: Blocked - {task_title[:40]}",
@@ -513,7 +514,7 @@ class NotificationDeliveryService(BaseService):
                 "the task will remain blocked until you call the tool."
             ),
             related_task_id=task_id,
-            requires_ack=True,
+            requires_ack=ACK_REQUIRED_BY_TYPE[NotificationType.BLOCKER_ESCALATION],
             read_by=[],
             acked_by=[],
         )
@@ -533,8 +534,8 @@ class NotificationDeliveryService(BaseService):
 
         task.assigned_to = pm.id
         notification = NotificationTable(
-            type="task_assignment",
-            priority="normal",
+            type=NotificationType.TASK_ASSIGNMENT,
+            priority=NotificationPriority.NORMAL,
             from_agent=submitter_agent_id,
             to_agents=[pm.id],
             subject=f"Documentation complete: {task.title or 'Unknown task'}",
@@ -543,7 +544,7 @@ class NotificationDeliveryService(BaseService):
                 "for final review.\n\nPlease review and complete the task."
             ),
             related_task_id=task_id,
-            requires_ack=False,
+            requires_ack=ACK_REQUIRED_BY_TYPE[NotificationType.TASK_ASSIGNMENT],
         )
         await self._persist_and_deliver(notification)
 
@@ -562,8 +563,8 @@ class NotificationDeliveryService(BaseService):
 
         task.assigned_to = pm.id
         notification = NotificationTable(
-            type="task_assignment",
-            priority="normal",
+            type=NotificationType.TASK_ASSIGNMENT,
+            priority=NotificationPriority.NORMAL,
             from_agent=submitter_agent_id,
             to_agents=[pm.id],
             subject=f"Task ready for review: {task.title or 'Unknown task'}",
@@ -573,7 +574,7 @@ class NotificationDeliveryService(BaseService):
                 "Please review and complete the task."
             ),
             related_task_id=task_id,
-            requires_ack=False,
+            requires_ack=ACK_REQUIRED_BY_TYPE[NotificationType.TASK_ASSIGNMENT],
         )
         await self._persist_and_deliver(notification)
 
@@ -587,8 +588,8 @@ class NotificationDeliveryService(BaseService):
     ) -> None:
         """Notify the task's assigned agent that their task is unblocked."""
         notification = NotificationTable(
-            type="task_assignment",
-            priority="high",
+            type=NotificationType.TASK_ASSIGNMENT,
+            priority=NotificationPriority.HIGH,
             from_agent=from_agent_id,
             to_agents=[assignee_agent_id],
             subject=f"Task unblocked: {task.title or 'Unknown task'}",
@@ -597,7 +598,7 @@ class NotificationDeliveryService(BaseService):
                 "Use roboco_task_get to review the task and continue work."
             ),
             related_task_id=task_id,
-            requires_ack=False,
+            requires_ack=ACK_REQUIRED_BY_TYPE[NotificationType.TASK_ASSIGNMENT],
         )
         await self._persist_and_deliver(notification)
 
@@ -612,8 +613,8 @@ class NotificationDeliveryService(BaseService):
     ) -> None:
         """Notify the task's assignee that CEO rejected and sent back for revision."""
         notification = NotificationTable(
-            type="task_assignment",
-            priority="high",
+            type=NotificationType.APPROVAL,
+            priority=NotificationPriority.HIGH,
             from_agent=from_agent_id,
             to_agents=[assignee_agent_id],
             subject=f"CEO Revision Required: {task.title or 'Unknown task'}",
@@ -623,7 +624,7 @@ class NotificationDeliveryService(BaseService):
                 "Please address the feedback and resubmit."
             ),
             related_task_id=task_id,
-            requires_ack=True,
+            requires_ack=ACK_REQUIRED_BY_TYPE[NotificationType.APPROVAL],
         )
         await self._persist_and_deliver(notification)
 
@@ -663,14 +664,14 @@ class NotificationDeliveryService(BaseService):
 
         body = f"Task {task_id} escalated by {escalator.slug}.\n\nReason: {reason}"
         notification = NotificationTable(
-            type="blocker_escalation",
-            priority="high",
+            type=NotificationType.BLOCKER_ESCALATION,
+            priority=NotificationPriority.HIGH,
             from_agent=escalator_agent_id,
             to_agents=[target.id],
             subject=f"Escalation: {task.title or 'Unknown task'}",
             body=body,
             related_task_id=task_id,
-            requires_ack=True,
+            requires_ack=ACK_REQUIRED_BY_TYPE[NotificationType.BLOCKER_ESCALATION],
             read_by=[],
             acked_by=[],
         )
@@ -696,8 +697,8 @@ class NotificationDeliveryService(BaseService):
             return
 
         notification = NotificationTable(
-            type="task_assignment",
-            priority="high",
+            type=NotificationType.APPROVAL,
+            priority=NotificationPriority.HIGH,
             from_agent=escalator_agent_id,
             to_agents=[ceo.id],
             subject=f"CEO Approval Required: {task.title or 'Unknown task'}",
@@ -708,7 +709,7 @@ class NotificationDeliveryService(BaseService):
                 "Use /ceo-approve or /ceo-reject to respond."
             ),
             related_task_id=task_id,
-            requires_ack=True,
+            requires_ack=ACK_REQUIRED_BY_TYPE[NotificationType.APPROVAL],
         )
         await self._persist_and_deliver(notification)
 

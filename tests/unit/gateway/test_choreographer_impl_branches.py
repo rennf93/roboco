@@ -15,7 +15,6 @@ import pytest
 import structlog
 from roboco.services.gateway.choreographer import Choreographer, ChoreographerDeps
 from roboco.services.gateway.choreographer._impl import DelegateInputs
-from roboco.services.gateway.claim_guards import pm_cannot_execute_code_guard
 from roboco.services.gateway.envelope import Envelope
 
 
@@ -26,6 +25,8 @@ def _wire_dev_task_svc(
 
     Defaults `agent_for` → developer/backend and the three list-* methods to
     empty lists so claim-guard short-circuits never fire unintentionally.
+    Also wires ``session.begin_nested()`` so VerbRunner's savepoint context
+    manager works against the mock.
     """
     task_svc = AsyncMock()
     task_svc.get.return_value = MagicMock(
@@ -37,11 +38,24 @@ def _wire_dev_task_svc(
         task_type="code",
         parent_task_id=parent_task_id,
         team="backend",
+        commits=[],
+        pr_number=None,
+        branch_name="feature/backend/abc",
+        quick_context=None,
     )
-    task_svc.agent_for.return_value = MagicMock(role="developer", team="backend")
+    task_svc.agent_for.return_value = MagicMock(
+        role="developer", team="backend", slug=None
+    )
     task_svc.list_in_progress_for_agent.return_value = []
     task_svc.list_paused_for_agent.return_value = []
     task_svc.get_subtasks.return_value = []
+    task_svc.session = MagicMock()
+    task_svc.session.begin_nested = MagicMock(
+        return_value=MagicMock(
+            __aenter__=AsyncMock(return_value=None),
+            __aexit__=AsyncMock(return_value=False),
+        )
+    )
     return task_svc
 
 
@@ -56,6 +70,19 @@ def _make_deps(**overrides: Any) -> ChoreographerDeps:
         "evidence_repo": AsyncMock(),
     }
     base.update(overrides)
+    # VerbRunner wraps composed atomic actions in
+    # ``task.session.begin_nested()``. AsyncMock auto-attribute access
+    # would return an unawaitable coroutine, breaking the
+    # ``async with`` protocol. Overwrite session with a MagicMock that
+    # implements the async-context-manager protocol explicitly.
+    task_dep = base["task"]
+    task_dep.session = MagicMock()
+    task_dep.session.begin_nested = MagicMock(
+        return_value=MagicMock(
+            __aenter__=AsyncMock(return_value=None),
+            __aexit__=AsyncMock(return_value=False),
+        )
+    )
     repo = base["evidence_repo"]
     for method in (
         "list_unread_a2a",
@@ -92,6 +119,12 @@ async def test_emit_rejection_passes_through_ok_envelope() -> None:
 
 @pytest.mark.asyncio
 async def test_i_will_work_on_pending_claim_raises_returns_invalid_state() -> None:
+    """When the runner re-raises a RuntimeError from claim(), the verb body
+    catches it and surfaces an invalid_state envelope with the runner's
+    message. Pre-spec the verb body produced "claim failed during
+    finalization"; the spec-driven body produces "verb runner failed:
+    <exc>" so the agent still gets a remediation hint instead of a 500.
+    """
     agent_id = uuid4()
     task_id = uuid4()
     task_svc = _wire_dev_task_svc(task_id, status="pending")
@@ -101,7 +134,8 @@ async def test_i_will_work_on_pending_claim_raises_returns_invalid_state() -> No
     env = await c.i_will_work_on(agent_id, task_id, plan="plan")
     body = env.as_dict()
     assert body["error"] == "invalid_state"
-    assert "claim failed during finalization" in body["message"]
+    assert "verb runner failed" in body["message"]
+    assert "workspace down" in body["message"]
 
 
 @pytest.mark.asyncio
@@ -251,14 +285,6 @@ async def test_i_will_work_on_in_progress_assigned_to_self_idempotent() -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_pm_cannot_execute_code_guard_passes_for_non_code_task() -> None:
-    """Direct guard unit test: PM + non-code task → no rejection.
-    Covers claim_guards.py:98 (the early-return for non-code task_type).
-    """
-    assert pm_cannot_execute_code_guard("cell_pm", "planning") is None
-    assert pm_cannot_execute_code_guard("main_pm", "documentation") is None
-
-
 @pytest.mark.asyncio
 async def test_i_will_plan_pm_with_already_active_task_rejects() -> None:
     """The already_active_guard still fires on i_will_plan even though
@@ -389,11 +415,13 @@ async def test_delegate_parent_not_found() -> None:
         pm_id,
         parent_id,
         DelegateInputs(
-            title="x",
-            description="y",
+            title="Implement endpoint",
+            description="Add /v1/foo endpoint with passing tests please",
             assigned_to="be-dev-1",
             team="backend",
             task_type="code",
+            nature="technical",
+            acceptance_criteria=["GET /v1/foo returns 200 with body"],
         ),
     )
     body = env.as_dict()
@@ -424,11 +452,13 @@ async def test_delegate_unknown_role_rejected() -> None:
         pm_id,
         parent_id,
         DelegateInputs(
-            title="x",
-            description="y",
+            title="Implement endpoint",
+            description="Add /v1/foo endpoint with passing tests please",
             assigned_to="be-dev-1",
             team="backend",
             task_type="code",
+            nature="technical",
+            acceptance_criteria=["GET /v1/foo returns 200 with body"],
         ),
     )
     body = env.as_dict()
@@ -460,11 +490,13 @@ async def test_delegate_parent_no_project_rejected() -> None:
         pm_id,
         parent_id,
         DelegateInputs(
-            title="x",
-            description="y",
+            title="Implement endpoint",
+            description="Add /v1/foo endpoint with passing tests please",
             assigned_to="be-dev-1",
             team="backend",
             task_type="code",
+            nature="technical",
+            acceptance_criteria=["GET /v1/foo returns 200 with body"],
         ),
     )
     body = env.as_dict()
@@ -941,7 +973,11 @@ def test_resolve_skill_string_entries() -> None:
 
 @pytest.mark.asyncio
 async def test_i_will_plan_pending_claim_returns_none_emit_rejection() -> None:
-    """Forces the await self._emit_rejection in the failed-claim branch."""
+    """When claim() returns None inside the runner, the savepoint rolls
+    back and the runner-failure path surfaces as invalid_state. Pre-spec
+    this branched into a hand-rolled "claim failed" message; now it is
+    emitted via _claim_plan_start_run's exception handler.
+    """
     pm_id = uuid4()
     task_id = uuid4()
     task = MagicMock(
@@ -953,10 +989,13 @@ async def test_i_will_plan_pending_claim_returns_none_emit_rejection() -> None:
         team="backend",
         parent_task_id=None,
         task_type="planning",
+        quick_context=None,
     )
     task_svc = AsyncMock()
     task_svc.get.return_value = task
-    task_svc.agent_for.return_value = MagicMock(role="cell_pm", team="backend")
+    task_svc.agent_for.return_value = MagicMock(
+        id=pm_id, role="cell_pm", team="backend", slug=None
+    )
     task_svc.list_in_progress_for_agent.return_value = []
     task_svc.list_paused_for_agent.return_value = []
     task_svc.get_subtasks.return_value = []
@@ -966,7 +1005,7 @@ async def test_i_will_plan_pending_claim_returns_none_emit_rejection() -> None:
     env = await c.i_will_plan(pm_id, task_id, plan="my plan that is long enough")
     body = env.as_dict()
     assert body["error"] == "invalid_state"
-    assert "claim failed" in body["message"]
+    assert "verb runner failed" in body["message"]
 
 
 # ---------------------------------------------------------------------------
@@ -1027,7 +1066,10 @@ async def test_i_will_work_on_envelope_carries_introspection_on_success() -> Non
     assert body["error"] is None
     assert body["current_state"] == "in_progress"
     assert isinstance(body["valid_next_verbs"], list)
-    assert "commit" in body["valid_next_verbs"]
+    # `valid_next_verbs` lists lifecycle INTENT verbs; `commit` is a
+    # content tool (do_server), not an intent, so the canonical spec
+    # excludes it. `open_pr` and `i_am_done` are the in_progress intents.
+    assert "open_pr" in body["valid_next_verbs"]
     assert "i_am_done" in body["valid_next_verbs"]
 
 
@@ -1037,9 +1079,7 @@ async def test_i_will_work_on_envelope_carries_introspection_on_rejection() -> N
     so the agent learns what verbs are actually valid right now."""
     agent_id = uuid4()
     task_id = uuid4()
-    task_svc = _wire_dev_task_svc(
-        task_id, status="completed", assigned_to=agent_id
-    )
+    task_svc = _wire_dev_task_svc(task_id, status="completed", assigned_to=agent_id)
     deps = _make_deps(task=task_svc)
     c = Choreographer(deps)
     env = await c.i_will_work_on(agent_id, task_id, plan="x")
@@ -1080,8 +1120,11 @@ async def test_open_pr_does_not_create_pr_if_no_commits() -> None:
     c = Choreographer(deps)
     env = await c.open_pr(dev_id, task_id)
     body = env.as_dict()
-    assert body["error"] == "invalid_state"
-    assert "no commits" in body["message"]
+    # Spec's PRECONDITION_COMMITS now produces tracing_gap rather than the
+    # previous bespoke invalid_state. The atomicity invariant the test
+    # pins (no git side effect when commits=[]) is unchanged.
+    assert body["error"] == "tracing_gap"
+    assert body["missing"] == ["commits>=1"]
     git_svc.create_pr.assert_not_called()
     git_svc.push_branch.assert_not_called()
 
@@ -1104,8 +1147,9 @@ async def test_i_will_work_on_missing_plan_does_not_claim_pending_task() -> None
     body = env.as_dict()
     assert body["error"] == "tracing_gap"
     assert "plan" in body["missing"]
-    task_svc.claim.assert_not_called(), (
-        "claim() ran before plan precondition was satisfied — atomicity broken"
+    (
+        task_svc.claim.assert_not_called(),
+        ("claim() ran before plan precondition was satisfied — atomicity broken"),
     )
 
 

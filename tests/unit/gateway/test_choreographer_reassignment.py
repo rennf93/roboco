@@ -30,6 +30,19 @@ def _make_deps(**overrides: Any) -> ChoreographerDeps:
         "evidence_repo": AsyncMock(),
     }
     base.update(overrides)
+    # VerbRunner uses task.session.begin_nested() as a savepoint context
+    # manager for spec-driven verbs (i_am_done, i_will_work_on, etc.).
+    # Other choreographer codepaths (doc.py:i_documented) await
+    # task.session.flush(), so keep the session itself an AsyncMock and
+    # only override begin_nested with a sync MagicMock that returns the
+    # async-context-manager protocol the runner expects.
+    task = base["task"]
+    task.session.begin_nested = MagicMock(
+        return_value=MagicMock(
+            __aenter__=AsyncMock(return_value=None),
+            __aexit__=AsyncMock(return_value=False),
+        )
+    )
     repo = base["evidence_repo"]
     for method in (
         "list_unread_a2a",
@@ -78,6 +91,9 @@ async def test_i_am_done_reassigns_task_to_qa_agent() -> None:
         documents=[],
         dev_notes="",
     )
+    after_verify = MagicMock(
+        **{**initial.__dict__, "status": "verifying", "self_verified": True},
+    )
     after_submit = MagicMock(
         **{**initial.__dict__, "status": "awaiting_qa", "assigned_to": None},
     )
@@ -85,6 +101,10 @@ async def test_i_am_done_reassigns_task_to_qa_agent() -> None:
 
     task_svc = AsyncMock()
     task_svc.get.return_value = initial
+    task_svc.agent_for.return_value = MagicMock(
+        id=dev_id, role="developer", team="backend", slug=None
+    )
+    task_svc.submit_verification.return_value = after_verify
     task_svc.submit_qa.return_value = after_submit
     task_svc.qa_agent_for_team.return_value = qa_agent
 
@@ -94,6 +114,11 @@ async def test_i_am_done_reassigns_task_to_qa_agent() -> None:
 
     journal_svc = AsyncMock()
     journal_svc.has_reflect_for_task.return_value = True
+    # JOURNAL_DURING_WORK_AT_LEAST_ONE: at least one decision/learning/struggle
+    # must exist between claim and submit.
+    journal_svc.has_decision_for_task.return_value = True
+    journal_svc.has_learning_for_task.return_value = False
+    journal_svc.has_struggle_for_task.return_value = False
 
     deps = _make_deps(task=task_svc, work_session=work_svc, journal=journal_svc)
     deps.evidence_repo.journal_highlights_for_task.return_value = []
@@ -130,12 +155,19 @@ async def test_i_am_done_skips_reassign_when_no_qa_agent() -> None:
         documents=[],
         dev_notes="",
     )
+    after_verify = MagicMock(
+        **{**initial.__dict__, "status": "verifying", "self_verified": True},
+    )
     after_submit = MagicMock(
         **{**initial.__dict__, "status": "awaiting_qa", "assigned_to": None},
     )
 
     task_svc = AsyncMock()
     task_svc.get.return_value = initial
+    task_svc.agent_for.return_value = MagicMock(
+        id=dev_id, role="developer", team="backend", slug=None
+    )
+    task_svc.submit_verification.return_value = after_verify
     task_svc.submit_qa.return_value = after_submit
     task_svc.qa_agent_for_team.return_value = None  # no QA found
 
@@ -145,6 +177,10 @@ async def test_i_am_done_skips_reassign_when_no_qa_agent() -> None:
 
     journal_svc = AsyncMock()
     journal_svc.has_reflect_for_task.return_value = True
+    # JOURNAL_DURING_WORK_AT_LEAST_ONE.
+    journal_svc.has_decision_for_task.return_value = True
+    journal_svc.has_learning_for_task.return_value = False
+    journal_svc.has_struggle_for_task.return_value = False
 
     deps = _make_deps(task=task_svc, work_session=work_svc, journal=journal_svc)
     deps.evidence_repo.journal_highlights_for_task.return_value = []
@@ -159,30 +195,51 @@ async def test_i_am_done_skips_reassign_when_no_qa_agent() -> None:
 # ---------------------------------------------------------------------------
 
 
+def _qa_awaiting_task(task_id: Any, qa_id: Any) -> MagicMock:
+    return MagicMock(
+        id=task_id,
+        status="awaiting_qa",
+        task_type="code",
+        team="backend",
+        assigned_to=qa_id,
+        qa_evidence_inspected=True,
+        quick_context=None,
+    )
+
+
+def _qa_agent(qa_id: Any) -> MagicMock:
+    return MagicMock(id=qa_id, role="qa", team="backend", slug=None)
+
+
+def _begin_nested_mock() -> Any:
+    return MagicMock(
+        return_value=MagicMock(
+            __aenter__=AsyncMock(return_value=None),
+            __aexit__=AsyncMock(return_value=False),
+        )
+    )
+
+
 @pytest.mark.asyncio
 async def test_pass_review_reassigns_task_to_documenter() -> None:
     qa_id = uuid4()
     doc_id = uuid4()
     task_id = uuid4()
-    t = MagicMock(
-        id=task_id,
-        status="claimed",
-        assigned_to=qa_id,
-        qa_evidence_inspected=True,
-    )
+    t = _qa_awaiting_task(task_id, qa_id)
     after = MagicMock(
-        **{
-            **t.__dict__,
-            "status": "awaiting_documentation",
-            "team": "backend",
-            "pr_url": "https://x/pr/8",
-            "assigned_to": None,
-        },
+        id=task_id,
+        status="awaiting_documentation",
+        team="backend",
+        pr_url="https://x/pr/8",
+        assigned_to=None,
     )
     task_svc = AsyncMock()
     task_svc.get.return_value = t
+    task_svc.agent_for.return_value = _qa_agent(qa_id)
     task_svc.qa_pass.return_value = after
     task_svc.documenter_for_team.return_value = MagicMock(id=doc_id)
+    task_svc.session = MagicMock()
+    task_svc.session.begin_nested = _begin_nested_mock()
     journal_svc = AsyncMock()
     journal_svc.has_learning_for_task.return_value = True
     deps = _make_deps(task=task_svc, journal=journal_svc)
@@ -201,25 +258,21 @@ async def test_pass_review_reassigns_task_to_documenter() -> None:
 async def test_pass_review_skips_reassign_when_no_documenter() -> None:
     qa_id = uuid4()
     task_id = uuid4()
-    t = MagicMock(
-        id=task_id,
-        status="claimed",
-        assigned_to=qa_id,
-        qa_evidence_inspected=True,
-    )
+    t = _qa_awaiting_task(task_id, qa_id)
     after = MagicMock(
-        **{
-            **t.__dict__,
-            "status": "awaiting_documentation",
-            "team": "backend",
-            "pr_url": "x",
-            "assigned_to": None,
-        },
+        id=task_id,
+        status="awaiting_documentation",
+        team="backend",
+        pr_url="x",
+        assigned_to=None,
     )
     task_svc = AsyncMock()
     task_svc.get.return_value = t
+    task_svc.agent_for.return_value = _qa_agent(qa_id)
     task_svc.qa_pass.return_value = after
     task_svc.documenter_for_team.return_value = None
+    task_svc.session = MagicMock()
+    task_svc.session.begin_nested = _begin_nested_mock()
     journal_svc = AsyncMock()
     journal_svc.has_learning_for_task.return_value = True
     deps = _make_deps(task=task_svc, journal=journal_svc)
@@ -240,12 +293,36 @@ async def test_i_documented_reassigns_task_to_cell_pm() -> None:
     doc_id = uuid4()
     pm_id = uuid4()
     task_id = uuid4()
-    t = MagicMock(id=task_id, status="claimed", assigned_to=doc_id, team="backend")
-    after = MagicMock(**{**t.__dict__, "status": "awaiting_pm_review"})
+    t = MagicMock(
+        id=task_id,
+        status="awaiting_documentation",
+        task_type="code",
+        assigned_to=doc_id,
+        team="backend",
+        quick_context=None,
+        documents=[],
+    )
+    after = MagicMock(
+        id=task_id,
+        status="awaiting_pm_review",
+        assigned_to=doc_id,
+        team="backend",
+    )
     task_svc = AsyncMock()
     task_svc.get.return_value = t
+    task_svc.agent_for.return_value = MagicMock(
+        id=doc_id, role="documenter", team="backend", slug=None
+    )
     task_svc.docs_complete.return_value = after
     task_svc.cell_pm_for_team.return_value = MagicMock(id=pm_id)
+    task_svc.session = MagicMock()
+    task_svc.session.flush = AsyncMock()
+    task_svc.session.begin_nested = MagicMock(
+        return_value=MagicMock(
+            __aenter__=AsyncMock(return_value=None),
+            __aexit__=AsyncMock(return_value=False),
+        )
+    )
     deps = _make_deps(task=task_svc)
     c = Choreographer(deps)
 
@@ -286,7 +363,9 @@ async def test_main_pm_complete_clears_assignment_for_ceo() -> None:
     deps = _make_deps(task=task_svc, git=git_svc, journal=journal_svc)
     c = Choreographer(deps)
 
-    env = await c.main_pm_complete(main_pm_id, root_task_id, notes="ready")
+    env = await c.main_pm_complete(
+        main_pm_id, root_task_id, notes="root scope reviewed and ready"
+    )
     assert env.error is None
     task_svc.reassign.assert_awaited_once_with(root_task_id, None)
 
@@ -363,7 +442,9 @@ async def test_cell_pm_complete_reassigns_parent_when_all_subtasks_done() -> Non
     deps = _make_deps(task=task_svc, git=git_svc, journal=journal_svc)
     c = Choreographer(deps)
 
-    env = await c.cell_pm_complete(pm_id, leaf_id, notes="reviewed and merged")
+    env = await c.cell_pm_complete(
+        pm_id, leaf_id, notes="cell scope reviewed and merged into parent"
+    )
     assert env.error is None
     # Parent reassignment should have been issued, and only for the parent.
     task_svc.reassign.assert_awaited_once_with(parent_id, new_pm_id)
@@ -445,18 +526,19 @@ async def test_fail_review_does_not_double_reassign() -> None:
     qa_id = uuid4()
     dev_id = uuid4()
     task_id = uuid4()
-    t = MagicMock(
-        id=task_id,
-        status="claimed",
-        assigned_to=qa_id,
-        qa_evidence_inspected=True,
-    )
+    t = _qa_awaiting_task(task_id, qa_id)
     after = MagicMock(
-        **{**t.__dict__, "status": "needs_revision", "assigned_to": dev_id},
+        id=task_id,
+        status="needs_revision",
+        assigned_to=dev_id,
+        team="backend",
     )
     task_svc = AsyncMock()
     task_svc.get.return_value = t
+    task_svc.agent_for.return_value = _qa_agent(qa_id)
     task_svc.qa_fail.return_value = after
+    task_svc.session = MagicMock()
+    task_svc.session.begin_nested = _begin_nested_mock()
     journal_svc = AsyncMock()
     journal_svc.has_learning_for_task.return_value = True
     a2a_svc = AsyncMock()

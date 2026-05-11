@@ -255,10 +255,13 @@ async def test_delegate_dispatches_inputs_bundle() -> None:
         json={
             "parent_task_id": _TASK_ID,
             "title": "Implement /v1/foo",
-            "description": "Add the foo endpoint with tests.",
+            "description": "Add the foo endpoint with passing tests.",
             "assigned_to": "be-dev-1",
             "team": "backend",
             "task_type": "code",
+            "nature": "feature",
+            "estimated_complexity": "medium",
+            "acceptance_criteria": ["GET /v1/foo returns 200 with body"],
         },
         headers=_HEADERS,
     )

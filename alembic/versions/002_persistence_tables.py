@@ -16,7 +16,7 @@ Adds:
 """
 
 import sqlalchemy as sa
-from alembic import op
+from alembic import context, op
 from sqlalchemy import inspect
 from sqlalchemy.dialects import postgresql
 
@@ -35,7 +35,15 @@ def _table_exists(name: str) -> bool:
     audit_log from the ORM metadata). Without this guard, op.create_table
     raises DuplicateTableError and the whole migration rolls back — so the
     ALTER TYPE ADD VALUE 'APPROVAL' above it never takes effect either.
+
+    In offline (--sql) mode there is no live DB to introspect — the
+    bind is a MockConnection that has no inspection system. Treat
+    "table does not exist" as the offline default so the SQL stub
+    emits the create_table statements unconditionally; idempotency is
+    only relevant when running against a live DB.
     """
+    if context.is_offline_mode():
+        return False
     bind = op.get_bind()
     return inspect(bind).has_table(name)
 

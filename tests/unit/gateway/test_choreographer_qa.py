@@ -89,16 +89,27 @@ async def test_claim_review_returns_evidence_inline() -> None:
 async def test_claim_review_blocks_if_task_not_awaiting_qa() -> None:
     qa_id = uuid4()
     task_id = uuid4()
-    t = MagicMock(id=task_id, status="in_progress")
+    t = MagicMock(
+        id=task_id,
+        status="in_progress",
+        task_type="code",
+        team="backend",
+        quick_context=None,
+    )
     task_svc = AsyncMock()
     task_svc.get.return_value = t
+    task_svc.agent_for.return_value = MagicMock(
+        id=qa_id, role="qa", team="backend", slug=None
+    )
     deps = _make_deps(task=task_svc)
     c = Choreographer(deps)
 
     env = await c.claim_review(qa_id, task_id)
     body = env.as_dict()
+    # Spec rejects: in_progress is not in `claim` action's source_statuses
+    # (PENDING, NEEDS_REVISION, AWAITING_QA, AWAITING_DOCUMENTATION).
     assert body["error"] == "invalid_state"
-    assert "awaiting_qa" in body["message"]
+    assert "in_progress" in body["message"] or "awaiting_qa" in body["message"]
 
 
 @pytest.mark.asyncio
@@ -162,18 +173,39 @@ async def test_pass_review_task_not_found_returns_not_found() -> None:
     assert env.as_dict()["error"] == "not_found"
 
 
+def _qa_owned_task(task_id: Any, qa_id: Any, **overrides: Any) -> MagicMock:
+    """Build a QA-owned awaiting_qa task fixture compatible with the spec gate.
+
+    Status defaults to awaiting_qa (which matches qa_pass / qa_fail's
+    spec source_statuses). task_type / team / quick_context defaulted
+    so the spec gate's role/state/task_type checks all evaluate against
+    real values rather than auto-generated MagicMock attributes.
+    """
+    base = {
+        "id": task_id,
+        "status": "awaiting_qa",
+        "task_type": "code",
+        "team": "backend",
+        "assigned_to": qa_id,
+        "qa_evidence_inspected": True,
+        "quick_context": None,
+    }
+    base.update(overrides)
+    return MagicMock(**base)
+
+
+def _qa_agent_mock(qa_id: Any) -> MagicMock:
+    return MagicMock(id=qa_id, role="qa", team="backend", slug=None)
+
+
 @pytest.mark.asyncio
 async def test_pass_review_requires_qa_notes_min_chars() -> None:
     qa_id = uuid4()
     task_id = uuid4()
-    t = MagicMock(
-        id=task_id,
-        status="claimed",
-        assigned_to=qa_id,
-        qa_evidence_inspected=True,
-    )
+    t = _qa_owned_task(task_id, qa_id)
     task_svc = AsyncMock()
     task_svc.get.return_value = t
+    task_svc.agent_for.return_value = _qa_agent_mock(qa_id)
     journal_svc = AsyncMock()
     journal_svc.has_learning_for_task.return_value = True
     deps = _make_deps(task=task_svc, journal=journal_svc)
@@ -189,14 +221,10 @@ async def test_pass_review_requires_qa_notes_min_chars() -> None:
 async def test_pass_review_requires_journal_learning() -> None:
     qa_id = uuid4()
     task_id = uuid4()
-    t = MagicMock(
-        id=task_id,
-        status="claimed",
-        assigned_to=qa_id,
-        qa_evidence_inspected=True,
-    )
+    t = _qa_owned_task(task_id, qa_id)
     task_svc = AsyncMock()
     task_svc.get.return_value = t
+    task_svc.agent_for.return_value = _qa_agent_mock(qa_id)
     journal_svc = AsyncMock()
     journal_svc.has_learning_for_task.return_value = False
     deps = _make_deps(task=task_svc, journal=journal_svc)
@@ -213,14 +241,10 @@ async def test_pass_review_requires_journal_learning() -> None:
 async def test_pass_review_requires_evidence_inspected() -> None:
     qa_id = uuid4()
     task_id = uuid4()
-    t = MagicMock(
-        id=task_id,
-        status="claimed",
-        assigned_to=qa_id,
-        qa_evidence_inspected=False,
-    )
+    t = _qa_owned_task(task_id, qa_id, qa_evidence_inspected=False)
     task_svc = AsyncMock()
     task_svc.get.return_value = t
+    task_svc.agent_for.return_value = _qa_agent_mock(qa_id)
     journal_svc = AsyncMock()
     journal_svc.has_learning_for_task.return_value = True
     deps = _make_deps(task=task_svc, journal=journal_svc)
@@ -237,24 +261,27 @@ async def test_pass_review_requires_evidence_inspected() -> None:
 async def test_pass_review_succeeds_and_transitions() -> None:
     qa_id = uuid4()
     task_id = uuid4()
-    t = MagicMock(
-        id=task_id,
-        status="claimed",
-        assigned_to=qa_id,
-        qa_evidence_inspected=True,
-    )
+    t = _qa_owned_task(task_id, qa_id)
     after = MagicMock(
-        **{
-            **t.__dict__,
-            "status": "awaiting_documentation",
-            "team": "backend",
-            "pr_url": "https://x/pr/8",
-        },
+        id=task_id,
+        status="awaiting_documentation",
+        assigned_to=qa_id,
+        team="backend",
+        pr_url="https://x/pr/8",
+        qa_evidence_inspected=True,
     )
     task_svc = AsyncMock()
     task_svc.get.return_value = t
+    task_svc.agent_for.return_value = _qa_agent_mock(qa_id)
     task_svc.qa_pass.return_value = after
     task_svc.documenter_for_team.return_value = MagicMock(id=uuid4())
+    task_svc.session = MagicMock()
+    task_svc.session.begin_nested = MagicMock(
+        return_value=MagicMock(
+            __aenter__=AsyncMock(return_value=None),
+            __aexit__=AsyncMock(return_value=False),
+        )
+    )
     journal_svc = AsyncMock()
     journal_svc.has_learning_for_task.return_value = True
     a2a_svc = AsyncMock()
@@ -277,11 +304,10 @@ async def test_pass_review_not_assigned_returns_not_authorized() -> None:
     qa_id = uuid4()
     other = uuid4()
     task_id = uuid4()
-    t = MagicMock(
-        id=task_id, status="claimed", assigned_to=other, qa_evidence_inspected=True
-    )
+    t = _qa_owned_task(task_id, other)
     task_svc = AsyncMock()
     task_svc.get.return_value = t
+    task_svc.agent_for.return_value = _qa_agent_mock(qa_id)
     deps = _make_deps(task=task_svc)
     c = Choreographer(deps)
 
@@ -295,18 +321,24 @@ async def test_fail_review_succeeds() -> None:
     qa_id = uuid4()
     task_id = uuid4()
     dev_id = uuid4()
-    t = MagicMock(
-        id=task_id,
-        status="claimed",
-        assigned_to=qa_id,
-        qa_evidence_inspected=True,
-    )
+    t = _qa_owned_task(task_id, qa_id)
     after = MagicMock(
-        **{**t.__dict__, "status": "needs_revision", "assigned_to": dev_id},
+        id=task_id,
+        status="needs_revision",
+        assigned_to=dev_id,
+        team="backend",
     )
     task_svc = AsyncMock()
     task_svc.get.return_value = t
+    task_svc.agent_for.return_value = _qa_agent_mock(qa_id)
     task_svc.qa_fail.return_value = after
+    task_svc.session = MagicMock()
+    task_svc.session.begin_nested = MagicMock(
+        return_value=MagicMock(
+            __aenter__=AsyncMock(return_value=None),
+            __aexit__=AsyncMock(return_value=False),
+        )
+    )
     journal_svc = AsyncMock()
     journal_svc.has_learning_for_task.return_value = True
     a2a_svc = AsyncMock()
@@ -328,14 +360,10 @@ async def test_fail_review_succeeds() -> None:
 async def test_fail_review_requires_at_least_one_issue() -> None:
     qa_id = uuid4()
     task_id = uuid4()
-    t = MagicMock(
-        id=task_id,
-        status="claimed",
-        assigned_to=qa_id,
-        qa_evidence_inspected=True,
-    )
+    t = _qa_owned_task(task_id, qa_id)
     task_svc = AsyncMock()
     task_svc.get.return_value = t
+    task_svc.agent_for.return_value = _qa_agent_mock(qa_id)
     journal_svc = AsyncMock()
     journal_svc.has_learning_for_task.return_value = True
     deps = _make_deps(task=task_svc, journal=journal_svc)
@@ -352,11 +380,10 @@ async def test_fail_review_not_assigned_returns_not_authorized() -> None:
     qa_id = uuid4()
     other = uuid4()
     task_id = uuid4()
-    t = MagicMock(
-        id=task_id, status="claimed", assigned_to=other, qa_evidence_inspected=True
-    )
+    t = _qa_owned_task(task_id, other)
     task_svc = AsyncMock()
     task_svc.get.return_value = t
+    task_svc.agent_for.return_value = _qa_agent_mock(qa_id)
     deps = _make_deps(task=task_svc)
     c = Choreographer(deps)
 
@@ -369,14 +396,10 @@ async def test_fail_review_not_assigned_returns_not_authorized() -> None:
 async def test_fail_review_blocks_when_journal_learning_missing() -> None:
     qa_id = uuid4()
     task_id = uuid4()
-    t = MagicMock(
-        id=task_id,
-        status="claimed",
-        assigned_to=qa_id,
-        qa_evidence_inspected=True,
-    )
+    t = _qa_owned_task(task_id, qa_id)
     task_svc = AsyncMock()
     task_svc.get.return_value = t
+    task_svc.agent_for.return_value = _qa_agent_mock(qa_id)
     journal_svc = AsyncMock()
     journal_svc.has_learning_for_task.return_value = False  # no learning
     deps = _make_deps(task=task_svc, journal=journal_svc)

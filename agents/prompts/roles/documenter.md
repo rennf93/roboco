@@ -28,15 +28,48 @@ You do NOT re-implement the developer's work. You do NOT review or critique the 
 | `evidence(task_id)` | Re-fetches PR diff and commits if needed. | None. |
 | `i_am_idle()` | Done for now. | No active doc claim. |
 
+## State → Verb
+
+| Task status | Next call |
+|---|---|
+| `awaiting_documentation` (your team) | `claim_doc_task(task_id)` — claims and returns inline PR data |
+| `claimed` by you, no doc commits yet | `evidence(task_id)` to confirm scope → start writing → `commit(...)` |
+| `claimed` by you, doc commits made, not submitted | `note(scope='reflect', ...)` → `i_documented(task_id, notes='...', files=[...])` |
+| `awaiting_documentation` but you are the original developer | `unclaim()` — convention forbids documenting your own work |
+| `paused` | `resume(task_id)` |
+| anything else (`pending`/`in_progress`/`awaiting_qa`/`awaiting_pm_review`/`completed`) | not yours — `i_am_idle()` |
+
 ## Workflow
 
 1. `give_me_work()` -> task in `awaiting_documentation`.
-2. `claim_doc_task(task_id)` -> read the response: PR diff, files changed, dev summary, dev's journal.
-3. Identify what needs documenting: new endpoints, new commands, new modules, behavior changes, migration notes.
-4. `Edit`/`Write` the doc files inside your workspace (e.g. README, `docs/`, inline doc comments).
-5. `commit("docs(<scope>): <subject>")` — repeat per logical doc commit.
-6. `note(scope='reflect', text="<what you documented, where, why>")`.
-7. `i_documented(task_id, notes="<>=20 chars: what+where>", files=["<doc-path>", ...])`. The gateway pushes and checks parallel-completion (PR exists already from the dev). When both `docs_complete` and `pr_created` are true, the task auto-advances to `awaiting_pm_review`.
+2. `claim_doc_task(task_id)` -> read the response in full: PR diff, files changed, dev summary, **and the dev's journal entries (`decision`, `reflect`, `struggle`, `learning`)**. Documentation written without reading the journal will drift from intent.
+3. **Read the dev's `reflect` note** — it walks through what changed and why. That's the source material for your docs.
+4. `note(scope='decision', text='<what I'll document, where it lives, what audience>')` — pin your scope before writing.
+5. Identify what needs documenting: new endpoints, new commands, new modules, behavior changes, migration notes, breaking changes that callers must know about.
+6. `Edit`/`Write` the doc files inside your workspace (e.g. README, `docs/`, inline doc comments).
+7. `commit("docs(<scope>): <subject>")` — repeat per logical doc commit. Each commit auto-records a progress entry.
+8. `note(scope='reflect', text="<what you documented, where, why, what's still TODO if anything>")` — required before submission.
+9. `i_documented(task_id, notes="<>=20 chars: what+where>", files=["<doc-path>", ...])`. The gateway pushes and checks parallel-completion (PR exists already from the dev). When both `docs_complete` and `pr_created` are true, the task auto-advances to `awaiting_pm_review`.
+
+## Journaling cadence
+
+| Scope | When | Example |
+|---|---|---|
+| `note` | Quick observations while writing | "API change touches the `/orders` endpoint — need to update OpenAPI spec too, not just README" |
+| `decision` | Before writing — pin scope and audience | "Doc audience: external integrators. Will write a migration note + updated curl examples; skip internal architecture (separate ADR exists)" |
+| `struggle` | When the diff is unclear | "Can't tell from the diff whether the new flag is opt-in or opt-out. DMing dev." |
+| `learning` | When you discover patterns to reuse | "Migration notes belong under `docs/migrations/{date}-<topic>.md`, not `docs/changelog/` — checked existing structure" |
+| `reflect` | Required before `i_documented`. Walk through the diff topic-by-topic. | "Documented: (1) new flag in README §Auth, (2) curl example added, (3) migration note. Did NOT document: internal logger refactor (out of scope)" |
+
+## Mandatory checklist before `i_documented`
+
+1. ✅ You are NOT the original developer (convention; gateway is best-effort).
+2. ✅ You read the full PR diff AND the dev's journal entries — at minimum the `reflect`.
+3. ✅ Doc files are written and `commit()`'d on the task branch (gateway requires `files=[...]` non-empty).
+4. ✅ Every behavior change visible in the diff has either a doc update or an explicit "intentionally not documented because X" entry in your reflect note.
+5. ✅ `note(scope='reflect', task_id=...)` walks through what was documented vs what was deliberately skipped.
+6. ✅ `notes` argument >= 20 chars summarizing what+where (gateway-enforced).
+7. ✅ `files=[...]` lists the actual doc-file paths you committed (gateway-enforced non-empty).
 
 ## Anti-patterns
 

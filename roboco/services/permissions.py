@@ -33,11 +33,12 @@ from roboco.agents_config import (
     AGENT_ROLE_MAP,
     AGENT_TEAM_MAP,
     CHANNEL_ACCESS,
-    NOTIFICATION_PERMISSIONS,
 )
 from roboco.agents_config import (
     get_agent_role as get_role_string,
 )
+from roboco.foundation.identity import Role as _FoundationRole
+from roboco.foundation.policy.communications import NOTIFY_SENDER_ROLES
 from roboco.models import AgentRole, Team
 from roboco.models.permissions import (
     COMMUNICATION_MATRIX,
@@ -72,21 +73,57 @@ def _get_agents_for_role_team(role: AgentRole, team: Team | None) -> list[str]:
 
 
 # =============================================================================
-# NOTIFICATION PERMISSIONS (derived from agents_config.NOTIFICATION_PERMISSIONS)
+# NOTIFICATION PERMISSIONS (derived from foundation.NOTIFY_SENDER_ROLES)
 # =============================================================================
+#
+# Foundation owns the sender allowlist. Scope semantics (who each sender may
+# reach) live here because they depend on the recipient's role + team — not
+# pure identity data. The mapping below preserves the legacy
+# NOTIFICATION_PERMISSIONS behaviour:
+#   - main_pm / ceo            -> "all"   (no recipient filter)
+#   - cell_pm                  -> "cell"  (own team members + any PM)
+#   - product_owner            -> list    (management chain only)
+#   - head_marketing           -> list    (management chain only)
+# Auditor is intentionally NOT a sender (silent observer per spec §5.5).
+
+# Board members notify the management chain only. Roles, not slugs — matched
+# against recipient.role in can_notify(). Each list is the set of recipient
+# roles the sender may notify.
+_BOARD_NOTIFY_TARGETS: dict[AgentRole, frozenset[AgentRole]] = {
+    AgentRole.PRODUCT_OWNER: frozenset(
+        {AgentRole.MAIN_PM, AgentRole.HEAD_MARKETING, AgentRole.AUDITOR, AgentRole.CEO}
+    ),
+    AgentRole.HEAD_MARKETING: frozenset(
+        {AgentRole.MAIN_PM, AgentRole.PRODUCT_OWNER, AgentRole.AUDITOR, AgentRole.CEO}
+    ),
+}
 
 
 def _can_role_send_notifications(role: AgentRole) -> bool:
-    """Check if a role can send notifications (from agents_config)."""
-    perms = NOTIFICATION_PERMISSIONS.get(role.value, {})
-    return bool(perms.get("can_send", False))
+    """Whether a role may call notify(). Canonical in foundation."""
+    try:
+        return _FoundationRole(role.value) in NOTIFY_SENDER_ROLES
+    except ValueError:
+        return False
 
 
-def _get_notification_scope(role: AgentRole) -> str | list[str]:
-    """Get the notification scope for a role (from agents_config)."""
-    perms = NOTIFICATION_PERMISSIONS.get(role.value, {})
-    scope = perms.get("scope", [])
-    return str(scope) if isinstance(scope, str) else list(scope) if scope else []
+def _get_notification_scope(role: AgentRole) -> str | list[AgentRole]:
+    """Scope of recipients a sender role may notify.
+
+    Returns:
+      - ``"all"`` for main_pm / ceo (no recipient filter)
+      - ``"cell"`` for cell_pm (own team + any PM)
+      - ``list[AgentRole]`` for board members (management chain only)
+      - ``[]`` for roles that cannot send notifications
+    """
+    if role in (AgentRole.MAIN_PM, AgentRole.CEO):
+        return "all"
+    if role is AgentRole.CELL_PM:
+        return "cell"
+    targets = _BOARD_NOTIFY_TARGETS.get(role)
+    if targets is not None:
+        return list(targets)
+    return []
 
 
 # =============================================================================
@@ -215,7 +252,7 @@ class PermissionService(SingletonService):
         return channels
 
     # =========================================================================
-    # NOTIFICATION PERMISSIONS (uses agents_config.NOTIFICATION_PERMISSIONS)
+    # NOTIFICATION PERMISSIONS (foundation.NOTIFY_SENDER_ROLES + local scope)
     # =========================================================================
 
     def can_send_notifications(self, agent: AgentContext) -> bool:
@@ -227,10 +264,10 @@ class PermissionService(SingletonService):
         sender: AgentContext,
         recipient: AgentContext,
     ) -> bool:
-        """
-        Check if sender can notify recipient.
+        """Check if sender can notify recipient.
 
-        Uses agents_config.NOTIFICATION_PERMISSIONS for scope rules.
+        Sender allowlist comes from foundation.NOTIFY_SENDER_ROLES.
+        Scope rules are encoded in _get_notification_scope.
         """
         if not self.can_send_notifications(sender):
             return False
@@ -249,11 +286,9 @@ class PermissionService(SingletonService):
             # Otherwise must be same team
             return sender.team == recipient.team
 
-        # List scope - check if recipient slug is in the allowed list
+        # List scope - check if recipient.role is in the allowed role list
         if isinstance(scope, list):
-            # Get recipient's potential slugs
-            recipient_slugs = _get_agents_for_role_team(recipient.role, recipient.team)
-            return any(slug in scope for slug in recipient_slugs)
+            return recipient.role in scope
 
         return False
 
@@ -395,14 +430,15 @@ class PermissionService(SingletonService):
         return agent_slug in write_list
 
     def can_agent_send_notifications(self, agent_slug: str) -> bool:
-        """
-        Check notification permission using agent slug (string ID).
+        """Check notification permission using agent slug (string ID).
 
-        Direct lookup in agents_config.NOTIFICATION_PERMISSIONS.
+        Derives from foundation.NOTIFY_SENDER_ROLES via the agent's role.
         """
         role = get_role_string(agent_slug)
-        perms = NOTIFICATION_PERMISSIONS.get(role, {})
-        return bool(perms.get("can_send", False))
+        try:
+            return _FoundationRole(role) in NOTIFY_SENDER_ROLES
+        except ValueError:
+            return False
 
 
 # =============================================================================
@@ -432,8 +468,10 @@ async def has_privileged_access(db: "AsyncSession", agent_id: UUID) -> bool:
     return role in PRIVILEGED_ROLES if role else False
 
 
-# Roles that can manage tasks and sessions (PMs and board)
-PM_ROLES = frozenset({AgentRole.CELL_PM, AgentRole.MAIN_PM})
+# PM_ROLES is canonical in foundation.identity. Re-export for backwards
+# compatibility; new consumers import from foundation directly.
+from roboco.foundation.identity import PM_ROLES  # noqa: F401, E402
+
 MANAGEMENT_ROLES = frozenset(
     {AgentRole.CEO, AgentRole.PRODUCT_OWNER, AgentRole.CELL_PM, AgentRole.MAIN_PM}
 )

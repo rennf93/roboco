@@ -151,10 +151,13 @@ async def test_create_task(task_client: dict) -> None:
         "/api/tasks",
         json={
             "title": "Test Task",
-            "description": "Some description",
+            "description": "Some description that is long enough for the schema",
             "acceptance_criteria": ["criteria"],
             "team": "backend",
             "project_id": str(task_client["project"].id),
+            "task_type": "code",
+            "nature": "technical",
+            "estimated_complexity": "medium",
         },
         headers=_HDR,
     )
@@ -605,11 +608,14 @@ async def test_create_task_assigned_to_uuid(task_client: dict) -> None:
         "/api/tasks",
         json={
             "title": "T",
-            "description": "d",
+            "description": "Twenty character description here ok",
             "acceptance_criteria": ["a"],
             "team": "backend",
             "project_id": str(task_client["project"].id),
             "assigned_to": str(task_client["agent"].id),
+            "task_type": "code",
+            "nature": "technical",
+            "estimated_complexity": "medium",
         },
         headers=_HDR,
     )
@@ -624,11 +630,14 @@ async def test_create_task_assigned_to_slug(task_client: dict) -> None:
         "/api/tasks",
         json={
             "title": "T",
-            "description": "d",
+            "description": "Twenty character description here ok",
             "acceptance_criteria": ["a"],
             "team": "backend",
             "project_id": str(task_client["project"].id),
             "assigned_to": task_client["agent"].slug,
+            "task_type": "code",
+            "nature": "technical",
+            "estimated_complexity": "medium",
         },
         headers=_HDR,
     )
@@ -1527,10 +1536,13 @@ async def test_create_task_role_not_authorized(task_client: dict) -> None:
         "/api/tasks",
         json={
             "title": "T",
-            "description": "d",
+            "description": "Twenty character description here ok",
             "acceptance_criteria": ["a"],
             "team": "backend",
             "project_id": str(task_client["project"].id),
+            "task_type": "code",
+            "nature": "technical",
+            "estimated_complexity": "medium",
         },
         headers=_HDR,
     )

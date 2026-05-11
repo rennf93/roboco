@@ -19,6 +19,7 @@ from roboco.agents_config import verify_agent_token
 from roboco.api.schemas.optimal import PaginationParams
 from roboco.db.base import get_db
 from roboco.db.tables import AgentTable
+from roboco.foundation.identity import BOARD_ROLES, DEV_ROLES, PM_ROLES, Role
 from roboco.models import AgentRole, Team
 from roboco.runtime import AgentOrchestrator
 from roboco.services.a2a import A2AService
@@ -340,12 +341,14 @@ CurrentAgentContext = Annotated[AgentContext, Depends(get_agent_context)]
 # no translation layer needed.
 # =============================================================================
 
-_PM_OR_ABOVE_ROLES: frozenset[str] = frozenset(
-    {"cell_pm", "main_pm", "product_owner", "auditor", "ceo"}
+# Role-sets derive from foundation so renaming a role lives in one file.
+# HEAD_MARKETING is intentionally excluded from every "above" set — the role is
+# a marketing spokesperson, not a workflow approver. StrEnum membership means
+# the sets compare equal against both Role.* and the lowercase header string.
+_PM_OR_ABOVE_ROLES: frozenset[Role] = (
+    PM_ROLES | (BOARD_ROLES - {Role.HEAD_MARKETING}) | {Role.CEO}
 )
-_DEVELOPER_OR_ABOVE_ROLES: frozenset[str] = frozenset(
-    {"developer", "cell_pm", "main_pm", "product_owner", "auditor", "ceo"}
-)
+_DEVELOPER_OR_ABOVE_ROLES: frozenset[Role] = DEV_ROLES | _PM_OR_ABOVE_ROLES
 
 
 def _role_value(role: Any) -> str:
@@ -371,9 +374,10 @@ def require_developer_or_above(role: Any, action: str) -> None:
         )
 
 
-_GLOBAL_CELL_ACCESS_ROLES: frozenset[str] = frozenset(
-    {"main_pm", "product_owner", "auditor", "ceo"}
-)
+_GLOBAL_CELL_ACCESS_ROLES: frozenset[Role] = (BOARD_ROLES - {Role.HEAD_MARKETING}) | {
+    Role.MAIN_PM,
+    Role.CEO,
+}
 
 
 def require_cell_access(agent: AgentContext, cell: Team, action: str) -> None:

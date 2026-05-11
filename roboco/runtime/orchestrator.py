@@ -39,6 +39,8 @@ from roboco.agents_config import (
     get_escalation_target,
 )
 from roboco.config import settings
+from roboco.foundation import identity as _foundation
+from roboco.foundation.policy.agent_loop import DEFAULT_BUDGET as _AGENT_LOOP_BUDGET
 from roboco.models import AgentRole, Team
 from roboco.models.runtime import (
     MODEL_MAP,
@@ -2312,29 +2314,20 @@ class AgentOrchestrator:
         }
         return role_map.get(agent_id, agent_id)
 
-    # Static team mappings for management agents (ROUTING purposes)
-    # NOTE: This differs from agents_config.get_agent_team() intentionally.
-    # agents_config returns None for management (no team for permissions).
-    # This map returns routing categories for dispatcher task assignment.
+    # Slug -> team string for ROUTING purposes. Derived from
+    # foundation.AGENTS so adding/renaming an agent edits exactly one
+    # file (foundation/identity.py). The dispatcher relies on this for
+    # task assignment routing categories.
     _AGENT_TEAM_MAP: ClassVar[dict[str, str]] = {
-        "main-pm": "main_pm",
-        "product-owner": "board",
-        "auditor": "board",
-        "head-marketing": "marketing",
+        slug: row.team.value for slug, row in _foundation.AGENTS.items()
     }
 
     def _get_agent_team(self, agent_id: str) -> str | None:
-        """Get team from agent_id."""
-        # Check static mappings first
-        if agent_id in self._AGENT_TEAM_MAP:
-            return self._AGENT_TEAM_MAP[agent_id]
-
-        # Check cell prefixes
-        prefix_map = {"be-": "backend", "fe-": "frontend", "ux-": "ux_ui"}
-        for prefix, team in prefix_map.items():
-            if agent_id.startswith(prefix):
-                return team
-        return None
+        """Get team from agent_id. Returns None for unknown slugs."""
+        try:
+            return _foundation.team_for_slug(agent_id).value
+        except KeyError:
+            return None
 
     def _resolve_agent_slug(self, agent_id_or_uuid: str) -> str:
         """Resolve agent UUID to slug. Returns input if already a slug."""
@@ -3037,7 +3030,7 @@ Start by:
         """Block non-trivial root tasks routed to a dev without subtasks."""
         complexity = task.get("estimated_complexity", "low")
         parent_task_id = task.get("parent_task_id")
-        if complexity not in ("medium", "high", "critical") or parent_task_id:
+        if complexity not in ("medium", "high") or parent_task_id:
             return None
         task_id = task.get("id")
         try:
@@ -3336,7 +3329,7 @@ Start by:
 
         if (
             self._has_cross_cell_keywords(text)
-            or complexity in ("high", "critical")
+            or complexity == "high"
             or not team
             or team == "all"
         ):
@@ -3804,7 +3797,8 @@ Start now: evidence(task_id="{task_id}")
         }
     )
 
-    _PM_RESPAWN_MAX_UNPRODUCTIVE = 3
+    # Use foundation's default; keep the local name for back-compat.
+    _PM_RESPAWN_MAX_UNPRODUCTIVE = _AGENT_LOOP_BUDGET.pm_respawn_max_unproductive
 
     async def _pm_respawn_should_gate(
         self, agent_slug: str, task: dict[str, Any]
@@ -4406,15 +4400,22 @@ Never `commit`, never write code, never run `git`. PMs coordinate.
         # would silently spawn the dev. Reject the dispatch if the
         # assignee's role doesn't match the task type — the PM that
         # mis-assigned needs to fix it before any agent runs.
-        if agent_slug and not self._dev_dispatch_role_matches(task, agent_slug):
-            logger.warning(
-                "dev dispatch: role/task_type mismatch — skipping spawn",
-                task_id=task.get("id"),
-                task_type=task.get("task_type"),
-                assignee_slug=agent_slug,
-                assignee_role=get_agent_role(agent_slug),
-            )
-            return
+        # Tasks owned by PM/board/QA roles aren't this dispatcher's lane;
+        # `_dispatch_pm_work` and the QA-pool path own them. Silently skip
+        # so the warning only fires on actual dev/doc misassignments.
+        if agent_slug:
+            assignee_role = get_agent_role(agent_slug)
+            if assignee_role not in ("developer", "documenter", "unknown"):
+                return
+            if not self._dev_dispatch_role_matches(task, agent_slug):
+                logger.warning(
+                    "dev dispatch: role/task_type mismatch — skipping spawn",
+                    task_id=task.get("id"),
+                    task_type=task.get("task_type"),
+                    assignee_slug=agent_slug,
+                    assignee_role=assignee_role,
+                )
+                return
 
         if agent_slug and status in (
             "needs_revision",
@@ -5047,7 +5048,7 @@ Never `commit`, never write code, never run `git`. PMs coordinate.
             return []
 
         complexity = task.get("estimated_complexity", "low")
-        is_low_complexity = complexity not in ("medium", "high", "critical")
+        is_low_complexity = complexity not in ("medium", "high")
         if is_low_complexity or task.get("parent_task_id"):
             return []
 
@@ -5458,16 +5459,30 @@ Your job:
 """
 
     def _build_a2a_prompt(self, notification: dict[str, Any]) -> str:
-        """Build initial prompt for handling an A2A (Agent-to-Agent) request."""
+        """Build initial prompt for handling an A2A (Agent-to-Agent) request.
+
+        Reads `priority` directly off the notification row (set by
+        NotificationService.send_a2a_notification). Pre-Phase-3 this
+        consumed a non-existent `metadata.urgent` and always rendered
+        urgency_note=False; the column-level priority is now the source
+        of truth.
+        """
         notif_id = notification.get("id", "unknown")
         from_agent = notification.get("from_agent", "unknown")
         body = notification.get("body", "No message provided")
         related_task_id = notification.get("related_task_id")
         metadata = notification.get("metadata", {})
         skill = metadata.get("skill", "general")
-        urgent = metadata.get("urgent", False)
+        priority_raw = notification.get("priority", "normal")
 
-        urgency_note = "**URGENT** - This request has priority.\n\n" if urgent else ""
+        # URGENT gets the bold attention-grabber; HIGH gets a quieter
+        # "higher priority" hint; NORMAL gets no prefix.
+        if priority_raw == "urgent":
+            urgency_note = "**URGENT** - This request has priority.\n\n"
+        elif priority_raw == "high":
+            urgency_note = "**HIGH PRIORITY** - Please handle promptly.\n\n"
+        else:
+            urgency_note = ""
         task_note = f"RELATED TASK: {related_task_id}\n" if related_task_id else ""
 
         return f"""You have received an A2A (Agent-to-Agent) REQUEST.
