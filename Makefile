@@ -260,9 +260,7 @@ quality:
 	@uv run alembic upgrade head --sql > /dev/null
 	@echo "==> import-linter (architectural boundaries)"
 	@uv run lint-imports
-	@echo "==> lifecycle artifacts up to date"
-	@$(MAKE) ci-lifecycle-check
-	@echo "==> foundation drift checks"
+	@echo "==> foundation drift checks (includes lifecycle artifacts)"
 	@$(MAKE) foundation-check
 	@echo ""
 	@echo "All quality gates passed."
@@ -458,23 +456,15 @@ show-python-versions:
 lifecycle:
 	uv run python scripts/build_lifecycle_artifacts.py
 
-# CI drift gate: regenerate lifecycle artifacts and fail if anything
-# changed. Run on every PR — drift between roboco/lifecycle/spec.py and
-# the committed artifacts (docs/lifecycle/*, agents/prompts/_generated/
-# lifecycle-*.md) cannot land on master.
-.PHONY: ci-lifecycle-check
-ci-lifecycle-check:
-	@uv run python scripts/build_lifecycle_artifacts.py
-	@git diff --exit-code -- docs/rag/lifecycle panel/lib/lifecycle.json agents/prompts/_generated/lifecycle-*.md \
-		|| (echo "Lifecycle artifacts are out of date. Run 'make lifecycle' and commit the diff." && exit 1)
-
 # =============================================================================
 # FOUNDATION DRIFT GATE
 # =============================================================================
 
-# Foundation drift gate: validates identity tables, runs foundation self-tests,
-# and (when reachable) checks postgres enum parity. Mirrors ci-lifecycle-check
-# so foundation/identity drift cannot land on master.
+# Canonical drift gate: validates identity tables, runs foundation self-tests,
+# regenerates lifecycle artifacts and fails on any uncommitted diff, and
+# (when reachable) checks postgres enum parity. Run on every PR — drift
+# between foundation tables / lifecycle spec and the committed artifacts
+# cannot land on master.
 .PHONY: foundation-check
 foundation-check:
 	@echo "==> foundation/identity validators"
@@ -487,6 +477,15 @@ foundation-check:
 	uv run pytest tests/foundation/test_communications_consumers.py --no-cov -q
 	@echo "==> foundation tests (full)"
 	uv run pytest tests/foundation/ --no-cov -q
+	@echo "==> lifecycle artifacts up-to-date (renders + git diff)"
+	@$(MAKE) lifecycle
+	@git diff --exit-code -- docs/rag/lifecycle panel/lib/lifecycle.json agents/prompts/_generated/lifecycle-*.md \
+		|| (echo "Lifecycle artifacts are out of date. Run 'make lifecycle' and commit the diff." && exit 1)
 	@echo "==> postgres enum parity (offline-skip if no DB)"
 	uv run python scripts/verify_postgres_enums.py || echo "  (skipped — postgres unreachable)"
 	@echo "All foundation drift checks passed."
+
+# Backwards-compatible alias — prior CI / scripts called `ci-lifecycle-check`.
+# `foundation-check` is now the canonical drift gate; this alias just forwards.
+.PHONY: ci-lifecycle-check
+ci-lifecycle-check: foundation-check
