@@ -2023,29 +2023,70 @@ class Choreographer:
         parent_task_id: UUID,
         inputs: DelegateInputs,
     ) -> Envelope | None:
-        """Block delegation when a non-terminal sibling owns the same slot.
+        """Block PM-decomposition over-spread (the smoke-run runaway pattern).
 
-        Same slot = same ``assigned_to`` + same ``task_type``. If a PM has
-        already delegated work to that agent of that type under this parent
-        and it isn't completed/cancelled, the new delegation is almost
-        certainly the PM decomposing twice. Reject with the existing
-        task_id so the PM can finish or cancel that one instead.
+        Two rules, both rooted in 'one lifecycle hop per parent':
+
+        1. **Same-type concurrency cap** (observed 2026-05-11 smoke): a
+           parent may have AT MOST one non-terminal subtask of types
+           ``code`` / ``planning`` / ``documentation`` at any given time,
+           regardless of assignee. These are the spine of the lifecycle —
+           the dev-QA-doc-PM chain is sequential. A Cell PM splitting one
+           workflow across be-dev-1 and be-dev-2 (e.g. "branch+edit" vs
+           "open PR") creates parallel children of the same type and
+           the lifecycle has no merge story for that. Reject; the PM
+           must either complete the existing child first or restructure
+           into independent parents.
+
+        2. **Same-assignee same-type** (fallback for other types): a PM
+           never delegates two ``research``/``design``/``administrative``
+           subtasks to the same agent under the same parent — that's
+           always a decomposition error.
+
+        Both rules surface the existing sibling id so the PM can finish
+        or cancel it instead of guessing.
         """
         terminal = {"completed", "cancelled"}
+        spine_types = {"code", "planning", "documentation"}
         siblings = await self.task.get_subtasks(parent_task_id)
+        new_type = str(inputs.task_type or "")
+        new_assignee = str(inputs.assigned_to or "")
         for s in siblings:
             if str(getattr(s, "status", "")) in terminal:
                 continue
+            sib_type = str(getattr(s, "task_type", ""))
+            sib_assignee = str(getattr(s, "assigned_to", "") or "")
+            # Rule 1: spine-type concurrency cap (ignores assignee)
+            if new_type in spine_types and sib_type == new_type:
+                return Envelope.invalid_state(
+                    message=(
+                        f"parent already has a non-terminal "
+                        f"task_type={new_type!r} subtask "
+                        f"({s.id}, assigned_to={sib_assignee!r}, "
+                        f"status={s.status}). The {new_type!r} spine is "
+                        f"sequential — only one non-terminal at a time."
+                    ),
+                    remediate=(
+                        "Drive the existing sibling to completion / "
+                        "cancel it before delegating another of the same "
+                        "type. If the work is genuinely parallel (two "
+                        "independent modules), split this parent into "
+                        "two sibling parents instead of two code "
+                        "subtasks under one parent."
+                    ),
+                    context_briefing={},
+                )
+            # Rule 2: same-assignee same-type fallback (non-spine types)
             if (
-                getattr(s, "assigned_to", None) is not None
-                and str(getattr(s, "assigned_to", "")) == str(inputs.assigned_to or "")
-                and str(getattr(s, "task_type", "")) == str(inputs.task_type or "")
+                sib_assignee
+                and sib_assignee == new_assignee
+                and sib_type == new_type
             ):
                 return Envelope.invalid_state(
                     message=(
                         f"sibling subtask already assigned to "
-                        f"{inputs.assigned_to!r} with task_type="
-                        f"{inputs.task_type!r}: id={s.id} status={s.status}"
+                        f"{new_assignee!r} with task_type={new_type!r}: "
+                        f"id={s.id} status={s.status}"
                     ),
                     remediate=(
                         "Either drive the existing sibling to completion / "
