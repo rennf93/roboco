@@ -50,6 +50,18 @@ async def do_note(
         text=body.text,
         scope=body.scope,
         task_id=body.task_id,
+        structured={
+            "title": body.title,
+            "context": body.context,
+            "options": body.options,
+            "chosen": body.chosen,
+            "rationale": body.rationale,
+            "consequences": body.consequences,
+            "what_done": body.what_done,
+            "what_learned": body.what_learned,
+            "what_struggled": body.what_struggled,
+            "next_steps": body.next_steps,
+        },
     )
     return envelope_to_response(env, request)
 

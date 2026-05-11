@@ -86,13 +86,70 @@ def commit(message: str, files: list[str] | None = None) -> dict[str, Any]:
     return _post("/api/v2/do/commit", {"message": message, "files": files})
 
 
-def note(text: str, scope: str = "note", task_id: str | None = None) -> dict[str, Any]:
-    """Write a journal entry. scope in note|decision|reflect|learning|struggle."""
-    return _post("/api/v2/do/note", {"text": text, "scope": scope, "task_id": task_id})
+def note(
+    text: str,
+    scope: str = "note",
+    task_id: str | None = None,
+    title: str | None = None,
+    context: str | None = None,
+    options: list[str] | None = None,
+    chosen: str | None = None,
+    rationale: str | None = None,
+    consequences: str | None = None,
+    what_done: str | None = None,
+    what_learned: str | None = None,
+    what_struggled: str | None = None,
+    next_steps: str | None = None,
+) -> dict[str, Any]:
+    """Write a journal entry. scope in note|decision|reflect|learning|struggle.
+
+    ``text`` is always the short summary (one paragraph max). For ``decision``
+    and ``reflect`` scopes, fill the scope-specific structured fields so the
+    panel renders them as named sections — pre-gateway parity:
+
+    - decision: ``context`` (the situation), ``options`` (list of strings,
+      one per alternative considered), ``chosen`` (the alternative you took),
+      ``rationale`` (why), ``consequences`` (what this commits us to)
+    - reflect: ``what_done`` (literal output), ``what_learned`` (new info),
+      ``what_struggled`` (where you got stuck), ``next_steps`` (follow-ups)
+
+    Other scopes (note / learning / struggle) just need ``text``.
+    """
+    return _post(
+        "/api/v2/do/note",
+        {
+            "text": text,
+            "scope": scope,
+            "task_id": task_id,
+            "title": title,
+            "context": context,
+            "options": options,
+            "chosen": chosen,
+            "rationale": rationale,
+            "consequences": consequences,
+            "what_done": what_done,
+            "what_learned": what_learned,
+            "what_struggled": what_struggled,
+            "next_steps": next_steps,
+        },
+    )
 
 
 def say(channel: str, text: str, task_id: str | None = None) -> dict[str, Any]:
-    """Post to a channel. task_id auto-injected if you have an active task."""
+    """Post to a channel. task_id auto-injected if you have an active task.
+
+    Args:
+        channel: Channel slug WITHOUT leading `#`. Valid values:
+            - Cell channels: `backend-cell`, `frontend-cell`, `uxui-cell`
+            - Cross-cell: `dev-all`, `qa-all`, `pm-all`, `doc-all`
+            - Management: `main-pm-board`, `board-private`
+            - Broadcast: `announcements`, `all-hands`
+            Write access varies by role — gateway returns `not_authorized` if
+            you cannot write to the requested channel; the error lists which
+            channels you can write to.
+        text: Message body.
+        task_id: Optional; auto-filled from your active task if omitted.
+    """
     return _post(
         "/api/v2/do/say",
         {"channel": channel, "text": text, "task_id": task_id},
@@ -105,7 +162,14 @@ def dm(
     task_id: str | None = None,
     skill: str | None = None,
 ) -> dict[str, Any]:
-    """A2A message. Auto-creates conversation; auto-resolves skill if needed."""
+    """A2A message. Auto-creates conversation; auto-resolves skill if needed.
+
+    Args:
+        recipient: Target agent slug (e.g. `be-pm`, `be-dev-1`, `ceo`).
+        text: Message body.
+        task_id: Optional; auto-filled from your active task if omitted.
+        skill: Optional skill slug to scope the conversation.
+    """
     return _post(
         "/api/v2/do/dm",
         {"recipient": recipient, "text": text, "task_id": task_id, "skill": skill},

@@ -91,6 +91,14 @@ class EscalateToCeoRequest(BaseModel):
 class IWillPlanRequest(BaseModel):
     task_id: UUID
     plan: str = Field(..., min_length=1)
+    # Optional rich-plan fields. These persist into Task.plan as a structured
+    # dict matching roboco.models.task.TaskPlan, so the panel's Plan tab
+    # shows Approach / Sub-Tasks / Technical Considerations / Risks /
+    # Open Questions instead of an empty pane. Pre-gateway parity.
+    approach: str = ""
+    technical_considerations: list[str] = Field(default_factory=list)
+    risks: list[dict[str, str]] = Field(default_factory=list)
+    open_questions: list[dict[str, str | bool]] = Field(default_factory=list)
 
 
 class DelegateRequest(BaseModel):

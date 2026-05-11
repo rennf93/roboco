@@ -99,7 +99,7 @@ class _ClaimPlanStartContext:
     task: Any
     role_str: str
     briefing: dict[str, Any]
-    plan: str | None
+    plan: str | dict[str, Any] | None
     verb_name: str
 
 
@@ -1758,7 +1758,11 @@ class Choreographer:
     # claim_doc_task + i_documented moved to ``doc.py`` (audit P2-2).
 
     async def i_will_plan(
-        self, pm_agent_id: UUID, task_id: UUID, plan: str
+        self,
+        pm_agent_id: UUID,
+        task_id: UUID,
+        plan: str,
+        rich_plan: dict[str, Any] | None = None,
     ) -> Envelope:
         """PM mirror of i_will_work_on for parent tasks.
 
@@ -1768,6 +1772,14 @@ class Choreographer:
         the DB. Idempotent re-entry: a respawned PM re-calling on a
         task they already own in claimed/in_progress just refreshes
         the heartbeat.
+
+        The rich-plan kwargs (``approach``, ``technical_considerations``,
+        ``risks``, ``open_questions``) populate the panel's Plan tab
+        (pre-gateway parity). When any are non-empty/non-default they
+        are persisted as a structured ``TaskPlan``-shaped dict via
+        ``TaskService.set_plan``; otherwise ``plan`` is stored as a
+        narrative string. Empty defaults keep behavior backward-compatible
+        for callers that don't pass rich fields.
         """
         t = await self.task.get(task_id)
         if t is None:
@@ -1799,13 +1811,39 @@ class Choreographer:
             actor_slug=getattr(agent, "slug", None) if agent is not None else None,
             original_developer_slug=_extract_original_developer(t),
         )
+        # Persist the structured plan dict (pre-gateway parity for the Plan
+        # tab) when the caller passed any rich field; otherwise fall through
+        # with the bare string so set_plan stores {"text": plan}.
+        effective_plan: str | dict[str, Any]
+        if rich_plan and any(
+            rich_plan.get(k)
+            for k in (
+                "approach",
+                "sub_tasks",
+                "technical_considerations",
+                "risks",
+                "open_questions",
+            )
+        ):
+            effective_plan = {
+                "text": plan,
+                "approach": rich_plan.get("approach", ""),
+                "sub_tasks": rich_plan.get("sub_tasks", []),
+                "technical_considerations": rich_plan.get(
+                    "technical_considerations", []
+                ),
+                "risks": rich_plan.get("risks", []),
+                "open_questions": rich_plan.get("open_questions", []),
+            }
+        else:
+            effective_plan = plan
         ctx = _ClaimPlanStartContext(
             agent_id=pm_agent_id,
             task_id=task_id,
             task=t,
             role_str=role_str,
             briefing=briefing,
-            plan=plan,
+            plan=effective_plan,
             verb_name="i_will_plan",
         )
         # Idempotent re-entry: PM already owns the task in_progress.
@@ -1969,10 +2007,54 @@ class Choreographer:
             pm_agent_id, parent_task_id, parent, inputs
         ):
             return guard
+        # Sibling dedup: catch the PM-decomposition bug where the same
+        # parent gets two subtasks for the same role + task_type
+        # (observed on smoke run 2026-05-11: Main PM created two planning
+        # tasks for be-pm; Cell PM created two code tasks for be-dev-1).
+        if guard := await self._delegate_sibling_dedup_guard(parent_task_id, inputs):
+            return guard
         # Gate Set B: PARENT_NOT_CLAIMED + SUBTASK_CAP
         return await self._delegate_lifecycle_guards(
             pm_agent_id, parent_task_id, parent
         )
+
+    async def _delegate_sibling_dedup_guard(
+        self,
+        parent_task_id: UUID,
+        inputs: DelegateInputs,
+    ) -> Envelope | None:
+        """Block delegation when a non-terminal sibling owns the same slot.
+
+        Same slot = same ``assigned_to`` + same ``task_type``. If a PM has
+        already delegated work to that agent of that type under this parent
+        and it isn't completed/cancelled, the new delegation is almost
+        certainly the PM decomposing twice. Reject with the existing
+        task_id so the PM can finish or cancel that one instead.
+        """
+        terminal = {"completed", "cancelled"}
+        siblings = await self.task.get_subtasks(parent_task_id)
+        for s in siblings:
+            if str(getattr(s, "status", "")) in terminal:
+                continue
+            if (
+                getattr(s, "assigned_to", None) is not None
+                and str(getattr(s, "assigned_to", "")) == str(inputs.assigned_to or "")
+                and str(getattr(s, "task_type", "")) == str(inputs.task_type or "")
+            ):
+                return Envelope.invalid_state(
+                    message=(
+                        f"sibling subtask already assigned to "
+                        f"{inputs.assigned_to!r} with task_type="
+                        f"{inputs.task_type!r}: id={s.id} status={s.status}"
+                    ),
+                    remediate=(
+                        "Either drive the existing sibling to completion / "
+                        "cancel it, or split this work into a subtask of "
+                        "the existing sibling rather than a new sibling."
+                    ),
+                    context_briefing={},
+                )
+        return None
 
     async def _delegate_static_guards(
         self,
@@ -2023,17 +2105,49 @@ class Choreographer:
     def _validate_assignee_task_type(assigned_to: str, task_type: str) -> str | None:
         """Reject role-vs-type misclassifications.
 
-        Rule (2026-05-09 smoke Bug B): when delegating to a Cell PM, the
-        subtask must be `planning`-typed. The Cell PM owns the planning
-        of the slice and delegates code execution to devs; a code-typed
-        task assigned to a Cell PM conflates the two layers and made
-        the lifecycle harder to reason about (a code task that nobody
-        will execute, just plan).
+        Rules:
+        - (2026-05-09 smoke Bug B): delegating to a Cell PM requires
+          ``task_type='planning'``. Cell PMs decompose; they don't execute.
+        - (2026-05-11 smoke): delegating to a Developer requires
+          ``task_type in {'code', 'documentation', 'research'}``. Devs
+          implement. Planning/design/administrative belong to PMs/board.
+          The 'research' allowance covers genuine spike work (try a
+          library, prototype an approach) — NOT coordination/handoff,
+          which is PM work.
+        - Delegating to a QA requires ``task_type='code'`` (their work is
+          to review PRs of code changes).
+        - Delegating to a Documenter requires ``task_type='documentation'``.
         """
+        from roboco.foundation.identity import AGENTS, Role
+
         if assigned_to in Choreographer._CELL_PM_SLUGS and task_type != "planning":
             return (
                 f"task_type={task_type!r} is invalid for assignee {assigned_to!r}: "
                 f"Cell PMs own planning tasks, not code/documentation/etc."
+            )
+        agent = AGENTS.get(assigned_to)
+        if agent is None:
+            return None
+        if agent.role is Role.DEVELOPER and task_type not in {
+            "code",
+            "documentation",
+            "research",
+        }:
+            return (
+                f"task_type={task_type!r} is invalid for assignee {assigned_to!r}: "
+                f"Developers own code/documentation/research. Coordination, "
+                f"planning, design, and administrative work belong to PMs."
+            )
+        if agent.role is Role.QA and task_type != "code":
+            return (
+                f"task_type={task_type!r} is invalid for assignee {assigned_to!r}: "
+                f"QA reviews code PRs — task_type must be 'code'."
+            )
+        if agent.role is Role.DOCUMENTER and task_type != "documentation":
+            return (
+                f"task_type={task_type!r} is invalid for assignee {assigned_to!r}: "
+                f"Documenters write documentation — task_type must be "
+                f"'documentation'."
             )
         return None
 
