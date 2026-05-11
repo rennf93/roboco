@@ -1446,7 +1446,12 @@ class Choreographer:
         return preference[0]
 
     async def i_am_blocked(
-        self, agent_id: UUID, task_id: UUID, reason: str
+        self,
+        agent_id: UUID,
+        task_id: UUID,
+        reason: str,
+        blocker_type: str | None = None,
+        what_needed: str | None = None,
     ) -> Envelope:
         """Escalate task_id and write a struggle journal entry; idle the agent.
 
@@ -1505,8 +1510,21 @@ class Choreographer:
         # verb body. Written before the runner dispatches `block` so a
         # later runner failure still leaves an audit trail of the agent's
         # struggle.
+        # Pre-gateway parity (G8 part b): if the agent supplied typed
+        # blocker_type / what_needed, render them as a structured
+        # markdown body so the panel renders Blocker / Type / Needed
+        # blocks instead of one flat sentence. Pre-gateway shape
+        # came from TaskBlockInput at 0c3d15a:roboco/mcp/schemas/__init__.py.
+        struggle_body = reason
+        if blocker_type or what_needed:
+            parts = [reason.strip()] if reason.strip() else []
+            if blocker_type:
+                parts.append(f"## Blocker Type\n{blocker_type}")
+            if what_needed:
+                parts.append(f"## What Needed\n{what_needed}")
+            struggle_body = "\n\n".join(parts)
         await self.journal.write_struggle(
-            agent_id=agent_id, task_id=task_id, content=reason
+            agent_id=agent_id, task_id=task_id, content=struggle_body
         )
         runner = self._verb_runner()
         try:

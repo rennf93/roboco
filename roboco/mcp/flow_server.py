@@ -227,9 +227,32 @@ def i_am_done(task_id: str, notes: str = "") -> dict[str, Any]:
     return _post(_role_path("i_am_done"), {"task_id": task_id, "notes": notes})
 
 
-def i_am_blocked(task_id: str, reason: str) -> dict[str, Any]:
-    """Escalate to PM. Logs a struggle journal entry."""
-    return _post(_role_path("i_am_blocked"), {"task_id": task_id, "reason": reason})
+def i_am_blocked(
+    task_id: str,
+    reason: str,
+    blocker_type: str | None = None,
+    what_needed: str | None = None,
+) -> dict[str, Any]:
+    """Escalate to PM. Logs a struggle journal entry.
+
+    Args:
+        task_id: UUID of the task you're stuck on.
+        reason: One paragraph describing the blocker.
+        blocker_type: One of ``external`` | ``internal`` | ``question`` |
+            ``dependency``. Optional but strongly preferred — the PM
+            triages by class. Pre-gateway parity.
+        what_needed: Concrete description of what would unblock the
+            task. Pre-gateway parity.
+    """
+    return _post(
+        _role_path("i_am_blocked"),
+        {
+            "task_id": task_id,
+            "reason": reason,
+            "blocker_type": blocker_type,
+            "what_needed": what_needed,
+        },
+    )
 
 
 def unclaim(task_id: str) -> dict[str, Any]:
