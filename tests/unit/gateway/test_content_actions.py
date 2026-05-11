@@ -221,7 +221,12 @@ async def test_commit_allows_documenter_role() -> None:
 
 @pytest.mark.asyncio
 async def test_note_reflect_scope_succeeds() -> None:
-    """scope='reflect' is valid; journal.write_entry is called."""
+    """scope='reflect' is valid; journal.write_entry is called.
+
+    Pre-gateway parity: reflect requires what_done / what_learned /
+    what_struggled (each a non-empty string). The gateway returns
+    `incomplete_input` if any is missing.
+    """
     agent_id = uuid4()
     task_id = uuid4()
     task_svc = AsyncMock()
@@ -240,6 +245,11 @@ async def test_note_reflect_scope_succeeds() -> None:
         text="Reflected on approach: went with async generator pattern.",
         scope="reflect",
         task_id=task_id,
+        structured={
+            "what_done": "Shipped the async generator pattern in service.py:120-180",
+            "what_learned": "asyncio.shield wraps cancellation correctly here",
+            "what_struggled": "Initially missed the cleanup race; commits 3a4f1 fix it",
+        },
     )
     body = env.as_dict()
 
@@ -248,6 +258,119 @@ async def test_note_reflect_scope_succeeds() -> None:
     journal_svc.write_entry.assert_awaited_once()
     call_kwargs = journal_svc.write_entry.call_args.kwargs
     assert call_kwargs["scope"] == "reflect"
+
+
+@pytest.mark.asyncio
+async def test_note_reflect_missing_required_fields_returns_incomplete_input() -> None:
+    """Pre-gateway parity: reflect without structured fields fails fast."""
+    agent_id = uuid4()
+    task_id = uuid4()
+    task_svc = AsyncMock()
+    task_svc.get_active_task_for_agent.return_value = None
+    task_svc.get.return_value = MagicMock(
+        id=task_id, assigned_to=agent_id, status="in_progress"
+    )
+    journal_svc = AsyncMock()
+
+    deps = _make_deps(task=task_svc, journal=journal_svc)
+    ca = ContentActions(deps)
+
+    env = await ca.note(
+        agent_id=agent_id,
+        text="bare reflect with no structured fields",
+        scope="reflect",
+        task_id=task_id,
+    )
+    body = env.as_dict()
+
+    assert body["error"] == "incomplete_input"
+    assert {"what_done", "what_learned", "what_struggled"}.issubset(set(body["missing"]))
+    journal_svc.write_entry.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_note_decision_requires_options_and_more() -> None:
+    """Pre-gateway parity: decision requires context/options(>=2)/chosen/rationale."""
+    agent_id = uuid4()
+    task_id = uuid4()
+    task_svc = AsyncMock()
+    task_svc.get_active_task_for_agent.return_value = None
+    task_svc.get.return_value = MagicMock(
+        id=task_id, assigned_to=agent_id, status="in_progress"
+    )
+    journal_svc = AsyncMock()
+
+    deps = _make_deps(task=task_svc, journal=journal_svc)
+    ca = ContentActions(deps)
+
+    # Missing everything structured → incomplete_input listing all required.
+    env = await ca.note(
+        agent_id=agent_id,
+        text="bare decision",
+        scope="decision",
+        task_id=task_id,
+    )
+    body = env.as_dict()
+    assert body["error"] == "incomplete_input"
+    assert {"context", "options", "chosen", "rationale"}.issubset(set(body["missing"]))
+
+    # Single option still fails (min 2).
+    env = await ca.note(
+        agent_id=agent_id,
+        text="decision with one option",
+        scope="decision",
+        task_id=task_id,
+        structured={
+            "context": "needed a queue",
+            "options": [{"name": "redis", "pros": "fast", "cons": "ephemeral"}],
+            "chosen": "redis",
+            "rationale": "speed beats durability for this case",
+        },
+    )
+    body = env.as_dict()
+    assert body["error"] == "incomplete_input"
+    assert "options" in body["missing"]
+
+    # Two options + all required → success.
+    env = await ca.note(
+        agent_id=agent_id,
+        text="real decision",
+        scope="decision",
+        task_id=task_id,
+        structured={
+            "context": "needed a queue",
+            "options": [
+                {"name": "redis", "pros": "fast", "cons": "ephemeral"},
+                {"name": "postgres", "pros": "durable", "cons": "slower writes"},
+            ],
+            "chosen": "redis",
+            "rationale": "speed beats durability for ephemeral work",
+        },
+    )
+    body = env.as_dict()
+    assert body["error"] is None
+    assert body["status"] == "noted"
+
+    # Three+ options also pass — 2 is the floor, not the ceiling.
+    env = await ca.note(
+        agent_id=agent_id,
+        text="three-way decision",
+        scope="decision",
+        task_id=task_id,
+        structured={
+            "context": "queue tech choice",
+            "options": [
+                {"name": "redis", "pros": "fast", "cons": "ephemeral"},
+                {"name": "postgres", "pros": "durable", "cons": "slower"},
+                {"name": "rabbitmq", "pros": "ordered", "cons": "ops overhead"},
+            ],
+            "chosen": "rabbitmq",
+            "rationale": "ordering matters more than raw speed here",
+        },
+    )
+    body = env.as_dict()
+    assert body["error"] is None
+    assert body["status"] == "noted"
 
 
 @pytest.mark.asyncio
@@ -283,6 +406,15 @@ async def test_note_auto_fills_task_id_from_active_task() -> None:
         agent_id=agent_id,
         text="Decided to use UUIDs instead of integer PKs for portability.",
         scope="decision",
+        structured={
+            "context": "Choosing primary-key strategy for the new tables",
+            "options": [
+                {"name": "int", "pros": "compact", "cons": "leaks volume"},
+                {"name": "uuid", "pros": "portable", "cons": "wider rows"},
+            ],
+            "chosen": "uuid",
+            "rationale": "portability matters more than 8 bytes/row",
+        },
     )
     body = env.as_dict()
 

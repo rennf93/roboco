@@ -92,26 +92,27 @@ def note(
     task_id: str | None = None,
     title: str | None = None,
     context: str | None = None,
-    options: list[str] | None = None,
+    options: list[dict[str, str]] | None = None,
     chosen: str | None = None,
     rationale: str | None = None,
-    consequences: str | None = None,
+    consequences: list[str] | None = None,
     what_done: str | None = None,
     what_learned: str | None = None,
     what_struggled: str | None = None,
-    next_steps: str | None = None,
+    next_steps: list[str] | None = None,
 ) -> dict[str, Any]:
     """Write a journal entry. scope in note|decision|reflect|learning|struggle.
 
     ``text`` is always the short summary (one paragraph max). For ``decision``
-    and ``reflect`` scopes, fill the scope-specific structured fields so the
-    panel renders them as named sections — pre-gateway parity:
+    and ``reflect`` scopes the structured fields are REQUIRED — pre-gateway
+    parity. The gateway returns ``incomplete_input`` if any is missing.
 
-    - decision: ``context`` (the situation), ``options`` (list of strings,
-      one per alternative considered), ``chosen`` (the alternative you took),
-      ``rationale`` (why), ``consequences`` (what this commits us to)
+    - decision: ``context`` (situation), ``options`` (list of ≥2 dicts
+      ``{name, pros, cons}``), ``chosen`` (which option), ``rationale``
+      (why), ``consequences`` (list of strings — what this commits us to)
     - reflect: ``what_done`` (literal output), ``what_learned`` (new info),
-      ``what_struggled`` (where you got stuck), ``next_steps`` (follow-ups)
+      ``what_struggled`` (where you got stuck), ``next_steps`` (list of
+      follow-up strings)
 
     Other scopes (note / learning / struggle) just need ``text``.
     """
@@ -321,6 +322,16 @@ def notify_ack(notification_id: str) -> dict[str, Any]:
     )
 
 
+def channels() -> dict[str, Any]:
+    """List the channel slugs you can read / write.
+
+    Use this BEFORE ``say(channel=...)`` if you're unsure of the slug —
+    inventing slugs returns ``Channel not found``. Returns
+    ``{writable: [...], readable: [...]}``.
+    """
+    return _post("/api/v2/do/channels", {})
+
+
 # ---------- Tool registry ----------
 #
 # Maps the tool name an agent calls (matches manifest entries and the
@@ -339,6 +350,7 @@ _TOOLS: dict[str, Any] = {
     "notify_list": notify_list,
     "notify_get": notify_get,
     "notify_ack": notify_ack,
+    "channels": channels,
 }
 
 

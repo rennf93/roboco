@@ -34,28 +34,37 @@ class RoleConfig:
 # Wave 1 receivers — every role with inbox access gets notify_list/get/ack
 # so `i_am_idle()` doesn't soft-block forever on unread notifications.
 _NOTIFY_RECEIVER = ("notify_list", "notify_get", "notify_ack")
+# Wave 2 — channel discovery. Every role gets `channels()` so the LLM stops
+# inventing slugs ("backend-dev", "backend") that don't exist.
+_CHANNEL_DISCOVERY = ("channels",)
 
 _DEV_FLOW = spec.intents_for_role(spec.Role.DEVELOPER)
-_DEV_DO = ("commit", "note", "say", "dm", "evidence", "progress", *_NOTIFY_RECEIVER)
+_DEV_DO = (
+    "commit", "note", "say", "dm", "evidence", "progress",
+    *_NOTIFY_RECEIVER, *_CHANNEL_DISCOVERY,
+)
 
 _QA_FLOW = spec.intents_for_role(spec.Role.QA)
-_QA_DO = ("note", "say", "dm", "evidence", *_NOTIFY_RECEIVER)
+_QA_DO = ("note", "say", "dm", "evidence", *_NOTIFY_RECEIVER, *_CHANNEL_DISCOVERY)
 
 _DOC_FLOW = spec.intents_for_role(spec.Role.DOCUMENTER)
-_DOC_DO = ("commit", "note", "say", "dm", "evidence", "progress", *_NOTIFY_RECEIVER)
+_DOC_DO = (
+    "commit", "note", "say", "dm", "evidence", "progress",
+    *_NOTIFY_RECEIVER, *_CHANNEL_DISCOVERY,
+)
 
 _CELL_PM_FLOW = spec.intents_for_role(spec.Role.CELL_PM)
 _CELL_PM_DO = (
     "note", "say", "dm", "notify", "evidence",
     "open_session", "link_session",
-    *_NOTIFY_RECEIVER,
+    *_NOTIFY_RECEIVER, *_CHANNEL_DISCOVERY,
 )
 
 _MAIN_PM_FLOW = spec.intents_for_role(spec.Role.MAIN_PM)
 _MAIN_PM_DO = (
     "note", "say", "dm", "notify", "evidence",
     "open_session", "link_session",
-    *_NOTIFY_RECEIVER,
+    *_NOTIFY_RECEIVER, *_CHANNEL_DISCOVERY,
 )
 
 _PRODUCT_OWNER_FLOW = spec.intents_for_role(spec.Role.PRODUCT_OWNER)
@@ -63,13 +72,13 @@ _HEAD_MARKETING_FLOW = spec.intents_for_role(spec.Role.HEAD_MARKETING)
 _BOARD_DO = (
     "note", "say", "dm", "notify", "evidence",
     "open_session",  # Board can open strategic sessions but not link arbitrary
-    *_NOTIFY_RECEIVER,
+    *_NOTIFY_RECEIVER, *_CHANNEL_DISCOVERY,
 )
 
 _AUDITOR_FLOW = spec.intents_for_role(spec.Role.AUDITOR)
 # Auditor reads, does not chat or escalate. notify_list/get for inbox visibility;
-# no ack (silent observer — wouldn't ack notifications).
-_AUDITOR_DO = ("note", "evidence", "notify_list", "notify_get")
+# no ack (silent observer — wouldn't ack notifications). channels for read map.
+_AUDITOR_DO = ("note", "evidence", "notify_list", "notify_get", *_CHANNEL_DISCOVERY)
 
 
 ROLE_CONFIGS: dict[str, RoleConfig] = {

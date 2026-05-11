@@ -329,6 +329,7 @@ def i_will_plan(
     task_id: str,
     plan: str,
     approach: str = "",
+    sub_tasks: list[dict[str, str]] | None = None,
     technical_considerations: list[str] | None = None,
     risks: list[dict[str, str]] | None = None,
     open_questions: list[dict[str, str | bool]] | None = None,
@@ -341,6 +342,10 @@ def i_will_plan(
         approach: 2-4 sentences describing the high-level approach for the
             Plan tab. Required for non-trivial tasks; empty string is allowed
             but produces an unpopulated Plan view.
+        sub_tasks: Decomposition of this task into sub-units, each
+            ``{"title": "...", "description": "..."}``. The gateway assigns
+            stable ids + order server-side. Populates the Plan tab's
+            Sub-Tasks section. Pre-gateway parity.
         technical_considerations: Bullet list of architectural / library /
             constraint notes. Each item is a single string.
         risks: List of {"risk": "...", "mitigation": "..."} entries.
@@ -352,6 +357,7 @@ def i_will_plan(
             "task_id": task_id,
             "plan": plan,
             "approach": approach,
+            "sub_tasks": sub_tasks or [],
             "technical_considerations": technical_considerations or [],
             "risks": risks or [],
             "open_questions": open_questions or [],

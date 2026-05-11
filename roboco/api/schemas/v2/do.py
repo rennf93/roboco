@@ -30,17 +30,17 @@ class NoteRequest(BaseModel):
     scope: str = "note"
     task_id: UUID | None = None
     title: str | None = None
-    # decision scope
+    # decision scope (all required at gateway when scope='decision')
     context: str | None = None
-    options: list[str] | None = None
+    options: list[dict[str, str]] | None = None  # [{name, pros, cons}, ...]
     chosen: str | None = None
     rationale: str | None = None
-    consequences: str | None = None
-    # reflect scope
+    consequences: list[str] | None = None
+    # reflect scope (what_done/learned/struggled required when scope='reflect')
     what_done: str | None = None
     what_learned: str | None = None
     what_struggled: str | None = None
-    next_steps: str | None = None
+    next_steps: list[str] | None = None
 
 
 class SayRequest(BaseModel):
@@ -121,3 +121,7 @@ class NotifyGetRequest(BaseModel):
 
 class NotifyAckRequest(BaseModel):
     notification_id: UUID
+
+
+class ChannelsRequest(BaseModel):
+    """No params — caller's identity comes from X-Agent-ID header."""

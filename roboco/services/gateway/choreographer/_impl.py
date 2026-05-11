@@ -46,6 +46,93 @@ from roboco.services.gateway.remediation import (
 logger = structlog.get_logger()
 
 
+def _normalize_sub_task(st: dict[str, Any], order: int) -> dict[str, Any]:
+    """Shape a sub_task entry to panel/src/types/index.ts::SubTask."""
+    from uuid import uuid4 as _uuid4
+
+    return {
+        "id": str(st.get("id") or _uuid4()),
+        "title": str(st.get("title", "")),
+        "description": st.get("description") or None,
+        "completed": bool(st.get("completed", False)),
+        "order": order,
+        "estimated_hours": st.get("estimated_hours"),
+        "notes": st.get("notes"),
+    }
+
+
+def _normalize_risk(r: dict[str, Any]) -> dict[str, Any]:
+    """Shape a risk entry to panel/src/types/index.ts (description/mitigation/severity).
+
+    Accepts either {description, mitigation, severity?} (panel shape) or
+    {risk, mitigation} (pre-gateway agent shape).
+    """
+    description = r.get("description") or r.get("risk") or ""
+    return {
+        "description": str(description),
+        "mitigation": str(r.get("mitigation", "")),
+        "severity": r.get("severity"),
+    }
+
+
+def _normalize_open_question(q: Any) -> dict[str, Any] | None:
+    """Shape an open_question entry to panel shape.
+
+    Returns None for entries we can't interpret (e.g., None or a number).
+    Accepts a bare string (the agent's short-form question), {question,
+    answered, answer} (pre-gateway shape), or {question, answer,
+    answered_by, answered_at} (panel shape).
+    """
+    if isinstance(q, str):
+        return {
+            "question": q,
+            "answer": None,
+            "answered_by": None,
+            "answered_at": None,
+        }
+    if not isinstance(q, dict):
+        return None
+    return {
+        "question": str(q.get("question", "")),
+        "answer": q.get("answer"),
+        "answered_by": q.get("answered_by"),
+        "answered_at": q.get("answered_at"),
+    }
+
+
+def _build_panel_shaped_plan(
+    plan_text: str, rich_plan: dict[str, Any]
+) -> dict[str, Any]:
+    """Build the Task.plan dict in the exact shape the panel UI consumes.
+
+    Panel reference: panel/src/types/index.ts::TaskPlan. Each list entry is
+    normalized so the panel renders without optional-field JS errors.
+    """
+    sub_tasks = [
+        _normalize_sub_task(st, i)
+        for i, st in enumerate(rich_plan.get("sub_tasks") or [])
+        if isinstance(st, dict)
+    ]
+    risks = [
+        _normalize_risk(r)
+        for r in (rich_plan.get("risks") or [])
+        if isinstance(r, dict)
+    ]
+    open_questions = [
+        normalized
+        for q in (rich_plan.get("open_questions") or [])
+        if (normalized := _normalize_open_question(q)) is not None
+    ]
+    return {
+        "text": plan_text,
+        "approach": rich_plan.get("approach", ""),
+        "sub_tasks": sub_tasks,
+        "technical_considerations": rich_plan.get("technical_considerations", []),
+        "risks": risks,
+        "open_questions": open_questions,
+    }
+
+
 def _extract_original_developer(task: Any) -> str | None:
     """Pull the original_developer slug out of a task's quick_context, if any.
 
@@ -1825,16 +1912,7 @@ class Choreographer:
                 "open_questions",
             )
         ):
-            effective_plan = {
-                "text": plan,
-                "approach": rich_plan.get("approach", ""),
-                "sub_tasks": rich_plan.get("sub_tasks", []),
-                "technical_considerations": rich_plan.get(
-                    "technical_considerations", []
-                ),
-                "risks": rich_plan.get("risks", []),
-                "open_questions": rich_plan.get("open_questions", []),
-            }
+            effective_plan = _build_panel_shaped_plan(plan, rich_plan)
         else:
             effective_plan = plan
         ctx = _ClaimPlanStartContext(
