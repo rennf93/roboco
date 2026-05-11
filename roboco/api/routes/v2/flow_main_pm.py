@@ -51,7 +51,17 @@ async def i_will_plan(
     x_agent_id: _AgentIdHeader,
     choreographer: _ChoreographerDep,
 ) -> dict:
-    env = await choreographer.i_will_plan(x_agent_id, body.task_id, body.plan)
+    env = await choreographer.i_will_plan(
+        x_agent_id,
+        body.task_id,
+        body.plan,
+        rich_plan={
+            "approach": body.approach,
+            "technical_considerations": body.technical_considerations,
+            "risks": body.risks,
+            "open_questions": body.open_questions,
+        },
+    )
     return envelope_to_response(env, request)
 
 

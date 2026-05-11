@@ -48,6 +48,56 @@ _NOTIFY_ALLOWED_ROLES: frozenset[str] = frozenset(
 )
 
 
+_DECISION_SECTIONS: tuple[tuple[str, str], ...] = (
+    ("context", "Context"),
+    ("options", "Options Considered"),
+    ("chosen", "Chosen"),
+    ("rationale", "Rationale"),
+    ("consequences", "Consequences"),
+)
+
+_REFLECT_SECTIONS: tuple[tuple[str, str], ...] = (
+    ("what_done", "What Done"),
+    ("what_learned", "What Learned"),
+    ("what_struggled", "What Struggled"),
+    ("next_steps", "Next Steps"),
+)
+
+
+def _render_journal_content(scope: str, text: str, structured: dict[str, Any]) -> str:
+    """Build the journal entry body. Pre-gateway parity for decision/reflect.
+
+    For scopes that have a structured shape (``decision``, ``reflect``), append
+    a markdown section for each populated field. Other scopes return ``text``
+    unchanged. The original ``text`` always lands first so consumers that
+    only render flat content still see the summary line.
+    """
+    sections = (
+        _DECISION_SECTIONS
+        if scope == "decision"
+        else _REFLECT_SECTIONS
+        if scope == "reflect"
+        else ()
+    )
+    if not sections:
+        return text
+    body_parts: list[str] = [text.strip()] if text.strip() else []
+    for key, label in sections:
+        value = structured.get(key)
+        if value is None:
+            continue
+        if isinstance(value, list):
+            if not value:
+                continue
+            rendered = "\n".join(f"- {item}" for item in value)
+        else:
+            rendered = str(value).strip()
+            if not rendered:
+                continue
+        body_parts.append(f"## {label}\n{rendered}")
+    return "\n\n".join(body_parts) if body_parts else text
+
+
 def _ownership_violation(task_id: UUID) -> Envelope:
     """Standard envelope for Gate Set D ownership violations.
 
@@ -200,8 +250,21 @@ class ContentActions:
         text: str,
         scope: str = "note",
         task_id: UUID | None = None,
+        structured: dict[str, Any] | None = None,
     ) -> Envelope:
-        """Write a journal entry. scope ∈ note|decision|reflect|learning|struggle."""
+        """Write a journal entry. scope ∈ note|decision|reflect|learning|struggle.
+
+        ``structured`` carries scope-specific fields (pre-gateway parity):
+
+        - decision: context, options[], chosen, rationale, consequences
+        - reflect: what_done, what_learned, what_struggled, next_steps
+
+        Non-None fields are formatted into the entry content as markdown
+        sections so the panel's Decisions / Reflections views render
+        them as named blocks instead of a one-line phrase. The ``title``
+        is taken from ``structured["title"]`` when present, otherwise
+        from the first line of ``text``.
+        """
         if scope not in _VALID_NOTE_SCOPES:
             return Envelope.invalid_state(
                 message=f"invalid scope {scope!r}",
@@ -215,13 +278,15 @@ class ContentActions:
             t = await self.task.get_active_task_for_agent(agent_id)
             if t is not None:
                 task_id = t.id
-        title = text.split("\n", 1)[0][:200]
+        s = structured or {}
+        title = (s.get("title") or text.split("\n", 1)[0])[:200]
+        content = _render_journal_content(scope, text, s)
         await self.journal.write_entry(
             agent_id=agent_id,
             task_id=task_id,
             scope=scope,
             title=title,
-            content=text,
+            content=content,
         )
         return Envelope.ok(
             status="noted",

@@ -325,9 +325,38 @@ def escalate_to_ceo(task_id: str, reason: str) -> dict[str, Any]:
 # PM lifecycle so PMs can drive parent tasks instead of stalling.
 
 
-def i_will_plan(task_id: str, plan: str) -> dict[str, Any]:
-    """PM: claim+start a pending parent task with a one-paragraph plan."""
-    return _post(_role_path("i_will_plan"), {"task_id": task_id, "plan": plan})
+def i_will_plan(
+    task_id: str,
+    plan: str,
+    approach: str = "",
+    technical_considerations: list[str] | None = None,
+    risks: list[dict[str, str]] | None = None,
+    open_questions: list[dict[str, str | bool]] | None = None,
+) -> dict[str, Any]:
+    """PM: claim+start a pending parent task with a structured plan.
+
+    Args:
+        task_id: UUID of the task you are planning.
+        plan: One-paragraph narrative (the agent-facing summary).
+        approach: 2-4 sentences describing the high-level approach for the
+            Plan tab. Required for non-trivial tasks; empty string is allowed
+            but produces an unpopulated Plan view.
+        technical_considerations: Bullet list of architectural / library /
+            constraint notes. Each item is a single string.
+        risks: List of {"risk": "...", "mitigation": "..."} entries.
+        open_questions: List of {"question": "...", "answered": false} entries.
+    """
+    return _post(
+        _role_path("i_will_plan"),
+        {
+            "task_id": task_id,
+            "plan": plan,
+            "approach": approach,
+            "technical_considerations": technical_considerations or [],
+            "risks": risks or [],
+            "open_questions": open_questions or [],
+        },
+    )
 
 
 def delegate(
