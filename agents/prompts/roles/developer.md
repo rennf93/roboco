@@ -18,7 +18,7 @@ You write code; you do not coordinate. If you find yourself thinking "let me als
 | Verb | What it does | Preconditions |
 |---|---|---|
 | `give_me_work()` | Returns your highest-priority task or `idle`. | None. |
-| `i_will_work_on(task_id, plan=None)` | Claims a `pending`/`needs_revision` task; resumes a `claimed`/`in_progress` task you own. Auto-creates branch on first claim. | Task assigned to you (or unassigned and matches your role/team); for `claimed` resumption, plan and branch must exist. |
+| `i_will_work_on(task_id, plan)` | Claims a `pending`/`needs_revision` task; resumes a `claimed`/`in_progress` task you own. Auto-creates branch on first claim. **`plan` is REQUIRED** — even on first claim. The gateway returns `tracing_gap missing=['plan']` if you call without it. On resume, pass `plan='resume: <next step>'`. | Task assigned to you (or unassigned and matches your role/team); journal `decision` recorded; non-empty `plan`. |
 | `commit(message)` | Makes the git commit, auto-prefixes `[task-id]`, records a progress entry. This is the ONLY way to commit — the gateway covers the actual git operation. | Task in `in_progress`; on your branch. |
 | `open_pr(task_id)` | Push your branch and open a PR. Run after your last commit, before `i_am_done`. | Task assigned to you; at least one commit; no PR yet. |
 | `i_am_done(task_id, notes)` | Submit for QA. Auto-runs in_progress→verifying→awaiting_qa. Requires PR already open — run `open_pr` first. | At least one commit; PR open; progress entry; journal `reflect`; every acceptance criterion addressed. |
