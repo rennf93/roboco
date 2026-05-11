@@ -64,13 +64,29 @@ _REFLECT_SECTIONS: tuple[tuple[str, str], ...] = (
 )
 
 
+def _render_option_block(option: dict[str, str] | str) -> str:
+    """Render one decision option. Accepts dict or legacy string."""
+    if isinstance(option, str):
+        return f"- {option}"
+    name = option.get("name", "").strip() or "(unnamed)"
+    pros = option.get("pros", "").strip()
+    cons = option.get("cons", "").strip()
+    block = [f"### {name}"]
+    if pros:
+        block.append(f"- Pros: {pros}")
+    if cons:
+        block.append(f"- Cons: {cons}")
+    return "\n".join(block)
+
+
 def _render_journal_content(scope: str, text: str, structured: dict[str, Any]) -> str:
     """Build the journal entry body. Pre-gateway parity for decision/reflect.
 
     For scopes that have a structured shape (``decision``, ``reflect``), append
-    a markdown section for each populated field. Other scopes return ``text``
-    unchanged. The original ``text`` always lands first so consumers that
-    only render flat content still see the summary line.
+    a markdown section for each populated field. ``decision.options`` is
+    rendered as named blocks with Pros/Cons (pre-gateway DecisionOption shape).
+    Other scopes return ``text`` unchanged. The original ``text`` always lands
+    first so flat-content consumers still see the summary line.
     """
     sections = (
         _DECISION_SECTIONS
@@ -86,7 +102,11 @@ def _render_journal_content(scope: str, text: str, structured: dict[str, Any]) -
         value = structured.get(key)
         if value is None:
             continue
-        if isinstance(value, list):
+        if key == "options" and isinstance(value, list):
+            if not value:
+                continue
+            rendered = "\n\n".join(_render_option_block(o) for o in value)
+        elif isinstance(value, list):
             if not value:
                 continue
             rendered = "\n".join(f"- {item}" for item in value)
@@ -96,6 +116,60 @@ def _render_journal_content(scope: str, text: str, structured: dict[str, Any]) -
                 continue
         body_parts.append(f"## {label}\n{rendered}")
     return "\n\n".join(body_parts) if body_parts else text
+
+
+# Pre-gateway `DecisionLogInput.options` enforced `min_length=2`. Same here.
+_MIN_DECISION_OPTIONS = 2
+
+
+def _check_scope_required_fields(
+    scope: str, structured: dict[str, Any]
+) -> tuple[list[str], dict[str, str]]:
+    """Pre-gateway parity: decision/reflect scopes required structured fields.
+
+    Returns (missing_field_names, field_hints) — both empty when satisfied.
+    """
+    if scope == "decision":
+        decision_required: tuple[tuple[str, str], ...] = (
+            ("context", "What situation led to this decision"),
+            ("options", "At least 2 alternatives considered as list[{name,pros,cons}]"),
+            ("chosen", "Which option you took"),
+            ("rationale", "Why this option (cite trade-offs)"),
+        )
+        missing: list[str] = []
+        hints: dict[str, str] = {}
+        for field, hint in decision_required:
+            value = structured.get(field)
+            if field == "options":
+                if (
+                    not isinstance(value, list)
+                    or len(value) < _MIN_DECISION_OPTIONS
+                ):
+                    missing.append(field)
+                    hints[field] = (
+                        "options must be a list of at least 2 dicts with "
+                        "shape {name: str, pros: str, cons: str}"
+                    )
+                continue
+            if not value or not str(value).strip():
+                missing.append(field)
+                hints[field] = hint
+        return missing, hints
+    if scope == "reflect":
+        reflect_required: tuple[tuple[str, str], ...] = (
+            ("what_done", "Literal output: what shipped, where (file:line / commit)"),
+            ("what_learned", "New info you didn't have before"),
+            ("what_struggled", "Where you got stuck (even briefly)"),
+        )
+        missing = []
+        hints = {}
+        for field, hint in reflect_required:
+            value = structured.get(field)
+            if not value or not str(value).strip():
+                missing.append(field)
+                hints[field] = hint
+        return missing, hints
+    return [], {}
 
 
 def _ownership_violation(task_id: UUID) -> Envelope:
@@ -279,6 +353,19 @@ class ContentActions:
             if t is not None:
                 task_id = t.id
         s = structured or {}
+        # Pre-gateway parity: decision and reflect scopes had required fields.
+        missing, hints = _check_scope_required_fields(scope, s)
+        if missing:
+            return Envelope.incomplete_input(
+                missing=missing,
+                field_hints=hints,
+                remediate=(
+                    f"re-issue note(scope={scope!r}, ...) with these fields "
+                    f"filled: {', '.join(missing)}. Pre-gateway parity — these "
+                    f"populate the panel's {scope.capitalize()}s view."
+                ),
+                context_briefing={},
+            )
         title = (s.get("title") or text.split("\n", 1)[0])[:200]
         content = _render_journal_content(scope, text, s)
         await self.journal.write_entry(
@@ -757,6 +844,39 @@ class ContentActions:
                 "body": n.body,
                 "requires_ack": n.requires_ack,
                 "from_agent": str(n.from_agent) if n.from_agent else None,
+            },
+            context_briefing={},
+        )
+
+    async def channels(self, *, agent_id: UUID) -> Envelope:
+        """Return the channels this agent can read / write.
+
+        Pre-gateway parity for ``roboco_channel_list``. Stops the
+        invented-channel-slug pattern (e.g. ``backend-dev``, ``backend``)
+        observed on smoke runs — the LLM sees the closed set in the
+        response and can pattern-match valid slugs from it.
+        """
+        from roboco.enforcement.channel_access import get_agent_channels
+
+        agent = await self.task.agent_for(agent_id)
+        slug = getattr(agent, "slug", "") or ""
+        if not slug:
+            return Envelope.not_found(
+                message=f"agent {agent_id} not in registry",
+            )
+        readable = sorted(get_agent_channels(slug, action="read"))
+        writable = sorted(get_agent_channels(slug, action="write"))
+        return Envelope.ok(
+            status="ok",
+            task_id=None,
+            next="continue",
+            evidence={
+                "writable": writable,
+                "readable": readable,
+                "note": (
+                    "Use the slug verbatim (no leading '#'). Inventing slugs "
+                    "returns 'Channel not found'."
+                ),
             },
             context_briefing={},
         )

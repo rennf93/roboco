@@ -96,6 +96,10 @@ class IWillPlanRequest(BaseModel):
     # shows Approach / Sub-Tasks / Technical Considerations / Risks /
     # Open Questions instead of an empty pane. Pre-gateway parity.
     approach: str = ""
+    sub_tasks: list[dict[str, str]] = Field(
+        default_factory=list,
+        description="List of {title, description} — server assigns id + order",
+    )
     technical_considerations: list[str] = Field(default_factory=list)
     risks: list[dict[str, str]] = Field(default_factory=list)
     open_questions: list[dict[str, str | bool]] = Field(default_factory=list)

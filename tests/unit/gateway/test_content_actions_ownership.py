@@ -133,10 +133,13 @@ async def test_note_with_task_id_allows_when_assignee() -> None:
     deps = _make_deps(task=task_svc, journal=journal_svc)
     ca = ContentActions(deps)
 
+    # Uses scope='note' (no structured-field requirement) — the test
+    # exercises the ownership gate, not the journal-shape gate (which is
+    # covered separately in test_content_actions.py).
     env = await ca.note(
         agent_id=agent_id,
-        text="Reflecting on my own task",
-        scope="reflect",
+        text="Working on my own task",
+        scope="note",
         task_id=task_id,
     )
     assert env.error is None
@@ -155,8 +158,8 @@ async def test_note_without_task_id_skips_ownership_check() -> None:
 
     env = await ca.note(
         agent_id=agent_id,
-        text="A general reflection note with enough length",
-        scope="reflect",
+        text="A general note with enough length",
+        scope="note",
     )
     assert env.error is None
     journal_svc.write_entry.assert_awaited_once()

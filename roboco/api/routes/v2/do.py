@@ -8,6 +8,7 @@ from fastapi import APIRouter, Depends, Header, Request
 from roboco.api.deps import get_content_actions
 from roboco.api.routes.v2._role_dep import envelope_to_response
 from roboco.api.schemas.v2.do import (
+    ChannelsRequest,
     CommitRequest,
     DmRequest,
     EvidenceRequest,
@@ -230,4 +231,15 @@ async def do_notify_ack(
         agent_id=x_agent_id,
         notification_id=body.notification_id,
     )
+    return envelope_to_response(env, request)
+
+
+@router.post("/channels")
+async def do_channels(
+    request: Request,
+    _body: ChannelsRequest,
+    x_agent_id: _AgentIdHeader,
+    actions: _ContentActionsDep,
+) -> dict:
+    env = await actions.channels(agent_id=x_agent_id)
     return envelope_to_response(env, request)

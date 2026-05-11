@@ -57,6 +57,7 @@ async def i_will_plan(
         body.plan,
         rich_plan={
             "approach": body.approach,
+            "sub_tasks": body.sub_tasks,
             "technical_considerations": body.technical_considerations,
             "risks": body.risks,
             "open_questions": body.open_questions,
