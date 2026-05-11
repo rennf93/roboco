@@ -200,6 +200,10 @@ class ContentActionsDeps:
     journal: Any
     workspace: Any
     notifications: Any
+    # Wave 1 added inbox-read verbs (notify_list/get/ack) that live on
+    # `NotificationDeliveryService`, not `NotificationService`. Keeping
+    # them separate so the sender vs receiver concerns stay split.
+    notification_delivery: Any = None
 
 
 _VALID_NOTIFY_PRIORITIES: frozenset[str] = frozenset(p.value for p in _comms.Priority)
@@ -788,7 +792,7 @@ class ContentActions:
         the verb is documented to soft-block on unread notifications, but
         previously there was no way for the agent to read or acknowledge them.
         """
-        items = await self.notifications.list_for_agent(
+        items = await self._deps.notification_delivery.list_for_agent(
             agent_id=agent_id,
             unread_only=unread_only,
             pending_ack_only=pending_ack_only,
@@ -824,7 +828,7 @@ class ContentActions:
     ) -> Envelope:
         """Read one notification (also marks it read)."""
         try:
-            n = await self.notifications.get_for_recipient_and_mark_read(
+            n = await self._deps.notification_delivery.get_for_recipient_and_mark_read(
                 notification_id=notification_id,
                 agent_id=agent_id,
             )
@@ -892,7 +896,7 @@ class ContentActions:
         Returns ``not_authorized`` if the caller isn't a recipient.
         """
         try:
-            n = await self.notifications.acknowledge(
+            n = await self._deps.notification_delivery.acknowledge(
                 notification_id=notification_id,
                 agent_id=agent_id,
                 ack_type="received",
