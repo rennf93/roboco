@@ -65,3 +65,59 @@ class NotifyRequest(BaseModel):
 
 class EvidenceRequest(BaseModel):
     task_id: UUID
+
+
+# =============================================================================
+# Wave 1 — Pre-gateway parity restoration
+# =============================================================================
+
+
+class OpenSessionRequest(BaseModel):
+    """PM creates a discussion session for one or more tasks.
+
+    Pre-gateway parity for `roboco_session_create_for_tasks`. Populates the
+    panel's Sessions tab.
+    """
+
+    task_id: UUID
+    channel: str = Field(..., min_length=1)
+    topic: str = Field(..., min_length=1, max_length=200)
+    relationship_type: str = "discussion"  # discussion|planning|review|retrospective
+    group_id: UUID | None = None
+
+
+class LinkSessionRequest(BaseModel):
+    """Link an existing session to a task. Idempotent."""
+
+    session_id: UUID
+    task_id: UUID
+    is_primary: bool = False
+    relationship_type: str = "discussion"
+
+
+class ProgressRequest(BaseModel):
+    """Narrative progress update with 0..100 percentage.
+
+    Pre-gateway parity for `roboco_task_progress`. Populates the panel's
+    Progress tab.
+    """
+
+    task_id: UUID
+    message: str = Field(..., min_length=1)
+    percentage: int = Field(..., ge=0, le=100)
+
+
+class NotifyListRequest(BaseModel):
+    """Read this agent's notification inbox."""
+
+    unread_only: bool = True
+    pending_ack_only: bool = False
+    limit: int = Field(default=20, ge=1, le=100)
+
+
+class NotifyGetRequest(BaseModel):
+    notification_id: UUID
+
+
+class NotifyAckRequest(BaseModel):
+    notification_id: UUID

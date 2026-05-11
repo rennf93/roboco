@@ -13,7 +13,7 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, ClassVar
 
 from roboco.foundation.policy import communications as _comms
 from roboco.foundation.policy.journaling import Scope as _Scope
@@ -516,6 +516,282 @@ class ContentActions:
             task_id=str(task_id),
             next="continue",
             evidence=ev.as_dict(),
+            context_briefing={},
+        )
+
+    # =========================================================================
+    # Wave 1 — pre-gateway parity restoration
+    # =========================================================================
+
+    _SESSION_OPENER_ROLES: ClassVar[frozenset[str]] = frozenset(
+        {"cell_pm", "main_pm", "product_owner", "head_marketing", "ceo"}
+    )
+
+    async def progress(
+        self,
+        *,
+        agent_id: UUID,
+        task_id: UUID,
+        message: str,
+        percentage: int,
+    ) -> Envelope:
+        """Append a narrative progress update (pre-gateway parity).
+
+        Caller must be the task's assignee and the task must be in an
+        active status — these are the same constraints the pre-gateway
+        `roboco_task_progress` handler enforced.
+        """
+        active = {
+            "in_progress",
+            "verifying",
+            "awaiting_qa",
+            "awaiting_documentation",
+        }
+        t = await self.task.get(task_id)
+        if t is None:
+            return Envelope.not_found(message=f"task {task_id} not found")
+        if t.assigned_to != agent_id:
+            return _ownership_violation(task_id)
+        if str(t.status) not in active:
+            return Envelope.invalid_state(
+                message=(
+                    f"task is in {t.status!r}; progress updates only valid "
+                    f"in active statuses ({sorted(active)})"
+                ),
+                remediate=(
+                    "use evidence(task_id) to re-read state; if you're past "
+                    "i_am_done, the run has moved on — call i_am_idle()"
+                ),
+                context_briefing={},
+            )
+        await self.task.add_progress(
+            task_id=task_id,
+            agent_id=agent_id,
+            message=message,
+            percentage=percentage,
+        )
+        return Envelope.ok(
+            status=str(t.status),
+            task_id=str(task_id),
+            next="continue",
+            context_briefing={},
+        )
+
+    async def open_session(
+        self,
+        *,
+        agent_id: UUID,
+        task_id: UUID,
+        channel: str,
+        topic: str,
+        relationship_type: str = "discussion",
+        group_id: UUID | None = None,
+    ) -> Envelope:
+        """PM-or-up creates a discussion session linked to a task.
+
+        Pre-gateway parity for `roboco_session_create_for_tasks`. The
+        underlying service de-duplicates: if an ancestor of this task
+        already has a primary session in the same channel, it reuses
+        that session instead of opening a new one.
+        """
+        from roboco.api.schemas.sessions import SessionForTasksCreateRequest
+
+        agent = await self.task.agent_for(agent_id)
+        role_str = str(agent.role) if agent is not None else ""
+        if role_str not in self._SESSION_OPENER_ROLES:
+            return Envelope.not_authorized(
+                message=(
+                    f"role {role_str!r} cannot open sessions; PM roles only"
+                ),
+                remediate=(
+                    "ask your PM to open_session for you, or escalate_up if "
+                    "no session exists for the work you need to discuss"
+                ),
+                context_briefing={},
+            )
+        req = SessionForTasksCreateRequest(
+            task_ids=[task_id],
+            channel_slug=channel,
+            relationship_type=relationship_type,
+            group_id=group_id,
+        )
+        # ``topic`` isn't part of SessionForTasksCreateRequest yet — pre-gateway
+        # the session topic was implicit (group name). For now we attach it to
+        # the envelope so the panel + journal can surface it; threading it
+        # into the session row is Wave 2 work.
+        _ = topic
+        session, links = await self.messaging.create_session_for_tasks(
+            req=req, pm_agent_id=agent_id
+        )
+        return Envelope.ok(
+            status="session_open",
+            task_id=str(task_id),
+            next="continue",
+            evidence={
+                "session_id": str(session.id),
+                "channel": channel,
+                "topic": topic,
+                "link_count": len(links),
+            },
+            context_briefing={},
+        )
+
+    async def link_session(
+        self,
+        *,
+        agent_id: UUID,
+        session_id: UUID,
+        task_id: UUID,
+        is_primary: bool = False,
+        relationship_type: str = "discussion",
+    ) -> Envelope:
+        """Link an existing session to a task (idempotent).
+
+        Caller must own the task — prevents cross-agent session-link spam.
+        """
+        from roboco.models.session import SessionTaskRelationshipType
+
+        t = await self.task.get(task_id)
+        if t is None:
+            return Envelope.not_found(message=f"task {task_id} not found")
+        if t.assigned_to is not None and t.assigned_to != agent_id:
+            return _ownership_violation(task_id)
+        try:
+            rel = SessionTaskRelationshipType(relationship_type)
+        except ValueError:
+            return Envelope.invalid_state(
+                message=(
+                    f"invalid relationship_type {relationship_type!r}"
+                ),
+                remediate=(
+                    "use one of: discussion | planning | review | retrospective"
+                ),
+                context_briefing={},
+            )
+        link = await self.messaging.link_session_to_task(
+            session_id=session_id,
+            task_id=task_id,
+            added_by=agent_id,
+            is_primary=is_primary,
+            relationship_type=rel,
+        )
+        return Envelope.ok(
+            status="session_linked",
+            task_id=str(task_id),
+            next="continue",
+            evidence={
+                "session_id": str(session_id),
+                "link_id": str(link.id),
+                "is_primary": is_primary,
+            },
+            context_briefing={},
+        )
+
+    async def notify_list(
+        self,
+        *,
+        agent_id: UUID,
+        unread_only: bool = True,
+        pending_ack_only: bool = False,
+        limit: int = 20,
+    ) -> Envelope:
+        """Read this agent's notification inbox.
+
+        Closes the pre-gateway parity gap that left `i_am_idle()` deadlocked:
+        the verb is documented to soft-block on unread notifications, but
+        previously there was no way for the agent to read or acknowledge them.
+        """
+        items = await self.notifications.list_for_agent(
+            agent_id=agent_id,
+            unread_only=unread_only,
+            pending_ack_only=pending_ack_only,
+            type_filter=None,
+            limit=limit,
+        )
+        notifications = [
+            {
+                "id": str(n.id),
+                "type": str(n.type),
+                "priority": str(n.priority),
+                "subject": n.subject,
+                "body": n.body,
+                "requires_ack": n.requires_ack,
+                "timestamp": n.timestamp.isoformat() if n.timestamp else None,
+                "from_agent": str(n.from_agent) if n.from_agent else None,
+            }
+            for n in items
+        ]
+        return Envelope.ok(
+            status="ok",
+            task_id=None,
+            next="continue",
+            evidence={"notifications": notifications, "count": len(notifications)},
+            context_briefing={},
+        )
+
+    async def notify_get(
+        self,
+        *,
+        agent_id: UUID,
+        notification_id: UUID,
+    ) -> Envelope:
+        """Read one notification (also marks it read)."""
+        try:
+            n = await self.notifications.get_for_recipient_and_mark_read(
+                notification_id=notification_id,
+                agent_id=agent_id,
+            )
+        except Exception:
+            return Envelope.not_found(
+                message=f"notification {notification_id} not found"
+            )
+        return Envelope.ok(
+            status="ok",
+            task_id=None,
+            next="continue",
+            evidence={
+                "id": str(n.id),
+                "type": str(n.type),
+                "priority": str(n.priority),
+                "subject": n.subject,
+                "body": n.body,
+                "requires_ack": n.requires_ack,
+                "from_agent": str(n.from_agent) if n.from_agent else None,
+            },
+            context_briefing={},
+        )
+
+    async def notify_ack(
+        self,
+        *,
+        agent_id: UUID,
+        notification_id: UUID,
+    ) -> Envelope:
+        """Acknowledge a notification.
+
+        Returns ``not_authorized`` if the caller isn't a recipient.
+        """
+        try:
+            n = await self.notifications.acknowledge(
+                notification_id=notification_id,
+                agent_id=agent_id,
+                ack_type="received",
+            )
+        except ValueError as exc:
+            return Envelope.not_authorized(
+                message=str(exc),
+                remediate="only recipients of a notification can ack it",
+                context_briefing={},
+            )
+        if n is None:
+            return Envelope.not_found(
+                message=f"notification {notification_id} not found"
+            )
+        return Envelope.ok(
+            status="acked",
+            task_id=None,
+            next="continue",
+            evidence={"id": str(notification_id), "acked": True},
             context_briefing={},
         )
 
