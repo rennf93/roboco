@@ -230,6 +230,21 @@ class StreamEventBus:
 
             except asyncio.CancelledError:
                 break
+            except ResponseError as e:
+                # NOGROUP: consumer group disappeared (e.g. Redis FLUSHALL by
+                # an external cleanup while the orchestrator is still up).
+                # Re-bootstrap the groups so we self-heal instead of spamming
+                # the same error every block-cycle.
+                if "NOGROUP" in str(e):
+                    logger.warning(
+                        "Stream consumer group missing; recreating",
+                        group=self.group_name,
+                    )
+                    for stream in streams:
+                        await self._ensure_consumer_group(stream)
+                    continue
+                logger.error("Error in stream event loop", error=str(e))
+                await asyncio.sleep(1)
             except Exception as e:
                 logger.error("Error in stream event loop", error=str(e))
                 await asyncio.sleep(1)

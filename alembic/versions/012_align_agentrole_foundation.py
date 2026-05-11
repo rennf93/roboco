@@ -5,7 +5,7 @@ enum values cannot be removed without a destructive recreation, so the
 inverse direction (postgres has extras the foundation lacks) is handled
 in foundation by keeping the legacy value (e.g., Team.MARKETING).
 
-Revision ID: 012_align_agentrole_team_with_foundation
+Revision ID: 012_align_agentrole_foundation
 Revises: 011_drop_quarantined_state
 Create Date: 2026-05-10
 """
@@ -14,7 +14,7 @@ from __future__ import annotations
 
 from alembic import context, op
 
-revision = "012_align_agentrole_team_with_foundation"
+revision = "012_align_agentrole_foundation"
 down_revision = "011_drop_quarantined_state"
 branch_labels = None
 depends_on = None

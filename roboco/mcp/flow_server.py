@@ -331,20 +331,44 @@ def i_will_plan(task_id: str, plan: str) -> dict[str, Any]:
 
 
 def delegate(
-    parent_task_id: str, title: str, description: str, body: dict
+    parent_task_id: str,
+    title: str,
+    description: str,
+    assigned_to: str,
+    team: str,
+    task_type: str,
+    nature: str,
+    acceptance_criteria: list[str],
+    estimated_complexity: str = "medium",
 ) -> dict[str, Any]:
     """PM: create a subtask of parent_task_id.
 
-    Required body keys: ``assigned_to``, ``team``. Optional: ``task_type``,
-    ``acceptance_criteria``, ``estimated_complexity``.
+    Args:
+        parent_task_id: UUID of the parent task.
+        title: Short imperative title.
+        description: Multi-paragraph description with context (>=20 chars).
+        assigned_to: Agent slug receiving the task (e.g. "be-dev-1").
+        team: One of "backend" | "frontend" | "ux_ui" | "board" | "main_pm".
+        task_type: One of "code" | "documentation" | "research" | "planning"
+            | "design" | "administrative".
+        nature: One of "technical" | "non_technical".
+        acceptance_criteria: Non-empty list of verifiable outcome strings.
+        estimated_complexity: One of "low" | "medium" | "high". Default "medium".
     """
-    payload: dict[str, Any] = {
-        "parent_task_id": parent_task_id,
-        "title": title,
-        "description": description,
-    }
-    payload.update(body)
-    return _post(_role_path("delegate"), payload)
+    return _post(
+        _role_path("delegate"),
+        {
+            "parent_task_id": parent_task_id,
+            "title": title,
+            "description": description,
+            "assigned_to": assigned_to,
+            "team": team,
+            "task_type": task_type,
+            "nature": nature,
+            "acceptance_criteria": acceptance_criteria,
+            "estimated_complexity": estimated_complexity,
+        },
+    )
 
 
 def submit_up(task_id: str, notes: str) -> dict[str, Any]:

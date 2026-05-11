@@ -158,7 +158,11 @@ select = [
 
 # Lazy imports to avoid circular dependencies
 [tool.ruff.lint.per-file-ignores]
-"roboco/mcp/**/*.py" = ["PLC0415"]
+# MCP tool surfaces ARE the LLM-facing contract — every parameter must be
+# top-level + typed so the SDK exposes it as a discrete schema field with
+# enum constraints. Bundling into a dataclass would hide enum hints from
+# the LLM and bring back invented values like nature='standard'.
+"roboco/mcp/**/*.py" = ["PLC0415", "PLR0913"]
 "roboco/services/*.py" = ["PLC0415"]
 "roboco/api/routes/*.py" = ["PLC0415"]
 "roboco/runtime/*.py" = ["PLC0415"]
