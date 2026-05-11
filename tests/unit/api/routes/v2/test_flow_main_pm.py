@@ -230,7 +230,7 @@ async def test_delegate_to_cell_pm_dispatches_inputs_bundle() -> None:
             "assigned_to": "be-pm",
             "team": "backend",
             "task_type": "planning",
-            "nature": "feature",
+            "nature": "technical",
             "estimated_complexity": "high",
             "acceptance_criteria": [
                 "all subtasks created with acceptance criteria",

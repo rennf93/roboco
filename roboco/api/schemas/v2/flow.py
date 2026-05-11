@@ -2,7 +2,7 @@
 
 from uuid import UUID
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 
 class GiveMeWorkRequest(BaseModel):
@@ -132,6 +132,54 @@ class DelegateRequest(BaseModel):
     # acceptance_criteria is required and non-empty; downstream policy
     # also denylist-checks each item against placeholder phrases.
     acceptance_criteria: list[str] = Field(..., min_length=1)
+
+    # Pre-gateway parity: cross-field validators that catch the most common
+    # LLM-vs-schema confusions. Pre-gateway lived in
+    # roboco/mcp/schemas/__init__.py::TaskCreateInput at 0c3d15a.
+    @field_validator("estimated_complexity", mode="before")
+    @classmethod
+    def _complexity_must_be_string(cls, v: object) -> object:
+        """Reject ints — agents sometimes send 1/2/3 thinking it's priority."""
+        if isinstance(v, int) and not isinstance(v, bool):
+            raise ValueError(
+                f"estimated_complexity must be a string "
+                f"(low|medium|high|critical), got int {v!r}. "
+                f"Priority is not a delegate parameter — drop it."
+            )
+        if isinstance(v, str) and v.lower() not in {
+            "low", "medium", "high", "critical",
+        }:
+            raise ValueError(
+                f"estimated_complexity must be one of: low, medium, high, "
+                f"critical. Got {v!r}."
+            )
+        return v
+
+    @field_validator("nature", mode="before")
+    @classmethod
+    def _nature_must_be_known(cls, v: object) -> object:
+        """Reject invented nature values (e.g., 'standard') with the enum hint."""
+        if isinstance(v, str) and v.lower() not in {"technical", "non_technical"}:
+            raise ValueError(
+                f"nature must be one of: technical | non_technical. Got {v!r}. "
+                f"This was the 2026-05-11 'standard' regression — drop the "
+                f"invented value and use the enum."
+            )
+        return v
+
+    @field_validator("task_type", mode="before")
+    @classmethod
+    def _task_type_must_be_known(cls, v: object) -> object:
+        """Reject invented task_type values with the enum hint."""
+        if isinstance(v, str) and v.lower() not in {
+            "code", "documentation", "research",
+            "planning", "design", "administrative",
+        }:
+            raise ValueError(
+                f"task_type must be one of: code | documentation | research | "
+                f"planning | design | administrative. Got {v!r}."
+            )
+        return v
 
 
 class SubmitUpRequest(BaseModel):

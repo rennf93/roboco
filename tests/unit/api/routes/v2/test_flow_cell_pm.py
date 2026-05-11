@@ -259,7 +259,7 @@ async def test_delegate_dispatches_inputs_bundle() -> None:
             "assigned_to": "be-dev-1",
             "team": "backend",
             "task_type": "code",
-            "nature": "feature",
+            "nature": "technical",
             "estimated_complexity": "medium",
             "acceptance_criteria": ["GET /v1/foo returns 200 with body"],
         },
