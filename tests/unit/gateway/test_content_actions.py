@@ -286,7 +286,8 @@ async def test_note_reflect_missing_required_fields_returns_incomplete_input() -
     body = env.as_dict()
 
     assert body["error"] == "incomplete_input"
-    assert {"what_done", "what_learned", "what_struggled"}.issubset(set(body["missing"]))
+    missing = set(body["missing"])
+    assert {"what_done", "what_learned", "what_struggled"}.issubset(missing)
     journal_svc.write_entry.assert_not_awaited()
 
 

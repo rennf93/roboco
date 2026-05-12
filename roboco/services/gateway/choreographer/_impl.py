@@ -2045,14 +2045,22 @@ class Choreographer:
             verb_name="i_will_plan",
         )
         # Re-entry check runs first — a respawned PM with thin args ("resume",
-        # no sub_tasks) must short-circuit here before the sub_tasks gate.
+        # no sub_tasks) must short-circuit here before any gate.
         if reentry := await self._handle_pm_reentry(
             ctx, t, pm_agent_id, task_id, role_str, briefing
         ):
             return reentry
-        # Gate runs only for initial-claim paths (not re-entry).
-        # PMs decompose; their plan MUST include approach + at least one sub_task.
-        # Devs execute; sub_tasks list can be empty (their plan is execution-shaped).
+        # Lifecycle spec gate runs BEFORE the sub_tasks gate so wrong-state
+        # cases (e.g., task in backlog/claimed/completed) return invalid_state
+        # — the lifecycle's verdict — instead of being masked by the
+        # PM-decomposition check. Parity test
+        # `test_lifecycle_consumer_parity.py::test_i_will_plan_matches_spec`
+        # asserts this order.
+        if rejection := await self._claim_plan_start_gate(ctx, role, spec_ctx):
+            return rejection
+        # Spec gate passed; now enforce the verb-specific PM-decomposition
+        # contract. PMs decompose; their plan MUST include approach + at
+        # least one sub_task. Devs execute; sub_tasks may be empty.
         if rejection := await self._pm_sub_tasks_gate(
             role_str=role_str,
             rich_plan=rich_plan,
@@ -2061,8 +2069,6 @@ class Choreographer:
             task_id=task_id,
             briefing=briefing,
         ):
-            return rejection
-        if rejection := await self._claim_plan_start_gate(ctx, role, spec_ctx):
             return rejection
         envelope = await self._claim_plan_start_run(ctx, agent, spec_ctx)
         return await self._post_claim_journal_gate(

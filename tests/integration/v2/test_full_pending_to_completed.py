@@ -173,11 +173,16 @@ class _MockContentActions:
         text: object,
         scope: str = "note",
         task_id: object = None,
+        structured: object = None,
     ) -> Envelope:
+        # `structured` mirrors the Wave 2 G4 production signature (panel
+        # decision/reflect fields). The mock ignores it — the test asserts
+        # lifecycle transitions, not journal-entry rendering.
         _ = agent_id
         _ = text
         _ = scope
         _ = task_id
+        _ = structured
         return Envelope.ok(status="noted", task_id=None, next="continue")
 
 
