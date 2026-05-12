@@ -1519,9 +1519,7 @@ class AgentOrchestrator:
         return cmd
 
     @staticmethod
-    def _append_claude_json_mount(
-        cmd: list[str], hosts: dict[str, str | None]
-    ) -> None:
+    def _append_claude_json_mount(cmd: list[str], hosts: dict[str, str | None]) -> None:
         """Mount host's ~/.claude.json sibling FILE if present (audit D-48)."""
         claude_dir = hosts["claude"]
         if not claude_dir:

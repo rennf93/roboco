@@ -2424,9 +2424,7 @@ class Choreographer:
             pm_agent_id, parent_task_id, parent
         )
 
-    _TERMINAL_STATUSES: ClassVar[frozenset[str]] = frozenset(
-        {"completed", "cancelled"}
-    )
+    _TERMINAL_STATUSES: ClassVar[frozenset[str]] = frozenset({"completed", "cancelled"})
     _SPINE_TASK_TYPES: ClassVar[frozenset[str]] = frozenset(
         {"code", "planning", "documentation"}
     )
