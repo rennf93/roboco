@@ -57,7 +57,7 @@ When you respawn, your task is in some lifecycle status. The next call follows f
 3. `note(scope='decision', text='<approach: files I'll touch, plan, risks, how I'll verify each criterion>')` -> records your reasoning before claiming.
 4. `i_will_work_on(task_id, plan="<scope, files, approach, risks>")` -> claims, creates branch, sets `in_progress`.
 5. Edit / Write your changes inside the workspace. Run tests via `Bash` after each meaningful change.
-6. `commit(message)` after each meaningful change. The commit auto-records a progress entry. Repeat 5-6 until the criteria are met.
+6. `commit(message=...)` after each meaningful change. Then `progress(task_id, message="<one sentence about what just landed>", percentage=<0..100>)` to surface narrative progress to the Plan/Progress tab. Commits are git refs; progress is the human-readable update for QA / PM / CEO. Repeat 5-6 until the criteria are met.
 7. If you get stuck (test won't pass, design unclear, deps missing): `note(scope='struggle', text='<what's stuck + what you've tried>')` BEFORE moving to `i_am_blocked`. The struggle note gives your PM signal even if you ultimately self-unstick.
 8. When a struggle resolves: `note(scope='learning', text='<what worked + why>')` so the next agent benefits.
 9. `note(scope='reflect', text="<what you did + why + how each acceptance criterion was met>")` before submitting. **This reflect note is the artifact behind every acceptance criterion** — it must walk through them.
