@@ -50,6 +50,18 @@ from roboco.models.base import (
 from roboco.models.session import SessionScope
 from roboco.models.work_session import WorkSessionStatus
 
+# Python class name → canonical postgres enum name (only the cases where
+# the lowercased class name does NOT match the migration's `name=...`).
+# Audited from alembic/versions/*.py — every other StrEnum uses
+# lower(class_name), so we default to that.
+_PG_ENUM_NAME_OVERRIDES: dict[str, str] = {
+    # The foundation's `Role` class binds to the postgres `agentrole` enum
+    # (see alembic 001 + 012). Without this override, SQLAlchemy infers
+    # `role` from the class name, producing the `operator does not exist:
+    # agentrole = role` regression that smoke run 2 hit.
+    "Role": "agentrole",
+}
+
 
 def _str_enum(enum_cls: type) -> Enum:
     """SQLAlchemy Enum that serializes by `.value` (lowercase) for StrEnum types.
@@ -57,8 +69,19 @@ def _str_enum(enum_cls: type) -> Enum:
     Matches the lowercase values declared in alembic/versions/001_initial_schema.py.
     Without values_callable, SQLAlchemy uses `.name` (uppercase) which does not
     match the alembic-declared enum members.
+
+    The `name=` is pinned to the canonical postgres enum name so that
+    ``Base.metadata.create_all`` (test setup) produces the same enum
+    types the migrations create. Default is ``lower(class_name)`` —
+    matches every alembic migration's name=...; the only override is
+    ``Role`` → ``agentrole`` (E2 fix).
     """
-    return Enum(enum_cls, values_callable=lambda obj: [m.value for m in obj])
+    name = _PG_ENUM_NAME_OVERRIDES.get(enum_cls.__name__, enum_cls.__name__.lower())
+    return Enum(
+        enum_cls,
+        name=name,
+        values_callable=lambda obj: [m.value for m in obj],
+    )
 
 
 # =============================================================================

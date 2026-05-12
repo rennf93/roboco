@@ -218,7 +218,9 @@ async def test_i_will_plan_rejects_non_pending_state() -> None:
     pm_id = uuid4()
     task_id = uuid4()
     task_svc = AsyncMock()
-    task_svc.get.return_value = MagicMock(id=task_id, status="in_progress", assigned_to=uuid4())
+    task_svc.get.return_value = MagicMock(
+        id=task_id, status="in_progress", assigned_to=uuid4()
+    )
     task_svc.agent_for.return_value = MagicMock(role="cell_pm", team="backend")
     deps = _make_deps(task=task_svc)
     c = Choreographer(deps)
@@ -392,8 +394,13 @@ async def test_i_will_plan_idempotent_when_already_in_progress_for_caller() -> N
         task_id,
         plan="re-entry plan",
         rich_plan={
-            "approach": "Idempotent re-entry: task already in progress, refresh heartbeat.",
-            "sub_tasks": [{"title": "Re-entry subtask", "description": "Resume work"}],
+            "approach": (
+                "Idempotent re-entry: task already in progress, "
+                "refresh heartbeat."
+            ),
+            "sub_tasks": [
+                {"title": "Re-entry subtask", "description": "Resume work"}
+            ],
         },
     )
 
@@ -451,8 +458,13 @@ async def test_i_will_plan_recovery_when_already_claimed_for_caller() -> None:
         task_id,
         plan="re-entry plan",
         rich_plan={
-            "approach": "Recovery re-entry: task claimed but not started; run set_plan + start.",
-            "sub_tasks": [{"title": "Recovery subtask", "description": "Resume from claimed"}],
+            "approach": (
+                "Recovery re-entry: task claimed but not started; "
+                "run set_plan + start."
+            ),
+            "sub_tasks": [
+                {"title": "Recovery subtask", "description": "Resume from claimed"}
+            ],
         },
     )
 
