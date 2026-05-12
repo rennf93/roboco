@@ -120,51 +120,68 @@ def _render_journal_content(scope: str, text: str, structured: dict[str, Any]) -
 _MIN_DECISION_OPTIONS = 2
 
 
+_DECISION_REQUIRED: tuple[tuple[str, str], ...] = (
+    ("context", "What situation led to this decision"),
+    ("options", "At least 2 alternatives considered as list[{name,pros,cons}]"),
+    ("chosen", "Which option you took"),
+    ("rationale", "Why this option (cite trade-offs)"),
+)
+
+_REFLECT_REQUIRED: tuple[tuple[str, str], ...] = (
+    ("what_done", "Literal output: what shipped, where (file:line / commit)"),
+    ("what_learned", "New info you didn't have before"),
+    ("what_struggled", "Where you got stuck (even briefly)"),
+)
+
+_OPTIONS_HINT = (
+    "options must be a list of at least 2 dicts with "
+    "shape {name: str, pros: str, cons: str}"
+)
+
+
+def _options_field_missing(value: Any) -> bool:
+    """True when decision.options is absent or under the minimum count."""
+    return not isinstance(value, list) or len(value) < _MIN_DECISION_OPTIONS
+
+
+def _scalar_field_missing(value: Any) -> bool:
+    """True when a required scalar/text field is empty/whitespace."""
+    return not value or not str(value).strip()
+
+
+def _collect_required(
+    required: tuple[tuple[str, str], ...], structured: dict[str, Any]
+) -> tuple[list[str], dict[str, str]]:
+    """Walk a (field, hint) table and collect missing fields with hints."""
+    missing: list[str] = []
+    hints: dict[str, str] = {}
+    for field, hint in required:
+        value = structured.get(field)
+        if field == "options":
+            if _options_field_missing(value):
+                missing.append(field)
+                hints[field] = _OPTIONS_HINT
+            continue
+        if _scalar_field_missing(value):
+            missing.append(field)
+            hints[field] = hint
+    return missing, hints
+
+
+_SCOPE_REQUIRED: dict[str, tuple[tuple[str, str], ...]] = {
+    "decision": _DECISION_REQUIRED,
+    "reflect": _REFLECT_REQUIRED,
+}
+
+
 def _check_scope_required_fields(
     scope: str, structured: dict[str, Any]
 ) -> tuple[list[str], dict[str, str]]:
-    """Pre-gateway parity: decision/reflect scopes required structured fields.
-
-    Returns (missing_field_names, field_hints) — both empty when satisfied.
-    """
-    if scope == "decision":
-        decision_required: tuple[tuple[str, str], ...] = (
-            ("context", "What situation led to this decision"),
-            ("options", "At least 2 alternatives considered as list[{name,pros,cons}]"),
-            ("chosen", "Which option you took"),
-            ("rationale", "Why this option (cite trade-offs)"),
-        )
-        missing: list[str] = []
-        hints: dict[str, str] = {}
-        for field, hint in decision_required:
-            value = structured.get(field)
-            if field == "options":
-                if not isinstance(value, list) or len(value) < _MIN_DECISION_OPTIONS:
-                    missing.append(field)
-                    hints[field] = (
-                        "options must be a list of at least 2 dicts with "
-                        "shape {name: str, pros: str, cons: str}"
-                    )
-                continue
-            if not value or not str(value).strip():
-                missing.append(field)
-                hints[field] = hint
-        return missing, hints
-    if scope == "reflect":
-        reflect_required: tuple[tuple[str, str], ...] = (
-            ("what_done", "Literal output: what shipped, where (file:line / commit)"),
-            ("what_learned", "New info you didn't have before"),
-            ("what_struggled", "Where you got stuck (even briefly)"),
-        )
-        missing = []
-        hints = {}
-        for field, hint in reflect_required:
-            value = structured.get(field)
-            if not value or not str(value).strip():
-                missing.append(field)
-                hints[field] = hint
-        return missing, hints
-    return [], {}
+    """Pre-gateway parity: decision/reflect scopes required structured fields."""
+    required = _SCOPE_REQUIRED.get(scope)
+    if required is None:
+        return [], {}
+    return _collect_required(required, structured)
 
 
 def _ownership_violation(task_id: UUID) -> Envelope:
