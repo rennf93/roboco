@@ -34,6 +34,36 @@ def build_doc_source(*, kind: str, id_: str | None) -> str | None:
     return f"roboco://{kind}/{id_}"
 
 
+_MIN_CHUNK_LENGTH = 200
+
+
+def _filter_quality_chunks(raw_chunks: list[Any]) -> list[Any]:
+    """Drop tiny chunks and chunks that are mostly markdown formatting."""
+    kept: list[Any] = []
+    for chunk in raw_chunks:
+        text = chunk.text.strip()
+        if len(text) < _MIN_CHUNK_LENGTH:
+            continue
+        non_formatting = (
+            text.replace("```", "").replace("---", "").replace("#", "").strip()
+        )
+        if len(non_formatting) < _MIN_CHUNK_LENGTH // 2:
+            continue
+        kept.append(chunk)
+    return kept
+
+
+def _reset_store_connection(store: Any) -> None:
+    """Force-reset the piragi store connection after an aborted transaction."""
+    if not (hasattr(store, "_conn") and store._conn):
+        return
+    try:
+        store._conn.close()
+        store._init_schema()
+    except Exception as reset_err:
+        logger.warning("Failed to reset connection", error=str(reset_err))
+
+
 @dataclass
 class IndexConfig:
     """Configuration for an index plugin."""
@@ -424,88 +454,10 @@ class BaseIndexPlugin(ABC):
             metadata=metadata,
         )
 
-        # Access piragi's sync internals for direct processing
-        ragi_sync = self.ragi._sync
-
-        chunk_count = 0
-
-        def _process_and_store() -> int:
-            nonlocal chunk_count
-
-            # Chunk the document
-            raw_chunks = ragi_sync.chunker.chunk_document(doc)
-
-            # Filter garbage chunks at index time (not search time!)
-            # This prevents tiny/garbage chunks from polluting vector space
-            MIN_CHUNK_LENGTH = 200  # Minimum meaningful content
-            chunks = []
-            for chunk in raw_chunks:
-                text = chunk.text.strip()
-                # Skip tiny chunks, markdown artifacts, code fences only
-                if len(text) < MIN_CHUNK_LENGTH:
-                    continue
-                # Skip chunks that are mostly markdown formatting
-                non_formatting = (
-                    text.replace("```", "").replace("---", "").replace("#", "").strip()
-                )
-                if len(non_formatting) < MIN_CHUNK_LENGTH // 2:
-                    continue
-                chunks.append(chunk)
-
-            if not chunks:
-                logger.warning(
-                    "All chunks filtered as garbage",
-                    doc_source=doc.source,
-                    raw_count=len(raw_chunks),
-                )
-                return 0
-
-            # Add metadata to each chunk
-            for chunk in chunks:
-                chunk.metadata = {**chunk.metadata, **metadata}
-
-            chunk_count = len(chunks)
-            logger.debug(
-                "Chunks after quality filter",
-                raw=len(raw_chunks),
-                kept=chunk_count,
-                filtered=len(raw_chunks) - chunk_count,
-            )
-
-            # Generate embeddings
-            chunks_with_embeddings = ragi_sync.embedder.embed_chunks(chunks)
-
-            # Store with retry on transaction errors
-            max_retries = 2
-            for attempt in range(max_retries):
-                try:
-                    ragi_sync.store.add_chunks(chunks_with_embeddings)
-                    return chunk_count
-                except Exception as e:
-                    if "transaction is aborted" in str(e) and attempt < max_retries - 1:
-                        logger.warning(
-                            "Retrying store after transaction error",
-                            index_type=self.index_type.value,
-                            attempt=attempt + 1,
-                        )
-                        # Force connection reset - rollback alone isn't enough
-                        if hasattr(ragi_sync.store, "_conn") and ragi_sync.store._conn:
-                            try:
-                                ragi_sync.store._conn.close()
-                                # Force reconnection by reinitializing schema
-                                ragi_sync.store._init_schema()
-                            except Exception as reset_err:
-                                logger.warning(
-                                    "Failed to reset connection",
-                                    error=str(reset_err),
-                                )
-                        continue
-                    raise
-
-            return chunk_count
-
         try:
-            await asyncio.to_thread(_process_and_store)
+            chunk_count = await asyncio.to_thread(
+                self._chunk_filter_embed_store, doc, metadata
+            )
             logger.debug(
                 "Ingested document",
                 index_type=self.index_type.value,
@@ -530,6 +482,55 @@ class BaseIndexPlugin(ABC):
                 success=False,
                 error=str(e),
             )
+
+    def _chunk_filter_embed_store(self, doc: Document, metadata: dict[str, Any]) -> int:
+        """Chunk → filter → embed → store. Returns count of stored chunks.
+
+        Runs synchronously inside ``asyncio.to_thread``; piragi's _sync
+        internals are blocking.
+        """
+        ragi_sync = self.ragi._sync
+        raw_chunks = ragi_sync.chunker.chunk_document(doc)
+        chunks = _filter_quality_chunks(raw_chunks)
+        if not chunks:
+            logger.warning(
+                "All chunks filtered as garbage",
+                doc_source=doc.source,
+                raw_count=len(raw_chunks),
+            )
+            return 0
+        for chunk in chunks:
+            chunk.metadata = {**chunk.metadata, **metadata}
+        logger.debug(
+            "Chunks after quality filter",
+            raw=len(raw_chunks),
+            kept=len(chunks),
+            filtered=len(raw_chunks) - len(chunks),
+        )
+        chunks_with_embeddings = ragi_sync.embedder.embed_chunks(chunks)
+        return self._store_with_transaction_retry(
+            ragi_sync.store, chunks_with_embeddings, len(chunks)
+        )
+
+    def _store_with_transaction_retry(
+        self, store: Any, chunks_with_embeddings: list[Any], chunk_count: int
+    ) -> int:
+        """Add chunks to store; retry once on aborted-transaction errors."""
+        max_retries = 2
+        for attempt in range(max_retries):
+            try:
+                store.add_chunks(chunks_with_embeddings)
+                return chunk_count
+            except Exception as e:
+                if "transaction is aborted" not in str(e) or attempt >= max_retries - 1:
+                    raise
+                logger.warning(
+                    "Retrying store after transaction error",
+                    index_type=self.index_type.value,
+                    attempt=attempt + 1,
+                )
+                _reset_store_connection(store)
+        return chunk_count
 
     def _prepare_docs_for_batch(
         self,
