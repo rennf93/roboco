@@ -19,10 +19,12 @@ Example:
 """
 
 import asyncio
+import math
 import os
 import re
 import shutil
 import subprocess
+import time
 from pathlib import Path
 from typing import Any, cast
 from uuid import UUID
@@ -128,6 +130,13 @@ def _ensure_agent_owned(workspace: Path) -> None:
         )
 
 
+# Thin wrapper around time.monotonic so tests can patch _monotonic without
+# affecting asyncio's own use of time.monotonic (which runs during event-loop
+# teardown and would exhaust a side_effect iterator if patched directly).
+def _monotonic() -> float:
+    return time.monotonic()
+
+
 # Per (project_slug, agent_slug) async lock to serialize concurrent
 # ensure_workspace calls in the same orchestrator process. Prevents two
 # coroutines from both passing the ".git exists?" check and then both
@@ -197,6 +206,13 @@ class WorkspaceService:
     def __init__(self, session: AsyncSession) -> None:
         self.session = session
         self.root = Path(settings.workspaces_root)
+        # Wave C2 (2026-05-12) — TTL cache for refresh fetches. Smoke run 3
+        # fired 9 refresh-fetch warnings per run because each evidence()
+        # call triggered ensure_workspace → fetch. The workspace doesn't
+        # change in subseconds. 30s TTL eliminates the noise without
+        # compromising freshness (commits land slower than 30s in practice;
+        # force=True override exists for the rare need-fresh case).
+        self._fetch_cache: dict[str, float] = {}
 
     def get_workspace_path(
         self,
@@ -399,6 +415,7 @@ class WorkspaceService:
         agent_id: UUID | str,
         git_url: str | None = None,
         default_branch: str = "main",
+        force: bool = False,
     ) -> Path:
         """
         Ensure workspace exists, cloning if necessary.
@@ -415,6 +432,9 @@ class WorkspaceService:
             agent_id: Agent UUID or slug
             git_url: Git URL to clone (fetched from project if not provided)
             default_branch: Default branch to checkout
+            force: When True, bypass the 30s refresh-fetch TTL cache and
+                always run ``git fetch origin`` on a healthy workspace.
+                Defaults to False so existing callers are unaffected.
 
         Returns:
             Path to the workspace directory
@@ -449,7 +469,19 @@ class WorkspaceService:
                 # reflects what's actually on the remote. Best-effort —
                 # network blips and offline mode must not break workspace
                 # setup; checkout is unchanged.
-                await self._fetch_origin_best_effort(workspace, project_slug)
+                #
+                # Wave C2 (2026-05-12): 30s TTL cache keyed by workspace
+                # path. Smoke run 3 fired this fetch 9x/run because every
+                # evidence() call triggers ensure_workspace within the same
+                # few seconds. Skip redundant fetches; force=True overrides.
+                _FETCH_CACHE_TTL_SECONDS = 30.0
+                now = _monotonic()
+                # -math.inf as default means "never fetched" — guarantees
+                # the first call always runs the fetch regardless of clock value.
+                last_fetch = self._fetch_cache.get(str(workspace), -math.inf)
+                if force or (now - last_fetch) >= _FETCH_CACHE_TTL_SECONDS:
+                    await self._fetch_origin_best_effort(workspace, project_slug)
+                    self._fetch_cache[str(workspace)] = _monotonic()
                 # Re-chown so the agent user can still write into .git
                 # after our root-side fetch updated refs/objects. Mirrors
                 # the pattern in `fetch_branch_for_inspection` — without
