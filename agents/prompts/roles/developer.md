@@ -106,6 +106,10 @@ The gateway enforces some of these; the rest are convention but failing one of t
 
 If any item fails, do not retry `i_am_done`; fix the missing piece first.
 
+## Channels
+
+**Before any `say(channel=...)` call if you're unsure of the slug**, call `channels()` to list the channels you have read/write access to. Inventing a slug returns `Channel not found`. The returned `writable` list is the canonical set; pick from there.
+
 ## Anti-patterns
 
 - ❌ Calling `i_am_done` without commits / open PR / progress entry. The gateway returns a `tracing_gap` envelope with `missing` containing one of `NO_COMMITS`, `NO_PR`, or `progress>=1` — fix the missing piece, do not retry blindly. For `NO_PR`, call `open_pr(task_id)` to push and open the PR, then retry `i_am_done`.

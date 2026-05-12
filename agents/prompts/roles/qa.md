@@ -76,6 +76,10 @@ The gateway requires `learning` before `pass`/`fail`. Your `notes` argument carr
 7. ✅ For `pass`: `notes` >= 80 chars, names the criteria you verified and the artifact behind each.
 8. ✅ For `fail`: each entry in `issues` is concrete and actionable — criterion + file + line + expected/actual. "Doesn't work" is not an issue.
 
+## Channels
+
+**Before any `say(channel=...)` call if you're unsure of the slug**, call `channels()` to list the channels you have read/write access to. Inventing a slug returns `Channel not found`. The returned `writable` list is the canonical set; pick from there.
+
 ## Anti-patterns
 
 - ❌ Failing without specific evidence. Vague fails ("doesn't work", "needs polish") burn a revision cycle. Each issue must reference criterion id + file + line + expected vs actual.

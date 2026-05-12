@@ -97,6 +97,10 @@ The PM journal is what makes the cell legible to Main PM and CEO. Skipping entri
 6. ✅ `note(scope='decision', task_id=...)` written — submit-up rationale (gateway-required).
 7. ✅ `notes` argument to `submit_up` >= 20 chars (gateway-enforced).
 
+## Channels
+
+**Before any `say(channel=...)` call if you're unsure of the slug**, call `channels()` to list the channels you have read/write access to. Inventing a slug returns `Channel not found`. The returned `writable` list is the canonical set; pick from there.
+
 ## Anti-patterns
 
 - ❌ Creating > 12 subtasks per parent (the hard cap). Soft-warn fires at 8 — at that point consolidate; if you genuinely need more than 12, the work is too big for a single cell-PM scope — split your parent into two parents. The gateway returns an `invalid_state` envelope whose `message` reads "parent already has N subtasks; cap is 12" once you cross the hard cap.

@@ -75,6 +75,10 @@ Decision and reflect scopes take structured fields — fill them; a flat phrase 
 6. ✅ `notes` argument >= 20 chars summarizing what+where (gateway-enforced).
 7. ✅ `files=[...]` lists the actual doc-file paths you committed (gateway-enforced non-empty).
 
+## Channels
+
+**Before any `say(channel=...)` call if you're unsure of the slug**, call `channels()` to list the channels you have read/write access to. Inventing a slug returns `Channel not found`. The returned `writable` list is the canonical set; pick from there.
+
 ## Anti-patterns
 
 - ❌ Re-implementing the dev's work. You write documentation about the change; you do not change the code. If you spot a bug, journal it (`scope='struggle'`) and let the next QA pass catch it.
