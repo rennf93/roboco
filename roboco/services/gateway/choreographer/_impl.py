@@ -2168,6 +2168,25 @@ class Choreographer:
 
     # claim_doc_task + i_documented moved to ``doc.py`` (audit P2-2).
 
+    _RICH_PLAN_FIELDS: ClassVar[tuple[str, ...]] = (
+        "approach",
+        "sub_tasks",
+        "technical_considerations",
+        "risks",
+        "open_questions",
+    )
+
+    @staticmethod
+    def _resolve_effective_plan(
+        plan: str, rich_plan: dict[str, Any] | None
+    ) -> str | dict[str, Any]:
+        """Use the panel-shaped dict when any rich field is populated."""
+        if not rich_plan:
+            return plan
+        if any(rich_plan.get(k) for k in Choreographer._RICH_PLAN_FIELDS):
+            return _build_panel_shaped_plan(plan, rich_plan)
+        return plan
+
     async def i_will_plan(
         self,
         pm_agent_id: UUID,
@@ -2223,30 +2242,13 @@ class Choreographer:
             actor_slug=getattr(agent, "slug", None) if agent is not None else None,
             original_developer_slug=_extract_original_developer(t),
         )
-        # Persist the structured plan dict (pre-gateway parity for the Plan
-        # tab) when the caller passed any rich field; otherwise fall through
-        # with the bare string so set_plan stores {"text": plan}.
-        effective_plan: str | dict[str, Any]
-        if rich_plan and any(
-            rich_plan.get(k)
-            for k in (
-                "approach",
-                "sub_tasks",
-                "technical_considerations",
-                "risks",
-                "open_questions",
-            )
-        ):
-            effective_plan = _build_panel_shaped_plan(plan, rich_plan)
-        else:
-            effective_plan = plan
         ctx = _ClaimPlanStartContext(
             agent_id=pm_agent_id,
             task_id=task_id,
             task=t,
             role_str=role_str,
             briefing=briefing,
-            plan=effective_plan,
+            plan=self._resolve_effective_plan(plan, rich_plan),
             verb_name="i_will_plan",
         )
         # Re-entry check runs first — a respawned PM with thin args ("resume",
