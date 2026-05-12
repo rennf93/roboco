@@ -738,6 +738,10 @@ class Choreographer:
                 task_id=task_id,
                 verb=verb_name,
             )
+        # Wave C4 (2026-05-12) — pre-gateway parity. Ensure WorkSession row
+        # exists on the stuck-claimed recovery path too (same guarantee as
+        # _claim_plan_start_run). Re-entry guard inside ensure_work_session.
+        await self.task.ensure_work_session(task_id, agent_id)
         await self._touch(task_id)
         return Envelope.ok(
             status=str(t.status),
@@ -840,6 +844,12 @@ class Choreographer:
                 task_id=ctx.task_id,
                 verb=verb_name,
             )
+        # Wave C4 (2026-05-12) — pre-gateway parity. Create the WorkSession
+        # row so downstream subsystems (panel, PR, merge chain) can track
+        # this agent's per-task git activity. work_session_id stored on the
+        # task; one WorkSession per (agent, task) claim cycle; re-entry
+        # guard inside ensure_work_session prevents duplicate rows.
+        await self.task.ensure_work_session(ctx.task_id, ctx.agent_id)
         await self._touch(ctx.task_id)
         return Envelope.ok(
             status=str(t.status),

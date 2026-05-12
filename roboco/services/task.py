@@ -4712,6 +4712,28 @@ class TaskService(BaseService):
         await self.session.flush()
         return task
 
+    async def ensure_work_session(
+        self,
+        task_id: UUID,
+        agent_id: UUID,
+    ) -> None:
+        """Create a WorkSession row if one does not already exist for this claim.
+
+        Wave C4 (2026-05-12) — pre-gateway parity. The gateway's claim/plan/
+        start path calls this after the task reaches in_progress so every
+        (agent, task) claim cycle has a WorkSession row that downstream
+        subsystems (panel, PR tracking, merge chain) can use. Delegates to
+        _create_work_session_if_needed with role=None so both developers and
+        PMs get a session (pre-gateway created sessions for all claimants).
+        No-ops if work_session_id is already set (re-entry guard).
+        """
+        task = await self.get(task_id)
+        if not task:
+            return
+        if task.work_session_id:
+            return
+        await self._create_work_session_if_needed(task, agent_id, agent_role=None)
+
     async def mark_evidence_inspected(self, task_id: UUID) -> None:
         """Set qa_evidence_inspected=True on the task."""
         task = await self.get(task_id)
