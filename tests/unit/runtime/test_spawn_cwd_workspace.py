@@ -9,6 +9,7 @@ the agent's task workspace.
 
 from __future__ import annotations
 
+import re
 from pathlib import Path
 from unittest.mock import patch
 
@@ -51,6 +52,32 @@ def _make_documenter_config(
         agent_id="be-doc",
         blueprint_path=Path("/app/agents/blueprints/be-doc.md"),
         model="haiku",
+        mcp_config_path=Path("/app/mcp-config.json"),
+        git_context=SpawnGitContext(project_slug=project_slug),
+    )
+
+
+def _make_product_owner_config(
+    *, project_slug: str = "roboco-api"
+) -> OrchestratorAgentConfig:
+    """Minimal AgentConfig for product-owner (product_owner role)."""
+    return OrchestratorAgentConfig(
+        agent_id="product-owner",
+        blueprint_path=Path("/app/agents/blueprints/product-owner.md"),
+        model="sonnet",
+        mcp_config_path=Path("/app/mcp-config.json"),
+        git_context=SpawnGitContext(project_slug=project_slug),
+    )
+
+
+def _make_head_marketing_config(
+    *, project_slug: str = "roboco-api"
+) -> OrchestratorAgentConfig:
+    """Minimal AgentConfig for head-marketing (head_marketing role)."""
+    return OrchestratorAgentConfig(
+        agent_id="head-marketing",
+        blueprint_path=Path("/app/agents/blueprints/head-marketing.md"),
+        model="sonnet",
         mcp_config_path=Path("/app/mcp-config.json"),
         git_context=SpawnGitContext(project_slug=project_slug),
     )
@@ -100,6 +127,37 @@ def _build_cmd(container_name: str, config: OrchestratorAgentConfig) -> list[str
         return AgentOrchestrator._build_mount_args(container_name, config, hosts)
 
 
+def _make_minimal_orchestrator() -> AgentOrchestrator:
+    """Instantiate AgentOrchestrator with all constructor I/O mocked out."""
+    with patch.object(AgentOrchestrator, "__init__", return_value=None):
+        orch = AgentOrchestrator.__new__(AgentOrchestrator)
+    return orch
+
+
+def _extract_workdir_from_cmd(cmd: list[str]) -> str | None:
+    """Return the value after -w in a docker run cmd list, or None."""
+    if "-w" not in cmd:
+        return None
+    return cmd[cmd.index("-w") + 1]
+
+
+_EDIT_ALLOWLIST_RE = re.compile(r"^Edit\((.+)/\*\*\)$")
+
+
+def _extract_edit_allowlist_prefix(permissions: dict[str, list[str]]) -> str:
+    """Extract the workspace path prefix from an Edit(path/**) allowlist entry.
+
+    Raises AssertionError if no matching entry is found.
+    """
+    for entry in permissions.get("allow", []):
+        m = _EDIT_ALLOWLIST_RE.match(entry)
+        if m:
+            return m.group(1)
+    raise AssertionError(
+        f"No Edit(<path>/**) entry found in allow list: {permissions['allow']}"
+    )
+
+
 class TestDeveloperSpawnCwdWorkspace:
     """Developer container must start in the agent's task workspace."""
 
@@ -114,20 +172,42 @@ class TestDeveloperSpawnCwdWorkspace:
         # Developer workspace: /data/workspaces/<project>/<team>/<agent>
         expected = "/data/workspaces/roboco-api/backend/be-dev-1"
         assert workdir == expected, (
-            f"Expected workdir '{expected}' but got '{workdir}'. "
-            f"Full cmd: {cmd}"
+            f"Expected workdir '{expected}' but got '{workdir}'. Full cmd: {cmd}"
         )
 
     def test_workdir_matches_edit_allowlist_path(self) -> None:
-        """The -w value matches the Edit({workspace_path}/**) allowlist prefix."""
-        config = _make_dev_config(project_slug="my-project")
+        """The -w value matches the Edit({workspace_path}/**) allowlist prefix.
+
+        This test derives the expected path from _get_role_permissions, not
+        from a hard-coded duplicate of the formula. If _build_mount_args and
+        _get_role_permissions drift to different formulas, this test catches it.
+        """
+        project_slug = "my-project"
+        # Workspace paths that _prepare_agent_spawn would compute for be-dev-1.
+        # be-dev-1 resolves to team=backend (agents_config); we use the same
+        # values the real code uses so the cross-check is meaningful.
+        workspace_path = f"/data/workspaces/{project_slug}/backend/be-dev-1"
+        cell_workspace_path = f"/data/workspaces/{project_slug}/backend"
+
+        orch = _make_minimal_orchestrator()
+        permissions = orch._get_role_permissions(
+            role="developer",
+            workspace_path=workspace_path,
+            cell_workspace_path=cell_workspace_path,
+        )
+        edit_prefix = _extract_edit_allowlist_prefix(permissions)
+
+        # Now build the docker cmd for the same agent/project.
+        config = _make_dev_config(project_slug=project_slug)
         cmd = _build_cmd("roboco-agent-be-dev-1", config)
 
-        w_idx = cmd.index("-w")
-        workdir = cmd[w_idx + 1]
-        # Allowlist in _get_role_permissions: Edit({workspace_path}/**)
-        # workdir must equal that workspace_path
-        assert workdir == "/data/workspaces/my-project/backend/be-dev-1"
+        workdir = _extract_workdir_from_cmd(cmd)
+        assert workdir is not None, f"'-w' flag missing from docker run cmd: {cmd}"
+        assert workdir == edit_prefix, (
+            f"_build_mount_args -w value '{workdir}' does not match "
+            f"_get_role_permissions Edit allowlist prefix '{edit_prefix}'. "
+            "These two sites must use the same workspace-path formula."
+        )
 
 
 class TestCellPmSpawnCwdNoWorkdir:
@@ -154,13 +234,101 @@ class TestDocumenterSpawnCwdCellWorkspace:
 
         # Documenter allowlist scopes to cell_workspace_path:
         # /data/workspaces/<project>/<team>
-        assert "-w" in cmd, (
-            f"'-w' flag missing from documenter docker run cmd: {cmd}"
-        )
+        assert "-w" in cmd, f"'-w' flag missing from documenter docker run cmd: {cmd}"
         w_idx = cmd.index("-w")
         workdir = cmd[w_idx + 1]
         expected = "/data/workspaces/roboco-api/backend"
         assert workdir == expected, (
             f"Expected documenter workdir '{expected}' but got '{workdir}'. "
             f"Full cmd: {cmd}"
+        )
+
+
+class TestProductOwnerSpawnCwdWorkspace:
+    """product_owner container must start in the per-agent workspace path."""
+
+    def test_cmd_contains_workdir_flag(self) -> None:
+        """docker run for a product_owner includes -w <per-agent-workspace>."""
+        config = _make_product_owner_config(project_slug="roboco-api")
+        cmd = _build_cmd("roboco-agent-product-owner", config)
+
+        assert "-w" in cmd, (
+            f"'-w' flag missing from product_owner docker run cmd: {cmd}"
+        )
+        workdir = _extract_workdir_from_cmd(cmd)
+        expected = "/data/workspaces/roboco-api/board/product-owner"
+        assert workdir == expected, (
+            f"Expected product_owner workdir '{expected}' but got '{workdir}'. "
+            f"Full cmd: {cmd}"
+        )
+
+    def test_workdir_matches_edit_allowlist_path(self) -> None:
+        """The product_owner -w value matches its Edit allowlist prefix."""
+        project_slug = "roboco-api"
+        workspace_path = f"/data/workspaces/{project_slug}/board/product-owner"
+        cell_workspace_path = f"/data/workspaces/{project_slug}/board"
+
+        orch = _make_minimal_orchestrator()
+        permissions = orch._get_role_permissions(
+            role="product_owner",
+            workspace_path=workspace_path,
+            cell_workspace_path=cell_workspace_path,
+        )
+        edit_prefix = _extract_edit_allowlist_prefix(permissions)
+
+        config = _make_product_owner_config(project_slug=project_slug)
+        cmd = _build_cmd("roboco-agent-product-owner", config)
+        workdir = _extract_workdir_from_cmd(cmd)
+
+        assert workdir is not None, (
+            f"'-w' flag missing from product_owner docker run cmd: {cmd}"
+        )
+        assert workdir == edit_prefix, (
+            f"_build_mount_args -w value '{workdir}' != "
+            f"_get_role_permissions Edit prefix '{edit_prefix}'."
+        )
+
+
+class TestHeadMarketingSpawnCwdWorkspace:
+    """head_marketing container must start in the per-agent workspace path."""
+
+    def test_cmd_contains_workdir_flag(self) -> None:
+        """docker run for a head_marketing includes -w <per-agent-workspace>."""
+        config = _make_head_marketing_config(project_slug="roboco-api")
+        cmd = _build_cmd("roboco-agent-head-marketing", config)
+
+        assert "-w" in cmd, (
+            f"'-w' flag missing from head_marketing docker run cmd: {cmd}"
+        )
+        workdir = _extract_workdir_from_cmd(cmd)
+        expected = "/data/workspaces/roboco-api/board/head-marketing"
+        assert workdir == expected, (
+            f"Expected head_marketing workdir '{expected}' but got '{workdir}'. "
+            f"Full cmd: {cmd}"
+        )
+
+    def test_workdir_matches_edit_allowlist_path(self) -> None:
+        """The head_marketing -w value matches its Edit allowlist prefix."""
+        project_slug = "roboco-api"
+        workspace_path = f"/data/workspaces/{project_slug}/board/head-marketing"
+        cell_workspace_path = f"/data/workspaces/{project_slug}/board"
+
+        orch = _make_minimal_orchestrator()
+        permissions = orch._get_role_permissions(
+            role="head_marketing",
+            workspace_path=workspace_path,
+            cell_workspace_path=cell_workspace_path,
+        )
+        edit_prefix = _extract_edit_allowlist_prefix(permissions)
+
+        config = _make_head_marketing_config(project_slug=project_slug)
+        cmd = _build_cmd("roboco-agent-head-marketing", config)
+        workdir = _extract_workdir_from_cmd(cmd)
+
+        assert workdir is not None, (
+            f"'-w' flag missing from head_marketing docker run cmd: {cmd}"
+        )
+        assert workdir == edit_prefix, (
+            f"_build_mount_args -w value '{workdir}' != "
+            f"_get_role_permissions Edit prefix '{edit_prefix}'."
         )

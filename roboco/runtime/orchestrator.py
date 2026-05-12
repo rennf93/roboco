@@ -169,6 +169,44 @@ def _resolve_agent_cli_model(provider_type: str, model: str) -> str:
     return model
 
 
+def _agent_workspace_path(project_slug: str, team: str, agent_id: str) -> str:
+    """Per-agent workspace path inside the container.
+
+    Mirrors the bind-mount layout: the host's workspaces dir is mounted at
+    /data/workspaces (orchestrator.py mount args), so each agent's clone lives
+    at /data/workspaces/<project>/<team>/<agent>. Used by both
+    _get_role_permissions (Edit/Write allowlist) and _build_mount_args
+    (docker ``-w`` flag) so the cwd matches the allowlist scope.
+    """
+    return f"/data/workspaces/{project_slug}/{team}/{agent_id}"
+
+
+def _cell_workspace_path(project_slug: str, team: str) -> str:
+    """Cell-level workspace path (documenter scope).
+
+    Same rationale as ``_agent_workspace_path``; documenters work at the cell
+    branch, not a per-agent dev branch.
+    """
+    return f"/data/workspaces/{project_slug}/{team}"
+
+
+def _resolve_project_slug_from_git_context(
+    git_context: "SpawnGitContext | None",
+) -> str:
+    """Extract project_slug from git_context, falling back to 'default'.
+
+    Module-level counterpart to the instance method ``_resolve_project_slug``.
+    Called by static / classmethod contexts (e.g. ``_build_mount_args``) that
+    cannot access ``self``. The fallback warning is omitted here because the
+    instance method already logs it when the full spawn path runs; this helper
+    is only for the mount-args path where the agent_id/task_id context is not
+    available.
+    """
+    if git_context and git_context.project_slug:
+        return git_context.project_slug
+    return "default"
+
+
 # =============================================================================
 # SPAWN MANIFEST — per-developer tool manifest mounting (Phase 1)
 # =============================================================================
@@ -1239,7 +1277,7 @@ class AgentOrchestrator:
         """Build AgentConfig + AgentInstance and surface per-agent settings path."""
         blueprint_path = self._generate_composed_prompt(agent_id)
         canonical_role = get_agent_role(agent_id)
-        team = get_agent_team(agent_id)
+        team = get_agent_team(agent_id) or "backend"
 
         # Resolve the provider route for this agent. Caller-supplied `model`
         # wins (dispatcher overrides, tests). Otherwise the routing service
@@ -1252,8 +1290,8 @@ class AgentOrchestrator:
             model = route.model_name
 
         project_slug = self._resolve_project_slug(git_context, agent_id, task_id)
-        workspace_path = f"/data/workspaces/{project_slug}/{team}/{agent_id}"
-        cell_workspace_path = f"/data/workspaces/{project_slug}/{team}"
+        workspace_path = _agent_workspace_path(project_slug, team, agent_id)
+        cell_workspace_path = _cell_workspace_path(project_slug, team)
 
         agent_settings_path = self._generate_agent_settings(
             agent_id, canonical_role, workspace_path, cell_workspace_path
@@ -1574,19 +1612,13 @@ class AgentOrchestrator:
         #   so the container falls back to /app (Dockerfile WORKDIR).
         _role = get_agent_role(config.agent_id) or "developer"
         _team = get_agent_team(config.agent_id) or ""
-        _project = (
-            config.git_context.project_slug
-            if config.git_context and config.git_context.project_slug
-            else "default"
-        )
-        _workspace_path = f"/data/workspaces/{_project}/{_team}/{config.agent_id}"
-        _cell_workspace_path = f"/data/workspaces/{_project}/{_team}"
+        _project = _resolve_project_slug_from_git_context(config.git_context)
         _roles_with_agent_workspace = {"developer", "product_owner", "head_marketing"}
         _roles_with_cell_workspace = {"documenter"}
         if _role in _roles_with_agent_workspace:
-            cmd.extend(["-w", _workspace_path])
+            cmd.extend(["-w", _agent_workspace_path(_project, _team, config.agent_id)])
         elif _role in _roles_with_cell_workspace:
-            cmd.extend(["-w", _cell_workspace_path])
+            cmd.extend(["-w", _cell_workspace_path(_project, _team)])
         # else: qa / cell_pm / main_pm / auditor — omit -w, fall back to /app
 
         return cmd
