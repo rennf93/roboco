@@ -1558,6 +1558,37 @@ class AgentOrchestrator:
             )
         else:
             cmd.extend(["-e", "ROBOCO_GATEWAY_ENABLED=false"])
+
+        # Pre-gateway parity (Wave A2+A3, 2026-05-12). Set the container's cwd
+        # to the agent's task workspace so Edit/Write resolve to paths that
+        # match _get_role_permissions allowlist, and `git add` operates inside
+        # the workspace clone. Without this, container WORKDIR (/app from the
+        # Dockerfile) shadows the workspace and every file op fails.
+        #
+        # Mirror the workspace-path selection in _get_role_permissions exactly:
+        # - developer / product_owner / head_marketing: per-agent workspace
+        #   (/data/workspaces/{project}/{team}/{agent})
+        # - documenter: cell workspace (/data/workspaces/{project}/{team})
+        #   (Write/Edit allowlist scopes to cell_workspace_path for this role)
+        # - qa / cell_pm / main_pm / auditor: no write workspace → omit -w
+        #   so the container falls back to /app (Dockerfile WORKDIR).
+        _role = get_agent_role(config.agent_id) or "developer"
+        _team = get_agent_team(config.agent_id) or ""
+        _project = (
+            config.git_context.project_slug
+            if config.git_context and config.git_context.project_slug
+            else "default"
+        )
+        _workspace_path = f"/data/workspaces/{_project}/{_team}/{config.agent_id}"
+        _cell_workspace_path = f"/data/workspaces/{_project}/{_team}"
+        _roles_with_agent_workspace = {"developer", "product_owner", "head_marketing"}
+        _roles_with_cell_workspace = {"documenter"}
+        if _role in _roles_with_agent_workspace:
+            cmd.extend(["-w", _workspace_path])
+        elif _role in _roles_with_cell_workspace:
+            cmd.extend(["-w", _cell_workspace_path])
+        # else: qa / cell_pm / main_pm / auditor — omit -w, fall back to /app
+
         return cmd
 
     @staticmethod
