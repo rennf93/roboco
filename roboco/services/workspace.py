@@ -350,11 +350,24 @@ class WorkspaceService:
             return
 
         if result.returncode != 0:
-            logger.warning(
+            stderr = result.stderr.strip()
+            # The credential-less refresh fetch is expected to fail for private
+            # repos — see this method's docstring. Downgrade the known-benign
+            # auth-failure signature to DEBUG so it doesn't pollute every
+            # monitor / log scrape during a smoke run. Genuine failures
+            # (network errors, broken remotes) still surface at WARNING.
+            is_expected_auth_fail = (
+                "could not read Username" in stderr
+                or "Authentication failed" in stderr
+                or "remote: Repository not found" in stderr
+            )
+            log = logger.debug if is_expected_auth_fail else logger.warning
+            log(
                 "ensure_workspace: refresh fetch returned non-zero",
                 workspace=str(workspace),
                 project=project_slug,
-                stderr=result.stderr.strip(),
+                stderr=stderr,
+                expected_auth_fail=is_expected_auth_fail,
             )
 
     @staticmethod
