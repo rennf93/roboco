@@ -496,6 +496,21 @@ class Choreographer:
         """Return the agent's most-actionable task or signal idle."""
         agent = await self._deps.task.agent_for(agent_id)
         role = str(agent.role) if agent is not None else "developer"
+        # Pre-assigned pending tasks take priority. Smoke run 3 (2026-05-12)
+        # showed agents missing tasks that were seeded with assigned_to=<them>
+        # and status=pending because the earlier code only walked
+        # list_assigned_for_agent (ordered by priority/updated_at — pending
+        # could rank behind in_progress rows) and the PM path checked
+        # awaiting_* queues but not the pre-assigned pending case.
+        pre_assigned = await self._deps.task.list_pending_for_agent(agent_id)
+        if pre_assigned:
+            t = pre_assigned[0]
+            return Envelope.ok(
+                status=str(t.status),
+                task_id=str(t.id),
+                next=f"call i_will_work_on(task_id='{t.id}', plan='<plan>') to start",
+                context_briefing=await self._briefing_for(agent_id, t.id),
+            ).with_introspection(task=t, role=role)
         assigned = await self._deps.task.list_assigned_for_agent(agent_id)
         if assigned:
             t = assigned[0]
@@ -2883,7 +2898,25 @@ class Choreographer:
         Mirrors the developer's give_me_work but does not filter to dev-only
         statuses — PMs care about all assigned tasks (planning, paused, in
         progress, awaiting_pm_review).
+
+        Pre-assigned pending tasks are checked first (Wave B6, 2026-05-12).
+        Smoke run 3 showed Main PM getting idle even though c7935d2c was
+        pending and assigned_to=main-pm because list_assigned_for_agent
+        ordered by priority/updated_at and could rank a pre-assigned pending
+        task below other active rows; the pre-assigned pending check now
+        wins unconditionally.
         """
+        # Pre-assigned pending tasks take priority over everything else.
+        pre_assigned = await self.task.list_pending_for_agent(pm_agent_id)
+        if pre_assigned:
+            t = pre_assigned[0]
+            await self._touch(t.id)
+            return Envelope.ok(
+                status=str(t.status),
+                task_id=str(t.id),
+                next=self._pm_next_hint(str(t.status), t.id),
+                context_briefing=await self._briefing_for(pm_agent_id, t.id),
+            )
         assigned = await self.task.list_assigned_for_agent(pm_agent_id)
         if assigned:
             t = assigned[0]

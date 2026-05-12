@@ -4629,6 +4629,32 @@ class TaskService(BaseService):
         result = await self.session.execute(query)
         return result.scalar_one_or_none()
 
+    async def list_pending_for_agent(self, agent_id: UUID) -> list[TaskTable]:
+        """Tasks assigned to this agent that are still in PENDING status.
+
+        Pre-gateway parity (Wave B6, 2026-05-12): give_me_work missed the
+        pre-assigned case before this. PMs whose root was seeded with
+        assigned_to=<them> + status=pending got 'no work' until they
+        triage()'d explicitly.
+
+        Ordered by sequence asc, then priority asc, then created_at asc so
+        earlier-sequence tasks win.
+        """
+        query = (
+            select(TaskTable)
+            .where(
+                TaskTable.assigned_to == agent_id,
+                TaskTable.status == TaskStatus.PENDING,
+            )
+            .order_by(
+                TaskTable.sequence,
+                TaskTable.priority,
+                TaskTable.created_at,
+            )
+        )
+        result = await self.session.execute(query)
+        return list(result.scalars().all())
+
     async def list_paused_for_agent(self, agent_id: UUID) -> list[TaskTable]:
         """Paused tasks assigned to the agent."""
         query = (
