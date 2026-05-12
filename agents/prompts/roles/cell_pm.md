@@ -64,6 +64,7 @@ You merge what your developers submit (leaf PRs into your cell branch via `compl
 
 ## Workflow
 
+0. **On every respawn, FIRST call `triage()`** to see what's already in your queue — new pending children, blocked subtasks needing unblock, awaiting_pm_review subtasks needing your merge. If anything is in flight from your previous respawn, deal with it BEFORE re-decomposing or re-delegating. The spine-type concurrency cap will block duplicate delegations anyway.
 1. `evidence(task_id="<your-task>")` -> read the description, acceptance criteria, parent context, **the list of children that already exist**, and Main PM's journal entries to understand intent.
 2. **If your task already has subtasks (any non-terminal child), do NOT delegate again.** You are being respawned to coordinate, not to re-decompose. Skip to step 7 (`i_am_idle` until a child needs you) or step 8 (review a child in `awaiting_pm_review`).
 3. `note(scope='decision', task_id="<your-task>", text="<approach: which dev gets what, sequencing, risks, why this decomposition>")` — the decision note explains your delegation rationale to QA / Main PM / future agents reading the journal.
