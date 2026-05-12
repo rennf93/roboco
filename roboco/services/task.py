@@ -4742,6 +4742,29 @@ class TaskService(BaseService):
         task.qa_evidence_inspected = True
         await self.session.flush()
 
+    async def set_acceptance_criteria_status(
+        self, task_id: UUID, status: list[dict[str, Any]]
+    ) -> TaskTable | None:
+        """Persist per-criterion addressing status. Wave C5 (2026-05-12).
+
+        Replaces the full acceptance_criteria_status list with `status`.
+        Each entry must have the shape:
+            {
+                "criterion": str,
+                "addressed": bool,
+                "artifact_ref": str | None,
+                "checked_at": str,  # ISO-8601 UTC
+            }
+
+        Returns the updated task, or None if the task no longer exists.
+        """
+        task = await self.get(task_id)
+        if task is None:
+            return None
+        task.acceptance_criteria_status = status
+        await self.session.flush()
+        return task
+
     async def reassign(
         self, task_id: UUID, new_assignee: UUID | None
     ) -> TaskTable | None:
