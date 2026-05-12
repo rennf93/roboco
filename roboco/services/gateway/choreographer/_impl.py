@@ -2424,6 +2424,69 @@ class Choreographer:
             pm_agent_id, parent_task_id, parent
         )
 
+    _TERMINAL_STATUSES: ClassVar[frozenset[str]] = frozenset(
+        {"completed", "cancelled"}
+    )
+    _SPINE_TASK_TYPES: ClassVar[frozenset[str]] = frozenset(
+        {"code", "planning", "documentation"}
+    )
+
+    @staticmethod
+    def _spine_type_dup_envelope(
+        new_type: str, sibling: Any, sib_assignee: str
+    ) -> Envelope:
+        """Rule-1 rejection: spine-type concurrency cap hit."""
+        return Envelope.invalid_state(
+            message=(
+                f"parent already has a non-terminal "
+                f"task_type={new_type!r} subtask "
+                f"({sibling.id}, assigned_to={sib_assignee!r}, "
+                f"status={sibling.status}). The {new_type!r} spine is "
+                f"sequential — only one non-terminal at a time."
+            ),
+            remediate=(
+                "Drive the existing sibling to completion / "
+                "cancel it before delegating another of the same "
+                "type. If the work is genuinely parallel (two "
+                "independent modules), split this parent into "
+                "two sibling parents instead of two code "
+                "subtasks under one parent."
+            ),
+            context_briefing={},
+        )
+
+    @staticmethod
+    def _same_assignee_dup_envelope(
+        new_type: str, new_assignee: str, sibling: Any
+    ) -> Envelope:
+        """Rule-2 rejection: same assignee already owns same task_type."""
+        return Envelope.invalid_state(
+            message=(
+                f"sibling subtask already assigned to "
+                f"{new_assignee!r} with task_type={new_type!r}: "
+                f"id={sibling.id} status={sibling.status}"
+            ),
+            remediate=(
+                "Either drive the existing sibling to completion / "
+                "cancel it, or split this work into a subtask of "
+                "the existing sibling rather than a new sibling."
+            ),
+            context_briefing={},
+        )
+
+    @classmethod
+    def _sibling_dup_envelope(
+        cls, sibling: Any, new_type: str, new_assignee: str
+    ) -> Envelope | None:
+        """Apply Rule-1 then Rule-2 against one non-terminal sibling."""
+        sib_type = str(getattr(sibling, "task_type", ""))
+        sib_assignee = str(getattr(sibling, "assigned_to", "") or "")
+        if new_type in cls._SPINE_TASK_TYPES and sib_type == new_type:
+            return cls._spine_type_dup_envelope(new_type, sibling, sib_assignee)
+        if sib_assignee and sib_assignee == new_assignee and sib_type == new_type:
+            return cls._same_assignee_dup_envelope(new_type, new_assignee, sibling)
+        return None
+
     async def _delegate_sibling_dedup_guard(
         self,
         parent_task_id: UUID,
@@ -2433,70 +2496,25 @@ class Choreographer:
 
         Two rules, both rooted in 'one lifecycle hop per parent':
 
-        1. **Same-type concurrency cap** (observed 2026-05-11 smoke): a
-           parent may have AT MOST one non-terminal subtask of types
-           ``code`` / ``planning`` / ``documentation`` at any given time,
-           regardless of assignee. These are the spine of the lifecycle —
-           the dev-QA-doc-PM chain is sequential. A Cell PM splitting one
-           workflow across be-dev-1 and be-dev-2 (e.g. "branch+edit" vs
-           "open PR") creates parallel children of the same type and
-           the lifecycle has no merge story for that. Reject; the PM
-           must either complete the existing child first or restructure
-           into independent parents.
-
-        2. **Same-assignee same-type** (fallback for other types): a PM
-           never delegates two ``research``/``design``/``administrative``
-           subtasks to the same agent under the same parent — that's
-           always a decomposition error.
+        1. **Same-type concurrency cap**: a parent may have AT MOST one
+           non-terminal subtask of types ``code`` / ``planning`` /
+           ``documentation`` at any given time, regardless of assignee.
+        2. **Same-assignee same-type** (fallback): a PM never delegates two
+           ``research``/``design``/``administrative`` subtasks to the same
+           agent under the same parent.
 
         Both rules surface the existing sibling id so the PM can finish
         or cancel it instead of guessing.
         """
-        terminal = {"completed", "cancelled"}
-        spine_types = {"code", "planning", "documentation"}
         siblings = await self.task.get_subtasks(parent_task_id)
         new_type = str(inputs.task_type or "")
         new_assignee = str(inputs.assigned_to or "")
-        for s in siblings:
-            if str(getattr(s, "status", "")) in terminal:
+        for sibling in siblings:
+            if str(getattr(sibling, "status", "")) in self._TERMINAL_STATUSES:
                 continue
-            sib_type = str(getattr(s, "task_type", ""))
-            sib_assignee = str(getattr(s, "assigned_to", "") or "")
-            # Rule 1: spine-type concurrency cap (ignores assignee)
-            if new_type in spine_types and sib_type == new_type:
-                return Envelope.invalid_state(
-                    message=(
-                        f"parent already has a non-terminal "
-                        f"task_type={new_type!r} subtask "
-                        f"({s.id}, assigned_to={sib_assignee!r}, "
-                        f"status={s.status}). The {new_type!r} spine is "
-                        f"sequential — only one non-terminal at a time."
-                    ),
-                    remediate=(
-                        "Drive the existing sibling to completion / "
-                        "cancel it before delegating another of the same "
-                        "type. If the work is genuinely parallel (two "
-                        "independent modules), split this parent into "
-                        "two sibling parents instead of two code "
-                        "subtasks under one parent."
-                    ),
-                    context_briefing={},
-                )
-            # Rule 2: same-assignee same-type fallback (non-spine types)
-            if sib_assignee and sib_assignee == new_assignee and sib_type == new_type:
-                return Envelope.invalid_state(
-                    message=(
-                        f"sibling subtask already assigned to "
-                        f"{new_assignee!r} with task_type={new_type!r}: "
-                        f"id={s.id} status={s.status}"
-                    ),
-                    remediate=(
-                        "Either drive the existing sibling to completion / "
-                        "cancel it, or split this work into a subtask of "
-                        "the existing sibling rather than a new sibling."
-                    ),
-                    context_briefing={},
-                )
+            envelope = self._sibling_dup_envelope(sibling, new_type, new_assignee)
+            if envelope is not None:
+                return envelope
         return None
 
     async def _delegate_static_guards(
