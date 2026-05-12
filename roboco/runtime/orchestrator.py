@@ -1507,62 +1507,83 @@ class AgentOrchestrator:
             "-v",
             f"{hosts['claude']}:/home/agent/.claude",
         ]
+        AgentOrchestrator._append_claude_json_mount(cmd, hosts)
+        AgentOrchestrator._append_optional_host_mounts(cmd, hosts)
+        role = get_agent_role(config.agent_id) or "developer"
+        cmd.extend(AgentOrchestrator._core_volume_and_env_args(config, hosts, role))
+        AgentOrchestrator._append_provider_env(cmd, config)
+        subagent_model = _resolve_agent_cli_model(config.provider_type, config.model)
+        cmd.extend(["-e", f"CLAUDE_CODE_SUBAGENT_MODEL={subagent_model}"])
+        AgentOrchestrator._append_manifest_args(cmd, config, subagent_model)
+        AgentOrchestrator._append_workspace_cwd(cmd, config)
+        return cmd
 
-        # Claude CLI also reads ~/.claude.json (a sibling FILE, not under
-        # ~/.claude/). When that file isn't mounted, the CLI logs
-        # "config not found" and falls back to a backup inside ~/.claude/
-        # (audit D-48). Mount the host's claude.json if it exists so each
-        # agent boots from the same source of truth as the host.
+    @staticmethod
+    def _append_claude_json_mount(
+        cmd: list[str], hosts: dict[str, str | None]
+    ) -> None:
+        """Mount host's ~/.claude.json sibling FILE if present (audit D-48)."""
         claude_dir = hosts["claude"]
-        if claude_dir:
-            claude_json_host = f"{claude_dir.rstrip('/')}.json"
-            if Path(claude_json_host).exists():
-                cmd.extend(["-v", f"{claude_json_host}:/home/agent/.claude.json"])
+        if not claude_dir:
+            return
+        claude_json_host = f"{claude_dir.rstrip('/')}.json"
+        if Path(claude_json_host).exists():
+            cmd.extend(["-v", f"{claude_json_host}:/home/agent/.claude.json"])
 
+    @staticmethod
+    def _append_optional_host_mounts(
+        cmd: list[str], hosts: dict[str, str | None]
+    ) -> None:
+        """Mount agent settings.json and briefing.md when their hosts exist."""
         settings_host = hosts.get("settings")
         if settings_host:
             cmd.extend(["-v", f"{settings_host}:/home/agent/.claude/settings.json:ro"])
-
         briefing_host = hosts.get("briefing")
         if briefing_host:
             cmd.extend(["-v", f"{briefing_host}:/app/briefing.md:ro"])
 
+    @staticmethod
+    def _core_volume_and_env_args(
+        config: AgentConfig, hosts: dict[str, str | None], role: str
+    ) -> list[str]:
+        """The always-on -v/-e block (prompt, blueprints, docs, workspaces, env)."""
         docs_ro = "" if config.agent_id in ALL_DOCS else ":ro"
-        role = get_agent_role(config.agent_id) or "developer"
-        cmd.extend(
-            [
-                "-v",
-                f"{hosts['prompt']}:/app/system-prompt.md:ro",
-                "-v",
-                f"{hosts['blueprints']}:/app/agents/blueprints:ro",
-                "-v",
-                f"{hosts['docs']}:/app/docs{docs_ro}",
-                "-v",
-                f"{hosts['workspaces']}:/data/workspaces",
-                "-v",
-                f"{hosts['mcp_config']}:/app/mcp-config.json:ro",
-                "-e",
-                f"ROBOCO_AGENT_ID={config.agent_id}",
-                "-e",
-                f"ROBOCO_AGENT_ROLE={role}",
-                "-e",
-                "ROBOCO_API_URL=http://roboco-orchestrator:8000",
-                "-e",
-                "ROBOCO_SDK_PORT=9000",
-                "-e",
-                "ROBOCO_SDK_URL=http://localhost:9000",
-                "-e",
-                f"ROBOCO_AGENT_TOOL_CALL_WARN={settings.agent_tool_call_warn}",
-                "-e",
-                f"ROBOCO_AGENT_TOOL_CALL_HALT={settings.agent_tool_call_halt}",
-                "-e",
-                f"ROBOCO_AGENT_LOOP_THRESHOLD={settings.agent_loop_threshold}",
-                "-e",
-                f"ROBOCO_AGENT_LOOP_WINDOW={settings.agent_loop_window}",
-                "-e",
-                f"ROBOCO_AGENT_STOP_ATTEMPT_ALLOWANCE={settings.agent_stop_attempt_allowance}",
-            ]
-        )
+        return [
+            "-v",
+            f"{hosts['prompt']}:/app/system-prompt.md:ro",
+            "-v",
+            f"{hosts['blueprints']}:/app/agents/blueprints:ro",
+            "-v",
+            f"{hosts['docs']}:/app/docs{docs_ro}",
+            "-v",
+            f"{hosts['workspaces']}:/data/workspaces",
+            "-v",
+            f"{hosts['mcp_config']}:/app/mcp-config.json:ro",
+            "-e",
+            f"ROBOCO_AGENT_ID={config.agent_id}",
+            "-e",
+            f"ROBOCO_AGENT_ROLE={role}",
+            "-e",
+            "ROBOCO_API_URL=http://roboco-orchestrator:8000",
+            "-e",
+            "ROBOCO_SDK_PORT=9000",
+            "-e",
+            "ROBOCO_SDK_URL=http://localhost:9000",
+            "-e",
+            f"ROBOCO_AGENT_TOOL_CALL_WARN={settings.agent_tool_call_warn}",
+            "-e",
+            f"ROBOCO_AGENT_TOOL_CALL_HALT={settings.agent_tool_call_halt}",
+            "-e",
+            f"ROBOCO_AGENT_LOOP_THRESHOLD={settings.agent_loop_threshold}",
+            "-e",
+            f"ROBOCO_AGENT_LOOP_WINDOW={settings.agent_loop_window}",
+            "-e",
+            f"ROBOCO_AGENT_STOP_ATTEMPT_ALLOWANCE={settings.agent_stop_attempt_allowance}",
+        ]
+
+    @staticmethod
+    def _append_provider_env(cmd: list[str], config: AgentConfig) -> None:
+        """Inject ANTHROPIC_* env only on non-Anthropic providers."""
         # Provider routing: only inject ANTHROPIC_* env vars when the
         # resolved provider is non-Anthropic (i.e. Ollama Cloud). For the
         # Anthropic default path both fields are None and Claude Code
@@ -1572,15 +1593,12 @@ class AgentOrchestrator:
             cmd.extend(["-e", f"ANTHROPIC_BASE_URL={config.provider_base_url}"])
         if config.provider_auth_token:
             cmd.extend(["-e", f"ANTHROPIC_AUTH_TOKEN={config.provider_auth_token}"])
-        # Subagent model override: Claude Code's Task (Agent) tool defaults to
-        # claude-haiku-4-5-20251001 regardless of the parent's --model flag.
-        # When the parent runs on a non-Anthropic provider (e.g. Ollama Cloud),
-        # that default model is unreachable and subagent dispatch fails.
-        # CLAUDE_CODE_SUBAGENT_MODEL is a Claude Code env var (verified in
-        # v2.1.123 binary) that short-circuits the default selection so the
-        # spawned sub-task uses the same model as the parent agent.
-        subagent_model = _resolve_agent_cli_model(config.provider_type, config.model)
-        cmd.extend(["-e", f"CLAUDE_CODE_SUBAGENT_MODEL={subagent_model}"])
+
+    @staticmethod
+    def _append_manifest_args(
+        cmd: list[str], config: AgentConfig, subagent_model: str
+    ) -> None:
+        """Write the spawn manifest and flip the gateway flag."""
         # Spawn manifest + gateway flag — developer role only in Phase 1.
         # _build_manifest_for_agent writes the JSON file to the host and
         # returns the path; other roles get None and the gateway flag stays off.
@@ -1599,6 +1617,14 @@ class AgentOrchestrator:
         else:
             cmd.extend(["-e", "ROBOCO_GATEWAY_ENABLED=false"])
 
+    _ROLES_WITH_AGENT_WORKSPACE: ClassVar[frozenset[str]] = frozenset(
+        {"developer", "product_owner", "head_marketing"}
+    )
+    _ROLES_WITH_CELL_WORKSPACE: ClassVar[frozenset[str]] = frozenset({"documenter"})
+
+    @staticmethod
+    def _append_workspace_cwd(cmd: list[str], config: AgentConfig) -> None:
+        """Set the container -w to the agent or cell workspace by role."""
         # Pre-gateway parity (Wave A2+A3, 2026-05-12). Set the container's cwd
         # to the agent's task workspace so Edit/Write resolve to paths that
         # match _get_role_permissions allowlist, and `git add` operates inside
@@ -1607,23 +1633,15 @@ class AgentOrchestrator:
         #
         # Mirror the workspace-path selection in _get_role_permissions exactly:
         # - developer / product_owner / head_marketing: per-agent workspace
-        #   (/data/workspaces/{project}/{team}/{agent})
-        # - documenter: cell workspace (/data/workspaces/{project}/{team})
-        #   (Write/Edit allowlist scopes to cell_workspace_path for this role)
+        # - documenter: cell workspace
         # - qa / cell_pm / main_pm / auditor: no write workspace → omit -w
-        #   so the container falls back to /app (Dockerfile WORKDIR).
-        _role = get_agent_role(config.agent_id) or "developer"
-        _team = get_agent_team(config.agent_id) or ""
-        _project = _resolve_project_slug_from_git_context(config.git_context)
-        _roles_with_agent_workspace = {"developer", "product_owner", "head_marketing"}
-        _roles_with_cell_workspace = {"documenter"}
-        if _role in _roles_with_agent_workspace:
-            cmd.extend(["-w", _agent_workspace_path(_project, _team, config.agent_id)])
-        elif _role in _roles_with_cell_workspace:
-            cmd.extend(["-w", _cell_workspace_path(_project, _team)])
-        # else: qa / cell_pm / main_pm / auditor — omit -w, fall back to /app
-
-        return cmd
+        role = get_agent_role(config.agent_id) or "developer"
+        team = get_agent_team(config.agent_id) or ""
+        project = _resolve_project_slug_from_git_context(config.git_context)
+        if role in AgentOrchestrator._ROLES_WITH_AGENT_WORKSPACE:
+            cmd.extend(["-w", _agent_workspace_path(project, team, config.agent_id)])
+        elif role in AgentOrchestrator._ROLES_WITH_CELL_WORKSPACE:
+            cmd.extend(["-w", _cell_workspace_path(project, team)])
 
     @staticmethod
     def _append_agent_auth_env(cmd: list[str], config: AgentConfig) -> None:
