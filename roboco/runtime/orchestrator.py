@@ -499,14 +499,16 @@ class AgentOrchestrator:
         # is in a loop — without this gate the orchestrator re-spawns every
         # tick forever (seen in production on 2026-04-22).
         self._pm_respawn_tracker: dict[tuple[str, str], dict[str, Any]] = {}
-        # Stale-claim reaper config. Sourced from the same setting that
-        # `trigger_filter` consumes so both layers agree on the staleness
-        # cutoff on the same dispatch tick — the reaper runs first, frees
-        # the row, and any spawn `trigger_filter` queues lands on an
-        # unclaimed task. Tests bypass `__init__` via `__new__` and bind
-        # a mock `_task_svc` on the instance directly; production never
-        # uses that attribute, so it's not initialized here.
-        self._claim_heartbeat_ttl: int = settings.claim_stale_seconds
+        # Stale-claim reaper config. Wave C3 (2026-05-12): sourced from
+        # stale_claim_reap_seconds (default 600) rather than
+        # claim_stale_seconds (default 180). The two settings are now
+        # distinct: claim_stale_seconds drives trigger_filter (spawn
+        # queueing); stale_claim_reap_seconds drives the reaper.
+        # Smoke run 3 showed agents reaped at 180s while actively retrying
+        # rejected verbs — LLM inference routinely exceeds that window.
+        # Tests bypass `__init__` via `__new__` and set _claim_heartbeat_ttl
+        # directly; production never uses _task_svc from __init__.
+        self._claim_heartbeat_ttl: int = settings.stale_claim_reap_seconds
 
     # =========================================================================
     # LIFECYCLE

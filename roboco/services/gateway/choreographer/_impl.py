@@ -465,6 +465,17 @@ class Choreographer:
         """
         if env.error is None:
             return env
+        # Wave C3 (2026-05-12): refresh heartbeat on every rejection so an
+        # agent stuck in a verb-rejection loop (e.g., tracing_gap while
+        # retrying) does not look idle to the reaper. Best-effort: a
+        # heartbeat failure must never alter the envelope returned to the
+        # agent. _touch already guards task_id=None.
+        try:
+            await self._touch(task_id)
+        except Exception as exc:
+            logger.warning(
+                "heartbeat touch failed on rejection", error=str(exc), verb=verb
+            )
         from uuid import uuid4 as _uuid4
 
         details: dict[str, Any] = {
@@ -2291,11 +2302,7 @@ class Choreographer:
                     context_briefing={},
                 )
             # Rule 2: same-assignee same-type fallback (non-spine types)
-            if (
-                sib_assignee
-                and sib_assignee == new_assignee
-                and sib_type == new_type
-            ):
+            if sib_assignee and sib_assignee == new_assignee and sib_type == new_type:
                 return Envelope.invalid_state(
                     message=(
                         f"sibling subtask already assigned to "

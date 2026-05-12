@@ -326,6 +326,22 @@ class Settings(BaseSettings):
         ge=60,
         description="Claim heartbeat staleness threshold (seconds)",
     )
+    # Wave C3 (2026-05-12). Reaper window for stale-claim detection.
+    # Smoke run 3 reaped agents at ~180s while they were actively
+    # retrying — LLM inference + retry loops routinely exceed 3 min
+    # between verb successes. 600s is large enough to accommodate that
+    # without letting a genuinely-stuck container linger.
+    # Distinct from claim_stale_seconds (which drives trigger_filter
+    # spawn queueing); keeping them separate avoids a window where a
+    # higher reap threshold would also delay spawn-queue decisions.
+    stale_claim_reap_seconds: int = Field(
+        default=600,
+        ge=60,
+        description=(
+            "Reaper-only stale claim threshold (seconds); "
+            "override via ROBOCO_STALE_CLAIM_REAP_SECONDS"
+        ),
+    )
     spawn_cooldown_seconds: int = Field(
         default=60,
         ge=1,
