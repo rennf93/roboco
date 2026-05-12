@@ -38,33 +38,8 @@ low=$(printf '%s' "$cmd" | tr "[:upper:]" "[:lower:]")
 
 # --- git network / auth ops ---------------------------------------------------
 if echo "$low" | grep -qE '(^|[[:space:];&|])git[[:space:]]+(fetch|pull|push|clone|remote|ls-remote|checkout|commit|merge|rebase|reset|cherry-pick|revert|tag[[:space:]]+-d|update-ref|reflog[[:space:]]+delete)'; then
-    cat <<'EOF' >&2
-Denied: shell git for network / auth / branch-mutating ops is blocked.
-
-Read-only inspection (any role):
-  - roboco-git-readonly MCP: roboco_git_status / _log / _diff / _branch_list
-
-Write paths — there is NO direct shell-git or "roboco_git_commit" tool.
-Use the verb that matches your role; the choreographer handles git for you:
-
-  - developer / documenter: roboco-do `commit(message, files)`
-      → auto-prefixes [task-id], pushes to your branch, opens a PR via
-        the choreographer when the task transitions out of in_progress.
-        Your branch is auto-created when you call i_will_work_on().
-
-  - cell_pm / main_pm: roboco-flow `complete(task_id, notes)`
-      → cell_pm merges the leaf PR; main_pm opens the master PR and
-        escalates to CEO. PMs never run git directly — they delegate
-        code work to devs and complete to merge.
-
-  - any role: branches are NOT something you set up. They are created
-    on claim/i_will_work_on. If you don't see your branch, check that
-    you're actually claimed on the task.
-
-Raw `git fetch` etc. don't have auth (the PAT is injected only inside
-the MCP layer) and will fail with "could not read Username for
-'https://github.com'".
-EOF
+    echo "Denied: shell git for network / auth / branch-mutating ops is blocked." >&2
+    echo "Use the verb listed in your role's State→Verb table (e.g. commit, complete, i_am_done)." >&2
     exit 2
 fi
 
