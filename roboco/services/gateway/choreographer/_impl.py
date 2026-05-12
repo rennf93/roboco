@@ -2065,13 +2065,53 @@ class Choreographer:
         Returns the list of task IDs that were paused (as strings) so
         ``i_am_idle`` can tell the agent which ``resume(task_id)`` calls
         await it on the next respawn. Empty list when nothing was active.
+
+        Wave C7 (2026-05-12) — pre-gateway parity: a synthetic checkpoint is
+        written for each paused task so the panel's Checkpoints column reflects
+        reality. Checkpoint failure is swallowed; it must never block the pause.
         """
         in_progress = await self.task.list_in_progress_for_agent(agent_id)
         paused_ids: list[str] = []
         for t in in_progress:
             await self.task.pause_for_agent(agent_id, t.id)
             paused_ids.append(str(t.id))
+            await self._write_auto_pause_checkpoint(agent_id, t)
         return paused_ids
+
+    async def _write_auto_pause_checkpoint(
+        self, agent_id: UUID, task: Any
+    ) -> None:
+        """Write a synthetic checkpoint for a task that was auto-paused on i_am_idle.
+
+        Wave C7 (2026-05-12) — captures state-at-pause so the panel's
+        Checkpoints column is never empty after an auto-pause. Agents that
+        want an explicit checkpoint before idling can call note(scope='note',
+        text='checkpoint: ...') first; this synthetic write covers the bare
+        i_am_idle case which is what all current agents do.
+
+        Failure is logged and swallowed — the pause already happened and the
+        caller must not be affected by a checkpoint DB error.
+        """
+        commit_refs = [c.sha for c in (task.commits or [])[-3:]]
+        commit_count = len(task.commits or [])
+        state_summary = (
+            f"auto-paused on i_am_idle (commits: {commit_count})"
+        )
+        remaining_work = commit_refs if commit_refs else ["no commits yet"]
+        try:
+            await self.task.add_checkpoint(
+                task_id=task.id,
+                agent_id=agent_id,
+                state_summary=state_summary,
+                remaining_work=remaining_work,
+            )
+        except Exception:
+            log = structlog.get_logger(__name__)
+            log.warning(
+                "auto_pause_checkpoint_failed",
+                task_id=str(task.id),
+                agent_id=str(agent_id),
+            )
 
     # --- Phase 2 (QA) verbs moved to ``qa.py`` (audit P2-2). ---
 
