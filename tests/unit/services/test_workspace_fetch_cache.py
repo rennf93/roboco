@@ -164,9 +164,7 @@ async def test_force_true_bypasses_cache(
         # First call populates the cache.
         await svc.ensure_workspace(project_slug="roboco", agent_id=agent.id)
         # Second call with force=True must bypass the cache and fetch again.
-        await svc.ensure_workspace(
-            project_slug="roboco", agent_id=agent.id, force=True
-        )
+        await svc.ensure_workspace(project_slug="roboco", agent_id=agent.id, force=True)
 
     assert fetch_call_count == _EXPECTED_TWO_FETCHES, (
         f"force=True should bypass cache and fetch again; "

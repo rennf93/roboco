@@ -39,12 +39,10 @@ async def test_fetch_auth_fail_logs_at_debug() -> None:
     def capture_debug(event: str, **_kw: object) -> None:
         captured.append(("debug", event))
 
-    with patch(
-        "roboco.services.workspace.subprocess.run", return_value=fake_result
-    ), patch(
-        "roboco.services.workspace.logger.warning", side_effect=capture_warning
-    ), patch(
-        "roboco.services.workspace.logger.debug", side_effect=capture_debug
+    with (
+        patch("roboco.services.workspace.subprocess.run", return_value=fake_result),
+        patch("roboco.services.workspace.logger.warning", side_effect=capture_warning),
+        patch("roboco.services.workspace.logger.debug", side_effect=capture_debug),
     ):
         await WorkspaceService._fetch_origin_best_effort(
             workspace=workspace, project_slug="roboco-api"
@@ -79,12 +77,10 @@ async def test_fetch_genuine_failure_still_warns() -> None:
     def capture_debug(event: str, **_kw: object) -> None:
         captured.append(("debug", event))
 
-    with patch(
-        "roboco.services.workspace.subprocess.run", return_value=fake_result
-    ), patch(
-        "roboco.services.workspace.logger.warning", side_effect=capture_warning
-    ), patch(
-        "roboco.services.workspace.logger.debug", side_effect=capture_debug
+    with (
+        patch("roboco.services.workspace.subprocess.run", return_value=fake_result),
+        patch("roboco.services.workspace.logger.warning", side_effect=capture_warning),
+        patch("roboco.services.workspace.logger.debug", side_effect=capture_debug),
     ):
         await WorkspaceService._fetch_origin_best_effort(
             workspace=workspace, project_slug="roboco-api"

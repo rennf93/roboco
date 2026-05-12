@@ -40,8 +40,14 @@ _CHANNEL_DISCOVERY = ("channels",)
 
 _DEV_FLOW = spec.intents_for_role(spec.Role.DEVELOPER)
 _DEV_DO = (
-    "commit", "note", "say", "dm", "evidence", "progress",
-    *_NOTIFY_RECEIVER, *_CHANNEL_DISCOVERY,
+    "commit",
+    "note",
+    "say",
+    "dm",
+    "evidence",
+    "progress",
+    *_NOTIFY_RECEIVER,
+    *_CHANNEL_DISCOVERY,
 )
 
 _QA_FLOW = spec.intents_for_role(spec.Role.QA)
@@ -49,30 +55,53 @@ _QA_DO = ("note", "say", "dm", "evidence", *_NOTIFY_RECEIVER, *_CHANNEL_DISCOVER
 
 _DOC_FLOW = spec.intents_for_role(spec.Role.DOCUMENTER)
 _DOC_DO = (
-    "commit", "note", "say", "dm", "evidence", "progress",
-    *_NOTIFY_RECEIVER, *_CHANNEL_DISCOVERY,
+    "commit",
+    "note",
+    "say",
+    "dm",
+    "evidence",
+    "progress",
+    *_NOTIFY_RECEIVER,
+    *_CHANNEL_DISCOVERY,
 )
 
 _CELL_PM_FLOW = spec.intents_for_role(spec.Role.CELL_PM)
 _CELL_PM_DO = (
-    "note", "say", "dm", "notify", "evidence",
-    "open_session", "link_session",
-    *_NOTIFY_RECEIVER, *_CHANNEL_DISCOVERY,
+    "note",
+    "say",
+    "dm",
+    "notify",
+    "evidence",
+    "open_session",
+    "link_session",
+    *_NOTIFY_RECEIVER,
+    *_CHANNEL_DISCOVERY,
 )
 
 _MAIN_PM_FLOW = spec.intents_for_role(spec.Role.MAIN_PM)
 _MAIN_PM_DO = (
-    "note", "say", "dm", "notify", "evidence",
-    "open_session", "link_session",
-    *_NOTIFY_RECEIVER, *_CHANNEL_DISCOVERY,
+    "note",
+    "say",
+    "dm",
+    "notify",
+    "evidence",
+    "open_session",
+    "link_session",
+    *_NOTIFY_RECEIVER,
+    *_CHANNEL_DISCOVERY,
 )
 
 _PRODUCT_OWNER_FLOW = spec.intents_for_role(spec.Role.PRODUCT_OWNER)
 _HEAD_MARKETING_FLOW = spec.intents_for_role(spec.Role.HEAD_MARKETING)
 _BOARD_DO = (
-    "note", "say", "dm", "notify", "evidence",
+    "note",
+    "say",
+    "dm",
+    "notify",
+    "evidence",
     "open_session",  # Board can open strategic sessions but not link arbitrary
-    *_NOTIFY_RECEIVER, *_CHANNEL_DISCOVERY,
+    *_NOTIFY_RECEIVER,
+    *_CHANNEL_DISCOVERY,
 )
 
 _AUDITOR_FLOW = spec.intents_for_role(spec.Role.AUDITOR)

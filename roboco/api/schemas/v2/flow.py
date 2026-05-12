@@ -50,7 +50,10 @@ class IAmBlockedRequest(BaseModel):
         if v is None:
             return v
         if isinstance(v, str) and v.lower() not in {
-            "external", "internal", "question", "dependency",
+            "external",
+            "internal",
+            "question",
+            "dependency",
         }:
             raise ValueError(
                 f"blocker_type must be one of: external | internal | "
@@ -178,7 +181,10 @@ class DelegateRequest(BaseModel):
                 f"Priority is not a delegate parameter — drop it."
             )
         if isinstance(v, str) and v.lower() not in {
-            "low", "medium", "high", "critical",
+            "low",
+            "medium",
+            "high",
+            "critical",
         }:
             raise ValueError(
                 f"estimated_complexity must be one of: low, medium, high, "
@@ -203,8 +209,12 @@ class DelegateRequest(BaseModel):
     def _task_type_must_be_known(cls, v: object) -> object:
         """Reject invented task_type values with the enum hint."""
         if isinstance(v, str) and v.lower() not in {
-            "code", "documentation", "research",
-            "planning", "design", "administrative",
+            "code",
+            "documentation",
+            "research",
+            "planning",
+            "design",
+            "administrative",
         }:
             raise ValueError(
                 f"task_type must be one of: code | documentation | research | "
