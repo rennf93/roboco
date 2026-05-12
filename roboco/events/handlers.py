@@ -325,6 +325,46 @@ async def handle_question_answered(event: Event) -> None:
 
 
 # =============================================================================
+# AUDITOR SPAWN HANDLER
+# =============================================================================
+
+
+async def handle_auditor_spawn(event: Event) -> None:
+    """Wave C6 (2026-05-12) — spawn auditor on exceptional lifecycle events.
+
+    Spawned on task.blocked / task.cancelled / task.awaiting_ceo_approval
+    so the auditor can read the journal aggregate and emit a reflect note
+    that surfaces to CEO. The container is one-shot; auditor i_am_idle()s
+    as soon as it has logged its observation.
+
+    Auditor spawn failure is deliberately swallowed — the auditor is a
+    silent observer whose absence must have no side effects on the lifecycle.
+    """
+    if not _context.orchestrator:
+        return
+
+    task_id = event.data.get("task_id")
+
+    logger.info(
+        "Spawning auditor for exceptional event",
+        event_type=event.type.value,
+        task_id=task_id,
+    )
+
+    try:
+        await _context.orchestrator.spawn_agent(agent_id="auditor")
+    except Exception as exc:
+        # Auditor spawn failure must NOT block the underlying event from
+        # being processed. Log the warning and return cleanly.
+        logger.warning(
+            "auditor spawn failed",
+            event_type=event.type.value,
+            task_id=task_id,
+            error=str(exc),
+        )
+
+
+# =============================================================================
 # HANDLER REGISTRATION
 # =============================================================================
 
@@ -360,6 +400,17 @@ def register_default_handlers(bus: Any = None) -> None:
 
     # Question handlers
     bus.subscribe(EventType.QUESTION_ANSWERED, handle_question_answered)
+
+    # Auditor spawn handlers — Wave C6 (2026-05-12)
+    # Auditor observes exceptional task lifecycle events only; routine
+    # progress events (claimed, started, in_progress) do not trigger it.
+    auditor_events = [
+        EventType.TASK_BLOCKED,
+        EventType.TASK_CANCELLED,
+        EventType.TASK_AWAITING_CEO_APPROVAL,
+    ]
+    for event_type in auditor_events:
+        bus.subscribe(event_type, handle_auditor_spawn)
 
     # NOTE: A2A routing is now handled by SDK Server directly
     # Orchestrator dispatcher handles fallback spawning via notification polling
