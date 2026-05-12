@@ -9,16 +9,17 @@ from __future__ import annotations
 from unittest.mock import AsyncMock, MagicMock
 from uuid import uuid4
 
-import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
-
 from roboco.api.deps import get_choreographer
 from roboco.api.routes.v2.flow_main_pm import router
-
+from roboco.api.schemas.v2.flow import IWillPlanRequest
 
 _AGENT_ID = "00000000-0000-0000-0004-000000000001"
 _HEADERS = {"X-Agent-ID": _AGENT_ID, "X-Agent-Role": "main_pm"}
+_HTTP_UNPROCESSABLE = 422
+_HTTP_OK = 200
+_MIN_APPROACH_LEN = 20
 
 
 def _make_envelope(error: str, missing: list[str] | None = None) -> MagicMock:
@@ -52,7 +53,7 @@ def test_i_will_plan_rejects_missing_approach() -> None:
             # no approach, no sub_tasks
         },
     )
-    assert resp.status_code == 422, resp.text
+    assert resp.status_code == _HTTP_UNPROCESSABLE, resp.text
     detail = resp.json()
     assert any(
         "approach" in str(err.get("loc", []))
@@ -87,7 +88,7 @@ def test_i_will_plan_rejects_empty_subtasks_for_pm() -> None:
     # The gateway-side gate returns an envelope with error='incomplete_input'
     # and missing=['sub_tasks']. HTTP status is 200 (envelope carries error).
     body = resp.json()
-    if resp.status_code == 200:
+    if resp.status_code == _HTTP_OK:
         assert body.get("error") == "incomplete_input", body
         assert "sub_tasks" in (body.get("missing") or []), body
     else:
@@ -98,8 +99,6 @@ def test_i_will_plan_rejects_empty_subtasks_for_pm() -> None:
 
 def test_i_will_plan_schema_accepts_rich_plan() -> None:
     """Pydantic schema accepts a fully-formed request with rich plan fields."""
-    from roboco.api.schemas.v2.flow import IWillPlanRequest
-
     req = IWillPlanRequest(
         task_id=uuid4(),
         plan="Route to backend",
@@ -113,5 +112,5 @@ def test_i_will_plan_schema_accepts_rich_plan() -> None:
         risks=[],
         open_questions=[],
     )
-    assert len(req.approach) >= 20
+    assert len(req.approach) >= _MIN_APPROACH_LEN
     assert len(req.sub_tasks) == 1

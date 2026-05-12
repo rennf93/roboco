@@ -45,6 +45,10 @@ from roboco.services.gateway.remediation import (
 
 logger = structlog.get_logger()
 
+# Minimum character length enforced on rich_plan["approach"] by the PM sub-tasks
+# gate. Must match the Pydantic min_length on IWillPlanRequest.approach.
+_PM_APPROACH_MIN_LEN = 20
+
 
 def _normalize_sub_task(st: dict[str, Any], order: int) -> dict[str, Any]:
     """Shape a sub_task entry to panel/src/types/index.ts::SubTask."""
@@ -343,16 +347,22 @@ class Choreographer:
         role_str: str,
         briefing: dict[str, Any],
     ) -> Envelope | None:
-        """Handle i_will_plan re-entry cases so the caller stays within PLR0911.
+        """Handle two distinct re-entry contracts for i_will_plan.
 
-        Returns an Envelope for two short-circuit paths:
-        - Idempotent re-entry: PM already owns the task in in_progress — touch
-          the heartbeat and return OK without re-running the spec gate.
-        - Recovery re-entry: task stuck in claimed after a crash — skip re-claim
-          (CLAIMED is not a valid source state for claim) and run set_plan+start.
+        Idempotent heartbeat: the PM already owns the task in in_progress —
+        touch the heartbeat and return OK without re-running the spec gate.
+        This is the crash-recovery path: a PM container that respawns after a
+        mid-run crash re-calls i_will_plan with thin args ("resume") and must
+        receive OK so it can proceed from where it left off.
 
-        Returns None when neither re-entry condition applies, signalling the
-        caller should continue to the normal claim-plan-start path.
+        Crash-recovery claim: task is stuck in claimed after a crash — skip
+        re-claim (claimed is not a valid source for the claim transition) and
+        run set_plan+start to complete the interrupted sequence.
+
+        Returns None when neither condition applies, signalling the caller to
+        continue to the normal claim-plan-start path. PLR0911 budget is the
+        secondary reason this lives in a helper; the domain contract above is
+        the primary one.
         """
         status = str(t.status)
         if status == "in_progress" and t.assigned_to == pm_agent_id:
@@ -380,30 +390,43 @@ class Choreographer:
         task_id: UUID,
         briefing: dict[str, Any],
     ) -> Envelope | None:
-        """Wave A1 gate: PMs must supply at least one sub_task in i_will_plan.
+        """Wave A1 gate: PMs must supply approach (>= 20 chars) and sub_tasks.
 
-        Returns a rejection Envelope when the caller is a PM role and
-        rich_plan.sub_tasks is absent or empty; returns None to signal
-        the gate passed and the caller should continue.
+        Enforces both fields at the choreographer layer so direct service-layer
+        callers (MCP server, test fixtures, orchestrator-internal Python) cannot
+        persist a plan that bypassed the HTTP Pydantic boundary.
+
+        Returns a rejection Envelope when the caller is a PM role and either
+        field is absent/insufficient; returns None to signal the gate passed.
         """
         if role_str not in ("cell_pm", "main_pm"):
             return None
-        if rich_plan and rich_plan.get("sub_tasks"):
+        missing: list[str] = []
+        field_hints: dict[str, str] = {}
+        approach_raw = (rich_plan or {}).get("approach", "")
+        if len(str(approach_raw).strip()) < _PM_APPROACH_MIN_LEN:
+            missing.append("approach")
+            field_hints["approach"] = (
+                "approach must be a non-empty string of at least 20 characters "
+                "describing how the PM will decompose and route this task."
+            )
+        if not (rich_plan and rich_plan.get("sub_tasks")):
+            missing.append("sub_tasks")
+            field_hints["sub_tasks"] = (
+                "PMs must list at least one sub_task — a "
+                "non-empty list of {title, description}. "
+                "Each becomes a delegate target after i_will_plan."
+            )
+        if not missing:
             return None
         return await self._emit_rejection(
             Envelope.incomplete_input(
-                missing=["sub_tasks"],
-                field_hints={
-                    "sub_tasks": (
-                        "PMs must list at least one sub_task — a "
-                        "non-empty list of {title, description}. "
-                        "Each becomes a delegate target after i_will_plan."
-                    )
-                },
+                missing=missing,
+                field_hints=field_hints,
                 remediate=(
                     "re-issue i_will_plan(task_id, plan, approach, "
                     "sub_tasks=[{'title': '...', 'description': '...'}, ...]) "
-                    "with a non-empty sub_tasks list."
+                    "with approach >= 20 chars and a non-empty sub_tasks list."
                 ),
                 context_briefing=briefing,
             ).with_introspection(task=task, role=role_str),
@@ -1952,17 +1975,18 @@ class Choreographer:
         Atomic: spec.can_invoke_intent runs before any state mutation;
         the composed (claim, set_plan, start) sequence is wrapped in a
         savepoint by the runner so a mid-sequence failure rolls back
-        the DB. Idempotent re-entry: a respawned PM re-calling on a
-        task they already own in claimed/in_progress just refreshes
-        the heartbeat.
+        the DB.
 
-        The rich-plan kwargs (``approach``, ``technical_considerations``,
-        ``risks``, ``open_questions``) populate the panel's Plan tab
-        (pre-gateway parity). When any are non-empty/non-default they
-        are persisted as a structured ``TaskPlan``-shaped dict via
-        ``TaskService.set_plan``; otherwise ``plan`` is stored as a
-        narrative string. Empty defaults keep behavior backward-compatible
-        for callers that don't pass rich fields.
+        PM callers must supply ``approach`` (>= 20 chars) and a non-empty
+        ``sub_tasks`` list inside ``rich_plan`` — these are enforced in
+        ``_pm_sub_tasks_gate``. Developer callers may omit ``sub_tasks``
+        (their plan is execution-shaped) but still need ``approach`` via
+        the HTTP schema layer.
+
+        Control flow: re-entry check → if not re-entry → sub_tasks gate
+        → spec gate → claim+plan+start. The re-entry check must come first
+        so a respawned PM calling with thin args ("resume", no sub_tasks)
+        is short-circuited before the gate can reject them.
         """
         t = await self.task.get(task_id)
         if t is None:
@@ -1975,18 +1999,6 @@ class Choreographer:
         agent = await self.task.agent_for(pm_agent_id)
         role_str = str(agent.role) if agent is not None else "cell_pm"
         briefing = await self._briefing_for(pm_agent_id, task_id)
-        # Wave A1 (2026-05-12) — pre-gateway parity for _validate_claimed_start.
-        # PMs decompose; their plan MUST include at least one sub_task. Devs
-        # execute; sub_tasks list can be empty (their plan is execution-shaped).
-        if rejection := await self._pm_sub_tasks_gate(
-            role_str=role_str,
-            rich_plan=rich_plan,
-            task=t,
-            agent_id=pm_agent_id,
-            task_id=task_id,
-            briefing=briefing,
-        ):
-            return rejection
         try:
             role = spec_module.Role(role_str)
         except ValueError:
@@ -2032,12 +2044,24 @@ class Choreographer:
             plan=effective_plan,
             verb_name="i_will_plan",
         )
-        # Re-entry paths (idempotent + recovery) are handled in a shared helper
-        # so i_will_plan stays within the PLR0911 return-statement budget.
+        # Re-entry check runs first — a respawned PM with thin args ("resume",
+        # no sub_tasks) must short-circuit here before the sub_tasks gate.
         if reentry := await self._handle_pm_reentry(
             ctx, t, pm_agent_id, task_id, role_str, briefing
         ):
             return reentry
+        # Gate runs only for initial-claim paths (not re-entry).
+        # PMs decompose; their plan MUST include approach + at least one sub_task.
+        # Devs execute; sub_tasks list can be empty (their plan is execution-shaped).
+        if rejection := await self._pm_sub_tasks_gate(
+            role_str=role_str,
+            rich_plan=rich_plan,
+            task=t,
+            agent_id=pm_agent_id,
+            task_id=task_id,
+            briefing=briefing,
+        ):
+            return rejection
         if rejection := await self._claim_plan_start_gate(ctx, role, spec_ctx):
             return rejection
         envelope = await self._claim_plan_start_run(ctx, agent, spec_ctx)
