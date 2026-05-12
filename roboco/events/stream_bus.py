@@ -212,42 +212,47 @@ class StreamEventBus:
 
         while self._running:
             try:
-                # Block for 5 seconds waiting for new messages
-                results = await self._redis.xreadgroup(
-                    self.group_name,
-                    self.consumer_name,
-                    stream_dict,
-                    count=10,
-                    block=5000,
-                )
-
-                if not results:
-                    continue
-
-                for stream_name, messages in results:
-                    for message_id, data in messages:
-                        await self._handle_message(stream_name, message_id, data)
-
+                await self._listen_tick(stream_dict)
             except asyncio.CancelledError:
                 break
             except ResponseError as e:
-                # NOGROUP: consumer group disappeared (e.g. Redis FLUSHALL by
-                # an external cleanup while the orchestrator is still up).
-                # Re-bootstrap the groups so we self-heal instead of spamming
-                # the same error every block-cycle.
-                if "NOGROUP" in str(e):
-                    logger.warning(
-                        "Stream consumer group missing; recreating",
-                        group=self.group_name,
-                    )
-                    for stream in streams:
-                        await self._ensure_consumer_group(stream)
+                if await self._handle_response_error(e, streams):
                     continue
-                logger.error("Error in stream event loop", error=str(e))
                 await asyncio.sleep(1)
             except Exception as e:
                 logger.error("Error in stream event loop", error=str(e))
                 await asyncio.sleep(1)
+
+    async def _listen_tick(self, stream_dict: dict[str, str]) -> None:
+        """Block for one XREADGROUP cycle and dispatch any messages."""
+        assert self._redis is not None
+        results = await self._redis.xreadgroup(
+            self.group_name,
+            self.consumer_name,
+            stream_dict,
+            count=10,
+            block=5000,
+        )
+        if not results:
+            return
+        for stream_name, messages in results:
+            for message_id, data in messages:
+                await self._handle_message(stream_name, message_id, data)
+
+    async def _handle_response_error(
+        self, exc: ResponseError, streams: list[str]
+    ) -> bool:
+        """Recover from NOGROUP by rebootstrapping; return True iff recovered."""
+        if "NOGROUP" in str(exc):
+            logger.warning(
+                "Stream consumer group missing; recreating",
+                group=self.group_name,
+            )
+            for stream in streams:
+                await self._ensure_consumer_group(stream)
+            return True
+        logger.error("Error in stream event loop", error=str(exc))
+        return False
 
     @staticmethod
     def _decode_event_data(data: dict) -> str | None:
