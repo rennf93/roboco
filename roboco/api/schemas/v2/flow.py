@@ -122,11 +122,11 @@ class EscalateToCeoRequest(BaseModel):
 class IWillPlanRequest(BaseModel):
     task_id: UUID
     plan: str = Field(..., min_length=1)
-    # Optional rich-plan fields. These persist into Task.plan as a structured
-    # dict matching roboco.models.task.TaskPlan, so the panel's Plan tab
-    # shows Approach / Sub-Tasks / Technical Considerations / Risks /
-    # Open Questions instead of an empty pane. Pre-gateway parity.
-    approach: str = ""
+    # Pre-gateway parity (Wave A1, 2026-05-12). Approach is REQUIRED — agents
+    # could not transition claimed → in_progress without filling this in the
+    # pre-gateway flow. The Plan tab depends on it; smoke run 3 confirmed
+    # the empty default lets agents through with thin plans.
+    approach: str = Field(..., min_length=20)
     sub_tasks: list[dict[str, str]] = Field(
         default_factory=list,
         description="List of {title, description} — server assigns id + order",

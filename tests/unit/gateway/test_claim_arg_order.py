@@ -260,7 +260,21 @@ async def test_i_will_plan_calls_claim_and_start_with_task_id_first() -> None:
     deps = _make_deps(task=task_svc)
     c = Choreographer(deps)
 
-    env = await c.i_will_plan(pm_id, task_id, plan="break the work into 3 subtasks")
+    env = await c.i_will_plan(
+        pm_id,
+        task_id,
+        plan="break the work into 3 subtasks",
+        rich_plan={
+            "approach": (
+                "Three-cell decomposition: backend, frontend, and ux each "
+                "own a vertical slice of the work."
+            ),
+            "sub_tasks": [
+                {"title": "Backend slice", "description": "API + DB"},
+                {"title": "Frontend slice", "description": "UI integration"},
+            ],
+        },
+    )
 
     task_svc.claim.assert_awaited_once_with(task_id, pm_id)
     task_svc.start.assert_awaited_once_with(task_id, pm_id)

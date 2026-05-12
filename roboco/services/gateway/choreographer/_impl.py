@@ -334,6 +334,84 @@ class Choreographer:
             context_briefing=ctx.briefing,
         ).with_introspection(task=task, role=ctx.role_str)
 
+    async def _handle_pm_reentry(
+        self,
+        ctx: _ClaimPlanStartContext,
+        t: Any,
+        pm_agent_id: UUID,
+        task_id: UUID,
+        role_str: str,
+        briefing: dict[str, Any],
+    ) -> Envelope | None:
+        """Handle i_will_plan re-entry cases so the caller stays within PLR0911.
+
+        Returns an Envelope for two short-circuit paths:
+        - Idempotent re-entry: PM already owns the task in in_progress — touch
+          the heartbeat and return OK without re-running the spec gate.
+        - Recovery re-entry: task stuck in claimed after a crash — skip re-claim
+          (CLAIMED is not a valid source state for claim) and run set_plan+start.
+
+        Returns None when neither re-entry condition applies, signalling the
+        caller should continue to the normal claim-plan-start path.
+        """
+        status = str(t.status)
+        if status == "in_progress" and t.assigned_to == pm_agent_id:
+            await self._touch(task_id)
+            return Envelope.ok(
+                status=status,
+                task_id=str(task_id),
+                next=spec_module._INTENT_VERBS["i_will_plan"].next_hint(t),
+                context_briefing=briefing,
+            ).with_introspection(task=t, role=role_str)
+        if status == "claimed" and t.assigned_to == pm_agent_id:
+            envelope = await self._resume_from_claimed(ctx)
+            return await self._post_claim_journal_gate(
+                "i_will_plan", pm_agent_id, task_id, envelope
+            )
+        return None
+
+    async def _pm_sub_tasks_gate(
+        self,
+        *,
+        role_str: str,
+        rich_plan: dict[str, Any] | None,
+        task: Any,
+        agent_id: UUID,
+        task_id: UUID,
+        briefing: dict[str, Any],
+    ) -> Envelope | None:
+        """Wave A1 gate: PMs must supply at least one sub_task in i_will_plan.
+
+        Returns a rejection Envelope when the caller is a PM role and
+        rich_plan.sub_tasks is absent or empty; returns None to signal
+        the gate passed and the caller should continue.
+        """
+        if role_str not in ("cell_pm", "main_pm"):
+            return None
+        if rich_plan and rich_plan.get("sub_tasks"):
+            return None
+        return await self._emit_rejection(
+            Envelope.incomplete_input(
+                missing=["sub_tasks"],
+                field_hints={
+                    "sub_tasks": (
+                        "PMs must list at least one sub_task — a "
+                        "non-empty list of {title, description}. "
+                        "Each becomes a delegate target after i_will_plan."
+                    )
+                },
+                remediate=(
+                    "re-issue i_will_plan(task_id, plan, approach, "
+                    "sub_tasks=[{'title': '...', 'description': '...'}, ...]) "
+                    "with a non-empty sub_tasks list."
+                ),
+                context_briefing=briefing,
+            ).with_introspection(task=task, role=role_str),
+            agent_id=agent_id,
+            task_id=task_id,
+            verb="i_will_plan",
+        )
+
     async def _emit_rejection(
         self,
         env: Envelope,
@@ -1897,6 +1975,18 @@ class Choreographer:
         agent = await self.task.agent_for(pm_agent_id)
         role_str = str(agent.role) if agent is not None else "cell_pm"
         briefing = await self._briefing_for(pm_agent_id, task_id)
+        # Wave A1 (2026-05-12) — pre-gateway parity for _validate_claimed_start.
+        # PMs decompose; their plan MUST include at least one sub_task. Devs
+        # execute; sub_tasks list can be empty (their plan is execution-shaped).
+        if rejection := await self._pm_sub_tasks_gate(
+            role_str=role_str,
+            rich_plan=rich_plan,
+            task=t,
+            agent_id=pm_agent_id,
+            task_id=task_id,
+            briefing=briefing,
+        ):
+            return rejection
         try:
             role = spec_module.Role(role_str)
         except ValueError:
@@ -1942,29 +2032,12 @@ class Choreographer:
             plan=effective_plan,
             verb_name="i_will_plan",
         )
-        # Idempotent re-entry: PM already owns the task in_progress.
-        # Touch heartbeat and short-circuit before the spec gate (which
-        # would otherwise reject because in_progress is not a source state
-        # for the composed `claim` action).
-        if str(t.status) == "in_progress" and t.assigned_to == pm_agent_id:
-            await self._touch(task_id)
-            return Envelope.ok(
-                status=str(t.status),
-                task_id=str(task_id),
-                next=spec_module._INTENT_VERBS["i_will_plan"].next_hint(t),
-                context_briefing=briefing,
-            ).with_introspection(task=t, role=role_str)
-        # Recovery re-entry: task stuck in `claimed` (e.g. orchestrator restart
-        # or a partial-claim race) and the PM already owns it. The spec
-        # `claim` action's source-statuses do NOT include CLAIMED, so the spec
-        # gate would reject. Surface this as a runner call that runs only
-        # set_plan + start. Without this block, a PM reclaiming from a
-        # crashed mid-sequence would loop forever.
-        if str(t.status) == "claimed" and t.assigned_to == pm_agent_id:
-            envelope = await self._resume_from_claimed(ctx)
-            return await self._post_claim_journal_gate(
-                "i_will_plan", pm_agent_id, task_id, envelope
-            )
+        # Re-entry paths (idempotent + recovery) are handled in a shared helper
+        # so i_will_plan stays within the PLR0911 return-statement budget.
+        if reentry := await self._handle_pm_reentry(
+            ctx, t, pm_agent_id, task_id, role_str, briefing
+        ):
+            return reentry
         if rejection := await self._claim_plan_start_gate(ctx, role, spec_ctx):
             return rejection
         envelope = await self._claim_plan_start_run(ctx, agent, spec_ctx)

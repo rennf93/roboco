@@ -383,7 +383,20 @@ async def test_cell_pm_can_plan_code_typed_parent_via_i_will_plan() -> None:
     deps = _make_deps(task=task_svc)
     c = Choreographer(deps)
 
-    env = await c.i_will_plan(pm_id, task_id, plan="Decompose into 2 dev subtasks.")
+    env = await c.i_will_plan(
+        pm_id,
+        task_id,
+        plan="Decompose into 2 dev subtasks.",
+        rich_plan={
+            "approach": (
+                "Split code-typed parent into two developer-claimable subtasks: "
+                "one for API implementation, one for test coverage."
+            ),
+            "sub_tasks": [
+                {"title": "API subtask", "description": "Implement endpoint"},
+            ],
+        },
+    )
     body = env.as_dict()
     # The PM-cannot-execute-code rejection must NOT fire on i_will_plan.
     assert body.get("error") != "not_authorized", (
@@ -422,7 +435,20 @@ async def test_pm_can_plan_non_code_parent() -> None:
     deps = _make_deps(task=task_svc)
     c = Choreographer(deps)
 
-    env = await c.i_will_plan(pm_id, task_id, plan="break it down")
+    env = await c.i_will_plan(
+        pm_id,
+        task_id,
+        plan="break it down",
+        rich_plan={
+            "approach": (
+                "Single-cell decomposition: backend handles the full scope; "
+                "no frontend or ux work required for this planning task."
+            ),
+            "sub_tasks": [
+                {"title": "Backend planning slice", "description": "Scope and assign"}
+            ],
+        },
+    )
     assert env.error is None
 
 

@@ -240,6 +240,14 @@ async def test_i_will_plan_calls_heartbeat() -> None:
     deps = _make_deps(task=task_svc)
     c = Choreographer(deps)
 
-    await c.i_will_plan(pm_id, tid, plan="plan-text")
+    await c.i_will_plan(
+        pm_id,
+        tid,
+        plan="plan-text",
+        rich_plan={
+            "approach": "Single-cell decomposition: backend handles all scope.",
+            "sub_tasks": [{"title": "Slice A", "description": "backend API work"}],
+        },
+    )
 
     task_svc.heartbeat.assert_awaited_with(tid)

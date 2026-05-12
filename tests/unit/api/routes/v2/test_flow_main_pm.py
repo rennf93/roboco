@@ -204,7 +204,18 @@ async def test_i_will_plan_dispatches_to_choreographer() -> None:
 
     resp = client.post(
         "/api/v2/flow/main_pm/i_will_plan",
-        json={"task_id": _TASK_ID, "plan": "split into backend, frontend, ux cells"},
+        json={
+            "task_id": _TASK_ID,
+            "plan": "split into backend, frontend, ux cells",
+            "approach": (
+                "Three-cell decomposition: backend handles API, frontend "
+                "handles UI integration, ux-ui handles design."
+            ),
+            "sub_tasks": [
+                {"title": "Backend cell", "description": "API implementation"},
+                {"title": "Frontend cell", "description": "UI integration"},
+            ],
+        },
         headers=_HEADERS,
     )
 

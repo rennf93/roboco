@@ -103,7 +103,21 @@ async def test_i_will_plan_claims_starts_and_sets_plan() -> None:
     deps = _make_deps(task=task_svc)
     c = Choreographer(deps)
 
-    env = await c.i_will_plan(pm_id, task_id, plan="break the work into 3 subtasks")
+    env = await c.i_will_plan(
+        pm_id,
+        task_id,
+        plan="break the work into 3 subtasks",
+        rich_plan={
+            "approach": (
+                "Three-cell decomposition: backend, frontend, and ux each "
+                "own a vertical slice of the work."
+            ),
+            "sub_tasks": [
+                {"title": "Backend slice", "description": "API + DB"},
+                {"title": "Frontend slice", "description": "UI integration"},
+            ],
+        },
+    )
     assert env.error is None
     assert env.status == "in_progress"
     task_svc.claim.assert_awaited_once_with(task_id, pm_id)
@@ -159,7 +173,21 @@ async def test_i_will_plan_blocks_when_journal_decision_at_claim_missing() -> No
     deps = _make_deps(task=task_svc, journal=journal_svc)
     c = Choreographer(deps)
 
-    env = await c.i_will_plan(pm_id, task_id, plan="break the work into 3 subtasks")
+    env = await c.i_will_plan(
+        pm_id,
+        task_id,
+        plan="break the work into 3 subtasks",
+        rich_plan={
+            "approach": (
+                "Three-cell decomposition: backend, frontend, and ux each "
+                "own a vertical slice of the work."
+            ),
+            "sub_tasks": [
+                {"title": "Backend slice", "description": "API + DB"},
+                {"title": "Frontend slice", "description": "UI integration"},
+            ],
+        },
+    )
     body = env.as_dict()
     assert body["error"] == "tracing_gap"
     assert "journal:decision_at_claim" in body["missing"]
@@ -190,12 +218,20 @@ async def test_i_will_plan_rejects_non_pending_state() -> None:
     pm_id = uuid4()
     task_id = uuid4()
     task_svc = AsyncMock()
-    task_svc.get.return_value = MagicMock(id=task_id, status="in_progress")
+    task_svc.get.return_value = MagicMock(id=task_id, status="in_progress", assigned_to=uuid4())
     task_svc.agent_for.return_value = MagicMock(role="cell_pm", team="backend")
     deps = _make_deps(task=task_svc)
     c = Choreographer(deps)
 
-    env = await c.i_will_plan(pm_id, task_id, plan="x")
+    env = await c.i_will_plan(
+        pm_id,
+        task_id,
+        plan="x",
+        rich_plan={
+            "approach": "Single-cell decomposition: backend handles all scope.",
+            "sub_tasks": [{"title": "Slice A", "description": "backend API work"}],
+        },
+    )
     body = env.as_dict()
     assert body["error"] == "invalid_state"
 
@@ -247,7 +283,21 @@ async def test_i_will_plan_calls_claim_when_pre_assigned_and_pending() -> None:
     deps = _make_deps(task=task_svc)
     c = Choreographer(deps)
 
-    env = await c.i_will_plan(pm_id, task_id, plan="distribute to be-pm and fe-pm")
+    env = await c.i_will_plan(
+        pm_id,
+        task_id,
+        plan="distribute to be-pm and fe-pm",
+        rich_plan={
+            "approach": (
+                "Two-cell dispatch: be-pm owns backend vertical, "
+                "fe-pm owns frontend vertical."
+            ),
+            "sub_tasks": [
+                {"title": "Backend cell", "description": "Assign to be-pm"},
+                {"title": "Frontend cell", "description": "Assign to fe-pm"},
+            ],
+        },
+    )
 
     assert env.error is None
     assert env.status == "in_progress"
@@ -297,7 +347,15 @@ async def test_i_will_plan_surfaces_start_failure_instead_of_faking_ok() -> None
     deps = _make_deps(task=task_svc)
     c = Choreographer(deps)
 
-    env = await c.i_will_plan(pm_id, task_id, plan="x")
+    env = await c.i_will_plan(
+        pm_id,
+        task_id,
+        plan="x",
+        rich_plan={
+            "approach": "Single-cell decomposition: backend handles all scope.",
+            "sub_tasks": [{"title": "Slice A", "description": "backend API work"}],
+        },
+    )
     body = env.as_dict()
     assert body["error"] == "invalid_state"
     assert "start failed" in body["message"]
@@ -329,7 +387,15 @@ async def test_i_will_plan_idempotent_when_already_in_progress_for_caller() -> N
     deps = _make_deps(task=task_svc)
     c = Choreographer(deps)
 
-    env = await c.i_will_plan(pm_id, task_id, plan="re-entry plan")
+    env = await c.i_will_plan(
+        pm_id,
+        task_id,
+        plan="re-entry plan",
+        rich_plan={
+            "approach": "Idempotent re-entry: task already in progress, refresh heartbeat.",
+            "sub_tasks": [{"title": "Re-entry subtask", "description": "Resume work"}],
+        },
+    )
 
     assert env.error is None
     assert env.status == "in_progress"
@@ -380,7 +446,15 @@ async def test_i_will_plan_recovery_when_already_claimed_for_caller() -> None:
     deps = _make_deps(task=task_svc)
     c = Choreographer(deps)
 
-    env = await c.i_will_plan(pm_id, task_id, plan="re-entry plan")
+    env = await c.i_will_plan(
+        pm_id,
+        task_id,
+        plan="re-entry plan",
+        rich_plan={
+            "approach": "Recovery re-entry: task claimed but not started; run set_plan + start.",
+            "sub_tasks": [{"title": "Recovery subtask", "description": "Resume from claimed"}],
+        },
+    )
 
     assert env.error is None
     assert env.status == "in_progress"
@@ -412,7 +486,15 @@ async def test_i_will_plan_still_rejects_in_progress_for_other_agent() -> None:
     deps = _make_deps(task=task_svc)
     c = Choreographer(deps)
 
-    env = await c.i_will_plan(pm_id, task_id, plan="x")
+    env = await c.i_will_plan(
+        pm_id,
+        task_id,
+        plan="x",
+        rich_plan={
+            "approach": "Single-cell decomposition: backend handles all scope.",
+            "sub_tasks": [{"title": "Slice A", "description": "backend API work"}],
+        },
+    )
     body = env.as_dict()
 
     assert body["error"] == "invalid_state"
@@ -430,7 +512,15 @@ async def test_i_will_plan_returns_tracing_gap_without_plan() -> None:
     deps = _make_deps(task=task_svc)
     c = Choreographer(deps)
 
-    env = await c.i_will_plan(pm_id, task_id, plan="")
+    env = await c.i_will_plan(
+        pm_id,
+        task_id,
+        plan="",
+        rich_plan={
+            "approach": "Single-cell decomposition: backend handles all scope.",
+            "sub_tasks": [{"title": "Slice A", "description": "backend API work"}],
+        },
+    )
     body = env.as_dict()
     assert body["error"] == "tracing_gap"
     assert "plan" in body["missing"]

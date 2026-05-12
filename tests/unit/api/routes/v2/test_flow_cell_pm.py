@@ -233,7 +233,17 @@ async def test_i_will_plan_dispatches_to_choreographer() -> None:
 
     resp = client.post(
         "/api/v2/flow/cell_pm/i_will_plan",
-        json={"task_id": _TASK_ID, "plan": "break into 3 subtasks for backend"},
+        json={
+            "task_id": _TASK_ID,
+            "plan": "break into 3 subtasks for backend",
+            "approach": (
+                "Decompose into backend API slice, QA verification pass, "
+                "and documentation update."
+            ),
+            "sub_tasks": [
+                {"title": "Backend API slice", "description": "Implement endpoint"}
+            ],
+        },
         headers=_HEADERS,
     )
 

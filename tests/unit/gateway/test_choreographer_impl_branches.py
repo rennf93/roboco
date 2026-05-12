@@ -312,7 +312,15 @@ async def test_i_will_plan_pm_with_already_active_task_rejects() -> None:
     task_svc.list_paused_for_agent.return_value = []
     deps = _make_deps(task=task_svc)
     c = Choreographer(deps)
-    env = await c.i_will_plan(pm_id, task_id, plan="x" * 30)
+    env = await c.i_will_plan(
+        pm_id,
+        task_id,
+        plan="x" * 30,
+        rich_plan={
+            "approach": "Decompose planning task into backend and frontend subtasks.",
+            "sub_tasks": [{"title": "Slice A", "description": "backend API work"}],
+        },
+    )
     body = env.as_dict()
     assert body["error"] == "invalid_state"
     assert "in_progress task" in body["message"]
@@ -362,7 +370,20 @@ async def test_i_will_plan_cell_pm_on_code_typed_parent_succeeds() -> None:
     task_svc.start.return_value = started_task
     deps = _make_deps(task=task_svc)
     c = Choreographer(deps)
-    env = await c.i_will_plan(pm_id, task_id, plan="Decompose into 2 dev subtasks.")
+    env = await c.i_will_plan(
+        pm_id,
+        task_id,
+        plan="Decompose into 2 dev subtasks.",
+        rich_plan={
+            "approach": (
+                "Split code-typed parent into developer-claimable subtasks: "
+                "one for API, one for test coverage validation."
+            ),
+            "sub_tasks": [
+                {"title": "API subtask", "description": "Implement the endpoint"},
+            ],
+        },
+    )
     body = env.as_dict()
     # The PM-cannot-execute-code rejection must NOT fire on i_will_plan.
     assert body.get("error") != "not_authorized", (
@@ -393,7 +414,15 @@ async def test_i_will_plan_pending_claim_fails() -> None:
     task_svc.claim.return_value = None  # claim fails
     deps = _make_deps(task=task_svc)
     c = Choreographer(deps)
-    env = await c.i_will_plan(pm_id, task_id, plan="my plan that is long enough")
+    env = await c.i_will_plan(
+        pm_id,
+        task_id,
+        plan="my plan that is long enough",
+        rich_plan={
+            "approach": "Decompose planning task into backend and frontend subtasks.",
+            "sub_tasks": [{"title": "Slice A", "description": "backend API work"}],
+        },
+    )
     body = env.as_dict()
     assert body["error"] == "invalid_state"
 
@@ -1002,7 +1031,15 @@ async def test_i_will_plan_pending_claim_returns_none_emit_rejection() -> None:
     task_svc.claim.return_value = None
     deps = _make_deps(task=task_svc)
     c = Choreographer(deps)
-    env = await c.i_will_plan(pm_id, task_id, plan="my plan that is long enough")
+    env = await c.i_will_plan(
+        pm_id,
+        task_id,
+        plan="my plan that is long enough",
+        rich_plan={
+            "approach": "Decompose planning task into backend and frontend subtasks.",
+            "sub_tasks": [{"title": "Slice A", "description": "backend API work"}],
+        },
+    )
     body = env.as_dict()
     assert body["error"] == "invalid_state"
     assert "verb runner failed" in body["message"]
