@@ -102,5 +102,7 @@ immediately. The breaker tracks repeated rejections of the same verb
 Read the `remediate` field — it names what was missing across the last
 N rejections. Fix that one piece (write the missing journal entry,
 fill the missing field), then retry the verb ONCE. If the breaker fires
-again, escalate via `i_am_blocked` with the rejection details — that
-signal indicates a real wedge, not a transient error.
+again, you don't have an `i_am_blocked` verb — `dm(recipient='ceo', text=...)`
+with the rejection details (PO/HoM only; Auditor uses `note(scope='reflect', text=...)`)
+so the wedge is captured. The signal indicates a real wedge, not a transient
+error.
