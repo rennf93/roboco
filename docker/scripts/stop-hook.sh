@@ -1,12 +1,10 @@
 #!/usr/bin/env bash
 # Stop hook — prevent silent exits without a terminal transition.
 #
-# An agent should never "just stop" mid-task. They must call one of the
-# terminal MCP tools first (roboco_agent_idle, roboco_task_substitute,
-# roboco_task_escalate, roboco_task_pause, roboco_task_block, submit_qa,
-# qa_pass/fail, docs_complete, task_complete, task_cancel). Otherwise the
-# task stays in `claimed` / `in_progress` forever and the PM has to hand-
-# unstick it.
+# An agent should never "just stop" mid-task. They must call a terminal
+# gateway verb first (i_am_idle, i_am_done, i_am_blocked, pass, fail,
+# i_documented, complete, escalate_up, unclaim) so the task is not left
+# stuck in `claimed` / `in_progress` for the PM to hand-unstick.
 #
 # This hook blocks the Stop on the first ungraceful attempt (exit 2 with a
 # reminder). If the agent tries to Stop again anyway, SDK state shows
@@ -46,18 +44,27 @@ if (( attempts > allowance )); then
 fi
 
 # First ungraceful attempt: nudge the agent to call a terminal tool.
-cat >&2 <<EOF
-Denied: you stopped without calling a terminal tool. The task is still
-assigned to you and will not be handed off.
-
-Call one of:
-  - roboco_agent_idle()                       # no work remains
-  - roboco_task_substitute(reason="...")      # release the task
-  - roboco_task_escalate(reason="...")        # escalate to PM
-  - roboco_task_pause(checkpoint="...")       # save progress, come back
-  - roboco_task_submit_qa() / qa_pass() / qa_fail() / docs_complete() / task_complete()
-
-Then stop again. If you genuinely cannot transition, a second stop will
-auto-substitute with reason="stopped_without_transition" (recorded).
-EOF
+{
+  echo "Denied: you stopped without calling a terminal tool. The task is"
+  echo "still assigned to you and will not be handed off. Call one of:"
+  case "${ROBOCO_AGENT_ROLE:-}" in
+    developer|documenter)
+      echo "  - i_am_done(task_id, notes)   # work submitted for QA"
+      echo "  - i_am_blocked(reason)        # stuck, need PM"
+      echo "  - i_am_idle()                 # no work remains"
+      ;;
+    qa)
+      echo "  - pass(task_id, notes) / fail(task_id, issues)"
+      echo "  - i_am_idle()"
+      ;;
+    cell_pm|main_pm)
+      echo "  - complete(task_id, notes) / escalate_up(task_id, notes)"
+      echo "  - i_am_idle()"
+      ;;
+    *)
+      echo "  - i_am_idle()  # default terminal verb for any role"
+      ;;
+  esac
+  echo "Then stop again. A second ungraceful stop auto-releases the task (recorded)."
+} >&2
 exit 2
