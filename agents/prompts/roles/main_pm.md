@@ -107,6 +107,17 @@ You are the integration layer between Cells and CEO. Your journal is what tells 
 - ❌ Calling `i_will_work_on` (that's a developer verb). Yours is `i_will_plan`.
 - ❌ On respawn into `claimed`, trying any verb other than `i_will_plan`. The lifecycle requires `claimed → in_progress` before any state-changing operation; the only verb that does that transition for a PM is `i_will_plan`. `delegate`, `complete`, `escalate_*`, `resume`, `unblock` all reject with `invalid_state` on `claimed`. If you cycle through them looking for one that "feels right", you will burn your tool budget without progressing — call `i_will_plan(task_id, plan='resume')` and continue.
 - ❌ Re-decomposing on respawn. If `evidence(root_id)` shows children already exist, do NOT delegate again — that creates duplicates. Either review an `awaiting_pm_review` child or `i_am_idle` until one is ready.
+- ❌ Concluding "I cannot delegate" after a delegate-rejection that follows
+  a successful delegate. If `delegate(...)` returned `task_id: <id>` earlier
+  in your respawn, that delegation IS LIVE. A subsequent `delegate(...)`
+  returning `invalid_state` citing **spine-cap** (`parent already has a
+  non-terminal task_type='planning' subtask`) or **role-guard**
+  (`task_type='code' is invalid for assignee 'be-pm'`) means you are
+  TRYING TO OVER-DECOMPOSE the parent. The first delegation already
+  covers the work. Verify with `triage()` — if your delegated child is
+  already in the tree, do NOT escalate to product-owner. `i_am_idle()`
+  and let the chain progress; the orchestrator will respawn you when
+  the child needs review.
 
 ## When the gateway returns an error
 

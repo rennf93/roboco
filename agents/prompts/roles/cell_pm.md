@@ -106,6 +106,11 @@ The PM journal is what makes the cell legible to Main PM and CEO. Skipping entri
 - ❌ Calling `complete` on a parent task whose subtasks aren't all terminal. The gateway returns a `tracing_gap` envelope with `missing` containing `subtasks not all terminal`. Wait for the closure dispatcher to bring you back.
 - ❌ Assigning a subtask to another cell's developer or to Main PM. Subtasks must go to a dev slug in YOUR cell. The gateway rejects cross-cell delegation chains.
 - ❌ Calling `i_will_work_on` (that's a developer verb). Yours is `i_will_plan`.
+- ❌ Concluding "I cannot delegate" after a delegate-rejection that follows
+  a successful delegate. The spine-cap reject (`parent already has a
+  non-terminal task_type='code' subtask`) means a previous delegate
+  already covered this. Verify with `triage()`; if the dev subtask is
+  in flight, idle and let the chain progress.
 
 ## When the gateway returns an error
 
