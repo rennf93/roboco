@@ -1155,6 +1155,53 @@ class Choreographer:
         await self._write_criteria_status(ctx.agent_id, ctx.task_id, ctx.task)
         return None
 
+    @staticmethod
+    def _extract_first_commit_sha(t: Any) -> str | None:
+        """Read the first commit sha off the task, dict or model alike."""
+        commits: list[Any] = list(getattr(t, "commits", []) or [])
+        if not commits:
+            return None
+        first = commits[0]
+        if isinstance(first, dict):
+            return first.get("sha")
+        return getattr(first, "sha", None)
+
+    @staticmethod
+    def _already_addressed_criteria(existing_status: list[dict[str, Any]]) -> set[str]:
+        """Criteria already carrying a non-empty referencing_artifact_id."""
+        return {
+            s["criterion"]
+            for s in existing_status
+            if isinstance(s, dict) and s.get("referencing_artifact_id")
+        }
+
+    @staticmethod
+    def _find_existing_entry(
+        existing_status: list[dict[str, Any]], criterion: str
+    ) -> dict[str, Any] | None:
+        """First existing entry whose criterion key matches; None otherwise."""
+        for entry in existing_status:
+            if isinstance(entry, dict) and entry.get("criterion") == criterion:
+                return entry
+        return None
+
+    @staticmethod
+    def _new_criterion_entry(
+        criterion: str, has_reflect: bool, first_commit_sha: str | None, now_iso: str
+    ) -> dict[str, Any]:
+        """Build the per-criterion status row for an unaddressed criterion."""
+        addressed = has_reflect or first_commit_sha is not None
+        if not addressed:
+            artifact_ref: str | None = None
+        else:
+            artifact_ref = first_commit_sha if first_commit_sha else "reflect-note"
+        return {
+            "criterion": criterion,
+            "addressed": addressed,
+            "artifact_ref": artifact_ref,
+            "checked_at": now_iso,
+        }
+
     async def _write_criteria_status(
         self, agent_id: UUID, task_id: UUID, t: Any
     ) -> None:
@@ -1168,9 +1215,8 @@ class Choreographer:
 
         Already-addressed entries (those already carrying a non-empty
         referencing_artifact_id) are preserved as-is. Only criteria not yet
-        addressed receive a new entry.  The artifact_ref for newly-addressed
-        criteria is the first commit sha if one exists, otherwise "reflect-note"
-        (since the reflect note is what the gate accepted as the artifact).
+        addressed receive a new entry. The artifact_ref for newly-addressed
+        criteria is the first commit sha if one exists, otherwise "reflect-note".
         """
         criteria: list[str] = list(getattr(t, "acceptance_criteria", []) or [])
         if not criteria:
@@ -1179,54 +1225,26 @@ class Choreographer:
         existing_status: list[dict[str, Any]] = list(
             getattr(t, "acceptance_criteria_status", []) or []
         )
-        already_addressed: set[str] = {
-            s["criterion"]
-            for s in existing_status
-            if isinstance(s, dict) and s.get("referencing_artifact_id")
-        }
-
+        already_addressed = self._already_addressed_criteria(existing_status)
         if already_addressed >= set(criteria):
-            # Every criterion already has a citation — nothing to write.
             return
 
-        # Choose artifact ref: prefer first commit sha, fall back to reflect-note.
-        commits: list[Any] = list(getattr(t, "commits", []) or [])
-        first_commit_sha: str | None = None
-        if commits:
-            first = commits[0]
-            if isinstance(first, dict):
-                first_commit_sha = first.get("sha")
-            else:
-                first_commit_sha = getattr(first, "sha", None)
-
+        first_commit_sha = self._extract_first_commit_sha(t)
         has_reflect = await self.journal.has_reflect_for_task(agent_id, task_id)
         now_iso = datetime.now(UTC).isoformat()
 
         new_status: list[dict[str, Any]] = []
         for criterion in criteria:
             if criterion in already_addressed:
-                # Keep the pre-existing entry verbatim.
-                for entry in existing_status:
-                    if isinstance(entry, dict) and entry.get("criterion") == criterion:
-                        new_status.append(entry)
-                        break
-            else:
-                addressed = has_reflect or first_commit_sha is not None
-                artifact_ref: str | None
-                if addressed:
-                    artifact_ref = (
-                        first_commit_sha if first_commit_sha else "reflect-note"
-                    )
-                else:
-                    artifact_ref = None
-                new_status.append(
-                    {
-                        "criterion": criterion,
-                        "addressed": addressed,
-                        "artifact_ref": artifact_ref,
-                        "checked_at": now_iso,
-                    }
+                preserved = self._find_existing_entry(existing_status, criterion)
+                if preserved is not None:
+                    new_status.append(preserved)
+                continue
+            new_status.append(
+                self._new_criterion_entry(
+                    criterion, has_reflect, first_commit_sha, now_iso
                 )
+            )
 
         await self.task.set_acceptance_criteria_status(task_id, new_status)
 
