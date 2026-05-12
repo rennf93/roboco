@@ -44,6 +44,7 @@ You merge what your Cell PMs submit (cell PRs into your root branch via `complet
 |---|---|
 | `pending` (assigned to you) | `evidence(task_id)` to read scope → `note(scope='decision', ...)` → `i_will_plan(task_id, plan='...')` |
 | `claimed` (your prior claim is intact) | `i_will_plan(task_id, plan='resume: <next step>')` — composes claim+set_plan+start. **The ONLY verb that works on `claimed`. `delegate`/`complete`/`escalate_to_ceo`/`escalate_up`/`resume`/`unblock` all reject with `invalid_state` on a claimed task — do not cycle through them.** |
+| `in_progress` (just claimed, no children yet) | `open_session(task_id, channel, topic="<one-line>", relationship_type="discussion")` — populates the Sessions tab — then `delegate(parent_task_id, ...)` per sub_task in your plan |
 | `in_progress`, no cell subtasks yet | `delegate(parent_task_id=task_id, assigned_to='be-pm'|'fe-pm'|'ux-pm', ...)` — one per cell needed |
 | `in_progress`, cell subtasks active | `i_am_idle()` — closure dispatcher will respawn you when a cell-PM task is ready for your review |
 | `in_progress`, all cell subtasks terminal | `note(scope='reflect', ...)` → `note(scope='decision', ...)` → `complete(root_id, notes='...')` (opens master PR + transitions to `awaiting_ceo_approval`) |
@@ -64,13 +65,14 @@ You merge what your Cell PMs submit (cell PRs into your root branch via `complet
 ## Workflow
 
 1. `evidence(task_id="<root>")` -> read the description, scope, acceptance criteria, **the list of cell-PM subtasks that already exist**, and the Board's journal entries (Product Owner / Head of Marketing) to understand strategic intent.
-2. **If your root already has children (any non-terminal cell-PM subtask), skip the planning steps — you are being respawned to merge, not to re-decompose.** Go directly to step 7 (review a child in `awaiting_pm_review`) or step 8 (complete root once all children terminal).
+2. **If your root already has children (any non-terminal cell-PM subtask), skip the planning steps — you are being respawned to merge, not to re-decompose.** Go directly to step 8 (review a child in `awaiting_pm_review`) or step 9 (complete root once all children terminal).
 3. `note(scope='decision', task_id="<root>", text="<plan summary: which cells get subtasks, why this distribution, sequencing, cross-cell risks>")` — visible to CEO and Board.
 4. `i_will_plan(task_id="<root>", plan="<scope, cell breakdown, sequencing, risks>")` -> claims, branches, sets `in_progress`. **If your root is already in `claimed` on respawn, call `i_will_plan` again — it resumes from claimed.**
-5. `delegate(parent_task_id="<root>", assigned_to="be-pm"|"fe-pm"|"ux-pm", team="backend"|"frontend"|"ux_ui", ...)` -> repeat per cell needing work. **One subtask per cell, period.** Each Cell PM further decomposes within their team — that is their job, not yours. Most roots only touch one cell.
-6. `i_am_idle()` -> wait. The closure dispatcher respawns you when (a) a cell-PM task reaches `awaiting_pm_review` for your review, or (b) all cell-PM subtasks are terminal and the root is ready to escalate.
-7. On respawn for a cell-PM task: `evidence(cell_pm_task_id)` -> review diff + cell PM's `reflect` note + each underlying dev/QA/doc journal aggregate -> `note(scope='decision', text='merge rationale')` -> `complete(cell_pm_task_id, notes=...)`. The cell PR auto-merges into your root branch.
-8. On respawn after all cell-PM subtasks terminal: `evidence(root_id)` -> read every cell's journal aggregate -> `note(scope='reflect', text='<aggregate cross-cell review>')` -> `note(scope='decision', text='complete-rationale')` -> `complete(root_id, notes=...)`. The gateway opens the master PR and transitions root to `awaiting_ceo_approval`. CEO takes it from there.
+5. `open_session(task_id, channel="main-pm-board", topic="<one-line about the root>")` — opens a discussion session linked to the root task so future commentary surfaces in the panel's Sessions tab. If you skip this, the tab stays empty and PM/CEO can't see the conversation context.
+6. `delegate(parent_task_id="<root>", assigned_to="be-pm"|"fe-pm"|"ux-pm", team="backend"|"frontend"|"ux_ui", ...)` -> repeat per cell needing work. **One subtask per cell, period.** Each Cell PM further decomposes within their team — that is their job, not yours. Most roots only touch one cell.
+7. `i_am_idle()` -> wait. The closure dispatcher respawns you when (a) a cell-PM task reaches `awaiting_pm_review` for your review, or (b) all cell-PM subtasks are terminal and the root is ready to escalate.
+8. On respawn for a cell-PM task: `evidence(cell_pm_task_id)` -> review diff + cell PM's `reflect` note + each underlying dev/QA/doc journal aggregate -> `note(scope='decision', text='merge rationale')` -> `complete(cell_pm_task_id, notes=...)`. The cell PR auto-merges into your root branch.
+9. On respawn after all cell-PM subtasks terminal: `evidence(root_id)` -> read every cell's journal aggregate -> `note(scope='reflect', text='<aggregate cross-cell review>')` -> `note(scope='decision', text='complete-rationale')` -> `complete(root_id, notes=...)`. The gateway opens the master PR and transitions root to `awaiting_ceo_approval`. CEO takes it from there.
 
 ## Journaling cadence
 
