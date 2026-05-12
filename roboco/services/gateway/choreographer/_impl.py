@@ -12,6 +12,7 @@ injection so later phases just fill in the bodies.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from typing import Any, ClassVar
 from uuid import UUID
 
@@ -1148,7 +1149,86 @@ class Choreographer:
             ctx.agent_id, ctx.task_id, ctx.task
         ):
             return await self._reject_i_am_done(ctx, rejection)
+        # Wave C5 (2026-05-12) — pre-gateway parity. Persist per-criterion
+        # status now that all gates have passed. The write runs AFTER the
+        # verdict so it cannot change i_am_done's rejection behavior.
+        await self._write_criteria_status(ctx.agent_id, ctx.task_id, ctx.task)
         return None
+
+    async def _write_criteria_status(
+        self, agent_id: UUID, task_id: UUID, t: Any
+    ) -> None:
+        """Persist per-criterion addressing status to task.acceptance_criteria_status.
+
+        Wave C5 (2026-05-12) — pre-gateway parity. The i_am_done gate uses
+        journal:reflect as a blanket addressing artifact when it is present
+        (one reflect note covers all criteria — spec §9 item 1). We surface
+        that decision as a structured per-criterion list so the panel and
+        audit log can render per-criterion checkmarks.
+
+        Already-addressed entries (those already carrying a non-empty
+        referencing_artifact_id) are preserved as-is. Only criteria not yet
+        addressed receive a new entry.  The artifact_ref for newly-addressed
+        criteria is the first commit sha if one exists, otherwise "reflect-note"
+        (since the reflect note is what the gate accepted as the artifact).
+        """
+        criteria: list[str] = list(getattr(t, "acceptance_criteria", []) or [])
+        if not criteria:
+            return
+
+        existing_status: list[dict[str, Any]] = list(
+            getattr(t, "acceptance_criteria_status", []) or []
+        )
+        already_addressed: set[str] = {
+            s["criterion"]
+            for s in existing_status
+            if isinstance(s, dict) and s.get("referencing_artifact_id")
+        }
+
+        if already_addressed >= set(criteria):
+            # Every criterion already has a citation — nothing to write.
+            return
+
+        # Choose artifact ref: prefer first commit sha, fall back to reflect-note.
+        commits: list[Any] = list(getattr(t, "commits", []) or [])
+        first_commit_sha: str | None = None
+        if commits:
+            first = commits[0]
+            if isinstance(first, dict):
+                first_commit_sha = first.get("sha")
+            else:
+                first_commit_sha = getattr(first, "sha", None)
+
+        has_reflect = await self.journal.has_reflect_for_task(agent_id, task_id)
+        now_iso = datetime.now(UTC).isoformat()
+
+        new_status: list[dict[str, Any]] = []
+        for criterion in criteria:
+            if criterion in already_addressed:
+                # Keep the pre-existing entry verbatim.
+                for entry in existing_status:
+                    if isinstance(entry, dict) and entry.get("criterion") == criterion:
+                        new_status.append(entry)
+                        break
+            else:
+                addressed = has_reflect or first_commit_sha is not None
+                artifact_ref: str | None
+                if addressed:
+                    artifact_ref = (
+                        first_commit_sha if first_commit_sha else "reflect-note"
+                    )
+                else:
+                    artifact_ref = None
+                new_status.append(
+                    {
+                        "criterion": criterion,
+                        "addressed": addressed,
+                        "artifact_ref": artifact_ref,
+                        "checked_at": now_iso,
+                    }
+                )
+
+        await self.task.set_acceptance_criteria_status(task_id, new_status)
 
     async def _i_am_done_run(
         self, ctx: _IAmDoneContext, agent: Any, spec_ctx: spec_module.Context
