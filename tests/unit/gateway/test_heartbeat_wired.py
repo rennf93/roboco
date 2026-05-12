@@ -186,6 +186,7 @@ async def test_pm_give_me_work_calls_heartbeat_when_returning_task() -> None:
     tid = uuid4()
     assigned = MagicMock(id=tid, status="pending")
     task_svc = AsyncMock()
+    task_svc.list_pending_for_agent.return_value = []
     task_svc.list_assigned_for_agent.return_value = [assigned]
     deps = _make_deps(task=task_svc)
     c = Choreographer(deps)
@@ -199,6 +200,7 @@ async def test_pm_give_me_work_calls_heartbeat_when_returning_task() -> None:
 async def test_pm_give_me_work_does_not_heartbeat_on_idle() -> None:
     pm_id = uuid4()
     task_svc = AsyncMock()
+    task_svc.list_pending_for_agent.return_value = []
     task_svc.list_assigned_for_agent.return_value = []
     deps = _make_deps(task=task_svc)
     c = Choreographer(deps)

@@ -54,6 +54,7 @@ async def test_give_me_work_returns_assigned_task() -> None:
     agent_id = uuid4()
     task_obj = MagicMock(id=uuid4(), status="pending", title="t1")
     task_svc = AsyncMock()
+    task_svc.list_pending_for_agent.return_value = []
     task_svc.list_assigned_for_agent.return_value = [task_obj]
     deps = _make_deps(task=task_svc)
     c = Choreographer(deps)
@@ -70,6 +71,7 @@ async def test_give_me_work_returns_paused_when_no_assigned() -> None:
     agent_id = uuid4()
     paused_obj = MagicMock(id=uuid4(), status="paused")
     task_svc = AsyncMock()
+    task_svc.list_pending_for_agent.return_value = []
     task_svc.list_assigned_for_agent.return_value = []
     task_svc.list_paused_for_agent.return_value = [paused_obj]
     deps = _make_deps(task=task_svc)
@@ -85,6 +87,7 @@ async def test_give_me_work_returns_paused_when_no_assigned() -> None:
 async def test_give_me_work_returns_idle_when_no_work() -> None:
     agent_id = uuid4()
     task_svc = AsyncMock()
+    task_svc.list_pending_for_agent.return_value = []
     task_svc.list_assigned_for_agent.return_value = []
     task_svc.list_paused_for_agent.return_value = []
     deps = _make_deps(task=task_svc)
