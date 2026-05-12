@@ -20,6 +20,7 @@ catch-up behavior for the explicit-opt-in case.
 
 from __future__ import annotations
 
+from datetime import UTC, datetime
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 from uuid import uuid4
@@ -61,6 +62,13 @@ def _make_deps(**overrides: Any) -> ChoreographerDeps:
         "journal_highlights_for_task",
     ):
         getattr(repo, method).return_value = []
+    # C8: default-fresh journal:decision so PM-decision gate passes.
+    # Tests that exercise the gate boundary stub their own value.
+    # The check matches MagicMock and AsyncMock (the two default sentinel
+    # types pytest's unittest.mock leaves on un-stubbed return_values).
+    _ldef = base["journal"].latest_decision_at.return_value
+    if type(_ldef).__name__ in ("MagicMock", "AsyncMock"):
+        base["journal"].latest_decision_at.return_value = datetime.now(UTC)
     return ChoreographerDeps(**base)
 
 
@@ -127,6 +135,7 @@ async def test_i_am_done_auto_runs_submit_verification_when_in_progress() -> Non
     journal_svc.has_reflect_for_task.return_value = True
     # JOURNAL_DURING_WORK_AT_LEAST_ONE: ≥1 decision/learning/struggle.
     journal_svc.has_decision_for_task.return_value = True
+    journal_svc.latest_decision_at.return_value = datetime.now(UTC)
     journal_svc.has_learning_for_task.return_value = False
     journal_svc.has_struggle_for_task.return_value = False
     work_svc = AsyncMock()
@@ -163,6 +172,7 @@ async def test_i_am_done_blocks_when_no_commits() -> None:
     journal_svc.has_reflect_for_task.return_value = True
     # JOURNAL_DURING_WORK_AT_LEAST_ONE: ≥1 decision/learning/struggle.
     journal_svc.has_decision_for_task.return_value = True
+    journal_svc.latest_decision_at.return_value = datetime.now(UTC)
     journal_svc.has_learning_for_task.return_value = False
     journal_svc.has_struggle_for_task.return_value = False
     deps = _make_deps(task=task_svc, journal=journal_svc)
@@ -201,6 +211,7 @@ async def test_i_am_done_blocks_when_no_pr() -> None:
     journal_svc.has_reflect_for_task.return_value = True
     # JOURNAL_DURING_WORK_AT_LEAST_ONE: ≥1 decision/learning/struggle.
     journal_svc.has_decision_for_task.return_value = True
+    journal_svc.latest_decision_at.return_value = datetime.now(UTC)
     journal_svc.has_learning_for_task.return_value = False
     journal_svc.has_struggle_for_task.return_value = False
     deps = _make_deps(task=task_svc, journal=journal_svc)
@@ -240,6 +251,7 @@ async def test_i_am_done_blocks_when_no_progress() -> None:
     journal_svc.has_reflect_for_task.return_value = True
     # JOURNAL_DURING_WORK_AT_LEAST_ONE: ≥1 decision/learning/struggle.
     journal_svc.has_decision_for_task.return_value = True
+    journal_svc.latest_decision_at.return_value = datetime.now(UTC)
     journal_svc.has_learning_for_task.return_value = False
     journal_svc.has_struggle_for_task.return_value = False
     deps = _make_deps(task=task_svc, journal=journal_svc)
@@ -284,6 +296,7 @@ async def test_i_am_done_proceeds_when_all_gates_pass() -> None:
     journal_svc.has_reflect_for_task.return_value = True
     # JOURNAL_DURING_WORK_AT_LEAST_ONE: ≥1 decision/learning/struggle.
     journal_svc.has_decision_for_task.return_value = True
+    journal_svc.latest_decision_at.return_value = datetime.now(UTC)
     journal_svc.has_learning_for_task.return_value = False
     journal_svc.has_struggle_for_task.return_value = False
     work_svc = AsyncMock()

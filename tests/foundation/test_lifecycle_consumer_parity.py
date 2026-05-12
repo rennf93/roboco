@@ -7,6 +7,7 @@ test that makes drift between the spec and the verb body impossible.
 
 from __future__ import annotations
 
+from datetime import UTC, datetime
 from itertools import product
 from unittest.mock import AsyncMock, MagicMock
 from uuid import uuid4
@@ -41,6 +42,9 @@ def _make_deps(task_svc=None) -> ChoreographerDeps:
         "journal_highlights_for_task",
     ):
         getattr(repo, method).return_value = []
+    # C8: default-fresh journal:decision so PM-decision gate passes.
+    # Parity tests that exercise the gate boundary stub their own value.
+    base["journal"].latest_decision_at.return_value = datetime.now(UTC)
     return ChoreographerDeps(**base)
 
 
@@ -521,6 +525,7 @@ async def test_i_am_done_matches_spec(
     journal_svc.has_reflect_for_task.return_value = True
     # JOURNAL_DURING_WORK_AT_LEAST_ONE: ≥1 decision/learning/struggle.
     journal_svc.has_decision_for_task.return_value = True
+    journal_svc.latest_decision_at.return_value = datetime.now(UTC)
     journal_svc.has_learning_for_task.return_value = False
     journal_svc.has_struggle_for_task.return_value = False
     work_svc = deps.work_session
@@ -869,6 +874,7 @@ async def test_complete_matches_spec(role: str, status: str) -> None:
     git_svc.pr_target.return_value = "master"
     journal_svc = AsyncMock()
     journal_svc.has_decision_for_task.return_value = True
+    journal_svc.latest_decision_at.return_value = datetime.now(UTC)
     deps_kwargs = {
         "task": task_svc,
         "work_session": AsyncMock(),
@@ -966,6 +972,7 @@ async def test_escalate_up_matches_spec(role: str, status: str) -> None:
     # journal:decision is not on the spec — satisfy it so the verb-specific
     # preflight does not surface a non-spec tracing_gap on the allowed branch.
     journal_svc.has_decision_for_task.return_value = True
+    journal_svc.latest_decision_at.return_value = datetime.now(UTC)
     deps = _make_deps(task_svc=task_svc)
     deps = ChoreographerDeps(
         task=task_svc,
@@ -1063,6 +1070,7 @@ async def test_escalate_to_ceo_matches_spec(role: str, status: str) -> None:
     )
     journal_svc = AsyncMock()
     journal_svc.has_decision_for_task.return_value = True
+    journal_svc.latest_decision_at.return_value = datetime.now(UTC)
     deps = _make_deps(task_svc=task_svc)
     deps = ChoreographerDeps(
         task=task_svc,
@@ -1164,6 +1172,7 @@ async def test_submit_up_matches_spec(role: str, status: str) -> None:
     git_svc.create_pr.return_value = {"pr_number": 12, "pr_url": "x"}
     journal_svc = AsyncMock()
     journal_svc.has_decision_for_task.return_value = True
+    journal_svc.latest_decision_at.return_value = datetime.now(UTC)
     deps = _make_deps(task_svc=task_svc)
     deps = ChoreographerDeps(
         task=task_svc,

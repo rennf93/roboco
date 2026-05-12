@@ -770,6 +770,29 @@ class JournalService(BaseService):
             agent_id, task_id, JournalEntryType.DECISION_LOG
         )
 
+    async def latest_decision_at(
+        self, agent_id: UUID, task_id: UUID
+    ) -> datetime | None:
+        """Return ``created_at`` of the most recent DECISION_LOG entry for
+        (agent, task), or ``None`` if no decision exists.
+
+        Backs the windowed-satisfaction variant of the PM-decision
+        tracing gate (Wave C8): the choreographer treats decisions older
+        than ``settings.pm_decision_window_seconds`` as missing so PMs
+        write a fresh decision around each decision point.
+        """
+        query = (
+            select(func.max(JournalEntryTable.created_at))
+            .join(JournalTable, JournalEntryTable.journal_id == JournalTable.id)
+            .where(
+                JournalTable.agent_id == agent_id,
+                JournalEntryTable.task_id == task_id,
+                JournalEntryTable.type == JournalEntryType.DECISION_LOG,
+            )
+        )
+        result = await self.session.execute(query)
+        return result.scalar()
+
     async def has_note_for_task(self, agent_id: UUID, task_id: UUID) -> bool:
         """True iff a GENERAL (scope='note') entry exists for (agent, task).
 

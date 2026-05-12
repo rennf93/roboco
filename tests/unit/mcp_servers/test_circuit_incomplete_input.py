@@ -36,9 +36,7 @@ _MINIMAL_MANIFEST = {
 
 
 @pytest.fixture()
-def flow_module(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-) -> types.ModuleType:
+def flow_module(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> types.ModuleType:
     """Import flow_server with minimal env vars needed for constant inspection."""
     manifest_path = tmp_path / "tool-manifest.json"
     manifest_path.write_text(json.dumps(_MINIMAL_MANIFEST))

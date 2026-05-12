@@ -39,10 +39,7 @@ async def test_role_enum_dropped_after_upgrade(db_session) -> None:  # type: ign
     # The conftest fixture should handle that — verify by reading the
     # existing tests' conftest.
     result = await db_session.execute(
-        text(
-            "SELECT typname FROM pg_type "
-            "WHERE typname IN ('role', 'agentrole')"
-        )
+        text("SELECT typname FROM pg_type WHERE typname IN ('role', 'agentrole')")
     )
     rows = {row[0] for row in result}
     assert "agentrole" in rows, "agentrole must remain (it's the live enum)"

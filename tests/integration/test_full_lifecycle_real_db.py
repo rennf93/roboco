@@ -22,6 +22,7 @@ When extended to all roles, this test catches:
 
 from __future__ import annotations
 
+from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 from unittest.mock import AsyncMock
 from uuid import UUID, uuid4
@@ -143,12 +144,17 @@ def _mock_evidence_repo() -> Any:
 
 
 def _mock_journal_with_reflect() -> Any:
-    """Journal stub that reports reflect/learning/decision entries present."""
+    """Journal stub that reports reflect/learning/decision entries present.
+
+    ``latest_decision_at`` is anchored to ``datetime.now(UTC)`` so the C8
+    recency window on the PM-decision gate accepts it.
+    """
     journal = AsyncMock()
     journal.has_reflect_for_task.return_value = True
     journal.has_learning_for_task.return_value = True
     journal.has_decision_for_task.return_value = True
     journal.has_struggle_for_task.return_value = False
+    journal.latest_decision_at.return_value = datetime.now(UTC)
     return journal
 
 

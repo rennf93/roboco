@@ -8,6 +8,7 @@ mapping so the panel can render checkmarks.
 
 from __future__ import annotations
 
+from datetime import UTC, datetime
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 from uuid import uuid4
@@ -45,6 +46,13 @@ def _make_deps(**overrides: Any) -> ChoreographerDeps:
         "journal_highlights_for_task",
     ):
         getattr(repo, method).return_value = []
+    # C8: default-fresh journal:decision so PM-decision gate passes.
+    # Tests that exercise the gate boundary stub their own value.
+    # The check matches MagicMock and AsyncMock (the two default sentinel
+    # types pytest's unittest.mock leaves on un-stubbed return_values).
+    _ldef = base["journal"].latest_decision_at.return_value
+    if type(_ldef).__name__ in ("MagicMock", "AsyncMock"):
+        base["journal"].latest_decision_at.return_value = datetime.now(UTC)
     return ChoreographerDeps(**base)
 
 
@@ -108,6 +116,7 @@ async def test_i_am_done_writes_criteria_status_on_success() -> None:
     journal_svc = AsyncMock()
     journal_svc.has_reflect_for_task.return_value = True
     journal_svc.has_decision_for_task.return_value = True
+    journal_svc.latest_decision_at.return_value = datetime.now(UTC)
     journal_svc.has_learning_for_task.return_value = False
     journal_svc.has_struggle_for_task.return_value = False
 
@@ -184,6 +193,7 @@ async def test_i_am_done_with_no_criteria_does_not_write_status() -> None:
     journal_svc = AsyncMock()
     journal_svc.has_reflect_for_task.return_value = True
     journal_svc.has_decision_for_task.return_value = True
+    journal_svc.latest_decision_at.return_value = datetime.now(UTC)
     journal_svc.has_learning_for_task.return_value = False
     journal_svc.has_struggle_for_task.return_value = False
 
@@ -241,6 +251,7 @@ async def test_i_am_done_skips_write_when_all_criteria_already_addressed() -> No
     journal_svc = AsyncMock()
     journal_svc.has_reflect_for_task.return_value = True
     journal_svc.has_decision_for_task.return_value = True
+    journal_svc.latest_decision_at.return_value = datetime.now(UTC)
     journal_svc.has_learning_for_task.return_value = False
     journal_svc.has_struggle_for_task.return_value = False
 
@@ -283,6 +294,7 @@ async def test_i_am_done_gate_rejection_skips_criteria_write() -> None:
     journal_svc = AsyncMock()
     journal_svc.has_reflect_for_task.return_value = False
     journal_svc.has_decision_for_task.return_value = False
+    journal_svc.latest_decision_at.return_value = None
     journal_svc.has_learning_for_task.return_value = False
     journal_svc.has_struggle_for_task.return_value = False
 
@@ -337,6 +349,7 @@ async def test_i_am_done_uses_reflect_note_artifact_when_commit_sha_is_none() ->
     journal_svc = AsyncMock()
     journal_svc.has_reflect_for_task.return_value = True
     journal_svc.has_decision_for_task.return_value = True
+    journal_svc.latest_decision_at.return_value = datetime.now(UTC)
     journal_svc.has_learning_for_task.return_value = False
     journal_svc.has_struggle_for_task.return_value = False
 

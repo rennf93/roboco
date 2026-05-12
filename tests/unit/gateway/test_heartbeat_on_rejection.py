@@ -17,6 +17,7 @@ Constraints (from spec):
 
 from __future__ import annotations
 
+from datetime import UTC, datetime
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 from uuid import uuid4
@@ -55,6 +56,13 @@ def _make_deps(**overrides: Any) -> ChoreographerDeps:
             __aexit__=AsyncMock(return_value=False),
         )
     )
+    # C8: default-fresh journal:decision so PM-decision gate passes.
+    # Tests that exercise the gate boundary stub their own value.
+    # The check matches MagicMock and AsyncMock (the two default sentinel
+    # types pytest's unittest.mock leaves on un-stubbed return_values).
+    _ldef = base["journal"].latest_decision_at.return_value
+    if type(_ldef).__name__ in ("MagicMock", "AsyncMock"):
+        base["journal"].latest_decision_at.return_value = datetime.now(UTC)
     return ChoreographerDeps(**base)
 
 

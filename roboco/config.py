@@ -342,6 +342,20 @@ class Settings(BaseSettings):
             "override via ROBOCO_STALE_CLAIM_REAP_SECONDS"
         ),
     )
+    # Wave C8 (2026-05-12). Pre-gateway parity: PMs wrote a fresh
+    # journal:decision around each decision point, not once at task
+    # creation. The PM-decision tracing gate (delegate, unblock,
+    # escalate_up, escalate_to_ceo) treats decisions older than this
+    # window as missing, forcing a new note(scope='decision', ...) on
+    # each pass through the gate.
+    pm_decision_window_seconds: int = Field(
+        default=300,
+        ge=1,
+        description=(
+            "Recency window (seconds) for PM journal:decision to satisfy "
+            "gating verbs; override via ROBOCO_PM_DECISION_WINDOW_SECONDS"
+        ),
+    )
     spawn_cooldown_seconds: int = Field(
         default=60,
         ge=1,

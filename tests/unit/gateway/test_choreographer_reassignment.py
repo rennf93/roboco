@@ -11,6 +11,7 @@ stage as part of every transition.
 
 from __future__ import annotations
 
+from datetime import UTC, datetime
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 from uuid import uuid4
@@ -54,6 +55,13 @@ def _make_deps(**overrides: Any) -> ChoreographerDeps:
         "journal_highlights_for_task",
     ):
         getattr(repo, method).return_value = []
+    # C8: default-fresh journal:decision so PM-decision gate passes.
+    # Tests that exercise the gate boundary stub their own value.
+    # The check matches MagicMock and AsyncMock (the two default sentinel
+    # types pytest's unittest.mock leaves on un-stubbed return_values).
+    _ldef = base["journal"].latest_decision_at.return_value
+    if type(_ldef).__name__ in ("MagicMock", "AsyncMock"):
+        base["journal"].latest_decision_at.return_value = datetime.now(UTC)
     return ChoreographerDeps(**base)
 
 
@@ -117,6 +125,7 @@ async def test_i_am_done_reassigns_task_to_qa_agent() -> None:
     # JOURNAL_DURING_WORK_AT_LEAST_ONE: at least one decision/learning/struggle
     # must exist between claim and submit.
     journal_svc.has_decision_for_task.return_value = True
+    journal_svc.latest_decision_at.return_value = datetime.now(UTC)
     journal_svc.has_learning_for_task.return_value = False
     journal_svc.has_struggle_for_task.return_value = False
 
@@ -179,6 +188,7 @@ async def test_i_am_done_skips_reassign_when_no_qa_agent() -> None:
     journal_svc.has_reflect_for_task.return_value = True
     # JOURNAL_DURING_WORK_AT_LEAST_ONE.
     journal_svc.has_decision_for_task.return_value = True
+    journal_svc.latest_decision_at.return_value = datetime.now(UTC)
     journal_svc.has_learning_for_task.return_value = False
     journal_svc.has_struggle_for_task.return_value = False
 
@@ -360,6 +370,7 @@ async def test_main_pm_complete_clears_assignment_for_ceo() -> None:
     git_svc.pr_target.return_value = "master"
     journal_svc = AsyncMock()
     journal_svc.has_decision_for_task.return_value = True
+    journal_svc.latest_decision_at.return_value = datetime.now(UTC)
     deps = _make_deps(task=task_svc, git=git_svc, journal=journal_svc)
     c = Choreographer(deps)
 
@@ -391,6 +402,7 @@ async def test_board_escalate_to_ceo_clears_assignment() -> None:
     task_svc.escalate_to_ceo.return_value = after
     journal_svc = AsyncMock()
     journal_svc.has_decision_for_task.return_value = True
+    journal_svc.latest_decision_at.return_value = datetime.now(UTC)
     deps = _make_deps(task=task_svc, journal=journal_svc)
     c = Choreographer(deps)
 
@@ -439,6 +451,7 @@ async def test_cell_pm_complete_reassigns_parent_when_all_subtasks_done() -> Non
     git_svc.pr_merge.return_value = {"merged": True, "merge_commit_sha": "abc"}
     journal_svc = AsyncMock()
     journal_svc.has_decision_for_task.return_value = True
+    journal_svc.latest_decision_at.return_value = datetime.now(UTC)
     deps = _make_deps(task=task_svc, git=git_svc, journal=journal_svc)
     c = Choreographer(deps)
 
@@ -477,6 +490,7 @@ async def test_cell_pm_complete_skips_parent_reassign_when_subtasks_pending() ->
     git_svc.pr_merge.return_value = {"merged": True, "merge_commit_sha": "abc"}
     journal_svc = AsyncMock()
     journal_svc.has_decision_for_task.return_value = True
+    journal_svc.latest_decision_at.return_value = datetime.now(UTC)
     deps = _make_deps(task=task_svc, git=git_svc, journal=journal_svc)
     c = Choreographer(deps)
 
@@ -507,6 +521,7 @@ async def test_cell_pm_complete_skips_parent_walk_up_for_root_task() -> None:
     git_svc.pr_merge.return_value = {"merged": True, "merge_commit_sha": "abc"}
     journal_svc = AsyncMock()
     journal_svc.has_decision_for_task.return_value = True
+    journal_svc.latest_decision_at.return_value = datetime.now(UTC)
     deps = _make_deps(task=task_svc, git=git_svc, journal=journal_svc)
     c = Choreographer(deps)
 

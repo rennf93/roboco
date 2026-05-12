@@ -1396,11 +1396,28 @@ class Choreographer:
         foundation table. Verbs requiring more (``complete``,
         ``submit_up``) use the verb-specific helpers below which thread
         the additional state (reflect, notes, subtasks) into GateContext.
+
+        Wave C8 (2026-05-12) — pre-gateway parity: the gate requires the
+        *most recent* journal:decision for (agent, task) to be no older
+        than ``settings.pm_decision_window_seconds``. Older decisions are
+        treated as missing so PMs write a fresh decision around each
+        decision point rather than once at task creation.
         """
+        from roboco.config import settings as _settings
         from roboco.foundation.policy import tracing as _tr
 
-        has_decision = await self.journal.has_decision_for_task(agent_id, task_id)
-        ctx = _tr.GateContext(journal_decision_present=has_decision)
+        # C8: recency-window only. Per-verb-group consumption tracking
+        # (one decision satisfies exactly one delegate/unblock/escalate
+        # call, then is consumed) is out of scope — Choreographer is
+        # per-request so multi-call state would need a persistent store.
+        latest = await self.journal.latest_decision_at(agent_id, task_id)
+        window_seconds = _settings.pm_decision_window_seconds
+        fresh = (
+            latest is not None
+            and (datetime.now(UTC) - latest).total_seconds() <= window_seconds
+        )
+
+        ctx = _tr.GateContext(journal_decision_present=fresh)
         result = _tr.check_requirements(
             task=t,
             requirements=list(_tr.requirements_for(verb)),
@@ -2078,9 +2095,7 @@ class Choreographer:
             await self._write_auto_pause_checkpoint(agent_id, t)
         return paused_ids
 
-    async def _write_auto_pause_checkpoint(
-        self, agent_id: UUID, task: Any
-    ) -> None:
+    async def _write_auto_pause_checkpoint(self, agent_id: UUID, task: Any) -> None:
         """Write a synthetic checkpoint for a task that was auto-paused on i_am_idle.
 
         Wave C7 (2026-05-12) — captures state-at-pause so the panel's
@@ -2094,9 +2109,7 @@ class Choreographer:
         """
         commit_refs = [c.sha for c in (task.commits or [])[-3:]]
         commit_count = len(task.commits or [])
-        state_summary = (
-            f"auto-paused on i_am_idle (commits: {commit_count})"
-        )
+        state_summary = f"auto-paused on i_am_idle (commits: {commit_count})"
         remaining_work = commit_refs if commit_refs else ["no commits yet"]
         try:
             await self.task.add_checkpoint(

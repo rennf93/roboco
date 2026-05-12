@@ -5,6 +5,7 @@ Covers: triage, triage_all, unblock, complete, escalate_up.
 
 from __future__ import annotations
 
+from datetime import UTC, datetime
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 from uuid import uuid4
@@ -35,6 +36,13 @@ def _make_deps(**overrides: Any) -> ChoreographerDeps:
         "journal_highlights_for_task",
     ):
         getattr(repo, method).return_value = []
+    # C8: default-fresh journal:decision so PM-decision gate passes.
+    # Tests that exercise the gate boundary stub their own value.
+    # The check matches MagicMock and AsyncMock (the two default sentinel
+    # types pytest's unittest.mock leaves on un-stubbed return_values).
+    _ldef = base["journal"].latest_decision_at.return_value
+    if type(_ldef).__name__ in ("MagicMock", "AsyncMock"):
+        base["journal"].latest_decision_at.return_value = datetime.now(UTC)
     return ChoreographerDeps(**base)
 
 
@@ -142,6 +150,7 @@ async def test_unblock_restores_pre_block_state() -> None:
     task_svc.unblock_with_restore.return_value = after
     journal_svc = AsyncMock()
     journal_svc.has_decision_for_task.return_value = True
+    journal_svc.latest_decision_at.return_value = datetime.now(UTC)
     deps = _make_deps(task=task_svc, journal=journal_svc)
     c = Choreographer(deps)
 
@@ -168,6 +177,7 @@ async def test_unblock_default_restores() -> None:
     task_svc.unblock_with_restore.return_value = after
     journal_svc = AsyncMock()
     journal_svc.has_decision_for_task.return_value = True
+    journal_svc.latest_decision_at.return_value = datetime.now(UTC)
     deps = _make_deps(task=task_svc, journal=journal_svc)
     c = Choreographer(deps)
 
@@ -185,6 +195,7 @@ async def test_unblock_blocks_without_journal_decision() -> None:
     task_svc.get.return_value = t
     journal_svc = AsyncMock()
     journal_svc.has_decision_for_task.return_value = False
+    journal_svc.latest_decision_at.return_value = None
     deps = _make_deps(task=task_svc, journal=journal_svc)
     c = Choreographer(deps)
 
@@ -226,6 +237,7 @@ async def test_unblock_restore_false_returns_legacy_message() -> None:
     task_svc.unblock_with_restore.return_value = after
     journal_svc = AsyncMock()
     journal_svc.has_decision_for_task.return_value = True
+    journal_svc.latest_decision_at.return_value = datetime.now(UTC)
     deps = _make_deps(task=task_svc, journal=journal_svc)
     c = Choreographer(deps)
 
@@ -257,6 +269,7 @@ async def test_cell_pm_complete_merges_then_completes() -> None:
     git_svc.pr_merge.return_value = {"merged": True, "merge_commit_sha": "merge-abc"}
     journal_svc = AsyncMock()
     journal_svc.has_decision_for_task.return_value = True
+    journal_svc.latest_decision_at.return_value = datetime.now(UTC)
     journal_svc.has_reflect_for_task.return_value = True
     deps = _make_deps(task=task_svc, git=git_svc, journal=journal_svc)
     c = Choreographer(deps)
@@ -284,6 +297,7 @@ async def test_cell_pm_complete_blocks_if_subtasks_unfinished() -> None:
     task_svc.all_subtasks_terminal.return_value = False
     journal_svc = AsyncMock()
     journal_svc.has_decision_for_task.return_value = True
+    journal_svc.latest_decision_at.return_value = datetime.now(UTC)
     journal_svc.has_reflect_for_task.return_value = True
     deps = _make_deps(task=task_svc, journal=journal_svc)
     c = Choreographer(deps)
@@ -311,6 +325,7 @@ async def test_cell_pm_complete_requires_journal_decision() -> None:
     task_svc.all_subtasks_terminal.return_value = True
     journal_svc = AsyncMock()
     journal_svc.has_decision_for_task.return_value = False
+    journal_svc.latest_decision_at.return_value = None
     deps = _make_deps(task=task_svc, journal=journal_svc)
     c = Choreographer(deps)
 
@@ -337,6 +352,7 @@ async def test_cell_pm_complete_no_pr_returns_invalid_state() -> None:
     task_svc.all_subtasks_terminal.return_value = True
     journal_svc = AsyncMock()
     journal_svc.has_decision_for_task.return_value = True
+    journal_svc.latest_decision_at.return_value = datetime.now(UTC)
     journal_svc.has_reflect_for_task.return_value = True
     deps = _make_deps(task=task_svc, journal=journal_svc)
     c = Choreographer(deps)
@@ -384,6 +400,7 @@ async def test_main_pm_complete_opens_master_pr_and_escalates() -> None:
     git_svc.create_pr.return_value = {"pr_number": 99, "pr_url": "https://x/y/pull/99"}
     journal_svc = AsyncMock()
     journal_svc.has_decision_for_task.return_value = True
+    journal_svc.latest_decision_at.return_value = datetime.now(UTC)
     journal_svc.has_reflect_for_task.return_value = True
     deps = _make_deps(task=task_svc, git=git_svc, journal=journal_svc)
     c = Choreographer(deps)
@@ -423,6 +440,7 @@ async def test_main_pm_complete_skips_pr_creation_if_already_master_targeted() -
     git_svc.pr_target.return_value = "master"
     journal_svc = AsyncMock()
     journal_svc.has_decision_for_task.return_value = True
+    journal_svc.latest_decision_at.return_value = datetime.now(UTC)
     journal_svc.has_reflect_for_task.return_value = True
     deps = _make_deps(task=task_svc, git=git_svc, journal=journal_svc)
     c = Choreographer(deps)
@@ -471,6 +489,7 @@ async def test_main_pm_complete_blocks_unfinished_subtasks() -> None:
     task_svc.all_subtasks_terminal.return_value = False
     journal_svc = AsyncMock()
     journal_svc.has_decision_for_task.return_value = True
+    journal_svc.latest_decision_at.return_value = datetime.now(UTC)
     deps = _make_deps(task=task_svc, journal=journal_svc)
     c = Choreographer(deps)
 
@@ -502,6 +521,7 @@ async def test_complete_dispatches_cell_pm() -> None:
     git_svc.pr_merge.return_value = {"merged": True, "merge_commit_sha": "x"}
     journal_svc = AsyncMock()
     journal_svc.has_decision_for_task.return_value = True
+    journal_svc.latest_decision_at.return_value = datetime.now(UTC)
     journal_svc.has_reflect_for_task.return_value = True
     deps = _make_deps(task=task_svc, git=git_svc, journal=journal_svc)
     c = Choreographer(deps)
@@ -536,6 +556,7 @@ async def test_complete_dispatches_main_pm() -> None:
     git_svc.create_pr.return_value = {"pr_number": 99, "pr_url": "x"}
     journal_svc = AsyncMock()
     journal_svc.has_decision_for_task.return_value = True
+    journal_svc.latest_decision_at.return_value = datetime.now(UTC)
     journal_svc.has_reflect_for_task.return_value = True
     deps = _make_deps(task=task_svc, git=git_svc, journal=journal_svc)
     c = Choreographer(deps)
@@ -577,6 +598,7 @@ async def test_escalate_up_routes_by_escalation_target() -> None:
     task_svc.escalate.return_value = after
     journal_svc = AsyncMock()
     journal_svc.has_decision_for_task.return_value = True
+    journal_svc.latest_decision_at.return_value = datetime.now(UTC)
     deps = _make_deps(task=task_svc, journal=journal_svc)
     c = Choreographer(deps)
 
@@ -604,6 +626,7 @@ async def test_escalate_up_returns_invalid_state_when_target_lookup_fails() -> N
     task_svc.escalate.return_value = None  # target slug not found in DB
     journal_svc = AsyncMock()
     journal_svc.has_decision_for_task.return_value = True
+    journal_svc.latest_decision_at.return_value = datetime.now(UTC)
     deps = _make_deps(task=task_svc, journal=journal_svc)
     c = Choreographer(deps)
 
@@ -628,6 +651,7 @@ async def test_escalate_up_blocks_without_journal_decision() -> None:
     )
     journal_svc = AsyncMock()
     journal_svc.has_decision_for_task.return_value = False
+    journal_svc.latest_decision_at.return_value = None
     deps = _make_deps(task=task_svc, journal=journal_svc)
     c = Choreographer(deps)
 
@@ -657,6 +681,7 @@ async def test_escalate_up_no_target_returns_invalid_state() -> None:
     )
     journal_svc = AsyncMock()
     journal_svc.has_decision_for_task.return_value = True
+    journal_svc.latest_decision_at.return_value = datetime.now(UTC)
     deps = _make_deps(task=task_svc, journal=journal_svc)
     c = Choreographer(deps)
 

@@ -6,6 +6,7 @@ state gate (awaiting_pm_review only), and journal:decision tracing gate.
 
 from __future__ import annotations
 
+from datetime import UTC, datetime
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 from uuid import uuid4
@@ -49,6 +50,13 @@ def _make_deps(**overrides: Any) -> ChoreographerDeps:
         "journal_highlights_for_task",
     ):
         getattr(repo, method).return_value = []
+    # C8: default-fresh journal:decision so PM-decision gate passes.
+    # Tests that exercise the gate boundary stub their own value.
+    # The check matches MagicMock and AsyncMock (the two default sentinel
+    # types pytest's unittest.mock leaves on un-stubbed return_values).
+    _ldef = base["journal"].latest_decision_at.return_value
+    if type(_ldef).__name__ in ("MagicMock", "AsyncMock"):
+        base["journal"].latest_decision_at.return_value = datetime.now(UTC)
     return ChoreographerDeps(**base)
 
 
@@ -68,6 +76,7 @@ async def test_board_escalate_to_ceo_succeeds_for_product_owner() -> None:
     task_svc.escalate_to_ceo.return_value = after
     journal_svc = AsyncMock()
     journal_svc.has_decision_for_task.return_value = True
+    journal_svc.latest_decision_at.return_value = datetime.now(UTC)
     deps = _make_deps(task=task_svc, journal=journal_svc)
     c = Choreographer(deps)
 
@@ -97,6 +106,7 @@ async def test_board_escalate_to_ceo_succeeds_for_head_marketing() -> None:
     task_svc.escalate_to_ceo.return_value = after
     journal_svc = AsyncMock()
     journal_svc.has_decision_for_task.return_value = True
+    journal_svc.latest_decision_at.return_value = datetime.now(UTC)
     deps = _make_deps(task=task_svc, journal=journal_svc)
     c = Choreographer(deps)
 
@@ -156,6 +166,7 @@ async def test_board_escalate_to_ceo_requires_journal_decision() -> None:
     task_svc.agent_for.return_value = MagicMock(role="product_owner")
     journal_svc = AsyncMock()
     journal_svc.has_decision_for_task.return_value = False
+    journal_svc.latest_decision_at.return_value = None
     deps = _make_deps(task=task_svc, journal=journal_svc)
     c = Choreographer(deps)
 
@@ -197,6 +208,7 @@ async def test_board_escalate_to_ceo_succeeds_for_main_pm() -> None:
     task_svc.escalate_to_ceo.return_value = after
     journal_svc = AsyncMock()
     journal_svc.has_decision_for_task.return_value = True
+    journal_svc.latest_decision_at.return_value = datetime.now(UTC)
     deps = _make_deps(task=task_svc, journal=journal_svc)
     c = Choreographer(deps)
 

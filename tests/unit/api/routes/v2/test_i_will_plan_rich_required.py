@@ -56,8 +56,7 @@ def test_i_will_plan_rejects_missing_approach() -> None:
     assert resp.status_code == _HTTP_UNPROCESSABLE, resp.text
     detail = resp.json()
     assert any(
-        "approach" in str(err.get("loc", []))
-        for err in detail.get("detail", [])
+        "approach" in str(err.get("loc", [])) for err in detail.get("detail", [])
     ), detail
 
 
@@ -106,9 +105,7 @@ def test_i_will_plan_schema_accepts_rich_plan() -> None:
             "Single-cell decomposition for the smoke test: be-pm handles "
             "git workflow validation end to end."
         ),
-        sub_tasks=[
-            {"title": "Backend slice", "description": "Branch + edit + PR"}
-        ],
+        sub_tasks=[{"title": "Backend slice", "description": "Branch + edit + PR"}],
         risks=[],
         open_questions=[],
     )

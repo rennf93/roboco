@@ -7,6 +7,7 @@ states (claim failures, start failures, missing parents, etc.).
 
 from __future__ import annotations
 
+from datetime import UTC, datetime
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 from uuid import uuid4
@@ -94,6 +95,13 @@ def _make_deps(**overrides: Any) -> ChoreographerDeps:
         "journal_highlights_for_task",
     ):
         getattr(repo, method).return_value = []
+    # C8: default-fresh journal:decision so PM-decision gate passes.
+    # Tests that exercise the gate boundary stub their own value.
+    # The check matches MagicMock and AsyncMock (the two default sentinel
+    # types pytest's unittest.mock leaves on un-stubbed return_values).
+    _ldef = base["journal"].latest_decision_at.return_value
+    if type(_ldef).__name__ in ("MagicMock", "AsyncMock"):
+        base["journal"].latest_decision_at.return_value = datetime.now(UTC)
     return ChoreographerDeps(**base)
 
 
@@ -588,6 +596,7 @@ async def test_submit_up_submit_pm_review_fails() -> None:
     task_svc.submit_pm_review.return_value = None  # service returns None
     journal = AsyncMock()
     journal.has_decision_for_task.return_value = True
+    journal.latest_decision_at.return_value = datetime.now(UTC)
     git = AsyncMock()
     git.create_pr = AsyncMock()
     deps = _make_deps(task=task_svc, journal=journal, git=git)
@@ -645,6 +654,7 @@ async def test_submit_up_no_branch_rejected() -> None:
     task_svc.all_subtasks_terminal.return_value = True
     journal = AsyncMock()
     journal.has_decision_for_task.return_value = True
+    journal.latest_decision_at.return_value = datetime.now(UTC)
     deps = _make_deps(task=task_svc, journal=journal)
     c = Choreographer(deps)
     env = await c.submit_up(pm_id, task_id, notes="x" * 30)
@@ -913,6 +923,7 @@ async def test_main_pm_complete_missing_journal_decision() -> None:
     task_svc.get.return_value = task
     journal = AsyncMock()
     journal.has_decision_for_task.return_value = False
+    journal.latest_decision_at.return_value = None
     deps = _make_deps(task=task_svc, journal=journal)
     c = Choreographer(deps)
     env = await c.main_pm_complete(main_pm_id, task_id, notes="x" * 30)

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from datetime import UTC, datetime
 from unittest.mock import AsyncMock, MagicMock
 from uuid import uuid4
 
@@ -126,6 +127,7 @@ async def test_i_am_done_calls_heartbeat() -> None:
     journal_svc.has_reflect_for_task.return_value = True
     # JOURNAL_DURING_WORK_AT_LEAST_ONE: ≥1 decision/learning/struggle entry.
     journal_svc.has_decision_for_task.return_value = True
+    journal_svc.latest_decision_at.return_value = datetime.now(UTC)
     journal_svc.has_learning_for_task.return_value = False
     journal_svc.has_struggle_for_task.return_value = False
     evidence_repo = AsyncMock()

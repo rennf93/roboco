@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from datetime import UTC, datetime
 from unittest.mock import AsyncMock, MagicMock
 from uuid import uuid4
 
@@ -14,6 +15,21 @@ def _service_with_count(count: int) -> JournalService:
     """Build a JournalService whose count query returns `count`."""
     result = MagicMock()
     result.scalar.return_value = count
+    session = MagicMock()
+    session.execute = AsyncMock(return_value=result)
+    session.flush = AsyncMock()
+    return JournalService(session)
+
+
+def _service_with_scalar(value: object) -> JournalService:
+    """Build a JournalService whose scalar query returns `value`.
+
+    Mirrors `_service_with_count` but lets the test inject any value
+    (including a `datetime` or `None`) for the single-column query path
+    used by `latest_decision_at`.
+    """
+    result = MagicMock()
+    result.scalar.return_value = value
     session = MagicMock()
     session.execute = AsyncMock(return_value=result)
     session.flush = AsyncMock()
@@ -97,3 +113,49 @@ async def test_write_struggle_handles_empty_content_gracefully() -> None:
     args, _kwargs = add_struggle_mock.call_args
     params = args[1]
     assert params.title == "Struggle"
+
+
+# ---------------------------------------------------------------------------
+# latest_decision_at — windowed-satisfaction support for the PM-decision gate
+# (C8). Returns the `created_at` of the newest DECISION_LOG entry for an
+# (agent, task) pair, or None if no decision exists.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_latest_decision_at_returns_none_when_no_decision() -> None:
+    """No DECISION_LOG entries → scalar query returns None → method returns None."""
+    svc = _service_with_scalar(None)
+    assert await svc.latest_decision_at(uuid4(), uuid4()) is None
+
+
+@pytest.mark.asyncio
+async def test_latest_decision_at_returns_timestamp_of_single_decision() -> None:
+    """One DECISION_LOG entry → returns its `created_at`."""
+    expected = datetime(2026, 5, 12, 10, 0, 0, tzinfo=UTC)
+    svc = _service_with_scalar(expected)
+    out = await svc.latest_decision_at(uuid4(), uuid4())
+    assert out == expected
+
+
+@pytest.mark.asyncio
+async def test_latest_decision_at_returns_most_recent_when_multiple_decisions() -> None:
+    """SQL `max(created_at)` returns the newest; method passes it through.
+
+    The DB does the max() reduction in the query — the mock returns
+    whatever the scalar would; we assert the method respects that value.
+    """
+    newest = datetime(2026, 5, 12, 12, 30, 0, tzinfo=UTC)
+    svc = _service_with_scalar(newest)
+    out = await svc.latest_decision_at(uuid4(), uuid4())
+    assert out == newest
+
+
+@pytest.mark.asyncio
+async def test_latest_decision_at_filters_by_agent_id() -> None:
+    """The query filters by (agent_id, task_id) — a decision by another
+    agent on the same task must NOT count. The mock returns None to
+    represent the post-filter empty set."""
+    svc = _service_with_scalar(None)
+    out = await svc.latest_decision_at(uuid4(), uuid4())
+    assert out is None

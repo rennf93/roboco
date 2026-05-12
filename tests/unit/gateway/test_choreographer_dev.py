@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from datetime import UTC, datetime
 from unittest.mock import AsyncMock, MagicMock
 from uuid import uuid4
 
@@ -392,6 +393,7 @@ async def test_i_am_done_blocks_when_acceptance_criteria_unaddressed() -> None:
     # rejection here is the unaddressed AC2 criterion, not the new
     # mid-flight cadence gate.
     journal_svc.has_decision_for_task.return_value = True
+    journal_svc.latest_decision_at.return_value = datetime.now(UTC)
     journal_svc.has_learning_for_task.return_value = False
     journal_svc.has_struggle_for_task.return_value = False
     deps = _make_deps(task=task_svc, journal=journal_svc)
@@ -445,6 +447,7 @@ async def test_i_am_done_reflect_note_addresses_acceptance_criteria() -> None:
     # Satisfy JOURNAL_DURING_WORK_AT_LEAST_ONE so the test's narrow assertion
     # (criteria-gap cleared) isn't masked by an unrelated tracing failure.
     journal_svc.has_decision_for_task.return_value = True
+    journal_svc.latest_decision_at.return_value = datetime.now(UTC)
     journal_svc.has_learning_for_task.return_value = False
     journal_svc.has_struggle_for_task.return_value = False
     deps = _make_deps(task=task_svc, journal=journal_svc)
@@ -495,6 +498,7 @@ async def test_i_am_done_blocks_when_journal_reflect_missing() -> None:
     # Satisfy JOURNAL_DURING_WORK_AT_LEAST_ONE so journal:reflect is the
     # load-bearing gap surfaced to the assertion.
     journal_svc.has_decision_for_task.return_value = True
+    journal_svc.latest_decision_at.return_value = datetime.now(UTC)
     journal_svc.has_learning_for_task.return_value = False
     journal_svc.has_struggle_for_task.return_value = False
     deps = _make_deps(task=task_svc, journal=journal_svc)

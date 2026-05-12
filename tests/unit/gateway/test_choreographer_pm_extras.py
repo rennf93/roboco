@@ -6,6 +6,7 @@ auto-pause behavior of i_am_idle for PMs.
 
 from __future__ import annotations
 
+from datetime import UTC, datetime
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 from uuid import UUID, uuid4
@@ -54,6 +55,13 @@ def _make_deps(**overrides: Any) -> ChoreographerDeps:
         "journal_highlights_for_task",
     ):
         getattr(repo, method).return_value = []
+    # C8: default-fresh journal:decision so PM-decision gate passes.
+    # Tests that exercise the gate boundary stub their own value.
+    # The check matches MagicMock and AsyncMock (the two default sentinel
+    # types pytest's unittest.mock leaves on un-stubbed return_values).
+    _ldef = base["journal"].latest_decision_at.return_value
+    if type(_ldef).__name__ in ("MagicMock", "AsyncMock"):
+        base["journal"].latest_decision_at.return_value = datetime.now(UTC)
     return ChoreographerDeps(**base)
 
 
@@ -170,6 +178,7 @@ async def test_i_will_plan_blocks_when_journal_decision_at_claim_missing() -> No
     task_svc.start.return_value = started
     journal_svc = AsyncMock()
     journal_svc.has_decision_for_task.return_value = False
+    journal_svc.latest_decision_at.return_value = None
     deps = _make_deps(task=task_svc, journal=journal_svc)
     c = Choreographer(deps)
 
@@ -395,12 +404,9 @@ async def test_i_will_plan_idempotent_when_already_in_progress_for_caller() -> N
         plan="re-entry plan",
         rich_plan={
             "approach": (
-                "Idempotent re-entry: task already in progress, "
-                "refresh heartbeat."
+                "Idempotent re-entry: task already in progress, refresh heartbeat."
             ),
-            "sub_tasks": [
-                {"title": "Re-entry subtask", "description": "Resume work"}
-            ],
+            "sub_tasks": [{"title": "Re-entry subtask", "description": "Resume work"}],
         },
     )
 
@@ -459,8 +465,7 @@ async def test_i_will_plan_recovery_when_already_claimed_for_caller() -> None:
         plan="re-entry plan",
         rich_plan={
             "approach": (
-                "Recovery re-entry: task claimed but not started; "
-                "run set_plan + start."
+                "Recovery re-entry: task claimed but not started; run set_plan + start."
             ),
             "sub_tasks": [
                 {"title": "Recovery subtask", "description": "Resume from claimed"}
@@ -804,6 +809,7 @@ async def test_submit_up_opens_pr_and_reassigns_to_main_pm() -> None:
     git_svc.create_pr.return_value = {"pr_number": 12, "pr_url": "x"}
     journal_svc = AsyncMock()
     journal_svc.has_decision_for_task.return_value = True
+    journal_svc.latest_decision_at.return_value = datetime.now(UTC)
     deps = _make_deps(task=task_svc, git=git_svc, journal=journal_svc)
     c = Choreographer(deps)
 
@@ -833,6 +839,7 @@ async def test_submit_up_blocks_when_subtasks_not_terminal() -> None:
     task_svc.all_subtasks_terminal.return_value = False
     journal_svc = AsyncMock()
     journal_svc.has_decision_for_task.return_value = True
+    journal_svc.latest_decision_at.return_value = datetime.now(UTC)
     deps = _make_deps(task=task_svc, journal=journal_svc)
     c = Choreographer(deps)
 
@@ -874,6 +881,7 @@ async def test_submit_up_blocks_without_journal_decision() -> None:
     task_svc.agent_for.return_value = MagicMock(role="cell_pm", team="backend")
     journal_svc = AsyncMock()
     journal_svc.has_decision_for_task.return_value = False
+    journal_svc.latest_decision_at.return_value = None
     deps = _make_deps(task=task_svc, journal=journal_svc)
     c = Choreographer(deps)
 
