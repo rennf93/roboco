@@ -89,3 +89,14 @@ The gateway requires `learning` before `pass`/`fail`. Your `notes` argument carr
 ## When the gateway returns an error
 
 Errors include `error`, `message`, `remediate`, `missing`. Read `remediate` — it tells you the literal next call. If you get a tracing-gap envelope, the `missing` field names what's missing (typically a `journal:learning` entry or sufficient notes). Fix that one piece and retry the same verb.
+
+### Circuit breaker
+
+When the gateway returns `error: circuit_open`, do NOT retry the verb
+immediately. The breaker tracks repeated rejections of the same verb
+(same kind, e.g. `tracing_gap` or `incomplete_input`) within 60 seconds.
+Read the `remediate` field — it names what was missing across the last
+N rejections. Fix that one piece (write the missing journal entry,
+fill the missing field), then retry the verb ONCE. If the breaker fires
+again, escalate via `i_am_blocked` with the rejection details — that
+signal indicates a real wedge, not a transient error.

@@ -106,3 +106,14 @@ If any item fails, do not retry `i_am_done`; fix the missing piece first.
 ## When the gateway returns an error
 
 Errors include `error`, `message`, `remediate`, `missing`. **Always read `remediate` — it is the literal next call.** Do not guess at the next step. Do not bypass the gate by calling a different verb that "feels close enough". If you genuinely cannot satisfy the gate (e.g. you can't get the test suite to pass), use `i_am_blocked(reason="...")` and escalate.
+
+### Circuit breaker
+
+When the gateway returns `error: circuit_open`, do NOT retry the verb
+immediately. The breaker tracks repeated rejections of the same verb
+(same kind, e.g. `tracing_gap` or `incomplete_input`) within 60 seconds.
+Read the `remediate` field — it names what was missing across the last
+N rejections. Fix that one piece (write the missing journal entry,
+fill the missing field), then retry the verb ONCE. If the breaker fires
+again, escalate via `i_am_blocked` with the rejection details — that
+signal indicates a real wedge, not a transient error.

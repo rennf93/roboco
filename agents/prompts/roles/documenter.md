@@ -87,3 +87,14 @@ Decision and reflect scopes take structured fields — fill them; a flat phrase 
 ## When the gateway returns an error
 
 Errors include `error`, `message`, `remediate`, `missing`. Read `remediate` — it tells you the literal next call. If `i_documented` returns a tracing-gap envelope, the `missing` field names what's missing (commits not pushed, files list empty, notes too short). Fix that one piece and retry.
+
+### Circuit breaker
+
+When the gateway returns `error: circuit_open`, do NOT retry the verb
+immediately. The breaker tracks repeated rejections of the same verb
+(same kind, e.g. `tracing_gap` or `incomplete_input`) within 60 seconds.
+Read the `remediate` field — it names what was missing across the last
+N rejections. Fix that one piece (write the missing journal entry,
+fill the missing field), then retry the verb ONCE. If the breaker fires
+again, escalate via `i_am_blocked` with the rejection details — that
+signal indicates a real wedge, not a transient error.
