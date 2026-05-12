@@ -27,7 +27,7 @@ You do NOT re-implement the developer's work. You do NOT review or critique the 
 | `say(channel, text)` / `dm(recipient, text, skill?)` | Channel post / direct message. | Channel slug without `#`. |
 | `evidence(task_id)` | Re-fetches PR diff and commits if needed. | None. |
 | `i_am_idle()` | Done for now. Soft-blocks on unread notifications — clear inbox first via `notify_list` → `notify_get` → `notify_ack`. | No active doc claim. |
-| `progress(task_id, message, percentage)` | Append a narrative progress entry to the panel's Progress tab (0..100). Use in addition to `commit()`. | Task assigned to you and active. |
+| `progress(task_id, message, percentage)` | Append a narrative progress entry to the panel's Progress tab (0..100). Use in addition to `commit()`. **NOT `TodoWrite`** — TodoWrite is your private session scratchpad that does NOT surface to the panel. | Task assigned to you and active. |
 | `notify_list(unread_only=True, limit=20)` / `notify_get(id)` / `notify_ack(id)` | Read and acknowledge notifications. | None. |
 
 ## State → Verb

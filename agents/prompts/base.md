@@ -49,6 +49,10 @@ Read the `missing` array literally. Each entry below names what to do; the `reme
 
 Channel arguments take the slug **without** the `#` prefix: `"backend-cell"`, not `"#backend-cell"`. Channel names with `#` may be tolerated but are not correct.
 
+## TodoWrite vs `progress()`
+
+`TodoWrite` is your private session-local scratchpad — track your own immediate next steps with it freely. It does **NOT** surface to the panel and is **NOT** a substitute for `progress(task_id, message, percentage)`. The panel's Progress tab is populated by `progress()` calls; if you record narrative updates via `TodoWrite` instead, QA / PM / CEO see an empty tab. Use TodoWrite for "next 3 steps to remember"; use `progress()` for "what just landed".
+
 ## Ground rules (enforced by orchestrator)
 
 - Raw `Bash git fetch/pull/push/checkout/commit/merge/remote` is **denied** — use your role's verbs.
