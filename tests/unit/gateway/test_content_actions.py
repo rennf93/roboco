@@ -646,3 +646,56 @@ async def test_verify_explicit_task_ownership_returns_not_found() -> None:
     assert env is not None
     body = env.as_dict()
     assert body["error"] == "not_found"
+
+
+# ---------------------------------------------------------------------------
+# B4 — decision/reflect remediate includes a literal call example
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_decision_incomplete_input_includes_call_example() -> None:
+    """Decision rejection includes a literal note(scope='decision', ...) template."""
+    task = AsyncMock()
+    task.get_active_task_for_agent.return_value = None
+    task.agent_for.return_value = MagicMock(role="cell_pm")
+    deps = _make_deps(task=task)
+    ca = ContentActions(deps)
+
+    env = await ca.note(
+        agent_id=uuid4(),
+        text="bare decision",
+        scope="decision",
+    )
+    body = env.as_dict()
+    assert body["error"] == "incomplete_input"
+    remediate = body.get("remediate", "")
+    # Must include a literal call template, not just a field list
+    assert "note(scope='decision'" in remediate, remediate
+    assert "context=" in remediate, remediate
+    assert "options=[" in remediate, remediate
+    assert "chosen=" in remediate, remediate
+    assert "rationale=" in remediate, remediate
+
+
+@pytest.mark.asyncio
+async def test_reflect_incomplete_input_includes_call_example() -> None:
+    """Reflect rejection includes a literal note(scope='reflect', ...) call template."""
+    task = AsyncMock()
+    task.get_active_task_for_agent.return_value = None
+    task.agent_for.return_value = MagicMock(role="developer")
+    deps = _make_deps(task=task)
+    ca = ContentActions(deps)
+
+    env = await ca.note(
+        agent_id=uuid4(),
+        text="bare reflect",
+        scope="reflect",
+    )
+    body = env.as_dict()
+    assert body["error"] == "incomplete_input"
+    remediate = body.get("remediate", "")
+    assert "note(scope='reflect'" in remediate, remediate
+    assert "what_done=" in remediate, remediate
+    assert "what_learned=" in remediate, remediate
+    assert "what_struggled=" in remediate, remediate

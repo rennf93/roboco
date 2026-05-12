@@ -360,14 +360,41 @@ class ContentActions:
         # Pre-gateway parity: decision and reflect scopes had required fields.
         missing, hints = _check_scope_required_fields(scope, s)
         if missing:
+            if scope == "decision":
+                remediate = (
+                    "re-issue note(scope='decision', ...) with these fields filled: "
+                    f"{', '.join(missing)}.\n\nExample:\n"
+                    "note(\n"
+                    "  scope='decision',\n"
+                    "  text='<one-line summary of the decision>',\n"
+                    "  context='<the situation that led to it>',\n"
+                    "  options=[\n"
+                    "    {'name': 'optionA', 'pros': '<pros>', 'cons': '<cons>'},\n"
+                    "    {'name': 'optionB', 'pros': '<pros>', 'cons': '<cons>'},\n"
+                    "  ],\n"
+                    "  chosen='<which option>',\n"
+                    "  rationale='<why this option — cite trade-offs>',\n"
+                    ")\n\n"
+                    "Pre-gateway parity — these populate the panel's Decisions view."
+                )
+            else:
+                remediate = (
+                    "re-issue note(scope='reflect', ...) with these fields filled: "
+                    f"{', '.join(missing)}.\n\nExample:\n"
+                    "note(\n"
+                    "  scope='reflect',\n"
+                    "  text='<one-line summary of the reflection>',\n"
+                    "  what_done='<what shipped, where (file:line / commit)>',\n"
+                    "  what_learned='<new info you didn't have before>',\n"
+                    "  what_struggled='<where you got stuck — even briefly>',\n"
+                    "  next_steps=['<follow-up #1>', '<follow-up #2>'],\n"
+                    ")\n\n"
+                    "Pre-gateway parity — these populate the panel's Reflections view."
+                )
             return Envelope.incomplete_input(
                 missing=missing,
                 field_hints=hints,
-                remediate=(
-                    f"re-issue note(scope={scope!r}, ...) with these fields "
-                    f"filled: {', '.join(missing)}. Pre-gateway parity — these "
-                    f"populate the panel's {scope.capitalize()}s view."
-                ),
+                remediate=remediate,
                 context_briefing={},
             )
         title = (s.get("title") or text.split("\n", 1)[0])[:200]
