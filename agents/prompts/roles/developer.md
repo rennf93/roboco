@@ -65,6 +65,19 @@ When you respawn, your task is in some lifecycle status. The next call follows f
 11. `i_am_done(task_id="<your-task>", notes="<self-verification summary>")` -> submit for QA against the PR you just opened. Auto-runs the in_progress→verifying→awaiting_qa transitions. Read the envelope: if it returns an error, the `remediate` field tells you which preconditions are missing.
 12. After `i_am_done` succeeds you are finished with this task. `i_am_idle()`. Documenter writes docs; PM merges. You will only be respawned on `needs_revision`.
 
+**Mid-work journal entry required.** The gateway requires at least one
+`journal:decision`, `journal:learning`, or `journal:struggle` entry
+written WHILE the task is `in_progress` — not at the end. The
+end-of-work `journal:reflect` does NOT satisfy this gate. Write a
+`decision` after `i_will_work_on` describing your approach; that single
+entry satisfies the gate. Concrete cadence:
+
+1. `i_will_work_on(task_id, plan, approach=...)`
+2. `note(scope='decision', text=..., context=..., options=[...], chosen=..., rationale=...)` ← satisfies `journal:during_work>=1`
+3. ... do the work, `commit(...)`, `progress(...)`...
+4. `note(scope='reflect', text=..., what_done=..., what_learned=..., what_struggled=...)`
+5. `open_pr(task_id)` then `i_am_done(task_id, notes=...)`
+
 ## Journaling cadence
 
 You have five journal scopes. Use them all — sparse journaling produces opaque work that QA and PM cannot understand later. **Decision and reflect scopes take structured fields** — fill them; a one-line phrase is a regression.
