@@ -79,22 +79,29 @@ def _render_option_block(option: dict[str, str] | str) -> str:
     return "\n".join(block)
 
 
-def _render_journal_content(scope: str, text: str, structured: dict[str, Any]) -> str:
-    """Build the journal entry body. Pre-gateway parity for decision/reflect.
+_SCOPE_SECTIONS: dict[str, tuple[tuple[str, str], ...]] = {
+    "decision": _DECISION_SECTIONS,
+    "reflect": _REFLECT_SECTIONS,
+}
 
-    For scopes that have a structured shape (``decision``, ``reflect``), append
-    a markdown section for each populated field. ``decision.options`` is
-    rendered as named blocks with Pros/Cons (pre-gateway DecisionOption shape).
-    Other scopes return ``text`` unchanged. The original ``text`` always lands
-    first so flat-content consumers still see the summary line.
-    """
-    sections = (
-        _DECISION_SECTIONS
-        if scope == "decision"
-        else _REFLECT_SECTIONS
-        if scope == "reflect"
-        else ()
-    )
+
+def _render_section_value(key: str, value: Any) -> str | None:
+    """Render one section value or return None to skip the section."""
+    if key == "options" and isinstance(value, list):
+        if not value:
+            return None
+        return "\n\n".join(_render_option_block(o) for o in value)
+    if isinstance(value, list):
+        if not value:
+            return None
+        return "\n".join(f"- {item}" for item in value)
+    rendered = str(value).strip()
+    return rendered or None
+
+
+def _render_journal_content(scope: str, text: str, structured: dict[str, Any]) -> str:
+    """Build the journal entry body. Pre-gateway parity for decision/reflect."""
+    sections = _SCOPE_SECTIONS.get(scope, ())
     if not sections:
         return text
     body_parts: list[str] = [text.strip()] if text.strip() else []
@@ -102,18 +109,9 @@ def _render_journal_content(scope: str, text: str, structured: dict[str, Any]) -
         value = structured.get(key)
         if value is None:
             continue
-        if key == "options" and isinstance(value, list):
-            if not value:
-                continue
-            rendered = "\n\n".join(_render_option_block(o) for o in value)
-        elif isinstance(value, list):
-            if not value:
-                continue
-            rendered = "\n".join(f"- {item}" for item in value)
-        else:
-            rendered = str(value).strip()
-            if not rendered:
-                continue
+        rendered = _render_section_value(key, value)
+        if rendered is None:
+            continue
         body_parts.append(f"## {label}\n{rendered}")
     return "\n\n".join(body_parts) if body_parts else text
 
@@ -141,10 +139,7 @@ def _check_scope_required_fields(
         for field, hint in decision_required:
             value = structured.get(field)
             if field == "options":
-                if (
-                    not isinstance(value, list)
-                    or len(value) < _MIN_DECISION_OPTIONS
-                ):
+                if not isinstance(value, list) or len(value) < _MIN_DECISION_OPTIONS:
                     missing.append(field)
                     hints[field] = (
                         "options must be a list of at least 2 dicts with "
@@ -718,9 +713,7 @@ class ContentActions:
         role_str = str(agent.role) if agent is not None else ""
         if role_str not in self._SESSION_OPENER_ROLES:
             return Envelope.not_authorized(
-                message=(
-                    f"role {role_str!r} cannot open sessions; PM roles only"
-                ),
+                message=(f"role {role_str!r} cannot open sessions; PM roles only"),
                 remediate=(
                     "ask your PM to open_session for you, or escalate_up if "
                     "no session exists for the work you need to discuss"
@@ -778,9 +771,7 @@ class ContentActions:
             rel = SessionTaskRelationshipType(relationship_type)
         except ValueError:
             return Envelope.invalid_state(
-                message=(
-                    f"invalid relationship_type {relationship_type!r}"
-                ),
+                message=(f"invalid relationship_type {relationship_type!r}"),
                 remediate=(
                     "use one of: discussion | planning | review | retrospective"
                 ),
