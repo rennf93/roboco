@@ -190,12 +190,6 @@ class Task(TimestampMixin):
     docs_complete: bool = Field(default=False, description="Documenter has finished")
     pr_created: bool = Field(default=False, description="Developer has created PR")
 
-    # PM Approval Tracking (for AWAITING_PM_REVIEW phase)
-    pm_approvals: dict[str, bool] = Field(
-        default_factory=dict,
-        description="PM approvals: {'main_pm': True, 'cell_pm': True}",
-    )
-
     # Ownership
     created_by: UUID = Field(..., description="Agent who created the task")
     assigned_to: UUID | None = Field(
@@ -370,7 +364,6 @@ class TaskUpdate(RobocoBase):
     pr_url: str | None = None
     docs_complete: bool | None = None
     pr_created: bool | None = None
-    pm_approvals: dict[str, bool] | None = None
 
 
 # =============================================================================

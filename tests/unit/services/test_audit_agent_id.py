@@ -259,7 +259,6 @@ async def test_submit_for_qa_writes_audit_with_dev_agent_id(
         pr_url="https://github.com/example/audit-test/pull/99",
         docs_complete=False,
         pr_created=True,
-        pm_approvals={},
         created_by=system_uuid,
         assigned_to=dev_uuid,
         claimed_by=dev_uuid,

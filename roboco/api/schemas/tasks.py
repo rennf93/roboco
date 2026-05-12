@@ -269,9 +269,6 @@ class TaskResponse(BaseModel):
     docs_complete: bool = False  # Documenter has finished
     pr_created: bool = False  # Developer has created PR
 
-    # PM Approval Tracking (for AWAITING_PM_REVIEW phase)
-    pm_approvals: dict[str, bool] = {}  # e.g. {'main_pm': True, 'cell_pm': True}
-
     # Ownership
     team: Team
     created_by: UUID
@@ -622,7 +619,6 @@ def task_to_response(task: "TaskTable") -> TaskResponse:
         ),
         docs_complete=task.docs_complete,
         pr_created=task.pr_created,
-        pm_approvals=task.pm_approvals or {},
         team=task.team,
         created_by=require_uuid(task.created_by),
         assigned_to=to_python_uuid(task.assigned_to),

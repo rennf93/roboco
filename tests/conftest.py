@@ -346,7 +346,6 @@ async def smoke_test_batch(db_session: AsyncSession) -> AsyncIterator[list[UUID]
         pr_url="https://github.com/example/smoke/pull/1",
         docs_complete=True,
         pr_created=True,
-        pm_approvals={"cell_pm": str(pm_agent.id)},
         created_by=system_agent.id,
         assigned_to=dev_agent.id,
         team=Team.BACKEND,

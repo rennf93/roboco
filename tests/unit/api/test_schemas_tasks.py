@@ -276,7 +276,6 @@ def _stub_task(*, with_project: bool = False) -> SimpleNamespace:
         project=(SimpleNamespace(slug="proj-1") if with_project else None),
         docs_complete=False,
         pr_created=False,
-        pm_approvals={},
         team=Team.BACKEND,
         created_by=uuid4(),
         assigned_to=None,

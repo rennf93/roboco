@@ -196,9 +196,6 @@ class TaskTable(Base):
     docs_complete: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     pr_created: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
 
-    # PM Approval Tracking (for AWAITING_PM_REVIEW phase)
-    pm_approvals: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
-
     # Ownership
     created_by: Mapped[UUID] = mapped_column(
         UUID(as_uuid=True), ForeignKey("agents.id"), nullable=False
