@@ -1704,6 +1704,7 @@ class AgentOrchestrator:
                 "/app/system-prompt.md",
                 "--mcp-config",
                 "/app/mcp-config.json",
+                "--strict-mcp-config",
                 "--tools",
                 "Read,Write,Edit,Bash,Grep,Glob,Task,TodoWrite",
                 "--output-format",
