@@ -1697,6 +1697,49 @@ class Choreographer:
                 return skill
         return preference[0]
 
+    @staticmethod
+    def _build_struggle_body(
+        reason: str, blocker_type: str | None, what_needed: str | None
+    ) -> str:
+        """Render the reason + optional Blocker Type / What Needed sections."""
+        # Pre-gateway parity (G8 part b): typed blocker_type / what_needed
+        # render as structured markdown blocks instead of a flat sentence.
+        if not (blocker_type or what_needed):
+            return reason
+        parts = [reason.strip()] if reason.strip() else []
+        if blocker_type:
+            parts.append(f"## Blocker Type\n{blocker_type}")
+        if what_needed:
+            parts.append(f"## What Needed\n{what_needed}")
+        return "\n\n".join(parts)
+
+    async def _run_i_am_blocked_intent(
+        self,
+        agent_id: UUID,
+        task_id: UUID,
+        t: Any,
+        agent: Any,
+        spec_ctx: spec_module.Context,
+        role_str: str,
+        briefing: dict[str, Any],
+    ) -> tuple[Any, Envelope | None]:
+        """Dispatch (block,) via the verb runner; return (task, rejection)."""
+        runner = self._verb_runner()
+        try:
+            updated = await runner.run_intent("i_am_blocked", t, agent, spec_ctx)
+        except Exception as exc:
+            return t, await self._emit_rejection(
+                Envelope.invalid_state(
+                    message=f"verb runner failed: {exc}",
+                    remediate="check workspace + retry; if persistent, escalate",
+                    context_briefing=briefing,
+                ).with_introspection(task=t, role=role_str),
+                agent_id=agent_id,
+                task_id=task_id,
+                verb="i_am_blocked",
+            )
+        return updated, None
+
     async def i_am_blocked(
         self,
         agent_id: UUID,
@@ -1710,12 +1753,9 @@ class Choreographer:
         Atomic: ``spec.can_invoke_intent`` runs first and enforces role
         membership (developer/qa/documenter) and the source-status
         constraint of the composed ``block`` action (in_progress only).
-        After the spec gate accepts, the journal:struggle entry is
-        written from the verb body — the runner does NOT model journal
-        side effects, and a struggle log is a side effect outside the
-        lifecycle action. Then ``VerbRunner.run_intent("i_am_blocked",
-        ...)`` dispatches the (block,) atomic chain wrapped in a
-        savepoint so a mid-sequence failure rolls back the DB.
+        After the spec gate accepts, the journal:struggle entry is written
+        from the verb body, then ``VerbRunner.run_intent("i_am_blocked", ...)``
+        dispatches the (block,) atomic chain wrapped in a savepoint.
         """
         t = await self.task.get(task_id)
         if t is None:
@@ -1757,41 +1797,19 @@ class Choreographer:
                 task_id=task_id,
                 verb="i_am_blocked",
             )
-        # Journal:struggle is a side effect outside the lifecycle action;
-        # the runner does NOT model journal effects, so it stays in the
-        # verb body. Written before the runner dispatches `block` so a
-        # later runner failure still leaves an audit trail of the agent's
-        # struggle.
-        # Pre-gateway parity (G8 part b): if the agent supplied typed
-        # blocker_type / what_needed, render them as a structured
-        # markdown body so the panel renders Blocker / Type / Needed
-        # blocks instead of one flat sentence. Pre-gateway shape
-        # came from TaskBlockInput at 0c3d15a:roboco/mcp/schemas/__init__.py.
-        struggle_body = reason
-        if blocker_type or what_needed:
-            parts = [reason.strip()] if reason.strip() else []
-            if blocker_type:
-                parts.append(f"## Blocker Type\n{blocker_type}")
-            if what_needed:
-                parts.append(f"## What Needed\n{what_needed}")
-            struggle_body = "\n\n".join(parts)
+        # Journal:struggle is a side effect outside the lifecycle action; it
+        # stays in the verb body, written before the runner dispatches `block`
+        # so a later runner failure still leaves an audit trail.
         await self.journal.write_struggle(
-            agent_id=agent_id, task_id=task_id, content=struggle_body
+            agent_id=agent_id,
+            task_id=task_id,
+            content=self._build_struggle_body(reason, blocker_type, what_needed),
         )
-        runner = self._verb_runner()
-        try:
-            t = await runner.run_intent("i_am_blocked", t, agent, spec_ctx)
-        except Exception as exc:
-            return await self._emit_rejection(
-                Envelope.invalid_state(
-                    message=f"verb runner failed: {exc}",
-                    remediate="check workspace + retry; if persistent, escalate",
-                    context_briefing=briefing,
-                ).with_introspection(task=t, role=role_str),
-                agent_id=agent_id,
-                task_id=task_id,
-                verb="i_am_blocked",
-            )
+        t, rejection = await self._run_i_am_blocked_intent(
+            agent_id, task_id, t, agent, spec_ctx, role_str, briefing
+        )
+        if rejection is not None:
+            return rejection
         await self._touch(task_id)
         return Envelope.ok(
             status=str(t.status),
