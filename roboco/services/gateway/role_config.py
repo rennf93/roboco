@@ -46,6 +46,7 @@ _DEV_DO = (
     "dm",
     "evidence",
     "progress",
+    "pr_update",
     *_NOTIFY_RECEIVER,
     *_CHANNEL_DISCOVERY,
 )
@@ -61,6 +62,7 @@ _DOC_DO = (
     "dm",
     "evidence",
     "progress",
+    "pr_update",
     *_NOTIFY_RECEIVER,
     *_CHANNEL_DISCOVERY,
 )
@@ -74,6 +76,7 @@ _CELL_PM_DO = (
     "evidence",
     "open_session",
     "link_session",
+    "pr_update",
     *_NOTIFY_RECEIVER,
     *_CHANNEL_DISCOVERY,
 )
@@ -87,6 +90,7 @@ _MAIN_PM_DO = (
     "evidence",
     "open_session",
     "link_session",
+    "pr_update",
     *_NOTIFY_RECEIVER,
     *_CHANNEL_DISCOVERY,
 )

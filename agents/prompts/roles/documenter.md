@@ -20,6 +20,7 @@ You do NOT re-implement the developer's work. You do NOT review or critique the 
 | `give_me_work()` | Returns a task in `awaiting_documentation` or `idle`. | None. |
 | `claim_doc_task(task_id)` | Claims the doc task; returns PR data inline. | Task in `awaiting_documentation`; you are not the original developer. |
 | `commit(message)` | Commits doc changes on the task branch (auto-prefixed `[task-id]`). | Task in `in_progress`; on the task branch. |
+| `pr_update(task_id, title?, body?, reviewers?)` | Update the PR's title, body, or reviewer list (e.g. to add a doc-relevant summary). At least one field must be set. **Do NOT bash-shim `gh pr edit`** — use this verb. | Task has `pr_number`; you are claimant on the doc task. |
 | `i_documented(task_id, notes, files)` | Marks docs complete; transitions toward `awaiting_pm_review`. | At least one doc file in `files`; `notes` >= 20 chars. |
 | `unclaim(task_id)` | Release this claim back to pending. Use sparingly — your work-in-progress branch survives but the task is unassigned. | Task assigned to you and in claimed/in_progress. |
 | `resume(task_id)` | Resume a paused task. Transitions paused → in_progress. | Task assigned to you and in paused state. |
