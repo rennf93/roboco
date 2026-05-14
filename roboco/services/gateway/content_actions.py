@@ -932,6 +932,25 @@ class ContentActions:
         {"cell_pm", "main_pm"}
     )
 
+    @staticmethod
+    def _pr_update_is_authorized(agent_id: UUID, task: Any, agent: Any) -> bool:
+        """True iff caller is the task's assignee, main_pm, or cell_pm on team.
+
+        Extracted so pr_update stays under xenon's cyclomatic-complexity
+        bound — the three branches plus the team-string compare push the
+        verb itself over the line when inlined.
+        """
+        if task.assigned_to == agent_id:
+            return True
+        role_str = str(agent.role) if agent is not None else ""
+        if role_str == "main_pm":
+            return True
+        if role_str != "cell_pm" or agent is None:
+            return False
+        if agent.team is None or task.team is None:
+            return False
+        return str(agent.team) == str(task.team)
+
     async def pr_update(
         self,
         *,
@@ -982,17 +1001,8 @@ class ContentActions:
                 context_briefing={},
             )
         agent = await self.task.agent_for(agent_id)
-        role_str = str(agent.role) if agent is not None else ""
-        is_assignee = t.assigned_to == agent_id
-        is_main_pm = role_str == "main_pm"
-        is_cell_pm_on_team = (
-            role_str == "cell_pm"
-            and agent is not None
-            and agent.team is not None
-            and t.team is not None
-            and str(agent.team) == str(t.team)
-        )
-        if not (is_assignee or is_main_pm or is_cell_pm_on_team):
+        if not self._pr_update_is_authorized(agent_id, t, agent):
+            role_str = str(agent.role) if agent is not None else ""
             return Envelope.not_authorized(
                 message=(
                     f"role {role_str!r} is neither the assignee nor a PM on "
