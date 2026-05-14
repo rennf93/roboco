@@ -31,16 +31,21 @@ class NoteRequest(BaseModel):
     scope: str = "note"
     task_id: UUID | None = None
     title: str | None = None
-    # decision scope (all required at gateway when scope='decision')
-    context: str | None = None
+    # decision scope (all required at gateway when scope='decision').
+    # Typed as non-nullable str (default "") so the MCP tool schema declares
+    # the field as `string` not `anyOf[string, null]` — smoke-6 showed
+    # minimax-m2.7 passing literal `null` for these and the server-side
+    # gate looping forever on `incomplete_input`. Empty string still counts
+    # as missing at the gate.
+    context: str = ""
     options: list[dict[str, str]] | None = None  # [{name, pros, cons}, ...]
-    chosen: str | None = None
-    rationale: str | None = None
+    chosen: str = ""
+    rationale: str = ""
     consequences: list[str] | None = None
     # reflect scope (what_done/learned/struggled required when scope='reflect')
-    what_done: str | None = None
-    what_learned: str | None = None
-    what_struggled: str | None = None
+    what_done: str = ""
+    what_learned: str = ""
+    what_struggled: str = ""
     next_steps: list[str] | None = None
 
 
