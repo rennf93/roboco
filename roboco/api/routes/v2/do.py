@@ -20,6 +20,7 @@ from roboco.api.schemas.v2.do import (
     NotifyRequest,
     OpenSessionRequest,
     ProgressRequest,
+    PRUpdateRequest,
     SayRequest,
 )
 from roboco.services.gateway.content_actions import ContentActions
@@ -242,4 +243,21 @@ async def do_channels(
     actions: _ContentActionsDep,
 ) -> dict:
     env = await actions.channels(agent_id=x_agent_id)
+    return envelope_to_response(env, request)
+
+
+@router.post("/pr_update")
+async def do_pr_update(
+    request: Request,
+    body: PRUpdateRequest,
+    x_agent_id: _AgentIdHeader,
+    actions: _ContentActionsDep,
+) -> dict:
+    env = await actions.pr_update(
+        agent_id=x_agent_id,
+        task_id=body.task_id,
+        title=body.title,
+        body=body.body,
+        reviewers=body.reviewers,
+    )
     return envelope_to_response(env, request)

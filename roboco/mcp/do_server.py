@@ -332,6 +332,43 @@ def channels() -> dict[str, Any]:
     return _post("/api/v2/do/channels", {})
 
 
+def pr_update(
+    task_id: str,
+    title: str | None = None,
+    body: str | None = None,
+    reviewers: list[str] | None = None,
+) -> dict[str, Any]:
+    """Update an existing PR's title, body, and/or requested reviewers.
+
+    Use after ``open_pr`` when you need to correct the title/body or
+    request a reviewer. At least one of ``title``, ``body``, or
+    ``reviewers`` must be provided — passing all three None is rejected
+    with ``invalid_state`` before any GitHub call.
+
+    Args:
+        task_id: UUID of the task whose PR you're editing.
+        title: Replacement PR title (omit to leave unchanged).
+        body: Replacement PR body markdown (omit to leave unchanged).
+        reviewers: List of agent slugs to request as reviewers (e.g.
+            ``["be-dev-2", "be-qa"]``). The gateway maps slugs to GitHub
+            usernames where the project records that mapping, otherwise
+            the slugs are forwarded as-is.
+
+    Authorization: caller must be the task's assignee OR a PM on the
+    task's team (cell_pm same-team, or main_pm cross-team). Anyone else
+    receives ``not_authorized``.
+    """
+    return _post(
+        "/api/v2/do/pr_update",
+        {
+            "task_id": task_id,
+            "title": title,
+            "body": body,
+            "reviewers": reviewers,
+        },
+    )
+
+
 # ---------- Tool registry ----------
 #
 # Maps the tool name an agent calls (matches manifest entries and the
@@ -351,6 +388,7 @@ _TOOLS: dict[str, Any] = {
     "notify_get": notify_get,
     "notify_ack": notify_ack,
     "channels": channels,
+    "pr_update": pr_update,
 }
 
 

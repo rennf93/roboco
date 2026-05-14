@@ -15,6 +15,7 @@ import re
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, ClassVar
 
+from roboco.exceptions import GitError
 from roboco.foundation.policy import communications as _comms
 from roboco.foundation.policy.journaling import Scope as _Scope
 from roboco.services.gateway.commit_validator import validate_commit_message
@@ -924,6 +925,107 @@ class ContentActions:
                     "returns 'Channel not found'."
                 ),
             },
+            context_briefing={},
+        )
+
+    _PM_ROLES_FOR_PR_UPDATE: ClassVar[frozenset[str]] = frozenset(
+        {"cell_pm", "main_pm"}
+    )
+
+    async def pr_update(
+        self,
+        *,
+        agent_id: UUID,
+        task_id: UUID,
+        title: str | None = None,
+        body: str | None = None,
+        reviewers: list[str] | None = None,
+    ) -> Envelope:
+        """Update an existing PR's title, body, and/or requested reviewers.
+
+        Smoke-5 surfaced this gap: agents who needed to edit a PR's
+        title/body or assign a reviewer after ``open_pr`` had no verb
+        for it and got bash-shimmed by the ``gh pr edit`` guard. This
+        verb is the gateway-native replacement.
+
+        Authorization: caller must be the task's ``assigned_to`` OR a
+        PM on the task's team (cell_pm.team == task.team, or main_pm
+        which is cross-team).
+
+        Preconditions:
+          - task must exist (else not_found)
+          - task.pr_number must be set (else invalid_state, remediate
+            'call open_pr')
+          - at least one of title/body/reviewers must be non-None (else
+            invalid_state — schema-level check is the first line of
+            defense; this guard catches direct gateway calls)
+        """
+        if title is None and body is None and reviewers is None:
+            return Envelope.invalid_state(
+                message="no fields to update",
+                remediate=(
+                    "provide at least one of title, body, or reviewers; "
+                    "passing all None has no effect"
+                ),
+                context_briefing={},
+            )
+        t = await self.task.get(task_id)
+        if t is None:
+            return Envelope.not_found(message=f"task {task_id} not found")
+        if t.pr_number is None:
+            return Envelope.invalid_state(
+                message=f"task {task_id} has no PR open",
+                remediate=(
+                    "call open_pr(task_id) first; pr_update only edits an "
+                    "already-open PR"
+                ),
+                context_briefing={},
+            )
+        agent = await self.task.agent_for(agent_id)
+        role_str = str(agent.role) if agent is not None else ""
+        is_assignee = t.assigned_to == agent_id
+        is_main_pm = role_str == "main_pm"
+        is_cell_pm_on_team = (
+            role_str == "cell_pm"
+            and agent is not None
+            and agent.team is not None
+            and t.team is not None
+            and str(agent.team) == str(t.team)
+        )
+        if not (is_assignee or is_main_pm or is_cell_pm_on_team):
+            return Envelope.not_authorized(
+                message=(
+                    f"role {role_str!r} is neither the assignee nor a PM on "
+                    f"this task's team; cannot update PR"
+                ),
+                remediate=(
+                    "only the task's assignee or a PM on the task's team "
+                    "may edit the PR; ask the assignee or your PM to call "
+                    "pr_update instead"
+                ),
+                context_briefing={},
+            )
+        try:
+            result = await self.git.update_pr_for_task(
+                task_id,
+                title=title,
+                body=body,
+                reviewers=reviewers,
+            )
+        except GitError as exc:
+            return Envelope.invalid_state(
+                message=str(exc),
+                remediate=(
+                    "check the PR number on the task and retry; if the PR "
+                    "was closed externally, the task should be reset"
+                ),
+                context_briefing={},
+            )
+        return Envelope.ok(
+            status=str(t.status),
+            task_id=str(task_id),
+            next="continue working, or i_am_done when ready",
+            evidence=result,
             context_briefing={},
         )
 
