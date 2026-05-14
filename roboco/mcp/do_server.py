@@ -27,10 +27,24 @@ ORCHESTRATOR_URL = os.environ.get(
     "ROBOCO_ORCHESTRATOR_URL",
     "http://roboco-orchestrator:8000",
 )
+# Per-agent SDK loopback for the per-verb circuit breaker.
+SDK_URL = os.environ.get("ROBOCO_SDK_URL", "http://localhost:9000")
 AGENT_ID = os.environ["ROBOCO_AGENT_ID"]
 AGENT_ROLE = os.environ["ROBOCO_AGENT_ROLE"]
 
 _TIMEOUT = 30
+# Tight timeout for SDK loopback — local sidecar; gateway path must not stall.
+_SDK_TIMEOUT = 2.0
+
+# Envelope error kinds that count toward the per-verb circuit breaker.
+# Mirrors flow_server._CIRCUIT_REJECTION_KINDS — agent_sdk.server is the
+# authoritative side; the same set must be applied here so the do-server
+# (content tools) gets the same protection as flow-server (intent verbs).
+# Smoke-6 surfaced the gap: `note(scope='decision')` looped 8 times
+# returning `incomplete_input` with no breaker.
+_CIRCUIT_REJECTION_KINDS: frozenset[str] = frozenset(
+    {"tracing_gap", "invalid_state", "not_authorized", "incomplete_input"}
+)
 
 mcp = FastMCP("roboco-do")
 log = structlog.get_logger()
@@ -56,6 +70,13 @@ def _post(path: str, body: dict[str, Any]) -> dict[str, Any]:
     Mirrors flow_server._post: surfaces the orchestrator's envelope on
     both 2xx and 4xx so the agent always sees ``remediate``. Only
     fabricates a transport_error envelope when the body is unparseable.
+
+    Rejection envelopes (error in _CIRCUIT_REJECTION_KINDS) are forwarded
+    to the local SDK's /verb/attempted so the per-verb circuit breaker
+    can track them. If the SDK reports open, the original rejection is
+    REPLACED with circuit_open. Smoke-6 surfaced the gap: do-server had
+    no breaker and `note(scope='decision')` looped 8 times returning
+    incomplete_input.
     """
     with httpx.Client(timeout=_TIMEOUT) as client:
         response = client.post(
@@ -78,7 +99,74 @@ def _post(path: str, body: dict[str, Any]) -> dict[str, Any]:
                 ),
                 "missing": [],
             }
+    # Outside the orchestrator client so the SDK call is its own connection.
+    return _record_and_check_circuit(path, body, payload)
+
+
+def _verb_from_path(path: str) -> str:
+    """Extract the verb name from a do-server path.
+
+    ``/api/v2/do/<verb>`` → ``<verb>``. Returns the original path if it
+    doesn't match the expected shape (defensive — breaker falls open
+    downstream when the verb is unrecognized).
+    """
+    return path.rsplit("/", 1)[-1]
+
+
+def _record_and_check_circuit(
+    path: str,
+    body: dict[str, Any],
+    payload: dict[str, Any],
+) -> dict[str, Any]:
+    """Forward a content-tool rejection to the SDK breaker; maybe substitute.
+
+    For successful (ok) envelopes this is a no-op — only rejections of
+    kind tracing_gap / invalid_state / not_authorized / incomplete_input
+    are reported. When the SDK responds with ``open=true`` we replace the
+    original rejection with the wire-format ``circuit_open`` envelope so
+    the agent stops retrying.
+
+    Best-effort: SDK unreachable, slow, or malformed response → return
+    the original payload. The breaker is a safety net; it must never
+    break the gateway path.
+    """
+    rejection_kind = payload.get("error")
+    if rejection_kind not in _CIRCUIT_REJECTION_KINDS:
         return payload
+
+    verb = _verb_from_path(path)
+    task_id = body.get("task_id")
+    try:
+        with httpx.Client(timeout=_SDK_TIMEOUT) as client:
+            resp = client.post(
+                f"{SDK_URL}/verb/attempted",
+                json={
+                    "verb": verb,
+                    "task_id": str(task_id) if task_id is not None else None,
+                    "rejection_kind": rejection_kind,
+                },
+            )
+            status = resp.json()
+    except (httpx.HTTPError, OSError, ValueError, json.JSONDecodeError) as exc:
+        log.warning(
+            "do_server: SDK /verb/attempted unreachable; breaker bypassed",
+            verb=verb,
+            task_id=task_id,
+            error=str(exc),
+        )
+        return payload
+
+    if status.get("open") and isinstance(status.get("circuit_envelope"), dict):
+        circuit_env: dict[str, Any] = status["circuit_envelope"]
+        log.info(
+            "do_server: circuit_open substituted for rejection",
+            verb=verb,
+            task_id=task_id,
+            attempts=status.get("attempts"),
+            limit=status.get("limit"),
+        )
+        return circuit_env
+    return payload
 
 
 def commit(message: str, files: list[str] | None = None) -> dict[str, Any]:
