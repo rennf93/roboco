@@ -724,7 +724,10 @@ class ContentActions:
         already has a primary session in the same channel, it reuses
         that session instead of opening a new one.
         """
-        from roboco.api.schemas.sessions import SessionForTasksCreateRequest
+        from roboco.models.session import (
+            SessionForTasksCreate,
+            SessionTaskRelationshipType,
+        )
 
         agent = await self.task.agent_for(agent_id)
         role_str = str(agent.role) if agent is not None else ""
@@ -737,10 +740,14 @@ class ContentActions:
                 ),
                 context_briefing={},
             )
-        req = SessionForTasksCreateRequest(
+        try:
+            rel_type = SessionTaskRelationshipType(relationship_type)
+        except ValueError:
+            rel_type = SessionTaskRelationshipType.DISCUSSION
+        req = SessionForTasksCreate(
             task_ids=[task_id],
             channel_slug=channel,
-            relationship_type=relationship_type,
+            relationship_type=rel_type,
             group_id=group_id,
         )
         # ``topic`` isn't part of SessionForTasksCreateRequest yet — pre-gateway
