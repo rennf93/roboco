@@ -17,6 +17,7 @@ def _make_deps(**overrides: AsyncMock) -> ContentActionsDeps:
     else:
         task = AsyncMock()
         task.get_active_task_for_agent.return_value = None
+        task.get_journal_context_task_for_agent.return_value = None
         # commit() checks caller role server-side; default-created mocks
         # need a default developer role so existing tests pass through.
         # Caller-supplied mocks must set agent_for themselves.
@@ -400,6 +401,7 @@ async def test_note_auto_fills_task_id_from_active_task() -> None:
     task_obj = MagicMock(id=task_id, status="in_progress")
     task_svc = AsyncMock()
     task_svc.get_active_task_for_agent.return_value = task_obj
+    task_svc.get_journal_context_task_for_agent.return_value = task_obj
     journal_svc = AsyncMock()
 
     deps = _make_deps(task=task_svc, journal=journal_svc)
@@ -440,6 +442,7 @@ async def test_say_auto_injects_task_id_when_active_task_exists() -> None:
     task_obj = MagicMock(id=task_id, status="in_progress")
     task_svc = AsyncMock()
     task_svc.get_active_task_for_agent.return_value = task_obj
+    task_svc.get_journal_context_task_for_agent.return_value = task_obj
     messaging_svc = AsyncMock()
 
     deps = _make_deps(task=task_svc, messaging=messaging_svc)
@@ -507,6 +510,7 @@ async def test_dm_with_active_task_succeeds() -> None:
     task_obj = MagicMock(id=task_id, status="in_progress")
     task_svc = AsyncMock()
     task_svc.get_active_task_for_agent.return_value = task_obj
+    task_svc.get_journal_context_task_for_agent.return_value = task_obj
     a2a_svc = AsyncMock()
 
     deps = _make_deps(task=task_svc, a2a=a2a_svc)

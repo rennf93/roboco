@@ -22,6 +22,7 @@ def _make_deps(**overrides: AsyncMock) -> ContentActionsDeps:
     else:
         task = AsyncMock()
         task.get_active_task_for_agent.return_value = None
+        task.get_journal_context_task_for_agent.return_value = None
         task.agent_for.return_value = MagicMock(role="cell_pm")
 
     git = overrides.get("git", AsyncMock())
@@ -239,6 +240,7 @@ async def test_notify_auto_fills_task_id_from_active_task() -> None:
     task_obj = MagicMock(id=task_id, status="awaiting_pm_review")
     task_svc = AsyncMock()
     task_svc.get_active_task_for_agent.return_value = task_obj
+    task_svc.get_journal_context_task_for_agent.return_value = task_obj
     task_svc.agent_for.return_value = MagicMock(role="cell_pm")
     notif_svc = AsyncMock()
 

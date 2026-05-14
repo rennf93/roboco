@@ -4489,6 +4489,22 @@ class TaskService(BaseService):
         TaskStatus.AWAITING_DOCUMENTATION,
     }
 
+    # States in which the agent still owns the task for content / journal
+    # context, even if it isn't progressing. Used by note / say / dm /
+    # evidence so journal entries written from blocked or paused get the
+    # task_id auto-attached (otherwise the C8 + tracing gates never see
+    # the agent's decisions and the agent spirals).
+    _JOURNAL_CONTEXT_STATUSES: ClassVar[set[TaskStatus]] = {
+        TaskStatus.CLAIMED,
+        TaskStatus.IN_PROGRESS,
+        TaskStatus.VERIFYING,
+        TaskStatus.AWAITING_QA,
+        TaskStatus.AWAITING_DOCUMENTATION,
+        TaskStatus.BLOCKED,
+        TaskStatus.PAUSED,
+        TaskStatus.NEEDS_REVISION,
+    }
+
     # Statuses that count as "still assignable to the agent" for triage.
     _AGENT_NON_TERMINAL_STATUSES: ClassVar[set[TaskStatus]] = {
         TaskStatus.PENDING,
@@ -4622,6 +4638,30 @@ class TaskService(BaseService):
             .where(
                 TaskTable.assigned_to == agent_id,
                 TaskTable.status.in_(self._DEV_ACTIVE_STATUSES),
+            )
+            .order_by(TaskTable.updated_at.desc().nullslast())
+            .limit(1)
+        )
+        result = await self.session.execute(query)
+        return result.scalar_one_or_none()
+
+    async def get_journal_context_task_for_agent(
+        self, agent_id: UUID
+    ) -> TaskTable | None:
+        """Most-recently-updated task the agent owns for journal/content context.
+
+        Wider than ``get_active_task_for_agent`` — includes BLOCKED, PAUSED,
+        and NEEDS_REVISION so journal entries written while stuck still
+        get the task_id auto-attached. Smoke-5 surfaced the bug: PMs
+        wrote decisions during blocked state, auto-injection returned
+        None, entries persisted with task_id=NULL, the C8 tracing gate
+        never saw them, agents spiraled forever.
+        """
+        query = (
+            select(TaskTable)
+            .where(
+                TaskTable.assigned_to == agent_id,
+                TaskTable.status.in_(self._JOURNAL_CONTEXT_STATUSES),
             )
             .order_by(TaskTable.updated_at.desc().nullslast())
             .limit(1)

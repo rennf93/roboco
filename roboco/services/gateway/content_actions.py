@@ -320,8 +320,8 @@ class ContentActions:
         """Gate Set D: refuse content posts on tasks the caller does not own.
 
         Only call this for *explicit* task_id (caller passed it themselves).
-        Auto-fill from get_active_task_for_agent is implicitly self-owned
-        and does not need a re-check.
+        Auto-fill from get_journal_context_task_for_agent is implicitly
+        self-owned and does not need a re-check.
 
         Allows ``assigned_to=None`` (post-handoff transient state) so QA /
         documenter can still inspect tasks between reassignments.
@@ -365,7 +365,7 @@ class ContentActions:
             if reject := await self._verify_explicit_task_ownership(agent_id, task_id):
                 return reject
         else:
-            t = await self.task.get_active_task_for_agent(agent_id)
+            t = await self.task.get_journal_context_task_for_agent(agent_id)
             if t is not None:
                 task_id = t.id
         s = structured or {}
@@ -464,7 +464,7 @@ class ContentActions:
             if reject := await self._verify_explicit_task_ownership(agent_id, task_id):
                 return reject
         else:
-            t = await self.task.get_active_task_for_agent(agent_id)
+            t = await self.task.get_journal_context_task_for_agent(agent_id)
             if t is not None:
                 task_id = t.id
         try:
@@ -516,7 +516,7 @@ class ContentActions:
             if reject := await self._verify_explicit_task_ownership(agent_id, task_id):
                 return reject
         else:
-            t = await self.task.get_active_task_for_agent(agent_id)
+            t = await self.task.get_journal_context_task_for_agent(agent_id)
             if t is not None:
                 task_id = t.id
         if task_id is None:
@@ -592,7 +592,7 @@ class ContentActions:
             if reject := await self._verify_explicit_task_ownership(agent_id, task_id):
                 return reject
         else:
-            t = await self.task.get_active_task_for_agent(agent_id)
+            t = await self.task.get_journal_context_task_for_agent(agent_id)
             if t is not None:
                 task_id = t.id
         await self.notifications.send_ack_notification(

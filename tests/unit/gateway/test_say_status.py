@@ -26,6 +26,7 @@ def _make_deps(**overrides: AsyncMock) -> ContentActionsDeps:
         task = AsyncMock()
         task.agent_for.return_value = MagicMock(role="developer", slug="be-dev-1")
         task.get_active_task_for_agent.return_value = None
+        task.get_journal_context_task_for_agent.return_value = None
 
     git = overrides.get("git", AsyncMock())
     messaging = overrides.get("messaging", AsyncMock())
@@ -68,6 +69,7 @@ async def test_say_posted_status_with_active_task() -> None:
     task_svc = AsyncMock()
     task_svc.agent_for.return_value = MagicMock(role="developer", slug="be-dev-1")
     task_svc.get_active_task_for_agent.return_value = task_obj
+    task_svc.get_journal_context_task_for_agent.return_value = task_obj
 
     ca = ContentActions(_make_deps(task=task_svc))
     env = await ca.say(
