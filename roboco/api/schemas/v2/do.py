@@ -1,8 +1,9 @@
 """Request schemas for /api/v2/do/* content tools."""
 
+from typing import Self
 from uuid import UUID
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 
 class CommitRequest(BaseModel):
@@ -125,3 +126,33 @@ class NotifyAckRequest(BaseModel):
 
 class ChannelsRequest(BaseModel):
     """No params — caller's identity comes from X-Agent-ID header."""
+
+
+class PRUpdateRequest(BaseModel):
+    """Update an open PR's title/body and/or request reviewers.
+
+    Smoke-5 surfaced the gap: agents who needed to fix the PR title or
+    request a reviewer after `open_pr` had no verb for it and got blocked
+    by the bash-guard on `gh pr edit`. This is the gateway-native fix.
+
+    At least one of `title`, `body`, or `reviewers` must be provided —
+    enforced via a `model_validator` so the route returns 422 before the
+    request ever reaches `ContentActions`.
+
+    `reviewers` is a list of agent slugs (e.g. `["be-dev-2", "be-qa"]`);
+    the gateway maps to GitHub usernames where the project records that
+    mapping, otherwise the slugs go through as-is.
+    """
+
+    task_id: UUID
+    title: str | None = None
+    body: str | None = None
+    reviewers: list[str] | None = None
+
+    @model_validator(mode="after")
+    def _at_least_one_field(self) -> Self:
+        if self.title is None and self.body is None and self.reviewers is None:
+            raise ValueError(
+                "at least one of title, body, or reviewers must be provided"
+            )
+        return self
