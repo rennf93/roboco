@@ -80,6 +80,10 @@ _REV_LIST_PARTS = 2
 
 # GitHub REST API status codes
 _GH_UNPROCESSABLE = 422
+# 404 means the PR (or repo) does not exist; surfaced as a typed GitError
+# by `update_pr_for_task` so the gateway can convert it into a specific
+# invalid_state envelope rather than the generic refusal message.
+_HTTP_NOT_FOUND = 404
 # 409 means the PR can't be merged in its current state — typically because
 # a concurrent sibling-subtask merge updated the target branch and our local
 # refs are stale. `pr_merge` re-syncs and retries exactly once on this code.
@@ -1261,6 +1265,151 @@ class GitService(BaseService):
             source_branch,
             target_branch,
         )
+
+    async def _patch_pr_title_body(
+        self,
+        owner: str,
+        repo: str,
+        pr_number: int,
+        git_token: str,
+        payload: dict[str, str],
+    ) -> None:
+        """PATCH /repos/{owner}/{repo}/pulls/{pr_number} with title/body.
+
+        Translates HTTP failures into GitError so the verb layer can map
+        them onto invalid_state envelopes. 404 → "PR not found"; any
+        other non-2xx surfaces the GitHub validation text inline.
+        """
+        try:
+            async with httpx.AsyncClient(timeout=_GIT_TIMEOUT) as client:
+                resp = await client.patch(
+                    f"https://api.github.com/repos/{owner}/{repo}/pulls/{pr_number}",
+                    headers={
+                        "Authorization": f"Bearer {git_token}",
+                        "Accept": "application/vnd.github+json",
+                        "X-GitHub-Api-Version": "2022-11-28",
+                    },
+                    json=payload,
+                )
+        except httpx.HTTPError as e:
+            raise GitError(
+                f"GitHub API error while updating PR #{pr_number}: {e}",
+                {"owner": owner, "repo": repo, "pr": pr_number},
+            ) from e
+        if resp.status_code == _HTTP_NOT_FOUND:
+            raise GitError(
+                f"PR not found: #{pr_number} on {owner}/{repo}",
+                {"owner": owner, "repo": repo, "pr": pr_number},
+            )
+        if not resp.is_success:
+            raise GitError(
+                f"GitHub API refused PR update ({resp.status_code}): {resp.text[:200]}",
+                {"owner": owner, "repo": repo, "pr": pr_number},
+            )
+
+    async def _post_pr_reviewers(
+        self,
+        owner: str,
+        repo: str,
+        pr_number: int,
+        git_token: str,
+        reviewers: list[str],
+    ) -> None:
+        """POST /repos/{owner}/{repo}/pulls/{pr_number}/requested_reviewers.
+
+        Mirrors `_patch_pr_title_body` error handling. The reviewers list
+        is passed through verbatim — caller is responsible for mapping
+        agent slugs onto GitHub usernames where the project records that.
+        """
+        try:
+            async with httpx.AsyncClient(timeout=_GIT_TIMEOUT) as client:
+                resp = await client.post(
+                    f"https://api.github.com/repos/{owner}/{repo}/pulls/"
+                    f"{pr_number}/requested_reviewers",
+                    headers={
+                        "Authorization": f"Bearer {git_token}",
+                        "Accept": "application/vnd.github+json",
+                        "X-GitHub-Api-Version": "2022-11-28",
+                    },
+                    json={"reviewers": reviewers},
+                )
+        except httpx.HTTPError as e:
+            raise GitError(
+                f"GitHub API error while adding reviewers to PR #{pr_number}: {e}",
+                {"owner": owner, "repo": repo, "pr": pr_number},
+            ) from e
+        if resp.status_code == _HTTP_NOT_FOUND:
+            raise GitError(
+                f"PR not found: #{pr_number} on {owner}/{repo}",
+                {"owner": owner, "repo": repo, "pr": pr_number},
+            )
+        if not resp.is_success:
+            raise GitError(
+                f"GitHub API refused reviewer request ({resp.status_code}): "
+                f"{resp.text[:200]}",
+                {"owner": owner, "repo": repo, "pr": pr_number},
+            )
+
+    async def update_pr_for_task(
+        self,
+        task_id: UUID,
+        *,
+        title: str | None = None,
+        body: str | None = None,
+        reviewers: list[str] | None = None,
+    ) -> dict[str, Any]:
+        """Update an open PR's title/body and/or request reviewers.
+
+        Looks up the task, resolves the project's GitHub PAT, and routes
+        through `_patch_pr_title_body` (when title or body is set) and
+        `_post_pr_reviewers` (when reviewers is set). Either or both run;
+        the verb layer guarantees at least one is provided.
+
+        Returns a dict with `pr_number`, `pr_url`, and a `updated_fields`
+        list naming which of title/body/reviewers actually went out.
+        """
+        task_service = get_task_service(self.session)
+        task = await task_service.get(task_id)
+        if task is None:
+            raise NotFoundError("Task", str(task_id))
+        if task.pr_number is None:
+            raise GitError(
+                f"Task {task_id} has no PR open; cannot update.",
+                {"task_id": str(task_id)},
+            )
+
+        project_service = get_project_service(self.session)
+        project = await project_service.get(UUID(str(task.project_id)))
+        if project is None:
+            raise NotFoundError("Project", str(task.project_id))
+
+        workspace_agent_id = self._resolve_workspace_agent_id(task, None)
+        workspace = await self.get_workspace(project.slug, agent_id=workspace_agent_id)
+        owner, repo = self._parse_github_remote(workspace)
+        git_token = await self._get_project_token_or_raise(project.slug)
+        pr_number = int(task.pr_number)
+
+        updated: list[str] = []
+        patch_payload: dict[str, str] = {}
+        if title is not None:
+            patch_payload["title"] = title
+            updated.append("title")
+        if body is not None:
+            patch_payload["body"] = body
+            updated.append("body")
+        if patch_payload:
+            await self._patch_pr_title_body(
+                owner, repo, pr_number, git_token, patch_payload
+            )
+        if reviewers is not None:
+            await self._post_pr_reviewers(owner, repo, pr_number, git_token, reviewers)
+            updated.append("reviewers")
+
+        return {
+            "pr_number": pr_number,
+            "pr_url": str(task.pr_url) if task.pr_url else "",
+            "updated_fields": updated,
+        }
 
     _PR_OPEN_STATES: ClassVar[frozenset[str]] = frozenset(
         {
