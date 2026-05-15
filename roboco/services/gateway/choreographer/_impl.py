@@ -1556,13 +1556,18 @@ class Choreographer:
     async def _build_i_am_done_ok(
         self, agent_id: UUID, task_id: UUID, t: Any
     ) -> Envelope:
-        """Assemble the success envelope for i_am_done / _with_catchup."""
+        """Assemble the success envelope for i_am_done / _with_catchup.
+
+        Task #154: files_changed sourced from git (authoritative) so the
+        i_am_done envelope shows the same file list QA / docs / PMs will
+        see — independent of legacy ``add_files_modified`` plumbing.
+        """
         journal_highlights = await self.evidence_repo.journal_highlights_for_task(
             task_id
         )
         files_changed: list[str] = []
-        if t.work_session_id:
-            files_changed = await self.work_session.files_changed(t.work_session_id)
+        if t.branch_name:
+            files_changed = await self.git.list_changed_files(branch_name=t.branch_name)
         evidence = build_evidence_for_task(
             t,
             journal_highlights=journal_highlights,

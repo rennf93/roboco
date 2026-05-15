@@ -182,16 +182,21 @@ class QAMixin(_Base):
     async def _build_qa_claim_evidence(self, t: Any, task_id: UUID) -> Any:
         """Assemble the inline evidence payload returned by claim_review.
 
-        Bundles files_changed (from work_session) + pr_diff_summary (from
-        git) + journal_highlights so the QA agent has the full PR
-        context up-front and can't miss a piece.
+        Bundles files_changed + pr_diff_summary (both from git, the
+        authoritative source) + journal_highlights so the QA agent has
+        the full PR context up-front and can't miss a piece.
+
+        Task #154: files_changed comes from ``git.list_changed_files``
+        instead of ``work_session.files_modified``. The legacy
+        ``add_files_modified`` HTTP path that populated files_modified
+        is not called by the gateway ``commit()``, so the work_session
+        list was always empty — QA saw no files even on real PRs.
         """
         files_changed: list[str] = []
-        if t.work_session_id:
-            files_changed = await self.work_session.files_changed(t.work_session_id)
         diff_summary = ""
         if t.branch_name:
             diff_summary = await self.git.diff(branch_name=t.branch_name)
+            files_changed = await self.git.list_changed_files(branch_name=t.branch_name)
         journal_highlights = await self.evidence_repo.journal_highlights_for_task(
             task_id
         )

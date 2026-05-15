@@ -78,9 +78,9 @@ async def test_claim_review_returns_evidence_inline() -> None:
     task_svc.list_paused_for_agent.return_value = []
     task_svc.qa_claim.return_value = t_claimed
     work_svc = AsyncMock()
-    work_svc.files_changed.return_value = ["README.md"]
     git_svc = AsyncMock()
     git_svc.diff.return_value = "+++ diff content"
+    git_svc.list_changed_files.return_value = ["README.md"]
     deps = _make_deps(task=task_svc, work_session=work_svc, git=git_svc)
     c = Choreographer(deps)
 

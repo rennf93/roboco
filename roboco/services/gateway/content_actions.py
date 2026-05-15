@@ -217,6 +217,10 @@ class ContentActionsDeps:
     # `NotificationDeliveryService`, not `NotificationService`. Keeping
     # them separate so the sender vs receiver concerns stay split.
     notification_delivery: Any = None
+    # Task #154: evidence() returns journal_highlights for QA/reviewer
+    # context. Matches the choreographer's EvidenceRepo wiring so both
+    # paths surface the same shape.
+    evidence_repo: Any = None
 
 
 _VALID_NOTIFY_PRIORITIES: frozenset[str] = frozenset(p.value for p in _comms.Priority)
@@ -253,6 +257,10 @@ class ContentActions:
     @property
     def notifications(self) -> Any:
         return self._deps.notifications
+
+    @property
+    def evidence_repo(self) -> Any:
+        return self._deps.evidence_repo
 
     async def commit(
         self,
@@ -648,6 +656,13 @@ class ContentActions:
         Allows inspection when caller is assignee OR task is unassigned
         (post-handoff transient state) — strict ownership only blocks
         cross-agent inspection of an actively-owned task.
+
+        Task #154: ``files_changed`` and ``pr_diff_summary`` are pulled
+        from git (against the branch's parent) — the authoritative source.
+        Earlier versions hard-coded ``files_changed=[]`` and used
+        ``HEAD~1`` for the diff base, so QA / reviewers saw an empty
+        change list and only the latest commit's delta even when the PR
+        on GitHub had a multi-commit change set.
         """
         t = await self.task.get(task_id)
         if t is None:
@@ -659,13 +674,21 @@ class ContentActions:
                 agent_id=agent_id, branch_name=t.branch_name
             )
         diff = ""
+        files_changed: list[str] = []
         if t.branch_name:
-            base = "HEAD~1" if t.commits else None
-            diff = await self.git.diff(branch_name=t.branch_name, base=base)
+            diff = await self.git.diff(
+                branch_name=t.branch_name, actor_agent_id=agent_id
+            )
+            files_changed = await self.git.list_changed_files(
+                branch_name=t.branch_name, actor_agent_id=agent_id
+            )
+        journal_highlights = await self.evidence_repo.journal_highlights_for_task(
+            task_id
+        )
         ev = build_evidence_for_task(
             t,
-            journal_highlights=[],
-            files_changed=[],
+            journal_highlights=journal_highlights,
+            files_changed=files_changed,
             pr_diff_summary=diff,
         )
         return Envelope.ok(

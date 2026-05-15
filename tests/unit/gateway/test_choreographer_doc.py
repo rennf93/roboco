@@ -70,9 +70,9 @@ async def test_claim_doc_task_returns_evidence() -> None:
     task_svc.list_paused_for_agent.return_value = []
     task_svc.doc_claim.return_value = after
     work_svc = AsyncMock()
-    work_svc.files_changed.return_value = ["README.md"]
     git_svc = AsyncMock()
     git_svc.diff.return_value = "+++ diff"
+    git_svc.list_changed_files.return_value = ["README.md"]
     deps = _make_deps(task=task_svc, work_session=work_svc, git=git_svc)
     c = Choreographer(deps)
 

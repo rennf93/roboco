@@ -44,6 +44,11 @@ def _make_deps(**overrides: AsyncMock) -> ContentActionsDeps:
     journal = overrides.get("journal", AsyncMock())
     workspace = overrides.get("workspace", AsyncMock())
     notifications = overrides.get("notifications", AsyncMock())
+    if "evidence_repo" in overrides:
+        evidence_repo = overrides["evidence_repo"]
+    else:
+        evidence_repo = AsyncMock()
+        evidence_repo.journal_highlights_for_task.return_value = []
     return ContentActionsDeps(
         task=task,
         git=git,
@@ -52,6 +57,7 @@ def _make_deps(**overrides: AsyncMock) -> ContentActionsDeps:
         journal=journal,
         workspace=workspace,
         notifications=notifications,
+        evidence_repo=evidence_repo,
     )
 
 

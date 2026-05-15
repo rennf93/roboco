@@ -175,13 +175,19 @@ class DocMixin(_Base):
         ).with_introspection(task=t, role=role_str)
 
     async def _claim_doc_evidence(self, task: Any, task_id: UUID) -> dict[str, Any]:
-        """Build the evidence dict surfaced inline on claim_doc_task ok envelopes."""
+        """Build the evidence dict surfaced inline on claim_doc_task ok envelopes.
+
+        Task #154: files_changed sourced from git (authoritative) instead
+        of ``work_session.files_modified``, which the gateway commit()
+        does not populate. The docs writer sees an accurate file list.
+        """
         files_changed: list[str] = []
-        if task.work_session_id:
-            files_changed = await self.work_session.files_changed(task.work_session_id)
         diff = ""
         if task.branch_name:
             diff = await self.git.diff(branch_name=task.branch_name)
+            files_changed = await self.git.list_changed_files(
+                branch_name=task.branch_name
+            )
         journal_highlights = await self.evidence_repo.journal_highlights_for_task(
             task_id
         )

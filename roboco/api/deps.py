@@ -519,7 +519,7 @@ async def get_choreographer(
 async def get_content_actions(
     db_session: DbSession,
 ) -> ContentActions:
-    """Build a ContentActions with all 7 service dependencies wired up."""
+    """Build a ContentActions with all service dependencies wired up."""
     return ContentActions(
         ContentActionsDeps(
             task=TaskService(db_session),
@@ -530,6 +530,7 @@ async def get_content_actions(
             workspace=WorkspaceService(db_session),
             notifications=NotificationService(),
             notification_delivery=NotificationDeliveryService(db_session),
+            evidence_repo=EvidenceRepo(db_session),
         )
     )
 
