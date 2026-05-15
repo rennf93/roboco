@@ -2180,8 +2180,14 @@ class Choreographer:
     def _resolve_effective_plan(
         plan: str, rich_plan: dict[str, Any] | None
     ) -> str | dict[str, Any]:
-        """Use the panel-shaped dict when any rich field is populated."""
-        if not rich_plan:
+        """Use the panel-shaped dict when any rich field is populated.
+
+        Requires `plan` (narrative paragraph) to be non-empty — the rich
+        structure is layered on top, not a replacement. An empty paragraph
+        falls through as ``""`` so the spec's plan-required precondition
+        emits tracing_gap.
+        """
+        if not plan or not rich_plan:
             return plan
         if any(rich_plan.get(k) for k in Choreographer._RICH_PLAN_FIELDS):
             return _build_panel_shaped_plan(plan, rich_plan)
@@ -2236,8 +2242,13 @@ class Choreographer:
                 task_id=task_id,
                 verb="i_will_plan",
             )
+        effective_plan = self._resolve_effective_plan(plan, rich_plan)
+        # Task #153: spec_ctx carries the resolved (possibly-dict) plan so the
+        # verb runner's set_plan handler persists the panel-shaped rich shape.
+        # Passing the raw `plan` string here was the bug that left the Plan tab
+        # empty: the runner uses spec_ctx, not _ClaimPlanStartContext.
         spec_ctx = spec_module.Context(
-            plan=plan,
+            plan=effective_plan,
             actor_id=pm_agent_id,
             actor_slug=getattr(agent, "slug", None) if agent is not None else None,
             original_developer_slug=_extract_original_developer(t),
@@ -2248,7 +2259,7 @@ class Choreographer:
             task=t,
             role_str=role_str,
             briefing=briefing,
-            plan=self._resolve_effective_plan(plan, rich_plan),
+            plan=effective_plan,
             verb_name="i_will_plan",
         )
         # Re-entry check runs first — a respawned PM with thin args ("resume",

@@ -676,7 +676,7 @@ class Context:
     """
 
     actor_id: UUID | None = None
-    plan: str | None = None
+    plan: str | dict[str, Any] | None = None
     has_journal_decision: bool = False
     has_journal_reflect: bool = False
     has_journal_learning: bool = False
