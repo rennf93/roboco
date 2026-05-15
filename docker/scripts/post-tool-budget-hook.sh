@@ -39,6 +39,13 @@ except Exception:
 PY
 )"
 
+# Record the tool name on the SDK so the stop-hook can recognize a
+# graceful terminal call (i_am_idle / i_am_done / pass / fail / etc.).
+# Fire-and-forget — never block Claude on this.
+curl -sf -m 2 -X POST "$SDK_URL/terminal/tool_recorded" \
+    -H "Content-Type: application/json" \
+    -d "{\"tool\":\"$TOOL\"}" >/dev/null 2>&1 || true
+
 # Ask the SDK to record + return status. 2s timeout — we never block Claude.
 resp=$(curl -sf -m 2 -X POST "$SDK_URL/budget/tool_called" \
     -H "Content-Type: application/json" \
