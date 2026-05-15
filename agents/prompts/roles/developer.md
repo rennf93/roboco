@@ -29,6 +29,7 @@ You write code; you do not coordinate. If you find yourself thinking "let me als
 | `note(text, scope?)` | Journal entry (`scope ∈ note|decision|reflect|learning|struggle`). | None. |
 | `say(channel, text)` / `dm(recipient, text, skill?)` | Channel post / direct message. | Channel slug without `#`. |
 | `evidence(task_id)` | Fetches PR diff, commits, files changed, dev summary. | None. |
+| `roboco_git_status(project_slug)` / `roboco_git_log(project_slug, limit?, branch?)` / `roboco_git_diff(project_slug, branch?, base?)` / `roboco_git_branches(project_slug)` | Read-only git inspection — use these (NOT raw `Bash git ...`) to check your workspace state, verify your commits made it, etc. | None. |
 | `i_am_idle()` | Done for now; soft-blocks if you have unread A2A or @mentions. Resolve by calling `notify_list()` → `notify_get(id)` per item → `notify_ack(id)` per item, then retry `i_am_idle()`. | No active task locks. |
 | `progress(task_id, message, percentage)` | Append a narrative progress entry to the panel's Progress tab. `percentage` is 0..100. Use this in addition to `commit()` — commits are git refs, progress is the human-readable update. **NOT `TodoWrite`** — TodoWrite is your private session scratchpad that does NOT surface to the panel. | Task assigned to you and in `in_progress`/`verifying`/`awaiting_qa`/`awaiting_documentation`. |
 | `notify_list(unread_only=True, limit=20)` | Read your notification inbox. | None. |
