@@ -2175,23 +2175,61 @@ class AgentOrchestrator:
 
     _TOOL_LOAD_CACHE: ClassVar[dict[str, str]] = {}
 
+    # Per-role built-in tools that must be activated via ToolSearch before
+    # use. Mirrors the system-prompt layer's _ROLE_BUILTIN_TOOLS in
+    # roboco/agents/factories/_base.py — kept in sync because the briefing
+    # and the system prompt are independent code paths. Smoke-8 evidence:
+    # weak models skip the system-prompt directive; the briefing block is
+    # the second touch point that gets them to actually run ToolSearch.
+    _COMMON_BUILTIN_TOOLS: ClassVar[tuple[str, ...]] = (
+        "Read",
+        "Bash",
+        "Grep",
+        "Glob",
+        "Task",
+        "TodoWrite",
+    )
+    _ROLE_BUILTIN_TOOLS: ClassVar[dict[str, tuple[str, ...]]] = {
+        "developer": (*_COMMON_BUILTIN_TOOLS, "Edit", "Write"),
+        "documenter": (*_COMMON_BUILTIN_TOOLS, "Edit", "Write"),
+        "qa": _COMMON_BUILTIN_TOOLS,
+        "main_pm": _COMMON_BUILTIN_TOOLS,
+        "cell_pm": _COMMON_BUILTIN_TOOLS,
+        "product_owner": _COMMON_BUILTIN_TOOLS,
+        "head_marketing": _COMMON_BUILTIN_TOOLS,
+        "auditor": _COMMON_BUILTIN_TOOLS,
+    }
+
     def _build_tool_load_block(self, role: str) -> str:
         """Build the mandatory first-action ToolSearch directive.
 
-        Weak models consistently skip the role prompt's `Load on spawn
-        (one ToolSearch select: call)` line — then trip on "Edit exists
-        but is not enabled in this context" when they try to edit a
-        file, or "No such tool available: mcp__roboco-flow__…" when
-        they try to act. Hoisting the directive into the briefing's
-        first block (with the exact query string inline) pulls the
-        bootstrap into the prompt-most-salient position.
-
-        Returns empty string if we can't locate the role file — the
-        briefing still works without it.
+        Weak models consistently skip the system-prompt's directive (added
+        in #144) and call Edit/Write directly, hitting "Edit exists but is
+        not enabled in this context." Hoisting the same directive into the
+        briefing (which is the first user-visible message after spawn) is
+        the second touch point. Pre-rendered from the per-role tool list
+        — no role-file scrape required.
         """
         if role in self._TOOL_LOAD_CACHE:
             return self._TOOL_LOAD_CACHE[role]
-        block = self._read_tool_load_from_role_prompt(role)
+        tools = self._ROLE_BUILTIN_TOOLS.get(role)
+        if not tools:
+            block = ""
+        else:
+            tool_list = ",".join(tools)
+            block = (
+                "## First action required\n"
+                "\n"
+                "Before any other tool call you MUST run this ToolSearch.\n"
+                "Built-in tools (Edit, Write, Read, etc.) are deferred until\n"
+                "you activate them. Skipping this step makes Edit calls fail\n"
+                'with "Edit exists but is not enabled in this context" — '
+                "wasting your budget and stalling the task.\n"
+                "\n"
+                "Copy this verbatim as your first action:\n"
+                "\n"
+                f'```\nToolSearch(query="select:{tool_list}")\n```\n"\n"\n'
+            )
         self._TOOL_LOAD_CACHE[role] = block
         return block
 
@@ -2311,15 +2349,19 @@ class AgentOrchestrator:
             f"- **Workspace:** `{workspace_path}`\n"
             f"{task_block}"
             "\n## Terminal tools (how to exit cleanly)\n"
-            "- `roboco_agent_idle()` — no work remaining\n"
-            "- `roboco_task_substitute(reason=...)` — release the task\n"
-            "- `roboco_task_escalate(reason=...)` — escalate up the chain\n"
-            "- `roboco_task_pause(checkpoint=...)` — save progress, resume later\n"
-            "- Role handoffs: `roboco_task_submit_qa()`, `_qa_pass/fail()`, "
-            "`_docs_complete()`, `_complete()`\n"
+            "- `i_am_idle()` — no work remaining (every role)\n"
+            "- `i_am_blocked(task_id, reason, ...)` — stuck (developer)\n"
+            "- `unclaim(task_id)` — release a claim back to the pool\n"
+            "- Role handoffs:\n"
+            "  - developer → `i_am_done(task_id, notes)` (submit for QA)\n"
+            "  - qa → `pass(task_id, notes)` / `fail(task_id, issues)`\n"
+            "  - documenter → `i_documented(task_id, notes, files)`\n"
+            "  - cell_pm → `complete(task_id, notes)` / `submit_up(...)`"
+            " / `escalate_up(...)`\n"
+            "  - main_pm → `complete(...)` / `escalate_to_ceo(...)`\n"
             "\n"
             "A Stop without a terminal tool will be rejected; a second Stop\n"
-            "auto-substitutes with `reason='stopped_without_transition'`.\n"
+            "auto-substitutes the task so it can be picked up elsewhere.\n"
             "\n"
             "## Budget\n"
             f"Soft-warn at {settings.agent_tool_call_warn} tool calls, "
