@@ -542,6 +542,26 @@ class Choreographer:
 
     # --- Phase 1 (developer) verbs ---
 
+    @staticmethod
+    def _claim_verb_hint(role: str, task: Any) -> str:
+        """Role + status aware 'how to start this task' hint.
+
+        Task #162 facet (d): give_me_work hard-coded
+        ``i_will_work_on(...)`` for every role/status. A documenter
+        handed an awaiting_documentation task (or QA an awaiting_qa
+        task) was told to call a dev verb it doesn't have — it looped.
+        Map to the verb that actually claims the task for this role.
+        """
+        tid = str(getattr(task, "id", ""))
+        status = str(getattr(task, "status", ""))
+        if status == "awaiting_documentation":
+            return f"call claim_doc_task(task_id='{tid}') to start"
+        if status == "awaiting_qa":
+            return f"call claim_review(task_id='{tid}') to start"
+        if role in ("cell_pm", "main_pm", "product_owner", "head_marketing"):
+            return f"call i_will_plan(task_id='{tid}', plan='<plan>') to start"
+        return f"call i_will_work_on(task_id='{tid}', plan='<plan>') to start"
+
     async def give_me_work(self, agent_id: UUID) -> Envelope:
         """Return the agent's most-actionable task or signal idle."""
         agent = await self._deps.task.agent_for(agent_id)
@@ -558,7 +578,7 @@ class Choreographer:
             return Envelope.ok(
                 status=str(t.status),
                 task_id=str(t.id),
-                next=f"call i_will_work_on(task_id='{t.id}', plan='<plan>') to start",
+                next=self._claim_verb_hint(role, t),
                 context_briefing=await self._briefing_for(agent_id, t.id),
             ).with_introspection(task=t, role=role)
         assigned = await self._deps.task.list_assigned_for_agent(agent_id)
@@ -567,7 +587,7 @@ class Choreographer:
             return Envelope.ok(
                 status=str(t.status),
                 task_id=str(t.id),
-                next=f"call i_will_work_on(task_id='{t.id}', plan='<plan>') to start",
+                next=self._claim_verb_hint(role, t),
                 context_briefing=await self._briefing_for(agent_id, t.id),
             ).with_introspection(task=t, role=role)
         paused = await self._deps.task.list_paused_for_agent(agent_id)

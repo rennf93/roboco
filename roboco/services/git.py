@@ -536,11 +536,13 @@ class GitService(BaseService):
         if current_branch and current_branch != task_branch:
             raise ValidationError(
                 f"BRANCH_MISMATCH: Workspace is on '{current_branch}' but "
-                f"task requires '{task_branch}'. Branches are auto-checked-"
-                f"out when you call `i_will_work_on(task_id)` (devs) or "
-                f"`i_will_plan(task_id, plan)` (PMs) — call your role's "
-                f"verb on the right task instead of switching branches by "
-                f"hand."
+                f"task requires '{task_branch}'. The branch is checked out "
+                f"into your clone by your role's claim verb: "
+                f"`i_will_work_on(task_id)` (devs), "
+                f"`i_will_plan(task_id, plan)` (PMs), "
+                f"`claim_doc_task(task_id)` (documenters), "
+                f"`claim_review(task_id)` (QA). Re-call your role's claim "
+                f"verb on this task instead of switching branches by hand."
             )
 
     async def _link_commit_to_task(
@@ -1815,6 +1817,30 @@ class GitService(BaseService):
         workspace_agent_id = self._resolve_workspace_agent_id(task, actor_agent_id)
         return await self.get_workspace(project.slug, agent_id=workspace_agent_id)
 
+    async def checkout_branch_in_agent_workspace(
+        self,
+        branch_name: str,
+        *,
+        actor_agent_id: UUID,
+    ) -> None:
+        """Check out `branch_name` into the actor's own clone.
+
+        Task #162: dev/PM workspaces land on the right branch because
+        ``_auto_create_branch`` runs ``git checkout -b`` in the dev's
+        clone at claim time. The documenter's clone is a *separate*
+        workspace; when it claims an awaiting_documentation task the
+        branch already exists (created by the dev) so no checkout ever
+        ran in the doc's clone — it stayed on the default branch and
+        ``roboco_docs_write`` / ``commit`` failed with BRANCH_MISMATCH.
+        This puts the doc's workspace on the task branch (fetch +
+        tracking-branch create). Best-effort: a checkout failure must
+        not break the claim itself — the caller surfaces a remediation.
+        """
+        workspace = await self._workspace_for_branch(
+            branch_name, actor_agent_id=actor_agent_id
+        )
+        await self.checkout(workspace, branch_name)
+
     async def push_branch(
         self,
         branch_name: str,
@@ -2102,6 +2128,61 @@ class GitService(BaseService):
             )
         return str(base_ref)
 
+    async def _ref_exists(self, workspace: Any, ref: str) -> bool:
+        """True iff `ref` resolves in `workspace` (e.g. 'origin/<branch>')."""
+        result = await self._run_git(
+            workspace,
+            ["rev-parse", "--verify", "--quiet", f"{ref}^{{commit}}"],
+            check=False,
+        )
+        return result.returncode == 0
+
+    async def _default_branch_ref(self, workspace: Any) -> str:
+        """Resolve the repo's default remote branch ref.
+
+        Tries ``origin/HEAD`` (the canonical pointer), then common
+        defaults. Always returns a usable ref string; falls back to
+        ``origin/master`` so the diff command is still well-formed even
+        on a misconfigured remote (an empty/garbage diff is recoverable;
+        a malformed git invocation is not).
+        """
+        head = await self._run_git(
+            workspace,
+            ["symbolic-ref", "--quiet", "refs/remotes/origin/HEAD"],
+            check=False,
+        )
+        target = head.stdout.strip()
+        if head.returncode == 0 and target:
+            # refs/remotes/origin/HEAD -> refs/remotes/origin/<name>
+            return target.replace("refs/remotes/", "", 1)
+        for candidate in ("origin/master", "origin/main"):
+            await self._run_git(
+                workspace,
+                ["fetch", "origin", candidate.split("/", 1)[1]],
+                check=False,
+            )
+            if await self._ref_exists(workspace, candidate):
+                return candidate
+        return "origin/master"
+
+    async def _resolve_diff_base(self, workspace: Any, branch_name: str) -> str:
+        """Best diff base for `branch_name` when no explicit base is given.
+
+        Task #161: a leaf dev branch's ``parent_branch_for`` is the
+        cell-PM branch (``feature/{team}/{root}--{cellpm}``) which is
+        NEVER pushed — only devs push their own leaf branch. Diffing
+        against a non-existent ``origin/<parent>`` returns an empty
+        diff, so QA / docs see nothing. Fall back to the repo default
+        branch when the computed parent ref is absent on origin.
+        """
+        from roboco.services.gateway.merge_chain import parent_branch_for
+
+        parent = parent_branch_for(branch_name)
+        await self._run_git(workspace, ["fetch", "origin", parent], check=False)
+        if await self._ref_exists(workspace, f"origin/{parent}"):
+            return f"origin/{parent}"
+        return await self._default_branch_ref(workspace)
+
     async def diff(
         self,
         *,
@@ -2112,24 +2193,20 @@ class GitService(BaseService):
         """Return the git diff for `branch_name` against `base`.
 
         When `base` is omitted, diffs against the branch's parent (per
-        `parent_branch_for`) which is what the choreographer/PR-review
-        path wants. Content_actions evidence path can pass `HEAD~1` to
-        get just the latest change diff for incremental review.
+        `parent_branch_for`), falling back to the repo default branch
+        when that parent was never pushed (Task #161). Content_actions
+        evidence path can pass `HEAD~1` for an incremental diff.
 
         ``actor_agent_id`` resolves the workspace via the caller's clone
         when ``task.assigned_to`` is None (audit D-40) — important for
         QA reviewing post-submit_qa.
         """
-        from roboco.services.gateway.merge_chain import parent_branch_for
-
         workspace = await self._workspace_for_branch(
             branch_name, actor_agent_id=actor_agent_id
         )
         if base is None:
-            parent = parent_branch_for(branch_name)
-            # Make sure the parent ref exists locally before diffing.
-            await self._run_git(workspace, ["fetch", "origin", parent], check=False)
-            diff_args = ["diff", f"origin/{parent}...{branch_name}"]
+            base_ref = await self._resolve_diff_base(workspace, branch_name)
+            diff_args = ["diff", f"{base_ref}...{branch_name}"]
         else:
             diff_args = ["diff", f"{base}...{branch_name}"]
         diff_result = await self._run_git(workspace, diff_args, check=False)
@@ -2149,17 +2226,15 @@ class GitService(BaseService):
         authoritative git state — independent of whether the agent
         ever called the legacy ``add_files_modified`` HTTP endpoint
         (which the gateway commit() does not call). Empty paths are
-        skipped; output preserves git's order.
+        skipped; output preserves git's order. Same Task #161 default-
+        branch fallback as ``diff``.
         """
-        from roboco.services.gateway.merge_chain import parent_branch_for
-
         workspace = await self._workspace_for_branch(
             branch_name, actor_agent_id=actor_agent_id
         )
         if base is None:
-            parent = parent_branch_for(branch_name)
-            await self._run_git(workspace, ["fetch", "origin", parent], check=False)
-            args = ["diff", "--name-only", f"origin/{parent}...{branch_name}"]
+            base_ref = await self._resolve_diff_base(workspace, branch_name)
+            args = ["diff", "--name-only", f"{base_ref}...{branch_name}"]
         else:
             args = ["diff", "--name-only", f"{base}...{branch_name}"]
         result = await self._run_git(workspace, args, check=False)
