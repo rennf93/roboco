@@ -2448,7 +2448,14 @@ class Choreographer:
                 "type. If the work is genuinely parallel (two "
                 "independent modules), split this parent into "
                 "two sibling parents instead of two code "
-                "subtasks under one parent."
+                "subtasks under one parent.\n\n"
+                "**DO NOT work around this by delegating again with a "
+                "different task_type** (e.g. 'documentation' or "
+                "'research' as a 'verification' subtask). The lifecycle "
+                "handles QA, documentation, and PM-review automatically "
+                "after the code subtask finishes — you do not create "
+                "auxiliary subtasks for those roles. Call i_am_idle() "
+                "now and wait for the existing child to come back."
             ),
             context_briefing={},
         )
