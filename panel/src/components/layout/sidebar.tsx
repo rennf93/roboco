@@ -72,6 +72,7 @@ export function Sidebar() {
               width={32}
               height={32}
               priority
+              unoptimized
               className="h-8 w-8 rounded"
             />
             <span className="font-semibold text-lg">RoboCo</span>

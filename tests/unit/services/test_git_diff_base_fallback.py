@@ -1,0 +1,90 @@
+"""Task #161: GitService diff base falls back to default branch.
+
+A leaf dev branch's parent (per parent_branch_for) is the cell-PM
+branch feature/{team}/{root}--{cellpm}, which is NEVER pushed — only
+devs push their own leaf branch. Diffing against a non-existent
+origin/<parent> returns an empty diff, so QA / docs saw nothing.
+_resolve_diff_base must fall back to the repo default branch when the
+parent ref is absent on origin.
+"""
+
+from __future__ import annotations
+
+from pathlib import Path
+from typing import Any
+from unittest.mock import AsyncMock
+
+import pytest
+from roboco.services.git import GitService
+
+
+def _git_service() -> GitService:
+    return GitService.__new__(GitService)
+
+
+@pytest.mark.asyncio
+async def test_resolve_diff_base_uses_parent_when_pushed() -> None:
+    """When origin/<parent> exists, use it (normal case)."""
+    svc = _git_service()
+    svc._run_git = AsyncMock()  # type: ignore[method-assign]
+    svc._ref_exists = AsyncMock(return_value=True)  # type: ignore[method-assign]
+    ws = Path("/tmp/ws")
+
+    base = await svc._resolve_diff_base(
+        ws, "feature/backend/root1234--cellpm56--dev78901"
+    )
+    # parent_branch_for strips the last --segment.
+    assert base == "origin/feature/backend/root1234--cellpm56"
+
+
+@pytest.mark.asyncio
+async def test_resolve_diff_base_falls_back_when_parent_absent() -> None:
+    """When origin/<parent> does NOT exist (cell-PM branch never pushed),
+    fall back to the repo default branch via origin/HEAD."""
+    svc = _git_service()
+    svc._run_git = AsyncMock()  # type: ignore[method-assign]
+    # parent ref absent → _ref_exists False for the parent check.
+    svc._ref_exists = AsyncMock(return_value=False)  # type: ignore[method-assign]
+    svc._default_branch_ref = AsyncMock(  # type: ignore[method-assign]
+        return_value="origin/master"
+    )
+    ws = Path("/tmp/ws")
+
+    base = await svc._resolve_diff_base(
+        ws, "feature/backend/root1234--cellpm56--dev78901"
+    )
+    assert base == "origin/master"
+    svc._default_branch_ref.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_default_branch_ref_prefers_origin_head() -> None:
+    """origin/HEAD symbolic-ref is the canonical default-branch pointer."""
+    svc = _git_service()
+
+    async def fake_run(_ws: Any, args: list[str], **_kw: Any) -> Any:
+        if args[:2] == ["symbolic-ref", "--quiet"]:
+            return type(
+                "R", (), {"returncode": 0, "stdout": "refs/remotes/origin/main\n"}
+            )()
+        return type("R", (), {"returncode": 1, "stdout": ""})()
+
+    svc._run_git = fake_run  # type: ignore[method-assign]
+    ref = await svc._default_branch_ref(Path("/tmp/ws"))
+    assert ref == "origin/main"
+
+
+@pytest.mark.asyncio
+async def test_default_branch_ref_fallback_when_no_head() -> None:
+    """No origin/HEAD → probe origin/master then origin/main; final
+    hard fallback is origin/master so the git invocation stays valid."""
+    svc = _git_service()
+
+    async def fake_run(_ws: Any, _args: list[str], **_kw: Any) -> Any:
+        # symbolic-ref fails; fetches succeed but ref never verifies.
+        return type("R", (), {"returncode": 1, "stdout": ""})()
+
+    svc._run_git = fake_run  # type: ignore[method-assign]
+    svc._ref_exists = AsyncMock(return_value=False)  # type: ignore[method-assign]
+    ref = await svc._default_branch_ref(Path("/tmp/ws"))
+    assert ref == "origin/master"

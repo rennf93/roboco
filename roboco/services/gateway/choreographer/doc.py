@@ -31,6 +31,7 @@ requires.
 
 from __future__ import annotations
 
+import contextlib
 from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any
 
@@ -165,6 +166,16 @@ class DocMixin(_Base):
         # "start") but doc_claim is the runtime-correct specialized form
         # that keeps status at AWAITING_DOCUMENTATION. See module docstring.
         t = await self.task.doc_claim(doc_agent_id, task_id)
+        # Task #162: the documenter's clone is separate from the dev's;
+        # the task branch already exists (dev created it) so no checkout
+        # ran in the doc's workspace. Put the doc on the task branch now
+        # so roboco_docs_write / commit don't fail BRANCH_MISMATCH.
+        # Best-effort — a checkout hiccup must not fail the claim.
+        if t.branch_name:
+            with contextlib.suppress(Exception):
+                await self.git.checkout_branch_in_agent_workspace(
+                    t.branch_name, actor_agent_id=doc_agent_id
+                )
         ev = await self._claim_doc_evidence(t, task_id)
         return Envelope.ok(
             status=str(t.status),
