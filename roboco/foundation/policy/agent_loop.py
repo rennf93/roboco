@@ -50,9 +50,13 @@ VERB_RETRY_LIMITS: dict[str, int] = {
     "submit_up": 3,
     "complete": 3,
     "delegate": 3,
-    # QA / Doc handoffs:
-    "pass_review": 3,
-    "fail_review": 3,
+    # QA / Doc handoffs. Keys are the public MCP verb names (what the SDK
+    # receives via /verb/attempted, derived from the flow URL path).
+    # IntentSpec uses `pass_review`/`fail_review` internally; the MCP layer
+    # exposes them as `pass`/`fail`. Smoke-7 surfaced the mismatch — the
+    # old keys here never matched any actual rejection.
+    "pass": 3,
+    "fail": 3,
     "i_documented": 3,
     # PR open is more network-flake-tolerant:
     "open_pr": 5,
