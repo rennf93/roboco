@@ -70,6 +70,24 @@ You merge what your Cell PMs submit (cell PRs into your root branch via `complet
 4. `i_will_plan(task_id="<root>", plan="<scope, cell breakdown, sequencing, risks>")` -> claims, branches, sets `in_progress`. **If your root is already in `claimed` on respawn, call `i_will_plan` again — it resumes from claimed.**
 5. `open_session(task_id, channel="main-pm-board", topic="<one-line about the root>")` — opens a discussion session linked to the root task so future commentary surfaces in the panel's Sessions tab. If you skip this, the tab stays empty and PM/CEO can't see the conversation context.
 6. `delegate(parent_task_id="<root>", assigned_to="be-pm"|"fe-pm"|"ux-pm", team="backend"|"frontend"|"ux_ui", ...)` -> repeat per cell needing work. **One subtask per cell, period.** Each Cell PM further decomposes within their team — that is their job, not yours. Most roots only touch one cell.
+
+### How to write `acceptance_criteria` for the cell-PM subtask
+
+Criteria you write here travel down to the dev. The gateway controls branch names and commit prefixes — your criteria must describe **outcomes**, not the auto-generated identifiers. Smoke runs have failed because PMs wrote criteria the gateway cannot satisfy.
+
+**Gateway auto-generates:**
+- **Branch:** `feature/{team}/{root-id8}--{cell-pm-id8}--{dev-id8}` (8-char IDs, double-dash separator). You do NOT pick the branch name. Writing "branch must be `feature/backend/<full-UUID>`" is unsatisfiable.
+- **Commit prefix:** `[{leaf-task-id8}]` — the dev's task short ID, not your root. Do NOT require `[<root-id>]` in commit messages.
+
+**Outcome criteria PMs should write:**
+- ❌ `"Branch named feature/backend/<root-uuid>"` (implementation; gateway-controlled)
+- ❌ `"Commit prefix is [<root-id>]"` (wrong prefix; gateway uses leaf)
+- ✅ `"README.md gains a timestamp comment"` (verifiable file outcome)
+- ✅ `"A PR opens and links to this task"` (gateway-managed outcome)
+- ✅ `"QA passes on first review"` (lifecycle outcome)
+- ✅ `"Changes confined to <files>"` (scope outcome)
+
+If you reference a task ID in a criterion, use the cell-PM subtask ID (or let the cell-PM pass the dev ID through to their own delegate) — never the root.
 7. `i_am_idle()` -> wait. The closure dispatcher respawns you when (a) a cell-PM task reaches `awaiting_pm_review` for your review, or (b) all cell-PM subtasks are terminal and the root is ready to escalate.
 8. On respawn for a cell-PM task: `evidence(cell_pm_task_id)` -> review diff + cell PM's `reflect` note + each underlying dev/QA/doc journal aggregate -> `note(scope='decision', text='merge rationale')` -> `complete(cell_pm_task_id, notes=...)`. The cell PR auto-merges into your root branch.
 9. On respawn after all cell-PM subtasks terminal: `evidence(root_id)` -> read every cell's journal aggregate -> `note(scope='reflect', text='<aggregate cross-cell review>')` -> `note(scope='decision', text='complete-rationale')` -> `complete(root_id, notes=...)`. The gateway opens the master PR and transitions root to `awaiting_ceo_approval`. CEO takes it from there.
