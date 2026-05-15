@@ -2067,12 +2067,24 @@ class AgentOrchestrator:
     def _readiness_check_role_for_status(
         agent_id: str, role: str, status: str
     ) -> str | None:
-        """Verify agent role matches the role expected for the task status."""
+        """Verify agent role matches the role expected for the task status.
+
+        Handoff states are role-specific. Dev-owned states (in_progress,
+        verifying, needs_revision, paused, blocked) are restricted to
+        developer/documenter to defang the smoke-8 bug where QA got
+        respawned on a `needs_revision` task via the crash-restart path
+        and immediately hit ``role 'qa' may not claim from status
+        'needs_revision'`` at the gateway.
+        """
         role_mismatch: dict[str, str | set[str]] = {
             "awaiting_qa": "qa",
             "awaiting_documentation": "documenter",
             "awaiting_pm_review": {"cell_pm", "main_pm"},
             "awaiting_ceo_approval": "ceo",
+            # Dev-owned states — only developer/documenter may claim or
+            # resume work here. PMs / QA spawning on these is a misroute.
+            "needs_revision": {"developer", "documenter"},
+            "verifying": {"developer", "documenter"},
         }
         required = role_mismatch.get(status)
         if required is None:
@@ -2863,67 +2875,103 @@ Start by:
                         error=str(e),
                     )
 
+    @staticmethod
+    async def _inspect_container_state(
+        container_name: str,
+    ) -> tuple[bool, int | None]:
+        """Return (is_running, exit_code) from `docker inspect`.
+
+        exit_code is None when the output is missing or unparseable; the
+        caller treats None as a crash for safety (smoke-8 fix).
+        """
+        proc = await asyncio.create_subprocess_exec(
+            "docker",
+            "inspect",
+            "-f",
+            "{{.State.Running}} {{.State.ExitCode}}",
+            container_name,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.DEVNULL,
+        )
+        stdout, _ = await proc.communicate()
+        parts = stdout.decode().strip().split()
+        is_running = bool(parts) and parts[0] == "true"
+        try:
+            exit_code = int(parts[1]) if len(parts) > 1 and parts[1] else None
+        except ValueError:
+            exit_code = None
+        return is_running, exit_code
+
+    async def _handle_stopped_container(
+        self, agent_id: str, instance: Any, exit_code: int | None
+    ) -> None:
+        """Update state + auto-restart only when the exit was non-zero.
+
+        Smoke-8 evidence: graceful exits (exit 0 — agent called i_am_idle)
+        were treated as crashes by the old logic. The health check bumped
+        error_count and respawned the agent with the prior task_id even if
+        the task had since moved into a state the role can't claim from
+        (e.g. QA → needs_revision). Now: clean exits reset error_count and
+        do nothing; non-zero exits keep the existing crash-retry behaviour.
+        """
+        cid = instance.container_id[:12] if instance.container_id else None
+        graceful = exit_code == 0
+        if graceful:
+            logger.info(
+                "Agent container exited gracefully",
+                agent_id=agent_id,
+                container_id=cid,
+                exit_code=exit_code,
+            )
+        else:
+            logger.warning(
+                "Agent container stopped unexpectedly",
+                agent_id=agent_id,
+                container_id=cid,
+                exit_code=exit_code,
+            )
+        instance.state = AgentState.OFFLINE
+        instance.container_id = None
+        if graceful:
+            instance.error_count = 0
+            return
+        instance.error_count += 1
+        max_retries = 3
+        if instance.error_count < max_retries:
+            logger.info("Auto-restarting crashed agent", agent_id=agent_id)
+            await self.spawn_agent(
+                agent_id=agent_id,
+                task_id=instance.current_task_id,
+                git_context=(instance.config.git_context if instance.config else None),
+            )
+        elif instance.error_count == max_retries:
+            # Exactly at the threshold — escalate once to humans so a
+            # stranded agent doesn't die silently. Subsequent crashes
+            # stay quiet to avoid notification spam.
+            logger.error(
+                "Agent exceeded max restart attempts; escalating",
+                agent_id=agent_id,
+                error_count=instance.error_count,
+                task_id=instance.current_task_id,
+            )
+            await self._notify_agent_stranded(
+                agent_id=agent_id,
+                error_count=instance.error_count,
+                task_id=instance.current_task_id,
+            )
+
     async def _check_health(self) -> None:
         """Check health of all running agents."""
         for agent_id, instance in list(self._instances.items()):
             if instance.state not in (AgentState.ACTIVE, AgentState.WAITING_SHORT):
                 continue
-
             if instance.container_id is None:
                 continue
-
-            # Check if container is still running
-            container_name = f"roboco-agent-{agent_id}"
-            proc = await asyncio.create_subprocess_exec(
-                "docker",
-                "inspect",
-                "-f",
-                "{{.State.Running}}",
-                container_name,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.DEVNULL,
+            is_running, exit_code = await self._inspect_container_state(
+                f"roboco-agent-{agent_id}"
             )
-            stdout, _ = await proc.communicate()
-
-            is_running = stdout.decode().strip() == "true"
-
             if not is_running:
-                cid = instance.container_id[:12] if instance.container_id else None
-                logger.warning(
-                    "Agent container stopped",
-                    agent_id=agent_id,
-                    container_id=cid,
-                )
-                instance.state = AgentState.OFFLINE
-                instance.error_count += 1
-                instance.container_id = None
-
-                # Auto-restart if not too many errors
-                max_retries = 3
-                if instance.error_count < max_retries:
-                    logger.info("Auto-restarting agent", agent_id=agent_id)
-                    await self.spawn_agent(
-                        agent_id=agent_id,
-                        task_id=instance.current_task_id,
-                        git_context=(
-                            instance.config.git_context if instance.config else None
-                        ),
-                    )
-                elif instance.error_count == max_retries:
-                    # Exactly at the threshold — escalate once to humans so a
-                    # stranded agent doesn't die silently. Subsequent crashes
-                    # stay quiet to avoid notification spam.
-                    logger.error(
-                        "Agent exceeded max restart attempts; escalating",
-                        agent_id=agent_id,
-                        error_count=instance.error_count,
-                        task_id=instance.current_task_id,
-                    )
-                    await self._notify_agent_stranded(
-                        agent_id=agent_id,
-                        error_count=instance.error_count,
-                        task_id=instance.current_task_id,
-                    )
+                await self._handle_stopped_container(agent_id, instance, exit_code)
 
     async def _notify_agent_stranded(
         self,
