@@ -2135,6 +2135,36 @@ class GitService(BaseService):
         diff_result = await self._run_git(workspace, diff_args, check=False)
         return diff_result.stdout
 
+    async def list_changed_files(
+        self,
+        *,
+        branch_name: str,
+        base: str | None = None,
+        actor_agent_id: UUID | None = None,
+    ) -> list[str]:
+        """Return the file paths changed on `branch_name` relative to `base`.
+
+        Mirrors ``diff`` but invokes ``git diff --name-only`` so the
+        gateway evidence path can populate ``files_changed`` from the
+        authoritative git state — independent of whether the agent
+        ever called the legacy ``add_files_modified`` HTTP endpoint
+        (which the gateway commit() does not call). Empty paths are
+        skipped; output preserves git's order.
+        """
+        from roboco.services.gateway.merge_chain import parent_branch_for
+
+        workspace = await self._workspace_for_branch(
+            branch_name, actor_agent_id=actor_agent_id
+        )
+        if base is None:
+            parent = parent_branch_for(branch_name)
+            await self._run_git(workspace, ["fetch", "origin", parent], check=False)
+            args = ["diff", "--name-only", f"origin/{parent}...{branch_name}"]
+        else:
+            args = ["diff", "--name-only", f"{base}...{branch_name}"]
+        result = await self._run_git(workspace, args, check=False)
+        return [line for line in result.stdout.splitlines() if line.strip()]
+
     async def commit(
         self,
         *,

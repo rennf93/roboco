@@ -119,6 +119,12 @@ class _StubGit:
         del branch_name, base, actor_agent_id
         return "stub diff"
 
+    async def list_changed_files(
+        self, *, branch_name: str, base: Any = None, actor_agent_id: Any = None
+    ) -> list[str]:
+        del branch_name, base, actor_agent_id
+        return []
+
     async def pr_target(self, pr_number: int, *, actor_agent_id: Any = None) -> str:
         del pr_number, actor_agent_id
         return "main"
