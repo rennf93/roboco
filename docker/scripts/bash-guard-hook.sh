@@ -133,6 +133,34 @@ if echo "$low" | grep -qE '(^|[[:space:];&|])(python3?|perl|node|ruby|awk|sed)[[
     exit 2
 fi
 
+# --- gateway-internals import bypass (task #164) ------------------------------
+# An agent must reach the orchestrator ONLY through its manifest-bound MCP
+# verbs. Importing the server package directly
+#   uv run python3 -c "from roboco.mcp.flow_server import open_pr; open_pr(...)"
+#   python3 << 'EOF' ... import roboco.services.gateway ... EOF
+#   python -m roboco.mcp.do_server
+# bypasses the per-role tool manifest entirely (role-scoping becomes
+# meaningless if the agent can call any verb in-process) and lets the agent
+# run choreographer/service code outside the gateway's tracing + auth.
+# The whole command string (heredoc body included) is in $low, so a flat
+# substring match on a roboco import is sufficient and robust to quoting.
+if echo "$low" | grep -qE '(python3?|uv[[:space:]]+run|poetry[[:space:]]+run|pipenv[[:space:]]+run|pdm[[:space:]]+run|hatch[[:space:]]+run)' && \
+   echo "$low" | grep -qE '(import[[:space:]]+roboco|from[[:space:]]+roboco|-m[[:space:]]+roboco|roboco\.(mcp|services|runtime|foundation|api|enforcement)\b)'; then
+    echo "Denied: importing or running roboco.* internals from the shell bypasses the MCP role manifest, tracing, and auth. Use your role's MCP verbs (roboco-flow / roboco-do / roboco-git-readonly / roboco-optimal / roboco-docs) — they are the only sanctioned path to the orchestrator." >&2
+    exit 2
+fi
+
+# --- agent-identity forgery (task #164) --------------------------------------
+# ROBOCO_AGENT_ID is the agent's identity. It is injected by the orchestrator
+# at spawn and the agent process must never rewrite it — doing so lets one
+# agent act as another (forged audit trail, bypassed ownership checks). No
+# legitimate agent shell command sets this variable; deny any assignment or
+# export of it (already lowercased into $low).
+if echo "$low" | grep -qE '(^|[[:space:];&|]|env[[:space:]]+|export[[:space:]]+)roboco_agent_id[[:space:]]*='; then
+    echo "Denied: ROBOCO_AGENT_ID is your injected identity — overriding it forges another agent's identity. Never set or export it. Call your MCP verbs with your real identity instead." >&2
+    exit 2
+fi
+
 # Redirected reads from /proc/self/environ: `read -r var < /proc/self/environ`,
 # `while read … < /proc/…/environ`, etc.
 if echo "$low" | grep -qE '<[[:space:]]*/proc/(self|[0-9]+)/(environ|cmdline)'; then
