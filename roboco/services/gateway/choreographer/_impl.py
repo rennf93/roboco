@@ -1696,15 +1696,54 @@ class Choreographer:
                 "cancelled) before this transition; wait for the closure "
                 "dispatcher to bring you back when ready."
             ),
+            "journal:during_work>=1": (
+                "no journal:decision / :learning / :struggle entry exists "
+                "for this task yet. Pre-gateway parity: developers write "
+                "at least one work-progress journal entry before submit. "
+                f"Call note(scope='decision'|'learning'|'struggle', "
+                f"task_id='{tid}', text='<what you decided or learned>') "
+                "with a substantive entry, then retry i_am_done. "
+                "NOTE: scope='reflect' does NOT count for this requirement — "
+                "reflect is the post-work summary; during_work demands "
+                "an entry written while the work was happening."
+            ),
+            "journal:struggle": (
+                f"call note(scope='struggle', task_id='{tid}', "
+                "text='<what is blocking you>') with the blocker details, "
+                "then retry."
+            ),
+            "commits>=1": (
+                "no commits linked to this task yet. Use commit(message=...) "
+                "to record your changes, then retry."
+            ),
+            "pr_open": (
+                "no PR has been opened for this task. Call open_pr() to "
+                "push the branch + open the PR, then retry."
+            ),
+            "self_verified": (
+                "task has not been self-verified. i_am_done normally runs "
+                "submit_verification automatically; if you see this gap, "
+                "retry i_am_done after the previous call returned."
+            ),
         }
         return simple_hints.get(missing_key)
 
     async def _build_tracing_gap(
         self, agent_id: UUID, task_id: UUID, missing: list[str]
     ) -> Envelope:
-        """Translate missing requirement keys into agent-facing hints."""
+        """Translate missing requirement keys into agent-facing hints.
+
+        Task #159: multi-missing remediate uses a numbered list so the
+        agent sees each requirement as a distinct step instead of a
+        single semicolon-joined sentence the model parses as one
+        instruction. Each missing key with no hint in
+        ``_hint_for_missing_key`` still surfaces as a literal
+        ``missing[]`` entry (defense-in-depth: the agent gets at least
+        the key name even if no hint is registered).
+        """
         hints: list[str] = []
         unaddressed: list[str] = []
+        unhinted: list[str] = []
         for m in missing:
             if m.startswith("acceptance_criterion:"):
                 unaddressed.append(m.split(":", 1)[1])
@@ -1712,6 +1751,8 @@ class Choreographer:
             hint = self._hint_for_missing_key(m, task_id)
             if hint is not None:
                 hints.append(hint)
+            else:
+                unhinted.append(m)
         if unaddressed:
             hints.append(
                 hint_for_unaddressed_acceptance_criteria(
@@ -1719,9 +1760,25 @@ class Choreographer:
                     task_id=str(task_id),
                 )
             )
+        # Fallback hints for missing keys without a registered hint —
+        # the agent at least sees the literal token instead of nothing.
+        for token in unhinted:
+            hints.append(
+                f"requirement {token!r} not satisfied — see lifecycle docs "
+                f"or escalate via i_am_blocked if you do not know how to "
+                f"satisfy this."
+            )
+        if len(hints) <= 1:
+            remediate = hints[0] if hints else ""
+        else:
+            numbered = "\n".join(f"{i + 1}. {h}" for i, h in enumerate(hints))
+            remediate = (
+                f"Multiple requirements missing — address ALL of the "
+                f"following before retrying:\n{numbered}"
+            )
         return Envelope.tracing_gap(
             missing=missing,
-            remediate=" ; ".join(hints),
+            remediate=remediate,
             context_briefing=await self._briefing_for(agent_id, task_id),
         )
 
@@ -2563,14 +2620,38 @@ class Choreographer:
             context_briefing={},
         )
 
+    @staticmethod
+    def _is_cross_team_planning(new_type: str, new_team: str, sib_team: str) -> bool:
+        """Task #157: planning subtasks on different teams are NOT
+        over-decomposition — main_pm fans planning out to per-cell PMs.
+        Both teams must be non-empty so an empty-team escape hatch can't
+        bypass the cap defensively.
+        """
+        return (
+            new_type == "planning"
+            and bool(new_team)
+            and bool(sib_team)
+            and new_team != sib_team
+        )
+
     @classmethod
     def _sibling_dup_envelope(
-        cls, sibling: Any, new_type: str, new_assignee: str
+        cls, sibling: Any, new_type: str, new_team: str, new_assignee: str
     ) -> Envelope | None:
-        """Apply Rule-1 then Rule-2 against one non-terminal sibling."""
+        """Apply Rule-1 then Rule-2 against one non-terminal sibling.
+
+        ``code`` / ``documentation`` stay capped regardless of team —
+        a single repo on one branch shouldn't have two simultaneous code
+        subtasks. ``planning`` allows cross-team fanout (see
+        :meth:`_is_cross_team_planning`).
+        """
         sib_type = str(getattr(sibling, "task_type", ""))
+        sib_team = str(getattr(sibling, "team", "") or "")
         sib_assignee = str(getattr(sibling, "assigned_to", "") or "")
-        if new_type in cls._SPINE_TASK_TYPES and sib_type == new_type:
+        same_spine_type = new_type in cls._SPINE_TASK_TYPES and sib_type == new_type
+        if same_spine_type and not cls._is_cross_team_planning(
+            new_type, new_team, sib_team
+        ):
             return cls._spine_type_dup_envelope(new_type, sibling, sib_assignee)
         if sib_assignee and sib_assignee == new_assignee and sib_type == new_type:
             return cls._same_assignee_dup_envelope(new_type, new_assignee, sibling)
@@ -2588,6 +2669,9 @@ class Choreographer:
         1. **Same-type concurrency cap**: a parent may have AT MOST one
            non-terminal subtask of types ``code`` / ``planning`` /
            ``documentation`` at any given time, regardless of assignee.
+           Task #157 exception: ``planning`` subtasks on different
+           teams are allowed in parallel — that's main_pm's legitimate
+           cross-cell fanout.
         2. **Same-assignee same-type** (fallback): a PM never delegates two
            ``research``/``design``/``administrative`` subtasks to the same
            agent under the same parent.
@@ -2597,11 +2681,14 @@ class Choreographer:
         """
         siblings = await self.task.get_subtasks(parent_task_id)
         new_type = str(inputs.task_type or "")
+        new_team = str(inputs.team or "")
         new_assignee = str(inputs.assigned_to or "")
         for sibling in siblings:
             if str(getattr(sibling, "status", "")) in self._TERMINAL_STATUSES:
                 continue
-            envelope = self._sibling_dup_envelope(sibling, new_type, new_assignee)
+            envelope = self._sibling_dup_envelope(
+                sibling, new_type, new_team, new_assignee
+            )
             if envelope is not None:
                 return envelope
         return None

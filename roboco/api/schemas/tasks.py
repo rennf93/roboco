@@ -532,7 +532,11 @@ def convert_plan(plan_data: dict | None) -> TaskPlanResponse | None:
 
     def _coerce_risk(r: object) -> dict[str, str]:
         if not isinstance(r, dict):
-            return {"description": str(r) if r else "", "mitigation": "", "severity": "medium"}
+            return {
+                "description": str(r) if r else "",
+                "mitigation": "",
+                "severity": "medium",
+            }
         sev = r.get("severity")
         return {
             "description": str(r.get("description") or r.get("risk") or ""),
