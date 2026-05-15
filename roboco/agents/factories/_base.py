@@ -105,6 +105,70 @@ def _autogen_verbs_layer(prompts_path: Path, role: "AgentRole") -> str | None:
     return _load_layer(prompts_path / "_generated" / f"{role_value}.md")
 
 
+# Built-in Claude Code tools each role's session needs at spawn time.
+# Smoke-7 surfaced: be-dev-1 hit "Edit exists but is not enabled in this
+# context" because Claude Code v2.1.69+ defers built-in tools behind a
+# ToolSearch activation. Weak models skip the soft directive in the
+# briefing, so we hoist the exact call into a top-of-system-prompt
+# layer (highest-priority instruction the model sees).
+#
+# Read/Bash/Grep/Glob/Task/TodoWrite are needed by every role; Edit/Write
+# only by roles that author code or docs.
+_BUILTIN_TOOLS_COMMON: tuple[str, ...] = (
+    "Read",
+    "Bash",
+    "Grep",
+    "Glob",
+    "Task",
+    "TodoWrite",
+)
+_BUILTIN_TOOLS_AUTHORS: tuple[str, ...] = (*_BUILTIN_TOOLS_COMMON, "Edit", "Write")
+
+_ROLE_BUILTIN_TOOLS: dict[str, tuple[str, ...]] = {
+    "developer": _BUILTIN_TOOLS_AUTHORS,
+    "documenter": _BUILTIN_TOOLS_AUTHORS,
+    "qa": _BUILTIN_TOOLS_COMMON,
+    "main_pm": _BUILTIN_TOOLS_COMMON,
+    "cell_pm": _BUILTIN_TOOLS_COMMON,
+    "product_owner": _BUILTIN_TOOLS_COMMON,
+    "head_marketing": _BUILTIN_TOOLS_COMMON,
+    "auditor": _BUILTIN_TOOLS_COMMON,
+}
+
+
+def _tool_load_directive_layer(role: "AgentRole") -> str | None:
+    """Top-of-prompt instruction to activate deferred built-in tools.
+
+    Claude Code v2.1.69+ defers built-in tools (Edit, Write, Read, etc.)
+    behind a ToolSearch call to save context tokens. Without ToolSearch,
+    `Edit` returns "Edit exists but is not enabled in this context." Weak
+    models skip this if it's buried in the briefing; we hoist it into the
+    system prompt's very first block so it's the highest-priority
+    instruction. The call has no side effects beyond enabling the tools.
+    """
+    role_value = role.value if hasattr(role, "value") else str(role)
+    tools = _ROLE_BUILTIN_TOOLS.get(role_value)
+    if not tools:
+        return None
+    tool_list = ",".join(tools)
+    return (
+        "# FIRST ACTION REQUIRED (mandatory)\n"
+        "\n"
+        "Before any other tool call you MUST run this ToolSearch once.\n"
+        "Built-in tools (Edit, Write, Read, etc.) are deferred until you\n"
+        "activate them. Skipping this step results in errors like\n"
+        '"Edit exists but is not enabled in this context" that waste your\n'
+        "tool-call budget and may leave the task in a stuck state.\n"
+        "\n"
+        "Copy this verbatim as your first action:\n"
+        "\n"
+        f'```\nToolSearch(query="select:{tool_list}")\n```\n'
+        "\n"
+        "Only after that call returns successfully should you proceed to\n"
+        "the role-specific workflow below."
+    )
+
+
 def _lifecycle_layer(prompts_path: Path, role: "AgentRole") -> str | None:
     """Load the canonical lifecycle fragment for this role.
 
@@ -155,6 +219,7 @@ def compose_prompt(
     parts: list[str] = []
 
     for layer in (
+        _tool_load_directive_layer(role),
         _lifecycle_layer(prompts_path, role),
         _load_layer(prompts_path / "base.md"),
         _role_layer(prompts_path, role),
