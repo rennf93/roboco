@@ -554,20 +554,28 @@ _CIRCUIT_REJECTION_KINDS: frozenset[str] = frozenset(
     {"tracing_gap", "invalid_state", "not_authorized", "incomplete_input"}
 )
 
+# Names match the gateway verb surface — i.e. what `terminal_tool_recorded`
+# stores after stripping the `mcp__roboco-flow__` / `mcp__roboco-do__`
+# prefix (see line ~798). Pre-gateway names (roboco_agent_idle, etc.)
+# never match the suffix-stripped values, so the stop hook used to nag
+# every agent even after a successful i_am_idle (smoke-7 evidence).
 _TERMINAL_TOOLS: frozenset[str] = frozenset(
     {
-        "roboco_agent_idle",
-        "roboco_task_substitute",
-        "roboco_task_escalate",
-        "roboco_task_escalate_to_ceo",
-        "roboco_task_pause",
-        "roboco_task_block",
-        "roboco_task_submit_qa",
-        "roboco_task_qa_pass",
-        "roboco_task_qa_fail",
-        "roboco_task_docs_complete",
-        "roboco_task_complete",
-        "roboco_task_cancel",
+        # Every role's clean exit.
+        "i_am_idle",
+        # Developer / documenter handoff verbs.
+        "i_am_done",
+        "i_am_blocked",
+        "i_documented",
+        "unclaim",
+        # QA verdicts.
+        "pass",
+        "fail",
+        # PM handoffs.
+        "complete",
+        "submit_up",
+        "escalate_up",
+        "escalate_to_ceo",
     }
 )
 
