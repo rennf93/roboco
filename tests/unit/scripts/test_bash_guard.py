@@ -84,3 +84,90 @@ def test_github_url_still_uses_github_specific_deny() -> None:
     # The GitHub-specific message should appear, not the gateway message.
     combined = (result.stdout + result.stderr).lower()
     assert "github" in combined or "pat" in combined
+
+
+# ---------------------------------------------------------------------------
+# Task #164: gateway-internals import bypass + agent-identity forgery
+# ---------------------------------------------------------------------------
+
+
+def test_blocks_uv_run_python_importing_flow_server() -> None:
+    """The exact smoke-12 bypass: uv run python -c importing the flow server."""
+    assert (
+        _run(
+            'uv run python3 -c "from roboco.mcp.flow_server import open_pr; '
+            "open_pr(task_id='x')\""
+        )
+        == _DENIED
+    )
+
+
+def test_blocks_plain_python_c_import_roboco() -> None:
+    assert _run('python3 -c "import roboco.services.gateway as g; g.foo()"') == _DENIED
+
+
+def test_blocks_python_heredoc_importing_roboco() -> None:
+    """Heredoc body is part of the command string — must still be caught."""
+    cmd = (
+        "uv run python3 << 'EOF'\n"
+        "import os\n"
+        "from roboco.mcp.do_server import commit\n"
+        "commit(message='x')\n"
+        "EOF"
+    )
+    assert _run(cmd) == _DENIED
+
+
+def test_blocks_python_m_roboco_module() -> None:
+    assert _run("python -m roboco.mcp.flow_server") == _DENIED
+    assert _run("uv run -m roboco.services.gateway") == _DENIED
+
+
+def test_blocks_poetry_run_python_import_roboco() -> None:
+    assert _run('poetry run python -c "from roboco.runtime import x"') == _DENIED
+
+
+def test_blocks_setting_roboco_agent_id_inline() -> None:
+    """Forging identity via an inline env assignment before a command."""
+    assert (
+        _run(
+            "ROBOCO_AGENT_ID=00000000-0000-0000-0001-000000000001 "
+            "uv run python3 -c 'print(1)'"
+        )
+        == _DENIED
+    )
+
+
+def test_blocks_export_roboco_agent_id() -> None:
+    assert (
+        _run("export ROBOCO_AGENT_ID=00000000-0000-0000-0001-000000000001") == _DENIED
+    )
+
+
+def test_blocks_os_environ_roboco_agent_id_in_python() -> None:
+    """The smoke-12 form: os.environ['ROBOCO_AGENT_ID']=... then import roboco.
+
+    Caught by the import-bypass rule (references roboco import) even
+    independent of the identity rule."""
+    cmd = (
+        'uv run python3 -c "import os; '
+        "os.environ['ROBOCO_AGENT_ID']='00000000-0000-0000-0001-000000000001'; "
+        "from roboco.mcp.flow_server import open_pr; open_pr(task_id='x')\""
+    )
+    assert _run(cmd) == _DENIED
+
+
+def test_allows_legitimate_python_without_roboco() -> None:
+    """A normal python one-liner that doesn't touch roboco internals or
+    the identity var must still pass — don't over-block."""
+    assert _run('python3 -c "print(2 + 2)"') == _ALLOWED
+
+
+def test_allows_reading_roboco_source_with_cat() -> None:
+    """Reading source files for context (cat/grep) is fine — the block is
+    specifically on *executing* roboco internals, not viewing them."""
+    assert _run("cat roboco/services/gateway/choreographer/_impl.py") == _ALLOWED
+
+
+def test_allows_grep_for_roboco_symbol() -> None:
+    assert _run("grep -rn 'import roboco' tests/") == _ALLOWED
