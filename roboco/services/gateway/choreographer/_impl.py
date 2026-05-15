@@ -2754,6 +2754,32 @@ class Choreographer:
                 ),
                 context_briefing=await self._briefing_for(pm_agent_id, parent_task_id),
             )
+        if str(inputs.task_type) == "documentation":
+            # Task #163: the lifecycle auto-handles documentation. After a
+            # `code` subtask passes QA it transitions to
+            # awaiting_documentation and a *documenter* is spawned
+            # automatically. A PM-created `documentation` subtask assigned
+            # to a developer can never be spawned (dev-dispatch rejects
+            # role/task_type mismatch) — it becomes a permanent orphan
+            # that deadlocks submit_up (all subtasks must be terminal).
+            # The spine-cap is per-type so this slips past the
+            # code-vs-code dedup; reject it explicitly here.
+            return Envelope.invalid_state(
+                message=(
+                    "task_type='documentation' subtasks are not PM-"
+                    "delegatable: the lifecycle creates the documentation "
+                    "phase automatically after the code subtask passes QA."
+                ),
+                remediate=(
+                    "Delegate ONLY the code subtask (task_type='code'). "
+                    "Once it passes QA the gateway transitions it to "
+                    "awaiting_documentation and spawns a documenter for "
+                    "you — do NOT create a separate documentation subtask "
+                    "or assign docs to a developer. Re-issue delegate(...) "
+                    "with task_type='code' and i_am_idle when done."
+                ),
+                context_briefing=await self._briefing_for(pm_agent_id, parent_task_id),
+            )
         return None
 
     _CELL_PM_SLUGS: ClassVar[frozenset[str]] = frozenset({"be-pm", "fe-pm", "ux-pm"})
