@@ -451,7 +451,11 @@ _TOOLS: dict[str, Any] = {
     "unclaim": unclaim,
     "resume": resume,
     "i_am_idle": i_am_idle,
-    # qa
+    # qa — keys are the public MCP tool names (what agents see and prompts
+    # advertise). `pass`/`fail` are Python keywords so the IntentSpec uses
+    # `pass_review`/`fail_review` internally; the public-name mapping below
+    # bridges the two so the manifest's IntentSpec entries register as
+    # `mcp__roboco-flow__pass` / `mcp__roboco-flow__fail`.
     "claim_review": claim_review,
     "pass": pass_review,
     "fail": fail_review,
@@ -469,6 +473,17 @@ _TOOLS: dict[str, Any] = {
     "submit_up": submit_up,
     # board / main pm
     "escalate_to_ceo": escalate_to_ceo,
+}
+
+
+# IntentSpec verb names → MCP public tool names. The IntentSpec layer uses
+# Python-friendly identifiers (no reserved keywords); the MCP layer exposes
+# the user-facing verb name. Smoke-7 surfaced this gap: the manifest carried
+# `pass_review`/`fail_review` (IntentSpec names) but flow_server only had
+# `pass`/`fail` keys, so QA's tools were silently dropped at registration.
+_INTENT_TO_PUBLIC: dict[str, str] = {
+    "pass_review": "pass",
+    "fail_review": "fail",
 }
 
 
@@ -527,14 +542,15 @@ def _register_tools() -> list[str]:
         )
         log.error("flow_server: manifest missing", role=AGENT_ROLE, path=manifest_path)
         raise RuntimeError(msg)
-    unknown = [verb for verb in allowed if verb not in _TOOLS]
+    public = [_INTENT_TO_PUBLIC.get(verb, verb) for verb in allowed]
+    unknown = [verb for verb in public if verb not in _TOOLS]
     if unknown:
         log.warning(
             "flow_server: manifest references unimplemented verbs",
             role=AGENT_ROLE,
             missing=sorted(unknown),
         )
-    names = [verb for verb in allowed if verb in _TOOLS]
+    names = [verb for verb in public if verb in _TOOLS]
 
     for verb in names:
         mcp.tool(name=verb)(_TOOLS[verb])
