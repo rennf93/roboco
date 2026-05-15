@@ -204,3 +204,6 @@ uv run mypy roboco/
 ## License
 
 MIT
+
+---
+*Last updated: 2026-05-15*
