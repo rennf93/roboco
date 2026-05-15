@@ -260,3 +260,30 @@ def test_verb_extracted_from_path(do_module: types.ModuleType) -> None:
         do_module.commit(message="[abc12345] test commit message under 20 chars")
     sdk_body = next(body for url, body in captured if "test-sdk" in url)
     assert sdk_body["verb"] == "commit"
+
+
+def test_dict_shaped_error_does_not_crash(do_module: types.ModuleType) -> None:
+    """A RobocoError.to_dict()-shaped response must pass through without TypeError.
+
+    Smoke-7: A2AAccessDeniedError escaped to middleware and was rendered as
+    {'error': {'code': ..., 'message': ..., 'details': ...}}. The circuit
+    breaker's `error in frozenset` check then crashed with
+    `TypeError: unhashable type: 'dict'`.
+    """
+    factory, captured = _make_client(
+        orchestrator_response={
+            "error": {
+                "code": "A2A_ACCESS_DENIED",
+                "message": "be-qa cannot A2A with qa-all",
+                "details": {},
+            }
+        },
+        sdk_response=None,  # SDK must not be touched
+    )
+    # No TypeError; payload passes through untouched.
+    with patch("httpx.Client", side_effect=factory):
+        result = do_module.dm(recipient="qa-all", text="x")
+    assert isinstance(result["error"], dict)
+    assert result["error"]["code"] == "A2A_ACCESS_DENIED"
+    # SDK breaker MUST NOT have been called for a non-string error.
+    assert all("test-sdk" not in url for url, _ in captured)

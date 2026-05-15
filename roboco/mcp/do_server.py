@@ -130,7 +130,14 @@ def _record_and_check_circuit(
     the original payload. The breaker is a safety net; it must never
     break the gateway path.
     """
+    # Gateway envelopes use a string `error` (kind); RobocoError-derived
+    # exceptions surface a dict-shaped error via FastAPI's middleware
+    # (smoke-7: TypeError on `dict in frozenset`). Defend against the
+    # dict shape — only string kinds count toward the breaker, dicts pass
+    # straight through.
     rejection_kind = payload.get("error")
+    if not isinstance(rejection_kind, str):
+        return payload
     if rejection_kind not in _CIRCUIT_REJECTION_KINDS:
         return payload
 
