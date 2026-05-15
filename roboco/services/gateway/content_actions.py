@@ -537,13 +537,28 @@ class ContentActions:
                 remediate="provide task_id explicitly or claim a task first",
                 context_briefing={},
             )
-        await self.a2a.send(
-            from_agent=agent_id,
-            to_agent=recipient,
-            task_id=task_id,
-            body=text,
-            skill=skill,
-        )
+        # Catch A2A access denials and return an Envelope. If the
+        # error escapes here it's caught by FastAPI's middleware and
+        # rendered as RobocoError.to_dict() — a dict-shaped 'error'
+        # field that breaks do_server's circuit-breaker frozenset
+        # check (smoke-7: TypeError: unhashable type: 'dict').
+        from roboco.enforcement.a2a_access import A2AAccessDeniedError
+
+        try:
+            await self.a2a.send(
+                from_agent=agent_id,
+                to_agent=recipient,
+                task_id=task_id,
+                body=text,
+                skill=skill,
+            )
+        except A2AAccessDeniedError as e:
+            remediate = e.route_hint or e.reason
+            return Envelope.not_authorized(
+                message=e.message,
+                remediate=remediate,
+                context_briefing={},
+            )
         return Envelope.ok(
             status="sent",
             task_id=str(task_id),
