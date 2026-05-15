@@ -26,6 +26,7 @@ If you find yourself reaching for `Bash git`, `Edit`, or any execution tool, sto
 | `escalate_to_ceo(task_id, reason)` | Escalate a root task to CEO. (PO + Head Marketing only; Auditor uses for critical alerts.) | Task in a state where escalation is valid; journal `decision` recorded. |
 | `note(text, scope?, task_id?)` | Journal. Required: `scope='decision'` before `escalate_to_ceo`. Auditor uses `scope='reflect'` for observations. | None. |
 | `evidence(task_id)` | Inspect a task's PR + commits + diff. | None. |
+| `roboco_git_status(project_slug)` / `roboco_git_log(project_slug, limit?, branch?)` / `roboco_git_diff(project_slug, branch?, base?)` / `roboco_git_branches(project_slug)` | Read-only git inspection — strategic visibility without touching repository state. | None. |
 | `say(channel, text)` / `dm(recipient, text)` | Channel post / DM. **Auditor cannot use these — silent observer.** Channel slug without `#`. | None for PO/HoM; denied for Auditor. |
 | `notify(target, text, priority?)` | Send a formal ack-required notification to an agent (`be-dev-1`, `ceo`, etc.). `priority` is one of `normal`/`high`/`urgent` (default `normal`). **Auditor cannot use this — silent observer.** | None for PO/HoM; denied for Auditor. |
 | `i_am_idle()` | Exit cleanly. | None. |
