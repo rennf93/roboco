@@ -1008,6 +1008,44 @@ class MessagingService(BaseService):
         )
         return list(result.scalars().all())
 
+    async def propagate_sessions_to_subtask(
+        self,
+        parent_task_id: UUID,
+        subtask_id: UUID,
+        added_by: UUID,
+    ) -> list[SessionTaskTable]:
+        """Link every session attached to ``parent_task_id`` onto ``subtask_id``.
+
+        Task #156: pre-gateway flow created a session with the whole task
+        tree at once, so subtasks were visible in the parent's group chat
+        the moment they existed. The gateway creates subtasks one at a
+        time via ``delegate()``, so this step re-attaches every existing
+        parent session link to the new child.
+
+        ``link_session_to_task`` is idempotent on duplicate (session, task)
+        pairs, so re-runs are no-ops. Primary status is NOT propagated —
+        each subtask owns its own primary slot, and a primary on the
+        parent should not auto-claim the subtask's primary too.
+        """
+        parent_links = await self.get_sessions_for_task(parent_task_id)
+        propagated: list[SessionTaskTable] = []
+        for parent_link in parent_links:
+            session_id = cast("UUID", parent_link.session_id)
+            rel_raw = parent_link.relationship_type
+            try:
+                rel = SessionTaskRelationshipType(rel_raw)
+            except (TypeError, ValueError):
+                rel = SessionTaskRelationshipType.DISCUSSION
+            link = await self.link_session_to_task(
+                session_id=session_id,
+                task_id=subtask_id,
+                added_by=added_by,
+                is_primary=False,
+                relationship_type=rel,
+            )
+            propagated.append(link)
+        return propagated
+
     async def _walk_task_ancestors(self, task_id: UUID) -> list["TaskTable"]:  # type: ignore[name-defined]  # noqa: F821
         """Return [parent, grandparent, ..., root] for a task, empty if none.
 

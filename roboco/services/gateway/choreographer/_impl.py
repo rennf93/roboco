@@ -11,6 +11,7 @@ injection so later phases just fill in the bodies.
 
 from __future__ import annotations
 
+import contextlib
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any, ClassVar
@@ -173,6 +174,10 @@ class ChoreographerDeps:
     journal: Any
     audit: Any
     evidence_repo: Any
+    # Task #156: messaging is optional so existing callsites + tests that
+    # don't exercise session propagation don't have to plumb it in. The
+    # delegate() path uses it to thread parent sessions onto new subtasks.
+    messaging: Any = None
 
 
 @dataclass(frozen=True)
@@ -305,10 +310,38 @@ class Choreographer:
     def evidence_repo(self) -> Any:
         return self._deps.evidence_repo
 
+    @property
+    def messaging(self) -> Any:
+        return self._deps.messaging
+
     async def _touch(self, task_id: UUID | None) -> None:
         """Best-effort heartbeat write; silent on missing task."""
         if task_id is not None:
             await self.task.heartbeat(task_id)
+
+    async def _record_milestone_progress(
+        self,
+        task_id: UUID,
+        agent_id: UUID,
+        message: str,
+        percentage: int | None = None,
+    ) -> None:
+        """Append a server-emitted progress entry on a lifecycle milestone.
+
+        Task #155: agents call ``progress()`` inconsistently. Server-side
+        auto-emit on natural milestones (open_pr, i_am_done) guarantees
+        the panel + audit view always have entries at the major
+        transitions, regardless of how chatty the agent is. Best-effort:
+        a missing task_id or write failure must not break the verb path
+        — progress is observability, not correctness.
+        """
+        with contextlib.suppress(Exception):
+            await self.task.add_progress(
+                task_id=task_id,
+                agent_id=agent_id,
+                message=message,
+                percentage=percentage,
+            )
 
     @staticmethod
     def _reassigned_rejection(
@@ -1034,12 +1067,34 @@ class Choreographer:
                 task_id=task_id,
                 verb="open_pr",
             )
-        # Re-fetch: git_service.create_pr writes pr_number / pr_url onto
-        # the task row. The runner doesn't bubble that update back, so a
-        # fresh load is the simplest way to surface the new fields in the
-        # OK envelope's next-hint and introspection block.
+        return await self._open_pr_success_envelope(
+            agent_id, task_id, t, briefing, role_str
+        )
+
+    async def _open_pr_success_envelope(
+        self,
+        agent_id: UUID,
+        task_id: UUID,
+        t: Any,
+        briefing: dict[str, Any],
+        role_str: str,
+    ) -> Envelope:
+        """Refresh the task, auto-emit milestone progress, build the OK envelope.
+
+        git_service.create_pr writes pr_number / pr_url onto the task row;
+        the runner doesn't bubble that update back so we re-fetch. Task
+        #155 milestone progress fires server-side so the panel + audit
+        log always show "opened PR #N" regardless of agent chattiness.
+        """
         refreshed = await self.task.get(task_id)
         t = refreshed if refreshed is not None else t
+        if t.pr_number is not None:
+            await self._record_milestone_progress(
+                task_id,
+                agent_id,
+                f"opened PR #{t.pr_number}",
+                percentage=70,
+            )
         return Envelope.ok(
             status=str(t.status),
             task_id=str(task_id),
@@ -1266,6 +1321,14 @@ class Choreographer:
             )
         await self._notify_qa(ctx.agent_id, ctx.task_id, t)
         await self._touch(ctx.task_id)
+        # Task #155: server-side milestone progress so the panel always
+        # records the QA handoff regardless of agent's progress() habits.
+        await self._record_milestone_progress(
+            ctx.task_id,
+            ctx.agent_id,
+            "submitted for QA review",
+            percentage=90,
+        )
         return await self._build_i_am_done_ok(ctx.agent_id, ctx.task_id, t)
 
     async def _i_am_done_resume_from_verifying(self, ctx: _IAmDoneContext) -> Envelope:
@@ -2886,7 +2949,20 @@ class Choreographer:
             nature=nature_enum,
             estimated_complexity=complexity_enum,
         )
-        return await self.task.create_subtask(req)
+        new_task = await self.task.create_subtask(req)
+        # Task #156: thread the parent's existing session links onto the
+        # new subtask so the assigned agent (dev/qa/doc) lands in the
+        # group chat the PM has already been talking in. Pre-gateway
+        # parity — sessions were wired to the whole tree at creation
+        # time; the gateway path created subtasks one-by-one and forgot
+        # this step. Idempotent on re-runs; no-op when no parent session.
+        if self.messaging is not None:
+            await self.messaging.propagate_sessions_to_subtask(
+                parent_task_id=parent_task_id,
+                subtask_id=new_task.id,
+                added_by=pm_agent_id,
+            )
+        return new_task
 
     @staticmethod
     def _validate_delegation_chain(pm_role: str, target_slug: str) -> str | None:

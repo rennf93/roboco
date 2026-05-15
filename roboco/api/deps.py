@@ -502,7 +502,7 @@ def require_task_action(
 async def get_choreographer(
     db_session: DbSession,
 ) -> Choreographer:
-    """Build a Choreographer with all 7 service dependencies wired up."""
+    """Build a Choreographer with all service dependencies wired up."""
     return Choreographer(
         ChoreographerDeps(
             task=TaskService(db_session),
@@ -512,6 +512,7 @@ async def get_choreographer(
             journal=JournalService(db_session),
             audit=get_audit_service(),
             evidence_repo=EvidenceRepo(db_session),
+            messaging=MessagingService(db_session),
         )
     )
 
