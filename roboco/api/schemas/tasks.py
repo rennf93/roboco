@@ -511,6 +511,11 @@ def convert_plan(plan_data: dict | None) -> TaskPlanResponse | None:
     UUID) to a fresh UUID so a single bad write doesn't permanently brick
     the read path. The DB-level id is replaced; PMs treat sub_task.order
     + title as the stable handle anyway.
+
+    Risks: the schema declares ``risks: list[dict[str, str]]``; a None
+    severity from a pre-fix gateway write fails the response load with a
+    500 on every panel poll. Coerce defensively here so existing-bad data
+    in the DB doesn't brick the read path.
     """
     if not plan_data:
         return None
@@ -524,6 +529,16 @@ def convert_plan(plan_data: dict | None) -> TaskPlanResponse | None:
             except (ValueError, AttributeError):
                 return uuid4()
         return uuid4()
+
+    def _coerce_risk(r: object) -> dict[str, str]:
+        if not isinstance(r, dict):
+            return {"description": str(r) if r else "", "mitigation": "", "severity": "medium"}
+        sev = r.get("severity")
+        return {
+            "description": str(r.get("description") or r.get("risk") or ""),
+            "mitigation": str(r.get("mitigation") or ""),
+            "severity": str(sev) if sev not in (None, "") else "medium",
+        }
 
     sub_tasks = [
         SubTaskResponse(
@@ -542,7 +557,7 @@ def convert_plan(plan_data: dict | None) -> TaskPlanResponse | None:
         approach=plan_data.get("approach", ""),
         sub_tasks=sub_tasks,
         technical_considerations=plan_data.get("technical_considerations", []),
-        risks=plan_data.get("risks", []),
+        risks=[_coerce_risk(r) for r in (plan_data.get("risks") or [])],
         open_questions=plan_data.get("open_questions", []),
     )
 

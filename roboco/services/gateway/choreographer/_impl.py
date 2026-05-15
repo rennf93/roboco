@@ -71,13 +71,18 @@ def _normalize_risk(r: dict[str, Any]) -> dict[str, Any]:
     """Shape a risk entry to panel/src/types/index.ts (description/mitigation/severity).
 
     Accepts either {description, mitigation, severity?} (panel shape) or
-    {risk, mitigation} (pre-gateway agent shape).
+    {risk, mitigation} (pre-gateway agent shape). ``severity`` always
+    serializes to a non-None string — the TaskPlanResponse schema declares
+    ``risks: list[dict[str, str]]`` and a None severity from an agent who
+    omits the field triggers a panel-load 500 on every poll.
     """
     description = r.get("description") or r.get("risk") or ""
+    severity_raw = r.get("severity")
+    severity = str(severity_raw) if severity_raw not in (None, "") else "medium"
     return {
         "description": str(description),
         "mitigation": str(r.get("mitigation", "")),
-        "severity": r.get("severity"),
+        "severity": severity,
     }
 
 
