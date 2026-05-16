@@ -32,12 +32,15 @@ requires.
 from __future__ import annotations
 
 import contextlib
+from datetime import UTC, datetime
+from pathlib import Path
 from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any
 
 from roboco.config import settings
 from roboco.foundation.policy import lifecycle as spec_module
 from roboco.foundation.policy import tracing as _tr
+from roboco.models.task import DocRef
 from roboco.services.gateway.envelope import Envelope
 from roboco.services.gateway.evidence_builder import build_evidence_for_task
 
@@ -49,6 +52,30 @@ if TYPE_CHECKING:
     _Base = ChoreographerHelpers
 else:
     _Base = object
+
+
+def _doc_refs_for(files: list[str], agent_id: UUID) -> list[dict[str, Any]]:
+    """DocRef-shaped dicts for ``Task.documents`` (a JSON column).
+
+    ``i_documented`` receives a flat list of file paths, but
+    ``Task.documents`` is ``list[DocRef]`` persisted as dicts — readers do
+    ``DocRef(**d)`` / ``d["path"]`` and the doc indexer does ``d.get``.
+    Stamping bare strings 500s ``list_docs`` and breaks indexing (#169).
+    """
+    now = datetime.now(UTC).isoformat()
+    slug = str(agent_id)
+    return [
+        DocRef(
+            path=f,
+            title=Path(f).name,
+            doc_type="doc",
+            created_by=slug,
+            created_at=now,
+            updated_by=slug,
+            updated_at=now,
+        ).model_dump()
+        for f in files
+    ]
 
 
 def _extract_original_developer(task: Any) -> str | None:
@@ -385,7 +412,7 @@ class DocMixin(_Base):
         # sees it.
         existing = await self.task.get(task_id)
         if existing is not None:
-            existing.documents = files
+            existing.documents = _doc_refs_for(files, doc_agent_id)
             await self.task.session.flush()
 
         runner = self._verb_runner()
