@@ -1817,6 +1817,30 @@ class GitService(BaseService):
         workspace_agent_id = self._resolve_workspace_agent_id(task, actor_agent_id)
         return await self.get_workspace(project.slug, agent_id=workspace_agent_id)
 
+    async def _token_for_branch(self, branch_name: str) -> str | None:
+        """Best-effort project PAT for authenticated fetch in the diff path.
+
+        Task #168: an unauthenticated ``git fetch`` fails on a private
+        repo ("could not read Username for github.com"), so the diff base
+        stays the stale clone-time ``origin/<default>`` and the three-dot
+        diff spans the whole repo delta instead of the branch's change.
+        Returns None on ANY resolution failure so the fetch degrades to
+        unauthenticated (prior behaviour) rather than raising inside an
+        evidence-assembly path — authentication is an optimisation here,
+        never a hard dependency of producing a diff.
+        """
+        try:
+            task = await self._task_for_branch(branch_name)
+            if task is None:
+                return None
+            project_service = get_project_service(self.session)
+            project = await project_service.get(UUID(str(task.project_id)))
+            if project is None:
+                return None
+            return await self._get_project_token_or_raise(project.slug)
+        except Exception:
+            return None
+
     async def checkout_branch_in_agent_workspace(
         self,
         branch_name: str,
@@ -2137,14 +2161,17 @@ class GitService(BaseService):
         )
         return result.returncode == 0
 
-    async def _default_branch_ref(self, workspace: Any) -> str:
+    async def _default_branch_ref(
+        self, workspace: Any, token: str | None = None
+    ) -> str:
         """Resolve the repo's default remote branch ref.
 
         Tries ``origin/HEAD`` (the canonical pointer), then common
         defaults. Always returns a usable ref string; falls back to
         ``origin/master`` so the diff command is still well-formed even
         on a misconfigured remote (an empty/garbage diff is recoverable;
-        a malformed git invocation is not).
+        a malformed git invocation is not). This only resolves the ref
+        NAME — the caller is responsible for fetching it fresh (#168).
         """
         head = await self._run_git(
             workspace,
@@ -2160,12 +2187,15 @@ class GitService(BaseService):
                 workspace,
                 ["fetch", "origin", candidate.split("/", 1)[1]],
                 check=False,
+                token=token,
             )
             if await self._ref_exists(workspace, candidate):
                 return candidate
         return "origin/master"
 
-    async def _resolve_diff_base(self, workspace: Any, branch_name: str) -> str:
+    async def _resolve_diff_base(
+        self, workspace: Any, branch_name: str, token: str | None = None
+    ) -> str:
         """Best diff base for `branch_name` when no explicit base is given.
 
         Task #161: a leaf dev branch's ``parent_branch_for`` is the
@@ -2174,16 +2204,32 @@ class GitService(BaseService):
         against a non-existent ``origin/<parent>`` returns an empty
         diff, so QA / docs see nothing. Fall back to the repo default
         branch when the computed parent ref is absent on origin.
+
+        Task #168: the default-branch ref in an inspecting clone is the
+        stale clone-time tip (origin/HEAD is set, so _default_branch_ref
+        early-returns its NAME without fetching). A three-dot diff against
+        a stale base spans the whole repo delta, not the branch's change.
+        Re-fetch the resolved base authenticated (unauth fails on private
+        repos) so the base is current.
         """
         from roboco.services.gateway.merge_chain import parent_branch_for
 
         parent = parent_branch_for(branch_name)
-        await self._run_git(workspace, ["fetch", "origin", parent], check=False)
+        await self._run_git(
+            workspace, ["fetch", "origin", parent], check=False, token=token
+        )
         if await self._ref_exists(workspace, f"origin/{parent}"):
             return f"origin/{parent}"
-        return await self._default_branch_ref(workspace)
+        default = await self._default_branch_ref(workspace, token=token)
+        short = default.split("/", 1)[1] if "/" in default else default
+        await self._run_git(
+            workspace, ["fetch", "origin", short], check=False, token=token
+        )
+        return default
 
-    async def _resolve_head_ref(self, workspace: Any, branch_name: str) -> str:
+    async def _resolve_head_ref(
+        self, workspace: Any, branch_name: str, token: str | None = None
+    ) -> str:
         """Ref for the branch tip that actually resolves in `workspace`.
 
         Task #161 (facet): the local ``<branch_name>`` ref only exists in
@@ -2199,7 +2245,9 @@ class GitService(BaseService):
         back to ``origin/<branch>``; last resort the bare name so the
         diff command stays well-formed.
         """
-        await self._run_git(workspace, ["fetch", "origin", branch_name], check=False)
+        await self._run_git(
+            workspace, ["fetch", "origin", branch_name], check=False, token=token
+        )
         if await self._ref_exists(workspace, branch_name):
             return branch_name
         if await self._ref_exists(workspace, f"origin/{branch_name}"):
@@ -2227,11 +2275,12 @@ class GitService(BaseService):
         workspace = await self._workspace_for_branch(
             branch_name, actor_agent_id=actor_agent_id
         )
-        head_ref = await self._resolve_head_ref(workspace, branch_name)
+        token = await self._token_for_branch(branch_name)
+        head_ref = await self._resolve_head_ref(workspace, branch_name, token=token)
         base_ref = (
             base
             if base is not None
-            else await self._resolve_diff_base(workspace, branch_name)
+            else await self._resolve_diff_base(workspace, branch_name, token=token)
         )
         diff_result = await self._run_git(
             workspace, ["diff", f"{base_ref}...{head_ref}"], check=False
@@ -2258,11 +2307,12 @@ class GitService(BaseService):
         workspace = await self._workspace_for_branch(
             branch_name, actor_agent_id=actor_agent_id
         )
-        head_ref = await self._resolve_head_ref(workspace, branch_name)
+        token = await self._token_for_branch(branch_name)
+        head_ref = await self._resolve_head_ref(workspace, branch_name, token=token)
         base_ref = (
             base
             if base is not None
-            else await self._resolve_diff_base(workspace, branch_name)
+            else await self._resolve_diff_base(workspace, branch_name, token=token)
         )
         result = await self._run_git(
             workspace,
