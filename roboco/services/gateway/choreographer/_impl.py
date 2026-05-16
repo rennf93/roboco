@@ -3500,6 +3500,33 @@ class Choreographer:
             context_briefing=await self._briefing_for(pm_agent_id, task_id),
         ).with_introspection(task=t, role=role)
 
+    async def _own_review_hint(self, pm_agent_id: UUID, exclude_task_id: UUID) -> str:
+        """Remediate suffix naming the PM's OWN task ready to complete.
+
+        Smoke-15 wedge (#170): a PM looped firing complete/unblock at the
+        wrong (parent) task_id while its own leaf sat at
+        ``awaiting_pm_review``, never named in any rejection — minimax
+        never found the one correct call. Surface it explicitly.
+        Best-effort: never raises into the rejection path.
+        """
+        try:
+            owned = await self.task.list_by_assignee(pm_agent_id)
+        except Exception:
+            return ""
+        ready = [
+            str(o.id)
+            for o in owned
+            if str(o.status) == "awaiting_pm_review" and o.id != exclude_task_id
+        ]
+        if not ready:
+            return ""
+        tid = ready[0]
+        return (
+            f" You OWN task {tid} which is awaiting_pm_review and ready to "
+            f"finish — call complete(task_id='{tid}', notes='...') on THAT "
+            "task, not this one."
+        )
+
     async def _cell_pm_complete_guard(
         self, pm_agent_id: UUID, task_id: UUID, t: Any, notes: str
     ) -> Envelope | None:
@@ -3515,7 +3542,10 @@ class Choreographer:
         if t.assigned_to != pm_agent_id:
             return Envelope.not_authorized(
                 message="not assigned to you",
-                remediate="claim the task or wait for it to be assigned",
+                remediate=(
+                    "claim the task or wait for it to be assigned."
+                    + await self._own_review_hint(pm_agent_id, task_id)
+                ),
                 context_briefing=await self._briefing_for(pm_agent_id, task_id),
             )
         if str(t.status) != "awaiting_pm_review":
@@ -3523,7 +3553,10 @@ class Choreographer:
                 message=(
                     f"task {task_id} is in {t.status}, expected awaiting_pm_review"
                 ),
-                remediate="this task is not ready for completion",
+                remediate=(
+                    "this task is not ready for completion."
+                    + await self._own_review_hint(pm_agent_id, task_id)
+                ),
                 context_briefing=await self._briefing_for(pm_agent_id, task_id),
             )
         if env := await self._check_complete_gates(pm_agent_id, task_id, notes):
@@ -3629,7 +3662,10 @@ class Choreographer:
         if t.assigned_to != main_pm_agent_id:
             return Envelope.not_authorized(
                 message="not assigned to you",
-                remediate="wait for assignment or claim",
+                remediate=(
+                    "wait for assignment or claim."
+                    + await self._own_review_hint(main_pm_agent_id, root_task_id)
+                ),
                 context_briefing=await self._briefing_for(
                     main_pm_agent_id, root_task_id
                 ),
@@ -3639,7 +3675,10 @@ class Choreographer:
                 message=(
                     f"task {root_task_id} is in {t.status}, expected awaiting_pm_review"
                 ),
-                remediate="this task is not ready for main-PM completion",
+                remediate=(
+                    "this task is not ready for main-PM completion."
+                    + await self._own_review_hint(main_pm_agent_id, root_task_id)
+                ),
                 context_briefing=await self._briefing_for(
                     main_pm_agent_id, root_task_id
                 ),
@@ -3650,8 +3689,9 @@ class Choreographer:
                     "main_pm complete only operates on root tasks (no parent_task_id)"
                 ),
                 remediate=(
-                    "cell PM should complete this task;"
-                    " main PM only completes root tasks"
+                    "cell PM should complete this task; main PM only"
+                    " completes root tasks."
+                    + await self._own_review_hint(main_pm_agent_id, root_task_id)
                 ),
                 context_briefing=await self._briefing_for(
                     main_pm_agent_id, root_task_id
