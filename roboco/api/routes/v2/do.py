@@ -151,6 +151,7 @@ async def do_progress(
         agent_id=x_agent_id,
         task_id=body.task_id,
         message=body.message,
+        plan_step=body.plan_step,
         percentage=body.percentage,
     )
     return envelope_to_response(env, request)

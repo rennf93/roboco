@@ -303,22 +303,42 @@ def evidence(task_id: str) -> dict[str, Any]:
 # ---------- Wave 1 — pre-gateway parity ----------
 
 
-def progress(task_id: str, message: str, percentage: int) -> dict[str, Any]:
-    """Append a narrative progress update to YOUR active task.
+def progress(
+    task_id: str,
+    message: str,
+    plan_step: str | None = None,
+    percentage: int | None = None,
+) -> dict[str, Any]:
+    """Record progress on YOUR active task — the % is computed for you.
+
+    Your plan's steps (sub_tasks) ARE the progress checklist. As you
+    FINISH each step, call this with ``plan_step`` set to that step's id
+    or its 1-based order; it is marked complete and the percentage is
+    derived from completed/total — you do NOT set the percentage and
+    cannot game it.
+
+    You may ALSO post a narrative update WITHOUT ``plan_step`` for an
+    important mid-step milestone (it documents the "why" and carries the
+    current derived %). Keep these to meaningful moments — not every
+    tool call.
 
     Args:
         task_id: UUID of the task you're working on.
         message: One-paragraph summary of what just landed.
-        percentage: 0..100 inclusive. Rough completion estimate; bump it as
-            you make progress so PM/QA can see velocity.
+        plan_step: The sub_task id (or its 1-based order) you just
+            COMPLETED. Omit for a narrative-only milestone update.
+        percentage: Ignored when the task has a plan checklist (the norm).
+            Only used as a fallback for tasks with no sub_tasks.
 
-    Populates the panel's Progress tab. Use this in addition to ``commit``
-    — commits are git refs; progress is narrative.
+    Populates the panel's Progress tab. Use in addition to ``commit`` —
+    commits are git refs; progress maps to your plan.
     """
-    return _post(
-        "/api/v2/do/progress",
-        {"task_id": task_id, "message": message, "percentage": percentage},
-    )
+    body: dict[str, Any] = {"task_id": task_id, "message": message}
+    if plan_step is not None:
+        body["plan_step"] = plan_step
+    if percentage is not None:
+        body["percentage"] = percentage
+    return _post("/api/v2/do/progress", body)
 
 
 def open_session(

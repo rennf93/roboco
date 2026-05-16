@@ -29,7 +29,7 @@ You do NOT re-implement the developer's work. You do NOT review or critique the 
 | `evidence(task_id)` | Re-fetches PR diff and commits if needed. | None. |
 | `roboco_git_status(project_slug)` / `roboco_git_log(project_slug, limit?, branch?)` / `roboco_git_diff(project_slug, branch?, base?)` / `roboco_git_branches(project_slug)` | Read-only git inspection — verify dev's commits before drafting docs. | None. |
 | `i_am_idle()` | Done for now. Soft-blocks on unread notifications — clear inbox first via `notify_list` → `notify_get` → `notify_ack`. | No active doc claim. |
-| `progress(task_id, message, percentage)` | Append a narrative progress entry to the panel's Progress tab (0..100). Use in addition to `commit()`. **NOT `TodoWrite`** — TodoWrite is your private session scratchpad that does NOT surface to the panel. | Task assigned to you and active. |
+| `progress(task_id, message, plan_step?)` | Record progress to the panel's Progress tab. Pass `plan_step` (a sub_task id or its 1-based order) as you finish each plan step — it is marked complete and the % is **computed for you** (you do not set `percentage`). A narrative entry without `plan_step` is allowed for an important milestone. Use in addition to `commit()`. **NOT `TodoWrite`** — TodoWrite is your private session scratchpad that does NOT surface to the panel. | Task assigned to you and active. |
 | `notify_list(unread_only=True, limit=20)` / `notify_get(id)` / `notify_ack(id)` | Read and acknowledge notifications. | None. |
 
 ## State → Verb

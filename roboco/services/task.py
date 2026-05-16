@@ -75,6 +75,46 @@ _MAX_NOTES_CHARS = 8000
 _TRUNCATION_MARKER = "[...earlier notes truncated for size...]\n"
 
 
+def _mark_subtask_complete(sub_tasks: list[dict[str, Any]], plan_step: str) -> bool:
+    """Mark the matching sub_task ``completed`` in place (#173).
+
+    ``plan_step`` matches a sub_task by its id, its ``order``, or its
+    1-based position. Returns True iff a sub_task matched (mutated in
+    place); False when nothing matched.
+    """
+    ref = str(plan_step).strip()
+    for i, st in enumerate(sub_tasks):
+        if ref in {str(st.get("id")), str(st.get("order")), str(i + 1)}:
+            st["completed"] = True
+            return True
+    return False
+
+
+def _plan_subtasks(task: Any) -> tuple[dict[str, Any], list[dict[str, Any]]]:
+    """(plan dict, sub_tasks list) for a task — safe on str/None plans."""
+    plan = task.plan if isinstance(task.plan, dict) else {}
+    sub_tasks = [st for st in (plan.get("sub_tasks") or []) if isinstance(st, dict)]
+    return plan, sub_tasks
+
+
+def _valid_step_refs(sub_tasks: list[dict[str, Any]]) -> list[str]:
+    """Human-listable step refs (id, else order, else 1-based index)."""
+    return [
+        str(st.get("id") or st.get("order") or i + 1) for i, st in enumerate(sub_tasks)
+    ]
+
+
+def _derive_plan_pct(
+    sub_tasks: list[dict[str, Any]], fallback: int | None
+) -> int | None:
+    """% = completed/total of the checklist (equal weight); ``fallback``
+    only when there is no checklist (#173)."""
+    if not sub_tasks:
+        return fallback
+    done = sum(1 for st in sub_tasks if st.get("completed"))
+    return round(done / len(sub_tasks) * 100)
+
+
 def _append_capped(existing: str | None, addition: str) -> str:
     """Append `addition` to `existing`, capped at _MAX_NOTES_CHARS.
 
@@ -3632,6 +3672,61 @@ class TaskService(BaseService):
         await self.session.flush()
 
         return task
+
+    async def record_plan_progress(
+        self,
+        task_id: UUID,
+        agent_id: UUID,
+        message: str,
+        plan_step: str | None = None,
+        fallback_percentage: int | None = None,
+    ) -> dict[str, Any] | None:
+        """Append a progress update whose % is DERIVED from the plan checklist.
+
+        #173: the plan's sub_tasks ARE the progress skeleton. When
+        ``plan_step`` (a sub_task id, or 1-based order/index) is given,
+        that step is marked ``completed`` and the percentage is computed
+        as completed/total (equal weight) — the agent cannot game it.
+        Narrative entries (no plan_step) are allowed for documentation
+        and carry the CURRENT derived % so the bar never regresses. When
+        the task has no sub_task checklist the agent's
+        ``fallback_percentage`` is used (back-compat).
+
+        Returns ``None`` if the task is missing, else a dict:
+        ``{"task", "percentage", "step_resolved": bool | None,
+        "valid_steps": [str]}``. ``step_resolved`` is None when no
+        plan_step was requested; False when requested but unmatched (the
+        caller surfaces a remediation listing ``valid_steps``).
+        """
+        task = await self.get(task_id)
+        if not task:
+            return None
+
+        plan, sub_tasks = _plan_subtasks(task)
+        step_resolved: bool | None = None
+        if plan_step is not None:
+            step_resolved = _mark_subtask_complete(sub_tasks, plan_step)
+            if step_resolved:
+                # Reassign so the JSON column registers the mutation.
+                task.plan = {**plan, "sub_tasks": sub_tasks}
+
+        percentage = _derive_plan_pct(sub_tasks, fallback_percentage)
+        task.progress_updates = [
+            *task.progress_updates,
+            {
+                "timestamp": datetime.now(UTC).isoformat(),
+                "agent_id": str(agent_id),
+                "message": message,
+                "percentage": percentage,
+            },
+        ]
+        await self.session.flush()
+        return {
+            "task": task,
+            "percentage": percentage,
+            "step_resolved": step_resolved,
+            "valid_steps": _valid_step_refs(sub_tasks),
+        }
 
     async def add_checkpoint(
         self,

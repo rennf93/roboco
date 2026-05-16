@@ -709,3 +709,92 @@ async def test_reflect_incomplete_input_includes_call_example() -> None:
     assert "what_done=" in remediate, remediate
     assert "what_learned=" in remediate, remediate
     assert "what_struggled=" in remediate, remediate
+
+
+# ---------------------------------------------------------------------------
+# #173: plan-driven progress — progress() marks a plan step + derives %.
+# ---------------------------------------------------------------------------
+
+
+def _active_task(agent_id: object) -> MagicMock:
+    return MagicMock(id=uuid4(), assigned_to=agent_id, status="in_progress")
+
+
+@pytest.mark.asyncio
+async def test_progress_plan_step_resolved_ok_with_derived_pct() -> None:
+    agent_id = uuid4()
+    t = _active_task(agent_id)
+    task = AsyncMock()
+    task.get.return_value = t
+    task.record_plan_progress.return_value = {
+        "task": t,
+        "percentage": 50,
+        "step_resolved": True,
+        "valid_steps": ["s1", "s2"],
+    }
+    actions = ContentActions(_make_deps(task=task))
+
+    env = await actions.progress(
+        agent_id=agent_id, task_id=t.id, message="did step 1", plan_step="s1"
+    )
+    body = env.as_dict()
+    assert body.get("error") is None, body
+    assert "50%" in body["next"], body
+    task.record_plan_progress.assert_awaited_once()
+    assert task.record_plan_progress.await_args.kwargs["plan_step"] == "s1"
+
+
+@pytest.mark.asyncio
+async def test_progress_unknown_plan_step_invalid_state_lists_valid() -> None:
+    agent_id = uuid4()
+    t = _active_task(agent_id)
+    task = AsyncMock()
+    task.get.return_value = t
+    task.record_plan_progress.return_value = {
+        "task": t,
+        "percentage": 0,
+        "step_resolved": False,
+        "valid_steps": ["s1", "s2"],
+    }
+    actions = ContentActions(_make_deps(task=task))
+
+    env = await actions.progress(
+        agent_id=agent_id, task_id=t.id, message="?", plan_step="bogus"
+    )
+    body = env.as_dict()
+    assert body["error"] == "invalid_state", body
+    assert "s1" in body["remediate"] and "s2" in body["remediate"], body
+
+
+@pytest.mark.asyncio
+async def test_progress_narrative_without_plan_step_ok() -> None:
+    agent_id = uuid4()
+    t = _active_task(agent_id)
+    task = AsyncMock()
+    task.get.return_value = t
+    task.record_plan_progress.return_value = {
+        "task": t,
+        "percentage": 25,
+        "step_resolved": None,
+        "valid_steps": ["s1"],
+    }
+    actions = ContentActions(_make_deps(task=task))
+
+    env = await actions.progress(
+        agent_id=agent_id, task_id=t.id, message="midway milestone"
+    )
+    assert env.as_dict().get("error") is None
+    assert task.record_plan_progress.await_args.kwargs["plan_step"] is None
+
+
+@pytest.mark.asyncio
+async def test_progress_ownership_enforced() -> None:
+    agent_id = uuid4()
+    t = MagicMock(id=uuid4(), assigned_to=uuid4(), status="in_progress")
+    task = AsyncMock()
+    task.get.return_value = t
+    actions = ContentActions(_make_deps(task=task))
+
+    env = await actions.progress(agent_id=agent_id, task_id=t.id, message="x")
+    assert env.as_dict()["error"] is not None
+    task.record_plan_progress.assert_not_awaited()

@@ -713,13 +713,20 @@ class ContentActions:
         agent_id: UUID,
         task_id: UUID,
         message: str,
-        percentage: int,
+        plan_step: str | None = None,
+        percentage: int | None = None,
     ) -> Envelope:
-        """Append a narrative progress update (pre-gateway parity).
+        """Append a progress update; % is derived from the plan checklist.
+
+        #173: pass ``plan_step`` (a sub_task id or 1-based order) as you
+        finish each plan step — it is marked complete and the % is
+        computed from completed/total (the agent cannot set it). A
+        narrative entry without ``plan_step`` is allowed for important
+        mid-step documentation and carries the current derived %.
+        ``percentage`` is only a fallback for tasks with no checklist.
 
         Caller must be the task's assignee and the task must be in an
-        active status — these are the same constraints the pre-gateway
-        `roboco_task_progress` handler enforced.
+        active status — same constraints as the pre-gateway handler.
         """
         active = {
             "in_progress",
@@ -744,16 +751,29 @@ class ContentActions:
                 ),
                 context_briefing={},
             )
-        await self.task.add_progress(
+        result = await self.task.record_plan_progress(
             task_id=task_id,
             agent_id=agent_id,
             message=message,
-            percentage=percentage,
+            plan_step=plan_step,
+            fallback_percentage=percentage,
         )
+        if result is None:
+            return Envelope.not_found(message=f"task {task_id} not found")
+        if result["step_resolved"] is False:
+            valid = result["valid_steps"]
+            return Envelope.invalid_state(
+                message=f"plan_step {plan_step!r} does not match any plan step",
+                remediate=(
+                    "pass a sub_task id or its 1-based order. Valid steps: "
+                    f"{valid}. Re-read them with evidence(task_id)."
+                ),
+                context_briefing={},
+            )
         return Envelope.ok(
             status=str(t.status),
             task_id=str(task_id),
-            next="continue",
+            next=f"progress {result['percentage']}% — continue",
             context_briefing={},
         )
 

@@ -102,15 +102,23 @@ class LinkSessionRequest(BaseModel):
 
 
 class ProgressRequest(BaseModel):
-    """Narrative progress update with 0..100 percentage.
+    """Progress update; % is DERIVED from the plan checklist (#173).
 
-    Pre-gateway parity for `roboco_task_progress`. Populates the panel's
-    Progress tab.
+    Pass ``plan_step`` (a sub_task id or its 1-based order) as you finish
+    each plan step — it is marked complete and the percentage is computed
+    from completed/total. A narrative entry without ``plan_step`` is
+    allowed for important mid-step documentation. ``percentage`` is an
+    optional fallback only for tasks with no sub_task checklist.
+    Populates the panel's Progress tab.
     """
 
     task_id: UUID
     message: str = Field(..., min_length=1)
-    percentage: int = Field(..., ge=0, le=100)
+    plan_step: str | None = Field(
+        default=None,
+        description="sub_task id or 1-based order to mark complete",
+    )
+    percentage: int | None = Field(default=None, ge=0, le=100)
 
 
 class NotifyListRequest(BaseModel):
