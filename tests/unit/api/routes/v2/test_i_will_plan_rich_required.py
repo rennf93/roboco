@@ -19,7 +19,19 @@ _AGENT_ID = "00000000-0000-0000-0004-000000000001"
 _HEADERS = {"X-Agent-ID": _AGENT_ID, "X-Agent-Role": "main_pm"}
 _HTTP_UNPROCESSABLE = 422
 _HTTP_OK = 200
-_MIN_APPROACH_LEN = 20
+# #171: raised 20→150 — must stay in sync with IWillPlanRequest.approach
+# min_length and choreographer._impl._PM_APPROACH_MIN_LEN.
+_MIN_APPROACH_LEN = 150
+_GOOD_APPROACH = (
+    "Single-cell decomposition for the git-workflow smoke test: be-pm owns "
+    "the backend slice end to end — claim, branch, delegate the README edit "
+    "to be-dev-1, sequence QA after the PR opens, then documentation, then "
+    "complete and submit_up. Frontend and UX cells are unaffected."
+)
+_GOOD_SUBTASK_DESC = (
+    "be-dev-1 creates the feature branch, prepends the smoke-test HTML "
+    "comment above the README H1 leaving the rest untouched, commits, opens PR."
+)
 
 
 def _make_envelope(error: str, missing: list[str] | None = None) -> MagicMock:
@@ -76,10 +88,7 @@ def test_i_will_plan_rejects_empty_subtasks_for_pm() -> None:
         json={
             "task_id": str(uuid4()),
             "plan": "Route to backend cell only",
-            "approach": (
-                "Single-cell decomposition: backend cell handles the "
-                "smoke test end-to-end; frontend and ux unaffected."
-            ),
+            "approach": _GOOD_APPROACH,
             "sub_tasks": [],  # empty — gateway rejects for PM
         },
     )
@@ -101,11 +110,8 @@ def test_i_will_plan_schema_accepts_rich_plan() -> None:
     req = IWillPlanRequest(
         task_id=uuid4(),
         plan="Route to backend",
-        approach=(
-            "Single-cell decomposition for the smoke test: be-pm handles "
-            "git workflow validation end to end."
-        ),
-        sub_tasks=[{"title": "Backend slice", "description": "Branch + edit + PR"}],
+        approach=_GOOD_APPROACH,
+        sub_tasks=[{"title": "Backend slice", "description": _GOOD_SUBTASK_DESC}],
         risks=[],
         open_questions=[],
     )

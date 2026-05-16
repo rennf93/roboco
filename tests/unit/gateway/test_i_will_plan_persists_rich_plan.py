@@ -133,11 +133,28 @@ async def test_i_will_plan_persists_panel_shaped_plan() -> None:
     c = Choreographer(deps)
 
     sub_tasks_in = [
-        {"title": "Backend slice", "description": "API + DB schema"},
-        {"title": "UX slice", "description": "Panel changes"},
+        {
+            "title": "Backend slice",
+            "description": (
+                "be-dev-1 implements the API endpoint and the DB schema "
+                "migration, with tests, behind the existing service layer."
+            ),
+        },
+        {
+            "title": "UX slice",
+            "description": (
+                "fe-dev-1 wires the panel view to the new endpoint and "
+                "renders the result list with loading + error states."
+            ),
+        },
     ]
     rich = {
-        "approach": "Three-slice decomposition: api, db, ui — each as a subtask.",
+        "approach": (
+            "Three-slice decomposition for the feature: backend builds the "
+            "API + DB migration first, UX consumes it after the endpoint is "
+            "merged, QA reviews each PR, docs follow. Strict sequencing; the "
+            "UX slice depends on the backend slice landing first."
+        ),
         "sub_tasks": sub_tasks_in,
         "risks": [{"risk": "schema migration may block", "mitigation": "rehearse"}],
     }
@@ -170,12 +187,11 @@ async def test_i_will_plan_persists_panel_shaped_plan() -> None:
 
 @pytest.mark.asyncio
 async def test_i_will_plan_with_thin_rich_plan_persists_string() -> None:
-    """PM passing rich_plan with empty rich fields — set_plan receives the str.
+    """PM passing a valid rich_plan — set_plan receives the dict shape.
 
-    _resolve_effective_plan only switches to the dict shape when at least one
-    rich-plan field is populated. If a PM somehow bypasses _pm_sub_tasks_gate
-    (e.g. via the re-entry path) with an empty rich_plan, the raw string
-    must still pass through. TaskService.set_plan wraps it as {"text": str}.
+    Regression coverage for _resolve_effective_plan: with rich-plan fields
+    populated the dict shape (not the raw string) must reach set_plan, and
+    the raw paragraph is preserved under `text`.
     """
     pm_id = uuid4()
     task_id = uuid4()
@@ -183,15 +199,28 @@ async def test_i_will_plan_with_thin_rich_plan_persists_string() -> None:
     deps = _make_deps(task=task_svc)
     c = Choreographer(deps)
 
-    # Single sub_task satisfies the gate; we test the str-vs-dict branch of
-    # _resolve_effective_plan by checking what shape reaches set_plan.
+    # A valid rich_plan satisfies the gate; we test the str-vs-dict branch
+    # of _resolve_effective_plan by checking what shape reaches set_plan.
     env = await c.i_will_plan(
         pm_id,
         task_id,
         plan="bare plan paragraph",
         rich_plan={
-            "approach": "PM-approved approach text that is long enough to pass.",
-            "sub_tasks": [{"title": "Slice", "description": "the work"}],
+            "approach": (
+                "Single-slice decomposition: be-dev-1 owns the change end "
+                "to end — branch, implement, test, open PR; QA reviews after "
+                "the PR opens; docs follow; then be-pm completes and submits "
+                "up. No cross-cell dependencies for this task."
+            ),
+            "sub_tasks": [
+                {
+                    "title": "Slice",
+                    "description": (
+                        "be-dev-1 implements the change with tests and opens "
+                        "the leaf PR for QA review."
+                    ),
+                }
+            ],
         },
     )
     body = env.as_dict()

@@ -237,11 +237,20 @@ async def test_i_will_plan_dispatches_to_choreographer() -> None:
             "task_id": _TASK_ID,
             "plan": "break into 3 subtasks for backend",
             "approach": (
-                "Decompose into backend API slice, QA verification pass, "
-                "and documentation update."
+                "Decompose into a backend API slice that be-dev-1 owns end "
+                "to end; QA reviews after the PR opens, documentation follows, "
+                "then be-pm completes and submits up. Single-cell — no "
+                "frontend or ux work; strict sequencing with no cross-cell "
+                "dependencies for this planning task."
             ),
             "sub_tasks": [
-                {"title": "Backend API slice", "description": "Implement endpoint"}
+                {
+                    "title": "Backend API slice",
+                    "description": (
+                        "be-dev-1 implements the endpoint with tests, commits "
+                        "with the task-id prefix, opens the leaf PR for QA."
+                    ),
+                }
             ],
         },
         headers=_HEADERS,

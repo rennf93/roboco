@@ -397,11 +397,20 @@ async def test_cell_pm_can_plan_code_typed_parent_via_i_will_plan() -> None:
         plan="Decompose into 2 dev subtasks.",
         rich_plan={
             "approach": (
-                "Split code-typed parent into two developer-claimable subtasks: "
-                "one for API implementation, one for test coverage."
+                "Split the code-typed parent into two developer-claimable "
+                "subtasks: one for API implementation, one for test coverage. "
+                "Sequenced so the API lands first; QA reviews each PR after "
+                "it opens, documentation follows, then complete and submit "
+                "up. No cross-cell dependencies for this slice."
             ),
             "sub_tasks": [
-                {"title": "API subtask", "description": "Implement endpoint"},
+                {
+                    "title": "API subtask",
+                    "description": (
+                        "be-dev-1 implements the endpoint with tests, commits "
+                        "with the task-id prefix, opens the leaf PR for QA."
+                    ),
+                },
             ],
         },
     )
@@ -450,10 +459,19 @@ async def test_pm_can_plan_non_code_parent() -> None:
         rich_plan={
             "approach": (
                 "Single-cell decomposition: backend handles the full scope; "
-                "no frontend or ux work required for this planning task."
+                "no frontend or ux work required for this planning task. "
+                "be-dev-1 owns the change end to end; QA reviews after the "
+                "PR opens, documentation follows, then be-pm completes and "
+                "submits up. Strict sequencing, no cross-cell dependencies."
             ),
             "sub_tasks": [
-                {"title": "Backend planning slice", "description": "Scope and assign"}
+                {
+                    "title": "Backend planning slice",
+                    "description": (
+                        "scope the change, assign be-dev-1, who implements "
+                        "with tests and opens the leaf PR for QA review."
+                    ),
+                }
             ],
         },
     )

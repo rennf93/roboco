@@ -208,12 +208,27 @@ async def test_i_will_plan_dispatches_to_choreographer() -> None:
             "task_id": _TASK_ID,
             "plan": "split into backend, frontend, ux cells",
             "approach": (
-                "Three-cell decomposition: backend handles API, frontend "
-                "handles UI integration, ux-ui handles design."
+                "Three-cell decomposition: backend handles the API, frontend "
+                "handles UI integration, ux-ui handles design. Sequenced so "
+                "backend lands first, QA reviews each PR after it opens, "
+                "documentation follows, then complete and submit up. No "
+                "cross-cell dependencies beyond the stated ordering."
             ),
             "sub_tasks": [
-                {"title": "Backend cell", "description": "API implementation"},
-                {"title": "Frontend cell", "description": "UI integration"},
+                {
+                    "title": "Backend cell",
+                    "description": (
+                        "be-dev-1 implements the API endpoint and migration "
+                        "with tests, opens the leaf PR for QA."
+                    ),
+                },
+                {
+                    "title": "Frontend cell",
+                    "description": (
+                        "fe-dev-1 wires the panel to the new endpoint with "
+                        "loading and error states, opens the leaf PR."
+                    ),
+                },
             ],
         },
         headers=_HEADERS,
