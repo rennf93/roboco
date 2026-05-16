@@ -12,6 +12,16 @@ class GiveMeWorkRequest(BaseModel):
 class IWillWorkOnRequest(BaseModel):
     task_id: UUID
     plan: str | None = None
+    # #172: the executing developer's plan is a step checklist (same
+    # SubTask shape as IWillPlanRequest.sub_tasks). It is both the
+    # execution plan AND the progress checklist (#173): completing a
+    # step advances progress. Depth is enforced server-side in
+    # choreographer._dev_steps_gate (a title with no real description is
+    # not a step). Server assigns id + order.
+    steps: list[dict[str, str]] = Field(
+        default_factory=list,
+        description="Ordered execution steps — list of {title, description}",
+    )
 
 
 class OpenPrRequest(BaseModel):

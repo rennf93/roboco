@@ -9,6 +9,17 @@ from uuid import uuid4
 import pytest
 from roboco.services.gateway.choreographer import Choreographer, ChoreographerDeps
 
+# #172: a developer fresh claim must carry a substantive step checklist.
+_STEPS = [
+    {
+        "title": "Implement the change",
+        "description": (
+            "edit the target file, add tests, run them, and stage the "
+            "change for commit on the task branch"
+        ),
+    }
+]
+
 
 def _make_deps(**overrides: AsyncMock) -> ChoreographerDeps:
     task = overrides.get("task", AsyncMock())
@@ -138,7 +149,7 @@ async def test_i_will_work_on_pending_with_plan() -> None:
     deps = _make_deps(task=task_svc)
     c = Choreographer(deps)
 
-    env = await c.i_will_work_on(agent_id, task_id, plan="do x then y")
+    env = await c.i_will_work_on(agent_id, task_id, plan="do x then y", steps=_STEPS)
     assert env.error is None
     assert env.status == "in_progress"
     task_svc.claim.assert_awaited_once_with(task_id, agent_id)
@@ -227,7 +238,7 @@ async def test_i_will_work_on_needs_revision_re_starts() -> None:
     deps = _make_deps(task=task_svc)
     c = Choreographer(deps)
 
-    env = await c.i_will_work_on(agent_id, task_id)
+    env = await c.i_will_work_on(agent_id, task_id, steps=_STEPS)
     assert env.status == "in_progress"
     task_svc.start.assert_awaited_once_with(task_id, agent_id)
 
@@ -332,7 +343,7 @@ async def test_i_will_work_on_blocks_when_journal_note_at_claim_missing() -> Non
     deps = _make_deps(task=task_svc, journal=journal_svc)
     c = Choreographer(deps)
 
-    env = await c.i_will_work_on(agent_id, task_id, plan="do x then y")
+    env = await c.i_will_work_on(agent_id, task_id, plan="do x then y", steps=_STEPS)
     body = env.as_dict()
     assert body["error"] == "tracing_gap"
     assert "journal:note_at_claim" in body["missing"]

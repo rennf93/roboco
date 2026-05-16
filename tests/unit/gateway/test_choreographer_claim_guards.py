@@ -22,6 +22,18 @@ from uuid import uuid4
 import pytest
 from roboco.services.gateway.choreographer import Choreographer, ChoreographerDeps
 
+# #172: a developer fresh claim must carry a substantive step checklist.
+# Inert on re-entry/error/non-dev paths, so safe to pass everywhere.
+_STEPS = [
+    {
+        "title": "Implement the change",
+        "description": (
+            "edit the target file, add tests, run them, and stage the "
+            "change for commit on the task branch"
+        ),
+    }
+]
+
 
 def _make_deps(**overrides: Any) -> ChoreographerDeps:
     base: dict[str, Any] = {
@@ -132,7 +144,7 @@ async def test_i_will_work_on_blocks_when_earlier_sibling_open() -> None:
     deps = _make_deps(task=task_svc)
     c = Choreographer(deps)
 
-    env = await c.i_will_work_on(agent_id, target_id, plan="x")
+    env = await c.i_will_work_on(agent_id, target_id, plan="x", steps=_STEPS)
     body = env.as_dict()
     assert body["error"] == "invalid_state"
     assert "sequence" in body["message"].lower()
@@ -177,7 +189,7 @@ async def test_i_will_work_on_allows_when_earlier_sibling_terminal() -> None:
     deps = _make_deps(task=task_svc)
     c = Choreographer(deps)
 
-    env = await c.i_will_work_on(agent_id, target_id)
+    env = await c.i_will_work_on(agent_id, target_id, steps=_STEPS)
     assert env.error is None
     task_svc.claim.assert_awaited_once_with(target_id, agent_id)
 
@@ -207,7 +219,7 @@ async def test_root_task_no_sequence_check() -> None:
     deps = _make_deps(task=task_svc)
     c = Choreographer(deps)
 
-    env = await c.i_will_work_on(agent_id, target_id)
+    env = await c.i_will_work_on(agent_id, target_id, steps=_STEPS)
     assert env.error is None
     # Sequence check should not have queried siblings on a root task
     task_svc.get_subtasks.assert_not_awaited()
@@ -238,7 +250,7 @@ async def test_i_will_work_on_blocks_when_agent_has_in_progress_task() -> None:
     deps = _make_deps(task=task_svc)
     c = Choreographer(deps)
 
-    env = await c.i_will_work_on(agent_id, target_id, plan="x")
+    env = await c.i_will_work_on(agent_id, target_id, plan="x", steps=_STEPS)
     body = env.as_dict()
     assert body["error"] == "invalid_state"
     assert str(other_id) in body["message"] or str(other_id) in body["remediate"]
@@ -272,7 +284,7 @@ async def test_i_will_work_on_resumption_does_not_self_block() -> None:
     deps = _make_deps(task=task_svc)
     c = Choreographer(deps)
 
-    env = await c.i_will_work_on(agent_id, task_id)
+    env = await c.i_will_work_on(agent_id, task_id, steps=_STEPS)
     assert env.error is None
     task_svc.start.assert_awaited_once_with(task_id, agent_id)
 
@@ -302,7 +314,7 @@ async def test_i_will_work_on_blocks_when_agent_has_paused_task() -> None:
     deps = _make_deps(task=task_svc)
     c = Choreographer(deps)
 
-    env = await c.i_will_work_on(agent_id, target_id, plan="x")
+    env = await c.i_will_work_on(agent_id, target_id, plan="x", steps=_STEPS)
     body = env.as_dict()
     assert body["error"] == "invalid_state"
     assert str(paused_id) in body["remediate"]
@@ -333,7 +345,7 @@ async def test_cell_pm_cannot_claim_code_task_via_i_will_work_on() -> None:
     deps = _make_deps(task=task_svc)
     c = Choreographer(deps)
 
-    env = await c.i_will_work_on(pm_id, task_id, plan="x")
+    env = await c.i_will_work_on(pm_id, task_id, plan="x", steps=_STEPS)
     body = env.as_dict()
     assert body["error"] == "not_authorized"
     # Spec produces "role 'cell_pm' may not call 'i_will_work_on'".
@@ -360,7 +372,7 @@ async def test_main_pm_cannot_claim_code_task_via_i_will_work_on() -> None:
     deps = _make_deps(task=task_svc)
     c = Choreographer(deps)
 
-    env = await c.i_will_work_on(pm_id, task_id, plan="x")
+    env = await c.i_will_work_on(pm_id, task_id, plan="x", steps=_STEPS)
     body = env.as_dict()
     assert body["error"] == "not_authorized"
 
@@ -510,7 +522,7 @@ async def test_developer_cannot_claim_qa_status_task() -> None:
     deps = _make_deps(task=task_svc)
     c = Choreographer(deps)
 
-    env = await c.i_will_work_on(dev_id, task_id)
+    env = await c.i_will_work_on(dev_id, task_id, steps=_STEPS)
     body = env.as_dict()
     assert body["error"] == "not_authorized"
     assert "developer" in body["message"]
@@ -601,7 +613,7 @@ async def test_non_developer_role_cannot_claim_via_i_will_work_on() -> None:
     deps = _make_deps(task=task_svc)
     c = Choreographer(deps)
 
-    env = await c.i_will_work_on(doc_id, task_id, plan="x")
+    env = await c.i_will_work_on(doc_id, task_id, plan="x", steps=_STEPS)
     body = env.as_dict()
     # Role-typed claim refuses with not_authorized
     assert body["error"] == "not_authorized"

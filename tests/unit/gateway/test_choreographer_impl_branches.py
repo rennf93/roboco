@@ -18,6 +18,19 @@ from roboco.services.gateway.choreographer import Choreographer, ChoreographerDe
 from roboco.services.gateway.choreographer._impl import DelegateInputs
 from roboco.services.gateway.envelope import Envelope
 
+# #172: a developer fresh claim must carry a substantive step checklist.
+# Inert on re-entry/error/non-dev paths (the gate is skipped or the call
+# short-circuits before it), so it is safe to pass everywhere.
+_STEPS = [
+    {
+        "title": "Implement the change",
+        "description": (
+            "edit the target file, add tests, run them, and stage the "
+            "change for commit on the task branch"
+        ),
+    }
+]
+
 
 def _wire_dev_task_svc(
     task_id, *, status: str, assigned_to=None, plan=None, parent_task_id=None
@@ -139,7 +152,7 @@ async def test_i_will_work_on_pending_claim_raises_returns_invalid_state() -> No
     task_svc.claim.side_effect = RuntimeError("workspace down")
     deps = _make_deps(task=task_svc)
     c = Choreographer(deps)
-    env = await c.i_will_work_on(agent_id, task_id, plan="plan")
+    env = await c.i_will_work_on(agent_id, task_id, plan="plan", steps=_STEPS)
     body = env.as_dict()
     assert body["error"] == "invalid_state"
     assert "verb runner failed" in body["message"]
@@ -155,7 +168,7 @@ async def test_i_will_work_on_pending_claim_returns_none_invalid_state() -> None
     task_svc.claim.return_value = None
     deps = _make_deps(task=task_svc)
     c = Choreographer(deps)
-    env = await c.i_will_work_on(agent_id, task_id, plan="plan")
+    env = await c.i_will_work_on(agent_id, task_id, plan="plan", steps=_STEPS)
     body = env.as_dict()
     assert body["error"] == "invalid_state"
 
@@ -177,7 +190,7 @@ async def test_i_will_work_on_pending_no_plan_tracing_gap() -> None:
     task_svc.claim.return_value = claimed_task
     deps = _make_deps(task=task_svc)
     c = Choreographer(deps)
-    env = await c.i_will_work_on(agent_id, task_id, plan=None)
+    env = await c.i_will_work_on(agent_id, task_id, plan=None, steps=_STEPS)
     body = env.as_dict()
     assert body["error"] == "tracing_gap"
 
@@ -201,7 +214,7 @@ async def test_i_will_work_on_start_returns_none_invalid_state() -> None:
     task_svc.start.return_value = None  # start fails
     deps = _make_deps(task=task_svc)
     c = Choreographer(deps)
-    env = await c.i_will_work_on(agent_id, task_id, plan="ok plan")
+    env = await c.i_will_work_on(agent_id, task_id, plan="ok plan", steps=_STEPS)
     body = env.as_dict()
     assert body["error"] == "invalid_state"
     assert "start failed" in body["message"]
@@ -224,7 +237,7 @@ async def test_needs_revision_branch_claim_fails_invalid_state() -> None:
     task_svc.claim.return_value = None
     deps = _make_deps(task=task_svc)
     c = Choreographer(deps)
-    env = await c.i_will_work_on(agent_id, task_id, plan="ok")
+    env = await c.i_will_work_on(agent_id, task_id, plan="ok", steps=_STEPS)
     body = env.as_dict()
     assert body["error"] == "invalid_state"
 
@@ -240,7 +253,7 @@ async def test_needs_revision_branch_start_fails() -> None:
     task_svc.start.return_value = None
     deps = _make_deps(task=task_svc)
     c = Choreographer(deps)
-    env = await c.i_will_work_on(agent_id, task_id, plan="ok")
+    env = await c.i_will_work_on(agent_id, task_id, plan="ok", steps=_STEPS)
     body = env.as_dict()
     assert body["error"] == "invalid_state"
 
@@ -261,7 +274,7 @@ async def test_claimed_branch_returns_start_failed() -> None:
     task_svc.start.return_value = None
     deps = _make_deps(task=task_svc)
     c = Choreographer(deps)
-    env = await c.i_will_work_on(agent_id, task_id, plan="ok")
+    env = await c.i_will_work_on(agent_id, task_id, plan="ok", steps=_STEPS)
     body = env.as_dict()
     assert body["error"] == "invalid_state"
 
@@ -282,7 +295,7 @@ async def test_i_will_work_on_in_progress_assigned_to_self_idempotent() -> None:
     task_svc.heartbeat = AsyncMock()
     deps = _make_deps(task=task_svc)
     c = Choreographer(deps)
-    env = await c.i_will_work_on(agent_id, task_id, plan="ok")
+    env = await c.i_will_work_on(agent_id, task_id, plan="ok", steps=_STEPS)
     body = env.as_dict()
     # No error — re-entry pass.
     assert "error" not in body or body.get("error") is None
@@ -1016,7 +1029,7 @@ async def test_claimed_branch_already_active_guard() -> None:
     task_svc.list_in_progress_for_agent.return_value = [in_prog]
     deps = _make_deps(task=task_svc)
     c = Choreographer(deps)
-    env = await c.i_will_work_on(agent_id, task_id, plan="ok")
+    env = await c.i_will_work_on(agent_id, task_id, plan="ok", steps=_STEPS)
     body = env.as_dict()
     assert body["error"] == "invalid_state"
 
@@ -1151,7 +1164,7 @@ async def test_i_will_work_on_envelope_carries_introspection_on_success() -> Non
     task_svc.start.return_value = claimed_task
     deps = _make_deps(task=task_svc)
     c = Choreographer(deps)
-    env = await c.i_will_work_on(agent_id, task_id, plan="ok plan")
+    env = await c.i_will_work_on(agent_id, task_id, plan="ok plan", steps=_STEPS)
     body = env.as_dict()
     assert body["error"] is None
     assert body["current_state"] == "in_progress"
@@ -1172,7 +1185,7 @@ async def test_i_will_work_on_envelope_carries_introspection_on_rejection() -> N
     task_svc = _wire_dev_task_svc(task_id, status="completed", assigned_to=agent_id)
     deps = _make_deps(task=task_svc)
     c = Choreographer(deps)
-    env = await c.i_will_work_on(agent_id, task_id, plan="x")
+    env = await c.i_will_work_on(agent_id, task_id, plan="x", steps=_STEPS)
     body = env.as_dict()
     assert body["error"] == "invalid_state"
     assert body["current_state"] == "completed"
@@ -1233,7 +1246,7 @@ async def test_i_will_work_on_missing_plan_does_not_claim_pending_task() -> None
     task_svc = _wire_dev_task_svc(task_id, status="pending")
     deps = _make_deps(task=task_svc)
     c = Choreographer(deps)
-    env = await c.i_will_work_on(agent_id, task_id, plan=None)
+    env = await c.i_will_work_on(agent_id, task_id, plan=None, steps=_STEPS)
     body = env.as_dict()
     assert body["error"] == "tracing_gap"
     assert "plan" in body["missing"]
@@ -1268,7 +1281,7 @@ async def test_i_will_work_on_claimed_with_no_plan_accepts_recovery_plan() -> No
     task_svc.start.return_value = started
     deps = _make_deps(task=task_svc)
     c = Choreographer(deps)
-    env = await c.i_will_work_on(agent_id, task_id, plan="recovery plan")
+    env = await c.i_will_work_on(agent_id, task_id, plan="recovery plan", steps=_STEPS)
     body = env.as_dict()
     assert body["error"] is None, f"expected success, got {body}"
     task_svc.set_plan.assert_awaited_once()

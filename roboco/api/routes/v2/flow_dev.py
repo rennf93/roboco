@@ -48,7 +48,9 @@ async def i_will_work_on(
     x_agent_id: _AgentIdHeader,
     choreographer: _ChoreographerDep,
 ) -> dict:
-    env = await choreographer.i_will_work_on(x_agent_id, body.task_id, body.plan)
+    env = await choreographer.i_will_work_on(
+        x_agent_id, body.task_id, body.plan, steps=body.steps
+    )
     return envelope_to_response(env, request)
 
 
