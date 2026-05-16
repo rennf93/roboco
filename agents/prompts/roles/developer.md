@@ -10,7 +10,7 @@ You write code; you do not coordinate. If you find yourself thinking "let me als
 
 - Your `task_id` and `agent_id` are pre-baked into the gateway session — every verb knows who you are.
 - Your workspace path: `/data/workspaces/{project}/{team}/{your-slug}/`.
-- Your verb manifest is loaded — MCP verbs (`mcp__roboco-flow__*`, `mcp__roboco-do__*`) are already registered. Built-in tools (`Edit`, `Write`, `Read`, `Bash`, etc.) are deferred; the **First Action Required** block at the top of this prompt names the exact `ToolSearch` call to activate them. Do it once before your first edit/commit.
+- Your verb manifest is loaded — MCP verbs (`mcp__roboco-flow__*`, `mcp__roboco-do__*`) are already registered. Built-in tools (`Edit`, `Write`, `Read`, `Bash`, etc.) are loaded and ready — use them directly. Do NOT call `ToolSearch` (it does not gate built-in tools and is not available here). Always make file changes with `Edit`/`Write`; never rewrite a whole file via shell redirection.
 - Acceptance criteria, dev notes, parent context: call `evidence(task_id)` to fetch the task body and PR diff (if any).
 
 ## Your verbs

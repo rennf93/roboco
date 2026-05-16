@@ -2182,12 +2182,13 @@ class AgentOrchestrator:
 
     _TOOL_LOAD_CACHE: ClassVar[dict[str, str]] = {}
 
-    # Per-role built-in tools that must be activated via ToolSearch before
-    # use. Mirrors the system-prompt layer's _ROLE_BUILTIN_TOOLS in
-    # roboco/agents/factories/_base.py — kept in sync because the briefing
-    # and the system prompt are independent code paths. Smoke-8 evidence:
-    # weak models skip the system-prompt directive; the briefing block is
-    # the second touch point that gets them to actually run ToolSearch.
+    # Per-role built-in tools, enumerated in the briefing so the agent
+    # knows exactly what it has. These are pre-loaded at spawn via the
+    # Claude Code `--tools` flag and gated only by the per-role
+    # permission rules — NOT by ToolSearch (MCP-only; never gates
+    # built-ins). Mirrors the system-prompt layer's _ROLE_BUILTIN_TOOLS
+    # in roboco/agents/factories/_base.py — kept in sync because the
+    # briefing and the system prompt are independent code paths.
     _COMMON_BUILTIN_TOOLS: ClassVar[tuple[str, ...]] = (
         "Read",
         "Bash",
@@ -2208,14 +2209,16 @@ class AgentOrchestrator:
     }
 
     def _build_tool_load_block(self, role: str) -> str:
-        """Build the mandatory first-action ToolSearch directive.
+        """Briefing block affirming the role's built-in tools are ready.
 
-        Weak models consistently skip the system-prompt's directive (added
-        in #144) and call Edit/Write directly, hitting "Edit exists but is
-        not enabled in this context." Hoisting the same directive into the
-        briefing (which is the first user-visible message after spawn) is
-        the second touch point. Pre-rendered from the per-role tool list
-        — no role-file scrape required.
+        Built-in tools are pre-loaded at spawn via the Claude Code
+        `--tools` flag and gated only by the per-role permission rules.
+        ToolSearch is MCP-only and never gates built-ins — an earlier
+        revision instructed agents to "run ToolSearch to activate
+        Edit/Write", which was false (ToolSearch is not even callable
+        here), so weak models chased a nonexistent tool and fell back to
+        destructive shell file-writes. This states the tools are live and
+        steers away from that failure. Cached per role.
         """
         if role in self._TOOL_LOAD_CACHE:
             return self._TOOL_LOAD_CACHE[role]
@@ -2223,56 +2226,25 @@ class AgentOrchestrator:
         if not tools:
             block = ""
         else:
-            tool_list = ",".join(tools)
+            tool_list = ", ".join(tools)
+            edit_line = (
+                "Make file changes with Edit/Write — never rewrite a "
+                "whole file via shell redirection (>, heredoc, tee); "
+                "that destroys content and is unnecessary.\n"
+                if "Edit" in tools
+                else "You read and review; you do not author files.\n"
+            )
             block = (
-                "## First action required\n"
+                "## Your tools are ready\n"
                 "\n"
-                "Before any other tool call you MUST run this ToolSearch.\n"
-                "Built-in tools (Edit, Write, Read, etc.) are deferred until\n"
-                "you activate them. Skipping this step makes Edit calls fail\n"
-                'with "Edit exists but is not enabled in this context" — '
-                "wasting your budget and stalling the task.\n"
+                f"Loaded and available now: {tool_list}. Use them "
+                "directly. Do NOT call ToolSearch — it does not gate "
+                "built-in tools and is not available here.\n"
+                f"{edit_line}"
                 "\n"
-                "Copy this verbatim as your first action:\n"
-                "\n"
-                f'```\nToolSearch(query="select:{tool_list}")\n```\n"\n"\n'
             )
         self._TOOL_LOAD_CACHE[role] = block
         return block
-
-    def _read_tool_load_from_role_prompt(self, role: str) -> str:
-        """Parse the `Load on spawn` line out of the role prompt."""
-        role_file = self.project_root / "agents" / "prompts" / "roles" / f"{role}.md"
-        if not role_file.exists():
-            return ""
-        try:
-            text = role_file.read_text()
-        except OSError:
-            return ""
-        marker = "## Load on spawn"
-        idx = text.find(marker)
-        if idx < 0:
-            return ""
-        # After the marker, the next line starts with a backtick-quoted list.
-        tail = text[idx + len(marker) :]
-        tick_start = tail.find("`")
-        tick_end = tail.find("`", tick_start + 1)
-        if tick_start < 0 or tick_end < 0:
-            return ""
-        tool_list = tail[tick_start + 1 : tick_end].strip()
-        if not tool_list:
-            return ""
-        return (
-            "## First action required\n"
-            "Before any other tool call, run ToolSearch to enable the tools\n"
-            "your role needs. Copy this verbatim as your first action:\n"
-            "\n"
-            f'```\nToolSearch(query="select:{tool_list}")\n```\n'
-            "\n"
-            "Skipping this step results in 'tool exists but is not enabled\n"
-            "in this context' errors that waste tool-call budget.\n"
-            "\n"
-        )
 
     @staticmethod
     def _format_task_briefing_block(task_id: str, task: dict[str, Any]) -> str:

@@ -137,35 +137,40 @@ _ROLE_BUILTIN_TOOLS: dict[str, tuple[str, ...]] = {
 
 
 def _tool_load_directive_layer(role: "AgentRole") -> str | None:
-    """Top-of-prompt instruction to activate deferred built-in tools.
+    """Top-of-prompt statement that built-in tools are ready to use.
 
-    Claude Code v2.1.69+ defers built-in tools (Edit, Write, Read, etc.)
-    behind a ToolSearch call to save context tokens. Without ToolSearch,
-    `Edit` returns "Edit exists but is not enabled in this context." Weak
-    models skip this if it's buried in the briefing; we hoist it into the
-    system prompt's very first block so it's the highest-priority
-    instruction. The call has no side effects beyond enabling the tools.
+    Built-in tools are pre-loaded at spawn via the Claude Code `--tools`
+    flag and gated only by the per-role permission allow/deny rules — NOT
+    by ToolSearch (which exists only for deferred MCP tools, never for
+    built-ins). An earlier revision instructed agents to "run ToolSearch
+    to activate Edit/Write"; that was false (ToolSearch is not a built-in
+    activator and is not even a callable tool here), so weak models
+    chased a nonexistent tool, concluded Edit/Write were unavailable, and
+    rewrote whole files via destructive shell redirection. This block
+    instead affirms the tools are live and steers away from that
+    failure: enumerated tools, used directly, edits via Edit/Write.
     """
     role_value = role.value if hasattr(role, "value") else str(role)
     tools = _ROLE_BUILTIN_TOOLS.get(role_value)
     if not tools:
         return None
-    tool_list = ",".join(tools)
+    tool_list = ", ".join(tools)
+    authors = "Edit" in tools
+    edit_line = (
+        "Make file changes with Edit/Write — never rewrite a whole file "
+        "via shell redirection (>, heredoc, tee); that destroys content "
+        "and is unnecessary.\n"
+        if authors
+        else "You read and review; you do not author files.\n"
+    )
     return (
-        "# FIRST ACTION REQUIRED (mandatory)\n"
+        "# Your tools are ready\n"
         "\n"
-        "Before any other tool call you MUST run this ToolSearch once.\n"
-        "Built-in tools (Edit, Write, Read, etc.) are deferred until you\n"
-        "activate them. Skipping this step results in errors like\n"
-        '"Edit exists but is not enabled in this context" that waste your\n'
-        "tool-call budget and may leave the task in a stuck state.\n"
-        "\n"
-        "Copy this verbatim as your first action:\n"
-        "\n"
-        f'```\nToolSearch(query="select:{tool_list}")\n```\n'
-        "\n"
-        "Only after that call returns successfully should you proceed to\n"
-        "the role-specific workflow below."
+        f"These built-in tools are loaded and available now: {tool_list}.\n"
+        "Use them directly. Do NOT call ToolSearch — it does not gate "
+        "built-in tools and is not available here; calling it only wastes "
+        "budget.\n"
+        f"{edit_line}"
     )
 
 

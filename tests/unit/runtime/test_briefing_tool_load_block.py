@@ -1,19 +1,19 @@
-"""Smoke-8: briefing's _build_tool_load_block emits the ToolSearch directive
-without depending on a "## Load on spawn" section in the role file.
+"""#167: the briefing's _build_tool_load_block must not push ToolSearch.
 
-The previous implementation scraped role prompts for that marker; since
-no role file had it, the function returned "" and the briefing showed
-agents no tool-load instruction. Combined with weak models skipping the
-system-prompt directive, the agent went straight to Edit and hit "not
-enabled in this context."
+Earlier (smoke-8) the block instructed agents to run a ToolSearch call
+to "activate deferred built-in tools". That premise was false —
+ToolSearch is MCP-only, never gates built-ins, and is not callable in
+the agent runtime — so weak models chased a nonexistent tool and fell
+back to destructive shell file-writes. The real cause of "Edit not
+enabled in this context" was a permission bug fixed separately.
 
-Fix: per-role tool list lives in the orchestrator (mirrors the
-factories layer). Pre-renders the directive directly — no file scrape.
+The block now affirms the role's built-in tools are loaded and ready,
+tells the agent NOT to call ToolSearch, and (for authoring roles)
+steers away from whole-file shell redirection.
 """
 
 from __future__ import annotations
 
-import re
 from unittest.mock import patch
 
 from roboco.runtime.orchestrator import AgentOrchestrator
@@ -26,58 +26,54 @@ def _orch() -> AgentOrchestrator:
     return orch
 
 
-def test_developer_directive_includes_edit_and_write() -> None:
+def _tool_names(block: str) -> list[str]:
+    """Exact tool tokens (so 'TodoWrite' is not mistaken for 'Write')."""
+    line = next(ln for ln in block.splitlines() if "available now:" in ln)
+    seg = line.split("available now: ", 1)[1]
+    return seg.split(".", 1)[0].split(", ")
+
+
+def test_developer_block_affirms_tools_no_toolsearch_call() -> None:
     block = _orch()._build_tool_load_block("developer")
-    assert "First action required" in block
-    assert "ToolSearch" in block
-    assert "Edit" in block
-    assert "Write" in block
+    assert "Your tools are ready" in block
+    assert "ToolSearch(query=" not in block
+    assert "are deferred" not in block
+    names = _tool_names(block)
+    assert "Edit" in names and "Write" in names
 
 
-def test_documenter_directive_includes_edit_and_write() -> None:
-    block = _orch()._build_tool_load_block("documenter")
-    assert "Edit" in block
-    assert "Write" in block
+def test_developer_block_steers_away_from_shell_redirection() -> None:
+    block = _orch()._build_tool_load_block("developer")
+    assert "shell redirection" in block
+    assert "Edit/Write" in block
 
 
-def test_qa_directive_excludes_edit_and_write() -> None:
+def test_documenter_block_lists_edit_and_write() -> None:
+    names = _tool_names(_orch()._build_tool_load_block("documenter"))
+    assert "Edit" in names and "Write" in names
+
+
+def test_qa_block_excludes_edit_and_write() -> None:
     block = _orch()._build_tool_load_block("qa")
-    assert "First action required" in block
-    # The ToolSearch line itself: pull the comma list to be precise about
-    # which tools are listed (substring match would catch "TodoWrite").
-    match = re.search(r'select:([^"]+)"', block)
-    assert match is not None
-    tools = match.group(1).split(",")
-    assert "Edit" not in tools
-    assert "Write" not in tools
-    assert "Read" in tools
-    assert "Bash" in tools
+    assert "Your tools are ready" in block
+    names = _tool_names(block)
+    assert "Edit" not in names and "Write" not in names
+    assert "Read" in names and "Bash" in names
 
 
-def test_pm_directives_exclude_edit_and_write() -> None:
+def test_pm_blocks_exclude_edit_and_write() -> None:
     for role in ("main_pm", "cell_pm", "product_owner", "head_marketing", "auditor"):
-        block = _orch()._build_tool_load_block(role)
-        match = re.search(r'select:([^"]+)"', block)
-        assert match is not None
-        tools = match.group(1).split(",")
-        assert "Edit" not in tools, f"{role} must not list Edit"
-        assert "Write" not in tools, f"{role} must not list Write"
+        names = _tool_names(_orch()._build_tool_load_block(role))
+        assert "Edit" not in names, f"{role} must not list Edit"
+        assert "Write" not in names, f"{role} must not list Write"
 
 
 def test_unknown_role_returns_empty() -> None:
-    """No directive for unknown roles (defensive)."""
-    block = _orch()._build_tool_load_block("nonexistent")
-    assert block == ""
-
-
-def test_directive_warns_about_failure_mode() -> None:
-    block = _orch()._build_tool_load_block("developer")
-    assert "Edit exists but is not enabled" in block
+    assert _orch()._build_tool_load_block("nonexistent") == ""
 
 
 def test_role_cache_works() -> None:
     orch = _orch()
     first = orch._build_tool_load_block("developer")
-    # Second call hits the cache (same return).
     second = orch._build_tool_load_block("developer")
-    assert first is second  # same string object
+    assert first is second

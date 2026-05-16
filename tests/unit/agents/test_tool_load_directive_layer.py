@@ -1,14 +1,17 @@
-"""Smoke-7: system prompt opens with a ToolSearch directive that activates
-deferred built-in tools (Edit, Write, Read, ...).
+"""#167: the system prompt must NOT tell agents to ToolSearch built-ins.
 
-Original bug: be-dev-1 called Edit and got "Edit exists but is not enabled
-in this context" because Claude Code v2.1.69+ defers built-in tools behind
-a ToolSearch call. The role prompts said "no ToolSearch needed" — a lie
-for built-in tools — so weak models skipped the activation step.
+Earlier (smoke-7) the prompt opened with a "# FIRST ACTION REQUIRED:
+run ToolSearch to activate Edit/Write" block. That premise was false:
+ToolSearch is MCP-only and never gates built-in tools, and it is not
+even a callable tool in the agent runtime. Weak models chased the
+nonexistent tool, concluded Edit/Write were unavailable, and rewrote
+whole files via destructive shell redirection. The real cause of
+"Edit exists but is not enabled in this context" was a permission bug
+(global Write(*)/Edit(*) deny + single-slash path), fixed separately.
 
-Fix: compose_prompt now prepends a tool-load directive layer that names
-the exact ToolSearch call for the role. It's the highest-priority block in
-the system prompt so even weak models follow it.
+The directive layer now affirms the tools are loaded and ready, tells
+agents NOT to call ToolSearch, and (for authoring roles) steers away
+from whole-file shell redirection.
 """
 
 from __future__ import annotations
@@ -18,74 +21,84 @@ from roboco.models import AgentRole, Team
 
 
 def _composed_prompt_for(role: AgentRole, team: Team | None = None) -> str:
-    """Compose the prompt for a role and team."""
     return compose_prompt(role, team, agent_slug="test-agent")
 
 
-def test_developer_prompt_starts_with_tool_load_directive() -> None:
-    """Developer system prompt begins with the ToolSearch activation block."""
+def test_prompt_no_longer_instructs_a_toolsearch_call() -> None:
+    """No role prompt may instruct an actual ToolSearch(query=...) call."""
+    for role in (
+        AgentRole.DEVELOPER,
+        AgentRole.DOCUMENTER,
+        AgentRole.QA,
+        AgentRole.MAIN_PM,
+        AgentRole.CELL_PM,
+    ):
+        prompt = _composed_prompt_for(role, Team.BACKEND)
+        assert "ToolSearch(query=" not in prompt, (
+            f"{role.value} prompt still instructs a ToolSearch call"
+        )
+        assert "are deferred" not in prompt, (
+            f"{role.value} prompt still claims built-ins are deferred"
+        )
+
+
+def test_developer_prompt_starts_with_tools_ready_block() -> None:
+    """Developer system prompt leads with the tools-ready affirmation."""
     prompt = _composed_prompt_for(AgentRole.DEVELOPER, Team.BACKEND)
-    assert prompt.startswith("# FIRST ACTION REQUIRED"), (
-        f"Developer prompt must lead with the tool-load directive. "
+    assert prompt.startswith("# Your tools are ready"), (
+        f"Developer prompt must lead with the tools-ready block. "
         f"Got first 80 chars: {prompt[:80]!r}"
     )
 
 
-def test_developer_directive_names_edit_and_write() -> None:
-    """Developer ToolSearch call lists Edit + Write (the smoke-7 wedge)."""
+def _tool_names(prompt: str) -> list[str]:
+    """Exact tool tokens from the 'available now: <names>.' enumeration.
+
+    Exact tokens matter: a substring check would treat 'TodoWrite' as
+    containing 'Write'.
+    """
+    line = next(ln for ln in prompt.splitlines() if "available now:" in ln)
+    seg = line.split("available now: ", 1)[1]
+    # _base layer ends the list with '.'; orchestrator continues with
+    # '. Use them...'. Either way the names stop at the first period.
+    return seg.split(".", 1)[0].split(", ")
+
+
+def test_developer_block_lists_edit_and_write_as_available() -> None:
+    """Authoring roles are told Edit + Write are loaded and available."""
+    for role in (AgentRole.DEVELOPER, AgentRole.DOCUMENTER):
+        names = _tool_names(_composed_prompt_for(role, Team.BACKEND))
+        assert "Edit" in names and "Write" in names, (
+            f"{role.value} tools-ready line must list Edit + Write: {names!r}"
+        )
+
+
+def test_developer_block_steers_away_from_shell_redirection() -> None:
+    """The exact failure mode (clobber a file via bash) is called out."""
     prompt = _composed_prompt_for(AgentRole.DEVELOPER, Team.BACKEND)
-    assert 'ToolSearch(query="select:' in prompt
-    # Find the ToolSearch line
-    line = next(line for line in prompt.splitlines() if "ToolSearch(query=" in line)
-    assert "Edit" in line, f"Developer ToolSearch missing Edit: {line!r}"
-    assert "Write" in line
+    assert "shell redirection" in prompt
+    assert "Edit/Write" in prompt
 
 
-def test_documenter_directive_names_edit_and_write() -> None:
-    """Documenter needs Edit/Write too — they author docs."""
-    prompt = _composed_prompt_for(AgentRole.DOCUMENTER, Team.BACKEND)
-    line = next(line for line in prompt.splitlines() if "ToolSearch(query=" in line)
-    assert "Edit" in line
-    assert "Write" in line
+def test_qa_block_excludes_edit_and_write() -> None:
+    """QA reads/reviews — Edit/Write must not be listed as available."""
+    names = _tool_names(_composed_prompt_for(AgentRole.QA, Team.BACKEND))
+    assert "Edit" not in names and "Write" not in names, names
+    assert "Read" in names and "Bash" in names
 
 
-def _tool_list_from_directive(prompt: str) -> list[str]:
-    """Extract the comma-separated tool list from the ToolSearch call."""
-    line = next(line for line in prompt.splitlines() if "ToolSearch(query=" in line)
-    # `ToolSearch(query="select:Read,Bash,...")` — pull out the names.
-    start = line.find("select:") + len("select:")
-    end = line.find('"', start)
-    return line[start:end].split(",")
-
-
-def test_qa_directive_excludes_edit_and_write() -> None:
-    """QA reads but doesn't author — directive must NOT activate Edit/Write."""
-    tools = _tool_list_from_directive(_composed_prompt_for(AgentRole.QA, Team.BACKEND))
-    assert "Edit" not in tools, f"QA must not activate Edit: tools={tools}"
-    assert "Write" not in tools
-    assert "Read" in tools
-    assert "Bash" in tools
-
-
-def test_pm_directives_exclude_edit_and_write() -> None:
-    """PMs coordinate; they don't author code. No Edit/Write activation."""
+def test_pm_blocks_exclude_edit_and_write() -> None:
     for role in (AgentRole.MAIN_PM, AgentRole.CELL_PM):
-        tools = _tool_list_from_directive(_composed_prompt_for(role))
-        assert "Edit" not in tools, f"{role.value} must not activate Edit: {tools}"
-        assert "Write" not in tools
+        names = _tool_names(_composed_prompt_for(role))
+        assert "Edit" not in names and "Write" not in names, (
+            f"{role.value} must not list Edit/Write: {names}"
+        )
 
 
-def test_directive_explains_why_it_matters() -> None:
-    """The block must mention 'Edit exists but is not enabled' so the agent
-    understands what skipping the call causes."""
+def test_block_is_first_layer_before_lifecycle() -> None:
+    """Tools-ready block precedes the lifecycle and base layers."""
     prompt = _composed_prompt_for(AgentRole.DEVELOPER, Team.BACKEND)
-    assert "Edit exists but is not enabled" in prompt
-
-
-def test_directive_is_first_layer_before_lifecycle() -> None:
-    """First Action block precedes the lifecycle and base layers."""
-    prompt = _composed_prompt_for(AgentRole.DEVELOPER, Team.BACKEND)
-    first_idx = prompt.find("# FIRST ACTION REQUIRED")
+    first_idx = prompt.find("# Your tools are ready")
     lifecycle_idx = prompt.find("Lifecycle")
     base_idx = prompt.find("RoboCo Agent — Base")
     assert first_idx == 0
