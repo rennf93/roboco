@@ -62,6 +62,7 @@ class _MockChoreographer:
         _agent_id: object,
         _task_id: object,
         _plan: object = None,
+        **_kwargs: object,
     ) -> Envelope:
         self._state["task_status"] = "in_progress"
         return Envelope.ok(

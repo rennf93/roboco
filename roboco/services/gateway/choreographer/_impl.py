@@ -959,7 +959,11 @@ class Choreographer:
         ).with_introspection(task=t, role=role_str)
 
     async def i_will_work_on(
-        self, agent_id: UUID, task_id: UUID, plan: str | None = None
+        self,
+        agent_id: UUID,
+        task_id: UUID,
+        plan: str | None = None,
+        steps: list[dict[str, Any]] | None = None,
     ) -> Envelope:
         """Claim a task and start work on it.
 
@@ -968,6 +972,15 @@ class Choreographer:
         savepoint by the runner so a mid-sequence failure rolls back
         the DB. Idempotent re-entry: a respawned dev re-calling on a
         task they already own in_progress just refreshes the heartbeat.
+
+        #172: ``steps`` is the developer's execution checklist (same
+        SubTask shape as a PM's sub_tasks). Persisted into
+        ``task.plan.sub_tasks`` via the panel-shaped path so it renders
+        identically AND feeds plan-driven progress (#173). A developer
+        on a fresh claim must supply substantive steps —
+        ``_dev_steps_gate`` enforces depth; the re-entry / recovery
+        paths short-circuit before the gate so a respawned dev is never
+        re-blocked for steps it already submitted.
         """
         t = await self.task.get(task_id)
         if t is None:
@@ -993,8 +1006,17 @@ class Choreographer:
                 task_id=task_id,
                 verb="i_will_work_on",
             )
+        # #172: layer the step checklist onto the narrative plan via the
+        # same panel-shaped path PMs use, so task.plan.sub_tasks is
+        # populated (panel render + #173 progress). No steps → unchanged
+        # string behaviour.
+        effective_plan: str | dict[str, Any] | None = plan
+        if steps:
+            effective_plan = self._resolve_effective_plan(
+                plan or "", {"sub_tasks": steps}
+            )
         spec_ctx = spec_module.Context(
-            plan=plan,
+            plan=effective_plan,
             actor_id=agent_id,
             actor_slug=getattr(agent, "slug", None) if agent is not None else None,
             original_developer_slug=_extract_original_developer(t),
@@ -1005,13 +1027,34 @@ class Choreographer:
             task=t,
             role_str=role_str,
             briefing=briefing,
-            plan=plan,
+            plan=effective_plan,
             verb_name="i_will_work_on",
         )
+        if reentry := await self._dev_reentry(
+            ctx, t, agent_id, task_id, role_str, briefing
+        ):
+            return reentry
+        return await self._fresh_dev_claim(
+            ctx, role, spec_ctx, agent, steps, role_str, t, agent_id, task_id, briefing
+        )
+
+    async def _dev_reentry(
+        self,
+        ctx: _ClaimPlanStartContext,
+        t: Any,
+        agent_id: UUID,
+        task_id: UUID,
+        role_str: str,
+        briefing: dict[str, Any],
+    ) -> Envelope | None:
+        """Re-entry short-circuits for i_will_work_on (extracted to keep
+        i_will_work_on under the cyclomatic-complexity gate; mirrors
+        _handle_pm_reentry). Returns an Envelope to short-circuit, or None
+        to fall through to the fresh-claim path.
+        """
         # Idempotent re-entry: agent already owns the task in_progress.
-        # Touch heartbeat and short-circuit before the spec gate (which
-        # would otherwise reject because in_progress is not a source state
-        # for the composed `claim` action).
+        # Short-circuit before the spec gate (in_progress is not a source
+        # state for the composed `claim` action).
         if str(t.status) == "in_progress" and t.assigned_to == agent_id:
             await self._touch(task_id)
             return Envelope.ok(
@@ -1020,24 +1063,111 @@ class Choreographer:
                 next=spec_module._INTENT_VERBS["i_will_work_on"].next_hint(t),
                 context_briefing=briefing,
             ).with_introspection(task=t, role=role_str)
-        # Recovery re-entry: task stuck in `claimed` (e.g. orchestrator restart
-        # or a partial-claim race) and the agent already owns it. The spec
-        # `claim` action's source-statuses do NOT include CLAIMED, so the spec
-        # gate would reject. Surface this as a runner call that runs only
-        # set_plan + start. Without this block, an agent reclaiming from a
-        # crashed mid-sequence would loop forever (Bug A from the 2026-05-09
-        # smoke test).
+        # Recovery re-entry: task stuck in `claimed` (orchestrator restart
+        # or partial-claim race) and the agent already owns it. The spec
+        # `claim` source-statuses exclude CLAIMED, so run only set_plan +
+        # start (Bug A from the 2026-05-09 smoke test).
         if str(t.status) == "claimed" and t.assigned_to == agent_id:
             envelope = await self._resume_from_claimed(ctx)
             return await self._post_claim_journal_gate(
                 "i_will_work_on", agent_id, task_id, envelope
             )
+        return None
+
+    async def _fresh_dev_claim(
+        self,
+        ctx: _ClaimPlanStartContext,
+        role: Any,
+        spec_ctx: Any,
+        agent: Any,
+        steps: list[dict[str, Any]] | None,
+        role_str: str,
+        t: Any,
+        agent_id: UUID,
+        task_id: UUID,
+        briefing: dict[str, Any],
+    ) -> Envelope:
+        """Fresh (non-re-entry) i_will_work_on tail: spec gate → dev-steps
+        gate → claim/plan/start → post-claim journal gate. Extracted so
+        i_will_work_on stays within the return-count budget; the dev-steps
+        gate mirrors _pm_sub_tasks_gate's placement (after the spec gate).
+        """
         if rejection := await self._claim_plan_start_gate(ctx, role, spec_ctx):
+            return rejection
+        if rejection := await self._dev_steps_gate(
+            role_str=role_str,
+            steps=steps,
+            task=t,
+            agent_id=agent_id,
+            task_id=task_id,
+            briefing=briefing,
+        ):
             return rejection
         envelope = await self._claim_plan_start_run(ctx, agent, spec_ctx)
         return await self._post_claim_journal_gate(
             "i_will_work_on", agent_id, task_id, envelope
         )
+
+    async def _dev_steps_gate(
+        self,
+        *,
+        role_str: str,
+        steps: list[dict[str, Any]] | None,
+        task: Any,
+        agent_id: UUID,
+        task_id: UUID,
+        briefing: dict[str, Any],
+    ) -> Envelope | None:
+        """#172: a developer's fresh claim must carry a substantive step
+        checklist — it is the execution plan AND the progress checklist
+        (#173). Non-developer callers and re-entry are unaffected (the
+        re-entry/recovery paths return before this is reached). Returns a
+        rejection Envelope when steps are absent/thin; None when the gate
+        passed.
+        """
+        if role_str != "developer":
+            return None
+        if not steps:
+            return await self._emit_rejection(
+                Envelope.incomplete_input(
+                    missing=["steps"],
+                    field_hints={
+                        "steps": (
+                            "developers must plan their work as a step "
+                            "checklist — a non-empty list of "
+                            "{title, description}. Each step is both your "
+                            "execution plan and a progress-checklist item."
+                        )
+                    },
+                    remediate=(
+                        "re-issue i_will_work_on(task_id, plan, "
+                        "steps=[{'title': '...', 'description': '...'}, ...]) "
+                        f"with every description >= {_PM_SUBTASK_DESC_MIN_LEN} "
+                        "chars saying what that step does."
+                    ),
+                    context_briefing=briefing,
+                ).with_introspection(task=task, role=role_str),
+                agent_id=agent_id,
+                task_id=task_id,
+                verb="i_will_work_on",
+            )
+        if thin := _thin_subtask_hint(steps):
+            return await self._emit_rejection(
+                Envelope.incomplete_input(
+                    missing=["steps"],
+                    field_hints={"steps": thin},
+                    remediate=(
+                        "re-issue i_will_work_on with every step description "
+                        f">= {_PM_SUBTASK_DESC_MIN_LEN} chars describing what "
+                        "that step actually does."
+                    ),
+                    context_briefing=briefing,
+                ).with_introspection(task=task, role=role_str),
+                agent_id=agent_id,
+                task_id=task_id,
+                verb="i_will_work_on",
+            )
+        return None
 
     @staticmethod
     def _with_briefing(env: Envelope, briefing: dict[str, Any]) -> Envelope:

@@ -19,6 +19,18 @@ from uuid import uuid4
 import pytest
 from roboco.services.gateway.choreographer import Choreographer, ChoreographerDeps
 
+# #172: a developer fresh claim must carry a substantive step checklist.
+# Inert on re-entry/error/non-dev paths, so safe to pass everywhere.
+_STEPS = [
+    {
+        "title": "Implement the change",
+        "description": (
+            "edit the target file, add tests, run them, and stage the "
+            "change for commit on the task branch"
+        ),
+    }
+]
+
 
 def _make_task_svc(agent_id, task_id, *, status: str):
     """Build a TaskService AsyncMock that completes the (claim, set_plan, start)
@@ -120,7 +132,7 @@ async def test_i_will_work_on_calls_ensure_work_session() -> None:
     deps = _make_deps(task_svc)
     c = Choreographer(deps)
 
-    env = await c.i_will_work_on(agent_id, task_id, plan="do x then y")
+    env = await c.i_will_work_on(agent_id, task_id, plan="do x then y", steps=_STEPS)
 
     assert env.error is None, f"Expected ok, got error={env.error} msg={env.message}"
     assert env.status == "in_progress"
@@ -255,7 +267,7 @@ async def test_ensure_work_session_not_called_when_start_fails() -> None:
     deps = _make_deps(task_svc)
     c = Choreographer(deps)
 
-    env = await c.i_will_work_on(agent_id, task_id, plan="do x then y")
+    env = await c.i_will_work_on(agent_id, task_id, plan="do x then y", steps=_STEPS)
 
     assert env.error == "invalid_state"
     task_svc.ensure_work_session.assert_not_awaited()

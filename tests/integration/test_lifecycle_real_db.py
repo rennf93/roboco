@@ -39,6 +39,17 @@ from roboco.services.gateway.choreographer import Choreographer, ChoreographerDe
 from roboco.services.task import TaskService
 from sqlalchemy import delete
 
+# #172: a developer fresh claim must carry a substantive step checklist.
+_STEPS = [
+    {
+        "title": "Implement the change",
+        "description": (
+            "edit the target file, add tests, run them, and stage the "
+            "change for commit on the task branch"
+        ),
+    }
+]
+
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator
 
@@ -387,7 +398,9 @@ async def test_dev_full_chain_through_awaiting_qa(
     )
     c = Choreographer(deps)
 
-    env = await c.i_will_work_on(dev_agent.id, task.id, plan="add the route")
+    env = await c.i_will_work_on(
+        dev_agent.id, task.id, plan="add the route", steps=_STEPS
+    )
     assert env.error is None, f"i_will_work_on failed: {env.message}"
     assert env.status == Status.IN_PROGRESS.value
 
@@ -753,7 +766,9 @@ async def test_block_then_unblock_restore(
     c = _build_choreographer(db_session, task, task_service)
 
     # Drive into in_progress via the real claim+start sequence.
-    env = await c.i_will_work_on(dev_agent.id, task.id, plan="implement /healthz")
+    env = await c.i_will_work_on(
+        dev_agent.id, task.id, plan="implement /healthz", steps=_STEPS
+    )
     assert env.error is None, f"i_will_work_on failed: {env.message}"
     assert env.status == Status.IN_PROGRESS.value
 
@@ -807,7 +822,9 @@ async def test_pause_then_resume(
     task_service = TaskService(db_session)
     c = _build_choreographer(db_session, task, task_service)
 
-    env = await c.i_will_work_on(dev_agent.id, task.id, plan="implement /healthz")
+    env = await c.i_will_work_on(
+        dev_agent.id, task.id, plan="implement /healthz", steps=_STEPS
+    )
     assert env.error is None, f"i_will_work_on failed: {env.message}"
     assert env.status == Status.IN_PROGRESS.value
 

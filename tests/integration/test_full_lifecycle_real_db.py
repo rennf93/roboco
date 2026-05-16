@@ -41,6 +41,17 @@ from roboco.models.base import (
 from roboco.services.gateway.choreographer import Choreographer, ChoreographerDeps
 from roboco.services.task import TaskService
 
+# #172: a developer fresh claim must carry a substantive step checklist.
+_STEPS = [
+    {
+        "title": "Implement the change",
+        "description": (
+            "edit the target file, add tests, run them, and stage the "
+            "change for commit on the task branch"
+        ),
+    }
+]
+
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator
 
@@ -318,7 +329,9 @@ async def test_dev_can_claim_pending_task_via_gateway(
     )
     c = Choreographer(deps)
 
-    env = await c.i_will_work_on(dev_agent.id, task.id, plan="add the route")
+    env = await c.i_will_work_on(
+        dev_agent.id, task.id, plan="add the route", steps=_STEPS
+    )
 
     assert env.error is None, f"claim failed: {env.message}"
     assert env.status == "in_progress"
@@ -360,7 +373,9 @@ async def test_dev_full_chain_through_awaiting_qa(
     c = Choreographer(deps)
 
     # 1. Claim
-    env = await c.i_will_work_on(dev_agent.id, task.id, plan="add the route")
+    env = await c.i_will_work_on(
+        dev_agent.id, task.id, plan="add the route", steps=_STEPS
+    )
     assert env.error is None
     assert env.status == "in_progress"
 
@@ -424,7 +439,7 @@ async def test_full_chain_through_doc_handoff(
     c = Choreographer(deps)
 
     # Drive the dev side first (same as test_dev_full_chain_through_awaiting_qa).
-    await c.i_will_work_on(dev_agent.id, task.id, plan="add the route")
+    await c.i_will_work_on(dev_agent.id, task.id, plan="add the route", steps=_STEPS)
     await stub_git.commit(
         branch_name=_BRANCH,
         message=f"[{str(task.id)[:8]}] feat(api): add /healthz",
