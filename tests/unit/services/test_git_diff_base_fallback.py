@@ -162,6 +162,9 @@ async def test_diff_targets_origin_head_in_foreign_clone() -> None:
     svc._resolve_head_ref = AsyncMock(  # type: ignore[method-assign]
         return_value=f"origin/{_BR}"
     )
+    svc._token_for_branch = AsyncMock(  # type: ignore[method-assign]
+        return_value="tok"
+    )
     captured: list[list[str]] = []
 
     async def fake_run(_ws: Any, args: list[str], **_kw: Any) -> Any:
@@ -173,6 +176,12 @@ async def test_diff_targets_origin_head_in_foreign_clone() -> None:
     out = await svc.diff(branch_name=_BR)
     assert out == "diff body"
     assert captured == [["diff", f"origin/master...origin/{_BR}"]]
+    # #168: the resolved project token is threaded into ref resolution so
+    # the fetches authenticate (unauth fails on private repos).
+    svc._resolve_head_ref.assert_awaited_once_with(Path("/tmp/qa-ws"), _BR, token="tok")
+    svc._resolve_diff_base.assert_awaited_once_with(
+        Path("/tmp/qa-ws"), _BR, token="tok"
+    )
 
 
 @pytest.mark.asyncio
@@ -188,6 +197,9 @@ async def test_list_changed_files_targets_origin_head_in_foreign_clone() -> None
     svc._resolve_head_ref = AsyncMock(  # type: ignore[method-assign]
         return_value=f"origin/{_BR}"
     )
+    svc._token_for_branch = AsyncMock(  # type: ignore[method-assign]
+        return_value="tok"
+    )
     captured: list[list[str]] = []
 
     async def fake_run(_ws: Any, args: list[str], **_kw: Any) -> Any:
@@ -199,6 +211,9 @@ async def test_list_changed_files_targets_origin_head_in_foreign_clone() -> None
     files = await svc.list_changed_files(branch_name=_BR)
     assert files == ["README.md", "src/app.py"]
     assert captured == [["diff", "--name-only", f"origin/master...origin/{_BR}"]]
+    svc._resolve_diff_base.assert_awaited_once_with(
+        Path("/tmp/qa-ws"), _BR, token="tok"
+    )
 
 
 @pytest.mark.asyncio
@@ -215,6 +230,9 @@ async def test_diff_honours_explicit_base_with_resolved_head() -> None:
     svc._resolve_head_ref = AsyncMock(  # type: ignore[method-assign]
         return_value=_BR
     )
+    svc._token_for_branch = AsyncMock(  # type: ignore[method-assign]
+        return_value=None
+    )
     captured: list[list[str]] = []
 
     async def fake_run(_ws: Any, args: list[str], **_kw: Any) -> Any:
@@ -225,3 +243,66 @@ async def test_diff_honours_explicit_base_with_resolved_head() -> None:
     await svc.diff(branch_name=_BR, base="HEAD~1")
     assert captured == [["diff", f"HEAD~1...{_BR}"]]
     svc._resolve_diff_base.assert_not_awaited()
+
+
+# ---------------------------------------------------------------------------
+# Task #168: the diff base must be CURRENT. In an inspecting clone
+# origin/HEAD is set, so _default_branch_ref early-returns the ref NAME
+# without fetching, leaving the base the stale clone-time tip — a
+# three-dot diff then spans the whole repo delta (smoke-15: 41 files vs a
+# 1-line change). _resolve_diff_base must re-fetch the resolved base, and
+# every fetch in the diff path must authenticate (unauth fails on a
+# private repo: "could not read Username for github.com").
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_resolve_diff_base_refetches_default_branch_with_token() -> None:
+    """Parent absent → default branch resolved → it must be re-fetched
+    authenticated so the base is current, not the stale clone-time ref."""
+    svc = _git_service()
+    calls: list[tuple[list[str], str | None]] = []
+
+    async def fake_run(_ws: Any, args: list[str], **kw: Any) -> Any:
+        calls.append((args, kw.get("token")))
+        return type("R", (), {"returncode": 0, "stdout": ""})()
+
+    svc._run_git = fake_run  # type: ignore[method-assign]
+    # parent ref never exists → fall back to default branch.
+    svc._ref_exists = AsyncMock(return_value=False)  # type: ignore[method-assign]
+    svc._default_branch_ref = AsyncMock(  # type: ignore[method-assign]
+        return_value="origin/master"
+    )
+
+    base = await svc._resolve_diff_base(Path("/tmp/ws"), _BR, token="tok")
+    assert base == "origin/master"
+    # The resolved default branch ('master') was fetched, authenticated.
+    assert (["fetch", "origin", "master"], "tok") in calls
+    # The parent fetch is also authenticated.
+    assert all(tok == "tok" for args, tok in calls if args[:2] == ["fetch", "origin"])
+    svc._default_branch_ref.assert_awaited_once_with(Path("/tmp/ws"), token="tok")
+
+
+@pytest.mark.asyncio
+async def test_resolve_head_ref_fetch_is_authenticated() -> None:
+    """The branch fetch in _resolve_head_ref must carry the token too."""
+    svc = _git_service()
+    seen: list[tuple[list[str], str | None]] = []
+
+    async def fake_run(_ws: Any, args: list[str], **kw: Any) -> Any:
+        seen.append((args, kw.get("token")))
+        return type("R", (), {"returncode": 0, "stdout": ""})()
+
+    svc._run_git = fake_run  # type: ignore[method-assign]
+    svc._ref_exists = AsyncMock(return_value=True)  # type: ignore[method-assign]
+    await svc._resolve_head_ref(Path("/tmp/ws"), _BR, token="tok")
+    assert (["fetch", "origin", _BR], "tok") in seen
+
+
+@pytest.mark.asyncio
+async def test_token_for_branch_is_best_effort_none() -> None:
+    """Unresolvable branch/project must yield None (degrade to unauth),
+    never raise inside the evidence-assembly path."""
+    svc = _git_service()
+    svc._task_for_branch = AsyncMock(return_value=None)  # type: ignore[method-assign]
+    assert await svc._token_for_branch(_BR) is None
