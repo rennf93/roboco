@@ -171,3 +171,82 @@ def test_allows_reading_roboco_source_with_cat() -> None:
 
 def test_allows_grep_for_roboco_symbol() -> None:
     assert _run("grep -rn 'import roboco' tests/") == _ALLOWED
+
+
+# ---------------------------------------------------------------------------
+# Task #165: git-ops check must inspect commands, not file CONTENT.
+# A file whose body documents git verbs (README, notes, a heredoc) is data
+# the shell writes — not a git invocation. It must NOT be denied. But a real
+# git command (including inside `bash -c "..."`, which IS executed) must
+# still be denied — that is the hook's entire reason to exist.
+# ---------------------------------------------------------------------------
+
+
+def test_allows_heredoc_readme_documenting_git_verbs() -> None:
+    """The exact smoke-13 wedge: restoring a README via heredoc whose body
+    explains `git commit` / `git push`. The body is data, not commands."""
+    cmd = (
+        "cat > README.md << 'EOF'\n"
+        "# Project\n"
+        "Run `git commit -m msg` to save your work.\n"
+        "Then `git push` to publish.\n"
+        "EOF"
+    )
+    assert _run(cmd) == _ALLOWED
+
+
+def test_allows_unquoted_heredoc_documenting_git() -> None:
+    cmd = (
+        "cat > docs/setup.md <<EOF\n"
+        "git clone the repo, then git checkout -b feature.\n"
+        "EOF"
+    )
+    assert _run(cmd) == _ALLOWED
+
+
+def test_allows_dash_heredoc_documenting_git() -> None:
+    """`<<-DELIM` indents the closing delimiter; body still stripped."""
+    cmd = "cat > n.md <<-EOF\n\tgit rebase main then git push --force\n\tEOF"
+    assert _run(cmd) == _ALLOWED
+
+
+def test_allows_echo_writing_git_instructions_to_file() -> None:
+    assert _run('echo "remember to git commit and git push" >> notes.md') == _ALLOWED
+
+
+def test_allows_printf_writing_git_instructions() -> None:
+    assert _run("printf 'git merge then git reset --hard\\n' > steps.txt") == _ALLOWED
+
+
+def test_allows_python_writing_file_content_mentioning_git() -> None:
+    """Non-roboco python that writes a string containing git verbs to a
+    file. Not a roboco import (so #164 is irrelevant) and not a git call."""
+    assert _run("python3 -c \"open('r.md','w').write('git push to ship')\"") == _ALLOWED
+
+
+def test_still_denies_real_git_push() -> None:
+    """Regression guard: the actual command must still be blocked."""
+    assert _run("git push origin feature/backend/ABC12345") == _DENIED
+
+
+def test_still_denies_git_in_bash_c_string() -> None:
+    """The hook's core purpose (per its header): a compound command whose
+    first token is `cd` but which executes `git fetch`. The quoted string
+    is EXECUTED — not a heredoc/echo body — so it must NOT be skeletonized
+    away."""
+    assert _run('bash -c "cd /workspace && git fetch origin"') == _DENIED
+
+
+def test_still_denies_git_commit_after_cd() -> None:
+    assert _run("cd /workspace && git commit -m 'x'") == _DENIED
+
+
+def test_still_denies_git_after_echo_separator() -> None:
+    """echo's args are stripped, but the `&&` boundary is preserved so the
+    real `git push` after it is still seen."""
+    assert _run('echo "starting" && git push') == _DENIED
+
+
+def test_still_denies_printf_piped_into_git_apply_path() -> None:
+    """printf body stripped, but `| git checkout` survives the separator."""
+    assert _run("printf 'patch' | git checkout -- .") == _DENIED
