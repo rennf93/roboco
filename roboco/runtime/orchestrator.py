@@ -714,8 +714,8 @@ class AgentOrchestrator:
         configs: dict[str, dict[str, list[str]]] = {
             "developer": {
                 "allow": [
-                    f"Write({workspace_path}/**)",
-                    f"Edit({workspace_path}/**)",
+                    f"Write(/{workspace_path}/**)",
+                    f"Edit(/{workspace_path}/**)",
                 ],
                 "deny": [],
             },
@@ -729,14 +729,14 @@ class AgentOrchestrator:
             },
             "documenter": {
                 "allow": [
-                    f"Write({cell_workspace_path}/**)",
-                    f"Edit({cell_workspace_path}/**)",
-                    "Write(/app/docs/**)",
-                    "Edit(/app/docs/**)",
-                    "Write(/app/CHANGELOG.md)",
-                    "Edit(/app/CHANGELOG.md)",
-                    "Write(/app/README.md)",
-                    "Edit(/app/README.md)",
+                    f"Write(/{cell_workspace_path}/**)",
+                    f"Edit(/{cell_workspace_path}/**)",
+                    "Write(//app/docs/**)",
+                    "Edit(//app/docs/**)",
+                    "Write(//app/CHANGELOG.md)",
+                    "Edit(//app/CHANGELOG.md)",
+                    "Write(//app/README.md)",
+                    "Edit(//app/README.md)",
                 ],
                 "deny": [],
             },
@@ -769,15 +769,15 @@ class AgentOrchestrator:
             },
             "product_owner": {
                 "allow": [
-                    f"Write({workspace_path}/**)",
-                    f"Edit({workspace_path}/**)",
+                    f"Write(/{workspace_path}/**)",
+                    f"Edit(/{workspace_path}/**)",
                 ],
                 "deny": [],
             },
             "head_marketing": {
                 "allow": [
-                    f"Write({workspace_path}/**)",
-                    f"Edit({workspace_path}/**)",
+                    f"Write(/{workspace_path}/**)",
+                    f"Edit(/{workspace_path}/**)",
                 ],
                 "deny": [],
             },
@@ -845,9 +845,16 @@ class AgentOrchestrator:
         base_deny = [
             # Block ALL native git commands - must use roboco_git_* tools
             "Bash(git:*)",
-            # Block file ops outside workspace (role-specific allows override)
-            "Write(*)",
-            "Edit(*)",
+            # NOTE: Write/Edit are intentionally NOT globally denied here.
+            # Claude Code evaluates rules deny -> ask -> allow and the first
+            # match wins, so a deny ALWAYS beats a more-specific allow (the
+            # glob syntax has no negation). A global Write(*)/Edit(*) here
+            # therefore unconditionally shadowed the per-role,
+            # workspace-scoped Write/Edit allows below — every agent (devs
+            # included) was unable to edit ANY file and fell back to
+            # destructive bash redirection (clobbering real files). Roles
+            # that must NOT write (qa, cell_pm, main_pm, auditor) carry
+            # their own Write(*)/Edit(*) deny in _get_role_permissions.
             # Block reads of credential stores, anywhere on the FS
             "Read(**/.git/config)",
             "Read(**/.gitconfig)",

@@ -145,14 +145,28 @@ _EDIT_ALLOWLIST_RE = re.compile(r"^Edit\((.+)/\*\*\)$")
 
 
 def _extract_edit_allowlist_prefix(permissions: dict[str, list[str]]) -> str:
-    """Extract the workspace path prefix from an Edit(path/**) allowlist entry.
+    """Extract the workspace fs-path prefix from an Edit(path/**) rule.
+
+    The rule MUST use the ``//`` absolute-filesystem form: Claude Code
+    resolves a single leading ``/`` against the settings.json project
+    root, not the container filesystem root, so a single-slash workspace
+    allow silently never matches and Edit/Write are effectively denied
+    (the smoke-10..14 "Edit not enabled in this context" failure). This
+    asserts the ``//`` invariant and returns the real fs path (one
+    leading slash) so it can be cross-checked against the docker ``-w``.
 
     Raises AssertionError if no matching entry is found.
     """
     for entry in permissions.get("allow", []):
         m = _EDIT_ALLOWLIST_RE.match(entry)
         if m:
-            return m.group(1)
+            rule_path = m.group(1)
+            assert rule_path.startswith("//"), (
+                "Edit/Write allow rule must use the // absolute-filesystem "
+                "form; a single leading / resolves against the settings.json "
+                f"project root and silently never matches: {entry}"
+            )
+            return rule_path[1:]
     raise AssertionError(
         f"No Edit(<path>/**) entry found in allow list: {permissions['allow']}"
     )
