@@ -40,7 +40,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     curl ca-certificates git gnupg jq \
     && curl -fsSL https://deb.nodesource.com/setup_22.x | bash - \
     && apt-get install -y --no-install-recommends nodejs \
-    && npm install -g @anthropic-ai/claude-code@2.1.114 \
+    && npm install -g @anthropic-ai/claude-code \
     && npm cache clean --force \
     && apt-get purge -y --auto-remove gnupg \
     && rm -rf /var/lib/apt/lists/* /root/.npm /tmp/*
