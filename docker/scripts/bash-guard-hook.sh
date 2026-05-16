@@ -36,8 +36,53 @@ except Exception:
 
 low=$(printf '%s' "$cmd" | tr "[:upper:]" "[:lower:]")
 
+# Skeletonize the command for the git-ops check ONLY (#165): strip heredoc
+# bodies and echo/printf literal arguments. Those are data the shell writes
+# to a file, never commands the shell executes — so a README/heredoc that
+# merely documents `git commit` must not be mistaken for invoking git.
+# Quoted args to a shell interpreter (`bash -c "... && git fetch"`) ARE
+# executed, are not echo/printf/heredoc bodies, and so survive untouched.
+# Every other rule below still inspects the full command ($low).
+git_skel=$(printf '%s' "$cmd" | python3 -c '
+import sys, re
+src = sys.stdin.read()
+lines = src.split("\n")
+opener = re.compile(r"<<-?\s*[^\sA-Za-z_]*([A-Za-z_]\w*)")
+kept = []
+i = 0
+n = len(lines)
+while i < n:
+    line = lines[i]
+    kept.append(line)
+    m = opener.search(line)
+    if m:
+        delim = m.group(1)
+        dash = "<<-" in line
+        i += 1
+        while i < n:
+            body = lines[i]
+            cand = body.strip() if dash else body
+            if cand == delim:
+                kept.append(body)
+                break
+            i += 1
+    i += 1
+skel = "\n".join(kept)
+skel = re.sub(r"(^|[\n;&|]|&&|\|\|)\s*(echo|printf)\b[^\n;&|]*", r"\1", skel)
+sys.stdout.write("__SKEL_OK__" + skel)
+' 2>/dev/null)
+# A successful run is prefixed with the sentinel even when the skeleton is
+# legitimately empty (whole command was echo/heredoc). No sentinel means
+# python failed — fail closed by inspecting the full command.
+if [[ "$git_skel" == __SKEL_OK__* ]]; then
+    git_skel="${git_skel#__SKEL_OK__}"
+else
+    git_skel="$cmd"
+fi
+git_skel_low=$(printf '%s' "$git_skel" | tr "[:upper:]" "[:lower:]")
+
 # --- git network / auth ops ---------------------------------------------------
-if echo "$low" | grep -qE '(^|[[:space:];&|])git[[:space:]]+(fetch|pull|push|clone|remote|ls-remote|checkout|commit|merge|rebase|reset|cherry-pick|revert|tag[[:space:]]+-d|update-ref|reflog[[:space:]]+delete)'; then
+if echo "$git_skel_low" | grep -qE '(^|[[:space:];&|])git[[:space:]]+(fetch|pull|push|clone|remote|ls-remote|checkout|commit|merge|rebase|reset|cherry-pick|revert|tag[[:space:]]+-d|update-ref|reflog[[:space:]]+delete)'; then
     echo "Denied: shell git for network / auth / branch-mutating ops is blocked." >&2
     echo "Use the verb listed in your role's State→Verb table (e.g. commit, complete, i_am_done)." >&2
     exit 2
