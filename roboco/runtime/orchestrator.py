@@ -3270,6 +3270,37 @@ Start by:
                 error=str(e),
             )
 
+    async def _auto_resume_paused_parent(
+        self, client: httpx.AsyncClient, task_id: str
+    ) -> None:
+        """Resume a paused parent right before its PM is respawned for closure.
+
+        #170: a PM auto-pauses its owned parent on i_am_idle (by design,
+        so the closure dispatcher knows to respawn it). Pre-gateway the
+        parent was resumed at respawn so the PM landed actionable; the
+        gateway refactor dropped that, so the respawned PM had to issue
+        ``resume()`` itself — which weak models (minimax) reliably fail,
+        wedging the whole chain (smoke-15). Restore the auto-resume:
+        paused -> in_progress before spawn so the PM can directly
+        submit_up / complete / escalate. Best-effort; a resume failure
+        must not block the spawn (the PM can still resume manually).
+        """
+        try:
+            await client.patch(
+                f"{self._api_url}/tasks/{task_id}",
+                json={"status": "in_progress"},
+            )
+            logger.info(
+                "Auto-resumed paused parent for PM closure respawn",
+                task_id=task_id,
+            )
+        except Exception as e:
+            logger.error(
+                "Failed to auto-resume paused parent",
+                task_id=task_id,
+                error=str(e),
+            )
+
     def _select_agent_for_cell(self, cell: str, role: str) -> str | None:
         """
         Select the best available agent for a cell and role.
@@ -4269,6 +4300,14 @@ Start now: evidence(task_id="{task_id}")
             descendants_count=len(descendants),
             pm_id=pm_id,
         )
+
+        # #170: the parent auto-paused when its PM idled (by design). Resume
+        # it before respawn so the PM lands actionable (in_progress) and can
+        # directly submit_up / complete / escalate — pre-gateway behaviour the
+        # gateway refactor dropped, which wedged smoke-15 (minimax never
+        # issued resume() itself).
+        if task.get("status") == "paused":
+            await self._auto_resume_paused_parent(client, task_id)
 
         prompt = self._build_pm_closure_prompt(task, descendants)
         await self.spawn_agent(
