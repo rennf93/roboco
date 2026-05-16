@@ -118,11 +118,26 @@ async def test_i_will_plan_claims_starts_and_sets_plan() -> None:
         rich_plan={
             "approach": (
                 "Three-cell decomposition: backend, frontend, and ux each "
-                "own a vertical slice of the work."
+                "own a vertical slice of the work. Backend lands first, QA "
+                "reviews each PR after it opens, documentation follows, then "
+                "complete and submit up. Strict sequencing with no cross-cell "
+                "dependencies beyond the stated ordering."
             ),
             "sub_tasks": [
-                {"title": "Backend slice", "description": "API + DB"},
-                {"title": "Frontend slice", "description": "UI integration"},
+                {
+                    "title": "Backend slice",
+                    "description": (
+                        "be-dev-1 implements the API + DB migration with "
+                        "tests and opens the leaf PR for QA review."
+                    ),
+                },
+                {
+                    "title": "Frontend slice",
+                    "description": (
+                        "fe-dev-1 wires the UI integration with loading and "
+                        "error states and opens the leaf PR for QA."
+                    ),
+                },
             ],
         },
     )
@@ -189,11 +204,26 @@ async def test_i_will_plan_blocks_when_journal_decision_at_claim_missing() -> No
         rich_plan={
             "approach": (
                 "Three-cell decomposition: backend, frontend, and ux each "
-                "own a vertical slice of the work."
+                "own a vertical slice of the work. Backend lands first, QA "
+                "reviews each PR after it opens, documentation follows, then "
+                "complete and submit up. Strict sequencing with no cross-cell "
+                "dependencies beyond the stated ordering."
             ),
             "sub_tasks": [
-                {"title": "Backend slice", "description": "API + DB"},
-                {"title": "Frontend slice", "description": "UI integration"},
+                {
+                    "title": "Backend slice",
+                    "description": (
+                        "be-dev-1 implements the API + DB migration with "
+                        "tests and opens the leaf PR for QA review."
+                    ),
+                },
+                {
+                    "title": "Frontend slice",
+                    "description": (
+                        "fe-dev-1 wires the UI integration with loading and "
+                        "error states and opens the leaf PR for QA."
+                    ),
+                },
             ],
         },
     )
@@ -239,8 +269,22 @@ async def test_i_will_plan_rejects_non_pending_state() -> None:
         task_id,
         plan="x",
         rich_plan={
-            "approach": "Single-cell decomposition: backend handles all scope.",
-            "sub_tasks": [{"title": "Slice A", "description": "backend API work"}],
+            "approach": (
+                "Single-cell decomposition: backend handles all scope. "
+                "be-dev-1 owns the change end to end — branch, implement, "
+                "test, open PR; QA reviews after the PR opens, documentation "
+                "follows, then be-pm completes and submits up. No cross-cell "
+                "dependencies for this planning task."
+            ),
+            "sub_tasks": [
+                {
+                    "title": "Slice A",
+                    "description": (
+                        "be-dev-1 implements the backend API change with "
+                        "tests and opens the leaf PR for QA review."
+                    ),
+                }
+            ],
         },
     )
     body = env.as_dict()
@@ -300,12 +344,27 @@ async def test_i_will_plan_calls_claim_when_pre_assigned_and_pending() -> None:
         plan="distribute to be-pm and fe-pm",
         rich_plan={
             "approach": (
-                "Two-cell dispatch: be-pm owns backend vertical, "
-                "fe-pm owns frontend vertical."
+                "Two-cell dispatch: be-pm owns the backend vertical, fe-pm "
+                "owns the frontend vertical. Backend lands first, QA reviews "
+                "each PR after it opens, documentation follows, then complete "
+                "and submit up. Strict sequencing with no cross-cell "
+                "dependencies beyond the stated ordering."
             ),
             "sub_tasks": [
-                {"title": "Backend cell", "description": "Assign to be-pm"},
-                {"title": "Frontend cell", "description": "Assign to fe-pm"},
+                {
+                    "title": "Backend cell",
+                    "description": (
+                        "be-pm decomposes and delegates the backend vertical "
+                        "to be-dev-1, who implements and opens the leaf PR."
+                    ),
+                },
+                {
+                    "title": "Frontend cell",
+                    "description": (
+                        "fe-pm decomposes and delegates the frontend vertical "
+                        "to fe-dev-1, who implements and opens the leaf PR."
+                    ),
+                },
             ],
         },
     )
@@ -363,8 +422,22 @@ async def test_i_will_plan_surfaces_start_failure_instead_of_faking_ok() -> None
         task_id,
         plan="x",
         rich_plan={
-            "approach": "Single-cell decomposition: backend handles all scope.",
-            "sub_tasks": [{"title": "Slice A", "description": "backend API work"}],
+            "approach": (
+                "Single-cell decomposition: backend handles all scope. "
+                "be-dev-1 owns the change end to end — branch, implement, "
+                "test, open PR; QA reviews after the PR opens, documentation "
+                "follows, then be-pm completes and submits up. No cross-cell "
+                "dependencies for this planning task."
+            ),
+            "sub_tasks": [
+                {
+                    "title": "Slice A",
+                    "description": (
+                        "be-dev-1 implements the backend API change with "
+                        "tests and opens the leaf PR for QA review."
+                    ),
+                }
+            ],
         },
     )
     body = env.as_dict()
@@ -508,8 +581,22 @@ async def test_i_will_plan_still_rejects_in_progress_for_other_agent() -> None:
         task_id,
         plan="x",
         rich_plan={
-            "approach": "Single-cell decomposition: backend handles all scope.",
-            "sub_tasks": [{"title": "Slice A", "description": "backend API work"}],
+            "approach": (
+                "Single-cell decomposition: backend handles all scope. "
+                "be-dev-1 owns the change end to end — branch, implement, "
+                "test, open PR; QA reviews after the PR opens, documentation "
+                "follows, then be-pm completes and submits up. No cross-cell "
+                "dependencies for this planning task."
+            ),
+            "sub_tasks": [
+                {
+                    "title": "Slice A",
+                    "description": (
+                        "be-dev-1 implements the backend API change with "
+                        "tests and opens the leaf PR for QA review."
+                    ),
+                }
+            ],
         },
     )
     body = env.as_dict()
@@ -534,8 +621,22 @@ async def test_i_will_plan_returns_tracing_gap_without_plan() -> None:
         task_id,
         plan="",
         rich_plan={
-            "approach": "Single-cell decomposition: backend handles all scope.",
-            "sub_tasks": [{"title": "Slice A", "description": "backend API work"}],
+            "approach": (
+                "Single-cell decomposition: backend handles all scope. "
+                "be-dev-1 owns the change end to end — branch, implement, "
+                "test, open PR; QA reviews after the PR opens, documentation "
+                "follows, then be-pm completes and submits up. No cross-cell "
+                "dependencies for this planning task."
+            ),
+            "sub_tasks": [
+                {
+                    "title": "Slice A",
+                    "description": (
+                        "be-dev-1 implements the backend API change with "
+                        "tests and opens the leaf PR for QA review."
+                    ),
+                }
+            ],
         },
     )
     body = env.as_dict()

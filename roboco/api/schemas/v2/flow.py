@@ -129,7 +129,10 @@ class IWillPlanRequest(BaseModel):
     # could not transition claimed → in_progress without filling this in the
     # pre-gateway flow. The Plan tab depends on it; smoke run 3 confirmed
     # the empty default lets agents through with thin plans.
-    approach: str = Field(..., min_length=20)
+    # min_length must match choreographer._impl._PM_APPROACH_MIN_LEN. Raised
+    # 20→150 (smoke-15): a 20-char approach was a one-liner; the approach +
+    # sub_tasks are also the progress checklist, so they must be substantive.
+    approach: str = Field(..., min_length=150)
     sub_tasks: list[dict[str, str]] = Field(
         default_factory=list,
         description="List of {title, description} — server assigns id + order",

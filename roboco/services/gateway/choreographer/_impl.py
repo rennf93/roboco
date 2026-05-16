@@ -47,9 +47,40 @@ from roboco.services.gateway.remediation import (
 
 logger = structlog.get_logger()
 
-# Minimum character length enforced on rich_plan["approach"] by the PM sub-tasks
-# gate. Must match the Pydantic min_length on IWillPlanRequest.approach.
-_PM_APPROACH_MIN_LEN = 20
+# Minimum character length enforced on rich_plan["approach"] by the PM
+# sub-tasks gate. Must match the Pydantic min_length on
+# IWillPlanRequest.approach. Raised 20→150 (smoke-15): plans were vague
+# because 20 chars is a one-liner; the approach + sub_tasks are also the
+# progress checklist, so they must be substantive.
+_PM_APPROACH_MIN_LEN = 150
+
+# Each PM sub_task is a real work step (it becomes a delegate target AND a
+# progress-checklist item). A title alone is not a plan — require a
+# description that actually says what the step does.
+_PM_SUBTASK_DESC_MIN_LEN = 60
+
+
+def _thin_subtask_hint(sub_tasks: list[Any]) -> str | None:
+    """Return a hint if any PM sub_task is title-only / thin (#171).
+
+    Each sub_task is a delegate target AND a progress-checklist item, so
+    a title with no real description is not a plan. Returns None when
+    every sub_task carries a title and a substantive description.
+    """
+    for i, st in enumerate(sub_tasks):
+        if not isinstance(st, dict):
+            return f"sub_task #{i + 1} must be an object {{title, description}}."
+        title = str(st.get("title", "")).strip()
+        desc = str(st.get("description") or "").strip()
+        if not title:
+            return f"sub_task #{i + 1} has no title."
+        if len(desc) < _PM_SUBTASK_DESC_MIN_LEN:
+            return (
+                f"sub_task #{i + 1} ('{title[:40]}') description is too thin "
+                f"({len(desc)} chars) — need >= {_PM_SUBTASK_DESC_MIN_LEN} "
+                "characters describing what the step actually does."
+            )
+    return None
 
 
 def _normalize_sub_task(st: dict[str, Any], order: int) -> dict[str, Any]:
@@ -429,14 +460,18 @@ class Choreographer:
         task_id: UUID,
         briefing: dict[str, Any],
     ) -> Envelope | None:
-        """Wave A1 gate: PMs must supply approach (>= 20 chars) and sub_tasks.
+        """Wave A1 gate: PMs must supply a substantive approach + sub_tasks.
 
         Enforces both fields at the choreographer layer so direct service-layer
         callers (MCP server, test fixtures, orchestrator-internal Python) cannot
         persist a plan that bypassed the HTTP Pydantic boundary.
 
-        Returns a rejection Envelope when the caller is a PM role and either
-        field is absent/insufficient; returns None to signal the gate passed.
+        Smoke-15: a 20-char approach and title-only sub_tasks were "no
+        effort" plans. approach must be >= _PM_APPROACH_MIN_LEN and every
+        sub_task needs a real title + a description that says what the
+        step does (it is both a delegate target and a progress-checklist
+        item). Returns a rejection Envelope when the caller is a PM role
+        and any field is absent/thin; returns None when the gate passed.
         """
         if role_str not in ("cell_pm", "main_pm"):
             return None
@@ -446,16 +481,21 @@ class Choreographer:
         if len(str(approach_raw).strip()) < _PM_APPROACH_MIN_LEN:
             missing.append("approach")
             field_hints["approach"] = (
-                "approach must be a non-empty string of at least 20 characters "
-                "describing how the PM will decompose and route this task."
+                f"approach must be a non-empty string of at least "
+                f"{_PM_APPROACH_MIN_LEN} characters describing HOW you will "
+                "decompose and route this task — not a one-liner."
             )
-        if not (rich_plan and rich_plan.get("sub_tasks")):
+        sub_tasks = (rich_plan or {}).get("sub_tasks") or []
+        if not sub_tasks:
             missing.append("sub_tasks")
             field_hints["sub_tasks"] = (
-                "PMs must list at least one sub_task — a "
-                "non-empty list of {title, description}. "
-                "Each becomes a delegate target after i_will_plan."
+                "PMs must list at least one sub_task — a non-empty list of "
+                "{title, description}. Each becomes a delegate target AND a "
+                "progress-checklist item."
             )
+        elif thin := _thin_subtask_hint(sub_tasks):
+            missing.append("sub_tasks")
+            field_hints["sub_tasks"] = thin
         if not missing:
             return None
         return await self._emit_rejection(
@@ -465,7 +505,8 @@ class Choreographer:
                 remediate=(
                     "re-issue i_will_plan(task_id, plan, approach, "
                     "sub_tasks=[{'title': '...', 'description': '...'}, ...]) "
-                    "with approach >= 20 chars and a non-empty sub_tasks list."
+                    f"with approach >= {_PM_APPROACH_MIN_LEN} chars and every "
+                    f"sub_task description >= {_PM_SUBTASK_DESC_MIN_LEN} chars."
                 ),
                 context_briefing=briefing,
             ).with_introspection(task=task, role=role_str),

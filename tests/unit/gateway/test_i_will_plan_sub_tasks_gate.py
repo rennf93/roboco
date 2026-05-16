@@ -20,7 +20,18 @@ from uuid import uuid4
 import pytest
 from roboco.services.gateway.choreographer import Choreographer, ChoreographerDeps
 
-_MIN_APPROACH_LEN = 20
+_MIN_APPROACH_LEN = 150  # #171: raised 20→150 (must match _PM_APPROACH_MIN_LEN)
+_GOOD_APPROACH = (
+    "Three-cell decomposition for the smoke test: backend owns the README "
+    "edit + PR, QA reviews after the PR opens, documentation follows, then "
+    "be-pm completes and submits up. Sequenced strictly; no cross-cell deps. "
+    "Frontend and UX cells are explicitly out of scope for this task."
+)
+_GOOD_SUBTASK_DESC = (
+    "be-dev-1 branches, prepends the smoke-test HTML comment above the "
+    "README H1 leaving the rest untouched, commits with the task-id prefix, "
+    "and opens the leaf PR for QA."
+)
 
 
 # ---------------------------------------------------------------------------
@@ -203,14 +214,44 @@ async def test_pm_with_filled_sub_tasks_passes_gate() -> None:
         task_id,
         plan="decompose work",
         rich_plan={
-            "approach": "Three-cell decomposition: backend, frontend, ux.",
-            "sub_tasks": [{"title": "Backend slice", "description": "API + DB"}],
+            "approach": _GOOD_APPROACH,
+            "sub_tasks": [
+                {"title": "Backend slice", "description": _GOOD_SUBTASK_DESC}
+            ],
         },
     )
     body = env.as_dict()
     # The gate must not have fired; the call may fail on other checks but not
     # with incomplete_input from the sub_tasks gate.
     assert body.get("error") != "incomplete_input", body
+
+
+@pytest.mark.asyncio
+async def test_pm_with_thin_subtask_description_gets_incomplete_input() -> None:
+    """#171: a good approach but a title-only / thin sub_task description is
+    rejected — sub_tasks must be real steps (delegate target + progress item)."""
+    pm_id = uuid4()
+    task_id = uuid4()
+    task_svc = _pm_task_svc(task_id, role="cell_pm")
+    deps = _make_deps(task=task_svc)
+    c = Choreographer(deps)
+
+    env = await c.i_will_plan(
+        pm_id,
+        task_id,
+        plan="decompose work",
+        rich_plan={
+            "approach": _GOOD_APPROACH,
+            "sub_tasks": [{"title": "Backend slice", "description": "API + DB"}],
+        },
+    )
+    body = env.as_dict()
+    assert body["error"] == "incomplete_input", body
+    assert "sub_tasks" in (body.get("missing") or []), body
+    assert (
+        "thin" in str(body.get("field_hints", {})).lower()
+        or "thin" in str(body.get("remediate", "")).lower()
+    ), body
 
 
 # ---------------------------------------------------------------------------

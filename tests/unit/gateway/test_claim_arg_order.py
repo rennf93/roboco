@@ -275,11 +275,26 @@ async def test_i_will_plan_calls_claim_and_start_with_task_id_first() -> None:
         rich_plan={
             "approach": (
                 "Three-cell decomposition: backend, frontend, and ux each "
-                "own a vertical slice of the work."
+                "own a vertical slice of the work. Backend lands first, QA "
+                "reviews each PR after it opens, documentation follows, then "
+                "complete and submit up. Strict sequencing with no cross-cell "
+                "dependencies beyond the stated ordering."
             ),
             "sub_tasks": [
-                {"title": "Backend slice", "description": "API + DB"},
-                {"title": "Frontend slice", "description": "UI integration"},
+                {
+                    "title": "Backend slice",
+                    "description": (
+                        "be-dev-1 implements the API + DB migration with "
+                        "tests and opens the leaf PR for QA review."
+                    ),
+                },
+                {
+                    "title": "Frontend slice",
+                    "description": (
+                        "fe-dev-1 wires the UI integration with loading and "
+                        "error states and opens the leaf PR for QA."
+                    ),
+                },
             ],
         },
     )

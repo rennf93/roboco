@@ -325,8 +325,22 @@ async def test_i_will_plan_pm_with_already_active_task_rejects() -> None:
         task_id,
         plan="x" * 30,
         rich_plan={
-            "approach": "Decompose planning task into backend and frontend subtasks.",
-            "sub_tasks": [{"title": "Slice A", "description": "backend API work"}],
+            "approach": (
+                "Decompose the planning task into backend and frontend "
+                "developer-claimable subtasks. Backend lands first, QA "
+                "reviews each PR after it opens, documentation follows, then "
+                "complete and submit up. Strict sequencing with no cross-cell "
+                "dependencies beyond the stated ordering."
+            ),
+            "sub_tasks": [
+                {
+                    "title": "Slice A",
+                    "description": (
+                        "be-dev-1 implements the backend API change with "
+                        "tests and opens the leaf PR for QA review."
+                    ),
+                }
+            ],
         },
     )
     body = env.as_dict()
@@ -427,8 +441,22 @@ async def test_i_will_plan_pending_claim_fails() -> None:
         task_id,
         plan="my plan that is long enough",
         rich_plan={
-            "approach": "Decompose planning task into backend and frontend subtasks.",
-            "sub_tasks": [{"title": "Slice A", "description": "backend API work"}],
+            "approach": (
+                "Decompose the planning task into backend and frontend "
+                "developer-claimable subtasks. Backend lands first, QA "
+                "reviews each PR after it opens, documentation follows, then "
+                "complete and submit up. Strict sequencing with no cross-cell "
+                "dependencies beyond the stated ordering."
+            ),
+            "sub_tasks": [
+                {
+                    "title": "Slice A",
+                    "description": (
+                        "be-dev-1 implements the backend API change with "
+                        "tests and opens the leaf PR for QA review."
+                    ),
+                }
+            ],
         },
     )
     body = env.as_dict()
@@ -1047,8 +1075,22 @@ async def test_i_will_plan_pending_claim_returns_none_emit_rejection() -> None:
         task_id,
         plan="my plan that is long enough",
         rich_plan={
-            "approach": "Decompose planning task into backend and frontend subtasks.",
-            "sub_tasks": [{"title": "Slice A", "description": "backend API work"}],
+            "approach": (
+                "Decompose the planning task into backend and frontend "
+                "developer-claimable subtasks. Backend lands first, QA "
+                "reviews each PR after it opens, documentation follows, then "
+                "complete and submit up. Strict sequencing with no cross-cell "
+                "dependencies beyond the stated ordering."
+            ),
+            "sub_tasks": [
+                {
+                    "title": "Slice A",
+                    "description": (
+                        "be-dev-1 implements the backend API change with "
+                        "tests and opens the leaf PR for QA review."
+                    ),
+                }
+            ],
         },
     )
     body = env.as_dict()

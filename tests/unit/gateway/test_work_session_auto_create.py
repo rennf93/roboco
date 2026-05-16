@@ -218,8 +218,21 @@ async def test_i_will_plan_calls_ensure_work_session() -> None:
     c = Choreographer(deps)
 
     rich_plan = {
-        "approach": "plan text with enough detail to pass the 20 char gate",
-        "sub_tasks": [{"title": "t1", "description": "desc1"}],
+        "approach": (
+            "Single-cell decomposition: be-dev-1 owns the change end to end "
+            "— branch, implement, test, open PR; QA reviews after the PR "
+            "opens, documentation follows, then be-pm completes and submits "
+            "up. No cross-cell dependencies for this planning task."
+        ),
+        "sub_tasks": [
+            {
+                "title": "t1",
+                "description": (
+                    "be-dev-1 implements the change with tests and opens the "
+                    "leaf PR for QA review."
+                ),
+            }
+        ],
     }
     env = await c.i_will_plan(
         pm_agent_id, task_id, plan="plan text", rich_plan=rich_plan
