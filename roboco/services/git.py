@@ -2183,6 +2183,29 @@ class GitService(BaseService):
             return f"origin/{parent}"
         return await self._default_branch_ref(workspace)
 
+    async def _resolve_head_ref(self, workspace: Any, branch_name: str) -> str:
+        """Ref for the branch tip that actually resolves in `workspace`.
+
+        Task #161 (facet): the local ``<branch_name>`` ref only exists in
+        the clone where the dev ran ``git checkout -b`` at claim. QA /
+        documenter / PM inspect from their OWN clones, which never had
+        that local branch — a bare ``<branch_name>`` resolves
+        ``refs/heads`` then ``refs/remotes/<name>`` but NEVER
+        ``refs/remotes/origin/<name>``, so ``git diff base...<branch>``
+        had an unresolvable head and returned an empty diff (QA saw no
+        changes on a real PR). ``open_pr`` pushes the leaf branch, so
+        ``origin/<branch>`` is the workspace-independent source of truth.
+        Fetch it, then prefer the local branch (dev's own clone) and fall
+        back to ``origin/<branch>``; last resort the bare name so the
+        diff command stays well-formed.
+        """
+        await self._run_git(workspace, ["fetch", "origin", branch_name], check=False)
+        if await self._ref_exists(workspace, branch_name):
+            return branch_name
+        if await self._ref_exists(workspace, f"origin/{branch_name}"):
+            return f"origin/{branch_name}"
+        return branch_name
+
     async def diff(
         self,
         *,
@@ -2204,12 +2227,15 @@ class GitService(BaseService):
         workspace = await self._workspace_for_branch(
             branch_name, actor_agent_id=actor_agent_id
         )
-        if base is None:
-            base_ref = await self._resolve_diff_base(workspace, branch_name)
-            diff_args = ["diff", f"{base_ref}...{branch_name}"]
-        else:
-            diff_args = ["diff", f"{base}...{branch_name}"]
-        diff_result = await self._run_git(workspace, diff_args, check=False)
+        head_ref = await self._resolve_head_ref(workspace, branch_name)
+        base_ref = (
+            base
+            if base is not None
+            else await self._resolve_diff_base(workspace, branch_name)
+        )
+        diff_result = await self._run_git(
+            workspace, ["diff", f"{base_ref}...{head_ref}"], check=False
+        )
         return diff_result.stdout
 
     async def list_changed_files(
@@ -2232,12 +2258,17 @@ class GitService(BaseService):
         workspace = await self._workspace_for_branch(
             branch_name, actor_agent_id=actor_agent_id
         )
-        if base is None:
-            base_ref = await self._resolve_diff_base(workspace, branch_name)
-            args = ["diff", "--name-only", f"{base_ref}...{branch_name}"]
-        else:
-            args = ["diff", "--name-only", f"{base}...{branch_name}"]
-        result = await self._run_git(workspace, args, check=False)
+        head_ref = await self._resolve_head_ref(workspace, branch_name)
+        base_ref = (
+            base
+            if base is not None
+            else await self._resolve_diff_base(workspace, branch_name)
+        )
+        result = await self._run_git(
+            workspace,
+            ["diff", "--name-only", f"{base_ref}...{head_ref}"],
+            check=False,
+        )
         return [line for line in result.stdout.splitlines() if line.strip()]
 
     async def commit(
