@@ -100,6 +100,22 @@ _SIMILARITY_THRESHOLD = 0.75
 _CONTENT_SUMMARY_LENGTH = 500
 
 
+def _coerce_doc_ref(d: object) -> DocRef:
+    """Build a DocRef from a stored ``Task.documents`` element.
+
+    Canonical rows are dicts (``DocRef.model_dump()``). Defensive
+    against legacy/corrupted rows (#169): a bare path string is wrapped
+    instead of exploding ``DocRef(**str)`` and 500-ing the endpoint.
+    """
+    if isinstance(d, DocRef):
+        return d
+    if isinstance(d, str):
+        return DocRef(path=d, title=Path(d).name, doc_type="doc")
+    if isinstance(d, dict):
+        return DocRef.model_validate(d)
+    raise TypeError(f"unsupported Task.documents element: {type(d).__name__}")
+
+
 # =============================================================================
 # SERVICE
 # =============================================================================
@@ -417,7 +433,7 @@ class DocsService(BaseService):
             task = result.scalar_one_or_none()
             if not task:
                 raise NotFoundError("Task", str(task_id))
-            return [DocRef(**d) for d in (task.documents or [])]
+            return [_coerce_doc_ref(d) for d in (task.documents or [])]
         else:
             # Get agent's team and list files from filesystem
             team = get_agent_team(agent_id)
@@ -526,8 +542,9 @@ class DocsService(BaseService):
             return None
 
         for doc in task.documents:
-            if doc.get("path") == path:
-                return DocRef(**doc)
+            ref = _coerce_doc_ref(doc)
+            if ref.path == path:
+                return ref
         return None
 
     async def _add_doc_to_task(self, task_id: UUID, doc_ref: DocRef) -> None:
