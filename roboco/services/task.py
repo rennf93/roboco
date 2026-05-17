@@ -1997,6 +1997,20 @@ class TaskService(BaseService):
         task = await self.get(task_id)
         if task is None or task.assigned_to != agent_id:
             return None
+        # #176: an agent assigned a `pending` task it never claimed (any
+        # persistent claim-time rejection — e.g. a gate the agent cannot
+        # satisfy) is otherwise trapped: unclaim/i_am_idle/i_am_blocked all
+        # reject from pending-assigned, so it loops until budget-reap and
+        # the task is left orphaned (pending, assigned, no progress).
+        # Releasing the assignment is a no-status-change escape (the row is
+        # already pending; no transition, so no lifecycle validation and no
+        # WorkSession to abandon — it was never claimed). The task returns
+        # to the pool for the dispatcher to reassign.
+        if task.status == TaskStatus.PENDING:
+            task.assigned_to = cast("Any", None)
+            task.active_claimant_id = cast("Any", None)
+            await self.session.flush()
+            return task
         if task.status not in (TaskStatus.CLAIMED, TaskStatus.IN_PROGRESS):
             return None
 

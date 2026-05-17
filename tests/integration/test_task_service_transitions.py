@@ -247,14 +247,36 @@ async def test_unclaim_for_agent_returns_none_when_wrong_assignee(
 
 
 @pytest.mark.asyncio
-async def test_unclaim_for_agent_returns_none_when_not_claimed(
+async def test_unclaim_for_agent_releases_pending_assignment(
     task_setup: dict, db_session: AsyncSession
 ) -> None:
+    """#176: an agent assigned a pending task it never claimed must be
+    able to unclaim it (escape the pending-assigned trap). The row stays
+    pending; only the assignment is released so the dispatcher can
+    reassign it instead of orphaning the task + looping the agent."""
     svc = task_setup["svc"]
     task = await svc.create(_req(task_setup))
     task.assigned_to = task_setup["agent_id"]
     await db_session.flush()
-    # status is PENDING, not CLAIMED/IN_PROGRESS
+    # status is PENDING, never claimed — the smoke-17 trap scenario.
+    out = await svc.unclaim_for_agent(task.id, agent_id=task_setup["agent_id"])
+    assert out is not None
+    assert out.status == TaskStatus.PENDING
+    assert out.assigned_to is None
+    assert out.active_claimant_id is None
+
+
+@pytest.mark.asyncio
+async def test_unclaim_for_agent_returns_none_when_paused(
+    task_setup: dict, db_session: AsyncSession
+) -> None:
+    """A non-pending/claimed/in_progress status (e.g. paused — which has
+    `resume`, not `unclaim`) is still not unclaimable."""
+    svc = task_setup["svc"]
+    task = await svc.create(_req(task_setup))
+    task.status = TaskStatus.PAUSED
+    task.assigned_to = task_setup["agent_id"]
+    await db_session.flush()
     assert await svc.unclaim_for_agent(task.id, agent_id=task_setup["agent_id"]) is None
 
 
