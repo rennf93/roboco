@@ -119,15 +119,37 @@ fi
 #   - scheme-less:        `curl roboco-orchestrator:8000/api`
 #   - protocol-relative:  `curl //roboco-orchestrator:8000/api`
 #   - any flag ordering:  `curl -s -X POST http://localhost:8000/x -d ...`
-# KNOWN GAPS (out of scope here):
+# Interpreter / library-driven HTTP is handled by the #175 rule below.
+# KNOWN GAP (still out of scope here):
 #   - Variable expansion: `URL=http://orchestrator/x; curl $URL` — the guard
 #     sees `curl $URL`, not the expanded URL, so this slips through. The
 #     X-Agent-Role check (task 4) is the second gate.
-#   - Interpreter one-liners: `python -c "import urllib.request; ..."` — too
-#     deeply hidden to regex. Mitigated by the manifest-bound MCP surface.
 if echo "$low" | grep -qE '(^|[[:space:];&|])(curl|wget|http|https|httpie)[[:space:]]' && \
    echo "$low" | grep -qE '((http|https)://)?/?(roboco-[a-z0-9_-]+|localhost|127\.0\.0\.1|0\.0\.0\.0)[:/]'; then
     echo "Denied: internal API calls bypass the gateway. Use the MCP verbs (roboco-flow / roboco-do / roboco-git-readonly / roboco-optimal / roboco-docs) — they route through the orchestrator with the right auth and tracing." >&2
+    exit 2
+fi
+
+# --- interpreter/library HTTP to an internal host (task #175) -----------------
+# The curl/wget rule above only fires when the FIRST token is an HTTP CLI.
+# smoke-17 showed an agent reach the orchestrator with forged X-Agent-*
+# identity headers via:
+#   python3 << 'EOF'
+#   import httpx
+#   httpx.post("http://roboco-orchestrator:8000/api/v2/flow/developer/i_will_work_on",
+#              headers={"X-Agent-ID": "<self>", "X-Agent-Role": "developer"})
+#   EOF
+# The binary is python3 (slips the CLI check) and it imports httpx, not
+# roboco.* (slips the #164 import check). Close it language-agnostically:
+# deny when the command pairs an HTTP-client token with a forbidden
+# internal host. The whole command (heredoc body included) is in $low,
+# consistent with the curl/wget sibling above. Legitimate shell work does
+# not both name an internal host AND drive an HTTP client; external HTTP
+# (pypi, docs.python.org, github — github also hits its own rule earlier)
+# has no internal host so it still passes.
+if echo "$low" | grep -qE '(httpx|requests|urllib|aiohttp|http\.client|httplib|http\.request|net/http|net::http|httparty|faraday|lwp|libwww|httpurlconnection|okhttp|node-fetch|axios|xmlhttprequest|websocket|fetch[[:space:]]*\()' && \
+   echo "$low" | grep -qE '((http|https|ws|wss)://)?/?(roboco-[a-z0-9_-]+|localhost|127\.0\.0\.1|0\.0\.0\.0)[:/]'; then
+    echo "Denied: reaching an internal host via an HTTP client (httpx / requests / urllib / aiohttp / fetch / Net::HTTP / ...) bypasses the gateway, role manifest, tracing and auth — and lets you forge X-Agent-* identity headers. Use your role's MCP verbs (roboco-flow / roboco-do / roboco-git-readonly / roboco-optimal / roboco-docs); they are the only sanctioned path to the orchestrator." >&2
     exit 2
 fi
 

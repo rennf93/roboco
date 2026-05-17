@@ -250,3 +250,93 @@ def test_still_denies_git_after_echo_separator() -> None:
 def test_still_denies_printf_piped_into_git_apply_path() -> None:
     """printf body stripped, but `| git checkout` survives the separator."""
     assert _run("printf 'patch' | git checkout -- .") == _DENIED
+
+
+# ---------------------------------------------------------------------------
+# Task #175: interpreter/library-driven HTTP to an internal host. The
+# curl/wget rule only fires when the first token is an HTTP CLI; smoke-17
+# reached the orchestrator with forged X-Agent-* headers via a python3
+# heredoc using httpx. Close it language-agnostically.
+# ---------------------------------------------------------------------------
+
+
+def test_blocks_smoke17_python_httpx_heredoc_to_orchestrator() -> None:
+    """The exact smoke-17 bypass: python3 heredoc, httpx.post to the
+    orchestrator with hand-forged identity headers."""
+    cmd = (
+        "python3 << 'PYEOF'\n"
+        "import httpx\n"
+        'httpx.post("http://roboco-orchestrator:8000/api/v2/flow/'
+        'developer/i_will_work_on",\n'
+        '           headers={"X-Agent-ID": "00000000-0000-0000-0001-'
+        '000000000001", "X-Agent-Role": "developer"})\n'
+        "PYEOF"
+    )
+    assert _run(cmd) == _DENIED
+
+
+def test_blocks_python_requests_to_localhost() -> None:
+    assert (
+        _run("python3 -c \"import requests; requests.get('http://localhost:8000/x')\"")
+        == _DENIED
+    )
+
+
+def test_blocks_python_urllib_to_orchestrator() -> None:
+    assert (
+        _run(
+            'python3 -c "import urllib.request; '
+            "urllib.request.urlopen('http://roboco-orchestrator:8000/api')\""
+        )
+        == _DENIED
+    )
+
+
+def test_blocks_node_fetch_to_internal_host() -> None:
+    assert (
+        _run("node -e \"fetch('http://roboco-orchestrator:8000/api/v2/do/note')\"")
+        == _DENIED
+    )
+
+
+def test_blocks_ruby_nethttp_to_127() -> None:
+    assert (
+        _run(
+            "ruby -e \"require 'net/http'; Net::HTTP.get(URI('http://127.0.0.1:8000/x'))\""
+        )
+        == _DENIED
+    )
+
+
+def test_blocks_aiohttp_to_orchestrator() -> None:
+    cmd = (
+        "uv run python3 << 'EOF'\n"
+        "import aiohttp, asyncio\n"
+        "async def m():\n"
+        "    async with aiohttp.ClientSession() as s:\n"
+        '        await s.post("http://roboco-orchestrator:8000/api/v2/flow/'
+        'developer/i_am_done")\n'
+        "asyncio.run(m())\n"
+        "EOF"
+    )
+    assert _run(cmd) == _DENIED
+
+
+def test_allows_python_requests_to_external_host() -> None:
+    """External HTTP (pypi/docs) has no internal host — must still pass."""
+    assert (
+        _run("python3 -c \"import requests; requests.get('https://pypi.org/simple/')\"")
+        == _ALLOWED
+    )
+
+
+def test_allows_python_httpx_import_without_internal_host() -> None:
+    """Importing/using an HTTP client with no internal host is fine —
+    don't over-block normal dependency usage."""
+    assert _run('python3 -c "import httpx; print(httpx.__version__)"') == _ALLOWED
+
+
+def test_allows_pytest_even_if_suite_uses_requests() -> None:
+    """The command string is just the runner — no http-client token and
+    no internal host literal — so it must pass."""
+    assert _run("uv run python -m pytest tests/unit/ -q") == _ALLOWED
