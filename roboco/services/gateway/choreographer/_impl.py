@@ -2222,7 +2222,10 @@ class Choreographer:
             return await self._emit_rejection(
                 Envelope.invalid_state(
                     message=f"cannot unclaim from status {t.status}",
-                    remediate="only claimed/in_progress tasks can be unclaimed",
+                    remediate=(
+                        "only a task assigned to you in pending / claimed / "
+                        "in_progress can be unclaimed"
+                    ),
                     context_briefing=briefing,
                 ).with_introspection(task=t, role=role_str),
                 agent_id=agent_id,
