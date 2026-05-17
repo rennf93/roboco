@@ -140,7 +140,11 @@ def test_i_will_work_on_passes_plan(flow_module: types.ModuleType) -> None:
         flow_module.i_will_work_on("task-uuid", plan="my plan")
 
     args, kwargs = fake_client.post.call_args
-    assert kwargs["json"] == {"task_id": "task-uuid", "plan": "my plan"}
+    assert kwargs["json"] == {
+        "task_id": "task-uuid",
+        "plan": "my plan",
+        "steps": [],
+    }
     assert "/api/v2/flow/developer/i_will_work_on" in args[0]
 
 
@@ -151,7 +155,28 @@ def test_i_will_work_on_plan_defaults_to_none(flow_module: types.ModuleType) -> 
         flow_module.i_will_work_on("task-uuid")
 
     _, kwargs = fake_client.post.call_args
-    assert kwargs["json"] == {"task_id": "task-uuid", "plan": None}
+    assert kwargs["json"] == {"task_id": "task-uuid", "plan": None, "steps": []}
+
+
+def test_i_will_work_on_passes_steps(flow_module: types.ModuleType) -> None:
+    """#172: the MCP tool must forward the steps checklist; the
+    server-side _dev_steps_gate rejects a fresh claim without it, so a
+    tool that drops steps wedges every code task."""
+    fake_client = _make_fake_client({"status": "in_progress"})
+    steps = [
+        {"title": "Checkout", "description": "create branch and read README"},
+        {"title": "Edit", "description": "append the timestamp comment"},
+    ]
+
+    with patch("httpx.Client", return_value=fake_client):
+        flow_module.i_will_work_on("task-uuid", plan="p", steps=steps)
+
+    _, kwargs = fake_client.post.call_args
+    assert kwargs["json"] == {
+        "task_id": "task-uuid",
+        "plan": "p",
+        "steps": steps,
+    }
 
 
 def test_i_am_done_sends_task_id_and_notes(flow_module: types.ModuleType) -> None:

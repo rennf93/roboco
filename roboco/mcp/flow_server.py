@@ -210,9 +210,28 @@ def give_me_work() -> dict[str, Any]:
     return _post(_role_path("give_me_work"), {})
 
 
-def i_will_work_on(task_id: str, plan: str | None = None) -> dict[str, Any]:
-    """Claim/start/recover a task. Works for pending, claimed, needs_revision."""
-    return _post(_role_path("i_will_work_on"), {"task_id": task_id, "plan": plan})
+def i_will_work_on(
+    task_id: str,
+    plan: str | None = None,
+    steps: list[dict[str, str]] | None = None,
+) -> dict[str, Any]:
+    """Claim/start/recover a task. Works for pending, claimed, needs_revision.
+
+    Args:
+        task_id: UUID of the task you are claiming.
+        plan: One-paragraph narrative of how you'll execute the task.
+        steps: Ordered execution checklist — list of
+            ``{"title": "...", "description": "..."}``. Required on a
+            FRESH claim: the gateway's ``_dev_steps_gate`` rejects an
+            empty or thin list, and the same list is reused as the
+            progress checklist (#173 — completing a step advances %).
+            Re-entry / recovery claims (already-claimed or
+            needs_revision) do not need steps re-supplied.
+    """
+    return _post(
+        _role_path("i_will_work_on"),
+        {"task_id": task_id, "plan": plan, "steps": steps or []},
+    )
 
 
 def open_pr(task_id: str) -> dict[str, Any]:
