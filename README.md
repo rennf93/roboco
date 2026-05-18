@@ -204,3 +204,5 @@ uv run mypy roboco/
 ## License
 
 MIT
+
+<!-- timestamp: 2026-05-18 -->
