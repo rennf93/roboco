@@ -3301,6 +3301,41 @@ Start by:
                 error=str(e),
             )
 
+    async def _auto_recover_blocked_parent(
+        self, client: httpx.AsyncClient, task_id: str
+    ) -> None:
+        """Recover a blocked parent right before its PM is respawned for closure.
+
+        #177: symmetric to ``_auto_resume_paused_parent`` (#170). The
+        closure dispatcher only reaches this point once every descendant
+        is terminal, so a parent still ``blocked`` here is an errant /
+        stale block (e.g. a child's i_am_blocked propagated, or a PM
+        blocked it and never unblocked) — the real dependency is already
+        done. #170 auto-resumed only ``paused`` parents, so a ``blocked``
+        one wedged the whole chain forever: the respawned PM cannot
+        submit_up / complete a blocked parent and must first ``unblock``
+        it (needs journal:decision), which weak models never reliably do
+        (smoke-19/this run wedged exactly here). ``blocked -> in_progress``
+        is lifecycle-valid — it is precisely what ``unblock(restore=True)``
+        performs. Best-effort; a failure must not block the spawn (the PM
+        can still ``unblock`` manually).
+        """
+        try:
+            await client.patch(
+                f"{self._api_url}/tasks/{task_id}",
+                json={"status": "in_progress"},
+            )
+            logger.info(
+                "Auto-recovered blocked parent for PM closure respawn",
+                task_id=task_id,
+            )
+        except Exception as e:
+            logger.error(
+                "Failed to auto-recover blocked parent",
+                task_id=task_id,
+                error=str(e),
+            )
+
     def _select_agent_for_cell(self, cell: str, role: str) -> str | None:
         """
         Select the best available agent for a cell and role.
@@ -4306,8 +4341,14 @@ Start now: evidence(task_id="{task_id}")
         # directly submit_up / complete / escalate — pre-gateway behaviour the
         # gateway refactor dropped, which wedged smoke-15 (minimax never
         # issued resume() itself).
-        if task.get("status") == "paused":
+        # #177: a parent that is `blocked` at closure (all descendants
+        # terminal) is an errant/stale block — recover it symmetrically so
+        # the chain can't wedge forever waiting for a PM to manually unblock.
+        parent_status = task.get("status")
+        if parent_status == "paused":
             await self._auto_resume_paused_parent(client, task_id)
+        elif parent_status == "blocked":
+            await self._auto_recover_blocked_parent(client, task_id)
 
         prompt = self._build_pm_closure_prompt(task, descendants)
         await self.spawn_agent(

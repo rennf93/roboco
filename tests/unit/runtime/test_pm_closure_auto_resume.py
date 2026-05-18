@@ -7,6 +7,13 @@ gateway refactor dropped that, so the respawned PM had to issue
 `resume()` itself — which minimax reliably failed, wedging smoke-15.
 _maybe_spawn_pm_closure must resume a `paused` parent (and only a
 paused one) immediately before spawning its PM.
+
+#177: symmetric handling for a `blocked` parent. At closure all
+descendants are terminal, so a still-`blocked` parent is an errant/
+stale block — it must be recovered to in_progress too, else the chain
+wedges forever waiting for a PM to manually unblock (this run wedged
+exactly there). `paused` and `blocked` are mutually exclusive — each
+triggers only its own recovery helper.
 """
 
 from __future__ import annotations
@@ -39,6 +46,7 @@ def _ready_orch() -> AgentOrchestrator:
     orch._task_git_context = MagicMock(return_value=None)  # type: ignore[method-assign]
     orch.spawn_agent = AsyncMock()  # type: ignore[method-assign]
     orch._auto_resume_paused_parent = AsyncMock()  # type: ignore[method-assign]
+    orch._auto_recover_blocked_parent = AsyncMock()  # type: ignore[method-assign]
     return orch
 
 
@@ -51,12 +59,28 @@ async def test_paused_parent_is_resumed_before_spawn() -> None:
     await orch._maybe_spawn_pm_closure(client, task)
 
     orch._auto_resume_paused_parent.assert_awaited_once_with(client, "parent-1")
+    orch._auto_recover_blocked_parent.assert_not_awaited()
+    orch.spawn_agent.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_blocked_parent_is_recovered_before_spawn() -> None:
+    """#177: a blocked parent at closure is recovered (not the paused path)."""
+    orch = _ready_orch()
+    client = AsyncMock()
+    task = {"id": "parent-2", "status": "blocked", "team": "backend"}
+
+    await orch._maybe_spawn_pm_closure(client, task)
+
+    orch._auto_recover_blocked_parent.assert_awaited_once_with(client, "parent-2")
+    orch._auto_resume_paused_parent.assert_not_awaited()
     orch.spawn_agent.assert_awaited_once()
 
 
 @pytest.mark.asyncio
 async def test_non_paused_parent_is_not_resumed() -> None:
-    """awaiting_pm_review / in_progress parents must NOT be touched."""
+    """awaiting_pm_review / in_progress parents must NOT be touched by
+    either recovery path."""
     for st in ("awaiting_pm_review", "in_progress"):
         orch = _ready_orch()
         client = AsyncMock()
@@ -65,6 +89,7 @@ async def test_non_paused_parent_is_not_resumed() -> None:
         await orch._maybe_spawn_pm_closure(client, task)
 
         orch._auto_resume_paused_parent.assert_not_awaited()
+        orch._auto_recover_blocked_parent.assert_not_awaited()
         orch.spawn_agent.assert_awaited_once()
 
 
@@ -105,3 +130,29 @@ async def test_auto_resume_swallows_errors() -> None:
 
     # Must not raise.
     await orch._auto_resume_paused_parent(client, "p")
+
+
+@pytest.mark.asyncio
+async def test_auto_recover_blocked_patches_status_in_progress() -> None:
+    """#177: blocked -> in_progress (same transition unblock(restore=True)
+    performs)."""
+    orch = _orch()
+    client = AsyncMock()
+
+    await orch._auto_recover_blocked_parent(client, "parent-7")
+
+    client.patch.assert_awaited_once()
+    call = client.patch.await_args
+    assert call.args[0].endswith("/tasks/parent-7")
+    assert call.kwargs["json"] == {"status": "in_progress"}
+
+
+@pytest.mark.asyncio
+async def test_auto_recover_blocked_swallows_errors() -> None:
+    """A recovery failure must not block the spawn (best-effort)."""
+    orch = _orch()
+    client = AsyncMock()
+    client.patch = AsyncMock(side_effect=RuntimeError("api down"))
+
+    # Must not raise.
+    await orch._auto_recover_blocked_parent(client, "p")
