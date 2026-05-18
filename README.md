@@ -204,3 +204,5 @@ uv run mypy roboco/
 ## License
 
 MIT
+
+<!-- git workflow smoke test: 2026-05-18 -->
