@@ -1090,19 +1090,23 @@ async def test_complete_in_progress_for_own_task(
 
 
 @pytest.mark.asyncio
-async def test_complete_cell_pm_escalates_to_main_pm(
+async def test_complete_cell_pm_does_not_escalate_to_main_pm(
     task_setup: dict, db_session: AsyncSession
 ) -> None:
-    """When a Cell PM completes a task, it gets escalated to Main PM."""
+    """#178: cell_pm completing an awaiting_pm_review non-root task
+    transitions it to COMPLETED and does NOT reassign to main_pm.
+
+    Pre-#178 the cell_pm branch of ``_apply_complete_approval_chain``
+    reassigned every awaiting_pm_review task to main_pm and kept it in
+    awaiting_pm_review for a second-tier review — but the gateway's
+    ``main_pm_complete`` rejects every non-root task
+    (``parent_task_id IS NOT NULL`` → invalid_state), so main_pm had
+    no verb to advance it. Result: the leaf was permanently wedged
+    (observed end-to-end this session). The fix removes the cell_pm
+    escalation branch; cell PM now completes non-root tasks directly,
+    and cell→main escalation, when intended, uses ``submit_up``.
+    """
     svc = task_setup["svc"]
-    # Strip leaked Main PMs so the picked Main PM is the one we're seeding.
-    # `_handle_cell_pm_escalation` orders by created_at and would otherwise
-    # pick a leaked-from-prior-test Main PM with an older timestamp.
-    await db_session.execute(
-        AgentTable.__table__.update()
-        .where(AgentTable.role == AgentRole.MAIN_PM)
-        .values(role=AgentRole.SYSTEM)
-    )
     cell_pm = AgentTable(
         id=uuid4(),
         name="CellPM",
@@ -1133,31 +1137,25 @@ async def test_complete_cell_pm_escalates_to_main_pm(
     await db_session.flush()
     task = await svc.create(_req(task_setup))
     task.status = TaskStatus.AWAITING_PM_REVIEW
+    task.assigned_to = cell_pm.id
     await db_session.flush()
     out = await svc.complete(task.id, agent_id=cell_pm.id)
     assert out is not None
-    # Escalated — task reassigned to main_pm
-    assert out.assigned_to == main_pm.id
-    assert out.status == TaskStatus.AWAITING_PM_REVIEW
+    assert out.status == TaskStatus.COMPLETED
+    assert out.assigned_to != main_pm.id
 
 
 @pytest.mark.asyncio
-async def test_complete_cell_pm_no_main_pm_falls_through(
+async def test_complete_cell_pm_no_main_pm_completes(
     task_setup: dict, db_session: AsyncSession
 ) -> None:
-    """If no Main PM exists, escalation returns None and chain falls through.
-
-    Other tests in earlier modules may have committed Main PMs that the
-    rollback fixture can't undo (commits stick). Delete any inside this
-    test's transaction so the rollback restores them at teardown — within
-    this test they appear absent.
+    """#178: cell_pm completing awaiting_pm_review transitions to
+    COMPLETED regardless of whether a Main PM exists. (Pre-#178 this
+    test guarded the "no Main PM → escalation returns None → falls
+    through to completion" fallback; post-#178 the cell_pm escalation
+    branch is gone entirely, so this path is the only path.)
     """
     svc = task_setup["svc"]
-    await db_session.execute(
-        AgentTable.__table__.update()
-        .where(AgentTable.role == AgentRole.MAIN_PM)
-        .values(role=AgentRole.SYSTEM)
-    )
     cell_pm = AgentTable(
         id=uuid4(),
         name="CellPM",

@@ -2970,41 +2970,6 @@ class TaskService(BaseService):
         is_own_task = agent_id and task.assigned_to == agent_id
         return task.status == TaskStatus.IN_PROGRESS and bool(is_own_task)
 
-    async def _handle_cell_pm_escalation(
-        self, task: TaskTable, task_id: UUID, agent_id: UUID | None
-    ) -> TaskTable | None:
-        """Handle Cell PM escalation to Main PM. Returns task if escalated."""
-        main_pm_result = await self.session.execute(
-            select(AgentTable)
-            .where(AgentTable.role == AgentRole.MAIN_PM)
-            .order_by(AgentTable.created_at)
-            .limit(1)
-        )
-        main_pm = main_pm_result.scalar_one_or_none()
-        if not main_pm:
-            self.log.warning(
-                "No Main PM found - proceeding with completion", task_id=str(task_id)
-            )
-            return None
-
-        task.assigned_to = cast("Any", main_pm.id)
-        task.claimed_by = cast("Any", main_pm.id)
-        await self.session.flush()
-        await self._emit_task_event(
-            EventType.TASK_ESCALATED_TO_MAIN_PM,
-            task_id,
-            {
-                "main_pm_id": str(main_pm.id),
-                "cell_pm_id": str(agent_id) if agent_id else None,
-            },
-        )
-        self.log.info(
-            "Cell PM approved - escalating to Main PM",
-            task_id=str(task_id),
-            main_pm_id=str(main_pm.id),
-        )
-        return task
-
     async def _validate_completion_prerequisites(
         self, task: TaskTable, task_id: UUID, agent_id: UUID | None
     ) -> list[TaskTable] | None:
@@ -3064,18 +3029,27 @@ class TaskService(BaseService):
         self,
         task: TaskTable,
         task_id: UUID,
-        agent_id: UUID | None,
         completing_agent_role: str | None,
         all_descendants: list[TaskTable],
     ) -> TaskTable | None:
-        """Run the Cell PM → Main PM → CEO chain; return escalated task or None."""
+        """Run the PM-completion approval chain; return escalated task or None.
+
+        #178: the cell_pm branch was removed (it reassigned every
+        ``awaiting_pm_review`` task from the cell PM to the main PM and
+        kept it in ``awaiting_pm_review`` — a legacy two-step "cell PM
+        approves, main PM approves" review chain). The gateway model
+        actually in use forbids ``main_pm_complete`` on any non-root
+        task (``parent_task_id IS NOT NULL`` → invalid_state), so a
+        leaf or cell-level task reassigned that way was permanently
+        wedged — main PM had no verb to advance it. Cell PM completing
+        a non-root task now just transitions it to COMPLETED (the
+        gateway model); the cell→main escalation, when intended,
+        happens via the dedicated ``submit_up`` verb, not via
+        ``complete``. The main_pm → CEO escalation for root parents
+        stays — it's the still-correct second tier.
+        """
         if task.status != TaskStatus.AWAITING_PM_REVIEW:
             return None
-
-        if completing_agent_role == "cell_pm":
-            escalated = await self._handle_cell_pm_escalation(task, task_id, agent_id)
-            if escalated:
-                return escalated
         is_root_parent = all_descendants and not task.parent_task_id
         if completing_agent_role == "main_pm" and is_root_parent:
             self.log.info(
@@ -3132,10 +3106,15 @@ class TaskService(BaseService):
         """
         Mark task as completed (PM only).
 
-        Approval hierarchy:
-        1. Cell PM reviews → reassigns to Main PM (same awaiting_pm_review state)
-        2. Main PM reviews leaf task → completes
-        3. Main PM reviews parent task (all descendants terminal) → escalates to CEO
+        Approval model (post-#178 — matches the gateway invariant
+        ``main_pm_complete`` rejects any non-root task):
+
+        - Cell PM completes a non-root task → COMPLETED. The cell→main
+          escalation, when intended, is the cell PM's ``submit_up``
+          verb on the cell-level parent, not ``complete``.
+        - Main PM completes a leaf/non-root task → COMPLETED.
+        - Main PM completes a root parent (descendants all terminal)
+          → escalates to CEO (``awaiting_ceo_approval``).
         """
         task = await self.get(task_id)
         if not task:
@@ -3149,7 +3128,7 @@ class TaskService(BaseService):
             return None
 
         escalated = await self._apply_complete_approval_chain(
-            task, task_id, agent_id, completing_agent_role, all_descendants
+            task, task_id, completing_agent_role, all_descendants
         )
         if escalated:
             return escalated

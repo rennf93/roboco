@@ -619,18 +619,13 @@ async def test_pm_complete_simple_task(
 ) -> None:
     """awaiting_pm_review → cell_pm complete → completed.
 
-    With no Main PM seeded, ``_handle_cell_pm_escalation`` short-circuits
-    and the task transitions straight to COMPLETED instead of being
-    handed up to the Main PM. This is the "simple task" path the plan
-    calls out — no parent task, no Main PM, no CEO escalation.
-
-    Test isolation note: ``test_groups_routes.py`` exercises the
-    groups POST endpoint, which commits via ``db.commit()`` and
-    persists a MAIN_PM agent across sessions in the test DB. We
-    delete any pre-existing MAIN_PM rows at the top of this test so
-    the cell PM completion is the only one in play. The delete runs
-    inside this test's session and is unwound by the conftest's
-    rollback, so committed state in the shared DB is untouched.
+    Post-#178: cell PM completing a non-root awaiting_pm_review task
+    always transitions straight to COMPLETED — there is no longer a
+    cell→main escalation in ``complete`` (the old branch is gone; the
+    cell→main hand-off, when intended, uses ``submit_up``). The
+    MAIN_PM deletion below is now a historical artifact (kept because
+    other tests in this file rely on the same isolation pattern); it
+    no longer affects this test's outcome.
     """
     await db_session.execute(
         delete(AgentTable).where(AgentTable.role == AgentRole.MAIN_PM)
