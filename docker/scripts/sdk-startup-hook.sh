@@ -12,6 +12,17 @@ LOG_FILE="/tmp/sdk-server.log"
 BRIEFING_FILE="/app/briefing.md"
 PRECOMPACT_FILE="/tmp/roboco-precompact-${AGENT_ID}.md"
 
+# #179: this hook runs with cwd = the agent's workspace, so a bare
+# `uv run` resolves a cwd-relative `.venv` (≠ the baked /app/.venv),
+# ignores VIRTUAL_ENV with a warning, and RE-SYNCS the full dependency
+# set (torch/lancedb/pyarrow/scipy, ~350MB) into a fresh venv. On a cold
+# uv wheel cache (first spawn after an image rebuild) that download takes
+# minutes and the SDK/MCP layer never comes up before the agent reaps.
+# Pin uv to the pre-baked image venv so it starts instantly regardless
+# of cwd. (The orchestrator sets the same var in every MCP server's env
+# in the generated mcp-config.json — keep both in sync.)
+export UV_PROJECT_ENVIRONMENT=/app/.venv
+
 # --- SDK bring-up ---------------------------------------------------------
 if ! curl -sf "http://localhost:${SDK_PORT}/health" >/dev/null 2>&1; then
     echo "[SDK] Starting for agent ${AGENT_ID} on port ${SDK_PORT}..."

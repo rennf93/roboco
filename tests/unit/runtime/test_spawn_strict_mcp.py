@@ -9,9 +9,11 @@ etc. The flag tells the CLI to load ONLY the servers from --mcp-config.
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 from unittest.mock import patch
 
+import pytest
 from roboco.models.runtime import OrchestratorAgentConfig, SpawnGitContext
 from roboco.runtime.orchestrator import AgentOrchestrator
 
@@ -67,3 +69,26 @@ class TestSpawnStrictMcpConfig:
             f"--strict-mcp-config should appear near --mcp-config; "
             f"strict_idx={strict_idx}, mcp_idx={mcp_idx}. Cmd: {cmd}"
         )
+
+
+class TestMcpConfigPinsBakedVenv:
+    """#179: every generated MCP server launch must pin uv to the baked
+    image venv so `uv run` (cwd = workspace) reuses /app/.venv instead of
+    re-syncing the full dependency set (~350MB) on every spawn."""
+
+    @pytest.mark.asyncio
+    async def test_every_mcp_server_env_pins_uv_project_environment(self) -> None:
+        orch = AgentOrchestrator.__new__(AgentOrchestrator)
+        # be-dev-1 is a known agent (resolves role + uuid); generation is
+        # otherwise pure (writes a json file and returns its path).
+        config_path = await orch._generate_mcp_config("be-dev-1")
+        config = json.loads(Path(config_path).read_text())
+        servers = config["mcpServers"]
+        assert servers, "expected at least the four core MCP servers"
+        for name, spec in servers.items():
+            assert spec["command"] == "uv", f"{name} should launch via uv"
+            assert spec["env"].get("UV_PROJECT_ENVIRONMENT") == "/app/.venv", (
+                f"MCP server {name!r} is missing UV_PROJECT_ENVIRONMENT="
+                f"/app/.venv — without it `uv run` re-downloads deps into a "
+                f"cwd-relative venv on every spawn (#179). env={spec['env']}"
+            )
