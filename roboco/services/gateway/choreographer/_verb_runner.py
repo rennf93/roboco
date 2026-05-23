@@ -20,7 +20,6 @@ from __future__ import annotations
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from typing import Any
-from uuid import UUID
 
 from roboco.foundation.policy import lifecycle as spec
 
@@ -178,38 +177,18 @@ class VerbRunner:
     async def _do_push_branch(self, task: Any, _agent: Any) -> Any:
         return await self.git_service.push_branch(task.branch_name)
 
-    async def _parent_branch_for(self, task: Any) -> str:
-        """Base/target branch for a child→parent PR: the parent task's own
-        branch_name.
-
-        #181: ``merge_chain.parent_branch_for`` derives the parent branch by
-        dropping the last ``--`` segment but REUSING the child's team segment.
-        That only holds within one team. Across a team boundary — every
-        cell→root PR, where the cell is ``feature/backend/…`` but the root is
-        ``feature/main_pm/…`` — it yields a branch name that doesn't exist on
-        the remote, and GitHub rejects the PR with ``base: invalid``. The
-        parent task's stored ``branch_name`` is authoritative: branch creation
-        already cuts and pushes each child from it
-        (``TaskService._resolve_parent_branch``). Fall back to string
-        derivation only when there is no parent or it has no branch yet.
-        """
-        from roboco.services.gateway.merge_chain import parent_branch_for
-
-        parent_id = getattr(task, "parent_task_id", None)
-        if parent_id is not None:
-            parent = await self.task_service.get(UUID(str(parent_id)))
-            if parent is not None and parent.branch_name:
-                return str(parent.branch_name)
-        return parent_branch_for(task.branch_name)
-
     async def _do_create_pr(self, task: Any, _agent: Any) -> Any:
-        parent = await self._parent_branch_for(task)
+        from roboco.services.gateway.merge_chain import resolve_parent_branch
+
+        parent = await resolve_parent_branch(task, self.task_service)
         return await self.git_service.create_pr(
             task.branch_name, parent=parent, is_root_pr=False
         )
 
     async def _do_pr_merge(self, task: Any, agent: Any) -> Any:
-        target = await self._parent_branch_for(task)
+        from roboco.services.gateway.merge_chain import resolve_parent_branch
+
+        target = await resolve_parent_branch(task, self.task_service)
         return await self.git_service.pr_merge(
             task.pr_number, target=target, actor_agent_id=agent.id
         )

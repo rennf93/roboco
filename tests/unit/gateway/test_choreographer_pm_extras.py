@@ -882,10 +882,13 @@ async def test_delegate_invalid_team_enum_rejected() -> None:
 
 
 @pytest.mark.asyncio
-async def test_submit_up_opens_pr_and_reassigns_to_main_pm() -> None:
+async def test_submit_up_opens_pr_and_keeps_cell_pm_assignment() -> None:
+    """#182: submit_up opens the cell→root PR and moves the cell task to
+    awaiting_pm_review, but does NOT hand it off to Main PM. The cell PM
+    owns cell completion (it is respawned to `complete` the task), so the
+    assignment stays put — no reassign."""
     pm_id = uuid4()
     task_id = uuid4()
-    main_pm_id = uuid4()
     t = MagicMock(
         id=task_id,
         status="in_progress",
@@ -907,7 +910,6 @@ async def test_submit_up_opens_pr_and_reassigns_to_main_pm() -> None:
     task_svc.agent_for.return_value = MagicMock(role="cell_pm", team="backend")
     task_svc.all_subtasks_terminal.return_value = True
     task_svc.submit_pm_review.return_value = after
-    task_svc.main_pm_agent.return_value = MagicMock(id=main_pm_id)
     git_svc = AsyncMock()
     git_svc.create_pr.return_value = {"pr_number": 12, "pr_url": "x"}
     journal_svc = AsyncMock()
@@ -922,7 +924,7 @@ async def test_submit_up_opens_pr_and_reassigns_to_main_pm() -> None:
     assert env.error is None
     assert env.status == "awaiting_pm_review"
     git_svc.create_pr.assert_awaited_once()
-    task_svc.reassign.assert_awaited_once()
+    task_svc.reassign.assert_not_called()
 
 
 @pytest.mark.asyncio

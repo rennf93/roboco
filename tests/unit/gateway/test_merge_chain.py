@@ -2,8 +2,15 @@
 
 from __future__ import annotations
 
+from unittest.mock import AsyncMock, MagicMock
+from uuid import uuid4
+
 import pytest
-from roboco.services.gateway.merge_chain import branch_depth, parent_branch_for
+from roboco.services.gateway.merge_chain import (
+    branch_depth,
+    parent_branch_for,
+    resolve_parent_branch,
+)
 
 _DEPTH_ROOT = 1
 _DEPTH_ONE_SUBTASK = 2
@@ -42,6 +49,47 @@ class TestParentBranchFor:
     def test_invalid_pattern_raises(self) -> None:
         with pytest.raises(ValueError, match="invalid branch"):
             parent_branch_for("not-a-branch")
+
+
+class TestResolveParentBranch:
+    """#181/#182: base/target comes from the parent TASK's branch_name, which
+    is correct across a team boundary; parent_branch_for is the fallback."""
+
+    @pytest.mark.asyncio
+    async def test_uses_parent_task_branch_across_team(self) -> None:
+        root_id = uuid4()
+        task = MagicMock(
+            parent_task_id=root_id,
+            branch_name="feature/backend/ROOT0001--CELL0001",
+        )
+        task_service = AsyncMock()
+        # Root lives under a DIFFERENT team prefix than the cell.
+        task_service.get = AsyncMock(
+            return_value=MagicMock(branch_name="feature/main_pm/ROOT0001")
+        )
+        result = await resolve_parent_branch(task, task_service)
+        assert result == "feature/main_pm/ROOT0001"
+        task_service.get.assert_awaited_once_with(root_id)
+
+    @pytest.mark.asyncio
+    async def test_falls_back_when_no_parent(self) -> None:
+        task = MagicMock(parent_task_id=None, branch_name="feature/backend/ROOT0001")
+        task_service = AsyncMock()
+        # No parent → root→master.
+        assert await resolve_parent_branch(task, task_service) == "master"
+        task_service.get.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_falls_back_when_parent_has_no_branch(self) -> None:
+        task = MagicMock(
+            parent_task_id=uuid4(),
+            branch_name="feature/backend/ROOT0001--CELL0001",
+        )
+        task_service = AsyncMock()
+        task_service.get = AsyncMock(return_value=MagicMock(branch_name=None))
+        # Parent exists but has no branch yet → string derivation.
+        result = await resolve_parent_branch(task, task_service)
+        assert result == "feature/backend/ROOT0001"
 
 
 def test_branch_depth_master_is_zero() -> None:

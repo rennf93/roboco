@@ -973,7 +973,10 @@ _INTENT_VERBS: dict[str, IntentSpec] = {
     "submit_up": IntentSpec(
         name="submit_up",
         allowed_roles=frozenset({Role.CELL_PM}),
-        description="Cell PM bubbles a finished cell-scope task up to Main PM.",
+        description=(
+            "Cell PM opens the cell→root PR and moves the cell task to"
+            " awaiting_pm_review. The same Cell PM then completes it."
+        ),
         composes=("submit_pm_review",),
         extra_preconditions=(),
         # The cell→root PR must exist BEFORE submit_pm_review runs — its
@@ -983,7 +986,9 @@ _INTENT_VERBS: dict[str, IntentSpec] = {
         # sees pr_created=True. Mirrors the dev's open_pr→i_am_done split.
         pre_side_effects=("create_pr",),
         side_effects=(),
-        next_hint=lambda _t: "idle until Main PM reviews",
+        # #182: the Cell PM owns cell completion — it merges the cell→root PR
+        # via complete(). Main PM only completes the ROOT task.
+        next_hint=lambda _t: "complete(task_id) to merge the cell→root PR",
     ),
     "unblock": IntentSpec(
         name="unblock",

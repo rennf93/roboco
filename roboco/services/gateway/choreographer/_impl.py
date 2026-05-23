@@ -32,7 +32,7 @@ from roboco.services.gateway.evidence_builder import (
     build_context_briefing,
     build_evidence_for_task,
 )
-from roboco.services.gateway.merge_chain import parent_branch_for
+from roboco.services.gateway.merge_chain import resolve_parent_branch
 from roboco.services.gateway.remediation import (
     hint_for_evidence_not_inspected,
     hint_for_missing_doc_files,
@@ -3386,7 +3386,11 @@ class Choreographer:
                 verb="submit_up",
             )
         t = outcome
-        await self._handoff_to_main_pm(pm_agent_id, task_id)
+        # #182: do NOT hand the cell task to Main PM. The cell PM owns cell
+        # completion — it stays assigned to the cell PM, which is respawned to
+        # `complete` the task (merging the cell→root PR). Main PM only
+        # completes the ROOT (root→master + escalate-to-CEO).
+        # `_maybe_advance_parent_to_pm_review` already keeps it on the cell PM.
         return Envelope.ok(
             status=str(t.status),
             task_id=str(task_id),
@@ -3491,21 +3495,6 @@ class Choreographer:
                 context_briefing=await self._briefing_for(pm_agent_id, task_id),
             )
         return None
-
-    async def _handoff_to_main_pm(self, pm_agent_id: UUID, task_id: UUID) -> None:
-        """Reassign the task to the Main PM and A2A-notify the handoff."""
-        main_pm = await self.task.main_pm_agent()
-        if main_pm is None:
-            return
-        main_pm_uuid = UUID(str(main_pm.id))
-        await self.task.reassign(task_id, main_pm_uuid)
-        await self.a2a.send(
-            from_agent=pm_agent_id,
-            to_agent=main_pm_uuid,
-            skill="task_management",
-            task_id=task_id,
-            body=f"Cell scope complete for {task_id}. Ready for Main PM review.",
-        )
 
     async def pm_give_me_work(self, pm_agent_id: UUID) -> Envelope:
         """Return the PM's first assigned task in any active status, or idle.
@@ -3771,7 +3760,11 @@ class Choreographer:
                 task_id=task_id,
                 verb="cell_pm_complete",
             )
-        target = parent_branch_for(t.branch_name)
+        # #181/#182: resolve the merge target from the PARENT task's real
+        # branch_name. For a leaf this is the cell branch (same team — no
+        # change); for a cell task it is the root branch (feature/main_pm/…),
+        # which parent_branch_for would have mis-derived as feature/<cellteam>/…
+        target = await resolve_parent_branch(t, self.task)
         merge_result = await self.git.pr_merge(
             t.pr_number, target=target, actor_agent_id=pm_agent_id
         )

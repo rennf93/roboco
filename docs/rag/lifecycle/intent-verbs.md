@@ -167,7 +167,7 @@ Resume a paused task you own. paused -> in_progress.
 
 ## submit_up
 
-Cell PM bubbles a finished cell-scope task up to Main PM.
+Cell PM opens the cell→root PR and moves the cell task to awaiting_pm_review. The same Cell PM then completes it.
 
 **Allowed roles:** cell_pm
 

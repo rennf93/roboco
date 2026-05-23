@@ -251,18 +251,25 @@ async def test_unblock_restore_false_returns_legacy_message() -> None:
 async def test_cell_pm_complete_merges_then_completes() -> None:
     pm_id = uuid4()
     task_id = uuid4()
+    parent_id = uuid4()
     t = MagicMock(
         id=task_id,
         status="awaiting_pm_review",
         assigned_to=pm_id,
         pr_number=8,
         branch_name="feature/backend/abc--def",
-        parent_task_id=uuid4(),
+        parent_task_id=parent_id,
         team="backend",
     )
     after = MagicMock(**{**t.__dict__, "status": "completed"})
+    # #181/#182: the merge target is the PARENT task's real branch_name —
+    # here under a DIFFERENT team prefix, which the old parent_branch_for
+    # would have mis-derived as feature/backend/abc.
+    parent = MagicMock(
+        id=parent_id, branch_name="feature/main_pm/abc", parent_task_id=None
+    )
     task_svc = AsyncMock()
-    task_svc.get.return_value = t
+    task_svc.get.side_effect = lambda tid: parent if tid == parent_id else t
     task_svc.all_subtasks_terminal.return_value = True
     task_svc.cell_pm_complete.return_value = after
     git_svc = AsyncMock()
@@ -278,7 +285,7 @@ async def test_cell_pm_complete_merges_then_completes() -> None:
     assert env.error is None
     assert env.status == "completed"
     git_svc.pr_merge.assert_awaited_once_with(
-        8, target="feature/backend/abc", actor_agent_id=pm_id
+        8, target="feature/main_pm/abc", actor_agent_id=pm_id
     )
 
 

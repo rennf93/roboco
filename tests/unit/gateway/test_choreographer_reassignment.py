@@ -438,12 +438,15 @@ async def test_cell_pm_complete_reassigns_parent_when_all_subtasks_done() -> Non
         id=parent_id,
         team="backend",
         parent_task_id=None,
+        branch_name="feature/backend/abc",
     )
 
     task_svc = AsyncMock()
-    # First .get is for the leaf (status check), then for the parent walk-up.
-    task_svc.get.side_effect = [leaf, parent]
-    task_svc.all_subtasks_terminal.side_effect = [True, True]
+    # get(leaf) for the status check, get(parent) for the merge-target
+    # resolution (#181/#182) and the parent walk-up. Keyed by id so it is
+    # robust to call count/order.
+    task_svc.get.side_effect = lambda tid: parent if tid == parent_id else leaf
+    task_svc.all_subtasks_terminal.return_value = True
     task_svc.cell_pm_complete.return_value = after
     task_svc.cell_pm_for_team.return_value = MagicMock(id=new_pm_id)
 

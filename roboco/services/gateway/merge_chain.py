@@ -12,6 +12,8 @@ Merge chain:
 from __future__ import annotations
 
 import re
+from typing import Any
+from uuid import UUID
 
 _TYPES = ("feature", "bug", "chore", "docs", "hotfix")
 _TYPE_PATTERN = "|".join(_TYPES)
@@ -33,7 +35,16 @@ def branch_depth(branch: str) -> int:
 
 
 def parent_branch_for(branch: str) -> str:
-    """Return the merge target for `branch`."""
+    """Return the merge target for `branch` by string surgery.
+
+    NOTE: this REUSES ``branch``'s own team segment for the parent, so it is
+    only correct within a single team. Across a team boundary — every
+    cell→root hop, where the cell is ``feature/backend/…`` but the root is
+    ``feature/main_pm/…`` — it yields a non-existent ref. For PR base/target
+    resolution prefer :func:`resolve_parent_branch`, which reads the parent
+    task's real branch_name. This stays as the fallback for the
+    rootless / same-team / diff-base cases.
+    """
     if branch == "master":
         return "master"
     m = _BRANCH_RE.match(branch)
@@ -46,3 +57,21 @@ def parent_branch_for(branch: str) -> str:
         return "master"
     parent_segments = "--".join(segments[:-1])
     return f"{type_}/{team}/{parent_segments}"
+
+
+async def resolve_parent_branch(task: Any, task_service: Any) -> str:
+    """Base/target branch for a child→parent PR: the parent task's own
+    branch_name.
+
+    The parent task's stored ``branch_name`` is authoritative — branch
+    creation already cuts and pushes each child from it
+    (``TaskService._resolve_parent_branch``). Unlike :func:`parent_branch_for`
+    it is correct across a team boundary (#181). Falls back to string
+    derivation only when there is no parent or the parent has no branch yet.
+    """
+    parent_id = getattr(task, "parent_task_id", None)
+    if parent_id is not None:
+        parent = await task_service.get(UUID(str(parent_id)))
+        if parent is not None and parent.branch_name:
+            return str(parent.branch_name)
+    return parent_branch_for(task.branch_name)

@@ -705,25 +705,6 @@ async def test_submit_up_no_branch_rejected() -> None:
 
 
 # ---------------------------------------------------------------------------
-# _handoff_to_main_pm: main_pm_agent returns None (line 1567)
-# ---------------------------------------------------------------------------
-
-
-@pytest.mark.asyncio
-async def test_handoff_to_main_pm_no_main_pm_returns_silently() -> None:
-    pm_id = uuid4()
-    task_id = uuid4()
-    task_svc = AsyncMock()
-    task_svc.main_pm_agent.return_value = None  # No main PM in DB
-    deps = _make_deps(task=task_svc)
-    c = Choreographer(deps)
-    # Should silently return without error.
-    await c._handoff_to_main_pm(pm_id, task_id)
-    # reassign + a2a never called.
-    task_svc.reassign.assert_not_called()
-
-
-# ---------------------------------------------------------------------------
 # _pm_next_hint: each branch (lines 1612-1616)
 # ---------------------------------------------------------------------------
 
