@@ -890,6 +890,7 @@ async def test_submit_up_opens_pr_and_reassigns_to_main_pm() -> None:
         id=task_id,
         status="in_progress",
         assigned_to=pm_id,
+        parent_task_id=None,
         branch_name="feature/backend/abc123",
         team="backend",
     )
@@ -897,6 +898,7 @@ async def test_submit_up_opens_pr_and_reassigns_to_main_pm() -> None:
         id=task_id,
         status="awaiting_pm_review",
         assigned_to=pm_id,
+        parent_task_id=None,
         branch_name="feature/backend/abc123",
         team="backend",
     )
