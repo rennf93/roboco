@@ -909,10 +909,12 @@ async def test_main_pm_complete_not_assigned() -> None:
 
 @pytest.mark.asyncio
 async def test_main_pm_complete_wrong_status() -> None:
+    # #183: in_progress is now an accepted source (root resumed from paused);
+    # use paused — a genuinely non-completable status — to exercise the guard.
     main_pm_id = uuid4()
     task_id = uuid4()
     task = MagicMock(
-        status="in_progress",
+        status="paused",
         assigned_to=main_pm_id,
         parent_task_id=None,
         title="t",

@@ -426,6 +426,53 @@ async def test_main_pm_complete_opens_master_pr_and_escalates() -> None:
 
 
 @pytest.mark.asyncio
+async def test_main_pm_complete_advances_in_progress_root_to_ceo() -> None:
+    """#183: a root resumed to in_progress (subtasks all done) has no submit_up
+    to reach awaiting_pm_review. main_pm_complete opens the root→master PR,
+    walks the root through awaiting_pm_review, then escalates to CEO."""
+    main_pm_id = uuid4()
+    root_task_id = uuid4()
+    in_prog = MagicMock(
+        id=root_task_id,
+        status="in_progress",
+        assigned_to=main_pm_id,
+        pr_number=None,
+        branch_name="feature/main_pm/root123",
+        parent_task_id=None,
+        team="main_pm",
+    )
+    awaiting = MagicMock(**{**in_prog.__dict__, "status": "awaiting_pm_review"})
+    after = MagicMock(**{**in_prog.__dict__, "status": "awaiting_ceo_approval"})
+    task_svc = AsyncMock()
+    task_svc.get.return_value = in_prog
+    task_svc.submit_pm_review.return_value = awaiting
+    task_svc.escalate_to_ceo.return_value = after
+    task_svc.all_subtasks_terminal.return_value = True
+    git_svc = AsyncMock()
+    git_svc.create_pr.return_value = {"pr_number": 99, "pr_url": "https://x/y/pull/99"}
+    journal_svc = AsyncMock()
+    journal_svc.has_decision_for_task.return_value = True
+    journal_svc.latest_decision_at.return_value = datetime.now(UTC)
+    journal_svc.has_reflect_for_task.return_value = True
+    deps = _make_deps(task=task_svc, git=git_svc, journal=journal_svc)
+    c = Choreographer(deps)
+
+    env = await c.main_pm_complete(
+        main_pm_id, root_task_id, notes="root scope reviewed; ready for CEO sign-off"
+    )
+    assert env.error is None
+    assert env.status == "awaiting_ceo_approval"
+    git_svc.create_pr.assert_awaited_once_with(
+        "feature/main_pm/root123",
+        parent="master",
+        is_root_pr=True,
+    )
+    # #183: the in_progress→awaiting_pm_review hop must run before escalation.
+    task_svc.submit_pm_review.assert_awaited_once()
+    task_svc.escalate_to_ceo.assert_awaited_once()
+
+
+@pytest.mark.asyncio
 async def test_main_pm_complete_skips_pr_creation_if_already_master_targeted() -> None:
     main_pm_id = uuid4()
     root_task_id = uuid4()

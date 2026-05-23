@@ -3837,10 +3837,16 @@ class Choreographer:
                     main_pm_agent_id, root_task_id
                 ),
             )
-        if str(t.status) != "awaiting_pm_review":
+        # #183: accept in_progress too. A root resumed from paused (its
+        # subtasks all done) sits in in_progress — there is no submit_up for
+        # roots to move it to awaiting_pm_review. main_pm_complete itself
+        # opens the root→master PR and walks it through awaiting_pm_review
+        # before escalating; the CEO is the root's reviewer.
+        if str(t.status) not in ("awaiting_pm_review", "in_progress"):
             return Envelope.invalid_state(
                 message=(
-                    f"task {root_task_id} is in {t.status}, expected awaiting_pm_review"
+                    f"task {root_task_id} is in {t.status}, expected"
+                    " awaiting_pm_review or in_progress"
                 ),
                 remediate=(
                     "this task is not ready for main-PM completion."
@@ -3904,6 +3910,38 @@ class Choreographer:
             needs_pr = current_target != "master"
         if needs_pr:
             await self.git.create_pr(t.branch_name, parent="master", is_root_pr=True)
+
+        # #183: escalate_to_ceo requires source=awaiting_pm_review, but a root
+        # resumed from paused is in_progress and nothing else moves it there
+        # (submit_up is cell-PM-only). The root→master PR now exists, so walk
+        # the root through awaiting_pm_review here. Uses the TaskService
+        # transition directly (no gateway team-match) — submit_pm_review's
+        # gates (in_progress + branch + pr_created + subtasks terminal) all
+        # hold at this point.
+        refreshed = await self.task.get(root_task_id)
+        if refreshed is not None and str(refreshed.status) == "in_progress":
+            advanced = await self.task.submit_pm_review(
+                main_pm_agent_id, root_task_id, notes
+            )
+            if advanced is None:
+                return await self._emit_rejection(
+                    Envelope.invalid_state(
+                        message=(
+                            "could not move root to awaiting_pm_review for CEO"
+                            " escalation"
+                        ),
+                        remediate=(
+                            "ensure the root→master PR is open and all subtasks"
+                            " are terminal, then retry complete"
+                        ),
+                        context_briefing=await self._briefing_for(
+                            main_pm_agent_id, root_task_id
+                        ),
+                    ).with_introspection(task=refreshed, role="main_pm"),
+                    agent_id=main_pm_agent_id,
+                    task_id=root_task_id,
+                    verb="main_pm_complete",
+                )
 
         # Use kwargs — service signature is (task_id, agent_role="cell_pm",
         # notes=None). Positional was passing agent_id as task_id and the
