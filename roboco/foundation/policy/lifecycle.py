@@ -186,6 +186,10 @@ class IntentSpec:
     don't cover (e.g. open_pr's "no PR already open" check).
     `side_effects` is a tuple of named git/branch/PR operations the
     runner invokes after the DB savepoint commits.
+    `pre_side_effects` are git/branch/PR operations the runner invokes
+    BEFORE the composing actions — for transitions that depend on a git
+    op having already run (e.g. submit_up must open the cell→root PR
+    before submit_pm_review's pr_created gate can pass).
     """
 
     name: str
@@ -195,6 +199,7 @@ class IntentSpec:
     extra_preconditions: tuple[Precondition, ...]
     side_effects: tuple[str, ...]
     next_hint: Callable[[Any], str]
+    pre_side_effects: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -971,7 +976,13 @@ _INTENT_VERBS: dict[str, IntentSpec] = {
         description="Cell PM bubbles a finished cell-scope task up to Main PM.",
         composes=("submit_pm_review",),
         extra_preconditions=(),
-        side_effects=("create_pr",),
+        # The cell→root PR must exist BEFORE submit_pm_review runs — its
+        # pr_created gate rejects (returning None) otherwise, which then
+        # crashed the trailing create_pr on a None task. create_pr persists
+        # pr_number onto the task row, so submit_pm_review (which re-fetches)
+        # sees pr_created=True. Mirrors the dev's open_pr→i_am_done split.
+        pre_side_effects=("create_pr",),
+        side_effects=(),
         next_hint=lambda _t: "idle until Main PM reviews",
     ),
     "unblock": IntentSpec(

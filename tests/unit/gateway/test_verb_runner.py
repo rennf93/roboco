@@ -81,6 +81,60 @@ async def test_runner_runs_side_effects_after_db_commit() -> None:
 
 
 @pytest.mark.asyncio
+async def test_submit_up_creates_pr_before_transition() -> None:
+    """#180: submit_up's create_pr (pre_side_effect) runs BEFORE the
+    submit_pm_review transition.
+
+    submit_pm_review rejects (returns None) unless pr_created is already
+    set; create_pr persists pr_number onto the task row. With the old
+    composes→side_effects ordering the transition ran first, returned
+    None, and the trailing create_pr crashed on ``None.branch_name``.
+    """
+    calls: list[str] = []
+
+    task_svc = AsyncMock()
+    task_svc.session.begin_nested = MagicMock(
+        return_value=MagicMock(__aenter__=AsyncMock(), __aexit__=AsyncMock())
+    )
+
+    def _submit_pm_review(*_args: object, **_kwargs: object) -> MagicMock:
+        calls.append("submit_pm_review")
+        return MagicMock(status="awaiting_pm_review")
+
+    task_svc.submit_pm_review = AsyncMock(side_effect=_submit_pm_review)
+
+    git_svc = AsyncMock()
+
+    def _create_pr(*_args: object, **_kwargs: object) -> dict[str, int]:
+        calls.append("create_pr")
+        return {"pr_number": 31}
+
+    git_svc.create_pr = AsyncMock(side_effect=_create_pr)
+    runner = VerbRunner(task_service=task_svc, git_service=git_svc)
+
+    task = MagicMock(
+        id=uuid4(),
+        status="in_progress",
+        branch_name="feature/backend/ABC12345--DEF67890",
+    )
+    agent = MagicMock(id=uuid4(), role="cell_pm")
+    ctx = spec.Context(notes="cell scope complete; bubbling up to main pm")
+
+    await runner.run_intent("submit_up", task, agent, ctx)
+    assert calls == ["create_pr", "submit_pm_review"], (
+        f"create_pr must precede submit_pm_review for submit_up; got {calls}"
+    )
+
+
+def test_submit_up_spec_pins_pr_before_transition() -> None:
+    """The submit_up spec declares create_pr as a pre_side_effect, not a
+    trailing side_effect — the ordering fix lives in the spec."""
+    submit_up = spec._INTENT_VERBS["submit_up"]
+    assert submit_up.pre_side_effects == ("create_pr",)
+    assert "create_pr" not in submit_up.side_effects
+
+
+@pytest.mark.asyncio
 async def test_runner_does_not_run_side_effects_if_compose_fails() -> None:
     """If a composed atomic action raises, side effects must NOT run."""
     task_svc = AsyncMock()

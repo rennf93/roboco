@@ -37,6 +37,8 @@ def _intent_verb_section(iv: IntentSpec) -> list[str]:
         f"**Allowed roles:** {', '.join(roles)}\n",
         _composes_line(iv),
     ]
+    if iv.pre_side_effects:
+        section.append(f"**Pre side effects:** {', '.join(iv.pre_side_effects)}\n")
     if iv.side_effects:
         section.append(f"**Side effects:** {', '.join(iv.side_effects)}\n")
     if iv.extra_preconditions:
@@ -86,6 +88,7 @@ def _intent_to_panel_dict(iv: IntentSpec) -> dict[str, Any]:
         "description": iv.description,
         "allowed_roles": sorted(r.value for r in iv.allowed_roles),
         "composes": list(iv.composes),
+        "pre_side_effects": list(iv.pre_side_effects),
         "side_effects": list(iv.side_effects),
     }
 
