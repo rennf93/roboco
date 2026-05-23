@@ -173,7 +173,7 @@ Cell PM bubbles a finished cell-scope task up to Main PM.
 
 **Composes:** submit_pm_review
 
-**Side effects:** create_pr
+**Pre side effects:** create_pr
 
 
 ## triage

@@ -41,13 +41,19 @@ class VerbRunner:
         agent: Any,
         context: spec.Context,
     ) -> Any:
-        """Run composed atomic actions in order, then side effects.
+        """Run pre-side-effects, then composed atomic actions, then side effects.
+
+        Most verbs only need composes→side_effects. A few (submit_up) need a
+        git op to run BEFORE the DB transition it gates — those declare
+        ``pre_side_effects`` which run first, outside the savepoint.
 
         Returns the final task object (post-composition). Raises whatever
         the underlying TaskService methods raise; the savepoint context
         rolls the DB back on raise.
         """
         intent = spec._INTENT_VERBS[intent_name]
+        for side_effect_name in intent.pre_side_effects:
+            await self._dispatch_side_effect(side_effect_name, task, agent)
         async with self.task_service.session.begin_nested():
             for action_name in intent.composes:
                 task = await self._dispatch_atomic(action_name, task, agent, context)

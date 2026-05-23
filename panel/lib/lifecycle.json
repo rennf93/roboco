@@ -30,6 +30,7 @@
       "composes": [],
       "description": "Claim awaiting_documentation. Returns evidence inline.",
       "name": "claim_doc_task",
+      "pre_side_effects": [],
       "side_effects": []
     },
     {
@@ -39,6 +40,7 @@
       "composes": [],
       "description": "Claim a task in awaiting_qa for review. Returns evidence inline.",
       "name": "claim_review",
+      "pre_side_effects": [],
       "side_effects": []
     },
     {
@@ -51,6 +53,7 @@
       ],
       "description": "Cell PM merges leaf PR + transitions to completed; Main PM merges root PR + escalates to CEO.",
       "name": "complete",
+      "pre_side_effects": [],
       "side_effects": [
         "pr_merge"
       ]
@@ -65,6 +68,7 @@
       ],
       "description": "Create a subtask under the current task. Validates the delegation chain (main_pm->cell_pm; cell_pm->its team's devs) and the assignee-vs-task_type rule (Cell PMs get planning-typed tasks; devs get code/documentation).",
       "name": "delegate",
+      "pre_side_effects": [],
       "side_effects": []
     },
     {
@@ -78,6 +82,7 @@
       ],
       "description": "Escalate to CEO with reason. Transitions to awaiting_ceo_approval.",
       "name": "escalate_to_ceo",
+      "pre_side_effects": [],
       "side_effects": []
     },
     {
@@ -88,6 +93,7 @@
       "composes": [],
       "description": "Escalate to your role's escalation_target.",
       "name": "escalate_up",
+      "pre_side_effects": [],
       "side_effects": []
     },
     {
@@ -99,6 +105,7 @@
       ],
       "description": "Fail QA with concrete issues. Transitions to needs_revision.",
       "name": "fail_review",
+      "pre_side_effects": [],
       "side_effects": []
     },
     {
@@ -112,6 +119,7 @@
       "composes": [],
       "description": "Return your most-actionable task or signal idle.",
       "name": "give_me_work",
+      "pre_side_effects": [],
       "side_effects": []
     },
     {
@@ -125,6 +133,7 @@
       ],
       "description": "Escalate to PM. Logs a struggle journal entry.",
       "name": "i_am_blocked",
+      "pre_side_effects": [],
       "side_effects": []
     },
     {
@@ -137,6 +146,7 @@
       ],
       "description": "Submit work for QA. Auto-runs in_progress->verifying then verifying->awaiting_qa. Strict - PR must be open (call open_pr first) and >=1 commit.",
       "name": "i_am_done",
+      "pre_side_effects": [],
       "side_effects": []
     },
     {
@@ -153,6 +163,7 @@
       "composes": [],
       "description": "Signal you have no active work. PMs auto-pause owned in_progress tasks.",
       "name": "i_am_idle",
+      "pre_side_effects": [],
       "side_effects": []
     },
     {
@@ -164,6 +175,7 @@
       ],
       "description": "Signal docs complete. Transitions to awaiting_pm_review.",
       "name": "i_documented",
+      "pre_side_effects": [],
       "side_effects": []
     },
     {
@@ -178,6 +190,7 @@
       ],
       "description": "PM mirror of i_will_work_on for parent tasks. Claim, plan, transition to in_progress; from there delegate subtasks.",
       "name": "i_will_plan",
+      "pre_side_effects": [],
       "side_effects": []
     },
     {
@@ -191,6 +204,7 @@
       ],
       "description": "Claim a task, set the plan, and transition to in_progress. Atomic - preconditions checked before any state mutation.",
       "name": "i_will_work_on",
+      "pre_side_effects": [],
       "side_effects": []
     },
     {
@@ -200,6 +214,7 @@
       "composes": [],
       "description": "Push the branch and open a PR. Atomic - preconditions (assignee, >=1 commit, no prior PR) checked BEFORE any git operation. After success, call i_am_done.",
       "name": "open_pr",
+      "pre_side_effects": [],
       "side_effects": [
         "push_branch",
         "create_pr"
@@ -214,6 +229,7 @@
       ],
       "description": "Pass QA. Transitions awaiting_qa -> awaiting_documentation.",
       "name": "pass_review",
+      "pre_side_effects": [],
       "side_effects": []
     },
     {
@@ -229,6 +245,7 @@
       ],
       "description": "Resume a paused task you own. paused -> in_progress.",
       "name": "resume",
+      "pre_side_effects": [],
       "side_effects": []
     },
     {
@@ -240,9 +257,10 @@
       ],
       "description": "Cell PM bubbles a finished cell-scope task up to Main PM.",
       "name": "submit_up",
-      "side_effects": [
+      "pre_side_effects": [
         "create_pr"
-      ]
+      ],
+      "side_effects": []
     },
     {
       "allowed_roles": [
@@ -255,6 +273,7 @@
       "composes": [],
       "description": "List actionable tasks in your scope.",
       "name": "triage",
+      "pre_side_effects": [],
       "side_effects": []
     },
     {
@@ -264,6 +283,7 @@
       "composes": [],
       "description": "List actionable tasks across all teams (Main PM only).",
       "name": "triage_all",
+      "pre_side_effects": [],
       "side_effects": []
     },
     {
@@ -276,6 +296,7 @@
       ],
       "description": "PM unblocks a blocked task; restores pre-block state.",
       "name": "unblock",
+      "pre_side_effects": [],
       "side_effects": []
     },
     {
@@ -289,6 +310,7 @@
       "composes": [],
       "description": "Voluntarily release a claim back to pending. The work-in-progress branch is preserved.",
       "name": "unclaim",
+      "pre_side_effects": [],
       "side_effects": []
     }
   ],
