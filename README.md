@@ -204,3 +204,4 @@ uv run mypy roboco/
 ## License
 
 MIT
+<!-- smoke-test: 2026-05-23 -->
