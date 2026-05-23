@@ -70,6 +70,10 @@ async def test_open_pr_pushes_and_opens_pr() -> None:
         plan="x",
         commits=[{"sha": "abc"}],
         pr_number=None,
+        # No parent → _do_create_pr falls back to parent_branch_for; this
+        # test asserts push+create mechanics, not the cell→root base (#181,
+        # covered in test_verb_runner).
+        parent_task_id=None,
         branch_name="feature/backend/abc12345",
     )
     # Re-fetched task post-runner has the new pr_number written by
@@ -82,6 +86,7 @@ async def test_open_pr_pushes_and_opens_pr() -> None:
         commits=[{"sha": "abc"}],
         pr_number=42,
         pr_url="https://gh/x/42",
+        parent_task_id=None,
         branch_name="feature/backend/abc12345",
     )
     task_svc = AsyncMock()

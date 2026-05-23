@@ -70,6 +70,7 @@ async def test_runner_runs_side_effects_after_db_commit() -> None:
         status="in_progress",
         commits=["abc"],
         pr_number=None,
+        parent_task_id=None,
         branch_name="feature/backend/ABC12345",
     )
     agent = MagicMock(id=uuid4(), role="developer")
@@ -115,6 +116,7 @@ async def test_submit_up_creates_pr_before_transition() -> None:
     task = MagicMock(
         id=uuid4(),
         status="in_progress",
+        parent_task_id=None,
         branch_name="feature/backend/ABC12345--DEF67890",
     )
     agent = MagicMock(id=uuid4(), role="cell_pm")
@@ -123,6 +125,53 @@ async def test_submit_up_creates_pr_before_transition() -> None:
     await runner.run_intent("submit_up", task, agent, ctx)
     assert calls == ["create_pr", "submit_pm_review"], (
         f"create_pr must precede submit_pm_review for submit_up; got {calls}"
+    )
+
+
+@pytest.mark.asyncio
+async def test_create_pr_base_is_parent_task_branch_across_team() -> None:
+    """#181: the cell→root PR base is the PARENT task's actual branch_name,
+    not the team-preserving string derivation.
+
+    The cell branch is feature/backend/ROOT--CELL but the root branch is
+    feature/main_pm/ROOT (different team). parent_branch_for() would derive
+    feature/backend/ROOT — a ref that doesn't exist on the remote, which
+    GitHub rejects with base: invalid. The base must come from the parent
+    task's branch_name.
+    """
+    task_svc = AsyncMock()
+    task_svc.session.begin_nested = MagicMock(
+        return_value=MagicMock(__aenter__=AsyncMock(), __aexit__=AsyncMock())
+    )
+    task_svc.submit_pm_review = AsyncMock(
+        return_value=MagicMock(status="awaiting_pm_review")
+    )
+    root_id = uuid4()
+    # Parent (root) task lives under a DIFFERENT team prefix.
+    task_svc.get = AsyncMock(
+        return_value=MagicMock(branch_name="feature/main_pm/ROOT0001")
+    )
+
+    git_svc = AsyncMock()
+    git_svc.create_pr = AsyncMock(return_value={"pr_number": 32})
+    runner = VerbRunner(task_service=task_svc, git_service=git_svc)
+
+    task = MagicMock(
+        id=uuid4(),
+        status="in_progress",
+        parent_task_id=root_id,
+        branch_name="feature/backend/ROOT0001--CELL0001",
+    )
+    agent = MagicMock(id=uuid4(), role="cell_pm")
+    ctx = spec.Context(notes="cell scope complete; bubbling up to main pm")
+
+    await runner.run_intent("submit_up", task, agent, ctx)
+
+    task_svc.get.assert_awaited_once_with(root_id)
+    _, kwargs = git_svc.create_pr.call_args
+    assert kwargs["parent"] == "feature/main_pm/ROOT0001", (
+        "cell→root PR base must be the parent task's real branch, not the "
+        f"team-derived name; got parent={kwargs['parent']!r}"
     )
 
 
