@@ -1266,8 +1266,21 @@ async def ceo_approve_task(
             status_code=status.HTTP_404_NOT_FOUND, detail="Task not found"
         )
 
-    notes = data.notes if data else None
-    task = await service.ceo_approve(task_id, notes)
+    # The CEO sign-off note is the audit record for merging to production —
+    # it must be present and substantive. An approval with no rationale leaves
+    # the audit trail empty, so reject it (the panel collects the note before
+    # POSTing). Order mirrors pass-qa: 404 before the notes gate.
+    if not data or not data.notes or len(data.notes.strip()) < _MIN_NOTES_CHARS:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=(
+                "CEO_NOTES_REQUIRED: CEO approval must include notes (>=20 "
+                "chars) recording why the work is approved for production. "
+                "POST /api/tasks/{id}/ceo-approve with notes='...'."
+            ),
+        )
+
+    task = await service.ceo_approve(task_id, data.notes)
     if not task:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
