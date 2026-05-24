@@ -7,6 +7,7 @@ import { useCreateBranch, useCreatePR } from "@/hooks/use-git";
 import { TaskHeader, TaskMetadata, TaskTabs } from "@/components/tasks/task-detail";
 import {
   EscalateToCeoDialog,
+  CeoApproveDialog,
   CeoRejectDialog,
   CreateBranchDialog,
   CreatePRDialog,
@@ -32,6 +33,7 @@ export default function TaskDetailPage({ params }: TaskDetailPageProps) {
 
   // Dialog states
   const [escalateDialogOpen, setEscalateDialogOpen] = useState(false);
+  const [approveDialogOpen, setApproveDialogOpen] = useState(false);
   const [rejectDialogOpen, setRejectDialogOpen] = useState(false);
   const [branchDialogOpen, setBranchDialogOpen] = useState(false);
   const [prDialogOpen, setPrDialogOpen] = useState(false);
@@ -103,9 +105,8 @@ export default function TaskDetailPage({ params }: TaskDetailPageProps) {
           toast.success("Submitted for PM review");
           break;
         case "ceo-approve":
-          await lifecycle.ceoApprove.mutateAsync({ taskId: task.id });
-          toast.success("Task approved and completed");
-          break;
+          setApproveDialogOpen(true);
+          return; // Don't refetch yet — dialog collects the required note
         case "ceo-reject":
           setRejectDialogOpen(true);
           return; // Don't refetch yet, dialog will handle it
@@ -163,6 +164,19 @@ export default function TaskDetailPage({ params }: TaskDetailPageProps) {
       refetch();
     } catch (err) {
       toast.error("Failed to request changes");
+      console.error(err);
+    }
+  };
+
+  const handleCeoApprove = async (notes: string) => {
+    if (!task) return;
+    try {
+      await lifecycle.ceoApprove.mutateAsync({ taskId: task.id, notes });
+      toast.success("Task approved and completed");
+      setApproveDialogOpen(false);
+      refetch();
+    } catch (err) {
+      toast.error("Failed to approve task");
       console.error(err);
     }
   };
@@ -278,6 +292,13 @@ export default function TaskDetailPage({ params }: TaskDetailPageProps) {
         onOpenChange={setEscalateDialogOpen}
         onConfirm={handleEscalateToCeo}
         isPending={lifecycle.escalateToCeo.isPending}
+      />
+
+      <CeoApproveDialog
+        open={approveDialogOpen}
+        onOpenChange={setApproveDialogOpen}
+        onConfirm={handleCeoApprove}
+        isPending={lifecycle.ceoApprove.isPending}
       />
 
       <CeoRejectDialog

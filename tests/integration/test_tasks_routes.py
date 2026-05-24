@@ -2434,7 +2434,7 @@ async def test_ceo_approve_service_returns_none(ceo_client: dict) -> None:
     await ceo_client["db"].flush()
     response = await ceo_client["client"].post(
         f"/api/tasks/{task.id}/ceo-approve",
-        json={"notes": "approved"},
+        json={"notes": "Reviewed and approved for production release."},
         headers=_HDR,
     )
     assert response.status_code == HTTPStatus.BAD_REQUEST
@@ -2452,10 +2452,29 @@ async def test_ceo_approve_success(ceo_client: dict) -> None:
         mock_factory.return_value = instance
         response = await ceo_client["client"].post(
             f"/api/tasks/{task.id}/ceo-approve",
-            json={"notes": "approved"},
+            json={"notes": "Verified against all acceptance criteria; approved."},
             headers=_HDR,
         )
     assert response.status_code == HTTPStatus.OK
+
+
+@pytest.mark.asyncio
+async def test_ceo_approve_without_notes_rejected(ceo_client: dict) -> None:
+    """Audit: a CEO approval with no/thin notes leaves no record of WHY the
+    work shipped, so the endpoint must reject it (>= 20 chars required). The
+    panel collects the note before POSTing."""
+    task = _seed_task_ceo(ceo_client)
+    await ceo_client["db"].flush()
+    for body in ({}, {"notes": ""}, {"notes": "lgtm"}):
+        response = await ceo_client["client"].post(
+            f"/api/tasks/{task.id}/ceo-approve",
+            json=body,
+            headers=_HDR,
+        )
+        assert response.status_code in (
+            HTTPStatus.BAD_REQUEST,
+            HTTPStatus.UNPROCESSABLE_ENTITY,
+        ), (body, response.status_code)
 
 
 @pytest.mark.asyncio

@@ -139,6 +139,72 @@ export function CeoRejectDialog({
   );
 }
 
+// CEO Approve Dialog — the sign-off note is the audit record for merging to
+// production, so it is REQUIRED and must be substantive (>= 20 chars), matching
+// the server's CEO_NOTES_REQUIRED gate.
+const _CEO_NOTES_MIN = 20;
+
+interface CeoApproveDialogProps {
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
+  onConfirm: (notes: string) => void;
+  isPending?: boolean;
+}
+
+export function CeoApproveDialog({
+  open,
+  onOpenChange,
+  onConfirm,
+  isPending,
+}: CeoApproveDialogProps) {
+  const [notes, setNotes] = useState("");
+  const tooShort = notes.trim().length < _CEO_NOTES_MIN;
+
+  const handleConfirm = () => {
+    if (!tooShort) {
+      onConfirm(notes.trim());
+      setNotes("");
+    }
+  };
+
+  return (
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      <DialogContent>
+        <DialogHeader>
+          <DialogTitle>Approve &amp; Merge</DialogTitle>
+          <DialogDescription>
+            Record why this work is approved for production. This note is the
+            permanent audit record for the merge and is required.
+          </DialogDescription>
+        </DialogHeader>
+        <div className="grid gap-4 py-4">
+          <div className="grid gap-2">
+            <Label htmlFor="ceo-approve-notes">Approval notes</Label>
+            <Textarea
+              id="ceo-approve-notes"
+              value={notes}
+              onChange={(e) => setNotes(e.target.value)}
+              placeholder="Verified against acceptance criteria; approving for production because..."
+              rows={4}
+            />
+            <p className="text-xs text-muted-foreground">
+              {notes.trim().length}/{_CEO_NOTES_MIN} characters minimum
+            </p>
+          </div>
+        </div>
+        <DialogFooter>
+          <Button variant="outline" onClick={() => onOpenChange(false)}>
+            Cancel
+          </Button>
+          <Button onClick={handleConfirm} disabled={tooShort || isPending}>
+            {isPending ? "Approving..." : "Approve & Merge"}
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
 // Create Branch Dialog
 interface CreateBranchDialogProps {
   open: boolean;

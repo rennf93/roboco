@@ -83,7 +83,13 @@ export function CeoApprovalQueue({ className }: CeoApprovalQueueProps) {
     if (!selectedTask) return;
 
     if (actionType === "approve") {
-      approveMutation.mutate({ taskId: selectedTask.id, notes: notes || undefined });
+      // The approval note is the audit record for merging to production —
+      // required and substantive (>= 20 chars), matching the server gate.
+      if (notes.trim().length < 20) {
+        toast.error("Approval notes are required (>= 20 characters)");
+        return;
+      }
+      approveMutation.mutate({ taskId: selectedTask.id, notes: notes.trim() });
     } else if (actionType === "reject") {
       if (!notes.trim()) {
         toast.error("Rejection reason is required");
