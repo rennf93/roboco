@@ -25,6 +25,7 @@ import {
 import { MoreHorizontal, Play, Pause, CheckCircle, XCircle, Pencil, Trash2, Clock, MessageSquare } from "lucide-react";
 import { toast } from "sonner";
 import { EditTaskDialog } from "./edit-task-dialog";
+import { RequiredNotesDialog } from "./task-detail/task-action-dialogs";
 
 interface TaskActionsProps {
   task: Task;
@@ -44,6 +45,8 @@ export function TaskActions({
   const deleteTask = useDeleteTask();
   const [editOpen, setEditOpen] = useState(false);
   const [deleteOpen, setDeleteOpen] = useState(false);
+  const [completeOpen, setCompleteOpen] = useState(false);
+  const [cancelOpen, setCancelOpen] = useState(false);
 
   const handleAction = async (action: string) => {
     try {
@@ -65,12 +68,10 @@ export function TaskActions({
           toast.success("Task resumed");
           break;
         case "complete":
-          await lifecycle.complete.mutateAsync(task.id);
-          toast.success("Task completed");
+          setCompleteOpen(true);
           break;
         case "cancel":
-          await lifecycle.cancel.mutateAsync(task.id);
-          toast.success("Task cancelled");
+          setCancelOpen(true);
           break;
         case "reopen":
           await lifecycle.reopen.mutateAsync(task.id);
@@ -83,6 +84,26 @@ export function TaskActions({
       }
     } catch {
       toast.error("Action failed: " + action);
+    }
+  };
+
+  const handleComplete = async (justification: string) => {
+    try {
+      await lifecycle.complete.mutateAsync({ taskId: task.id, justification });
+      toast.success("Task completed");
+      setCompleteOpen(false);
+    } catch {
+      toast.error("Action failed: complete");
+    }
+  };
+
+  const handleCancel = async (reason: string) => {
+    try {
+      await lifecycle.cancel.mutateAsync({ taskId: task.id, reason });
+      toast.success("Task cancelled");
+      setCancelOpen(false);
+    } catch {
+      toast.error("Action failed: cancel");
     }
   };
 
@@ -227,6 +248,35 @@ export function TaskActions({
         task={task}
         open={editOpen}
         onOpenChange={setEditOpen}
+      />
+
+      {/* Complete Dialog */}
+      <RequiredNotesDialog
+        open={completeOpen}
+        onOpenChange={setCompleteOpen}
+        onConfirm={handleComplete}
+        isPending={lifecycle.complete.isPending}
+        title="Approve & Complete"
+        description="Record why this work is approved and complete. This note is the permanent audit record and is required."
+        label="Completion justification"
+        placeholder="Approving and completing because..."
+        minChars={20}
+        confirmLabel="Approve & Complete"
+      />
+
+      {/* Cancel Dialog */}
+      <RequiredNotesDialog
+        open={cancelOpen}
+        onOpenChange={setCancelOpen}
+        onConfirm={handleCancel}
+        isPending={lifecycle.cancel.isPending}
+        title="Cancel Task"
+        description="Record why this task is being cancelled. This note is the permanent audit record and is required."
+        label="Cancellation reason"
+        placeholder="Cancelling because..."
+        minChars={10}
+        confirmLabel="Cancel Task"
+        destructive
       />
 
       {/* Delete Confirmation */}

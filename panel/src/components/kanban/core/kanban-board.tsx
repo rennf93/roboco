@@ -24,6 +24,14 @@ import {
 } from "@dnd-kit/core";
 import { useState } from "react";
 import { KanbanCard } from "./kanban-card";
+import { RequiredNotesDialog } from "@/components/tasks/task-detail/task-action-dialogs";
+
+type NotesActionKind = "pass-qa" | "fail-qa" | "complete";
+
+interface PendingNotesAction {
+  kind: NotesActionKind;
+  taskId: string;
+}
 
 interface ColumnConfig {
   id: string;
@@ -55,6 +63,7 @@ export function KanbanBoard({
   const lifecycle = useTaskLifecycle();
   const updateTask = useUpdateTask();
   const [activeTask, setActiveTask] = useState<Task | null>(null);
+  const [pendingNotesAction, setPendingNotesAction] = useState<PendingNotesAction | null>(null);
 
   const sensors = useSensors(
     useSensor(PointerSensor, {
@@ -138,28 +147,95 @@ export function KanbanBoard({
               toast.success("Task unblocked");
               break;
             case TaskStatus.AWAITING_QA:
-              await lifecycle.passQa.mutateAsync({ taskId });
-              toast.success("QA passed");
-              break;
+              setPendingNotesAction({ kind: "pass-qa", taskId });
+              return; // Dialog collects the required note
             case TaskStatus.AWAITING_DOCUMENTATION:
-              await lifecycle.complete.mutateAsync(taskId);
-              toast.success("Task completed");
-              break;
+              setPendingNotesAction({ kind: "complete", taskId });
+              return; // Dialog collects the required justification
           }
           break;
         case "pass-qa":
-          await lifecycle.passQa.mutateAsync({ taskId });
-          toast.success("QA passed");
-          break;
+          setPendingNotesAction({ kind: "pass-qa", taskId });
+          return; // Dialog collects the required note
         case "fail-qa":
-          await lifecycle.failQa.mutateAsync({ taskId });
-          toast.success("QA failed - returned to developer");
-          break;
+          setPendingNotesAction({ kind: "fail-qa", taskId });
+          return; // Dialog collects the required note
       }
       refetch();
     } catch {
       toast.error("Action failed");
     }
+  };
+
+  const handleNotesConfirm = async (text: string) => {
+    if (!pendingNotesAction) return;
+    const { kind, taskId } = pendingNotesAction;
+    try {
+      switch (kind) {
+        case "pass-qa":
+          await lifecycle.passQa.mutateAsync({ taskId, qaNotes: text });
+          toast.success("QA passed");
+          break;
+        case "fail-qa":
+          await lifecycle.failQa.mutateAsync({ taskId, qaNotes: text });
+          toast.success("QA failed - returned to developer");
+          break;
+        case "complete":
+          await lifecycle.complete.mutateAsync({ taskId, justification: text });
+          toast.success("Task completed");
+          break;
+      }
+      setPendingNotesAction(null);
+      refetch();
+    } catch {
+      toast.error("Action failed");
+    }
+  };
+
+  const notesDialogConfig: Record<
+    NotesActionKind,
+    {
+      title: string;
+      description: string;
+      label: string;
+      placeholder: string;
+      minChars: number;
+      confirmLabel: string;
+      destructive?: boolean;
+      isPending: boolean;
+    }
+  > = {
+    "pass-qa": {
+      title: "Pass QA",
+      description:
+        "Record the QA review outcome. This note is the permanent audit record and is required.",
+      label: "QA notes",
+      placeholder: "Verified against acceptance criteria; passing because...",
+      minChars: 20,
+      confirmLabel: "Pass QA",
+      isPending: lifecycle.passQa.isPending,
+    },
+    "fail-qa": {
+      title: "Fail QA",
+      description:
+        "Record what failed QA and what needs to change. This note is the permanent audit record and is required.",
+      label: "QA notes",
+      placeholder: "Failing QA because...",
+      minChars: 20,
+      confirmLabel: "Fail QA",
+      destructive: true,
+      isPending: lifecycle.failQa.isPending,
+    },
+    complete: {
+      title: "Approve & Complete",
+      description:
+        "Record why this work is approved and complete. This note is the permanent audit record and is required.",
+      label: "Completion justification",
+      placeholder: "Approving and completing because...",
+      minChars: 20,
+      confirmLabel: "Approve & Complete",
+      isPending: lifecycle.complete.isPending,
+    },
   };
 
   return (
@@ -225,6 +301,17 @@ export function KanbanBoard({
           ) : null}
         </DragOverlay>
       </DndContext>
+
+      {pendingNotesAction && (
+        <RequiredNotesDialog
+          open={true}
+          onOpenChange={(open) => {
+            if (!open) setPendingNotesAction(null);
+          }}
+          onConfirm={handleNotesConfirm}
+          {...notesDialogConfig[pendingNotesAction.kind]}
+        />
+      )}
     </div>
   );
 }
