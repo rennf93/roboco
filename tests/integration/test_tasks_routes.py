@@ -2209,6 +2209,7 @@ async def test_submit_pm_review_service_returns_none(task_client: dict) -> None:
         mock_factory.return_value = instance
         response = await task_client["client"].post(
             f"/api/tasks/{task.id}/submit-pm-review",
+            json={"notes": "Ready for PM review — all criteria met."},
             headers=_HDR,
         )
     assert response.status_code == HTTPStatus.BAD_REQUEST
@@ -2230,10 +2231,27 @@ async def test_complete_task_success(task_client: dict) -> None:
         mock_factory.return_value = instance
         response = await task_client["client"].post(
             f"/api/tasks/{task.id}/complete",
-            json={"force_with_cancelled": False},
+            json={
+                "force_with_cancelled": False,
+                "justification": "All acceptance criteria met; merging.",
+            },
             headers=_HDR,
         )
     assert response.status_code == HTTPStatus.OK
+
+
+@pytest.mark.asyncio
+async def test_complete_without_justification_rejected(task_client: dict) -> None:
+    """Audit: completing a task must carry its rationale (>= 20 chars)."""
+    task = _seed_task(task_client)
+    await task_client["db"].flush()
+    response = await task_client["client"].post(
+        f"/api/tasks/{task.id}/complete",
+        json={"force_with_cancelled": False},
+        headers=_HDR,
+    )
+    assert response.status_code == HTTPStatus.BAD_REQUEST
+    assert "JUSTIFICATION_REQUIRED" in response.json()["detail"]
 
 
 # ---------------------------------------------------------------------------

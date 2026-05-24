@@ -1084,11 +1084,19 @@ async def docs_complete(
 
     Transitions task from awaiting_documentation to awaiting_pm_review.
     """
+    # Audit: the documenter must record what was documented, so the next
+    # reader knows what exists. No note → empty trail, so reject.
+    if not data or not data.notes or len(data.notes.strip()) < _MIN_NOTES_CHARS:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=(
+                "DOC_NOTES_REQUIRED: docs-complete must include notes (>=20 "
+                "chars) describing what was documented and where."
+            ),
+        )
     service = get_task_service(db)
     try:
-        task = await service.docs_complete_for_task(
-            task_id, agent, notes=(data.notes if data else None)
-        )
+        task = await service.docs_complete_for_task(task_id, agent, notes=data.notes)
     except ServiceError as e:
         raise _translate_error(e) from e
     return task_to_response(task)
@@ -1122,7 +1130,17 @@ async def submit_for_pm_review(
             detail="Only the assigned agent can submit for PM review",
         )
 
-    notes = data.notes if data else None
+    # Audit: the submitter must record what is ready for review.
+    if not data or not data.notes or len(data.notes.strip()) < _MIN_NOTES_CHARS:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=(
+                "PM_REVIEW_NOTES_REQUIRED: submit-pm-review must include notes "
+                "(>=20 chars) summarizing what is ready for the PM to review."
+            ),
+        )
+
+    notes = data.notes
     task = await service.submit_for_pm_review(task_id, agent.role.value, notes)
     if not task:
         raise HTTPException(
@@ -1159,6 +1177,16 @@ async def complete_task(
     If force_with_cancelled=True, PM can complete despite cancelled subtasks.
     Requires justification. Does NOT apply to pending/in_progress subtasks.
     """
+    # Audit: completing a task is a decision that must carry its rationale.
+    justification = data.justification if data else None
+    if not justification or len(justification.strip()) < _MIN_NOTES_CHARS:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=(
+                "COMPLETE_JUSTIFICATION_REQUIRED: complete must include a "
+                "justification (>=20 chars) recording why the task is done."
+            ),
+        )
     service = get_task_service(db)
     try:
         task = await service.complete_task_for_agent(
@@ -1166,7 +1194,7 @@ async def complete_task(
             agent,
             permissions,
             force_with_cancelled=(data.force_with_cancelled if data else False),
-            justification=(data.justification if data else None),
+            justification=justification,
         )
     except ServiceError as e:
         raise _translate_error(e) from e
