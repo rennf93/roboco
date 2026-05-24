@@ -11,6 +11,7 @@ import {
   CeoRejectDialog,
   CreateBranchDialog,
   CreatePRDialog,
+  RequiredNotesDialog,
 } from "@/components/tasks/task-detail/task-action-dialogs";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Card, CardContent } from "@/components/ui/card";
@@ -37,6 +38,12 @@ export default function TaskDetailPage({ params }: TaskDetailPageProps) {
   const [rejectDialogOpen, setRejectDialogOpen] = useState(false);
   const [branchDialogOpen, setBranchDialogOpen] = useState(false);
   const [prDialogOpen, setPrDialogOpen] = useState(false);
+  const [cancelDialogOpen, setCancelDialogOpen] = useState(false);
+  const [passQaDialogOpen, setPassQaDialogOpen] = useState(false);
+  const [failQaDialogOpen, setFailQaDialogOpen] = useState(false);
+  const [docsCompleteDialogOpen, setDocsCompleteDialogOpen] = useState(false);
+  const [submitPmReviewDialogOpen, setSubmitPmReviewDialogOpen] = useState(false);
+  const [completeDialogOpen, setCompleteDialogOpen] = useState(false);
 
   const handleAction = async (action: string) => {
     if (!task) return;
@@ -76,34 +83,28 @@ export default function TaskDetailPage({ params }: TaskDetailPageProps) {
           toast.success("Task submitted for QA");
           break;
         case "pass-qa":
-          await lifecycle.passQa.mutateAsync({ taskId: task.id });
-          toast.success("Task passed QA");
-          break;
+          setPassQaDialogOpen(true);
+          return; // Don't refetch yet — dialog collects the required note
         case "fail-qa":
-          await lifecycle.failQa.mutateAsync({ taskId: task.id });
-          toast.success("Task failed QA");
-          break;
+          setFailQaDialogOpen(true);
+          return; // Don't refetch yet — dialog collects the required note
         case "complete":
-          await lifecycle.complete.mutateAsync(task.id);
-          toast.success("Task completed");
-          break;
+          setCompleteDialogOpen(true);
+          return; // Don't refetch yet — dialog collects the required justification
         case "cancel":
-          await lifecycle.cancel.mutateAsync(task.id);
-          toast.success("Task cancelled");
-          break;
+          setCancelDialogOpen(true);
+          return; // Don't refetch yet — dialog collects the required reason
         case "reopen":
           await lifecycle.reopen.mutateAsync(task.id);
           toast.success("Task reopened");
           break;
         // Git workflow actions
         case "docs-complete":
-          await lifecycle.docsComplete.mutateAsync(task.id);
-          toast.success("Documentation marked complete");
-          break;
+          setDocsCompleteDialogOpen(true);
+          return; // Don't refetch yet — dialog collects the required note
         case "submit-pm-review":
-          await lifecycle.submitPmReview.mutateAsync(task.id);
-          toast.success("Submitted for PM review");
-          break;
+          setSubmitPmReviewDialogOpen(true);
+          return; // Don't refetch yet — dialog collects the required note
         case "ceo-approve":
           setApproveDialogOpen(true);
           return; // Don't refetch yet — dialog collects the required note
@@ -177,6 +178,84 @@ export default function TaskDetailPage({ params }: TaskDetailPageProps) {
       refetch();
     } catch (err) {
       toast.error("Failed to approve task");
+      console.error(err);
+    }
+  };
+
+  const handleCancel = async (reason: string) => {
+    if (!task) return;
+    try {
+      await lifecycle.cancel.mutateAsync({ taskId: task.id, reason });
+      toast.success("Task cancelled");
+      setCancelDialogOpen(false);
+      refetch();
+    } catch (err) {
+      toast.error("Failed to cancel task");
+      console.error(err);
+    }
+  };
+
+  const handlePassQa = async (notes: string) => {
+    if (!task) return;
+    try {
+      await lifecycle.passQa.mutateAsync({ taskId: task.id, qaNotes: notes });
+      toast.success("Task passed QA");
+      setPassQaDialogOpen(false);
+      refetch();
+    } catch (err) {
+      toast.error("Failed to pass QA");
+      console.error(err);
+    }
+  };
+
+  const handleFailQa = async (notes: string) => {
+    if (!task) return;
+    try {
+      await lifecycle.failQa.mutateAsync({ taskId: task.id, qaNotes: notes });
+      toast.success("Task failed QA");
+      setFailQaDialogOpen(false);
+      refetch();
+    } catch (err) {
+      toast.error("Failed to fail QA");
+      console.error(err);
+    }
+  };
+
+  const handleDocsComplete = async (notes: string) => {
+    if (!task) return;
+    try {
+      await lifecycle.docsComplete.mutateAsync({ taskId: task.id, notes });
+      toast.success("Documentation marked complete");
+      setDocsCompleteDialogOpen(false);
+      refetch();
+    } catch (err) {
+      toast.error("Failed to mark documentation complete");
+      console.error(err);
+    }
+  };
+
+  const handleSubmitPmReview = async (notes: string) => {
+    if (!task) return;
+    try {
+      await lifecycle.submitPmReview.mutateAsync({ taskId: task.id, notes });
+      toast.success("Submitted for PM review");
+      setSubmitPmReviewDialogOpen(false);
+      refetch();
+    } catch (err) {
+      toast.error("Failed to submit for PM review");
+      console.error(err);
+    }
+  };
+
+  const handleComplete = async (justification: string) => {
+    if (!task) return;
+    try {
+      await lifecycle.complete.mutateAsync({ taskId: task.id, justification });
+      toast.success("Task completed");
+      setCompleteDialogOpen(false);
+      refetch();
+    } catch (err) {
+      toast.error("Failed to complete task");
       console.error(err);
     }
   };
@@ -306,6 +385,86 @@ export default function TaskDetailPage({ params }: TaskDetailPageProps) {
         onOpenChange={setRejectDialogOpen}
         onConfirm={handleCeoReject}
         isPending={lifecycle.ceoReject.isPending}
+      />
+
+      <RequiredNotesDialog
+        open={cancelDialogOpen}
+        onOpenChange={setCancelDialogOpen}
+        onConfirm={handleCancel}
+        isPending={lifecycle.cancel.isPending}
+        title="Cancel Task"
+        description="Record why this task is being cancelled. This note is the permanent audit record and is required."
+        label="Cancellation reason"
+        placeholder="Cancelling because..."
+        minChars={10}
+        confirmLabel="Cancel Task"
+        destructive
+      />
+
+      <RequiredNotesDialog
+        open={passQaDialogOpen}
+        onOpenChange={setPassQaDialogOpen}
+        onConfirm={handlePassQa}
+        isPending={lifecycle.passQa.isPending}
+        title="Pass QA"
+        description="Record the QA review outcome. This note is the permanent audit record and is required."
+        label="QA notes"
+        placeholder="Verified against acceptance criteria; passing because..."
+        minChars={20}
+        confirmLabel="Pass QA"
+      />
+
+      <RequiredNotesDialog
+        open={failQaDialogOpen}
+        onOpenChange={setFailQaDialogOpen}
+        onConfirm={handleFailQa}
+        isPending={lifecycle.failQa.isPending}
+        title="Fail QA"
+        description="Record what failed QA and what needs to change. This note is the permanent audit record and is required."
+        label="QA notes"
+        placeholder="Failing QA because..."
+        minChars={20}
+        confirmLabel="Fail QA"
+        destructive
+      />
+
+      <RequiredNotesDialog
+        open={docsCompleteDialogOpen}
+        onOpenChange={setDocsCompleteDialogOpen}
+        onConfirm={handleDocsComplete}
+        isPending={lifecycle.docsComplete.isPending}
+        title="Mark Docs Complete"
+        description="Record what documentation was written. This note is the permanent audit record and is required."
+        label="Documentation notes"
+        placeholder="Documented the following..."
+        minChars={20}
+        confirmLabel="Mark Docs Complete"
+      />
+
+      <RequiredNotesDialog
+        open={submitPmReviewDialogOpen}
+        onOpenChange={setSubmitPmReviewDialogOpen}
+        onConfirm={handleSubmitPmReview}
+        isPending={lifecycle.submitPmReview.isPending}
+        title="Submit for PM Review"
+        description="Record the summary for PM review. This note is the permanent audit record and is required."
+        label="Review notes"
+        placeholder="Submitting for PM review; summary..."
+        minChars={20}
+        confirmLabel="Submit for PM Review"
+      />
+
+      <RequiredNotesDialog
+        open={completeDialogOpen}
+        onOpenChange={setCompleteDialogOpen}
+        onConfirm={handleComplete}
+        isPending={lifecycle.complete.isPending}
+        title="Approve & Complete"
+        description="Record why this work is approved and complete. This note is the permanent audit record and is required."
+        label="Completion justification"
+        placeholder="Approving and completing because..."
+        minChars={20}
+        confirmLabel="Approve & Complete"
       />
 
       <CreateBranchDialog

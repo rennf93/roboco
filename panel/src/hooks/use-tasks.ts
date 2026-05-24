@@ -158,24 +158,26 @@ export function useTaskLifecycle() {
   });
 
   const passQa = useMutation({
-    mutationFn: ({ taskId, qaNotes }: { taskId: string; qaNotes?: string }) =>
+    mutationFn: ({ taskId, qaNotes }: { taskId: string; qaNotes: string }) =>
       tasksApi.passQa(taskId, qaNotes),
     onSuccess: invalidateTask,
   });
 
   const failQa = useMutation({
-    mutationFn: ({ taskId, qaNotes }: { taskId: string; qaNotes?: string }) =>
+    mutationFn: ({ taskId, qaNotes }: { taskId: string; qaNotes: string }) =>
       tasksApi.failQa(taskId, qaNotes),
     onSuccess: invalidateTask,
   });
 
   const complete = useMutation({
-    mutationFn: (taskId: string) => tasksApi.complete(taskId),
+    mutationFn: ({ taskId, justification }: { taskId: string; justification: string }) =>
+      tasksApi.complete(taskId, justification),
     onSuccess: invalidateTask,
   });
 
   const cancel = useMutation({
-    mutationFn: (taskId: string) => tasksApi.cancel(taskId),
+    mutationFn: ({ taskId, reason }: { taskId: string; reason: string }) =>
+      tasksApi.cancel(taskId, reason),
     onSuccess: invalidateTask,
   });
 
@@ -190,12 +192,14 @@ export function useTaskLifecycle() {
   });
 
   const docsComplete = useMutation({
-    mutationFn: (taskId: string) => tasksApi.docsComplete(taskId),
+    mutationFn: ({ taskId, notes }: { taskId: string; notes: string }) =>
+      tasksApi.docsComplete(taskId, notes),
     onSuccess: invalidateTask,
   });
 
   const submitPmReview = useMutation({
-    mutationFn: (taskId: string) => tasksApi.submitPmReview(taskId),
+    mutationFn: ({ taskId, notes }: { taskId: string; notes: string }) =>
+      tasksApi.submitPmReview(taskId, notes),
     onSuccess: invalidateTask,
   });
 

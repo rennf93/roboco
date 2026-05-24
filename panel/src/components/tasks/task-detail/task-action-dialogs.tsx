@@ -205,6 +205,84 @@ export function CeoApproveDialog({
   );
 }
 
+// Required Notes Dialog — a generalized version of CeoApproveDialog. Collects a
+// substantive audit note (>= minChars) before confirming a decision action.
+interface RequiredNotesDialogProps {
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
+  onConfirm: (text: string) => void;
+  isPending?: boolean;
+  title: string;
+  description: string;
+  label: string;
+  placeholder: string;
+  minChars: number;
+  confirmLabel: string;
+  destructive?: boolean;
+}
+
+export function RequiredNotesDialog({
+  open,
+  onOpenChange,
+  onConfirm,
+  isPending,
+  title,
+  description,
+  label,
+  placeholder,
+  minChars,
+  confirmLabel,
+  destructive,
+}: RequiredNotesDialogProps) {
+  const [text, setText] = useState("");
+  const tooShort = text.trim().length < minChars;
+
+  const handleConfirm = () => {
+    if (!tooShort) {
+      onConfirm(text.trim());
+      setText("");
+    }
+  };
+
+  return (
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      <DialogContent>
+        <DialogHeader>
+          <DialogTitle>{title}</DialogTitle>
+          <DialogDescription>{description}</DialogDescription>
+        </DialogHeader>
+        <div className="grid gap-4 py-4">
+          <div className="grid gap-2">
+            <Label htmlFor="required-notes">{label}</Label>
+            <Textarea
+              id="required-notes"
+              value={text}
+              onChange={(e) => setText(e.target.value)}
+              placeholder={placeholder}
+              rows={4}
+            />
+            <p className="text-xs text-muted-foreground">
+              {text.trim().length}/{minChars} characters minimum
+            </p>
+          </div>
+        </div>
+        <DialogFooter>
+          <Button variant="outline" onClick={() => onOpenChange(false)}>
+            Cancel
+          </Button>
+          <Button
+            variant={destructive ? "destructive" : "default"}
+            onClick={handleConfirm}
+            disabled={tooShort || isPending}
+          >
+            {isPending ? "Working..." : confirmLabel}
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
 // Create Branch Dialog
 interface CreateBranchDialogProps {
   open: boolean;
