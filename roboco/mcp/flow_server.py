@@ -214,23 +214,42 @@ def i_will_work_on(
     task_id: str,
     plan: str | None = None,
     steps: list[dict[str, str]] | None = None,
+    technical_considerations: list[str] | None = None,
+    risks: list[dict[str, str]] | None = None,
+    open_questions: list[dict[str, str | bool]] | None = None,
 ) -> dict[str, Any]:
     """Claim/start/recover a task. Works for pending, claimed, needs_revision.
 
+    On a FRESH claim a developer authors the SAME rich plan a PM does, so the
+    task's Plan tab is fully populated for audit/tracing — the gateway's
+    ``_dev_plan_gate`` rejects a thin one. Re-entry / recovery claims
+    (already-claimed, in_progress, needs_revision) do NOT re-supply any of
+    this; the gateway short-circuits before the gate.
+
     Args:
         task_id: UUID of the task you are claiming.
-        plan: One-paragraph narrative of how you'll execute the task.
+        plan: 2-4 sentences (>= 150 chars) describing HOW you will implement
+            this. Doubles as the plan's "Approach".
         steps: Ordered execution checklist — list of
-            ``{"title": "...", "description": "..."}``. Required on a
-            FRESH claim: the gateway's ``_dev_steps_gate`` rejects an
-            empty or thin list, and the same list is reused as the
-            progress checklist (#173 — completing a step advances %).
-            Re-entry / recovery claims (already-claimed or
-            needs_revision) do not need steps re-supplied.
+            ``{"title": "...", "description": "..."}`` with every description
+            substantive. Becomes the plan's sub-tasks AND the progress
+            checklist (#173 — completing a step advances %).
+        technical_considerations: Bullet list (strings) of architectural /
+            library / approach notes.
+        risks: List of ``{"risk": "...", "mitigation": "..."}`` entries.
+        open_questions: Optional list of ``{"question": "...",
+            "answered": false}`` entries.
     """
     return _post(
         _role_path("i_will_work_on"),
-        {"task_id": task_id, "plan": plan, "steps": steps or []},
+        {
+            "task_id": task_id,
+            "plan": plan,
+            "steps": steps or [],
+            "technical_considerations": technical_considerations or [],
+            "risks": risks or [],
+            "open_questions": open_questions or [],
+        },
     )
 
 

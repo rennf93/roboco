@@ -22,6 +22,31 @@ _GOOD_STEP_DESC = (
     "be-dev-1 prepends the smoke-test HTML comment above the README H1, "
     "leaving the rest of the file untouched, then stages the change."
 )
+# Full parity: a fresh dev claim authors the same rich plan a PM does. These
+# satisfy _dev_plan_gate (plan/approach >= 150 chars, substantive steps,
+# technical_considerations, risks).
+_GOOD_PLAN = (
+    "Append the timestamp HTML comment to the very bottom of README.md without "
+    "touching any other line, then commit it on the task branch and open a PR. "
+    "Verify the diff is a single-line addition before submitting for QA."
+)
+_GOOD_TC = ["Use a trailing newline so the comment sits on its own line."]
+_GOOD_RISKS = [
+    {
+        "risk": "An accidental reformat of README.md balloons the diff.",
+        "mitigation": "Append only; assert the diff touches one line pre-commit.",
+    }
+]
+
+
+def _full_plan_kwargs(steps: list[dict[str, str]]) -> dict[str, Any]:
+    """The full rich-plan kwargs a fresh dev claim must supply post-parity."""
+    return {
+        "plan": _GOOD_PLAN,
+        "steps": steps,
+        "technical_considerations": _GOOD_TC,
+        "risks": _GOOD_RISKS,
+    }
 
 
 def _make_deps(**overrides: Any) -> ChoreographerDeps:
@@ -137,22 +162,42 @@ async def test_dev_with_substantive_steps_passes_gate_and_persists_checklist() -
         {"title": "Edit README", "description": _GOOD_STEP_DESC},
         {"title": "Commit + open PR", "description": _GOOD_STEP_DESC},
     ]
-    env = await c.i_will_work_on(
-        dev_id,
-        task_id,
-        plan="implement the README change end to end",
-        steps=steps_in,
-    )
+    env = await c.i_will_work_on(dev_id, task_id, **_full_plan_kwargs(steps_in))
     body = env.as_dict()
     assert body.get("error") != "incomplete_input", body
-    # Steps were layered into the panel-shaped plan dict and persisted.
+    # The full rich plan was layered into the panel-shaped dict and persisted,
+    # so the dev leaf's Plan tab renders like a PM's (approach + sub_tasks +
+    # technical_considerations + risks).
     svc.set_plan.assert_awaited_once()
     persisted = svc.set_plan.await_args.args[1]
     assert isinstance(persisted, dict), persisted
     sub_tasks = persisted.get("sub_tasks") or []
     assert len(sub_tasks) == len(steps_in), persisted
     assert all(st.get("title") for st in sub_tasks), sub_tasks
-    assert persisted.get("text") == "implement the README change end to end"
+    assert persisted.get("approach") == _GOOD_PLAN
+    assert persisted.get("technical_considerations") == _GOOD_TC
+    assert len(persisted.get("risks") or []) == 1
+
+
+@pytest.mark.asyncio
+async def test_dev_fresh_claim_missing_considerations_and_risks_rejected() -> None:
+    """Full parity: substantive steps + long plan are not enough — a fresh dev
+    claim must also carry technical_considerations and risks."""
+    dev_id = uuid4()
+    task_id = uuid4()
+    c = Choreographer(_make_deps(task=_dev_task_svc(task_id)))
+
+    env = await c.i_will_work_on(
+        dev_id,
+        task_id,
+        plan=_GOOD_PLAN,
+        steps=[{"title": "Edit README", "description": _GOOD_STEP_DESC}],
+    )
+    body = env.as_dict()
+    assert body["error"] == "incomplete_input", body
+    missing = body.get("missing") or []
+    assert "technical_considerations" in missing, body
+    assert "risks" in missing, body
 
 
 @pytest.mark.asyncio

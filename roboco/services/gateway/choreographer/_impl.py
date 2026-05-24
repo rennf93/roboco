@@ -964,6 +964,9 @@ class Choreographer:
         task_id: UUID,
         plan: str | None = None,
         steps: list[dict[str, Any]] | None = None,
+        technical_considerations: list[str] | None = None,
+        risks: list[dict[str, Any]] | None = None,
+        open_questions: list[dict[str, Any]] | None = None,
     ) -> Envelope:
         """Claim a task and start work on it.
 
@@ -1006,15 +1009,21 @@ class Choreographer:
                 task_id=task_id,
                 verb="i_will_work_on",
             )
-        # #172: layer the step checklist onto the narrative plan via the
-        # same panel-shaped path PMs use, so task.plan.sub_tasks is
-        # populated (panel render + #173 progress). No steps → unchanged
-        # string behaviour.
-        effective_plan: str | dict[str, Any] | None = plan
-        if steps:
-            effective_plan = self._resolve_effective_plan(
-                plan or "", {"sub_tasks": steps}
-            )
+        # #172/full-parity: a dev authors the same rich plan a PM does. The
+        # dev's `plan` doubles as the Approach; `steps` become sub_tasks. Built
+        # via the panel-shaped path so the Plan tab renders identically and
+        # feeds #173 progress. With no rich fields (re-entry/recovery) this
+        # falls through to unchanged string behaviour.
+        rich_plan = {
+            "approach": plan or "",
+            "sub_tasks": steps or [],
+            "technical_considerations": technical_considerations or [],
+            "risks": risks or [],
+            "open_questions": open_questions or [],
+        }
+        effective_plan: str | dict[str, Any] | None = self._resolve_effective_plan(
+            plan or "", rich_plan
+        )
         spec_ctx = spec_module.Context(
             plan=effective_plan,
             actor_id=agent_id,
@@ -1035,7 +1044,16 @@ class Choreographer:
         ):
             return reentry
         return await self._fresh_dev_claim(
-            ctx, role, spec_ctx, agent, steps, role_str, t, agent_id, task_id, briefing
+            ctx,
+            role,
+            spec_ctx,
+            agent,
+            rich_plan,
+            role_str,
+            t,
+            agent_id,
+            task_id,
+            briefing,
         )
 
     async def _dev_reentry(
@@ -1080,23 +1098,23 @@ class Choreographer:
         role: Any,
         spec_ctx: Any,
         agent: Any,
-        steps: list[dict[str, Any]] | None,
+        rich_plan: dict[str, Any],
         role_str: str,
         t: Any,
         agent_id: UUID,
         task_id: UUID,
         briefing: dict[str, Any],
     ) -> Envelope:
-        """Fresh (non-re-entry) i_will_work_on tail: spec gate → dev-steps
+        """Fresh (non-re-entry) i_will_work_on tail: spec gate → dev-plan
         gate → claim/plan/start → post-claim journal gate. Extracted so
-        i_will_work_on stays within the return-count budget; the dev-steps
+        i_will_work_on stays within the return-count budget; the dev-plan
         gate mirrors _pm_sub_tasks_gate's placement (after the spec gate).
         """
         if rejection := await self._claim_plan_start_gate(ctx, role, spec_ctx):
             return rejection
-        if rejection := await self._dev_steps_gate(
+        if rejection := await self._dev_plan_gate(
             role_str=role_str,
-            steps=steps,
+            rich_plan=rich_plan,
             task=t,
             agent_id=agent_id,
             task_id=task_id,
@@ -1108,66 +1126,80 @@ class Choreographer:
             "i_will_work_on", agent_id, task_id, envelope
         )
 
-    async def _dev_steps_gate(
+    @staticmethod
+    def _dev_plan_field_gaps(rich_plan: dict[str, Any]) -> dict[str, str]:
+        """Collect missing/thin rich-plan fields for a fresh dev claim.
+
+        Full parity with PMs: approach (the dev's `plan`, >= min chars),
+        substantive sub_tasks (the `steps` checklist), technical_considerations
+        and risks. open_questions stay optional. Returns {field: hint}.
+        """
+        gaps: dict[str, str] = {}
+        approach = str(rich_plan.get("approach") or "").strip()
+        if len(approach) < _PM_APPROACH_MIN_LEN:
+            gaps["plan"] = (
+                f"plan must be >= {_PM_APPROACH_MIN_LEN} chars describing HOW "
+                "you will implement this (it is the plan's Approach)."
+            )
+        steps = rich_plan.get("sub_tasks") or []
+        if not steps:
+            gaps["steps"] = (
+                "a non-empty execution checklist — list of {title, "
+                "description}; each step is also a progress-checklist item."
+            )
+        elif thin := _thin_subtask_hint(steps):
+            gaps["steps"] = thin
+        if not rich_plan.get("technical_considerations"):
+            gaps["technical_considerations"] = (
+                "list >= 1 architectural / library / approach note (strings)."
+            )
+        if not rich_plan.get("risks"):
+            gaps["risks"] = (
+                "list >= 1 {risk, mitigation} entry — what could go wrong and "
+                "how you'll handle it."
+            )
+        return gaps
+
+    async def _dev_plan_gate(
         self,
         *,
         role_str: str,
-        steps: list[dict[str, Any]] | None,
+        rich_plan: dict[str, Any],
         task: Any,
         agent_id: UUID,
         task_id: UUID,
         briefing: dict[str, Any],
     ) -> Envelope | None:
-        """#172: a developer's fresh claim must carry a substantive step
-        checklist — it is the execution plan AND the progress checklist
-        (#173). Non-developer callers and re-entry are unaffected (the
-        re-entry/recovery paths return before this is reached). Returns a
-        rejection Envelope when steps are absent/thin; None when the gate
-        passed.
+        """A developer's FRESH claim must author the same rich plan a PM does,
+        so the task's Plan tab is fully populated for audit/tracing. Enforces
+        approach + steps + technical_considerations + risks (open_questions
+        optional). Non-developer callers and re-entry are unaffected — the
+        re-entry/recovery paths return before this is reached. Returns a
+        rejection Envelope when the plan is thin; None when it passes.
         """
         if role_str != "developer":
             return None
-        if not steps:
-            return await self._emit_rejection(
-                Envelope.incomplete_input(
-                    missing=["steps"],
-                    field_hints={
-                        "steps": (
-                            "developers must plan their work as a step "
-                            "checklist — a non-empty list of "
-                            "{title, description}. Each step is both your "
-                            "execution plan and a progress-checklist item."
-                        )
-                    },
-                    remediate=(
-                        "re-issue i_will_work_on(task_id, plan, "
-                        "steps=[{'title': '...', 'description': '...'}, ...]) "
-                        f"with every description >= {_PM_SUBTASK_DESC_MIN_LEN} "
-                        "chars saying what that step does."
-                    ),
-                    context_briefing=briefing,
-                ).with_introspection(task=task, role=role_str),
-                agent_id=agent_id,
-                task_id=task_id,
-                verb="i_will_work_on",
-            )
-        if thin := _thin_subtask_hint(steps):
-            return await self._emit_rejection(
-                Envelope.incomplete_input(
-                    missing=["steps"],
-                    field_hints={"steps": thin},
-                    remediate=(
-                        "re-issue i_will_work_on with every step description "
-                        f">= {_PM_SUBTASK_DESC_MIN_LEN} chars describing what "
-                        "that step actually does."
-                    ),
-                    context_briefing=briefing,
-                ).with_introspection(task=task, role=role_str),
-                agent_id=agent_id,
-                task_id=task_id,
-                verb="i_will_work_on",
-            )
-        return None
+        gaps = self._dev_plan_field_gaps(rich_plan)
+        if not gaps:
+            return None
+        return await self._emit_rejection(
+            Envelope.incomplete_input(
+                missing=sorted(gaps),
+                field_hints=gaps,
+                remediate=(
+                    "re-issue i_will_work_on(task_id, plan='<how, >= "
+                    f"{_PM_APPROACH_MIN_LEN} chars>', "
+                    "steps=[{'title': '...', 'description': '...'}, ...], "
+                    "technical_considerations=['...'], "
+                    "risks=[{'risk': '...', 'mitigation': '...'}]) — the same "
+                    "rich plan a PM authors, so your task's Plan tab is filled."
+                ),
+                context_briefing=briefing,
+            ).with_introspection(task=task, role=role_str),
+            agent_id=agent_id,
+            task_id=task_id,
+            verb="i_will_work_on",
+        )
 
     @staticmethod
     def _with_briefing(env: Envelope, briefing: dict[str, Any]) -> Envelope:

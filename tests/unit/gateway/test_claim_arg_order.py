@@ -36,6 +36,21 @@ _STEPS = [
         ),
     }
 ]
+# Full parity: a fresh dev claim authors the same rich plan a PM does.
+# These satisfy _dev_plan_gate (plan/approach >= 150 chars,
+# technical_considerations, risks).
+_GOOD_PLAN = (
+    "Append the timestamp HTML comment to the very bottom of README.md without "
+    "touching any other line, then commit it on the task branch and open a PR. "
+    "Verify the diff is a single-line addition before submitting for QA."
+)
+_GOOD_TC = ["Use a trailing newline so the comment sits on its own line."]
+_GOOD_RISKS = [
+    {
+        "risk": "An accidental reformat of README.md balloons the diff.",
+        "mitigation": "Append only; assert the diff touches one line pre-commit.",
+    }
+]
 
 
 def _make_deps(**overrides: Any) -> ChoreographerDeps:
@@ -132,7 +147,14 @@ async def test_i_will_work_on_pending_calls_claim_with_task_id_first() -> None:
     deps = _make_deps(task=task_svc)
     c = Choreographer(deps)
 
-    env = await c.i_will_work_on(agent_id, task_id, plan="x", steps=_STEPS)
+    env = await c.i_will_work_on(
+        agent_id,
+        task_id,
+        plan=_GOOD_PLAN,
+        steps=_STEPS,
+        technical_considerations=_GOOD_TC,
+        risks=_GOOD_RISKS,
+    )
 
     # Service signature is (task_id, agent_id, ...) — pin that order.
     task_svc.claim.assert_awaited_once_with(task_id, agent_id)
@@ -184,7 +206,14 @@ async def test_i_will_work_on_needs_revision_calls_start_with_task_id_first() ->
     deps = _make_deps(task=task_svc)
     c = Choreographer(deps)
 
-    env = await c.i_will_work_on(agent_id, task_id, steps=_STEPS)
+    env = await c.i_will_work_on(
+        agent_id,
+        task_id,
+        plan=_GOOD_PLAN,
+        steps=_STEPS,
+        technical_considerations=_GOOD_TC,
+        risks=_GOOD_RISKS,
+    )
 
     task_svc.start.assert_awaited_once_with(task_id, agent_id)
     task_svc.claim.assert_awaited_once_with(task_id, agent_id)

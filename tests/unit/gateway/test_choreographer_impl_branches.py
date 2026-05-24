@@ -30,6 +30,21 @@ _STEPS = [
         ),
     }
 ]
+# Full parity: a fresh dev claim authors the same rich plan a PM does.
+# These satisfy _dev_plan_gate (plan/approach >= 150 chars,
+# technical_considerations, risks).
+_GOOD_PLAN = (
+    "Append the timestamp HTML comment to the very bottom of README.md without "
+    "touching any other line, then commit it on the task branch and open a PR. "
+    "Verify the diff is a single-line addition before submitting for QA."
+)
+_GOOD_TC = ["Use a trailing newline so the comment sits on its own line."]
+_GOOD_RISKS = [
+    {
+        "risk": "An accidental reformat of README.md balloons the diff.",
+        "mitigation": "Append only; assert the diff touches one line pre-commit.",
+    }
+]
 
 
 def _wire_dev_task_svc(
@@ -152,7 +167,14 @@ async def test_i_will_work_on_pending_claim_raises_returns_invalid_state() -> No
     task_svc.claim.side_effect = RuntimeError("workspace down")
     deps = _make_deps(task=task_svc)
     c = Choreographer(deps)
-    env = await c.i_will_work_on(agent_id, task_id, plan="plan", steps=_STEPS)
+    env = await c.i_will_work_on(
+        agent_id,
+        task_id,
+        plan=_GOOD_PLAN,
+        steps=_STEPS,
+        technical_considerations=_GOOD_TC,
+        risks=_GOOD_RISKS,
+    )
     body = env.as_dict()
     assert body["error"] == "invalid_state"
     assert "verb runner failed" in body["message"]
@@ -168,7 +190,14 @@ async def test_i_will_work_on_pending_claim_returns_none_invalid_state() -> None
     task_svc.claim.return_value = None
     deps = _make_deps(task=task_svc)
     c = Choreographer(deps)
-    env = await c.i_will_work_on(agent_id, task_id, plan="plan", steps=_STEPS)
+    env = await c.i_will_work_on(
+        agent_id,
+        task_id,
+        plan=_GOOD_PLAN,
+        steps=_STEPS,
+        technical_considerations=_GOOD_TC,
+        risks=_GOOD_RISKS,
+    )
     body = env.as_dict()
     assert body["error"] == "invalid_state"
 
@@ -214,7 +243,14 @@ async def test_i_will_work_on_start_returns_none_invalid_state() -> None:
     task_svc.start.return_value = None  # start fails
     deps = _make_deps(task=task_svc)
     c = Choreographer(deps)
-    env = await c.i_will_work_on(agent_id, task_id, plan="ok plan", steps=_STEPS)
+    env = await c.i_will_work_on(
+        agent_id,
+        task_id,
+        plan=_GOOD_PLAN,
+        steps=_STEPS,
+        technical_considerations=_GOOD_TC,
+        risks=_GOOD_RISKS,
+    )
     body = env.as_dict()
     assert body["error"] == "invalid_state"
     assert "start failed" in body["message"]
@@ -237,7 +273,14 @@ async def test_needs_revision_branch_claim_fails_invalid_state() -> None:
     task_svc.claim.return_value = None
     deps = _make_deps(task=task_svc)
     c = Choreographer(deps)
-    env = await c.i_will_work_on(agent_id, task_id, plan="ok", steps=_STEPS)
+    env = await c.i_will_work_on(
+        agent_id,
+        task_id,
+        plan=_GOOD_PLAN,
+        steps=_STEPS,
+        technical_considerations=_GOOD_TC,
+        risks=_GOOD_RISKS,
+    )
     body = env.as_dict()
     assert body["error"] == "invalid_state"
 
@@ -253,7 +296,14 @@ async def test_needs_revision_branch_start_fails() -> None:
     task_svc.start.return_value = None
     deps = _make_deps(task=task_svc)
     c = Choreographer(deps)
-    env = await c.i_will_work_on(agent_id, task_id, plan="ok", steps=_STEPS)
+    env = await c.i_will_work_on(
+        agent_id,
+        task_id,
+        plan=_GOOD_PLAN,
+        steps=_STEPS,
+        technical_considerations=_GOOD_TC,
+        risks=_GOOD_RISKS,
+    )
     body = env.as_dict()
     assert body["error"] == "invalid_state"
 
@@ -1147,7 +1197,14 @@ async def test_i_will_work_on_envelope_carries_introspection_on_success() -> Non
     task_svc.start.return_value = claimed_task
     deps = _make_deps(task=task_svc)
     c = Choreographer(deps)
-    env = await c.i_will_work_on(agent_id, task_id, plan="ok plan", steps=_STEPS)
+    env = await c.i_will_work_on(
+        agent_id,
+        task_id,
+        plan=_GOOD_PLAN,
+        steps=_STEPS,
+        technical_considerations=_GOOD_TC,
+        risks=_GOOD_RISKS,
+    )
     body = env.as_dict()
     assert body["error"] is None
     assert body["current_state"] == "in_progress"

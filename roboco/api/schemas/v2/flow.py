@@ -22,6 +22,14 @@ class IWillWorkOnRequest(BaseModel):
         default_factory=list,
         description="Ordered execution steps — list of {title, description}",
     )
+    # Full parity with IWillPlanRequest so a dev leaf's Plan tab renders the
+    # same rich structure PMs author. Defaults stay permissive (NOT min_length)
+    # so re-entry/recovery calls that omit them still pass route validation;
+    # depth + presence are enforced on FRESH dev claims by
+    # choreographer._dev_plan_gate. The dev's `plan` doubles as the approach.
+    technical_considerations: list[str] = Field(default_factory=list)
+    risks: list[dict[str, str]] = Field(default_factory=list)
+    open_questions: list[dict[str, str | bool]] = Field(default_factory=list)
 
 
 class OpenPrRequest(BaseModel):

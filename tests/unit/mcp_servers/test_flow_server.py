@@ -144,6 +144,9 @@ def test_i_will_work_on_passes_plan(flow_module: types.ModuleType) -> None:
         "task_id": "task-uuid",
         "plan": "my plan",
         "steps": [],
+        "technical_considerations": [],
+        "risks": [],
+        "open_questions": [],
     }
     assert "/api/v2/flow/developer/i_will_work_on" in args[0]
 
@@ -155,7 +158,14 @@ def test_i_will_work_on_plan_defaults_to_none(flow_module: types.ModuleType) -> 
         flow_module.i_will_work_on("task-uuid")
 
     _, kwargs = fake_client.post.call_args
-    assert kwargs["json"] == {"task_id": "task-uuid", "plan": None, "steps": []}
+    assert kwargs["json"] == {
+        "task_id": "task-uuid",
+        "plan": None,
+        "steps": [],
+        "technical_considerations": [],
+        "risks": [],
+        "open_questions": [],
+    }
 
 
 def test_i_will_work_on_passes_steps(flow_module: types.ModuleType) -> None:
@@ -176,6 +186,9 @@ def test_i_will_work_on_passes_steps(flow_module: types.ModuleType) -> None:
         "task_id": "task-uuid",
         "plan": "p",
         "steps": steps,
+        "technical_considerations": [],
+        "risks": [],
+        "open_questions": [],
     }
 
 

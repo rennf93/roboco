@@ -4832,11 +4832,22 @@ class TaskService(BaseService):
     async def set_plan(
         self, task_id: UUID, plan: str | dict[str, Any]
     ) -> TaskTable | None:
-        """Write the task's plan field. Strings are wrapped as {'text': plan}."""
+        """Write the task's plan field. Strings are wrapped as {'text': plan}.
+
+        Never DOWNGRADE a rich plan to a contentless one: a recovery/re-entry
+        claim that omits the rich fields would otherwise clobber the Approach +
+        sub_tasks an earlier fresh claim already authored — this was why a
+        flaked-then-recovered dev leaf showed an empty Plan tab. If the incoming
+        plan has no approach but the stored one does, keep the stored plan.
+        """
         task = await self.get(task_id)
         if not task:
             return None
-        task.plan = plan if isinstance(plan, dict) else {"text": plan}
+        new_plan = plan if isinstance(plan, dict) else {"text": plan}
+        existing = task.plan if isinstance(task.plan, dict) else {}
+        if existing.get("approach") and not new_plan.get("approach"):
+            return task
+        task.plan = new_plan
         await self.session.flush()
         return task
 
