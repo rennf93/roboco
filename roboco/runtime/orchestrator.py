@@ -499,6 +499,11 @@ class AgentOrchestrator:
         # is in a loop — without this gate the orchestrator re-spawns every
         # tick forever (seen in production on 2026-04-22).
         self._pm_respawn_tracker: dict[tuple[str, str], dict[str, Any]] = {}
+        # Board agents (Product Owner / Head of Marketing) get exactly ONE
+        # review pass per assigned task: they have no verb to claim, plan,
+        # delegate, or complete, so a respawn cannot advance the task and would
+        # just loop. Tracks (agent_slug, task_id) already dispatched.
+        self._board_dispatched: set[tuple[str, str]] = set()
         # Stale-claim reaper config. Wave C3 (2026-05-12): sourced from
         # stale_claim_reap_seconds (default 600) rather than
         # claim_stale_seconds (default 180). The two settings are now
@@ -4027,6 +4032,15 @@ Start now: evidence(task_id="{task_id}")
         }
     )
 
+    # Board reviewers. They advise — review + record requirements + escalate —
+    # but do not build or delegate. Dispatched once per assigned board task.
+    _BOARD_AGENTS: ClassVar[frozenset[str]] = frozenset(
+        {
+            "product-owner",
+            "head-marketing",
+        }
+    )
+
     # Use foundation's default; keep the local name for back-compat.
     _PM_RESPAWN_MAX_UNPRODUCTIVE = _AGENT_LOOP_BUDGET.pm_respawn_max_unproductive
 
@@ -4165,6 +4179,38 @@ Start now: evidence(task_id="{task_id}")
             git_context=self._task_git_context(task),
         )
 
+    async def _handle_board_assigned_task(
+        self, task: dict[str, Any], assigned_to: str
+    ) -> None:
+        """Spawn a board agent (Product Owner / Head of Marketing) ONCE to
+        review an assigned board task.
+
+        Board roles advise: they can triage, record notes, discuss, and
+        escalate_to_ceo, but have NO verb to claim, plan, delegate, or complete.
+        So a respawn cannot advance the task — it would just loop. The board
+        reviews and records requirements; the CEO then reassigns the task to
+        Main PM for delegation to the cells. Dispatch is therefore one-shot per
+        (agent, task).
+        """
+        agent_slug = self._resolve_agent_slug(assigned_to)
+        if agent_slug not in self._BOARD_AGENTS or self._is_agent_active(agent_slug):
+            return
+        key = (agent_slug, str(task.get("id")))
+        if key in self._board_dispatched:
+            return
+        self._board_dispatched.add(key)
+        logger.info(
+            "Spawning board agent for review",
+            task_id=task.get("id"),
+            agent_id=agent_slug,
+        )
+        await self.spawn_agent(
+            agent_id=agent_slug,
+            task_id=task["id"],
+            initial_prompt=self._build_board_prompt(task),
+            git_context=self._task_git_context(task),
+        )
+
     def _pm_spawn_prompt(
         self, routing: str, agent_id: str, task: dict[str, Any]
     ) -> str:
@@ -4247,7 +4293,10 @@ Start now: evidence(task_id="{task_id}")
                 continue
             assigned_to = task.get("assigned_to")
             if assigned_to:
-                await self._handle_pm_assigned_task(task, assigned_to)
+                if self._resolve_agent_slug(assigned_to) in self._BOARD_AGENTS:
+                    await self._handle_board_assigned_task(task, assigned_to)
+                else:
+                    await self._handle_pm_assigned_task(task, assigned_to)
                 continue
 
             await self._route_unassigned_pm_task(client, task)
@@ -5566,6 +5615,42 @@ TEAM: {team}
 5. give_me_work() / triage() for the next item, or i_am_idle().
 
 Never `commit`, never write code, never run `git`. PMs coordinate.
+"""
+
+    def _build_board_prompt(self, task: dict[str, Any]) -> str:
+        """Prompt for a board agent (Product Owner / Head of Marketing) to
+        review and SHAPE a strategic task. Board roles advise — they do not
+        build, code, or delegate."""
+        task_id = task.get("id", "unknown")
+        title = task.get("title", "Untitled")
+        description = task.get("description", "No description")
+
+        return f"""\
+You are on the Board. This strategic task is assigned to YOU for review.
+
+TASK: {task_id}
+TITLE: {title}
+DESCRIPTION: {description}
+
+YOUR ROLE: review and shape this work. You do NOT build, code, claim, or
+delegate — those verbs are not yours. Your deliverable is a recorded review.
+
+== WHAT TO DO ==
+
+1. triage()
+     — see your board-level work and context.
+2. note(text="<the product requirements and acceptance criteria you expect, the
+        scope, the must-haves, and what 'done' looks like>",
+        scope='decision', task_id="{task_id}")
+     — this recorded review is how the CEO and Main PM act on your input.
+3. say(...) in your board channel to flag UX, positioning, or risk concerns
+     (Head of Marketing: weigh in on UX + how the feature is positioned).
+4. i_am_idle()
+     — when your review is recorded. The CEO routes the task to Main PM for
+       delegation to the cells; you do NOT hand it off yourself.
+
+Do NOT attempt to claim, plan, complete, or delegate — the gateway will reject
+those, and a substantive recorded note IS your job here.
 """
 
     def _build_marketing_prompt(self, task: dict[str, Any]) -> str:
