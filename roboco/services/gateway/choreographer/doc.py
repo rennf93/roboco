@@ -308,6 +308,48 @@ class DocMixin(_Base):
             verb="i_documented",
         )
 
+    async def _ensure_doc_reflect(
+        self,
+        doc_agent_id: UUID,
+        task_id: UUID,
+        notes: str,
+        files: list[str],
+    ) -> None:
+        """Record the journal:reflect i_documented requires, synthesized from
+        the documenter's own submission, when they didn't journal one.
+
+        ``i_documented`` requires a journal:reflect entry (pre-gateway parity,
+        VERB_REQUIREMENTS). Documenters that never call note(scope='reflect')
+        used to loop on the gate's tracing_gap until the per-verb circuit
+        breaker (limit 3 / 60s) locked them out, stranding the task in
+        awaiting_documentation. The ``notes`` + ``files`` this verb already
+        carries ARE the reflection's substance, so we write the entry from
+        them — one call, no loop.
+
+        Synthesis is skipped when (a) the agent already authored a reflect
+        (theirs is richer — never clobber it) or (b) the submission is below
+        the notes/files gate thresholds, so we never persist a reflect built
+        from input ``_check_doc_gates`` will reject anyway; the agent retries
+        with a real submission and we synthesize then.
+        """
+        if await self.journal.has_reflect_for_task(doc_agent_id, task_id):
+            return
+        if len(notes.strip()) < settings.docs_notes_min_chars or not files:
+            return
+        content = (
+            f"## What Done\n{notes.strip()}\n\n"
+            f"Documented files: {', '.join(files)}\n\n"
+            "## Next Steps\n- Hand off to PM review"
+        )
+        title = notes.strip().split("\n", 1)[0][:200]
+        await self.journal.write_entry(
+            agent_id=doc_agent_id,
+            task_id=task_id,
+            scope="reflect",
+            title=title,
+            content=content,
+        )
+
     async def _i_documented_spec_gate(
         self,
         doc_agent_id: UUID,
@@ -399,6 +441,11 @@ class DocMixin(_Base):
         )
         if spec_rejection is not None:
             return spec_rejection
+
+        # Satisfy the journal:reflect requirement from this submission's
+        # notes + files when the documenter didn't journal one themselves —
+        # otherwise the gate's tracing_gap loops into the circuit breaker.
+        await self._ensure_doc_reflect(doc_agent_id, task_id, notes, files)
 
         gate_rejection = await self._check_doc_gates(
             doc_agent_id, task_id, notes, files, owned_task
