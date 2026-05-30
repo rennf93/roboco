@@ -219,3 +219,5 @@ Contributions are welcome. All contributors must sign the Contributor License
 Agreement ([`CLA.md`](./CLA.md)) — this is automated on your first pull
 request. See [`CONTRIBUTING.md`](./CONTRIBUTING.md) for the workflow and why
 the CLA exists.
+
+<!-- timestamp: 2026-05-30 -->
