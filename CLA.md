@@ -117,13 +117,14 @@ discretion.
 ## 9. Governing law
 
 This Agreement is governed by and construed in accordance with the laws of
-**[JURISDICTION — TO BE SET BY THE MAINTAINER, e.g. "Italy" or the relevant
-country/state]**, without regard to its conflict-of-law provisions. Any
-dispute arising out of or relating to this Agreement shall be subject to the
-exclusive jurisdiction of the courts located in that jurisdiction.
+**Italy**, without regard to its conflict-of-law provisions. Any dispute
+arising out of or relating to this Agreement shall be subject to the exclusive
+jurisdiction of the competent courts of Italy.
 
-> ⚠️ This placeholder MUST be set to a real jurisdiction before the CLA is
-> used in production.
+> Note: before public launch, have counsel confirm the specific venue (foro
+> competente) — typically the court of the Maintainer's place of residence or
+> the future entity's registered office — and whether to name it explicitly
+> here.
 
 ## 10. Entire agreement
 
