@@ -16,6 +16,17 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 ** You need `X-Agent-Id` and `X-Agent-Role` headers to be set as 'ceo' for all API calls **
 **`ssh renzof@renzof-nas.local` SSH TO THE SERVER**
 
+## Licensing
+
+RoboCo is licensed under **AGPL-3.0** (see `LICENSE`). Copyright (c) 2026
+Renzo Franceschini. Do NOT reintroduce an MIT or other license reference
+anywhere (README, headers, package metadata) — the project is AGPL.
+
+Contributions require a signed **Contributor License Agreement** (`CLA.md`),
+automated via the CLA Assistant workflow (`.github/workflows/cla.yml`). The
+CLA preserves the option to dual-license / offer a commercial edition later;
+keep copyright assignment language intact. See `CONTRIBUTING.md`.
+
 ## Project Overview
 
 **RoboCo** is an AI Agentic Company - a virtual organization of 18 AI agents + 1 human CEO, designed to operate as a complete software development workforce. The system implements a structured organizational hierarchy with formal communication protocols, task management, and quality controls.

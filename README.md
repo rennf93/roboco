@@ -203,4 +203,19 @@ uv run mypy roboco/
 
 ## License
 
-MIT
+Copyright (c) 2026 Renzo Franceschini
+
+RoboCo is licensed under the **GNU Affero General Public License v3.0**
+(AGPL-3.0). See [`LICENSE`](./LICENSE) for the full text.
+
+The AGPL's network-use clause (section 13) means that if you run a modified
+version of RoboCo as a network service, you must make your modified source
+available to its users. This keeps the project open while preventing closed,
+hosted re-distributions.
+
+## Contributing
+
+Contributions are welcome. All contributors must sign the Contributor License
+Agreement ([`CLA.md`](./CLA.md)) — this is automated on your first pull
+request. See [`CONTRIBUTING.md`](./CONTRIBUTING.md) for the workflow and why
+the CLA exists.
