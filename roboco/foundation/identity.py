@@ -43,6 +43,14 @@ class Team(StrEnum):
     SYSTEM = "system"
 
 
+# The three delivery cells. A Product maps one Project per cell. This is the
+# single source of truth for "the cells" subset — distinct from the full Team
+# enum (which also has board/main_pm/marketing/system). Replaces the prior
+# string-literal duplicates in agents_config.CELL_MEMBERS and
+# orchestrator.cell_teams.
+CELL_TEAMS: frozenset[Team] = frozenset({Team.BACKEND, Team.FRONTEND, Team.UX_UI})
+
+
 class RoleLevel(IntEnum):
     SYSTEM = -1
     DEV = 1

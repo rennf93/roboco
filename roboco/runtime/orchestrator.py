@@ -40,6 +40,7 @@ from roboco.agents_config import (
 )
 from roboco.config import settings
 from roboco.foundation import identity as _foundation
+from roboco.foundation.identity import CELL_TEAMS
 from roboco.foundation.policy.agent_loop import DEFAULT_BUDGET as _AGENT_LOOP_BUDGET
 from roboco.models import AgentRole, Team
 from roboco.models.runtime import (
@@ -3500,7 +3501,9 @@ Start by:
     @staticmethod
     def _route_by_task_type(task_type: str, team: str | None) -> str | None:
         """Route based on task_type field alone; returns None if no match."""
-        cell_teams = ("backend", "frontend", "ux_ui")
+        cell_teams = tuple(
+            sorted(t.value for t in CELL_TEAMS)
+        )  # ("backend", "frontend", "ux_ui")
         if task_type in ("planning", "research", "administrative"):
             return "cell_pm" if team in cell_teams else "main_pm"
         if task_type == "design" and team not in ("backend", "frontend"):

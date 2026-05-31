@@ -123,15 +123,8 @@ AGENT_TEAM_MAP: dict[str, str] = {
 }
 
 CELL_MEMBERS: dict[str, list[str]] = {
-    _foundation.Team.BACKEND.value: sorted(
-        _foundation.slugs_for_team(_foundation.Team.BACKEND)
-    ),
-    _foundation.Team.FRONTEND.value: sorted(
-        _foundation.slugs_for_team(_foundation.Team.FRONTEND)
-    ),
-    _foundation.Team.UX_UI.value: sorted(
-        _foundation.slugs_for_team(_foundation.Team.UX_UI)
-    ),
+    team.value: sorted(_foundation.slugs_for_team(team))
+    for team in sorted(_foundation.CELL_TEAMS, key=lambda t: t.value)
 }
 
 
