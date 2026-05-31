@@ -85,3 +85,51 @@ async def test_create_and_get_product_with_cells(product_client: dict) -> None:
     assert body["cells"] == [
         {"team": "backend", "project_id": str(product_client["project"].id)}
     ]
+
+
+@pytest.mark.asyncio
+async def test_update_product_duplicate_team_cell_returns_409(
+    product_client: dict,
+) -> None:
+    slug = f"prod-{uuid4().hex[:6]}"
+    create = await product_client["client"].post(
+        "/api/products",
+        json={"name": "RoboCo", "slug": slug, "cells": []},
+        headers=_HDR,
+    )
+    assert create.status_code == HTTPStatus.CREATED, create.text
+    pid = create.json()["id"]
+
+    project_id = str(product_client["project"].id)
+    patch = await product_client["client"].patch(
+        f"/api/products/{pid}",
+        json={
+            "cells": [
+                {"team": "backend", "project_id": project_id},
+                {"team": "backend", "project_id": project_id},
+            ]
+        },
+        headers=_HDR,
+    )
+    assert patch.status_code == HTTPStatus.CONFLICT, patch.text
+
+
+@pytest.mark.asyncio
+async def test_update_product_unknown_project_cell_returns_422(
+    product_client: dict,
+) -> None:
+    slug = f"prod-{uuid4().hex[:6]}"
+    create = await product_client["client"].post(
+        "/api/products",
+        json={"name": "RoboCo", "slug": slug, "cells": []},
+        headers=_HDR,
+    )
+    assert create.status_code == HTTPStatus.CREATED, create.text
+    pid = create.json()["id"]
+
+    patch = await product_client["client"].patch(
+        f"/api/products/{pid}",
+        json={"cells": [{"team": "backend", "project_id": str(uuid4())}]},
+        headers=_HDR,
+    )
+    assert patch.status_code == HTTPStatus.UNPROCESSABLE_ENTITY, patch.text

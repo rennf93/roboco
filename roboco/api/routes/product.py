@@ -5,6 +5,7 @@ from __future__ import annotations
 from uuid import UUID
 
 from fastapi import APIRouter, HTTPException, Query, status
+from sqlalchemy.exc import IntegrityError
 
 from roboco.api.deps import CurrentAgentContext, DbSession, require_pm_or_above
 from roboco.api.schemas.product import (
@@ -95,10 +96,27 @@ async def update_product(
         description=data.description,
         cells=_to_mappings(data.cells) if data.cells is not None else None,
     )
-    product = await service.update(product_id, update_data)
-    if not product:
-        raise HTTPException(status.HTTP_404_NOT_FOUND, detail="Product not found")
-    await db.commit()
+    # Replacing cells flushes child rows that can violate the
+    # uq_product_projects_product_team UNIQUE (two cells with the same team in
+    # the body) or the product_projects.project_id FK (a non-existent project).
+    # Either raises IntegrityError and poisons the session, so roll back and map
+    # the conflict to a client error instead of leaking an unhandled 500.
+    try:
+        product = await service.update(product_id, update_data)
+        if not product:
+            raise HTTPException(status.HTTP_404_NOT_FOUND, detail="Product not found")
+        await db.commit()
+    except IntegrityError as e:
+        await db.rollback()
+        if "uq_product_projects_product_team" in str(e):
+            raise HTTPException(
+                status.HTTP_409_CONFLICT,
+                detail="Duplicate cell: each team may map to at most one project.",
+            ) from e
+        raise HTTPException(
+            status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="Invalid cell mapping: project_id does not reference a project.",
+        ) from e
     return product_to_response(product)
 
 
