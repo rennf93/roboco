@@ -450,6 +450,74 @@ class ProjectTable(Base):
     )
 
 
+class ProductTable(Base):
+    """A product groups a per-cell Project mapping (a repo topology)."""
+
+    __tablename__ = "products"
+
+    id: Mapped[UUID] = mapped_column(
+        UUID(as_uuid=True), primary_key=True, default=uuid4
+    )
+    name: Mapped[str] = mapped_column(String(100), nullable=False)
+    slug: Mapped[str] = mapped_column(
+        String(50), unique=True, nullable=False, index=True
+    )
+    description: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+    created_by: Mapped[UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("agents.id"), nullable=False
+    )
+
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=lambda: datetime.now(UTC), nullable=False
+    )
+    updated_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), onupdate=lambda: datetime.now(UTC), nullable=True
+    )
+
+    creator: Mapped["AgentTable"] = relationship("AgentTable", lazy="joined")
+    cells: Mapped[list["ProductProjectTable"]] = relationship(
+        "ProductProjectTable",
+        back_populates="product",
+        cascade="all, delete-orphan",
+        lazy="selectin",
+    )
+
+
+class ProductProjectTable(Base):
+    """One Project per cell per Product (the per-cell routing map)."""
+
+    __tablename__ = "product_projects"
+
+    id: Mapped[UUID] = mapped_column(
+        UUID(as_uuid=True), primary_key=True, default=uuid4
+    )
+    product_id: Mapped[UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("products.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    team: Mapped[Team] = mapped_column(_str_enum(Team), nullable=False)
+    project_id: Mapped[UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("projects.id", ondelete="RESTRICT"),
+        nullable=False,
+        index=True,
+    )
+
+    product: Mapped["ProductTable"] = relationship(
+        "ProductTable", back_populates="cells"
+    )
+    project: Mapped["ProjectTable"] = relationship(
+        "ProjectTable", foreign_keys=[project_id], lazy="joined"
+    )
+
+    __table_args__ = (
+        UniqueConstraint("product_id", "team", name="uq_product_projects_product_team"),
+    )
+
+
 # =============================================================================
 # WORK SESSION TABLE
 # =============================================================================
