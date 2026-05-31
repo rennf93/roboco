@@ -27,6 +27,7 @@ from roboco.api.routes.messages import router as messages_router
 from roboco.api.routes.notifications import router as notifications_router
 from roboco.api.routes.optimal import router as optimal_router
 from roboco.api.routes.orchestrator import router as orchestrator_router
+from roboco.api.routes.product import router as product_router
 from roboco.api.routes.project import router as project_router
 from roboco.api.routes.provider import router as provider_router
 from roboco.api.routes.sessions import router as sessions_router
@@ -271,6 +272,13 @@ def create_app() -> FastAPI:
         project_router,
         prefix=f"{api_prefix}/projects",
         tags=["Projects"],
+    )
+
+    # Product Management
+    app.include_router(
+        product_router,
+        prefix=f"{api_prefix}/products",
+        tags=["Products"],
     )
 
     # AI Providers (model routing + Ollama-cloud fallback)
