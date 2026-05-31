@@ -141,21 +141,8 @@ ALL_AGENTS: Final[list[str]] = list(AGENT_ROLE_MAP.keys())
 # Board members
 BOARD_MEMBERS: Final[list[str]] = ["product-owner", "head-marketing", "auditor"]
 
-# All PMs
-ALL_PMS: Final[list[str]] = ["be-pm", "fe-pm", "ux-pm", "main-pm"]
-
-# All by role (cross-cell)
-ALL_DEVS: Final[list[str]] = [
-    "be-dev-1",
-    "be-dev-2",
-    "fe-dev-1",
-    "fe-dev-2",
-    "ux-dev-1",
-    "ux-dev-2",
-]
-ALL_QA: Final[list[str]] = ["be-qa", "fe-qa", "ux-qa"]
+# All documenters (cross-cell) — used for docs-write workspace permissions
 ALL_DOCS: Final[list[str]] = ["be-doc", "fe-doc", "ux-doc"]
-CELL_PMS: Final[list[str]] = ["be-pm", "fe-pm", "ux-pm"]
 
 # `PM_ROLES` is canonical in foundation.identity (CELL_PM + MAIN_PM only).
 # This file's historical 5-role set is renamed to TASK_CREATOR_ROLES — it

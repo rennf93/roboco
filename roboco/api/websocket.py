@@ -21,9 +21,6 @@ from uuid import UUID
 import httpx
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect, status
 
-from roboco.api.schemas.websocket import (
-    NewMessageBroadcast,
-)
 from roboco.config import settings
 from roboco.db.base import get_db
 from roboco.services.repositories import resolve_agent_uuid
@@ -420,23 +417,6 @@ async def notification_stream(
 # =============================================================================
 
 
-async def broadcast_new_message(msg: NewMessageBroadcast) -> None:
-    """Broadcast a new message to channel and session subscribers."""
-    event = {
-        "type": "message.new",
-        "message_id": str(msg.message_id),
-        "agent_id": str(msg.agent_id),
-        "content": msg.content,
-        "message_type": msg.message_type,
-        "timestamp": datetime.now(UTC).isoformat(),
-    }
-
-    await asyncio.gather(
-        manager.broadcast_to_channel(msg.channel_id, event),
-        manager.broadcast_to_session(msg.session_id, event),
-    )
-
-
 async def broadcast_agent_chunk(
     agent_id: str, chunk: str, metadata: dict[str, Any]
 ) -> None:
@@ -450,23 +430,6 @@ async def broadcast_agent_chunk(
     }
 
     await manager.broadcast_to_agent_watchers(UUID(agent_id), event)
-
-
-async def broadcast_session_closed(
-    session_id: UUID, channel_id: UUID, reason: str
-) -> None:
-    """Broadcast session closed event."""
-    event = {
-        "type": "session.closed",
-        "session_id": str(session_id),
-        "reason": reason,
-        "timestamp": datetime.now(UTC).isoformat(),
-    }
-
-    await asyncio.gather(
-        manager.broadcast_to_session(session_id, event),
-        manager.broadcast_to_channel(channel_id, event),
-    )
 
 
 async def broadcast_notification(

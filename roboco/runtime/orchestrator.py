@@ -577,40 +577,6 @@ class AgentOrchestrator:
 
         logger.info("Orchestrator stopped")
 
-    def get_running_agents(self) -> set[str]:
-        """Get set of currently running agent IDs."""
-        return set(self._instances.keys())
-
-    def is_agent_busy(self, agent_id: str) -> bool:
-        """
-        Check if agent has active work.
-
-        An agent is busy if:
-        1. They're in the running instances, AND
-        2. They have a task claimed/in_progress/verifying
-
-        Note: This is a lightweight check based on instance status.
-        For full busy detection, the event handler queries the database.
-        """
-        if agent_id not in self._instances:
-            return False
-        instance = self._instances[agent_id]
-        # If agent is running with a task, they're busy
-        return instance.current_task_id is not None
-
-    def queue_priority_work(self, agent_id: str, work: dict[str, Any]) -> None:
-        """
-        Queue priority work for an agent.
-
-        This is a placeholder for future priority queue functionality.
-        Currently logs the request for observability.
-        """
-        logger.info(
-            "Priority work queued (not yet implemented)",
-            agent_id=agent_id,
-            work_type=work.get("type", "unknown"),
-        )
-
     async def _ensure_agent_image(self, agent_id: str | None = None) -> None:
         """Ensure the agent Docker images are built.
 
@@ -3096,10 +3062,6 @@ Start by:
     def get_instance(self, agent_id: str) -> AgentInstance | None:
         """Get instance for an agent."""
         return self._instances.get(agent_id)
-
-    def get_all_instances(self) -> dict[str, AgentInstance]:
-        """Get all agent instances."""
-        return dict(self._instances)
 
     def get_waiting_agents(self) -> dict[str, WaitingRecord]:
         """Get all waiting agents."""
