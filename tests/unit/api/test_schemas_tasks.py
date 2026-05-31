@@ -273,6 +273,7 @@ def _stub_task(*, with_project: bool = False) -> SimpleNamespace:
         nature=TaskNature.TECHNICAL,
         task_type=TaskType.CODE,
         project_id=uuid4(),
+        product_id=None,
         project=(SimpleNamespace(slug="proj-1") if with_project else None),
         docs_complete=False,
         pr_created=False,
