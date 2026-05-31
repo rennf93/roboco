@@ -152,6 +152,10 @@ class Task(TimestampMixin):
 
     # Project & Branch (branch auto-created on claim)
     project_id: UUID = Field(..., description="Project this task works on")
+    product_id: UUID | None = Field(
+        default=None,
+        description="Product this task belongs to (additive; drives subtask routing)",
+    )
     branch_name: str | None = Field(
         default=None, description="Branch created for this task"
     )
@@ -313,6 +317,7 @@ class TaskCreate(RobocoBase):
     task_type: TaskType = Field(...)
     nature: TaskNature = Field(...)
     project_id: UUID  # Required - all tasks need a project
+    product_id: UUID | None = None
 
 
 class TaskUpdate(RobocoBase):
@@ -373,6 +378,7 @@ class TaskCreateRequest:
     assigned_to: UUID | None = None
     target_date: datetime | None = None
     status: TaskStatus | None = None  # PM can set BACKLOG for subtasks
+    product_id: UUID | None = None
 
     # Ordering and dependencies
     sequence: int = 0  # Order within siblings (lower = first)

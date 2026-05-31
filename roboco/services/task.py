@@ -470,6 +470,7 @@ class TaskService(BaseService):
             # Git configuration (all tasks follow git workflow)
             task_type=req.task_type,
             project_id=req.project_id,
+            product_id=req.product_id,
         )
         self.session.add(task)
         await self.session.flush()

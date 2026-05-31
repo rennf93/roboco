@@ -204,6 +204,12 @@ class TaskTable(Base):
         nullable=False,
         index=True,
     )
+    product_id: Mapped[UUID | None] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("products.id", ondelete="RESTRICT"),
+        nullable=True,
+        index=True,
+    )
     branch_name: Mapped[str | None] = mapped_column(String(500), nullable=True)
     work_session_id: Mapped[UUID | None] = mapped_column(
         UUID(as_uuid=True),
@@ -373,6 +379,7 @@ class TaskTable(Base):
         Index("ix_tasks_assigned_status", "assigned_to", "status"),
         Index("ix_tasks_created_by_status", "created_by", "status"),
         Index("ix_tasks_project_status", "project_id", "status"),
+        Index("ix_tasks_product_status", "product_id", "status"),
     )
 
 
