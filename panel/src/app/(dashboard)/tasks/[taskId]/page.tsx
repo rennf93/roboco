@@ -4,7 +4,9 @@ import { use, useState } from "react";
 import { useTask, useTaskLifecycle } from "@/hooks/use-tasks";
 import { useProject } from "@/hooks/use-projects";
 import { useCreateBranch, useCreatePR } from "@/hooks/use-git";
+import { Team, TaskStatus } from "@/types";
 import { TaskHeader, TaskMetadata, TaskTabs } from "@/components/tasks/task-detail";
+import { ApproveAndStartButton } from "@/components/tasks/approve-and-start-button";
 import {
   EscalateToCeoDialog,
   CeoApproveDialog,
@@ -358,6 +360,13 @@ export default function TaskDetailPage({ params }: TaskDetailPageProps) {
     <div className="space-y-6">
       {/* Header */}
       <TaskHeader task={task} onAction={handleAction} />
+
+      {/* CEO gate #1: Approve & Start a board-reviewed pending task */}
+      {task.status === TaskStatus.PENDING && task.team === Team.BOARD && (
+        <div className="flex justify-end">
+          <ApproveAndStartButton task={task} />
+        </div>
+      )}
 
       {/* Metadata Cards */}
       <TaskMetadata task={task} />
