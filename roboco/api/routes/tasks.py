@@ -1320,6 +1320,53 @@ async def ceo_approve_task(
     return task_to_response(task)
 
 
+@router.post("/{task_id}/approve-and-start", response_model=TaskResponse)
+async def approve_and_start_task(
+    task_id: UUID,
+    db: DbSession,
+    agent: CurrentAgentContext,
+    data: QANotes | None = None,
+) -> TaskResponse:
+    """CEO gate #1: approve a board-reviewed task and hand it to Main PM.
+
+    Re-targets assigned_to -> main-pm while the task stays pending, so the
+    orchestrator spawns Main PM. Only CEO; requires substantive notes.
+    """
+    if agent.role != AgentRole.CEO:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Only CEO can approve-and-start tasks",
+        )
+
+    service = get_task_service(db)
+    task = await service.get(task_id)
+    if not task:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="Task not found"
+        )
+
+    # Order mirrors ceo-approve: 404 before the notes gate.
+    if not data or not data.notes or len(data.notes.strip()) < _MIN_NOTES_CHARS:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=(
+                "START_NOTES_REQUIRED: approve-and-start must include notes "
+                "(>=20 chars) recording why the board work is ready to build. "
+                "POST /api/tasks/{id}/approve-and-start with notes='...'."
+            ),
+        )
+
+    task = await service.approve_and_start(task_id, data.notes)
+    if not task:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Cannot start - task is not in a pending/startable state",
+        )
+
+    await db.commit()
+    return task_to_response(task)
+
+
 @router.post("/{task_id}/ceo-reject", response_model=TaskResponse)
 async def ceo_reject_task(
     task_id: UUID,

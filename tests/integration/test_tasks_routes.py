@@ -2496,6 +2496,51 @@ async def test_ceo_approve_without_notes_rejected(ceo_client: dict) -> None:
 
 
 @pytest.mark.asyncio
+async def test_approve_and_start_success(ceo_client: dict) -> None:
+    task = _seed_task_ceo(ceo_client, status=TaskStatus.PENDING)
+    await ceo_client["db"].flush()
+    with patch("roboco.api.routes.tasks.get_task_service") as mock_factory:
+        instance = AsyncMock()
+        instance.get = AsyncMock(return_value=task)
+        instance.approve_and_start = AsyncMock(return_value=task)
+        mock_factory.return_value = instance
+        resp = await ceo_client["client"].post(
+            f"/api/tasks/{task.id}/approve-and-start",
+            json={"notes": "Board review complete; clear requirements; build it now."},
+            headers=_HDR,
+        )
+    assert resp.status_code == HTTPStatus.OK
+    instance.approve_and_start.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_approve_and_start_requires_ceo(task_client: dict) -> None:
+    # task_client is MAIN_PM-role; the inline CEO guard must 403.
+    resp = await task_client["client"].post(
+        f"/api/tasks/{uuid4()}/approve-and-start",
+        json={"notes": "x" * 30},
+        headers=_HDR,
+    )
+    assert resp.status_code == HTTPStatus.FORBIDDEN
+
+
+@pytest.mark.asyncio
+async def test_approve_and_start_short_notes(ceo_client: dict) -> None:
+    task = _seed_task_ceo(ceo_client, status=TaskStatus.PENDING)
+    await ceo_client["db"].flush()
+    with patch("roboco.api.routes.tasks.get_task_service") as mock_factory:
+        instance = AsyncMock()
+        instance.get = AsyncMock(return_value=task)
+        mock_factory.return_value = instance
+        resp = await ceo_client["client"].post(
+            f"/api/tasks/{task.id}/approve-and-start",
+            json={"notes": "too short"},
+            headers=_HDR,
+        )
+    assert resp.status_code == HTTPStatus.BAD_REQUEST
+
+
+@pytest.mark.asyncio
 async def test_ceo_reject_task_not_found(ceo_client: dict) -> None:
     response = await ceo_client["client"].post(
         f"/api/tasks/{uuid4()}/ceo-reject",
