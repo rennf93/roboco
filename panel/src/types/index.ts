@@ -275,6 +275,7 @@ export interface Task {
   // Task Type & Git Configuration (all tasks follow git workflow)
   task_type: TaskType;
   project_id: string;
+  product_id?: string | null;
   work_session_id?: string | null;
   // PR Tracking (parallel execution in awaiting_documentation)
   docs_complete: boolean;
@@ -1154,6 +1155,42 @@ export interface ProjectSummary {
   is_active: boolean;
   has_workspace: boolean;
   has_git_token: boolean;
+}
+
+export interface ProductCellMapping {
+  team: Team;
+  project_id: string;
+}
+
+export interface Product {
+  id: string;
+  name: string;
+  slug: string;
+  description: string | null;
+  cells: ProductCellMapping[];
+  created_by: string;
+  created_at: string;
+  updated_at: string | null;
+}
+
+export interface ProductSummary {
+  id: string;
+  name: string;
+  slug: string;
+  cell_count: number;
+}
+
+export interface ProductCreate {
+  name: string;
+  slug: string;
+  description?: string;
+  cells?: ProductCellMapping[];
+}
+
+export interface ProductUpdate {
+  name?: string;
+  description?: string;
+  cells?: ProductCellMapping[];
 }
 
 export interface WorkSession {
