@@ -186,6 +186,7 @@ async def create_task(
         # Git configuration (all tasks follow git workflow)
         task_type=data.task_type,
         project_id=data.project_id,
+        product_id=data.product_id,
     )
     task = await service.create(req)
     await db.commit()

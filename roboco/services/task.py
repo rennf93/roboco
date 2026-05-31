@@ -5300,6 +5300,7 @@ class TaskService(BaseService):
             team=req.team,
             created_by=req.created_by,
             project_id=req.project_id,
+            product_id=req.product_id,
             parent_task_id=req.parent_task_id,
             assigned_to=req.assigned_to,
             estimated_complexity=req.estimated_complexity,

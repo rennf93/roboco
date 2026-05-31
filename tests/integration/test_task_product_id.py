@@ -5,6 +5,7 @@ from uuid import uuid4
 
 import pytest
 import pytest_asyncio
+from roboco.api.schemas.tasks import task_to_response
 from roboco.db.tables import AgentTable, ProductTable, ProjectTable
 from roboco.models import AgentRole, AgentStatus, Team
 from roboco.models.base import Complexity, TaskNature, TaskType
@@ -85,3 +86,31 @@ async def test_create_threads_product_id(svc_setup: dict) -> None:
 async def test_product_id_defaults_null(svc_setup: dict) -> None:
     task = await svc_setup["svc"].create(_req(svc_setup))
     assert task.product_id is None
+
+
+@pytest.mark.asyncio
+async def test_create_subtask_preserves_product_id(svc_setup: dict) -> None:
+    parent = await svc_setup["svc"].create(
+        _req(svc_setup, product_id=svc_setup["product_id"])
+    )
+    sub = await svc_setup["svc"].create_subtask(
+        _req(
+            svc_setup,
+            product_id=svc_setup["product_id"],
+            parent_task_id=parent.id,
+            assigned_to=svc_setup["creator"],
+        )
+    )
+    assert sub.product_id == svc_setup["product_id"]
+
+
+@pytest.mark.asyncio
+async def test_response_surfaces_product_id(svc_setup: dict) -> None:
+    with_product = await svc_setup["svc"].create(
+        _req(svc_setup, product_id=svc_setup["product_id"])
+    )
+    without = await svc_setup["svc"].create(_req(svc_setup))
+    # product_id is a scalar column (loaded after flush) — task_to_response maps
+    # it via to_python_uuid without triggering the project_slug lazy-load guard.
+    assert task_to_response(with_product).product_id == svc_setup["product_id"]
+    assert task_to_response(without).product_id is None
