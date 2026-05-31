@@ -564,6 +564,15 @@ export const tasksApi = {
     return data;
   },
 
+  // CEO gate #1: approve a board task and hand it to Main PM.
+  approveAndStart: async (taskId: string, notes?: string): Promise<Task> => {
+    const { data } = await api.post<Task>(
+      "/tasks/" + taskId + "/approve-and-start",
+      { notes },
+    );
+    return data;
+  },
+
   // CEO rejects a task (sends back for revision)
   ceoReject: async (taskId: string, notes: string): Promise<Task> => {
     if (isMockMode()) {
