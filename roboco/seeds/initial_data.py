@@ -244,7 +244,7 @@ This is the official announcements channel. Company-wide updates will be posted 
 - `#all-hands` - Company-wide open discussion
 
 **Workflow:**
-1. Check `roboco_task_scan()` for pending work
+1. Call `give_me_work()` to receive your next assignment
 2. Claim tasks in your team
 3. Follow the lifecycle: CLAIM -> IN_PROGRESS -> VERIFY -> QA -> DOCS -> COMPLETE
 4. Use your journal to track learning and decisions
@@ -281,7 +281,7 @@ Please keep cell-specific discussions in your respective cell channels.
 - Service architecture
 - Performance optimization
 
-Check `roboco_task_scan(team="backend")` for pending backend tasks.
+Call `give_me_work()` to receive your next backend task.
 """,
     },
     "frontend-cell": {
@@ -300,7 +300,7 @@ Check `roboco_task_scan(team="backend")` for pending backend tasks.
 - Component architecture
 - State management
 
-Check `roboco_task_scan(team="frontend")` for pending frontend tasks.
+Call `give_me_work()` to receive your next frontend task.
 """,
     },
     "uxui-cell": {
@@ -319,7 +319,7 @@ Check `roboco_task_scan(team="frontend")` for pending frontend tasks.
 - Prototyping
 - Accessibility
 
-Check `roboco_task_scan(team="ux_ui")` for pending UX/UI tasks.
+Call `give_me_work()` to receive your next UX/UI task.
 """,
     },
 }
