@@ -294,7 +294,7 @@ class A2AService:
             timestamp=task.updated_at or task.created_at,
         )
 
-        # Build artifacts from task outputs (future: populate from outputs)
+        # Build artifacts (placeholder — per-task file outputs are not tracked)
         artifacts: list[A2AArtifact] = []
 
         # Build metadata

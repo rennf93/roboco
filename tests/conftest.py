@@ -354,12 +354,10 @@ async def smoke_test_batch(db_session: AsyncSession) -> AsyncIterator[list[UUID]
         sequence=0,
         plan={"steps": ["draft", "implement", "test"]},
         estimated_complexity=Complexity.MEDIUM,
-        execution_log={},
         checkpoints=[],
         progress_updates=[{"at": "t0", "note": "started"}],
         commits=[{"sha": "abc123", "message": "[SMOKE001] initial"}],
         documents=[],
-        outputs=[],
         dev_notes="Built as planned.",
         qa_notes=(
             "Reviewed PR #1 carefully. Branch convention correct. Commit "

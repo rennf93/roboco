@@ -279,14 +279,12 @@ class TaskTable(Base):
     )
 
     # Execution (stored as JSON)
-    execution_log: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
     checkpoints: Mapped[list[dict[str, Any]]] = mapped_column(JSON, default=list)
     progress_updates: Mapped[list[dict[str, Any]]] = mapped_column(JSON, default=list)
 
     # Artifacts (stored as JSON)
     commits: Mapped[list[dict[str, Any]]] = mapped_column(JSON, default=list)
     documents: Mapped[list[dict[str, Any]]] = mapped_column(JSON, default=list)
-    outputs: Mapped[list[dict[str, Any]]] = mapped_column(JSON, default=list)
 
     # Documentation
     dev_notes: Mapped[str | None] = mapped_column(Text, nullable=True)

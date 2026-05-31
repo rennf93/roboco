@@ -59,15 +59,6 @@ class DocRef(RobocoBase):
     )
 
 
-class FileRef(RobocoBase):
-    """Reference to a file artifact."""
-
-    path: str = Field(..., description="Path to file")
-    description: str = Field(..., description="What this file is")
-    file_type: str = Field(..., description="File type/extension")
-    size_bytes: int | None = Field(default=None, description="File size in bytes")
-
-
 class ProgressUpdate(RobocoBase):
     """A progress update on a task."""
 
@@ -90,20 +81,6 @@ class Checkpoint(RobocoBase):
         default_factory=list, description="Remaining sub-tasks"
     )
     notes: str | None = Field(default=None, description="Additional notes")
-
-
-class ExecutionLog(RobocoBase):
-    """Log of task execution events."""
-
-    events: list[dict] = Field(
-        default_factory=list, description="List of execution events"
-    )
-    errors: list[dict] = Field(
-        default_factory=list, description="List of errors encountered"
-    )
-    total_duration_seconds: float | None = Field(
-        default=None, description="Total execution time"
-    )
 
 
 class SubTask(RobocoBase):
@@ -221,14 +198,12 @@ class Task(TimestampMixin):
     estimated_complexity: Complexity = Field(default=Complexity.MEDIUM)
 
     # Execution
-    execution_log: ExecutionLog = Field(default_factory=ExecutionLog)
     checkpoints: list[Checkpoint] = Field(default_factory=list)
     progress_updates: list[ProgressUpdate] = Field(default_factory=list)
 
     # Artifacts
     commits: list[CommitRef] = Field(default_factory=list)
     documents: list[DocRef] = Field(default_factory=list)
-    outputs: list[FileRef] = Field(default_factory=list)
 
     # Documentation
     dev_notes: str | None = Field(
