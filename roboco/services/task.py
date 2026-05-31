@@ -3365,6 +3365,58 @@ class TaskService(BaseService):
         )
         return task
 
+    async def approve_and_start(
+        self,
+        task_id: UUID,
+        notes: str | None = None,
+    ) -> TaskTable | None:
+        """CEO gate #1: hand a board-reviewed (pending) task to Main PM.
+
+        This is a reassignment, NOT a status transition. Board tasks live in
+        the pending pool; setting assigned_to -> main-pm (status unchanged at
+        pending) makes the orchestrator's _handle_pm_assigned_task spawn Main
+        PM on the next dispatch tick. Idempotent when already on main-pm;
+        returns None when the task is not in a startable (pending) state.
+        """
+        from roboco.services.agent import get_agent_service
+
+        task = await self.get(task_id)
+        if not task:
+            return None
+        if task.status != TaskStatus.PENDING:
+            self.log.warning(
+                "Cannot approve_and_start - task not pending",
+                task_id=str(task_id),
+                current_status=task.status.value,
+            )
+            return None
+
+        main_pm = await get_agent_service(self.session).get_by_slug("main-pm")
+        if main_pm is None:
+            self.log.error("approve_and_start - main-pm agent not found")
+            return None
+
+        already = task.assigned_to == main_pm.id
+        task.assigned_to = cast("Any", main_pm.id)
+
+        if notes:
+            existing = task.quick_context or ""
+            entry = f"approve_and_start_notes:{notes}"
+            task.quick_context = f"{existing}\n{entry}".strip() if existing else entry
+
+        await self.session.flush()
+        await self._emit_task_event(
+            EventType.TASK_STARTED,
+            task_id,
+            {"action": "approve_and_start", "notes": notes, "idempotent": already},
+        )
+        self.log.info(
+            "Task handed to Main PM (approve_and_start)",
+            task_id=str(task_id),
+            idempotent=already,
+        )
+        return task
+
     async def ceo_reject(
         self,
         task_id: UUID,
