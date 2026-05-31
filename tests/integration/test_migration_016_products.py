@@ -38,3 +38,15 @@ async def test_products_tables_and_task_fk_exist(db_session: AsyncSession) -> No
         )
     }
     assert "product_id" in cols
+
+    fk = {
+        r[0]
+        for r in await db_session.execute(
+            text(
+                "SELECT conname FROM pg_constraint "
+                "WHERE conrelid = 'tasks'::regclass AND contype = 'f' "
+                "AND conname = 'fk_tasks_product_id_products'"
+            )
+        )
+    }
+    assert "fk_tasks_product_id_products" in fk

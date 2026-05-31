@@ -70,10 +70,15 @@ def upgrade() -> None:
 
     op.add_column(
         "tasks",
-        sa.Column(
-            "product_id", postgresql.UUID(as_uuid=True),
-            sa.ForeignKey("products.id", ondelete="RESTRICT"), nullable=True,
-        ),
+        sa.Column("product_id", postgresql.UUID(as_uuid=True), nullable=True),
+    )
+    op.create_foreign_key(
+        "fk_tasks_product_id_products",
+        "tasks",
+        "products",
+        ["product_id"],
+        ["id"],
+        ondelete="RESTRICT",
     )
     op.create_index("ix_tasks_product_status", "tasks", ["product_id", "status"])
 
