@@ -151,7 +151,7 @@ async def delete_product(
     try:
         await service.delete(product_id)
         await db.commit()
-    except Exception as e:
+    except IntegrityError as e:
         await db.rollback()
         raise HTTPException(
             status.HTTP_409_CONFLICT,
