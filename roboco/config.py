@@ -28,7 +28,6 @@ class Settings(BaseSettings):
     # ==========================================================================
     # Application
     # ==========================================================================
-    app_name: str = "RoboCo"
     app_version: str = "0.1.0"
     debug: bool = False
     environment: str = Field(
@@ -44,9 +43,6 @@ class Settings(BaseSettings):
         default=None,
         description="Override API URL for containerized agents (e.g., http://roboco-orchestrator:8000)",
     )
-    reload: bool = Field(default=True, description="Auto-reload on code changes")
-    workers: int = Field(default=1, ge=1)
-
     # CORS
     cors_origins: list[str] = Field(
         default=[
@@ -164,7 +160,6 @@ class Settings(BaseSettings):
     # AI/LLM Providers
     # ==========================================================================
     anthropic_api_key: str | None = None
-    openai_api_key: str | None = None  # For embeddings
 
     # Default models
     default_embedding_model: str = Field(
@@ -193,34 +188,10 @@ class Settings(BaseSettings):
     # ==========================================================================
     # Security
     # ==========================================================================
-    secret_key: str = Field(
-        default="change-me-in-production-this-is-insecure",
-        min_length=32,
-        description="Secret key for JWT signing",
-    )
     encryption_key: str = Field(
         default="",
         description="Fernet encryption key for secrets.",
     )
-    access_token_expire_minutes: int = Field(default=60 * 24, ge=1)  # 24 hours
-    algorithm: str = "HS256"
-
-    # ==========================================================================
-    # Logging
-    # ==========================================================================
-    log_level: str = Field(
-        default="INFO", pattern="^(DEBUG|INFO|WARNING|ERROR|CRITICAL)$"
-    )
-    log_format: str = Field(default="json", pattern="^(json|console)$")
-
-    # ==========================================================================
-    # Sessions & Messages
-    # ==========================================================================
-    session_default_timeout_seconds: int = Field(default=300, ge=0)
-    session_max_time_window_minutes: int = Field(default=30, ge=1)
-    session_max_message_count: int = Field(default=100, ge=1)
-    session_max_content_length: int = Field(default=50000, ge=1)
-    message_max_length: int = Field(default=10000, ge=1)
 
     # ==========================================================================
     # Workspaces (Multi-Agent Git)
@@ -272,11 +243,6 @@ class Settings(BaseSettings):
         default=10,
         ge=2,
         description="How many recent tool calls to inspect for loop detection",
-    )
-    agent_budget_sweep_interval_seconds: int = Field(
-        default=60,
-        ge=5,
-        description="Kill-switch sweep interval for budget-exceeded containers",
     )
     agent_stop_attempt_allowance: int = Field(
         default=1,
@@ -377,27 +343,6 @@ class Settings(BaseSettings):
         default=20,
         ge=1,
         description="Minimum characters for docs notes",
-    )
-
-    # Commit-validator thresholds
-    commit_subject_min_chars: int = Field(
-        default=20,
-        ge=1,
-        description="Minimum characters for commit subject",
-    )
-    commit_banned_words: tuple[str, ...] = Field(
-        default=(
-            "wip",
-            "tmp",
-            "asdf",
-            "oops",
-            "fix",
-            "update",
-            "change",
-            "stuff",
-            "things",
-        ),
-        description="Banned words in commit messages",
     )
 
 
