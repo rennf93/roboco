@@ -15,6 +15,7 @@ import re
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, ClassVar
 
+from roboco.config import settings
 from roboco.exceptions import GitError
 from roboco.foundation.policy import communications as _comms
 from roboco.foundation.policy.journaling import Scope as _Scope
@@ -290,7 +291,11 @@ class ContentActions:
                 context_briefing={},
             )
         subject = _strip_task_prefix(message).strip()
-        result = validate_commit_message(subject)
+        result = validate_commit_message(
+            subject,
+            min_chars=settings.commit_subject_min_chars,
+            banned_words=settings.commit_banned_words,
+        )
         if not result.ok:
             return Envelope.invalid_state(
                 message=result.reason or "commit message invalid",

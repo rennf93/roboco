@@ -6,6 +6,7 @@ from unittest.mock import AsyncMock, MagicMock
 from uuid import uuid4
 
 import pytest
+from roboco.config import settings
 from roboco.services.gateway.content_actions import ContentActions, ContentActionsDeps
 
 
@@ -798,3 +799,32 @@ async def test_progress_ownership_enforced() -> None:
     env = await actions.progress(agent_id=agent_id, task_id=t.id, message="x")
     assert env.as_dict()["error"] is not None
     task.record_plan_progress.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_commit_gate_reads_settings_min_chars(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The commit gate reads settings.commit_subject_min_chars."""
+    monkeypatch.setattr(settings, "commit_subject_min_chars", 500)
+    ca = ContentActions(_make_deps())
+
+    # Normally a fine descriptive subject, now shorter than the bumped minimum.
+    env = await ca.commit(
+        agent_id=uuid4(),
+        message="feat(api): add /healthz endpoint for liveness checks",
+    )
+    assert env.as_dict()["error"] == "invalid_state"
+
+
+@pytest.mark.asyncio
+async def test_commit_gate_reads_settings_banned_words(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The commit gate reads settings.commit_banned_words."""
+    monkeypatch.setattr(settings, "commit_banned_words", ("bananaword",))
+    monkeypatch.setattr(settings, "commit_subject_min_chars", 1)
+    ca = ContentActions(_make_deps())
+
+    env = await ca.commit(agent_id=uuid4(), message="bananaword")
+    assert env.as_dict()["error"] == "invalid_state"

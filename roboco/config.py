@@ -345,6 +345,27 @@ class Settings(BaseSettings):
         description="Minimum characters for docs notes",
     )
 
+    # Commit-validator thresholds (wired into the gateway commit() gate)
+    commit_subject_min_chars: int = Field(
+        default=20,
+        ge=1,
+        description="Minimum characters for a commit subject",
+    )
+    commit_banned_words: tuple[str, ...] = Field(
+        default=(
+            "wip",
+            "tmp",
+            "asdf",
+            "oops",
+            "fix",
+            "update",
+            "change",
+            "stuff",
+            "things",
+        ),
+        description="Banned single-word commit subjects",
+    )
+
 
 @lru_cache
 def get_settings() -> Settings:
