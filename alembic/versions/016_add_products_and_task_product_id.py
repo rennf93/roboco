@@ -9,13 +9,9 @@ Revision ID: 016_add_products_product_id
 Revises: 015_drop_task_execution_outputs
 Create Date: 2026-05-31
 
-Intentional deviation from the plan literal (plan line 623): the revision id is
-kept to 27 chars because alembic_version.version_num is VARCHAR(32). The plan's
-longer literal ("016_add_products_and_task_product_id", 36 chars) overflows that
-column — `alembic upgrade head` raises asyncpg StringDataRightTruncationError
-("value too long for type character varying(32)") when stamping it, so the plan
-spec cannot be satisfied verbatim. The shortened id keeps Step 4's live
-upgrade/downgrade round-trip green.
+Note: the revision id is kept to 27 chars because alembic_version.version_num
+is VARCHAR(32); the spec's longer literal ("016_add_products_and_task_product_id",
+36 chars) overflows that column and cannot be stamped.
 """
 
 from __future__ import annotations
@@ -84,12 +80,9 @@ def upgrade() -> None:
 
 def downgrade() -> None:
     op.drop_index("ix_tasks_product_status", table_name="tasks")
-    # Intentional deviation from the plan literal (plan line 683, which used the
-    # Postgres default "tasks_product_id_fkey"). roboco/db/base.py sets a metadata
-    # naming_convention ("fk_%(table_name)s_%(column_0_name)s_%(referred_table_name)s"),
-    # so the FK that upgrade() creates is actually named "fk_tasks_product_id_products".
-    # The plan's default name does not exist in the DB; dropping it would raise
-    # "constraint does not exist". Verified against the live round-trip in Step 4.
+    # FK name follows the project's metadata naming convention
+    # (fk_%(table)s_%(column)s_%(referred_table)s), not Postgres's default
+    # "tasks_product_id_fkey".
     op.drop_constraint(
         "fk_tasks_product_id_products", "tasks", type_="foreignkey"
     )
