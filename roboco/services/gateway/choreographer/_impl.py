@@ -958,6 +958,23 @@ class Choreographer:
             context_briefing=briefing,
         ).with_introspection(task=t, role=role_str)
 
+    @staticmethod
+    def _build_rich_plan(
+        plan: str | None,
+        steps: list[dict[str, Any]] | None,
+        technical_considerations: list[str] | None,
+        risks: list[dict[str, Any]] | None,
+        open_questions: list[dict[str, Any]] | None,
+    ) -> dict[str, Any]:
+        """Assemble the panel-shaped rich plan (#172) from a dev's inputs."""
+        return {
+            "approach": plan or "",
+            "sub_tasks": steps or [],
+            "technical_considerations": technical_considerations or [],
+            "risks": risks or [],
+            "open_questions": open_questions or [],
+        }
+
     async def i_will_work_on(
         self,
         agent_id: UUID,
@@ -1014,13 +1031,9 @@ class Choreographer:
         # via the panel-shaped path so the Plan tab renders identically and
         # feeds #173 progress. With no rich fields (re-entry/recovery) this
         # falls through to unchanged string behaviour.
-        rich_plan = {
-            "approach": plan or "",
-            "sub_tasks": steps or [],
-            "technical_considerations": technical_considerations or [],
-            "risks": risks or [],
-            "open_questions": open_questions or [],
-        }
+        rich_plan = self._build_rich_plan(
+            plan, steps, technical_considerations, risks, open_questions
+        )
         effective_plan: str | dict[str, Any] | None = self._resolve_effective_plan(
             plan or "", rich_plan
         )
