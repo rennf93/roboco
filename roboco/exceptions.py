@@ -68,26 +68,6 @@ class NotFoundError(RobocoError):
         )
 
 
-class AlreadyExistsError(RobocoError):
-    """Resource already exists."""
-
-    def __init__(
-        self,
-        resource_type: str,
-        identifier: str,
-        details: dict[str, Any] | None = None,
-    ):
-        super().__init__(
-            message=f"{resource_type} already exists: {identifier}",
-            code="ALREADY_EXISTS",
-            details={
-                "resource_type": resource_type,
-                "identifier": identifier,
-                **(details or {}),
-            },
-        )
-
-
 # =============================================================================
 # VALIDATION ERRORS
 # =============================================================================
@@ -284,46 +264,6 @@ class TaskLifecycleError(TaskError):
         self.target_status = target_status
 
 
-class TaskBlockedError(TaskError):
-    """Task is blocked by dependencies."""
-
-    def __init__(
-        self,
-        task_id: str | UUID,
-        blocking_task_ids: list[str | UUID],
-        details: dict[str, Any] | None = None,
-    ):
-        super().__init__(
-            message=f"Task is blocked by {len(blocking_task_ids)} task(s)",
-            task_id=task_id,
-            code="TASK_BLOCKED",
-            details={
-                "blocking_task_ids": [str(tid) for tid in blocking_task_ids],
-                **(details or {}),
-            },
-        )
-
-
-class TaskClaimError(TaskError):
-    """Cannot claim task."""
-
-    def __init__(
-        self,
-        task_id: str | UUID,
-        reason: str,
-        details: dict[str, Any] | None = None,
-    ):
-        super().__init__(
-            message=f"Cannot claim task: {reason}",
-            task_id=task_id,
-            code="TASK_CLAIM_ERROR",
-            details={
-                "reason": reason,
-                **(details or {}),
-            },
-        )
-
-
 # =============================================================================
 # AGENT ERRORS
 # =============================================================================
@@ -344,46 +284,6 @@ class AgentError(RobocoError):
             code=code,
             details={
                 "agent_id": str(agent_id) if agent_id else None,
-                **(details or {}),
-            },
-        )
-
-
-class AgentNotAvailableError(AgentError):
-    """Agent is not available."""
-
-    def __init__(
-        self,
-        agent_id: str | UUID,
-        status: str,
-        details: dict[str, Any] | None = None,
-    ):
-        super().__init__(
-            message=f"Agent is not available (status: {status})",
-            agent_id=agent_id,
-            code="AGENT_NOT_AVAILABLE",
-            details={
-                "status": status,
-                **(details or {}),
-            },
-        )
-
-
-class AgentBusyError(AgentError):
-    """Agent is busy with another task."""
-
-    def __init__(
-        self,
-        agent_id: str | UUID,
-        current_task_id: str | UUID,
-        details: dict[str, Any] | None = None,
-    ):
-        super().__init__(
-            message="Agent is currently working on another task",
-            agent_id=agent_id,
-            code="AGENT_BUSY",
-            details={
-                "current_task_id": str(current_task_id),
                 **(details or {}),
             },
         )
@@ -472,26 +372,6 @@ class NotificationError(RobocoError):
         super().__init__(message=message, code=code, details=details)
 
 
-class NotificationPermissionError(NotificationError):
-    """Agent cannot send notifications."""
-
-    def __init__(
-        self,
-        agent_id: str | UUID,
-        agent_role: str,
-        details: dict[str, Any] | None = None,
-    ):
-        super().__init__(
-            message=f"Agent with role '{agent_role}' cannot send notifications",
-            code="NOTIFICATION_PERMISSION_DENIED",
-            details={
-                "agent_id": str(agent_id),
-                "agent_role": agent_role,
-                **(details or {}),
-            },
-        )
-
-
 # =============================================================================
 # SERVICE ERRORS
 # =============================================================================
@@ -527,44 +407,6 @@ class DatabaseError(ServiceError):
     ):
         super().__init__(
             service="database",
-            message=message,
-            details={
-                "operation": operation,
-                **(details or {}),
-            },
-        )
-
-
-class LLMError(ServiceError):
-    """LLM service error."""
-
-    def __init__(
-        self,
-        message: str,
-        model: str | None = None,
-        details: dict[str, Any] | None = None,
-    ):
-        super().__init__(
-            service="llm",
-            message=message,
-            details={
-                "model": model,
-                **(details or {}),
-            },
-        )
-
-
-class RAGError(ServiceError):
-    """RAG service error."""
-
-    def __init__(
-        self,
-        message: str,
-        operation: str | None = None,
-        details: dict[str, Any] | None = None,
-    ):
-        super().__init__(
-            service="rag",
             message=message,
             details={
                 "operation": operation,

@@ -10,10 +10,7 @@ from __future__ import annotations
 from uuid import uuid4
 
 from roboco.exceptions import (
-    AgentBusyError,
     AgentError,
-    AgentNotAvailableError,
-    AlreadyExistsError,
     AuthenticationError,
     ChannelAccessDeniedError,
     ChannelError,
@@ -22,17 +19,12 @@ from roboco.exceptions import (
     GitError,
     GitTimeoutError,
     InvalidStateError,
-    LLMError,
     NotFoundError,
     NotificationError,
-    NotificationPermissionError,
     PermissionDeniedError,
-    RAGError,
     RobocoError,
     ServiceError,
     SessionClosedError,
-    TaskBlockedError,
-    TaskClaimError,
     TaskError,
     TaskLifecycleError,
     ValidationError,
@@ -60,12 +52,6 @@ def test_not_found_error_with_details() -> None:
     assert err.code == "NOT_FOUND"
     assert err.details["hint"] == "check spelling"
     assert err.details["resource_id"] == str(rid)
-
-
-def test_already_exists_error_with_details() -> None:
-    err = AlreadyExistsError("Project", "myproj", details={"existing_id": "abc"})
-    assert err.code == "ALREADY_EXISTS"
-    assert err.details["existing_id"] == "abc"
 
 
 def test_validation_error_with_field_and_value() -> None:
@@ -193,32 +179,6 @@ def test_task_lifecycle_error_extra_kwargs() -> None:
     assert err.details["extra"] == "present"
 
 
-def test_task_blocked_error() -> None:
-    tid = uuid4()
-    blockers = [uuid4(), uuid4()]
-    err = TaskBlockedError(task_id=tid, blocking_task_ids=blockers)
-    assert err.code == "TASK_BLOCKED"
-    assert len(err.details["blocking_task_ids"]) == len(blockers)
-
-
-def test_task_blocked_error_with_extra_details() -> None:
-    err = TaskBlockedError(
-        task_id="t1", blocking_task_ids=["a"], details={"why": "tests"}
-    )
-    assert err.details["why"] == "tests"
-
-
-def test_task_claim_error() -> None:
-    err = TaskClaimError(task_id="t1", reason="role mismatch")
-    assert err.code == "TASK_CLAIM_ERROR"
-    assert err.details["reason"] == "role mismatch"
-
-
-def test_task_claim_error_with_extra_details() -> None:
-    err = TaskClaimError(task_id="t1", reason="x", details={"hint": "y"})
-    assert err.details["hint"] == "y"
-
-
 def test_agent_error_with_uuid() -> None:
     aid = uuid4()
     err = AgentError("oops", agent_id=aid)
@@ -232,30 +192,6 @@ def test_agent_error_no_agent_id() -> None:
 
 def test_agent_error_with_extra_details() -> None:
     err = AgentError("x", agent_id="a1", details={"k": "v"})
-    assert err.details["k"] == "v"
-
-
-def test_agent_not_available_error() -> None:
-    err = AgentNotAvailableError(agent_id="a1", status="offline")
-    assert err.code == "AGENT_NOT_AVAILABLE"
-    assert err.details["status"] == "offline"
-
-
-def test_agent_not_available_error_with_details() -> None:
-    err = AgentNotAvailableError(
-        agent_id="a1", status="offline", details={"why": "down"}
-    )
-    assert err.details["why"] == "down"
-
-
-def test_agent_busy_error() -> None:
-    err = AgentBusyError(agent_id="a1", current_task_id="t1")
-    assert err.code == "AGENT_BUSY"
-    assert err.details["current_task_id"] == "t1"
-
-
-def test_agent_busy_error_with_details() -> None:
-    err = AgentBusyError(agent_id="a1", current_task_id="t1", details={"k": "v"})
     assert err.details["k"] == "v"
 
 
@@ -319,19 +255,6 @@ def test_notification_error_with_custom_code() -> None:
     assert err.code == "CUSTOM"
 
 
-def test_notification_permission_error() -> None:
-    err = NotificationPermissionError(agent_id="a1", agent_role="developer")
-    assert err.code == "NOTIFICATION_PERMISSION_DENIED"
-    assert err.details["agent_role"] == "developer"
-
-
-def test_notification_permission_error_with_details() -> None:
-    err = NotificationPermissionError(
-        agent_id="a1", agent_role="developer", details={"k": "v"}
-    )
-    assert err.details["k"] == "v"
-
-
 def test_service_error_basic() -> None:
     err = ServiceError(service="redis", message="connection refused")
     assert err.code == "SERVICE_ERROR"
@@ -351,26 +274,6 @@ def test_database_error_basic() -> None:
 
 def test_database_error_with_details() -> None:
     err = DatabaseError("x", operation="select", details={"k": "v"})
-    assert err.details["k"] == "v"
-
-
-def test_llm_error_basic() -> None:
-    err = LLMError("rate limited", model="claude-haiku-4-5")
-    assert err.details["model"] == "claude-haiku-4-5"
-
-
-def test_llm_error_with_details() -> None:
-    err = LLMError("x", model="m", details={"k": "v"})
-    assert err.details["k"] == "v"
-
-
-def test_rag_error_basic() -> None:
-    err = RAGError("indexing failed", operation="index")
-    assert err.details["operation"] == "index"
-
-
-def test_rag_error_with_details() -> None:
-    err = RAGError("x", operation="search", details={"k": "v"})
     assert err.details["k"] == "v"
 
 
