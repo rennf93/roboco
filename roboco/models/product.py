@@ -13,17 +13,11 @@ from roboco.models.base import RobocoBase, TimestampMixin
 class ProductCellMapping(RobocoBase):
     """One cell -> Project assignment within a Product."""
 
-    # Keep ``team`` as a real ``Team`` enum (not its coerced ``str`` value).
-    # ``RobocoBase`` sets ``use_enum_values=True``, which would store/validate
-    # the plain string ``"backend"`` instead of ``Team.BACKEND``. That breaks
-    # cell-membership validation (``v.value`` and ``v in CELL_TEAMS`` both need
-    # an enum member) and enum identity for callers. Override just this model.
-    model_config = ConfigDict(
-        use_enum_values=False,
-        validate_assignment=True,
-        populate_by_name=True,
-        extra="forbid",
-    )
+    # Keep ``team`` as a real ``Team`` enum. ``RobocoBase`` sets
+    # ``use_enum_values=True``, which would coerce the field to the plain
+    # string ``"backend"`` and break ``team in CELL_TEAMS`` and enum identity
+    # for callers. This single override inherits the rest of the base config.
+    model_config = ConfigDict(use_enum_values=False)
 
     team: Team
     project_id: UUID
