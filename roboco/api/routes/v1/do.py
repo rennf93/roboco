@@ -6,8 +6,8 @@ from uuid import UUID
 from fastapi import APIRouter, Depends, Header, Request
 
 from roboco.api.deps import get_content_actions
-from roboco.api.routes.v2._role_dep import envelope_to_response
-from roboco.api.schemas.v2.do import (
+from roboco.api.routes.v1._role_dep import envelope_to_response
+from roboco.api.schemas.v1.do import (
     ChannelsRequest,
     CommitRequest,
     DmRequest,
@@ -25,7 +25,7 @@ from roboco.api.schemas.v2.do import (
 )
 from roboco.services.gateway.content_actions import ContentActions
 
-router = APIRouter(prefix="/api/v2/do", tags=["v2-do"])
+router = APIRouter(prefix="/api/v1/do", tags=["v1-do"])
 
 _AgentIdHeader = Annotated[UUID, Header(alias="X-Agent-ID")]
 _ContentActionsDep = Annotated[ContentActions, Depends(get_content_actions)]

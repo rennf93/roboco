@@ -5,7 +5,7 @@ implementation lands in its respective phase (Phase 1: dev verbs, Phase 2:
 QA verbs, Phase 3: doc + PM verbs, Phase 4: board verbs).
 
 The signatures are stable contracts that the MCP servers and the
-/api/v2/flow/* endpoints will call into. Phase 0 wires the dependency
+/api/v1/flow/* endpoints will call into. Phase 0 wires the dependency
 injection so later phases just fill in the bodies.
 """
 
@@ -275,7 +275,7 @@ class DelegateInputs:
     """Bundle of fields the ``delegate`` verb receives from the route layer.
 
     Mirrors :data:`roboco.foundation.policy.task_completeness.TASK_AT_CREATE`:
-    `task_type` and `nature` have no defaults — the v2 schema enforces both at
+    `task_type` and `nature` have no defaults — the v1 schema enforces both at
     the HTTP boundary (Task 15), and defaulting here too would let direct
     callers (tests, internal code) silently pick `'code'`/`'technical'` and
     recreate the 2026-05-08 deadlock.

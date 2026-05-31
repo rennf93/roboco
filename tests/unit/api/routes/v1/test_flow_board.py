@@ -1,4 +1,4 @@
-"""Unit tests for /api/v2/flow/board/* endpoints.
+"""Unit tests for /api/v1/flow/board/* endpoints.
 
 Uses a minimal FastAPI test client built from the new router only.
 No DB required — Choreographer is mocked.
@@ -13,7 +13,7 @@ import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from roboco.api.deps import get_choreographer
-from roboco.api.routes.v2.flow_board import router
+from roboco.api.routes.v1.flow_board import router
 
 _HTTP_200 = 200
 _HTTP_422 = 422
@@ -44,7 +44,7 @@ def _build_app(mock_choreographer: MagicMock) -> FastAPI:
 
 @pytest.mark.asyncio
 async def test_triage_returns_envelope() -> None:
-    """POST /api/v2/flow/board/triage returns 200 with envelope shape."""
+    """POST /api/v1/flow/board/triage returns 200 with envelope shape."""
     mock_chore = MagicMock()
     mock_chore.board_triage = AsyncMock(
         return_value=_make_envelope(status="awaiting_pm_review", task_id=_TASK_ID)
@@ -52,7 +52,7 @@ async def test_triage_returns_envelope() -> None:
     client = TestClient(_build_app(mock_chore))
 
     resp = client.post(
-        "/api/v2/flow/board/triage",
+        "/api/v1/flow/board/triage",
         json={},
         headers=_HEADERS,
     )
@@ -65,7 +65,7 @@ async def test_triage_returns_envelope() -> None:
 
 @pytest.mark.asyncio
 async def test_escalate_to_ceo_returns_envelope() -> None:
-    """POST /api/v2/flow/board/escalate_to_ceo forwards task_id and reason."""
+    """POST /api/v1/flow/board/escalate_to_ceo forwards task_id and reason."""
     mock_chore = MagicMock()
     mock_chore.escalate_to_ceo = AsyncMock(
         return_value=_make_envelope(status="awaiting_ceo_approval", task_id=_TASK_ID)
@@ -73,7 +73,7 @@ async def test_escalate_to_ceo_returns_envelope() -> None:
     client = TestClient(_build_app(mock_chore))
 
     resp = client.post(
-        "/api/v2/flow/board/escalate_to_ceo",
+        "/api/v1/flow/board/escalate_to_ceo",
         json={"task_id": _TASK_ID, "reason": "Strategic call needs CEO sign-off."},
         headers=_HEADERS,
     )
@@ -93,7 +93,7 @@ def test_escalate_to_ceo_validates_reason_required() -> None:
     client = TestClient(_build_app(mock_chore))
 
     resp = client.post(
-        "/api/v2/flow/board/escalate_to_ceo",
+        "/api/v1/flow/board/escalate_to_ceo",
         json={"task_id": _TASK_ID, "reason": ""},
         headers=_HEADERS,
     )
@@ -103,13 +103,13 @@ def test_escalate_to_ceo_validates_reason_required() -> None:
 
 @pytest.mark.asyncio
 async def test_i_am_idle_returns_envelope() -> None:
-    """POST /api/v2/flow/board/i_am_idle delegates to Choreographer.i_am_idle."""
+    """POST /api/v1/flow/board/i_am_idle delegates to Choreographer.i_am_idle."""
     mock_chore = MagicMock()
     mock_chore.i_am_idle = AsyncMock(return_value=_make_envelope(status="idle"))
     client = TestClient(_build_app(mock_chore))
 
     resp = client.post(
-        "/api/v2/flow/board/i_am_idle",
+        "/api/v1/flow/board/i_am_idle",
         json={},
         headers=_HEADERS,
     )

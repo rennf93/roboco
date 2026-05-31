@@ -1,4 +1,4 @@
-"""Schema-level tests for v2 flow request bodies."""
+"""Schema-level tests for v1 flow request bodies."""
 
 from __future__ import annotations
 
@@ -6,7 +6,7 @@ from uuid import uuid4
 
 import pytest
 from pydantic import ValidationError
-from roboco.api.schemas.v2.flow import DelegateRequest
+from roboco.api.schemas.v1.flow import DelegateRequest
 
 
 def test_delegate_request_requires_task_type() -> None:

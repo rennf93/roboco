@@ -32,14 +32,14 @@ from roboco.api.routes.provider import router as provider_router
 from roboco.api.routes.sessions import router as sessions_router
 from roboco.api.routes.stream import router as stream_router
 from roboco.api.routes.tasks import router as tasks_router
-from roboco.api.routes.v2 import do as do_module
-from roboco.api.routes.v2 import flow_auditor as flow_auditor_module
-from roboco.api.routes.v2 import flow_board as flow_board_module
-from roboco.api.routes.v2 import flow_cell_pm as flow_cell_pm_module
-from roboco.api.routes.v2 import flow_dev as flow_dev_module
-from roboco.api.routes.v2 import flow_doc as flow_doc_module
-from roboco.api.routes.v2 import flow_main_pm as flow_main_pm_module
-from roboco.api.routes.v2 import flow_qa as flow_qa_module
+from roboco.api.routes.v1 import do as do_module
+from roboco.api.routes.v1 import flow_auditor as flow_auditor_module
+from roboco.api.routes.v1 import flow_board as flow_board_module
+from roboco.api.routes.v1 import flow_cell_pm as flow_cell_pm_module
+from roboco.api.routes.v1 import flow_dev as flow_dev_module
+from roboco.api.routes.v1 import flow_doc as flow_doc_module
+from roboco.api.routes.v1 import flow_main_pm as flow_main_pm_module
+from roboco.api.routes.v1 import flow_qa as flow_qa_module
 from roboco.api.routes.work_session import router as work_session_router
 from roboco.api.websocket import router as ws_router
 from roboco.config import settings
@@ -294,28 +294,28 @@ def create_app() -> FastAPI:
         tags=["Documentation"],
     )
 
-    # API v2 — intent-verb flow endpoints
+    # API v1 — intent-verb flow endpoints
     app.include_router(flow_dev_module.router)
 
-    # API v2 — intent-verb QA flow endpoints
+    # API v1 — intent-verb QA flow endpoints
     app.include_router(flow_qa_module.router)
 
-    # API v2 — intent-verb documenter flow endpoints
+    # API v1 — intent-verb documenter flow endpoints
     app.include_router(flow_doc_module.router)
 
-    # API v2 — intent-verb cell PM flow endpoints
+    # API v1 — intent-verb cell PM flow endpoints
     app.include_router(flow_cell_pm_module.router)
 
-    # API v2 — intent-verb main PM flow endpoints
+    # API v1 — intent-verb main PM flow endpoints
     app.include_router(flow_main_pm_module.router)
 
-    # API v2 — intent-verb board flow endpoints
+    # API v1 — intent-verb board flow endpoints
     app.include_router(flow_board_module.router)
 
-    # API v2 — intent-verb auditor flow endpoints
+    # API v1 — intent-verb auditor flow endpoints
     app.include_router(flow_auditor_module.router)
 
-    # API v2 — content-tool endpoints
+    # API v1 — content-tool endpoints
     app.include_router(do_module.router)
 
     # ==========================================================================

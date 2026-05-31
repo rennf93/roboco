@@ -1,4 +1,4 @@
-"""Request schemas for /api/v2/flow/* intent verbs."""
+"""Request schemas for /api/v1/flow/* intent verbs."""
 
 from uuid import UUID
 

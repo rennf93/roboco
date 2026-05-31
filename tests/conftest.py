@@ -333,7 +333,7 @@ async def smoke_test_batch(db_session: AsyncSession) -> AsyncIterator[list[UUID]
     ]
     task = TaskTable(
         id=uuid4(),
-        title="Add /api/v2/example endpoint",
+        title="Add /api/v1/example endpoint",
         description="Smoke task — synthetic happy path.",
         acceptance_criteria=criteria,
         status=TaskStatus.COMPLETED,

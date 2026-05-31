@@ -96,7 +96,7 @@ def _autogen_verbs_layer(prompts_path: Path, role: "AgentRole") -> str | None:
 
     The file at ``_generated/<role>.md`` is rebuilt by
     ``scripts/regenerate_verb_tables.py`` from the Pydantic schemas in
-    ``roboco/api/schemas/v2/`` plus the role-config. Including it as a
+    ``roboco/api/schemas/v1/`` plus the role-config. Including it as a
     composition layer means the prompt always shows the literal accepted
     body shape for every verb the agent has — eliminating the prompt
     drift class identified in audit P2-9 (D-04, D-10, D-11, D-29-D-31).

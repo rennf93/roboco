@@ -11,7 +11,7 @@ test's assertions. Journal/A2A/audit/evidence are mocked because they
 don't gate the lifecycle paths under test.
 
 When extended to all roles, this test catches:
-  - URL prefix mismatch (route-level coverage in test_v2_role_dep)
+  - URL prefix mismatch (route-level coverage in test_v1_role_dep)
   - i_will_work_on AttributeError on None (claim → start sequence is real)
   - heartbeat seeding (reaper cutoff)
   - active_claimant_id wired (single-claimant invariant)

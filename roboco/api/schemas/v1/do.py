@@ -1,4 +1,4 @@
-"""Request schemas for /api/v2/do/* content tools."""
+"""Request schemas for /api/v1/do/* content tools."""
 
 from typing import Self
 from uuid import UUID

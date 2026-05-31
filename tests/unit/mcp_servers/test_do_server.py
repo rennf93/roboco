@@ -56,7 +56,7 @@ def test_commit_posts_message_and_files(do_module):  # type: ignore[no-untyped-d
 
     assert result["status"] == "in_progress"
     args, kwargs = fake_client.post.call_args
-    assert "/api/v2/do/commit" in args[0]
+    assert "/api/v1/do/commit" in args[0]
     assert kwargs["json"] == {"message": "feat(api): add /healthz", "files": ["foo.py"]}
 
 
@@ -136,5 +136,5 @@ def test_evidence_posts_task_id(do_module):  # type: ignore[no-untyped-def]
         do_module.evidence("task-uuid")
 
     args, kwargs = fake_client.post.call_args
-    assert "/api/v2/do/evidence" in args[0]
+    assert "/api/v1/do/evidence" in args[0]
     assert kwargs["json"] == {"task_id": "task-uuid"}

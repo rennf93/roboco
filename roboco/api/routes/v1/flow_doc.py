@@ -1,4 +1,4 @@
-"""QA intent-verb HTTP endpoints. Thin handlers; delegate to Choreographer."""
+"""Documenter intent-verb HTTP endpoints. Thin handlers; delegate to Choreographer."""
 
 from typing import Annotated
 from uuid import UUID
@@ -6,22 +6,21 @@ from uuid import UUID
 from fastapi import APIRouter, Depends, Header, Request
 
 from roboco.api.deps import get_choreographer
-from roboco.api.routes.v2._role_dep import envelope_to_response, require_qa
-from roboco.api.schemas.v2.flow import (
-    ClaimReviewRequest,
-    FailReviewRequest,
+from roboco.api.routes.v1._role_dep import envelope_to_response, require_doc
+from roboco.api.schemas.v1.flow import (
+    ClaimDocTaskRequest,
     GiveMeWorkRequest,
     IAmIdleRequest,
-    PassReviewRequest,
+    IDocumentedRequest,
     ResumeRequest,
     UnclaimRequest,
 )
 from roboco.services.gateway.choreographer import Choreographer
 
 router = APIRouter(
-    prefix="/api/v2/flow/qa",
-    tags=["v2-flow-qa"],
-    dependencies=[require_qa],
+    prefix="/api/v1/flow/documenter",
+    tags=["v1-flow-documenter"],
+    dependencies=[require_doc],
 )
 
 
@@ -40,36 +39,27 @@ async def give_me_work(
     return envelope_to_response(env, request)
 
 
-@router.post("/claim_review")
-async def claim_review(
+@router.post("/claim_doc_task")
+async def claim_doc_task(
     request: Request,
-    body: ClaimReviewRequest,
+    body: ClaimDocTaskRequest,
     x_agent_id: _AgentIdHeader,
     choreographer: _ChoreographerDep,
 ) -> dict:
-    env = await choreographer.claim_review(x_agent_id, body.task_id)
+    env = await choreographer.claim_doc_task(x_agent_id, body.task_id)
     return envelope_to_response(env, request)
 
 
-@router.post("/pass")
-async def qa_pass(
+@router.post("/i_documented")
+async def i_documented(
     request: Request,
-    body: PassReviewRequest,
+    body: IDocumentedRequest,
     x_agent_id: _AgentIdHeader,
     choreographer: _ChoreographerDep,
 ) -> dict:
-    env = await choreographer.pass_review(x_agent_id, body.task_id, body.notes)
-    return envelope_to_response(env, request)
-
-
-@router.post("/fail")
-async def qa_fail(
-    request: Request,
-    body: FailReviewRequest,
-    x_agent_id: _AgentIdHeader,
-    choreographer: _ChoreographerDep,
-) -> dict:
-    env = await choreographer.fail_review(x_agent_id, body.task_id, body.issues)
+    env = await choreographer.i_documented(
+        x_agent_id, body.task_id, body.notes, body.files
+    )
     return envelope_to_response(env, request)
 
 

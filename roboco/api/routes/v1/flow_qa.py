@@ -1,4 +1,4 @@
-"""Dev intent-verb HTTP endpoints. Thin handlers; delegate to Choreographer."""
+"""QA intent-verb HTTP endpoints. Thin handlers; delegate to Choreographer."""
 
 from typing import Annotated
 from uuid import UUID
@@ -6,23 +6,22 @@ from uuid import UUID
 from fastapi import APIRouter, Depends, Header, Request
 
 from roboco.api.deps import get_choreographer
-from roboco.api.routes.v2._role_dep import envelope_to_response, require_dev
-from roboco.api.schemas.v2.flow import (
+from roboco.api.routes.v1._role_dep import envelope_to_response, require_qa
+from roboco.api.schemas.v1.flow import (
+    ClaimReviewRequest,
+    FailReviewRequest,
     GiveMeWorkRequest,
-    IAmBlockedRequest,
-    IAmDoneRequest,
     IAmIdleRequest,
-    IWillWorkOnRequest,
-    OpenPrRequest,
+    PassReviewRequest,
     ResumeRequest,
     UnclaimRequest,
 )
 from roboco.services.gateway.choreographer import Choreographer
 
 router = APIRouter(
-    prefix="/api/v2/flow/developer",
-    tags=["v2-flow-developer"],
-    dependencies=[require_dev],
+    prefix="/api/v1/flow/qa",
+    tags=["v1-flow-qa"],
+    dependencies=[require_qa],
 )
 
 
@@ -41,61 +40,36 @@ async def give_me_work(
     return envelope_to_response(env, request)
 
 
-@router.post("/i_will_work_on")
-async def i_will_work_on(
+@router.post("/claim_review")
+async def claim_review(
     request: Request,
-    body: IWillWorkOnRequest,
+    body: ClaimReviewRequest,
     x_agent_id: _AgentIdHeader,
     choreographer: _ChoreographerDep,
 ) -> dict:
-    env = await choreographer.i_will_work_on(
-        x_agent_id,
-        body.task_id,
-        body.plan,
-        steps=body.steps,
-        technical_considerations=body.technical_considerations,
-        risks=body.risks,
-        open_questions=body.open_questions,
-    )
+    env = await choreographer.claim_review(x_agent_id, body.task_id)
     return envelope_to_response(env, request)
 
 
-@router.post("/open_pr")
-async def open_pr(
+@router.post("/pass")
+async def qa_pass(
     request: Request,
-    body: OpenPrRequest,
+    body: PassReviewRequest,
     x_agent_id: _AgentIdHeader,
     choreographer: _ChoreographerDep,
 ) -> dict:
-    env = await choreographer.open_pr(x_agent_id, body.task_id)
+    env = await choreographer.pass_review(x_agent_id, body.task_id, body.notes)
     return envelope_to_response(env, request)
 
 
-@router.post("/i_am_done")
-async def i_am_done(
+@router.post("/fail")
+async def qa_fail(
     request: Request,
-    body: IAmDoneRequest,
+    body: FailReviewRequest,
     x_agent_id: _AgentIdHeader,
     choreographer: _ChoreographerDep,
 ) -> dict:
-    env = await choreographer.i_am_done(x_agent_id, body.task_id, body.notes)
-    return envelope_to_response(env, request)
-
-
-@router.post("/i_am_blocked")
-async def i_am_blocked(
-    request: Request,
-    body: IAmBlockedRequest,
-    x_agent_id: _AgentIdHeader,
-    choreographer: _ChoreographerDep,
-) -> dict:
-    env = await choreographer.i_am_blocked(
-        x_agent_id,
-        body.task_id,
-        body.reason,
-        blocker_type=body.blocker_type,
-        what_needed=body.what_needed,
-    )
+    env = await choreographer.fail_review(x_agent_id, body.task_id, body.issues)
     return envelope_to_response(env, request)
 
 

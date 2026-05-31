@@ -7,7 +7,7 @@ shape is the single contract that MCP servers convert into JSON for agents.
 ``correlation_id`` is intentionally NOT a constructor argument — it is a
 transport-layer concern stamped post-construction by the route handler
 from ``request.state.correlation_id`` (see
-``api.routes.v2._role_dep.envelope_to_response``). Verb logic must never
+``api.routes.v1._role_dep.envelope_to_response``). Verb logic must never
 thread it through; doing so would mix request lifecycle into business
 logic.
 """

@@ -12,8 +12,8 @@ from uuid import uuid4
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from roboco.api.deps import get_choreographer
-from roboco.api.routes.v2.flow_main_pm import router
-from roboco.api.schemas.v2.flow import IWillPlanRequest
+from roboco.api.routes.v1.flow_main_pm import router
+from roboco.api.schemas.v1.flow import IWillPlanRequest
 
 _AGENT_ID = "00000000-0000-0000-0004-000000000001"
 _HEADERS = {"X-Agent-ID": _AGENT_ID, "X-Agent-Role": "main_pm"}
@@ -57,7 +57,7 @@ def test_i_will_plan_rejects_missing_approach() -> None:
     """A PM calling i_will_plan with bare `plan` (no approach) is rejected."""
     client = TestClient(_build_app())
     resp = client.post(
-        "/api/v2/flow/main_pm/i_will_plan",
+        "/api/v1/flow/main_pm/i_will_plan",
         headers=_HEADERS,
         json={
             "task_id": str(uuid4()),
@@ -83,7 +83,7 @@ def test_i_will_plan_rejects_empty_subtasks_for_pm() -> None:
 
     client = TestClient(_build_app(mock_chore))
     resp = client.post(
-        "/api/v2/flow/main_pm/i_will_plan",
+        "/api/v1/flow/main_pm/i_will_plan",
         headers=_HEADERS,
         json={
             "task_id": str(uuid4()),

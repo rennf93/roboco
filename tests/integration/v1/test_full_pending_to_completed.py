@@ -1,6 +1,6 @@
 """End-to-end test: task pending -> awaiting_ceo_approval through the gateway.
 
-Uses a minimal FastAPI app that includes all six v2 routers (no lifespan / no DB).
+Uses a minimal FastAPI app that includes all six v1 routers (no lifespan / no DB).
 Choreographer and ContentActions are replaced by stateful async mocks that track
 the simulated task lifecycle through every role hand-off.
 """
@@ -17,12 +17,12 @@ if TYPE_CHECKING:
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from roboco.api.deps import get_choreographer, get_content_actions
-from roboco.api.routes.v2 import do as do_module
-from roboco.api.routes.v2 import flow_cell_pm as flow_cell_pm_module
-from roboco.api.routes.v2 import flow_dev as flow_dev_module
-from roboco.api.routes.v2 import flow_doc as flow_doc_module
-from roboco.api.routes.v2 import flow_main_pm as flow_main_pm_module
-from roboco.api.routes.v2 import flow_qa as flow_qa_module
+from roboco.api.routes.v1 import do as do_module
+from roboco.api.routes.v1 import flow_cell_pm as flow_cell_pm_module
+from roboco.api.routes.v1 import flow_dev as flow_dev_module
+from roboco.api.routes.v1 import flow_doc as flow_doc_module
+from roboco.api.routes.v1 import flow_main_pm as flow_main_pm_module
+from roboco.api.routes.v1 import flow_qa as flow_qa_module
 from roboco.services.gateway.envelope import Envelope
 
 _HTTP_200 = 200
@@ -33,7 +33,7 @@ _State = dict[str, object]
 
 
 def _build_app() -> FastAPI:
-    """Minimal FastAPI app with all v2 routers — no lifespan, no DB."""
+    """Minimal FastAPI app with all v1 routers — no lifespan, no DB."""
     app = FastAPI()
     app.include_router(flow_dev_module.router)
     app.include_router(flow_qa_module.router)
@@ -214,28 +214,28 @@ async def test_pending_to_awaiting_ceo_approval(stateful_app: tuple) -> None:
     # 1. Dev: give_me_work -> i_will_work_on -> note -> i_am_done
     # ------------------------------------------------------------------
     r = client.post(
-        "/api/v2/flow/developer/give_me_work",
+        "/api/v1/flow/developer/give_me_work",
         headers={"X-Agent-ID": dev_id, "X-Agent-Role": "developer"},
         json={},
     )
     assert r.status_code == _HTTP_200
 
     r = client.post(
-        "/api/v2/flow/developer/i_will_work_on",
+        "/api/v1/flow/developer/i_will_work_on",
         headers={"X-Agent-ID": dev_id, "X-Agent-Role": "developer"},
         json={"task_id": str(uuid4()), "plan": "edit x then y"},
     )
     assert r.json()["status"] == "in_progress"
 
     r = client.post(
-        "/api/v2/do/note",
+        "/api/v1/do/note",
         headers={"X-Agent-ID": dev_id, "X-Agent-Role": "developer"},
         json={"text": "Reflected: did the work as planned.", "scope": "reflect"},
     )
     assert r.json()["error"] is None
 
     r = client.post(
-        "/api/v2/flow/developer/i_am_done",
+        "/api/v1/flow/developer/i_am_done",
         headers={"X-Agent-ID": dev_id, "X-Agent-Role": "developer"},
         json={"task_id": str(uuid4()), "notes": "all done"},
     )
@@ -247,14 +247,14 @@ async def test_pending_to_awaiting_ceo_approval(stateful_app: tuple) -> None:
     # 2. QA: claim_review -> note -> pass
     # ------------------------------------------------------------------
     r = client.post(
-        "/api/v2/flow/qa/claim_review",
+        "/api/v1/flow/qa/claim_review",
         headers={"X-Agent-ID": qa_id, "X-Agent-Role": "qa"},
         json={"task_id": str(uuid4())},
     )
     assert r.json()["evidence"]["pr_number"] == _PR_NUMBER
 
     r = client.post(
-        "/api/v2/do/note",
+        "/api/v1/do/note",
         headers={"X-Agent-ID": qa_id, "X-Agent-Role": "developer"},
         json={
             "text": "Reviewed; all acceptance criteria addressed.",
@@ -268,7 +268,7 @@ async def test_pending_to_awaiting_ceo_approval(stateful_app: tuple) -> None:
         "includes task ID. README diff matches spec. No security concerns."
     )
     r = client.post(
-        "/api/v2/flow/qa/pass",
+        "/api/v1/flow/qa/pass",
         headers={"X-Agent-ID": qa_id, "X-Agent-Role": "qa"},
         json={"task_id": str(uuid4()), "notes": long_notes},
     )
@@ -278,14 +278,14 @@ async def test_pending_to_awaiting_ceo_approval(stateful_app: tuple) -> None:
     # 3. Doc: claim_doc_task -> i_documented
     # ------------------------------------------------------------------
     r = client.post(
-        "/api/v2/flow/documenter/claim_doc_task",
+        "/api/v1/flow/documenter/claim_doc_task",
         headers={"X-Agent-ID": doc_id, "X-Agent-Role": "documenter"},
         json={"task_id": str(uuid4())},
     )
     assert r.status_code == _HTTP_200
 
     r = client.post(
-        "/api/v2/flow/documenter/i_documented",
+        "/api/v1/flow/documenter/i_documented",
         headers={"X-Agent-ID": doc_id, "X-Agent-Role": "documenter"},
         json={
             "task_id": str(uuid4()),
@@ -299,14 +299,14 @@ async def test_pending_to_awaiting_ceo_approval(stateful_app: tuple) -> None:
     # 4. Cell PM: note -> complete (auto-merges leaf PR)
     # ------------------------------------------------------------------
     r = client.post(
-        "/api/v2/do/note",
+        "/api/v1/do/note",
         headers={"X-Agent-ID": cell_pm_id, "X-Agent-Role": "developer"},
         json={"text": "Decision: approve and merge.", "scope": "decision"},
     )
     assert r.json()["error"] is None
 
     r = client.post(
-        "/api/v2/flow/cell_pm/complete",
+        "/api/v1/flow/cell_pm/complete",
         headers={"X-Agent-ID": cell_pm_id, "X-Agent-Role": "cell_pm"},
         json={"task_id": str(uuid4()), "notes": "Approved and merged"},
     )
@@ -316,14 +316,14 @@ async def test_pending_to_awaiting_ceo_approval(stateful_app: tuple) -> None:
     # 5. Main PM: note -> complete root (opens master PR + escalates to CEO)
     # ------------------------------------------------------------------
     r = client.post(
-        "/api/v2/do/note",
+        "/api/v1/do/note",
         headers={"X-Agent-ID": main_pm_id, "X-Agent-Role": "developer"},
         json={"text": "Root task ready for prod.", "scope": "decision"},
     )
     assert r.json()["error"] is None
 
     r = client.post(
-        "/api/v2/flow/main_pm/complete",
+        "/api/v1/flow/main_pm/complete",
         headers={"X-Agent-ID": main_pm_id, "X-Agent-Role": "main_pm"},
         json={"task_id": str(uuid4()), "notes": "Ready for prod"},
     )

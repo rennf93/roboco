@@ -15,7 +15,7 @@ from __future__ import annotations
 
 import pytest
 from pydantic import ValidationError
-from roboco.api.schemas.v2.do import NoteRequest
+from roboco.api.schemas.v1.do import NoteRequest
 
 
 def test_note_request_accepts_omitted_decision_fields() -> None:

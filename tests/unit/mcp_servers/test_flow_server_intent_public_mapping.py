@@ -99,7 +99,7 @@ def test_intent_public_mapping_used_on_unknowns(
 def test_post_to_correct_orchestrator_path(
     flow_module_qa: types.ModuleType,
 ) -> None:
-    """Calling the registered 'pass' tool POSTs to /api/v2/flow/qa/pass."""
+    """Calling the registered 'pass' tool POSTs to /api/v1/flow/qa/pass."""
     captured: list[tuple[str, dict]] = []
 
     def _client_factory(*_a: object, **_kw: object) -> MagicMock:
@@ -126,7 +126,7 @@ def test_post_to_correct_orchestrator_path(
     orchestrator_calls = [(u, b) for u, b in captured if "test-orchestrator" in u]
     assert len(orchestrator_calls) == 1
     url, body = orchestrator_calls[0]
-    assert url.endswith("/api/v2/flow/qa/pass"), (
+    assert url.endswith("/api/v1/flow/qa/pass"), (
         f"pass_review must POST to /qa/pass, got {url}"
     )
     assert body == {"task_id": "task-id-123", "notes": "LGTM"}

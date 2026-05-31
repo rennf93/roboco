@@ -1,4 +1,4 @@
-"""Unit tests for /api/v2/flow/main_pm/* endpoints.
+"""Unit tests for /api/v1/flow/main_pm/* endpoints.
 
 Uses a minimal FastAPI test client built from the new router only.
 No DB required — Choreographer is mocked.
@@ -13,7 +13,7 @@ import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from roboco.api.deps import get_choreographer
-from roboco.api.routes.v2.flow_main_pm import router
+from roboco.api.routes.v1.flow_main_pm import router
 
 _HTTP_200 = 200
 _HTTP_422 = 422
@@ -44,7 +44,7 @@ def _build_app(mock_choreographer: MagicMock) -> FastAPI:
 
 @pytest.mark.asyncio
 async def test_triage_all_returns_envelope() -> None:
-    """POST /api/v2/flow/main_pm/triage_all returns 200 with task or idle status."""
+    """POST /api/v1/flow/main_pm/triage_all returns 200 with task or idle status."""
     mock_chore = MagicMock()
     mock_chore.triage_all = AsyncMock(
         return_value=_make_envelope(status="awaiting_pm_review", task_id=_TASK_ID)
@@ -52,7 +52,7 @@ async def test_triage_all_returns_envelope() -> None:
     client = TestClient(_build_app(mock_chore))
 
     resp = client.post(
-        "/api/v2/flow/main_pm/triage_all",
+        "/api/v1/flow/main_pm/triage_all",
         json={},
         headers=_HEADERS,
     )
@@ -65,7 +65,7 @@ async def test_triage_all_returns_envelope() -> None:
 
 @pytest.mark.asyncio
 async def test_complete_calls_main_pm_complete_directly() -> None:
-    """POST /api/v2/flow/main_pm/complete calls main_pm_complete (not dispatch)."""
+    """POST /api/v1/flow/main_pm/complete calls main_pm_complete (not dispatch)."""
     mock_chore = MagicMock()
     mock_chore.main_pm_complete = AsyncMock(
         return_value=_make_envelope(status="awaiting_ceo_approval", task_id=_TASK_ID)
@@ -73,7 +73,7 @@ async def test_complete_calls_main_pm_complete_directly() -> None:
     client = TestClient(_build_app(mock_chore))
 
     resp = client.post(
-        "/api/v2/flow/main_pm/complete",
+        "/api/v1/flow/main_pm/complete",
         json={"task_id": _TASK_ID, "notes": "Root task done, escalating to CEO."},
         headers=_HEADERS,
     )
@@ -89,7 +89,7 @@ async def test_complete_calls_main_pm_complete_directly() -> None:
 
 @pytest.mark.asyncio
 async def test_escalate_up_dispatches_reason() -> None:
-    """POST /api/v2/flow/main_pm/escalate_up forwards task_id and reason."""
+    """POST /api/v1/flow/main_pm/escalate_up forwards task_id and reason."""
     mock_chore = MagicMock()
     mock_chore.escalate_up = AsyncMock(
         return_value=_make_envelope(status="awaiting_ceo_approval", task_id=_TASK_ID)
@@ -97,7 +97,7 @@ async def test_escalate_up_dispatches_reason() -> None:
     client = TestClient(_build_app(mock_chore))
 
     resp = client.post(
-        "/api/v2/flow/main_pm/escalate_up",
+        "/api/v1/flow/main_pm/escalate_up",
         json={"task_id": _TASK_ID, "reason": "Needs CEO sign-off on architecture."},
         headers=_HEADERS,
     )
@@ -110,7 +110,7 @@ async def test_escalate_up_dispatches_reason() -> None:
 
 @pytest.mark.asyncio
 async def test_unblock_dispatches_task_id_with_restore_true() -> None:
-    """POST /api/v2/flow/main_pm/unblock forwards task_id with restore=True default."""
+    """POST /api/v1/flow/main_pm/unblock forwards task_id with restore=True default."""
     mock_chore = MagicMock()
     mock_chore.unblock = AsyncMock(
         return_value=_make_envelope(status="in_progress", task_id=_TASK_ID)
@@ -118,7 +118,7 @@ async def test_unblock_dispatches_task_id_with_restore_true() -> None:
     client = TestClient(_build_app(mock_chore))
 
     resp = client.post(
-        "/api/v2/flow/main_pm/unblock",
+        "/api/v1/flow/main_pm/unblock",
         json={"task_id": _TASK_ID},
         headers=_HEADERS,
     )
@@ -131,13 +131,13 @@ async def test_unblock_dispatches_task_id_with_restore_true() -> None:
 
 @pytest.mark.asyncio
 async def test_i_am_idle_dispatches_agent_id() -> None:
-    """POST /api/v2/flow/main_pm/i_am_idle delegates to Choreographer.i_am_idle."""
+    """POST /api/v1/flow/main_pm/i_am_idle delegates to Choreographer.i_am_idle."""
     mock_chore = MagicMock()
     mock_chore.i_am_idle = AsyncMock(return_value=_make_envelope(status="idle"))
     client = TestClient(_build_app(mock_chore))
 
     resp = client.post(
-        "/api/v2/flow/main_pm/i_am_idle",
+        "/api/v1/flow/main_pm/i_am_idle",
         json={},
         headers=_HEADERS,
     )
@@ -154,7 +154,7 @@ def test_complete_rejects_empty_notes() -> None:
     client = TestClient(_build_app(mock_chore))
 
     resp = client.post(
-        "/api/v2/flow/main_pm/complete",
+        "/api/v1/flow/main_pm/complete",
         json={"task_id": _TASK_ID, "notes": ""},
         headers=_HEADERS,
     )
@@ -168,7 +168,7 @@ def test_escalate_up_rejects_empty_reason() -> None:
     client = TestClient(_build_app(mock_chore))
 
     resp = client.post(
-        "/api/v2/flow/main_pm/escalate_up",
+        "/api/v1/flow/main_pm/escalate_up",
         json={"task_id": _TASK_ID, "reason": ""},
         headers=_HEADERS,
     )
@@ -178,13 +178,13 @@ def test_escalate_up_rejects_empty_reason() -> None:
 
 @pytest.mark.asyncio
 async def test_give_me_work_routes_to_pm_give_me_work() -> None:
-    """POST /api/v2/flow/main_pm/give_me_work delegates to pm_give_me_work."""
+    """POST /api/v1/flow/main_pm/give_me_work delegates to pm_give_me_work."""
     mock_chore = MagicMock()
     mock_chore.pm_give_me_work = AsyncMock(return_value=_make_envelope(status="idle"))
     client = TestClient(_build_app(mock_chore))
 
     resp = client.post(
-        "/api/v2/flow/main_pm/give_me_work",
+        "/api/v1/flow/main_pm/give_me_work",
         json={},
         headers=_HEADERS,
     )
@@ -195,7 +195,7 @@ async def test_give_me_work_routes_to_pm_give_me_work() -> None:
 
 @pytest.mark.asyncio
 async def test_i_will_plan_dispatches_to_choreographer() -> None:
-    """POST /api/v2/flow/main_pm/i_will_plan forwards task_id and plan."""
+    """POST /api/v1/flow/main_pm/i_will_plan forwards task_id and plan."""
     mock_chore = MagicMock()
     mock_chore.i_will_plan = AsyncMock(
         return_value=_make_envelope(status="in_progress", task_id=_TASK_ID)
@@ -203,7 +203,7 @@ async def test_i_will_plan_dispatches_to_choreographer() -> None:
     client = TestClient(_build_app(mock_chore))
 
     resp = client.post(
-        "/api/v2/flow/main_pm/i_will_plan",
+        "/api/v1/flow/main_pm/i_will_plan",
         json={
             "task_id": _TASK_ID,
             "plan": "split into backend, frontend, ux cells",
@@ -240,7 +240,7 @@ async def test_i_will_plan_dispatches_to_choreographer() -> None:
 
 @pytest.mark.asyncio
 async def test_delegate_to_cell_pm_dispatches_inputs_bundle() -> None:
-    """POST /api/v2/flow/main_pm/delegate forwards body via DelegateInputs."""
+    """POST /api/v1/flow/main_pm/delegate forwards body via DelegateInputs."""
     mock_chore = MagicMock()
     mock_chore.delegate = AsyncMock(
         return_value=_make_envelope(status="created", task_id=_TASK_ID)
@@ -248,7 +248,7 @@ async def test_delegate_to_cell_pm_dispatches_inputs_bundle() -> None:
     client = TestClient(_build_app(mock_chore))
 
     resp = client.post(
-        "/api/v2/flow/main_pm/delegate",
+        "/api/v1/flow/main_pm/delegate",
         json={
             "parent_task_id": _TASK_ID,
             "title": "Backend slice",
@@ -280,7 +280,7 @@ async def test_escalate_to_ceo_dispatches() -> None:
     )
     client = TestClient(_build_app(mock_chore))
     resp = client.post(
-        "/api/v2/flow/main_pm/escalate_to_ceo",
+        "/api/v1/flow/main_pm/escalate_to_ceo",
         json={"task_id": _TASK_ID, "reason": "needs CEO sign-off"},
         headers=_HEADERS,
     )
@@ -296,7 +296,7 @@ async def test_unclaim_dispatches() -> None:
     )
     client = TestClient(_build_app(mock_chore))
     resp = client.post(
-        "/api/v2/flow/main_pm/unclaim",
+        "/api/v1/flow/main_pm/unclaim",
         json={"task_id": _TASK_ID},
         headers=_HEADERS,
     )
@@ -312,7 +312,7 @@ async def test_resume_dispatches() -> None:
     )
     client = TestClient(_build_app(mock_chore))
     resp = client.post(
-        "/api/v2/flow/main_pm/resume",
+        "/api/v1/flow/main_pm/resume",
         json={"task_id": _TASK_ID},
         headers=_HEADERS,
     )

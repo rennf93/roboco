@@ -1,4 +1,4 @@
-"""Unit tests for /api/v2/flow/auditor/* endpoints.
+"""Unit tests for /api/v1/flow/auditor/* endpoints.
 
 Uses a minimal FastAPI test client built from the new router only.
 No DB required — Choreographer is mocked.
@@ -13,7 +13,7 @@ import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from roboco.api.deps import get_choreographer
-from roboco.api.routes.v2.flow_auditor import router
+from roboco.api.routes.v1.flow_auditor import router
 
 _HTTP_200 = 200
 
@@ -43,7 +43,7 @@ def _build_app(mock_choreographer: MagicMock) -> FastAPI:
 
 @pytest.mark.asyncio
 async def test_triage_returns_envelope() -> None:
-    """POST /api/v2/flow/auditor/triage returns 200 with envelope shape."""
+    """POST /api/v1/flow/auditor/triage returns 200 with envelope shape."""
     mock_chore = MagicMock()
     mock_chore.auditor_triage = AsyncMock(
         return_value=_make_envelope(status="blocked", task_id=_TASK_ID)
@@ -51,7 +51,7 @@ async def test_triage_returns_envelope() -> None:
     client = TestClient(_build_app(mock_chore))
 
     resp = client.post(
-        "/api/v2/flow/auditor/triage",
+        "/api/v1/flow/auditor/triage",
         json={},
         headers=_HEADERS,
     )
@@ -64,13 +64,13 @@ async def test_triage_returns_envelope() -> None:
 
 @pytest.mark.asyncio
 async def test_i_am_idle_returns_envelope() -> None:
-    """POST /api/v2/flow/auditor/i_am_idle delegates to Choreographer.i_am_idle."""
+    """POST /api/v1/flow/auditor/i_am_idle delegates to Choreographer.i_am_idle."""
     mock_chore = MagicMock()
     mock_chore.i_am_idle = AsyncMock(return_value=_make_envelope(status="idle"))
     client = TestClient(_build_app(mock_chore))
 
     resp = client.post(
-        "/api/v2/flow/auditor/i_am_idle",
+        "/api/v1/flow/auditor/i_am_idle",
         json={},
         headers=_HEADERS,
     )

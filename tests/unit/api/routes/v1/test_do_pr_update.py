@@ -1,4 +1,4 @@
-"""Unit tests for POST /api/v2/do/pr_update — route + schema.
+"""Unit tests for POST /api/v1/do/pr_update — route + schema.
 
 Pydantic's model_validator must reject an all-None payload with 422
 before ContentActions ever runs; a valid payload must forward title /
@@ -14,7 +14,7 @@ import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from roboco.api.deps import get_content_actions
-from roboco.api.routes.v2.do import router
+from roboco.api.routes.v1.do import router
 from roboco.services.gateway.content_actions import ContentActions
 
 _HTTP_200 = 200
@@ -49,7 +49,7 @@ async def test_pr_update_all_none_returns_422() -> None:
     client = TestClient(_build_app(mock_actions))
 
     resp = client.post(
-        "/api/v2/do/pr_update",
+        "/api/v1/do/pr_update",
         json={"task_id": _TASK_ID},
         headers=_HEADERS,
     )
@@ -68,7 +68,7 @@ async def test_pr_update_title_only_forwards_to_content_actions() -> None:
     client = TestClient(_build_app(mock_actions))
 
     resp = client.post(
-        "/api/v2/do/pr_update",
+        "/api/v1/do/pr_update",
         json={"task_id": _TASK_ID, "title": "new title"},
         headers=_HEADERS,
     )
@@ -94,7 +94,7 @@ async def test_pr_update_all_fields_forwarded() -> None:
     client = TestClient(_build_app(mock_actions))
 
     resp = client.post(
-        "/api/v2/do/pr_update",
+        "/api/v1/do/pr_update",
         json={
             "task_id": _TASK_ID,
             "title": "t",

@@ -1,4 +1,4 @@
-"""Board (PO + Head Marketing) intent-verb HTTP endpoints.
+"""Auditor intent-verb HTTP endpoints. Read-only.
 
 Thin handlers; delegate to Choreographer.
 """
@@ -9,18 +9,14 @@ from uuid import UUID
 from fastapi import APIRouter, Depends, Header, Request
 
 from roboco.api.deps import get_choreographer
-from roboco.api.routes.v2._role_dep import envelope_to_response, require_board
-from roboco.api.schemas.v2.flow import (
-    EscalateToCeoRequest,
-    IAmIdleRequest,
-    TriageRequest,
-)
+from roboco.api.routes.v1._role_dep import envelope_to_response, require_auditor
+from roboco.api.schemas.v1.flow import IAmIdleRequest, TriageRequest
 from roboco.services.gateway.choreographer import Choreographer
 
 router = APIRouter(
-    prefix="/api/v2/flow/board",
-    tags=["v2-flow-board"],
-    dependencies=[require_board],
+    prefix="/api/v1/flow/auditor",
+    tags=["v1-flow-auditor"],
+    dependencies=[require_auditor],
 )
 
 
@@ -35,18 +31,7 @@ async def triage(
     x_agent_id: _AgentIdHeader,
     choreographer: _ChoreographerDep,
 ) -> dict:
-    env = await choreographer.board_triage(x_agent_id)
-    return envelope_to_response(env, request)
-
-
-@router.post("/escalate_to_ceo")
-async def escalate_to_ceo(
-    request: Request,
-    body: EscalateToCeoRequest,
-    x_agent_id: _AgentIdHeader,
-    choreographer: _ChoreographerDep,
-) -> dict:
-    env = await choreographer.escalate_to_ceo(x_agent_id, body.task_id, body.reason)
+    env = await choreographer.auditor_triage(x_agent_id)
     return envelope_to_response(env, request)
 
 

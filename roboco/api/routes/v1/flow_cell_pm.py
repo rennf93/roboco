@@ -1,4 +1,4 @@
-"""Main PM intent-verb HTTP endpoints. Thin handlers; delegate to Choreographer."""
+"""Cell PM intent-verb HTTP endpoints. Thin handlers; delegate to Choreographer."""
 
 from typing import Annotated
 from uuid import UUID
@@ -6,16 +6,16 @@ from uuid import UUID
 from fastapi import APIRouter, Depends, Header, Request
 
 from roboco.api.deps import get_choreographer
-from roboco.api.routes.v2._role_dep import envelope_to_response, require_main_pm
-from roboco.api.schemas.v2.flow import (
+from roboco.api.routes.v1._role_dep import envelope_to_response, require_cell_pm
+from roboco.api.schemas.v1.flow import (
     CompleteRequest,
     DelegateRequest,
-    EscalateToCeoRequest,
     EscalateUpRequest,
     GiveMeWorkRequest,
     IAmIdleRequest,
     IWillPlanRequest,
     ResumeRequest,
+    SubmitUpRequest,
     TriageRequest,
     UnblockRequest,
     UnclaimRequest,
@@ -23,9 +23,9 @@ from roboco.api.schemas.v2.flow import (
 from roboco.services.gateway.choreographer import Choreographer, DelegateInputs
 
 router = APIRouter(
-    prefix="/api/v2/flow/main_pm",
-    tags=["v2-flow-main-pm"],
-    dependencies=[require_main_pm],
+    prefix="/api/v1/flow/cell_pm",
+    tags=["v1-flow-cell-pm"],
+    dependencies=[require_cell_pm],
 )
 
 
@@ -87,47 +87,25 @@ async def delegate(
     return envelope_to_response(env, request)
 
 
-@router.post("/triage_all")
-async def triage_all(
+@router.post("/submit_up")
+async def submit_up(
+    request: Request,
+    body: SubmitUpRequest,
+    x_agent_id: _AgentIdHeader,
+    choreographer: _ChoreographerDep,
+) -> dict:
+    env = await choreographer.submit_up(x_agent_id, body.task_id, body.notes)
+    return envelope_to_response(env, request)
+
+
+@router.post("/triage")
+async def triage(
     request: Request,
     _body: TriageRequest,
     x_agent_id: _AgentIdHeader,
     choreographer: _ChoreographerDep,
 ) -> dict:
-    env = await choreographer.triage_all(x_agent_id)
-    return envelope_to_response(env, request)
-
-
-@router.post("/complete")
-async def complete(
-    request: Request,
-    body: CompleteRequest,
-    x_agent_id: _AgentIdHeader,
-    choreographer: _ChoreographerDep,
-) -> dict:
-    env = await choreographer.main_pm_complete(x_agent_id, body.task_id, body.notes)
-    return envelope_to_response(env, request)
-
-
-@router.post("/escalate_up")
-async def escalate_up(
-    request: Request,
-    body: EscalateUpRequest,
-    x_agent_id: _AgentIdHeader,
-    choreographer: _ChoreographerDep,
-) -> dict:
-    env = await choreographer.escalate_up(x_agent_id, body.task_id, body.reason)
-    return envelope_to_response(env, request)
-
-
-@router.post("/escalate_to_ceo")
-async def escalate_to_ceo(
-    request: Request,
-    body: EscalateToCeoRequest,
-    x_agent_id: _AgentIdHeader,
-    choreographer: _ChoreographerDep,
-) -> dict:
-    env = await choreographer.escalate_to_ceo(x_agent_id, body.task_id, body.reason)
+    env = await choreographer.triage(x_agent_id)
     return envelope_to_response(env, request)
 
 
@@ -139,6 +117,28 @@ async def unblock(
     choreographer: _ChoreographerDep,
 ) -> dict:
     env = await choreographer.unblock(x_agent_id, body.task_id, restore=body.restore)
+    return envelope_to_response(env, request)
+
+
+@router.post("/complete")
+async def complete(
+    request: Request,
+    body: CompleteRequest,
+    x_agent_id: _AgentIdHeader,
+    choreographer: _ChoreographerDep,
+) -> dict:
+    env = await choreographer.complete(x_agent_id, body.task_id, body.notes)
+    return envelope_to_response(env, request)
+
+
+@router.post("/escalate_up")
+async def escalate_up(
+    request: Request,
+    body: EscalateUpRequest,
+    x_agent_id: _AgentIdHeader,
+    choreographer: _ChoreographerDep,
+) -> dict:
+    env = await choreographer.escalate_up(x_agent_id, body.task_id, body.reason)
     return envelope_to_response(env, request)
 
 

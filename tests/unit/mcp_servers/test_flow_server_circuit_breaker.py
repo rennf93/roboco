@@ -6,7 +6,7 @@ the *missing wiring*: rejection envelopes from the gateway must be
 forwarded to the SDK, and when the breaker opens the rejection must be
 substituted with the circuit_open envelope before reaching the agent.
 
-The tests stub the orchestrator's httpx.Client (path '/api/v2/flow/...')
+The tests stub the orchestrator's httpx.Client (path '/api/v1/flow/...')
 and the SDK's httpx.Client (path '/verb/attempted') so the helper can
 be exercised end-to-end without a real network. We pick which mock to
 return by inspecting the URL the code under test is hitting.
@@ -392,11 +392,11 @@ def test_sdk_returns_malformed_json_fails_open(flow_module: types.ModuleType) ->
 def test_verb_from_path_extracts_last_segment(flow_module: types.ModuleType) -> None:
     """_verb_from_path strips the role prefix and returns the verb token."""
     assert (
-        flow_module._verb_from_path("/api/v2/flow/developer/i_am_done") == "i_am_done"
+        flow_module._verb_from_path("/api/v1/flow/developer/i_am_done") == "i_am_done"
     )
-    assert flow_module._verb_from_path("/api/v2/flow/qa/pass") == "pass"
+    assert flow_module._verb_from_path("/api/v1/flow/qa/pass") == "pass"
     assert (
-        flow_module._verb_from_path("/api/v2/flow/board/escalate_to_ceo")
+        flow_module._verb_from_path("/api/v1/flow/board/escalate_to_ceo")
         == "escalate_to_ceo"
     )
 

@@ -111,12 +111,12 @@ def _reload_for_role(
 
 
 def test_role_path_uses_agent_role(flow_module: types.ModuleType) -> None:
-    expected = "/api/v2/flow/developer/give_me_work"
+    expected = "/api/v1/flow/developer/give_me_work"
     assert flow_module._role_path("give_me_work") == expected
 
 
 def test_role_path_includes_verb(flow_module: types.ModuleType) -> None:
-    assert flow_module._role_path("i_am_done") == "/api/v2/flow/developer/i_am_done"
+    assert flow_module._role_path("i_am_done") == "/api/v1/flow/developer/i_am_done"
 
 
 def test_give_me_work_posts_to_orchestrator(flow_module: types.ModuleType) -> None:
@@ -128,7 +128,7 @@ def test_give_me_work_posts_to_orchestrator(flow_module: types.ModuleType) -> No
     assert result == {"status": "idle", "task_id": None}
     fake_client.post.assert_called_once()
     args, kwargs = fake_client.post.call_args
-    assert "/api/v2/flow/developer/give_me_work" in args[0]
+    assert "/api/v1/flow/developer/give_me_work" in args[0]
     assert kwargs["headers"]["X-Agent-ID"] == "00000000-0000-0000-0000-000000000001"
     assert kwargs["headers"]["X-Agent-Role"] == "developer"
 
@@ -148,7 +148,7 @@ def test_i_will_work_on_passes_plan(flow_module: types.ModuleType) -> None:
         "risks": [],
         "open_questions": [],
     }
-    assert "/api/v2/flow/developer/i_will_work_on" in args[0]
+    assert "/api/v1/flow/developer/i_will_work_on" in args[0]
 
 
 def test_i_will_work_on_plan_defaults_to_none(flow_module: types.ModuleType) -> None:
@@ -200,7 +200,7 @@ def test_i_am_done_sends_task_id_and_notes(flow_module: types.ModuleType) -> Non
 
     assert result == {"status": "awaiting_qa"}
     args, kwargs = fake_client.post.call_args
-    assert "/api/v2/flow/developer/i_am_done" in args[0]
+    assert "/api/v1/flow/developer/i_am_done" in args[0]
     assert kwargs["json"] == {"task_id": "task-abc", "notes": "all tests green"}
 
 
@@ -243,11 +243,11 @@ def test_i_am_idle_posts_empty_body(flow_module: types.ModuleType) -> None:
     assert result == {"status": "idle"}
     _, kwargs = fake_client.post.call_args
     assert kwargs["json"] == {}
-    assert "/api/v2/flow/developer/i_am_idle" in fake_client.post.call_args[0][0]
+    assert "/api/v1/flow/developer/i_am_idle" in fake_client.post.call_args[0][0]
 
 
 def test_claim_review_posts_to_qa_path(monkeypatch: pytest.MonkeyPatch) -> None:
-    """When AGENT_ROLE=qa, claim_review forwards to /api/v2/flow/qa/claim_review."""
+    """When AGENT_ROLE=qa, claim_review forwards to /api/v1/flow/qa/claim_review."""
     srv = _reload_for_role(monkeypatch, "qa", "00000000-0000-0000-0000-000000000002")
 
     fake_client = _make_fake_client({"status": "claimed", "evidence": {}})
@@ -257,7 +257,7 @@ def test_claim_review_posts_to_qa_path(monkeypatch: pytest.MonkeyPatch) -> None:
 
     assert result["status"] == "claimed"
     args, kwargs = fake_client.post.call_args
-    assert "/api/v2/flow/qa/claim_review" in args[0]
+    assert "/api/v1/flow/qa/claim_review" in args[0]
     assert kwargs["json"] == {"task_id": "task-uuid"}
 
 
@@ -271,7 +271,7 @@ def test_pass_review_passes_notes(monkeypatch: pytest.MonkeyPatch) -> None:
         srv.pass_review("task-uuid", notes)
 
     args, kwargs = fake_client.post.call_args
-    assert "/api/v2/flow/qa/pass" in args[0]
+    assert "/api/v1/flow/qa/pass" in args[0]
     assert kwargs["json"] == {"task_id": "task-uuid", "notes": notes}
 
 
@@ -285,7 +285,7 @@ def test_fail_review_passes_issues_list(monkeypatch: pytest.MonkeyPatch) -> None
         srv.fail_review("task-uuid", issues)
 
     args, kwargs = fake_client.post.call_args
-    assert "/api/v2/flow/qa/fail" in args[0]
+    assert "/api/v1/flow/qa/fail" in args[0]
     assert kwargs["json"] == {"task_id": "task-uuid", "issues": issues}
 
 
@@ -304,7 +304,7 @@ def test_claim_doc_task_posts_to_documenter_path(
 
     assert result["status"] == "claimed"
     args, kwargs = fake_client.post.call_args
-    assert "/api/v2/flow/documenter/claim_doc_task" in args[0]
+    assert "/api/v1/flow/documenter/claim_doc_task" in args[0]
     assert kwargs["json"] == {"task_id": "task-uuid"}
 
 
@@ -320,7 +320,7 @@ def test_i_documented_passes_notes_and_files(monkeypatch: pytest.MonkeyPatch) ->
 
     assert result["status"] == "awaiting_pm_review"
     args, kwargs = fake_client.post.call_args
-    assert "/api/v2/flow/documenter/i_documented" in args[0]
+    assert "/api/v1/flow/documenter/i_documented" in args[0]
     assert kwargs["json"] == {
         "task_id": "task-uuid",
         "notes": "wrote docs/foo.md",
@@ -340,7 +340,7 @@ def test_triage_uses_role_path(monkeypatch: pytest.MonkeyPatch) -> None:
 
     assert result["status"] == "blocked"
     args, kwargs = fake_client.post.call_args
-    assert "/api/v2/flow/cell_pm/triage" in args[0]
+    assert "/api/v1/flow/cell_pm/triage" in args[0]
     assert kwargs["json"] == {}
 
 
@@ -356,7 +356,7 @@ def test_triage_all_uses_role_path(monkeypatch: pytest.MonkeyPatch) -> None:
 
     assert result["status"] == "idle"
     args, kwargs = fake_client.post.call_args
-    assert "/api/v2/flow/main_pm/triage_all" in args[0]
+    assert "/api/v1/flow/main_pm/triage_all" in args[0]
     assert kwargs["json"] == {}
 
 
@@ -372,7 +372,7 @@ def test_unblock_with_restore_true(monkeypatch: pytest.MonkeyPatch) -> None:
 
     assert result["status"] == "in_progress"
     args, kwargs = fake_client.post.call_args
-    assert "/api/v2/flow/cell_pm/unblock" in args[0]
+    assert "/api/v1/flow/cell_pm/unblock" in args[0]
     assert kwargs["json"] == {"task_id": "task-uuid", "restore": True}
 
 
@@ -403,7 +403,7 @@ def test_complete_passes_notes(monkeypatch: pytest.MonkeyPatch) -> None:
 
     assert result["status"] == "completed"
     args, kwargs = fake_client.post.call_args
-    assert "/api/v2/flow/cell_pm/complete" in args[0]
+    assert "/api/v1/flow/cell_pm/complete" in args[0]
     assert kwargs["json"] == {"task_id": "task-uuid", "notes": "approved"}
 
 
@@ -419,7 +419,7 @@ def test_escalate_up_passes_reason(monkeypatch: pytest.MonkeyPatch) -> None:
 
     assert result["status"] == "blocked"
     args, kwargs = fake_client.post.call_args
-    assert "/api/v2/flow/cell_pm/escalate_up" in args[0]
+    assert "/api/v1/flow/cell_pm/escalate_up" in args[0]
     assert kwargs["json"] == {
         "task_id": "task-uuid",
         "reason": "cross-cell help needed",
@@ -427,7 +427,7 @@ def test_escalate_up_passes_reason(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 def test_escalate_to_ceo_passes_reason(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Board / Main PM verb forwards to /api/v2/flow/<role>/escalate_to_ceo."""
+    """Board / Main PM verb forwards to /api/v1/flow/<role>/escalate_to_ceo."""
     srv = _reload_for_role(
         monkeypatch, "product_owner", "00000000-0000-0000-0000-000000000005"
     )
@@ -441,7 +441,7 @@ def test_escalate_to_ceo_passes_reason(monkeypatch: pytest.MonkeyPatch) -> None:
     args, kwargs = fake_client.post.call_args
     # Board route serves PO + Head Marketing under one prefix; the slug
     # map in flow_server translates product_owner → board.
-    assert "/api/v2/flow/board/escalate_to_ceo" in args[0]
+    assert "/api/v1/flow/board/escalate_to_ceo" in args[0]
     assert kwargs["json"] == {
         "task_id": "task-uuid",
         "reason": "strategic decision needed",

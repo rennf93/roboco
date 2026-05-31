@@ -1,4 +1,4 @@
-"""Unit tests for /api/v2/flow/developer/* endpoints.
+"""Unit tests for /api/v1/flow/developer/* endpoints.
 
 Uses a minimal FastAPI test client built from the new router only.
 No DB required — Choreographer is mocked.
@@ -13,7 +13,7 @@ import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from roboco.api.deps import get_choreographer
-from roboco.api.routes.v2.flow_dev import router
+from roboco.api.routes.v1.flow_dev import router
 
 _HTTP_200 = 200
 _HTTP_422 = 422
@@ -40,13 +40,13 @@ def _build_app(mock_choreographer: MagicMock) -> FastAPI:
 
 @pytest.mark.asyncio
 async def test_give_me_work_returns_envelope() -> None:
-    """POST /api/v2/flow/developer/give_me_work returns 200 with envelope shape."""
+    """POST /api/v1/flow/developer/give_me_work returns 200 with envelope shape."""
     mock_chore = MagicMock()
     mock_chore.give_me_work = AsyncMock(return_value=_make_envelope(status="idle"))
     client = TestClient(_build_app(mock_chore))
 
     resp = client.post(
-        "/api/v2/flow/developer/give_me_work",
+        "/api/v1/flow/developer/give_me_work",
         json={},
         headers=_HEADERS,
     )
@@ -59,7 +59,7 @@ async def test_give_me_work_returns_envelope() -> None:
 
 @pytest.mark.asyncio
 async def test_i_will_work_on_dispatches_task_id() -> None:
-    """POST /api/v2/flow/developer/i_will_work_on forwards task_id and plan."""
+    """POST /api/v1/flow/developer/i_will_work_on forwards task_id and plan."""
     mock_chore = MagicMock()
     mock_chore.i_will_work_on = AsyncMock(
         return_value=_make_envelope(status="in_progress", task_id=_TASK_ID)
@@ -67,7 +67,7 @@ async def test_i_will_work_on_dispatches_task_id() -> None:
     client = TestClient(_build_app(mock_chore))
 
     resp = client.post(
-        "/api/v2/flow/developer/i_will_work_on",
+        "/api/v1/flow/developer/i_will_work_on",
         json={"task_id": _TASK_ID, "plan": "implement the feature"},
         headers=_HEADERS,
     )
@@ -84,7 +84,7 @@ async def test_i_will_work_on_dispatches_task_id() -> None:
 
 @pytest.mark.asyncio
 async def test_i_am_done_dispatches_task_and_notes() -> None:
-    """POST /api/v2/flow/developer/i_am_done forwards task_id and notes."""
+    """POST /api/v1/flow/developer/i_am_done forwards task_id and notes."""
     mock_chore = MagicMock()
     mock_chore.i_am_done = AsyncMock(
         return_value=_make_envelope(status="awaiting_qa", task_id=_TASK_ID)
@@ -92,7 +92,7 @@ async def test_i_am_done_dispatches_task_and_notes() -> None:
     client = TestClient(_build_app(mock_chore))
 
     resp = client.post(
-        "/api/v2/flow/developer/i_am_done",
+        "/api/v1/flow/developer/i_am_done",
         json={"task_id": _TASK_ID, "notes": "all tests pass"},
         headers=_HEADERS,
     )
@@ -105,7 +105,7 @@ async def test_i_am_done_dispatches_task_and_notes() -> None:
 
 @pytest.mark.asyncio
 async def test_i_am_blocked_dispatches_reason() -> None:
-    """POST /api/v2/flow/developer/i_am_blocked forwards task_id and reason."""
+    """POST /api/v1/flow/developer/i_am_blocked forwards task_id and reason."""
     mock_chore = MagicMock()
     mock_chore.i_am_blocked = AsyncMock(
         return_value=_make_envelope(status="blocked", task_id=_TASK_ID)
@@ -113,7 +113,7 @@ async def test_i_am_blocked_dispatches_reason() -> None:
     client = TestClient(_build_app(mock_chore))
 
     resp = client.post(
-        "/api/v2/flow/developer/i_am_blocked",
+        "/api/v1/flow/developer/i_am_blocked",
         json={"task_id": _TASK_ID, "reason": "waiting for design spec"},
         headers=_HEADERS,
     )
@@ -125,13 +125,13 @@ async def test_i_am_blocked_dispatches_reason() -> None:
 
 @pytest.mark.asyncio
 async def test_i_am_idle_dispatches_agent_id() -> None:
-    """POST /api/v2/flow/developer/i_am_idle delegates to Choreographer.i_am_idle."""
+    """POST /api/v1/flow/developer/i_am_idle delegates to Choreographer.i_am_idle."""
     mock_chore = MagicMock()
     mock_chore.i_am_idle = AsyncMock(return_value=_make_envelope(status="idle"))
     client = TestClient(_build_app(mock_chore))
 
     resp = client.post(
-        "/api/v2/flow/developer/i_am_idle",
+        "/api/v1/flow/developer/i_am_idle",
         json={},
         headers=_HEADERS,
     )
@@ -148,7 +148,7 @@ def test_i_am_blocked_rejects_empty_reason() -> None:
     client = TestClient(_build_app(mock_chore))
 
     resp = client.post(
-        "/api/v2/flow/developer/i_am_blocked",
+        "/api/v1/flow/developer/i_am_blocked",
         json={"task_id": _TASK_ID, "reason": ""},
         headers=_HEADERS,
     )
@@ -165,7 +165,7 @@ async def test_open_pr_dispatches_task_id() -> None:
     )
     client = TestClient(_build_app(mock_chore))
     resp = client.post(
-        "/api/v2/flow/developer/open_pr",
+        "/api/v1/flow/developer/open_pr",
         json={"task_id": _TASK_ID},
         headers=_HEADERS,
     )
@@ -182,7 +182,7 @@ async def test_unclaim_dispatches_task_id() -> None:
     )
     client = TestClient(_build_app(mock_chore))
     resp = client.post(
-        "/api/v2/flow/developer/unclaim",
+        "/api/v1/flow/developer/unclaim",
         json={"task_id": _TASK_ID},
         headers=_HEADERS,
     )
@@ -199,7 +199,7 @@ async def test_resume_dispatches_task_id() -> None:
     )
     client = TestClient(_build_app(mock_chore))
     resp = client.post(
-        "/api/v2/flow/developer/resume",
+        "/api/v1/flow/developer/resume",
         json={"task_id": _TASK_ID},
         headers=_HEADERS,
     )

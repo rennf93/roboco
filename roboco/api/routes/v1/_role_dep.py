@@ -1,4 +1,4 @@
-"""Role-asserting dependencies and shared helpers for v2 flow routers.
+"""Role-asserting dependencies and shared helpers for v1 flow routers.
 
 Every router gets one of these as a dependency so the role check happens
 before the choreographer body even runs. Defense in depth — the

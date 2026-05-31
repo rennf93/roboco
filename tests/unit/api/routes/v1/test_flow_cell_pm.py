@@ -1,4 +1,4 @@
-"""Unit tests for /api/v2/flow/cell_pm/* endpoints.
+"""Unit tests for /api/v1/flow/cell_pm/* endpoints.
 
 Uses a minimal FastAPI test client built from the new router only.
 No DB required — Choreographer is mocked.
@@ -13,7 +13,7 @@ import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from roboco.api.deps import get_choreographer
-from roboco.api.routes.v2.flow_cell_pm import router
+from roboco.api.routes.v1.flow_cell_pm import router
 
 _HTTP_200 = 200
 _HTTP_422 = 422
@@ -44,7 +44,7 @@ def _build_app(mock_choreographer: MagicMock) -> FastAPI:
 
 @pytest.mark.asyncio
 async def test_give_me_work_returns_envelope() -> None:
-    """POST /api/v2/flow/cell_pm/give_me_work returns 200 with envelope shape.
+    """POST /api/v1/flow/cell_pm/give_me_work returns 200 with envelope shape.
 
     Cell PM's give_me_work routes to ``pm_give_me_work`` so the response
     surfaces non-pending PM tasks (paused, awaiting_pm_review) too.
@@ -54,7 +54,7 @@ async def test_give_me_work_returns_envelope() -> None:
     client = TestClient(_build_app(mock_chore))
 
     resp = client.post(
-        "/api/v2/flow/cell_pm/give_me_work",
+        "/api/v1/flow/cell_pm/give_me_work",
         json={},
         headers=_HEADERS,
     )
@@ -67,7 +67,7 @@ async def test_give_me_work_returns_envelope() -> None:
 
 @pytest.mark.asyncio
 async def test_triage_returns_envelope() -> None:
-    """POST /api/v2/flow/cell_pm/triage returns 200 with task or idle status."""
+    """POST /api/v1/flow/cell_pm/triage returns 200 with task or idle status."""
     mock_chore = MagicMock()
     mock_chore.triage = AsyncMock(
         return_value=_make_envelope(status="awaiting_pm_review", task_id=_TASK_ID)
@@ -75,7 +75,7 @@ async def test_triage_returns_envelope() -> None:
     client = TestClient(_build_app(mock_chore))
 
     resp = client.post(
-        "/api/v2/flow/cell_pm/triage",
+        "/api/v1/flow/cell_pm/triage",
         json={},
         headers=_HEADERS,
     )
@@ -88,7 +88,7 @@ async def test_triage_returns_envelope() -> None:
 
 @pytest.mark.asyncio
 async def test_unblock_dispatches_task_id_with_restore_true() -> None:
-    """POST /api/v2/flow/cell_pm/unblock forwards task_id and restore=True."""
+    """POST /api/v1/flow/cell_pm/unblock forwards task_id and restore=True."""
     mock_chore = MagicMock()
     mock_chore.unblock = AsyncMock(
         return_value=_make_envelope(status="in_progress", task_id=_TASK_ID)
@@ -96,7 +96,7 @@ async def test_unblock_dispatches_task_id_with_restore_true() -> None:
     client = TestClient(_build_app(mock_chore))
 
     resp = client.post(
-        "/api/v2/flow/cell_pm/unblock",
+        "/api/v1/flow/cell_pm/unblock",
         json={"task_id": _TASK_ID},
         headers=_HEADERS,
     )
@@ -111,7 +111,7 @@ async def test_unblock_dispatches_task_id_with_restore_true() -> None:
 
 @pytest.mark.asyncio
 async def test_unblock_with_restore_false() -> None:
-    """POST /api/v2/flow/cell_pm/unblock forwards restore=False when specified."""
+    """POST /api/v1/flow/cell_pm/unblock forwards restore=False when specified."""
     mock_chore = MagicMock()
     mock_chore.unblock = AsyncMock(
         return_value=_make_envelope(status="in_progress", task_id=_TASK_ID)
@@ -119,7 +119,7 @@ async def test_unblock_with_restore_false() -> None:
     client = TestClient(_build_app(mock_chore))
 
     resp = client.post(
-        "/api/v2/flow/cell_pm/unblock",
+        "/api/v1/flow/cell_pm/unblock",
         json={"task_id": _TASK_ID, "restore": False},
         headers=_HEADERS,
     )
@@ -132,7 +132,7 @@ async def test_unblock_with_restore_false() -> None:
 
 @pytest.mark.asyncio
 async def test_complete_dispatches_task_and_notes() -> None:
-    """POST /api/v2/flow/cell_pm/complete forwards task_id and notes."""
+    """POST /api/v1/flow/cell_pm/complete forwards task_id and notes."""
     mock_chore = MagicMock()
     mock_chore.complete = AsyncMock(
         return_value=_make_envelope(status="completed", task_id=_TASK_ID)
@@ -140,7 +140,7 @@ async def test_complete_dispatches_task_and_notes() -> None:
     client = TestClient(_build_app(mock_chore))
 
     resp = client.post(
-        "/api/v2/flow/cell_pm/complete",
+        "/api/v1/flow/cell_pm/complete",
         json={"task_id": _TASK_ID, "notes": "All subtasks done, PR merged."},
         headers=_HEADERS,
     )
@@ -156,7 +156,7 @@ async def test_complete_dispatches_task_and_notes() -> None:
 
 @pytest.mark.asyncio
 async def test_escalate_up_dispatches_reason() -> None:
-    """POST /api/v2/flow/cell_pm/escalate_up forwards task_id and reason."""
+    """POST /api/v1/flow/cell_pm/escalate_up forwards task_id and reason."""
     mock_chore = MagicMock()
     mock_chore.escalate_up = AsyncMock(
         return_value=_make_envelope(status="awaiting_pm_review", task_id=_TASK_ID)
@@ -164,7 +164,7 @@ async def test_escalate_up_dispatches_reason() -> None:
     client = TestClient(_build_app(mock_chore))
 
     resp = client.post(
-        "/api/v2/flow/cell_pm/escalate_up",
+        "/api/v1/flow/cell_pm/escalate_up",
         json={"task_id": _TASK_ID, "reason": "Cross-cell dependency needs Main PM."},
         headers=_HEADERS,
     )
@@ -177,13 +177,13 @@ async def test_escalate_up_dispatches_reason() -> None:
 
 @pytest.mark.asyncio
 async def test_i_am_idle_dispatches_agent_id() -> None:
-    """POST /api/v2/flow/cell_pm/i_am_idle delegates to Choreographer.i_am_idle."""
+    """POST /api/v1/flow/cell_pm/i_am_idle delegates to Choreographer.i_am_idle."""
     mock_chore = MagicMock()
     mock_chore.i_am_idle = AsyncMock(return_value=_make_envelope(status="idle"))
     client = TestClient(_build_app(mock_chore))
 
     resp = client.post(
-        "/api/v2/flow/cell_pm/i_am_idle",
+        "/api/v1/flow/cell_pm/i_am_idle",
         json={},
         headers=_HEADERS,
     )
@@ -200,7 +200,7 @@ def test_complete_rejects_empty_notes() -> None:
     client = TestClient(_build_app(mock_chore))
 
     resp = client.post(
-        "/api/v2/flow/cell_pm/complete",
+        "/api/v1/flow/cell_pm/complete",
         json={"task_id": _TASK_ID, "notes": ""},
         headers=_HEADERS,
     )
@@ -214,7 +214,7 @@ def test_escalate_up_rejects_empty_reason() -> None:
     client = TestClient(_build_app(mock_chore))
 
     resp = client.post(
-        "/api/v2/flow/cell_pm/escalate_up",
+        "/api/v1/flow/cell_pm/escalate_up",
         json={"task_id": _TASK_ID, "reason": ""},
         headers=_HEADERS,
     )
@@ -224,7 +224,7 @@ def test_escalate_up_rejects_empty_reason() -> None:
 
 @pytest.mark.asyncio
 async def test_i_will_plan_dispatches_to_choreographer() -> None:
-    """POST /api/v2/flow/cell_pm/i_will_plan forwards task_id and plan."""
+    """POST /api/v1/flow/cell_pm/i_will_plan forwards task_id and plan."""
     mock_chore = MagicMock()
     mock_chore.i_will_plan = AsyncMock(
         return_value=_make_envelope(status="in_progress", task_id=_TASK_ID)
@@ -232,7 +232,7 @@ async def test_i_will_plan_dispatches_to_choreographer() -> None:
     client = TestClient(_build_app(mock_chore))
 
     resp = client.post(
-        "/api/v2/flow/cell_pm/i_will_plan",
+        "/api/v1/flow/cell_pm/i_will_plan",
         json={
             "task_id": _TASK_ID,
             "plan": "break into 3 subtasks for backend",
@@ -262,7 +262,7 @@ async def test_i_will_plan_dispatches_to_choreographer() -> None:
 
 @pytest.mark.asyncio
 async def test_delegate_dispatches_inputs_bundle() -> None:
-    """POST /api/v2/flow/cell_pm/delegate forwards body via DelegateInputs."""
+    """POST /api/v1/flow/cell_pm/delegate forwards body via DelegateInputs."""
     mock_chore = MagicMock()
     mock_chore.delegate = AsyncMock(
         return_value=_make_envelope(status="created", task_id=_TASK_ID)
@@ -270,7 +270,7 @@ async def test_delegate_dispatches_inputs_bundle() -> None:
     client = TestClient(_build_app(mock_chore))
 
     resp = client.post(
-        "/api/v2/flow/cell_pm/delegate",
+        "/api/v1/flow/cell_pm/delegate",
         json={
             "parent_task_id": _TASK_ID,
             "title": "Implement /v1/foo",
@@ -293,7 +293,7 @@ async def test_delegate_dispatches_inputs_bundle() -> None:
 
 @pytest.mark.asyncio
 async def test_submit_up_dispatches_notes() -> None:
-    """POST /api/v2/flow/cell_pm/submit_up forwards task_id and notes."""
+    """POST /api/v1/flow/cell_pm/submit_up forwards task_id and notes."""
     mock_chore = MagicMock()
     mock_chore.submit_up = AsyncMock(
         return_value=_make_envelope(status="awaiting_pm_review", task_id=_TASK_ID)
@@ -301,7 +301,7 @@ async def test_submit_up_dispatches_notes() -> None:
     client = TestClient(_build_app(mock_chore))
 
     resp = client.post(
-        "/api/v2/flow/cell_pm/submit_up",
+        "/api/v1/flow/cell_pm/submit_up",
         json={
             "task_id": _TASK_ID,
             "notes": "cell finished all subtasks, ready for main pm review",
@@ -314,12 +314,12 @@ async def test_submit_up_dispatches_notes() -> None:
 
 
 def test_submit_up_rejects_empty_notes() -> None:
-    """POST /api/v2/flow/cell_pm/submit_up rejects empty notes."""
+    """POST /api/v1/flow/cell_pm/submit_up rejects empty notes."""
     mock_chore = MagicMock()
     client = TestClient(_build_app(mock_chore))
 
     resp = client.post(
-        "/api/v2/flow/cell_pm/submit_up",
+        "/api/v1/flow/cell_pm/submit_up",
         json={"task_id": _TASK_ID, "notes": ""},
         headers=_HEADERS,
     )
@@ -335,7 +335,7 @@ async def test_unclaim_dispatches() -> None:
     )
     client = TestClient(_build_app(mock_chore))
     resp = client.post(
-        "/api/v2/flow/cell_pm/unclaim",
+        "/api/v1/flow/cell_pm/unclaim",
         json={"task_id": _TASK_ID},
         headers=_HEADERS,
     )
@@ -351,7 +351,7 @@ async def test_resume_dispatches() -> None:
     )
     client = TestClient(_build_app(mock_chore))
     resp = client.post(
-        "/api/v2/flow/cell_pm/resume",
+        "/api/v1/flow/cell_pm/resume",
         json={"task_id": _TASK_ID},
         headers=_HEADERS,
     )

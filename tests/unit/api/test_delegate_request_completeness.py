@@ -6,7 +6,7 @@ from uuid import uuid4
 
 import pytest
 from pydantic import ValidationError
-from roboco.api.schemas.v2.flow import DelegateRequest
+from roboco.api.schemas.v1.flow import DelegateRequest
 
 
 def _ok_payload() -> dict:

@@ -1,4 +1,4 @@
-"""Unit tests for /api/v2/flow/qa/* endpoints.
+"""Unit tests for /api/v1/flow/qa/* endpoints.
 
 Uses a minimal FastAPI test client built from the new router only.
 No DB required — Choreographer is mocked.
@@ -13,7 +13,7 @@ import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from roboco.api.deps import get_choreographer
-from roboco.api.routes.v2.flow_qa import router
+from roboco.api.routes.v1.flow_qa import router
 
 _HTTP_200 = 200
 _HTTP_422 = 422
@@ -44,13 +44,13 @@ def _build_app(mock_choreographer: MagicMock) -> FastAPI:
 
 @pytest.mark.asyncio
 async def test_give_me_work_returns_envelope() -> None:
-    """POST /api/v2/flow/qa/give_me_work returns 200 with envelope shape."""
+    """POST /api/v1/flow/qa/give_me_work returns 200 with envelope shape."""
     mock_chore = MagicMock()
     mock_chore.give_me_work = AsyncMock(return_value=_make_envelope(status="idle"))
     client = TestClient(_build_app(mock_chore))
 
     resp = client.post(
-        "/api/v2/flow/qa/give_me_work",
+        "/api/v1/flow/qa/give_me_work",
         json={},
         headers=_HEADERS,
     )
@@ -63,7 +63,7 @@ async def test_give_me_work_returns_envelope() -> None:
 
 @pytest.mark.asyncio
 async def test_claim_review_dispatches_task_id() -> None:
-    """POST /api/v2/flow/qa/claim_review returns 200 with evidence.pr_url in body."""
+    """POST /api/v1/flow/qa/claim_review returns 200 with evidence.pr_url in body."""
     mock_chore = MagicMock()
     mock_chore.claim_review = AsyncMock(
         return_value=_make_envelope(
@@ -75,7 +75,7 @@ async def test_claim_review_dispatches_task_id() -> None:
     client = TestClient(_build_app(mock_chore))
 
     resp = client.post(
-        "/api/v2/flow/qa/claim_review",
+        "/api/v1/flow/qa/claim_review",
         json={"task_id": _TASK_ID},
         headers=_HEADERS,
     )
@@ -90,7 +90,7 @@ async def test_claim_review_dispatches_task_id() -> None:
 
 @pytest.mark.asyncio
 async def test_pass_review_with_notes_returns_awaiting_documentation() -> None:
-    """POST /api/v2/flow/qa/pass with notes returns 200 with awaiting_documentation."""
+    """POST /api/v1/flow/qa/pass with notes returns 200 with awaiting_documentation."""
     mock_chore = MagicMock()
     mock_chore.pass_review = AsyncMock(
         return_value=_make_envelope(status="awaiting_documentation", task_id=_TASK_ID)
@@ -98,7 +98,7 @@ async def test_pass_review_with_notes_returns_awaiting_documentation() -> None:
     client = TestClient(_build_app(mock_chore))
 
     resp = client.post(
-        "/api/v2/flow/qa/pass",
+        "/api/v1/flow/qa/pass",
         json={
             "task_id": _TASK_ID,
             "notes": "All acceptance criteria met, tests green.",
@@ -116,7 +116,7 @@ async def test_pass_review_with_notes_returns_awaiting_documentation() -> None:
 
 @pytest.mark.asyncio
 async def test_pass_review_short_notes_returns_tracing_gap_envelope() -> None:
-    """POST /api/v2/flow/qa/pass with minimal notes relies on choreographer to gate."""
+    """POST /api/v1/flow/qa/pass with minimal notes relies on choreographer to gate."""
     mock_chore = MagicMock()
     mock_chore.pass_review = AsyncMock(
         return_value=_make_envelope(status="tracing_gap", task_id=_TASK_ID)
@@ -124,7 +124,7 @@ async def test_pass_review_short_notes_returns_tracing_gap_envelope() -> None:
     client = TestClient(_build_app(mock_chore))
 
     resp = client.post(
-        "/api/v2/flow/qa/pass",
+        "/api/v1/flow/qa/pass",
         json={"task_id": _TASK_ID, "notes": "ok"},
         headers=_HEADERS,
     )
@@ -137,7 +137,7 @@ async def test_pass_review_short_notes_returns_tracing_gap_envelope() -> None:
 
 @pytest.mark.asyncio
 async def test_fail_review_with_issues_returns_needs_revision() -> None:
-    """POST /api/v2/flow/qa/fail with issues returns 200 with needs_revision status."""
+    """POST /api/v1/flow/qa/fail with issues returns 200 with needs_revision status."""
     mock_chore = MagicMock()
     mock_chore.fail_review = AsyncMock(
         return_value=_make_envelope(status="needs_revision", task_id=_TASK_ID)
@@ -145,7 +145,7 @@ async def test_fail_review_with_issues_returns_needs_revision() -> None:
     client = TestClient(_build_app(mock_chore))
 
     resp = client.post(
-        "/api/v2/flow/qa/fail",
+        "/api/v1/flow/qa/fail",
         json={
             "task_id": _TASK_ID,
             "issues": ["Missing error handling", "No unit tests"],
@@ -162,12 +162,12 @@ async def test_fail_review_with_issues_returns_needs_revision() -> None:
 
 
 def test_fail_review_rejects_empty_issues_list() -> None:
-    """POST /api/v2/flow/qa/fail with empty issues list is rejected with 422."""
+    """POST /api/v1/flow/qa/fail with empty issues list is rejected with 422."""
     mock_chore = MagicMock()
     client = TestClient(_build_app(mock_chore))
 
     resp = client.post(
-        "/api/v2/flow/qa/fail",
+        "/api/v1/flow/qa/fail",
         json={"task_id": _TASK_ID, "issues": []},
         headers=_HEADERS,
     )
@@ -183,7 +183,7 @@ async def test_unclaim_dispatches_task_id() -> None:
     )
     client = TestClient(_build_app(mock_chore))
     resp = client.post(
-        "/api/v2/flow/qa/unclaim",
+        "/api/v1/flow/qa/unclaim",
         json={"task_id": _TASK_ID},
         headers=_HEADERS,
     )
@@ -199,7 +199,7 @@ async def test_resume_dispatches_task_id() -> None:
     )
     client = TestClient(_build_app(mock_chore))
     resp = client.post(
-        "/api/v2/flow/qa/resume",
+        "/api/v1/flow/qa/resume",
         json={"task_id": _TASK_ID},
         headers=_HEADERS,
     )
@@ -213,7 +213,7 @@ async def test_i_am_idle_dispatches_agent_id() -> None:
     mock_chore.i_am_idle = AsyncMock(return_value=_make_envelope(status="idle"))
     client = TestClient(_build_app(mock_chore))
     resp = client.post(
-        "/api/v2/flow/qa/i_am_idle",
+        "/api/v1/flow/qa/i_am_idle",
         json={},
         headers=_HEADERS,
     )

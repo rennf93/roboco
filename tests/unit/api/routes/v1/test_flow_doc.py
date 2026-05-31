@@ -1,4 +1,4 @@
-"""Unit tests for /api/v2/flow/documenter/* endpoints.
+"""Unit tests for /api/v1/flow/documenter/* endpoints.
 
 Uses a minimal FastAPI test client built from the new router only.
 No DB required — Choreographer is mocked.
@@ -13,7 +13,7 @@ import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from roboco.api.deps import get_choreographer
-from roboco.api.routes.v2.flow_doc import router
+from roboco.api.routes.v1.flow_doc import router
 
 _HTTP_200 = 200
 _HTTP_422 = 422
@@ -44,13 +44,13 @@ def _build_app(mock_choreographer: MagicMock) -> FastAPI:
 
 @pytest.mark.asyncio
 async def test_give_me_work_returns_envelope() -> None:
-    """POST /api/v2/flow/documenter/give_me_work returns 200 with envelope shape."""
+    """POST /api/v1/flow/documenter/give_me_work returns 200 with envelope shape."""
     mock_chore = MagicMock()
     mock_chore.give_me_work = AsyncMock(return_value=_make_envelope(status="idle"))
     client = TestClient(_build_app(mock_chore))
 
     resp = client.post(
-        "/api/v2/flow/documenter/give_me_work",
+        "/api/v1/flow/documenter/give_me_work",
         json={},
         headers=_HEADERS,
     )
@@ -63,7 +63,7 @@ async def test_give_me_work_returns_envelope() -> None:
 
 @pytest.mark.asyncio
 async def test_claim_doc_task_dispatches_task_id() -> None:
-    """POST /api/v2/flow/documenter/claim_doc_task forwards task_id."""
+    """POST /api/v1/flow/documenter/claim_doc_task forwards task_id."""
     mock_chore = MagicMock()
     mock_chore.claim_doc_task = AsyncMock(
         return_value=_make_envelope(status="awaiting_documentation", task_id=_TASK_ID)
@@ -71,7 +71,7 @@ async def test_claim_doc_task_dispatches_task_id() -> None:
     client = TestClient(_build_app(mock_chore))
 
     resp = client.post(
-        "/api/v2/flow/documenter/claim_doc_task",
+        "/api/v1/flow/documenter/claim_doc_task",
         json={"task_id": _TASK_ID},
         headers=_HEADERS,
     )
@@ -86,7 +86,7 @@ async def test_claim_doc_task_dispatches_task_id() -> None:
 
 @pytest.mark.asyncio
 async def test_i_documented_dispatches_notes_and_files() -> None:
-    """POST /api/v2/flow/documenter/i_documented forwards notes and files."""
+    """POST /api/v1/flow/documenter/i_documented forwards notes and files."""
     mock_chore = MagicMock()
     mock_chore.i_documented = AsyncMock(
         return_value=_make_envelope(status="awaiting_pm_review", task_id=_TASK_ID)
@@ -94,7 +94,7 @@ async def test_i_documented_dispatches_notes_and_files() -> None:
     client = TestClient(_build_app(mock_chore))
 
     resp = client.post(
-        "/api/v2/flow/documenter/i_documented",
+        "/api/v1/flow/documenter/i_documented",
         json={
             "task_id": _TASK_ID,
             "notes": "Documented the auth endpoint in docs/api/auth.md",
@@ -115,13 +115,13 @@ async def test_i_documented_dispatches_notes_and_files() -> None:
 
 @pytest.mark.asyncio
 async def test_i_am_idle_dispatches_agent_id() -> None:
-    """POST /api/v2/flow/documenter/i_am_idle delegates to Choreographer.i_am_idle."""
+    """POST /api/v1/flow/documenter/i_am_idle delegates to Choreographer.i_am_idle."""
     mock_chore = MagicMock()
     mock_chore.i_am_idle = AsyncMock(return_value=_make_envelope(status="idle"))
     client = TestClient(_build_app(mock_chore))
 
     resp = client.post(
-        "/api/v2/flow/documenter/i_am_idle",
+        "/api/v1/flow/documenter/i_am_idle",
         json={},
         headers=_HEADERS,
     )
@@ -138,7 +138,7 @@ def test_i_documented_rejects_empty_notes() -> None:
     client = TestClient(_build_app(mock_chore))
 
     resp = client.post(
-        "/api/v2/flow/documenter/i_documented",
+        "/api/v1/flow/documenter/i_documented",
         json={"task_id": _TASK_ID, "notes": "", "files": ["docs/readme.md"]},
         headers=_HEADERS,
     )
@@ -152,7 +152,7 @@ def test_i_documented_rejects_empty_files_list() -> None:
     client = TestClient(_build_app(mock_chore))
 
     resp = client.post(
-        "/api/v2/flow/documenter/i_documented",
+        "/api/v1/flow/documenter/i_documented",
         json={"task_id": _TASK_ID, "notes": "some docs", "files": []},
         headers=_HEADERS,
     )
@@ -168,7 +168,7 @@ async def test_unclaim_dispatches() -> None:
     )
     client = TestClient(_build_app(mock_chore))
     resp = client.post(
-        "/api/v2/flow/documenter/unclaim",
+        "/api/v1/flow/documenter/unclaim",
         json={"task_id": _TASK_ID},
         headers=_HEADERS,
     )
@@ -184,7 +184,7 @@ async def test_resume_dispatches() -> None:
     )
     client = TestClient(_build_app(mock_chore))
     resp = client.post(
-        "/api/v2/flow/documenter/resume",
+        "/api/v1/flow/documenter/resume",
         json={"task_id": _TASK_ID},
         headers=_HEADERS,
     )

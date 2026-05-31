@@ -1830,7 +1830,7 @@ class AgentOrchestrator:
             api_url = f"http://127.0.0.1:{settings.port}"
 
         agent_role = get_agent_role(agent_id) or ""
-        # Gateway v2 endpoints declare X-Agent-ID as Annotated[UUID, Header(...)],
+        # Gateway v1 endpoints declare X-Agent-ID as Annotated[UUID, Header(...)],
         # so the MCP server has to forward the agent's UUID — not the slug — or
         # every gateway call 422s on header parse. Resolve via AGENT_UUIDS map;
         # if the slug isn't in the map (custom agents), fall back to the slug

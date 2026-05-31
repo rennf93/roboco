@@ -13,7 +13,7 @@ These tests pin the contract:
 
 1. Envelope holds an optional ``correlation_id`` and round-trips it via
    ``as_dict()``.
-2. The v2 flow route reads ``request.state.correlation_id`` (set by
+2. The v1 flow route reads ``request.state.correlation_id`` (set by
    ``CorrelationIdMiddleware``) and stamps it onto the envelope before
    returning.
 3. Both MCP shims attach an ``X-Correlation-ID`` header on every POST,
@@ -40,7 +40,7 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from roboco.api.deps import get_choreographer
 from roboco.api.middleware import CorrelationIdMiddleware
-from roboco.api.routes.v2.flow_dev import router as flow_dev_router
+from roboco.api.routes.v1.flow_dev import router as flow_dev_router
 from roboco.services.gateway.choreographer import Choreographer, ChoreographerDeps
 from roboco.services.gateway.envelope import Envelope
 
@@ -98,7 +98,7 @@ def test_route_stamps_request_correlation_id_onto_envelope() -> None:
     app, _ = _build_app()
     client = TestClient(app)
     r = client.post(
-        "/api/v2/flow/developer/give_me_work",
+        "/api/v1/flow/developer/give_me_work",
         json={},
         headers={**_DEV_AGENT_HEADERS, "X-Correlation-ID": "trace-xyz"},
     )
@@ -112,7 +112,7 @@ def test_route_stamps_generated_correlation_id_when_header_missing() -> None:
     app, _ = _build_app()
     client = TestClient(app)
     r = client.post(
-        "/api/v2/flow/developer/give_me_work",
+        "/api/v1/flow/developer/give_me_work",
         json={},
         headers=_DEV_AGENT_HEADERS,
     )
