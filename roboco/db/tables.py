@@ -1693,9 +1693,7 @@ class ModelAssignmentTable(Base):
 
 class GatewayTriggerTable(Base):
     """Records every dispatcher spawn-decision (spawn / queue / drop) for
-    observability and gateway-tuning.  Written only when
-    ``settings.gateway_enabled`` is True; the legacy spawn path never touches
-    this table.
+    observability and gateway-tuning.
     """
 
     __tablename__ = "gateway_triggers"

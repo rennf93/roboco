@@ -258,12 +258,8 @@ class Settings(BaseSettings):
     agent_sla_cell_pm_claimed: int = Field(default=4 * 3600, ge=60)
 
     # ==========================================================================
-    # Agent Gateway (Phase 0 introduces; Phase 1+ activates)
+    # Agent Gateway
     # ==========================================================================
-    gateway_enabled: bool = Field(
-        default=False,
-        description="Enable Agent Gateway feature (Phase 0 flag)",
-    )
     manifest_host_dir: str = Field(
         default="/app/manifests",
         description=(

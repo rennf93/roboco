@@ -285,7 +285,7 @@ def _build_manifest_for_agent(agent_id: str, model: str) -> Path | None:
 
 
 # =============================================================================
-# GATEWAY PRE-SPAWN CHECK (gated behind settings.gateway_enabled)
+# GATEWAY PRE-SPAWN CHECK (trigger_filter spawn cooldown)
 # =============================================================================
 
 
@@ -364,13 +364,8 @@ async def gateway_pre_spawn_check(
     Returns a ``(outcome, reason)`` tuple where ``outcome`` is one of
     ``"spawn"``, ``"queue"``, or ``"drop"``.
 
-    When ``settings.gateway_enabled`` is False (the default in Phase 0) this
-    function returns immediately with ``("spawn", "gateway disabled")`` so the
-    existing legacy dispatch path is **completely unchanged**.
+    The trigger_filter spawn cooldown runs unconditionally for every spawn.
     """
-    if not settings.gateway_enabled:
-        return "spawn", "gateway disabled (legacy path)"
-
     from roboco.db.base import get_session_factory
     from roboco.services.gateway.trigger_filter import (
         Decision,
@@ -1148,12 +1143,10 @@ class AgentOrchestrator:
         remaining tasks were skipped until the next tick. This wrapper logs
         and returns None on failure so siblings still get dispatched.
 
-        When ``settings.gateway_enabled`` is True the gateway pre-spawn check
-        runs first; a QUEUE or DROP outcome skips the container launch.
-        When the flag is False (Phase 0 default) this block is a single
-        boolean test and the legacy path is completely unchanged.
+        The gateway pre-spawn check runs first; a QUEUE or DROP outcome skips
+        the container launch.
         """
-        # Gateway gate — zero-cost when gateway_enabled=False (Phase 0 default).
+        # Gateway pre-spawn cooldown gate.
         target_role = get_agent_role(agent_id) or "unknown"
         # Map context_label to one of the TriggerKind string values; unknown
         # labels fall back to "scan" which is the least-specific kind.
