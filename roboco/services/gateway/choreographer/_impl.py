@@ -295,6 +295,7 @@ class DelegateInputs:
     nature: str | None = None
     acceptance_criteria: list[str] | None = None
     estimated_complexity: str = "medium"
+    project_id: UUID | None = None
 
 
 class Choreographer:

@@ -187,6 +187,10 @@ class DelegateRequest(BaseModel):
     # acceptance_criteria is required and non-empty; downstream policy
     # also denylist-checks each item against placeholder phrases.
     acceptance_criteria: list[str] = Field(..., min_length=1)
+    # Optional per-subtask project override. When omitted, the choreographer
+    # resolves the project from the parent's Product map for this cell, then
+    # falls back to the parent's project. Plain optional field — no validator.
+    project_id: UUID | None = None
 
     # Pre-gateway parity: cross-field validators that catch the most common
     # LLM-vs-schema confusions. Pre-gateway lived in
