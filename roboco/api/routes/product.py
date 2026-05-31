@@ -17,6 +17,7 @@ from roboco.api.schemas.product import (
     product_to_summary,
 )
 from roboco.models.product import ProductCellMapping, ProductCreate, ProductUpdate
+from roboco.services.base import ConflictError
 from roboco.services.product import get_product_service
 
 router = APIRouter()
@@ -52,15 +53,31 @@ async def create_product(
         description=data.description,
         cells=_to_mappings(data.cells),
     )
+    # The service raises ConflictError (slug already taken) before any flush.
+    # Replacing cells then flushes child rows that can violate the
+    # uq_product_projects_product_team UNIQUE (two cells with the same team in
+    # the body) or the product_projects.project_id FK (a non-existent project).
+    # Either raises IntegrityError and poisons the session, so roll back and map
+    # the conflict to a client error instead of leaking an unhandled 500 — the
+    # same mapping update_product applies.
     try:
         product = await service.create(create_data, created_by=agent.agent_id)
         await db.commit()
-        return product_to_response(product)
-    except Exception as e:
+    except ConflictError as e:
         await db.rollback()
-        if "already exists" in str(e):
-            raise HTTPException(status.HTTP_409_CONFLICT, detail=str(e)) from e
-        raise
+        raise HTTPException(status.HTTP_409_CONFLICT, detail=str(e)) from e
+    except IntegrityError as e:
+        await db.rollback()
+        if "uq_product_projects_product_team" in str(e):
+            raise HTTPException(
+                status.HTTP_409_CONFLICT,
+                detail="Duplicate cell: each team may map to at most one project.",
+            ) from e
+        raise HTTPException(
+            status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="Invalid cell mapping: project_id does not reference a project.",
+        ) from e
+    return product_to_response(product)
 
 
 @router.get("/{product_id}", response_model=ProductResponse)
