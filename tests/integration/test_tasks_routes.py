@@ -2541,6 +2541,25 @@ async def test_approve_and_start_short_notes(ceo_client: dict) -> None:
 
 
 @pytest.mark.asyncio
+async def test_approve_and_start_missing_task_404_before_notes_gate(
+    ceo_client: dict,
+) -> None:
+    # Missing task -> 404 even with valid notes: the not-found guard runs
+    # before the notes gate, so service.approve_and_start is never reached.
+    with patch("roboco.api.routes.tasks.get_task_service") as mock_factory:
+        instance = AsyncMock()
+        instance.get = AsyncMock(return_value=None)
+        mock_factory.return_value = instance
+        resp = await ceo_client["client"].post(
+            f"/api/tasks/{uuid4()}/approve-and-start",
+            json={"notes": "Board review complete; clear requirements; build it now."},
+            headers=_HDR,
+        )
+    assert resp.status_code == HTTPStatus.NOT_FOUND
+    instance.approve_and_start.assert_not_awaited()
+
+
+@pytest.mark.asyncio
 async def test_ceo_reject_task_not_found(ceo_client: dict) -> None:
     response = await ceo_client["client"].post(
         f"/api/tasks/{uuid4()}/ceo-reject",
