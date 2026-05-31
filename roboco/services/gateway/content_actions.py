@@ -789,7 +789,7 @@ class ContentActions:
     ) -> Envelope:
         """PM-or-up creates a discussion session linked to a task.
 
-        Pre-gateway parity for `roboco_session_create_for_tasks`. The
+        Backs the `open_session` do-verb. The
         underlying service de-duplicates: if an ancestor of this task
         already has a primary session in the same channel, it reuses
         that session instead of opening a new one.

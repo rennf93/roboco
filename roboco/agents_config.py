@@ -648,7 +648,7 @@ def can_a2a_direct(from_agent: str, to_agent: str) -> tuple[bool, str | None]:
 
     # CEO is human - cannot A2A, use notifications
     if to_role == "ceo":
-        return False, "CEO is human. Use roboco_notify_send() instead of A2A."
+        return False, "CEO is human. Use notify() instead of A2A."
 
     # Board → board/main-pm (not CEO, not cells directly)
     if from_role in ("product_owner", "head_marketing", "auditor"):
@@ -681,7 +681,7 @@ def get_a2a_route_hint(from_agent: str, to_agent: str) -> str:
 
     # CEO is human - no A2A route, use notifications
     if to_role == "ceo":
-        return "CEO is human. Use roboco_notify_send() for CEO communication."
+        return "CEO is human. Use notify() for CEO communication."
 
     # Cross-cell routing
     if from_team and to_team and from_team != to_team:
@@ -694,4 +694,4 @@ def get_a2a_route_hint(from_agent: str, to_agent: str) -> str:
         cell_pm = get_pm_for_team(from_team)
         return f"Route: {from_agent}→{cell_pm}→main-pm→board"
 
-    return "Use roboco_task_escalate() for proper escalation."
+    return "Use escalate_up() for proper escalation."

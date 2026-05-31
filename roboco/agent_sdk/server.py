@@ -373,8 +373,8 @@ _CIRCUIT_REJECTION_KINDS: frozenset[str] = frozenset(
 
 # Names match the gateway verb surface — i.e. what `terminal_tool_recorded`
 # stores after stripping the `mcp__roboco-flow__` / `mcp__roboco-do__`
-# prefix (see line ~798). Pre-gateway names (roboco_agent_idle, etc.)
-# never match the suffix-stripped values, so the stop hook used to nag
+# prefix (see line ~798). The deleted pre-gateway tool names never
+# matched the suffix-stripped values, so the stop hook used to nag
 # every agent even after a successful i_am_idle (smoke-7 evidence).
 _TERMINAL_TOOLS: frozenset[str] = frozenset(
     {

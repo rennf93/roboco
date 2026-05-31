@@ -1181,7 +1181,7 @@ class HandoffTable(Base):
 
     Current Implementation:
         Handoffs use the simpler `dev_notes` + `handoff_summary` parameters
-        in `roboco_task_submit_qa()`, stored directly on the task.
+        in the submit/open_pr flow, stored directly on the task.
 
     Future Enhancement:
         This table enables richer, structured handoff documents with:

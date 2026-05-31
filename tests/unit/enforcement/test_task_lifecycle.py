@@ -104,7 +104,7 @@ def test_validate_git_no_context_passes() -> None:
 
 def test_git_doc_to_pm_review_requires_docs_complete() -> None:
     ctx = GitContext(docs_complete=False, pr_created=True)
-    with pytest.raises(GitRequirementError, match="docs_complete"):
+    with pytest.raises(GitRequirementError, match="documentation not yet complete"):
         validate_git_requirements("awaiting_documentation", "awaiting_pm_review", ctx)
 
 

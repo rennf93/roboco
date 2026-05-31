@@ -9,7 +9,7 @@ The orchestrator is the BRAIN of the system:
 - Claims tasks on behalf of agents before spawning
 - Agents receive their assignment at spawn time
 - Agents scan for more work after completing a task
-- Agents only call roboco_agent_idle() when truly no work remains
+- Agents only call i_am_idle() when truly no work remains
 """
 
 import asyncio
@@ -1693,10 +1693,10 @@ class AgentOrchestrator:
         return (
             "You may have been spawned without a specific task assignment. "
             "Follow your standard workflow:\n\n"
-            "1. Call `roboco_task_scan()` to find work for your role\n"
-            "2. If tasks found, claim with `roboco_task_claim(task_id)` "
-            "and begin: UNDERSTAND -> PLAN -> EXECUTE -> VERIFY -> HANDOFF\n"
-            "3. If no tasks available, call `roboco_agent_idle()` "
+            "1. Call `give_me_work()` to find work for your role\n"
+            "2. Begin the assigned task (its details arrive in the "
+            "response): UNDERSTAND -> PLAN -> EXECUTE -> VERIFY -> HANDOFF\n"
+            "3. If no tasks available, call `i_am_idle()` "
             "to shutdown gracefully\n\n"
             "Start now by scanning for work."
         )
@@ -2318,7 +2318,8 @@ class AgentOrchestrator:
         """Write a compact task briefing to be read by SessionStart hook.
 
         The briefing saves the agent from burning its first 2-3 tool calls on
-        `roboco_task_scan` + `roboco_task_get`. If `task_id` is known we fetch
+        `give_me_work` (whose Envelope already carries the task details). If
+        `task_id` is known we fetch
         the task and include title, status, branch, and acceptance criteria.
         On fetch failure we still emit the role-level part (role, escalation
         target, terminal tools, workspace path) — strictly better than nothing.
@@ -2756,7 +2757,7 @@ The blocker has been resolved: {resolution.get("details", "Resolved")}
 
 Resume by:
 1. Reading your checkpoint from .tasks/active/TASK-{record.task_id}/
-2. Call roboco_task_unblock("{record.task_id}")
+2. Call unblock("{record.task_id}")
 3. Continue from where you left off
 """
 
@@ -2765,7 +2766,7 @@ Resume by:
                 return f"""
 TASK-{record.task_id} has passed QA review.
 The task is now awaiting documentation.
-You may return to scanning for new work with roboco_task_scan().
+You may return to scanning for new work with give_me_work().
 """
             else:
                 return f"""
@@ -2793,7 +2794,7 @@ Resume by incorporating this information and continuing from where you stopped.
 You have been assigned a new task: TASK-{resolution.get("task_id")}
 
 Start by:
-1. Call roboco_task_get("{resolution.get("task_id")}") to get details
+1. Review the task details provided in your briefing / context_briefing
 2. Follow the standard workflow: UNDERSTAND → PLAN → EXECUTE → VERIFY → NOTES
 """
 
@@ -5276,8 +5277,8 @@ Never `commit`, never write code, never run `git`. PMs coordinate.
         note = (
             f"[SLA] role={breach.role} status={breach.status} "
             f"time_in_state={age_mins}m sla={sla_mins}m. "
-            "Escalating — agent should call roboco_task_escalate "
-            "or roboco_task_substitute."
+            "Escalating — agent should call escalate_up() "
+            "or unclaim()."
         )
         try:
             await client.patch(
@@ -5667,12 +5668,13 @@ DESCRIPTION: {description}
 
 Begin work:
 
-1. Call roboco_task_get("{task_id}") for full details and acceptance criteria
+1. Review the task details above (full acceptance criteria arrive in your
+   briefing / the give_me_work response)
 2. Execute the marketing task (content, campaigns, research, etc.)
 3. Coordinate with Product Owner or Main PM if needed
-4. Call roboco_task_complete("{task_id}") when done
-5. Call roboco_task_scan() to check for more marketing work
-6. If no more work, call roboco_agent_idle() to shutdown gracefully
+4. Call i_am_done() when done
+5. Call give_me_work() to check for more marketing work
+6. If no more work, call i_am_idle() to shutdown gracefully
 """
 
     def _build_pm_blocker_prompt(self, task: dict[str, Any]) -> str:
@@ -5697,9 +5699,9 @@ Your job:
 1. Understand the blocker by reviewing task details
 2. Communicate with the blocked developer if needed
 3. Resolve the blocker (coordinate resources, make decisions, escalate if needed)
-4. Once resolved, the developer can call roboco_task_unblock()
-5. Call roboco_task_scan() to check for other blocked tasks in your cell
-6. If no more blockers, call roboco_agent_idle() to shutdown gracefully
+4. Once resolved, call unblock("{task_id}") to release the task back to the developer
+5. Call triage() to check for other blocked tasks in your cell
+6. If no more blockers, call i_am_idle() to shutdown gracefully
 """
 
     def _build_escalation_prompt(self, notification: dict[str, Any]) -> str:
@@ -5721,12 +5723,12 @@ DETAILS:
 
 Your job:
 
-1. Acknowledge the notification with roboco_notify_ack("{notif_id}")
+1. Acknowledge the notification with notify_ack("{notif_id}")
 2. Assess the escalation and determine action needed
 3. Communicate decisions via appropriate channels
-4. If this requires further escalation, use roboco_escalate()
-5. When resolved, call roboco_task_scan() for other work
-6. If no more work, call roboco_agent_idle() to shutdown gracefully
+4. If this requires further escalation, use escalate_up()
+5. When resolved, call triage() for other work
+6. If no more work, call i_am_idle() to shutdown gracefully
 """
 
     def _build_approval_prompt(self, notification: dict[str, Any]) -> str:
@@ -5749,11 +5751,11 @@ REQUEST:
 Your job:
 
 1. Review the approval request carefully
-2. If related to a task, call roboco_task_get() for context
+2. If related to a task, use the task context provided in your briefing
 3. Make your decision and communicate it
-4. Acknowledge with roboco_notify_ack("{notif_id}")
-5. Call roboco_task_scan() for other work
-6. If no more work, call roboco_agent_idle() to shutdown gracefully
+4. Acknowledge with notify_ack("{notif_id}")
+5. Call triage() for other work
+6. If no more work, call i_am_idle() to shutdown gracefully
 """
 
     def _build_audit_prompt(self, alert: dict[str, Any] | None = None) -> str:
@@ -5773,7 +5775,7 @@ Your job:
 2. Review relevant channels and task history (you have read access to all)
 3. Compile your findings
 4. Report to CEO via appropriate channel
-5. Call roboco_agent_idle() when complete
+5. Call i_am_idle() when complete
 """
 
         return """Periodic AUDIT requested.
@@ -5784,7 +5786,7 @@ Your job:
 2. Check quality metrics (QA pass/fail rates, blocker frequency, etc.)
 3. Identify any concerns or patterns
 4. Compile audit report for CEO
-5. Call roboco_agent_idle() when complete
+5. Call i_am_idle() when complete
 """
 
     def _build_a2a_prompt(self, notification: dict[str, Any]) -> str:
@@ -5824,10 +5826,10 @@ REQUEST:
 
 Your job:
 
-1. Acknowledge the notification with roboco_notify_ack("{notif_id}")
+1. Acknowledge the notification with notify_ack("{notif_id}")
 2. Process the request using your {skill} capabilities
-3. Respond to {from_agent} using roboco_agent_request()
-4. If you need task context, call roboco_task_get("{related_task_id or "task_id"}")
-5. When done, call roboco_task_scan() for other work
-6. If no more work, call roboco_agent_idle() to shutdown gracefully
+3. Respond to {from_agent} using dm("{from_agent}", ...)
+4. If you need task context, it is provided in your briefing for the related task
+5. When done, call give_me_work() for other work
+6. If no more work, call i_am_idle() to shutdown gracefully
 """

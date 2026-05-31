@@ -349,7 +349,7 @@ def validate_git_requirements(
                 message=(
                     "Blocked: documentation not yet complete. "
                     "In awaiting_documentation, Documenter and Developer work in "
-                    "parallel. Wait for Documenter to call roboco_task_docs_complete()."
+                    "parallel. Wait for Documenter to call i_documented()."
                 ),
             )
         if not git_ctx.pr_created:

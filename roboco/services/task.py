@@ -582,7 +582,7 @@ class TaskService(BaseService):
         if not session_link:
             raise ValueError(
                 f"Task {task_id} has no linked session. "
-                "Create a session with roboco_session_create_for_tasks "
+                "Create a session with open_session() "
                 "before activating."
             )
 
@@ -4258,7 +4258,7 @@ class TaskService(BaseService):
                 f"DOC_NOTES_REQUIRED: docs_complete must include notes "
                 f"(>={self.MIN_NOTES_CHARS} chars) listing what was "
                 "documented and where. "
-                "Use roboco_task_docs_complete(notes='...')."
+                "Use i_documented(notes='...')."
             )
 
         completed = await self.docs_complete(task_id, notes)

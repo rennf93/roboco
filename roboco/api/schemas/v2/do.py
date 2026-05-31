@@ -81,7 +81,7 @@ class EvidenceRequest(BaseModel):
 class OpenSessionRequest(BaseModel):
     """PM creates a discussion session for one or more tasks.
 
-    Pre-gateway parity for `roboco_session_create_for_tasks`. Populates the
+    Backs the `open_session` do-verb. Populates the
     panel's Sessions tab.
     """
 
