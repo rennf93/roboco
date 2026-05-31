@@ -1,11 +1,16 @@
 from __future__ import annotations
 
+from typing import TYPE_CHECKING
+
 import pytest
 from sqlalchemy import text
 
+if TYPE_CHECKING:
+    from sqlalchemy.ext.asyncio import AsyncSession
+
 
 @pytest.mark.asyncio
-async def test_products_tables_and_task_fk_exist(db_session) -> None:  # type: ignore[no-untyped-def]
+async def test_products_tables_and_task_fk_exist(db_session: AsyncSession) -> None:
     """Post-state assertion (create_all schema, mirrors test_migration_013/014).
 
     NOT a real alembic round-trip — the suite builds the test DB via
