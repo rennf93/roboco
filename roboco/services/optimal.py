@@ -1730,25 +1730,6 @@ class OptimalService:
         await plugin.add_sources(sources)
         logger.info("Refreshed index", index_type=index_type.value, sources=sources)
 
-    # =========================================================================
-    # BACKWARDS COMPATIBILITY - Document Ingestion
-    # =========================================================================
-
-    async def ingest_document(
-        self,
-        index_type: IndexType,
-        content: str,
-        metadata: dict[str, Any],
-        doc_id: str | None = None,
-    ) -> None:
-        """
-        Ingest a document with metadata directly into an index.
-
-        This method maintains backwards compatibility with the old API.
-        """
-        plugin = self._get_plugin(index_type)
-        await plugin.ingest(content=content, doc_id=doc_id, **metadata)
-
     async def _check_embedding_health(
         self, details: dict[str, Any], timeout: float
     ) -> bool:

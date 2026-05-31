@@ -34,14 +34,10 @@ from roboco.agents_config import (
     AGENT_TEAM_MAP,
     CHANNEL_ACCESS,
 )
-from roboco.agents_config import (
-    get_agent_role as get_role_string,
-)
 from roboco.foundation.identity import Role as _FoundationRole
 from roboco.foundation.policy.communications import NOTIFY_SENDER_ROLES
 from roboco.models import AgentRole, Team
 from roboco.models.permissions import (
-    COMMUNICATION_MATRIX,
     KB_PERMISSIONS,
     ROLE_LEVELS,
     TASK_PERMISSIONS,
@@ -293,36 +289,6 @@ class PermissionService(SingletonService):
         return False
 
     # =========================================================================
-    # COMMUNICATION PERMISSIONS
-    # =========================================================================
-
-    def can_communicate(
-        self,
-        sender: AgentContext,
-        recipient: AgentContext,
-    ) -> bool:
-        """
-        Check if sender can directly communicate with recipient.
-
-        This is for direct messages, not channel messages.
-        Channel access is checked separately.
-        """
-        allowed = COMMUNICATION_MATRIX.get(sender.role, set())
-
-        if recipient.role in allowed:
-            # For cell members, check if same team
-            # Cell members can only communicate within their cell
-            sender_is_cell_member = sender.level >= PermissionLevel.CELL_MEMBER
-            recipient_is_cell_member = recipient.level >= PermissionLevel.CELL_MEMBER
-            different_teams = sender.team != recipient.team
-            cross_cell = (
-                sender_is_cell_member and recipient_is_cell_member and different_teams
-            )
-            return not cross_cell
-
-        return False
-
-    # =========================================================================
     # TASK PERMISSIONS
     # =========================================================================
 
@@ -396,49 +362,6 @@ class PermissionService(SingletonService):
             "can_send_notifications": self.can_send_notifications(agent),
             "task_actions": list(self.get_task_actions(agent)),
         }
-
-    # =========================================================================
-    # STRING-BASED LOOKUPS (direct access to agents_config)
-    # =========================================================================
-
-    def can_agent_read_channel(self, agent_slug: str, channel_slug: str) -> bool:
-        """
-        Check channel access using agent slug (string ID).
-
-        Direct lookup in agents_config.CHANNEL_ACCESS.
-        """
-        channel = CHANNEL_ACCESS.get(channel_slug)
-        if not channel:
-            return False
-
-        read_list = channel.get("read", [])
-        silent_list = channel.get("silent", [])
-
-        return agent_slug in read_list or agent_slug in silent_list
-
-    def can_agent_write_channel(self, agent_slug: str, channel_slug: str) -> bool:
-        """
-        Check channel write access using agent slug (string ID).
-
-        Direct lookup in agents_config.CHANNEL_ACCESS.
-        """
-        channel = CHANNEL_ACCESS.get(channel_slug)
-        if not channel:
-            return False
-
-        write_list = channel.get("write", [])
-        return agent_slug in write_list
-
-    def can_agent_send_notifications(self, agent_slug: str) -> bool:
-        """Check notification permission using agent slug (string ID).
-
-        Derives from foundation.NOTIFY_SENDER_ROLES via the agent's role.
-        """
-        role = get_role_string(agent_slug)
-        try:
-            return _FoundationRole(role) in NOTIFY_SENDER_ROLES
-        except ValueError:
-            return False
 
 
 # =============================================================================
