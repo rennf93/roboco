@@ -85,65 +85,6 @@ class Channel(TimestampMixin):
 
 
 # =============================================================================
-# PREDEFINED CHANNEL FACTORIES
-# =============================================================================
-
-
-def create_cell_channel(
-    cell_name: str,
-    member_ids: list[UUID],
-    auditor_id: UUID,
-) -> Channel:
-    """Create a standard cell channel."""
-    return Channel(
-        name=f"#{cell_name}-cell",
-        slug=f"{cell_name}-cell",
-        type=ChannelType.CELL,
-        description=f"Internal channel for {cell_name} cell",
-        members=member_ids,
-        writers=member_ids,
-        silent_observers=[auditor_id],
-    )
-
-
-def create_cross_cell_channel(
-    name: str,
-    member_ids: list[UUID],
-    main_pm_id: UUID,
-    auditor_id: UUID,
-) -> Channel:
-    """Create a cross-cell coordination channel."""
-    all_members = [*member_ids, main_pm_id]
-    return Channel(
-        name=f"#{name}",
-        slug=name,
-        type=ChannelType.CROSS_CELL,
-        description=f"Cross-cell channel: {name}",
-        members=all_members,
-        writers=member_ids,
-        silent_observers=[auditor_id],
-    )
-
-
-def create_announcements_channel(
-    all_agent_ids: list[UUID],
-    board_ids: list[UUID],
-    main_pm_id: UUID,
-    auditor_id: UUID,
-) -> Channel:
-    """Create the announcements channel (read-only for most)."""
-    return Channel(
-        name="#announcements",
-        slug="announcements",
-        type=ChannelType.SPECIAL,
-        description="Company-wide announcements (read-only except for Board and Main PM)",  # noqa: E501
-        members=all_agent_ids,
-        writers=[*board_ids, main_pm_id],
-        silent_observers=[auditor_id],
-    )
-
-
-# =============================================================================
 # CREATE/UPDATE SCHEMAS
 # =============================================================================
 

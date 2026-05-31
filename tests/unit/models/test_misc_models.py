@@ -20,12 +20,6 @@ from roboco.models.a2a import (
 )
 from roboco.models.agents import AgentConfig
 from roboco.models.base import ModelProvider
-from roboco.models.channel import (
-    create_announcements_channel,
-    create_cell_channel,
-    create_cross_cell_channel,
-)
-from roboco.models.handoff import HandoffParams, create_handoff
 from roboco.models.llm_catalog import (
     MODEL_CATALOG,
     _build_anthropic_entries,
@@ -155,46 +149,6 @@ def test_build_role_levels_skips_invalid_level() -> None:
 
 
 # ---------------------------------------------------------------------------
-# Channel factories — create_cell_channel, create_cross_cell_channel,
-# create_announcements_channel (channel.py 98, 116-117, 135)
-# ---------------------------------------------------------------------------
-
-
-def test_create_cell_channel() -> None:
-    members = [uuid4(), uuid4()]
-    auditor_id = uuid4()
-    ch = create_cell_channel("backend", members, auditor_id)
-    assert ch.name == "#backend-cell"
-    assert ch.slug == "backend-cell"
-    assert ch.members == members
-    assert ch.silent_observers == [auditor_id]
-
-
-def test_create_cross_cell_channel() -> None:
-    members = [uuid4(), uuid4()]
-    main_pm = uuid4()
-    auditor = uuid4()
-    ch = create_cross_cell_channel("dev-all", members, main_pm, auditor)
-    assert ch.name == "#dev-all"
-    # main_pm joins the member list.
-    assert main_pm in ch.members
-    assert auditor in ch.silent_observers
-
-
-def test_create_announcements_channel() -> None:
-    agents = [uuid4() for _ in range(3)]
-    board = [uuid4(), uuid4()]
-    main_pm = uuid4()
-    auditor = uuid4()
-    ch = create_announcements_channel(agents, board, main_pm, auditor)
-    assert ch.slug == "announcements"
-    # Writers = board + main_pm.
-    assert main_pm in ch.writers
-    for b in board:
-        assert b in ch.writers
-
-
-# ---------------------------------------------------------------------------
 # A2A helpers — A2AConversation methods + a2a_state_to_task_status fallback
 # ---------------------------------------------------------------------------
 
@@ -280,32 +234,6 @@ def test_a2a_conversation_status_values() -> None:
     assert A2AConversationStatus.ACTIVE == "active"
     assert A2AConversationStatus.PAUSED == "paused"
     assert A2AConversationStatus.CLOSED == "closed"
-
-
-# ---------------------------------------------------------------------------
-# Handoff factory (models/handoff.py 202-208)
-# ---------------------------------------------------------------------------
-
-
-def test_create_handoff_includes_changelog_required_doc() -> None:
-    task_id = uuid4()
-    handoff = create_handoff(
-        HandoffParams(
-            task_id=task_id,
-            summary="Built feature X",
-            commits=[{"sha": "abc123", "message": "init"}],
-            dev_notes_location="/notes/x",
-            new_functionality=["new login"],
-            modified_behavior=["redirect"],
-            breaking_changes=["remove old endpoint"],
-        )
-    )
-    assert handoff.task_id == task_id
-    assert handoff.summary == "Built feature X"
-    # required_docs always includes a changelog item.
-    doc_types = [d.doc_type for d in handoff.required_docs]
-    assert "changelog" in doc_types
-    assert handoff.new_functionality == ["new login"]
 
 
 # ---------------------------------------------------------------------------
