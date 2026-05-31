@@ -214,6 +214,10 @@ class ChoreographerDeps:
     # don't exercise session propagation don't have to plumb it in. The
     # delegate() path uses it to thread parent sessions onto new subtasks.
     messaging: Any = None
+    # Per-cell project routing for the delegate verb. Optional so existing
+    # callsites / tests that don't exercise Product routing don't have to plumb
+    # it in; when None, delegate falls back to parent-project inheritance.
+    product: Any = None
 
 
 @dataclass(frozen=True)
@@ -350,6 +354,10 @@ class Choreographer:
     @property
     def messaging(self) -> Any:
         return self._deps.messaging
+
+    @property
+    def product(self) -> Any:
+        return self._deps.product
 
     async def _touch(self, task_id: UUID | None) -> None:
         """Best-effort heartbeat write; silent on missing task."""
@@ -3234,6 +3242,24 @@ class Choreographer:
             context_briefing=briefing,
         ).with_introspection(task=new_task, role=role_str)
 
+    async def _resolve_subtask_project(
+        self, parent: Any, inputs: DelegateInputs
+    ) -> UUID:
+        """Resolve the project a delegated subtask lands in.
+
+        Priority: explicit inputs.project_id -> the parent's Product map for
+        this cell -> the parent's project (today's behaviour). Never raises;
+        a missing/partial Product map degrades gracefully.
+        """
+        if inputs.project_id is not None:
+            return inputs.project_id
+        parent_product_id = getattr(parent, "product_id", None)
+        if self.product is not None and parent_product_id is not None:
+            mapped = await self.product.project_for(parent_product_id, inputs.team)
+            if mapped is not None:
+                return UUID(str(mapped))
+        return UUID(str(parent.project_id))
+
     async def _create_subtask_from_inputs(
         self,
         pm_agent_id: UUID,
@@ -3294,13 +3320,15 @@ class Choreographer:
                 field_hints={"nature": "one of: technical | non_technical"},
                 message=f"invalid nature {inputs.nature!r}: {exc}",
             ) from exc
+        resolved_project_id = await self._resolve_subtask_project(parent, inputs)
         req = TaskCreateRequest(
             title=inputs.title,
             description=inputs.description,
             acceptance_criteria=inputs.acceptance_criteria,
             team=team_enum,
             created_by=pm_agent_id,
-            project_id=UUID(str(parent.project_id)),
+            project_id=resolved_project_id,
+            product_id=getattr(parent, "product_id", None),
             parent_task_id=parent_task_id,
             assigned_to=assignee_id,
             task_type=type_enum,

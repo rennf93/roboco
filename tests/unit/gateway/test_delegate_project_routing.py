@@ -15,15 +15,25 @@ from roboco.services.gateway.choreographer import (
 
 def _make_deps(**overrides: Any) -> ChoreographerDeps:
     base: dict[str, Any] = {
-        "task": AsyncMock(), "work_session": AsyncMock(), "git": AsyncMock(),
-        "a2a": AsyncMock(), "journal": AsyncMock(), "audit": AsyncMock(),
+        "task": AsyncMock(),
+        "work_session": AsyncMock(),
+        "git": AsyncMock(),
+        "a2a": AsyncMock(),
+        "journal": AsyncMock(),
+        "audit": AsyncMock(),
         "evidence_repo": AsyncMock(),
     }
     base.update(overrides)
     repo = base["evidence_repo"]
-    for m in ("list_unread_a2a", "list_unread_mentions", "list_pending_notifications",
-              "task_metadata_gaps", "recent_team_activity", "blockers_in_lane",
-              "journal_highlights_for_task"):
+    for m in (
+        "list_unread_a2a",
+        "list_unread_mentions",
+        "list_pending_notifications",
+        "task_metadata_gaps",
+        "recent_team_activity",
+        "blockers_in_lane",
+        "journal_highlights_for_task",
+    ):
         getattr(repo, m).return_value = []
     _ldef = base["journal"].latest_decision_at.return_value
     if type(_ldef).__name__ in ("MagicMock", "AsyncMock"):
@@ -33,17 +43,24 @@ def _make_deps(**overrides: Any) -> ChoreographerDeps:
 
 def _parent(pm_id, product_id=None, project_id=None):
     return MagicMock(
-        id=uuid4(), project_id=project_id or uuid4(), product_id=product_id,
-        status="in_progress", assigned_to=pm_id,
+        id=uuid4(),
+        project_id=project_id or uuid4(),
+        product_id=product_id,
+        status="in_progress",
+        assigned_to=pm_id,
     )
 
 
-def _inputs(**kw) -> DelegateInputs:
-    base = dict(
-        title="Implement endpoint", description="Add /v1/foo endpoint with tests",
-        assigned_to="be-dev-1", team="backend", task_type="code",
-        nature="technical", acceptance_criteria=["GET /v1/foo returns 200 with body"],
-    )
+def _inputs(**kw: Any) -> DelegateInputs:
+    base: dict[str, Any] = {
+        "title": "Implement endpoint",
+        "description": "Add /v1/foo endpoint with tests",
+        "assigned_to": "be-dev-1",
+        "team": "backend",
+        "task_type": "code",
+        "nature": "technical",
+        "acceptance_criteria": ["GET /v1/foo returns 200 with body"],
+    }
     base.update(kw)
     return DelegateInputs(**base)
 
