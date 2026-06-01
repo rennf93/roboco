@@ -2956,10 +2956,13 @@ class Choreographer:
         which is a strict subset of `AGENT_UUIDS` — so any AGENT_UUIDS
         check here was unreachable.
         """
-        if parent.project_id is None:
+        if parent.project_id is None and getattr(parent, "product_id", None) is None:
             return Envelope.invalid_state(
-                message="parent task has no project_id",
-                remediate="parent task must have a project to inherit",
+                message="parent task has neither a project_id nor a product_id",
+                remediate=(
+                    "the parent must have a project (single repo) or a product "
+                    "(cell->project map) so subtasks can resolve a repo"
+                ),
                 context_briefing=await self._briefing_for(pm_agent_id, parent_task_id),
             )
         try:
@@ -3248,8 +3251,9 @@ class Choreographer:
         """Resolve the project a delegated subtask lands in.
 
         Priority: explicit inputs.project_id -> the parent's Product map for
-        this cell -> the parent's project (today's behaviour). Never raises;
-        a missing/partial Product map degrades gracefully.
+        this cell -> the parent's own project. Raises TaskCompletenessError only
+        for a fan-out parent (product, no own project) whose product has no
+        mapping for this cell — i.e. the subtask would have no repo to land in.
         """
         if inputs.project_id is not None:
             return inputs.project_id
@@ -3258,7 +3262,21 @@ class Choreographer:
             mapped = await self.product.project_for(parent_product_id, inputs.team)
             if mapped is not None:
                 return UUID(str(mapped))
-        return UUID(str(parent.project_id))
+        if parent.project_id is not None:
+            return UUID(str(parent.project_id))
+        from roboco.foundation.policy.task_completeness import TaskCompletenessError
+
+        raise TaskCompletenessError(
+            missing=["project_id"],
+            field_hints={
+                "project_id": (
+                    f"no project for team {inputs.team!r}: add a "
+                    f"{inputs.team}->project mapping to the parent's product, or "
+                    "pass an explicit project_id on delegate"
+                )
+            },
+            message=f"cannot resolve a project for the {inputs.team} subtask",
+        )
 
     async def _create_subtask_from_inputs(
         self,

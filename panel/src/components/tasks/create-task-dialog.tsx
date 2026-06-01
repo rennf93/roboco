@@ -120,8 +120,9 @@ export function CreateTaskDialog() {
       newErrors.acceptance_criteria = "At least one acceptance criterion is required";
     }
 
-    if (!projectId) {
-      newErrors.project_id = "Project is required";
+    if (!projectId && !productId) {
+      newErrors.project_id =
+        "Pick a Project (the repo) or a Product (cell→project map for a fan-out task)";
     }
 
     setErrors(newErrors);
@@ -146,7 +147,7 @@ export function CreateTaskDialog() {
         estimated_complexity: complexity,
         nature,
         task_type: taskType,
-        project_id: projectId,
+        ...(projectId && { project_id: projectId }),
         ...(productId && { product_id: productId }),
         ...(dependencyIds.length > 0 && { dependency_ids: dependencyIds }),
         ...(parentTaskId && { parent_task_id: parentTaskId }),
@@ -386,11 +387,9 @@ export function CreateTaskDialog() {
                   </p>
                 </div>
 
-                {/* Project Selector (required - all tasks follow git workflow) */}
+                {/* Project — required UNLESS a Product is picked (fan-out task) */}
                 <div className="space-y-2">
-                  <Label>
-                    Project <span className="text-destructive">*</span>
-                  </Label>
+                  <Label>Project</Label>
                   <ProjectSelector
                     value={projectId || null}
                     onChange={(value) => setProjectId(value || "")}
@@ -400,7 +399,8 @@ export function CreateTaskDialog() {
                     <p className="text-xs text-destructive">{errors.project_id}</p>
                   )}
                   <p className="text-xs text-muted-foreground">
-                    All tasks follow git workflow with branching, commits, and PRs
+                    The repo this task targets. Optional if you pick a Product below — a
+                    fan-out task routes each cell&apos;s subtask via the Product instead.
                   </p>
                 </div>
 

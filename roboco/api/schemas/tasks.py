@@ -262,7 +262,7 @@ class TaskResponse(BaseModel):
 
     # Task Type & Git Configuration (all tasks follow git workflow)
     task_type: TaskType  # code, documentation, research, etc.
-    project_id: UUID  # Project this task works on (required)
+    project_id: UUID | None = None  # Repo this task targets (None for fan-out)
     project_slug: str | None = None  # Project slug for MCP/git tool calls
     product_id: UUID | None = None
 
@@ -628,7 +628,7 @@ def task_to_response(task: "TaskTable") -> TaskResponse:
         sequence=task.sequence,
         nature=task.nature,
         task_type=task.task_type,
-        project_id=require_uuid(task.project_id),
+        project_id=to_python_uuid(task.project_id),
         product_id=to_python_uuid(task.product_id),
         # Don't trigger a lazy load — on freshly-created tasks `project` is
         # unloaded, and a sync attribute access here would raise

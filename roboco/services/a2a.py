@@ -46,7 +46,7 @@ from roboco.models.a2a import (
     TextPart,
     task_status_to_a2a_state,
 )
-from roboco.models.base import TaskStatus, Team
+from roboco.models.base import Team
 from roboco.seeds.initial_data import AGENT_UUIDS
 
 logger = structlog.get_logger()
@@ -378,46 +378,6 @@ class A2AService:
             tasks = tasks[:page_size]
 
         return [self.task_to_a2a(t) for t in tasks], has_more
-
-    async def create_task_from_message(
-        self,
-        title: str,
-        description: str,
-        created_by: UUID,
-        team: Team = Team.BACKEND,
-    ) -> A2ATask:
-        """
-        Create a new task from an A2A message.
-
-        Args:
-            title: Task title
-            description: Task description
-            created_by: Agent ID creating the task
-            team: Team assignment
-
-        Returns:
-            Created A2ATask
-        """
-        task = TaskTable(
-            title=title,
-            description=description,
-            acceptance_criteria=["Task completed as specified"],
-            status=TaskStatus.PENDING,
-            priority=5,
-            team=team,
-            created_by=created_by,
-        )
-        self.session.add(task)
-        await self.session.flush()
-        await self.session.refresh(task)
-
-        logger.info(
-            "Created task from A2A message",
-            task_id=str(task.id),
-            title=title,
-        )
-
-        return self.task_to_a2a(task)
 
     async def cancel_task(self, task_id: str, reason: str | None = None) -> A2ATask:
         """

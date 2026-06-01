@@ -72,7 +72,7 @@ export const tasksApi = {
         estimated_complexity: task.estimated_complexity ?? Complexity.MEDIUM,
         nature: task.nature ?? TaskNature.TECHNICAL,
         task_type: task.task_type ?? TaskType.CODE,
-        project_id: task.project_id,
+        project_id: task.project_id ?? null,
         docs_complete: false,
         pr_created: false,
         pm_approvals: {},

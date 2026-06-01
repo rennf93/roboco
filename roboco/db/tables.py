@@ -197,11 +197,15 @@ class TaskTable(Base):
         _str_enum(TaskNature), nullable=False, default=TaskNature.TECHNICAL
     )
 
-    # Project & Branch (branch auto-created on claim)
-    project_id: Mapped[UUID] = mapped_column(
+    # Project & Branch (branch auto-created on claim).
+    # Nullable: a board/fan-out task carries `product_id` (a cell->project map)
+    # instead of a single project — it does no git itself; its cell subtasks
+    # each resolve a real project from the product. A task must have one or the
+    # other (enforced in TaskCreate).
+    project_id: Mapped[UUID | None] = mapped_column(
         UUID(as_uuid=True),
         ForeignKey("projects.id", ondelete="RESTRICT"),
-        nullable=False,
+        nullable=True,
         index=True,
     )
     product_id: Mapped[UUID | None] = mapped_column(
@@ -357,7 +361,7 @@ class TaskTable(Base):
     parent_task: Mapped["TaskTable | None"] = relationship(
         "TaskTable", remote_side=[id], lazy="select"
     )
-    project: Mapped["ProjectTable"] = relationship(
+    project: Mapped["ProjectTable | None"] = relationship(
         "ProjectTable", foreign_keys=[project_id], lazy="joined"
     )
     # Session links (many-to-many via SessionTaskTable).

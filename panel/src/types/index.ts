@@ -274,7 +274,7 @@ export interface Task {
   nature: TaskNature;
   // Task Type & Git Configuration (all tasks follow git workflow)
   task_type: TaskType;
-  project_id: string;
+  project_id: string | null; // null for a fan-out task that carries product_id
   product_id?: string | null;
   work_session_id?: string | null;
   // PR Tracking (parallel execution in awaiting_documentation)
@@ -326,8 +326,8 @@ export interface TaskCreate {
   dependency_ids?: string[]; // Task IDs that must complete first
   // Git configuration (all tasks follow git workflow)
   task_type?: TaskType; // Defaults to CODE
-  project_id: string; // Project this task works on (required)
-  product_id?: string; // Optional Product — drives per-cell project routing of subtasks
+  project_id?: string; // Repo this task targets; omit for a fan-out task that sets product_id
+  product_id?: string; // Cell→project map; drives per-cell routing of delegated subtasks
 }
 
 // =============================================================================

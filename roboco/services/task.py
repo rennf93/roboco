@@ -449,6 +449,15 @@ class TaskService(BaseService):
         Default status is PENDING. PM can pass status=BACKLOG when creating
         subtasks that need session setup before activation.
         """
+        # Service-layer invariant (covers every create path — API, a2a,
+        # gateway): a task targets a single repo (project_id) or fans out across
+        # cells via a product (product_id). It must have one or the other.
+        if req.project_id is None and req.product_id is None:
+            raise ValueError(
+                "task needs a project_id (the repo it targets) or a product_id "
+                "(a cell->project map for a fan-out task)"
+            )
+
         if req.parent_task_id:
             await self._validate_parent_depth(req.parent_task_id)
 

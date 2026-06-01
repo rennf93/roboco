@@ -600,13 +600,18 @@ async def test_delegate_unknown_role_rejected() -> None:
 
 @pytest.mark.asyncio
 async def test_delegate_parent_no_project_rejected() -> None:
-    """Line 1306: parent.project_id is None → invalid_state."""
+    """A parent with NEITHER a project_id NOR a product_id → invalid_state.
+
+    (A parent with a product_id but no project is allowed — subtasks resolve a
+    repo from the product map — so the guard now requires both to be None.)
+    """
     pm_id = uuid4()
     parent_id = uuid4()
     parent = MagicMock(
         status="in_progress",
         assigned_to=pm_id,
         project_id=None,
+        product_id=None,
         title="p",
     )
     task_svc = AsyncMock()
@@ -629,7 +634,7 @@ async def test_delegate_parent_no_project_rejected() -> None:
     )
     body = env.as_dict()
     assert body["error"] == "invalid_state"
-    assert "no project_id" in body["message"]
+    assert "project_id" in body["message"] and "product_id" in body["message"]
 
 
 # ---------------------------------------------------------------------------
