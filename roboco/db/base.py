@@ -177,44 +177,23 @@ async def run_migrations() -> None:
     await asyncio.to_thread(_run_alembic)
 
 
-async def _stamp_alembic_head() -> None:
-    """Mark Alembic as current (``head``) WITHOUT running any migration.
-
-    Used after a fresh ``create_all`` build: the schema is already the latest
-    ORM shape, so we record head as applied and future *incremental* migrations
-    layer on top. Runs in a worker thread (Alembic uses the sync API).
-    """
-    ini_path = Path(__file__).resolve().parents[2] / "alembic.ini"
-
-    def _run() -> None:
-        cfg = Config(str(ini_path))
-        cfg.set_main_option("sqlalchemy.url", settings.database_url_sync)
-        command.stamp(cfg, "head")
-
-    await asyncio.to_thread(_run)
-
-
 async def init_db() -> None:
     """
-    Initialize the database schema.
+    Initialize the database schema by running the Alembic migration chain.
 
-    `Base.metadata.create_all` (the full ORM) is the SOURCE OF TRUTH for the
-    schema on this project. The Alembic chain is intentionally incomplete:
-    several columns/tables (e.g. `notifications.delivered_at`, the RAG
-    `indexed_documents` table) have no migration and have always been
-    materialized by `create_all`. Alembic is used only for *incremental*
-    changes (enum tweaks, column drops) layered on top. The test suite builds
-    the schema the same way (`create_all`), so migrations are not exercised
-    there — which is why chain gaps don't surface until a migrate-only boot.
+    Migration 017 reconciled the chain to reproduce the FULL ORM schema, so
+    `alembic upgrade head` from base now builds every table/column/index AND
+    runs migration-embedded SEED DATA — e.g. the AI providers seeded in 004.
+    Building a fresh DB with a bare `create_all` (as a prior version did) skips
+    that seed: that is why a DB reset left `provider_configs` empty and the
+    Ollama-key endpoint 404'd. Always running migrations restores the seeds.
 
-    Fresh DB  -> `create_all` builds the full current schema, then stamp Alembic
-                 at head so later incremental migrations apply.
-    Existing  -> run pending migrations (incremental changes; a genuine failure
-                 is RAISED, not masked by a silent fallback), then
-                 `create_all(checkfirst=True)` to materialize any ORM table a
-                 migration didn't create. NOTE: `create_all` cannot add a column
-                 to an existing table, so a column added to the ORM without a
-                 migration needs a fresh rebuild of that table to appear.
+    Fresh DB  -> run the chain from base: full schema + seed data.
+    Existing  -> apply pending migrations (a genuine failure is RAISED, not
+                 masked by a silent fallback), then `create_all(checkfirst=True)`
+                 to gap-fill any ORM table a migration didn't create.
+                 `create_all` cannot ALTER an existing table, so an ORM column
+                 added without a migration needs a fresh rebuild to appear.
     """
     engine = get_engine()
     async with engine.begin() as conn:
@@ -231,19 +210,17 @@ async def init_db() -> None:
     async with engine.connect() as conn:
         has_tables = await _db_has_tables(conn)
 
-    if not has_tables:
-        # Fresh install: build the complete ORM schema, then record head.
-        async with engine.begin() as conn:
-            await conn.run_sync(Base.metadata.create_all)
-        await _stamp_alembic_head()
-        logger.info("Fresh DB: schema built via create_all, Alembic stamped at head")
-    else:
-        # Existing DB: apply incremental migrations, then gap-fill any missing
-        # ORM tables. A migration failure propagates (no silent create_all mask).
-        await run_migrations()
+    # Run the chain in both cases. run_migrations() stamps a pre-Alembic
+    # create_all DB at the initial revision first; a genuine failure propagates.
+    await run_migrations()
+
+    if has_tables:
+        # Existing DB: gap-fill any ORM table a migration didn't create.
         async with engine.begin() as conn:
             await conn.run_sync(Base.metadata.create_all)
         logger.info("Existing DB: migrations applied + create_all gap-fill")
+    else:
+        logger.info("Fresh DB: built via migrations (full schema + seed data)")
 
     # Dispose the async engine's connection pool. asyncpg caches enum type
     # OIDs and their values at connection-establishment time; any connection

@@ -396,9 +396,11 @@ async def test_init_db_raises_when_migrations_fail_on_existing_db() -> None:
 
 
 @pytest.mark.asyncio
-async def test_init_db_fresh_db_creates_all_and_stamps_head() -> None:
-    """A fresh DB (no tables) is built from the ORM via create_all, then Alembic
-    is stamped at head — incremental migrations are NOT run on a fresh build."""
+async def test_init_db_fresh_db_runs_migrations() -> None:
+    """A fresh DB (no tables) is built by running the complete migration chain
+    from base — NOT a bare create_all — so migration-embedded seed data (e.g. the
+    AI providers seeded in 004) is inserted. (A bare create_all skipped the seed,
+    which left provider_configs empty and 404'd the Ollama-key endpoint.)"""
     fake_conn = MagicMock()
     fake_conn.execute = AsyncMock()
     fake_conn.run_sync = AsyncMock()
@@ -419,13 +421,11 @@ async def test_init_db_fresh_db_creates_all_and_stamps_head() -> None:
         patch("roboco.db.base.get_engine", return_value=fake_engine),
         patch("roboco.db.base._db_has_tables", new=AsyncMock(return_value=False)),
         patch("roboco.db.base.run_migrations", new=AsyncMock()) as rm,
-        patch("roboco.db.base._stamp_alembic_head", new=AsyncMock()) as stamp,
     ):
         await init_db()
 
-    fake_conn.run_sync.assert_awaited()  # create_all built the schema
-    stamp.assert_awaited_once()  # then stamped at head
-    rm.assert_not_awaited()  # no incremental migrations on a fresh build
+    rm.assert_awaited_once()  # full chain from base -> schema + seeds
+    fake_conn.run_sync.assert_not_awaited()  # no bare create_all on the fresh path
     fake_engine.dispose.assert_awaited_once()
 
 
