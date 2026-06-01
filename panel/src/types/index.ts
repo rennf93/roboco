@@ -327,6 +327,7 @@ export interface TaskCreate {
   // Git configuration (all tasks follow git workflow)
   task_type?: TaskType; // Defaults to CODE
   project_id: string; // Project this task works on (required)
+  product_id?: string; // Optional Product — drives per-cell project routing of subtasks
 }
 
 // =============================================================================

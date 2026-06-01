@@ -2,6 +2,7 @@
 
 import { useState } from "react";
 import { useCreateTask } from "@/hooks/use-tasks";
+import { useProducts } from "@/hooks/use-products";
 import { Team, Complexity, TaskStatus, TaskNature, TaskType } from "@/types";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -94,10 +95,12 @@ export function CreateTaskDialog() {
   const [assignedTo, setAssignedTo] = useState<string | null>(null);
   const [taskType, setTaskType] = useState<TaskType>(TaskType.CODE);
   const [projectId, setProjectId] = useState<string>("");
+  const [productId, setProductId] = useState<string>("");
   const [advancedOpen, setAdvancedOpen] = useState(false);
   const [errors, setErrors] = useState<FormErrors>({});
 
   const createTask = useCreateTask();
+  const { data: products = [] } = useProducts();
 
   const validate = (): boolean => {
     const newErrors: FormErrors = {};
@@ -144,6 +147,7 @@ export function CreateTaskDialog() {
         nature,
         task_type: taskType,
         project_id: projectId,
+        ...(productId && { product_id: productId }),
         ...(dependencyIds.length > 0 && { dependency_ids: dependencyIds }),
         ...(parentTaskId && { parent_task_id: parentTaskId }),
         ...(assignedTo && { assigned_to: assignedTo }),
@@ -170,6 +174,7 @@ export function CreateTaskDialog() {
     setAssignedTo(null);
     setTaskType(TaskType.CODE);
     setProjectId("");
+    setProductId("");
     setAdvancedOpen(false);
     setErrors({});
   };
@@ -396,6 +401,31 @@ export function CreateTaskDialog() {
                   )}
                   <p className="text-xs text-muted-foreground">
                     All tasks follow git workflow with branching, commits, and PRs
+                  </p>
+                </div>
+
+                {/* Product (optional) — drives per-cell project routing of subtasks */}
+                <div className="space-y-2">
+                  <Label>Product</Label>
+                  <Select
+                    value={productId || "none"}
+                    onValueChange={(v) => setProductId(v === "none" ? "" : v)}
+                  >
+                    <SelectTrigger className="w-full">
+                      <SelectValue placeholder="None" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="none">None (single project)</SelectItem>
+                      {products.map((p) => (
+                        <SelectItem key={p.id} value={p.id}>
+                          {p.name}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                  <p className="text-xs text-muted-foreground">
+                    Optional. When set, delegated subtasks route to each cell&apos;s
+                    mapped project (manage these in Products).
                   </p>
                 </div>
               </div>
