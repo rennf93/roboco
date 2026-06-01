@@ -179,12 +179,22 @@ async def run_migrations() -> None:
 
 async def init_db() -> None:
     """
-    Initialize the database: pgvector extension, then Alembic migrations, with
-    a create_all fallback if the migration chain itself is broken.
+    Initialize the database: pgvector extension, then Alembic migrations.
 
-    Migrations are authoritative — `create_all` alone cannot add enum values
-    or alter existing objects, which is why notificationtype.APPROVAL was
-    missing from live DBs even though it had been added to the Python enum.
+    Migrations are AUTHORITATIVE and a failure here is RAISED, never swallowed.
+
+    The previous `create_all` fallback was removed (2026-06-01). It masked
+    migration failures and — because `create_all` creates missing tables but
+    cannot ALTER an existing one — silently left the schema inconsistent (a new
+    column would simply be absent). That turned an unapplied migration into a
+    self-perpetuating crash loop: 016's `CREATE TABLE products` failed, the
+    whole upgrade rolled back, the fallback re-created an *orphan* `products`
+    table, and every subsequent boot's migration failed again on the
+    now-existing table while `tasks.product_id` never got added. Failing loud
+    surfaces the real error so the operator applies the migration instead of
+    booting on a half-built schema. A genuinely fresh DB is still handled:
+    `run_migrations()` upgrades from base (or stamps a pre-Alembic create_all
+    DB at the initial revision, then upgrades).
     """
     engine = get_engine()
     async with engine.begin() as conn:
@@ -198,17 +208,8 @@ async def init_db() -> None:
                 error=str(e),
             )
 
-    try:
-        await run_migrations()
-        logger.info("Alembic migrations applied (head)")
-    except Exception as e:
-        logger.warning(
-            "Alembic upgrade failed, falling back to create_all",
-            error=str(e),
-        )
-        async with engine.begin() as conn:
-            await conn.run_sync(Base.metadata.create_all)
-        logger.info("Tables created via create_all fallback")
+    await run_migrations()
+    logger.info("Alembic migrations applied (head)")
 
     # Dispose the async engine's connection pool. asyncpg caches enum type
     # OIDs and their values at connection-establishment time; any connection

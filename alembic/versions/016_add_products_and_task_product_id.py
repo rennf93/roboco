@@ -26,12 +26,58 @@ branch_labels = None
 depends_on = None
 
 _TEAM_ENUM = sa.Enum(
-    "backend", "frontend", "ux_ui", "main_pm", "board", "marketing",
-    name="team", create_type=False,
+    "backend",
+    "frontend",
+    "ux_ui",
+    "main_pm",
+    "board",
+    "marketing",
+    name="team",
+    create_type=False,
 )
+
+# Literal (non-interpolated) emptiness probes: the orphan table names are fixed
+# constants, so these are constant SQL strings with no injection surface.
+_ORPHAN_EMPTY_CHECKS = {
+    "product_projects": sa.text("SELECT count(*) FROM product_projects"),
+    "products": sa.text("SELECT count(*) FROM products"),
+}
+
+
+def _drop_orphan_create_all_tables() -> None:
+    """Drop EMPTY orphan products/product_projects left by the old init_db
+    create_all fallback (removed 2026-06-01).
+
+    Before that fallback was removed, a failed boot of this migration rolled
+    back and create_all re-created bare products/product_projects tables; the
+    next boot's create_table below then failed with "relation already exists",
+    looping forever. Dropping the EMPTY orphans here lets the migration apply
+    cleanly and self-heals such a DB on the next deploy. Skipped in offline
+    (--sql) mode (no live DB to inspect); refuses to drop a table holding rows.
+    """
+    if op.get_context().as_sql:
+        return
+    bind = op.get_bind()
+    for orphan in ("product_projects", "products"):  # child before parent
+        exists = bind.execute(
+            sa.text("SELECT to_regclass(:qualified)"),
+            {"qualified": f"public.{orphan}"},
+        ).scalar()
+        if exists is None:
+            continue
+        rows = bind.execute(_ORPHAN_EMPTY_CHECKS[orphan]).scalar() or 0
+        if rows:
+            raise RuntimeError(
+                f"migration 016: refusing to drop non-empty orphan table "
+                f"{orphan!r} ({rows} rows); investigate manually"
+            )
+        op.drop_table(orphan)
 
 
 def upgrade() -> None:
+    # Heal DBs polluted by the old create_all fallback before creating tables.
+    _drop_orphan_create_all_tables()
+
     op.create_table(
         "products",
         sa.Column("id", postgresql.UUID(as_uuid=True), primary_key=True),
@@ -39,12 +85,16 @@ def upgrade() -> None:
         sa.Column("slug", sa.String(50), nullable=False, unique=True, index=True),
         sa.Column("description", sa.Text(), nullable=True),
         sa.Column(
-            "created_by", postgresql.UUID(as_uuid=True),
-            sa.ForeignKey("agents.id"), nullable=False,
+            "created_by",
+            postgresql.UUID(as_uuid=True),
+            sa.ForeignKey("agents.id"),
+            nullable=False,
         ),
         sa.Column(
-            "created_at", sa.DateTime(timezone=True),
-            nullable=False, server_default=sa.func.now(),
+            "created_at",
+            sa.DateTime(timezone=True),
+            nullable=False,
+            server_default=sa.func.now(),
         ),
         sa.Column("updated_at", sa.DateTime(timezone=True), nullable=True),
     )
@@ -53,15 +103,19 @@ def upgrade() -> None:
         "product_projects",
         sa.Column("id", postgresql.UUID(as_uuid=True), primary_key=True),
         sa.Column(
-            "product_id", postgresql.UUID(as_uuid=True),
+            "product_id",
+            postgresql.UUID(as_uuid=True),
             sa.ForeignKey("products.id", ondelete="CASCADE"),
-            nullable=False, index=True,
+            nullable=False,
+            index=True,
         ),
         sa.Column("team", _TEAM_ENUM, nullable=False),
         sa.Column(
-            "project_id", postgresql.UUID(as_uuid=True),
+            "project_id",
+            postgresql.UUID(as_uuid=True),
             sa.ForeignKey("projects.id", ondelete="RESTRICT"),
-            nullable=False, index=True,
+            nullable=False,
+            index=True,
         ),
         sa.UniqueConstraint(
             "product_id", "team", name="uq_product_projects_product_team"
@@ -88,9 +142,7 @@ def downgrade() -> None:
     # FK name follows the project's metadata naming convention
     # (fk_%(table)s_%(column)s_%(referred_table)s), not Postgres's default
     # "tasks_product_id_fkey".
-    op.drop_constraint(
-        "fk_tasks_product_id_products", "tasks", type_="foreignkey"
-    )
+    op.drop_constraint("fk_tasks_product_id_products", "tasks", type_="foreignkey")
     op.drop_column("tasks", "product_id")
     op.drop_table("product_projects")
     op.drop_table("products")
