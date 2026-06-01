@@ -177,24 +177,44 @@ async def run_migrations() -> None:
     await asyncio.to_thread(_run_alembic)
 
 
+async def _stamp_alembic_head() -> None:
+    """Mark Alembic as current (``head``) WITHOUT running any migration.
+
+    Used after a fresh ``create_all`` build: the schema is already the latest
+    ORM shape, so we record head as applied and future *incremental* migrations
+    layer on top. Runs in a worker thread (Alembic uses the sync API).
+    """
+    ini_path = Path(__file__).resolve().parents[2] / "alembic.ini"
+
+    def _run() -> None:
+        cfg = Config(str(ini_path))
+        cfg.set_main_option("sqlalchemy.url", settings.database_url_sync)
+        command.stamp(cfg, "head")
+
+    await asyncio.to_thread(_run)
+
+
 async def init_db() -> None:
     """
-    Initialize the database: pgvector extension, then Alembic migrations.
+    Initialize the database schema.
 
-    Migrations are AUTHORITATIVE and a failure here is RAISED, never swallowed.
+    `Base.metadata.create_all` (the full ORM) is the SOURCE OF TRUTH for the
+    schema on this project. The Alembic chain is intentionally incomplete:
+    several columns/tables (e.g. `notifications.delivered_at`, the RAG
+    `indexed_documents` table) have no migration and have always been
+    materialized by `create_all`. Alembic is used only for *incremental*
+    changes (enum tweaks, column drops) layered on top. The test suite builds
+    the schema the same way (`create_all`), so migrations are not exercised
+    there — which is why chain gaps don't surface until a migrate-only boot.
 
-    The previous `create_all` fallback was removed (2026-06-01). It masked
-    migration failures and — because `create_all` creates missing tables but
-    cannot ALTER an existing one — silently left the schema inconsistent (a new
-    column would simply be absent). That turned an unapplied migration into a
-    self-perpetuating crash loop: 016's `CREATE TABLE products` failed, the
-    whole upgrade rolled back, the fallback re-created an *orphan* `products`
-    table, and every subsequent boot's migration failed again on the
-    now-existing table while `tasks.product_id` never got added. Failing loud
-    surfaces the real error so the operator applies the migration instead of
-    booting on a half-built schema. A genuinely fresh DB is still handled:
-    `run_migrations()` upgrades from base (or stamps a pre-Alembic create_all
-    DB at the initial revision, then upgrades).
+    Fresh DB  -> `create_all` builds the full current schema, then stamp Alembic
+                 at head so later incremental migrations apply.
+    Existing  -> run pending migrations (incremental changes; a genuine failure
+                 is RAISED, not masked by a silent fallback), then
+                 `create_all(checkfirst=True)` to materialize any ORM table a
+                 migration didn't create. NOTE: `create_all` cannot add a column
+                 to an existing table, so a column added to the ORM without a
+                 migration needs a fresh rebuild of that table to appear.
     """
     engine = get_engine()
     async with engine.begin() as conn:
@@ -208,8 +228,22 @@ async def init_db() -> None:
                 error=str(e),
             )
 
-    await run_migrations()
-    logger.info("Alembic migrations applied (head)")
+    async with engine.connect() as conn:
+        has_tables = await _db_has_tables(conn)
+
+    if not has_tables:
+        # Fresh install: build the complete ORM schema, then record head.
+        async with engine.begin() as conn:
+            await conn.run_sync(Base.metadata.create_all)
+        await _stamp_alembic_head()
+        logger.info("Fresh DB: schema built via create_all, Alembic stamped at head")
+    else:
+        # Existing DB: apply incremental migrations, then gap-fill any missing
+        # ORM tables. A migration failure propagates (no silent create_all mask).
+        await run_migrations()
+        async with engine.begin() as conn:
+            await conn.run_sync(Base.metadata.create_all)
+        logger.info("Existing DB: migrations applied + create_all gap-fill")
 
     # Dispose the async engine's connection pool. asyncpg caches enum type
     # OIDs and their values at connection-establishment time; any connection
