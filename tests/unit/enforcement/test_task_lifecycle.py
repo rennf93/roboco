@@ -147,6 +147,22 @@ def test_git_claimed_to_in_progress_succeeds_with_branch() -> None:
     assert validate_git_requirements("claimed", "in_progress", ctx) is True
 
 
+def test_git_claimed_to_in_progress_coordination_task_needs_no_branch() -> None:
+    # A coordination/fan-out task (product, no repo of its own) does no git and
+    # never gets a branch — it must reach in_progress so Main PM can delegate.
+    # Without this exemption, start() raised GitRequirementError and the whole
+    # board->cells fan-out deadlocked (the PM looped on i_will_plan).
+    ctx = GitContext(branch_name=None, is_coordination=True)
+    assert validate_git_requirements("claimed", "in_progress", ctx) is True
+
+
+def test_git_claimed_to_in_progress_still_blocks_branchless_code_task() -> None:
+    # A normal code task with no branch is still blocked (regression guard).
+    ctx = GitContext(branch_name=None, is_coordination=False)
+    with pytest.raises(GitRequirementError, match="no branch"):
+        validate_git_requirements("claimed", "in_progress", ctx)
+
+
 # ---------------------------------------------------------------------------
 # check_parallel_completion
 # ---------------------------------------------------------------------------

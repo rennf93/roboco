@@ -315,6 +315,12 @@ class GitContext:
     pr_created: bool = False
     pr_number: int | None = None
     branch_name: str | None = None
+    # A coordination/fan-out task carries a product (a cell->project map) but no
+    # repo of its own, so it does no git work and never gets a branch. It must
+    # be able to transition claimed->in_progress without one. Mirrors
+    # `_is_coordination_task` in the orchestrator and the `_ensure_branch_for_task`
+    # short-circuit in TaskService.
+    is_coordination: bool = False
 
 
 def validate_git_requirements(
@@ -377,7 +383,11 @@ def validate_git_requirements(
             ),
         )
 
-    if transition == ("claimed", "in_progress") and not git_ctx.branch_name:
+    if (
+        transition == ("claimed", "in_progress")
+        and not git_ctx.branch_name
+        and not git_ctx.is_coordination
+    ):
         raise GitRequirementError(
             transition=transition,
             requirement="branch_name",

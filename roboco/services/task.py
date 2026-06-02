@@ -328,6 +328,11 @@ class TaskService(BaseService):
             pr_created=bool(task.pr_created),
             pr_number=task.pr_number,
             branch_name=str(task.branch_name) if task.branch_name else None,
+            # A coordination/fan-out task (product, no repo of its own) does no
+            # git and never gets a branch — exempt it from the branch gate so it
+            # can reach in_progress and delegate. product_id is a plain column
+            # (no lazy load).
+            is_coordination=(task.project_id is None and task.product_id is not None),
         )
         validate_git_requirements(current, target, git_ctx)
 
@@ -3419,6 +3424,11 @@ class TaskService(BaseService):
 
         already = task.assigned_to == main_pm.id
         task.assigned_to = cast("Any", main_pm.id)
+        # The board-reviewed coordination task now belongs to Main PM, who will
+        # delegate it to the cells. Leaving team="board" is misleading once it's
+        # off the board — reflect the new owner. Team.MAIN_PM is a valid non-cell
+        # team and does not affect dispatch (which routes by assignee, not team).
+        task.team = cast("Any", Team.MAIN_PM)
 
         if notes:
             existing = task.quick_context or ""
