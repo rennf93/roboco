@@ -1,6 +1,6 @@
 """Smoke-6: NoteRequest rejects null for decision/reflect string fields.
 
-Original bug: minimax-m2.7 read the MCP tool schema, saw
+Original bug: minimax-m3 read the MCP tool schema, saw
 `context: anyOf[string, null]`, and decided null was valid. Pydantic
 on the route accepted it (because the field WAS `str | None`), passed
 it through, and the server-side gate looped on `incomplete_input`.

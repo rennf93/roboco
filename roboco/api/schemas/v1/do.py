@@ -34,7 +34,7 @@ class NoteRequest(BaseModel):
     # decision scope (all required at gateway when scope='decision').
     # Typed as non-nullable str (default "") so the MCP tool schema declares
     # the field as `string` not `anyOf[string, null]` — smoke-6 showed
-    # minimax-m2.7 passing literal `null` for these and the server-side
+    # minimax-m3 passing literal `null` for these and the server-side
     # gate looping forever on `incomplete_input`. Empty string still counts
     # as missing at the gate.
     context: str = ""

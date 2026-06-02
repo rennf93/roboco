@@ -18,7 +18,7 @@ class TestBuildForRole:
                 role="developer",
                 team="backend",
                 workspace_path=Path("/data/workspaces/roboco/backend/be-dev-1"),
-                agent_model="minimax-m2.7:cloud",
+                agent_model="minimax-m3:cloud",
             )
         )
         assert "i_am_done" in m.flow_tools
@@ -36,11 +36,11 @@ class TestBuildForRole:
                 role="main_pm",
                 team="board",
                 workspace_path=Path("/data/workspaces/roboco/board/main-pm"),
-                agent_model="minimax-m2.7:cloud",
+                agent_model="minimax-m3:cloud",
             )
         )
         assert m.subagent_allowed is True
-        assert m.subagent_model == "minimax-m2.7:cloud"
+        assert m.subagent_model == "minimax-m3:cloud"
 
     def test_qa_manifest_no_write(self) -> None:
         m = build_for_role(
@@ -49,7 +49,7 @@ class TestBuildForRole:
                 role="qa",
                 team="backend",
                 workspace_path=Path("/data/workspaces/roboco/backend/be-qa"),
-                agent_model="minimax-m2.7:cloud",
+                agent_model="minimax-m3:cloud",
             )
         )
         assert m.write_tools == []
