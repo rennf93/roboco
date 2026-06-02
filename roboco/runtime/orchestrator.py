@@ -95,21 +95,6 @@ AGENT_IMAGES: dict[str, str] = {
     "auditor": "roboco-agent-pm",
 }
 
-# Complete list of MCP tools that trigger traceability reminders.
-# Post-gateway: every state-changing verb agents call routes through
-# roboco-flow (intent verbs) or roboco-do (content tools). Read-only git
-# views (roboco-git-readonly) and KB queries (roboco-optimal) emit one
-# additional trigger because they are the inputs PMs/devs cite when they
-# justify their next move.
-TRACEABILITY_TRIGGER_TOOLS: list[str] = [
-    # === Intent verbs (all role-scoped lifecycle transitions) ===
-    "mcp__roboco-flow__*",
-    # === Content tools (commit/push/PR + journal/notify/message) ===
-    "mcp__roboco-do__*",
-    # === KB Tools ===
-    "mcp__roboco-optimal__roboco_ask_mentor",
-]
-
 
 def get_agent_image(agent_id: str) -> str:
     """Get the Docker image for an agent."""
@@ -900,16 +885,6 @@ class AgentOrchestrator:
                     },
                 ],
                 "PostToolUse": [
-                    # Traceability reminders (context-aware, runs on specific tools)
-                    {
-                        "matcher": "|".join(TRACEABILITY_TRIGGER_TOOLS),
-                        "hooks": [
-                            {
-                                "type": "command",
-                                "command": "/app/scripts/traceability-hook.sh",
-                            }
-                        ],
-                    },
                     # Check for incoming A2A messages after each tool use
                     {
                         "matcher": "*",
