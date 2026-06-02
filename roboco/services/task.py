@@ -596,11 +596,14 @@ class TaskService(BaseService):
                 "before activating."
             )
 
-        # ENFORCEMENT: All tasks require project_id (double-check here)
-        if not task.project_id:
+        # ENFORCEMENT: a task needs a project (a repo) or a product (a
+        # cell->project map for a fan-out task). A coordination task carries a
+        # product and does no git itself.
+        if not task.project_id and not task.product_id:
             raise ValueError(
-                f"Cannot activate task '{task.title}' - no project set. "
-                "All tasks require a project for git workflow."
+                f"Cannot activate task '{task.title}' - no project or product "
+                "set. A task needs a project (a repo) or a product (a "
+                "cell->project map for a fan-out task)."
             )
 
         # NOTE: Git branch is auto-created on claim, not required at activation
@@ -626,7 +629,9 @@ class TaskService(BaseService):
 
         Strategy:
         - If branch exists: return it
-        - If no project: raise error (should not happen - project_id is required)
+        - Coordination/fan-out task (carries a product, no repo of its own): no
+          branch — it does no git work
+        - If neither project nor product: raise (genuinely misconfigured)
         - Create NEW branch (hierarchical name built by build_branch_name)
         - Branch created from parent's branch (or default if root)
 
@@ -637,9 +642,16 @@ class TaskService(BaseService):
             return str(task.branch_name)
 
         if not task.project_id:
+            # A coordination/fan-out task carries a product (a cell->project
+            # map) but no repo of its own, so it does no git work and has no
+            # branch — its cell subtasks each resolve a real project and get
+            # their own branches. Only a task with neither is misconfigured.
+            if task.product_id:
+                return ""
             raise ValueError(
-                "Task requires project_id to create branch. "
-                "Assign a project before claiming."
+                "Task requires a project_id (a repo) or a product_id (a "
+                "cell->project map) to create a branch. Assign one before "
+                "claiming."
             )
 
         return await self._auto_create_branch(task, agent_id)

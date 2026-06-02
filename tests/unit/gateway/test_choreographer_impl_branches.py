@@ -1330,3 +1330,38 @@ async def test_i_will_work_on_claimed_with_no_plan_accepts_recovery_plan() -> No
     body = env.as_dict()
     assert body["error"] is None, f"expected success, got {body}"
     task_svc.set_plan.assert_awaited_once()
+
+
+# ---------------------------------------------------------------------------
+# _pending_assignment_guard: board/advisory roles can idle without claiming
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("role", ["product_owner", "head_marketing", "auditor"])
+async def test_pending_assignment_guard_exempts_board_roles(role: str) -> None:
+    """A board/advisory agent that reviewed a still-pending coordination task
+    has no i_will_work_on/i_will_plan verb, so the idle gate must let it pass."""
+    task_svc = AsyncMock()
+    task_svc.list_assigned_for_agent.return_value = [
+        MagicMock(id=uuid4(), status="pending")
+    ]
+    task_svc.agent_for.return_value = MagicMock(role=role, team=None, slug=None)
+    c = Choreographer(_make_deps(task=task_svc))
+    assert await c._pending_assignment_guard(uuid4(), {}) is None
+
+
+@pytest.mark.asyncio
+async def test_pending_assignment_guard_still_blocks_developer() -> None:
+    """A developer holding a pending unclaimed task is still told to claim it."""
+    task_svc = AsyncMock()
+    task_svc.list_assigned_for_agent.return_value = [
+        MagicMock(id=uuid4(), status="pending")
+    ]
+    task_svc.agent_for.return_value = MagicMock(
+        role="developer", team="backend", slug=None
+    )
+    c = Choreographer(_make_deps(task=task_svc))
+    guard = await c._pending_assignment_guard(uuid4(), {})
+    assert guard is not None
+    assert guard.as_dict()["error"] == "invalid_state"

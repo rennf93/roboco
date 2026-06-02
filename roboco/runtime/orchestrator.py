@@ -152,6 +152,19 @@ def _read_project_slug(task: dict[str, Any]) -> str | None:
     return str(inner) if inner else None
 
 
+def _is_coordination_task(task: dict[str, Any]) -> bool:
+    """True for a board/fan-out task that carries a product but no repo of its own.
+
+    Such a task does no git work itself: its cell subtasks each resolve a real
+    project from the product's cell->project map (see TaskCreate's
+    project-or-product invariant and migration 018). It therefore has no
+    project_slug, branch_name, or git token, and must NOT be git-gated at the
+    spawn-readiness or stuck-detection checks the way a code task is. A task with
+    neither a project nor a product is genuinely unroutable and stays gated.
+    """
+    return not task.get("project_id") and bool(task.get("product_id"))
+
+
 def _resolve_agent_cli_model(provider_type: str, model: str) -> str:
     """Translate an agent model name to the string Claude Code expects.
 
@@ -2009,10 +2022,15 @@ class AgentOrchestrator:
                 if persistent is not None:
                     return await self._readiness_block(client, task_id, persistent)
 
-                project_slug = _read_project_slug(task)
-                token_reason = await self._readiness_check_git_token(project_slug)
-                if token_reason is not None:
-                    return await self._readiness_block(client, task_id, token_reason)
+                # Skip the git-token gate for coordination tasks — they have no
+                # project of their own, so there's no token to require.
+                if not _is_coordination_task(task):
+                    project_slug = _read_project_slug(task)
+                    token_reason = await self._readiness_check_git_token(project_slug)
+                    if token_reason is not None:
+                        return await self._readiness_block(
+                            client, task_id, token_reason
+                        )
         except httpx.HTTPError as e:
             # Transient — retry on next dispatch without auto-blocking.
             return f"readiness check HTTP error: {e}"
@@ -2089,12 +2107,15 @@ class AgentOrchestrator:
 
         if reason := self._readiness_check_acceptance_criteria(task):
             return reason
-        if not _read_project_slug(task):
-            return "task has no project"
-        if status in {"claimed", "in_progress", "verifying"} and not task.get(
-            "branch_name"
-        ):
-            return f"state={status} but branch_name is unset"
+        # A coordination task (product, no repo of its own) does no git: skip the
+        # project-slug and branch-name gates that only apply to code tasks.
+        if not _is_coordination_task(task):
+            if not _read_project_slug(task):
+                return "task has no project"
+            if status in {"claimed", "in_progress", "verifying"} and not task.get(
+                "branch_name"
+            ):
+                return f"state={status} but branch_name is unset"
         return self._readiness_check_role_for_status(agent_id, role, status)
 
     @staticmethod
@@ -3202,9 +3223,13 @@ Start by:
                 f"Task {task_id} has inadequate description ({len(description)} chars)"
             )
 
-        if not task.get("project_id"):
-            await self._auto_block_task(client, task_id, "Task needs project_id")
-            return f"Task {task_id} needs project"
+        # A coordination task carries a product instead of a repo; only a task
+        # with neither is genuinely unroutable.
+        if not task.get("project_id") and not _is_coordination_task(task):
+            await self._auto_block_task(
+                client, task_id, "Task needs a project_id or product_id"
+            )
+            return f"Task {task_id} needs a project or product"
 
         parent_id = task.get("parent_task_id")
         if parent_id:
@@ -5278,7 +5303,8 @@ Never `commit`, never write code, never run `git`. PMs coordinate.
     def _check_stuck_conditions(self, task: dict[str, Any]) -> list[str]:
         """Check for common stuck conditions (git, description)."""
         issues: list[str] = []
-        if not task.get("branch_name"):
+        # A coordination task does no git, so it legitimately has no branch.
+        if not task.get("branch_name") and not _is_coordination_task(task):
             issues.append("Task missing branch_name")
         description = (task.get("description") or "").strip()
         if len(description) < self._MIN_DESCRIPTION_LEN:

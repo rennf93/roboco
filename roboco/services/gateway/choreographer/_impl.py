@@ -2411,8 +2411,10 @@ class Choreographer:
            or @mentions (must address those first).
         2. Refuse with INVALID_STATE if the agent has any pending tasks
            assigned but never claimed — they must call i_will_work_on (dev/qa/
-           doc) or i_will_plan (pm) first. (Gate Set C, pre-gateway implicit
-           via the orchestrator's auto-respawn.)
+           doc) or i_will_plan (pm) first. Board/advisory roles (product_owner,
+           head_marketing, auditor) are exempt: they review without claiming.
+           (Gate Set C, pre-gateway implicit via the orchestrator's
+           auto-respawn.)
         3. Auto-pause every in_progress task this agent owns so the
            orchestrator's PM-closure dispatcher can wake them when subtasks
            finish, instead of leaving the parent stuck at ``in_progress``
@@ -2467,8 +2469,16 @@ class Choreographer:
         pending = [t for t in assigned if str(t.status) == "pending"]
         if not pending:
             return None
-        first = pending[0]
         agent = await self.task.agent_for(agent_id)
+        # Board/advisory roles (product_owner, head_marketing, auditor) review
+        # and advise without ever claiming — they have no i_will_work_on /
+        # i_will_plan verb. Their one-shot board dispatch is meant to leave the
+        # coordination task pending for the CEO to reassign to Main PM, so they
+        # must be allowed to idle after recording their review. Without this
+        # they wedge: the gate would demand a claim verb the role does not have.
+        if agent and agent.role in ("product_owner", "head_marketing", "auditor"):
+            return None
+        first = pending[0]
         verb = (
             "i_will_plan"
             if agent and agent.role in ("cell_pm", "main_pm")

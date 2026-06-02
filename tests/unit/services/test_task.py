@@ -592,3 +592,35 @@ async def test_escalate_up_to_role_returns_none_for_unknown_role() -> None:
     _bind(svc, "get", AsyncMock(return_value=task))
     out = await svc.escalate_up_to_role(uuid4(), task.id, "bogus_role", "reason")
     assert out is None
+
+
+# ---------------------------------------------------------------------------
+# _ensure_branch_for_task — coordination/fan-out tasks do no git
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_ensure_branch_returns_existing_branch() -> None:
+    """An already-branched task short-circuits before any project check."""
+    svc = TaskService(MagicMock())
+    task = MagicMock(branch_name="feature/backend/abc12345", project_id=None)
+    assert (
+        await svc._ensure_branch_for_task(task, uuid4()) == "feature/backend/abc12345"
+    )
+
+
+@pytest.mark.asyncio
+async def test_ensure_branch_skips_coordination_task() -> None:
+    """A product-backed task with no repo of its own gets no branch (not raised)."""
+    svc = TaskService(MagicMock())
+    task = MagicMock(branch_name=None, project_id=None, product_id=uuid4())
+    assert await svc._ensure_branch_for_task(task, uuid4()) == ""
+
+
+@pytest.mark.asyncio
+async def test_ensure_branch_raises_when_neither_project_nor_product() -> None:
+    """A task with neither a project nor a product is genuinely misconfigured."""
+    svc = TaskService(MagicMock())
+    task = MagicMock(branch_name=None, project_id=None, product_id=None)
+    with pytest.raises(ValueError, match="project_id"):
+        await svc._ensure_branch_for_task(task, uuid4())
