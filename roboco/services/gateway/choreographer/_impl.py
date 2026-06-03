@@ -3321,7 +3321,10 @@ class Choreographer:
         """Cross-cell sequencing: in a product fan-out the FRONTEND cell task
         depends on the UX/UI cell task — UX design is upstream of frontend
         implementation, while backend runs in parallel. Wires the dependency in
-        either delegation order. Best-effort: never breaks delegate.
+        either delegation order. A dev/code subtask delegated under a cell task
+        that is itself still waiting on that dependency inherits it, so the
+        developer is held until UX is done instead of coding ahead of the
+        design. Best-effort: never breaks delegate.
         """
         if parent is None or getattr(parent, "product_id", None) is None:
             return
@@ -3329,6 +3332,9 @@ class Choreographer:
 
         nt_team = self._team_value(new_task.team)
         try:
+            # A subtask of a cell task that is waiting on another cell must wait
+            # too — propagate the parent's unmet cross-cell dependencies down.
+            await self.task.inherit_unmet_dependencies(new_task.id, parent.id)
             if nt_team == Team.FRONTEND.value:
                 await self._depend_frontend_on_ux(new_task, parent.id)
             elif nt_team == Team.UX_UI.value:

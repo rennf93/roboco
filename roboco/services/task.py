@@ -4192,6 +4192,32 @@ class TaskService(BaseService):
             task.dependency_ids = [*task.dependency_ids, depends_on_id]
             await self.session.flush()
 
+    async def inherit_unmet_dependencies(
+        self, subtask_id: UUID, parent_id: UUID
+    ) -> None:
+        """Copy a parent's still-unresolved dependencies onto a subtask.
+
+        A subtask of a task that is itself waiting on a cross-cell dependency
+        (e.g. a frontend dev subtask under a frontend cell task that waits on
+        the UX/UI design) must be held until that dependency resolves — the
+        developer cannot code ahead of the design. Only non-terminal parent
+        dependencies are inherited; already-completed ones would never release
+        the subtask via `_unblock_dependents`. Reuses `add_dependency`, so the
+        subtask is held by `list_pending(filter_by_dependencies=True)`.
+        """
+        parent = await self.get(parent_id)
+        if parent is None or not parent.dependency_ids:
+            return
+        dep_result = await self.session.execute(
+            select(TaskTable.id, TaskTable.status).where(
+                TaskTable.id.in_(parent.dependency_ids)
+            )
+        )
+        terminal = {TaskStatus.COMPLETED, TaskStatus.CANCELLED}
+        for dep_id, dep_status in dep_result.all():
+            if dep_status not in terminal:
+                await self.add_dependency(subtask_id, dep_id)
+
     async def get_subtasks(self, parent_task_id: UUID) -> list[TaskTable]:
         """Get all subtasks of a parent task."""
         result = await self.session.execute(
