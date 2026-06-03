@@ -1724,3 +1724,82 @@ class GatewayTriggerTable(Base):
         Index("ix_gateway_triggers_created_at", "created_at"),
         Index("ix_gateway_triggers_kind_decision", "trigger_kind", "decision"),
     )
+
+
+# =============================================================================
+# PROMPTER CONVERSATION TABLE
+# =============================================================================
+
+
+class PromptConversationTable(Base):
+    """
+    Persistent conversation thread for the human-facing Prompter feature.
+
+    Each row represents one conversation between a user and the assistant.
+    Messages are stored in PromptMessageTable with cascade-delete so that
+    deleting a conversation removes all its messages automatically.
+    """
+
+    __tablename__ = "prompter_conversations"
+
+    id: Mapped[UUID] = mapped_column(
+        UUID(as_uuid=True), primary_key=True, default=uuid4
+    )
+    agent_id: Mapped[str] = mapped_column(String(100), nullable=False, index=True)
+    title: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=lambda: datetime.now(UTC), nullable=False
+    )
+
+    # Relationship: cascade-delete so messages are removed with the conversation
+    messages: Mapped[list["PromptMessageTable"]] = relationship(
+        "PromptMessageTable",
+        back_populates="conversation",
+        cascade="all, delete-orphan",
+        lazy="select",
+        order_by="PromptMessageTable.created_at",
+    )
+
+    __table_args__ = (
+        Index("ix_prompter_conv_agent_created", "agent_id", "created_at"),
+    )
+
+
+# =============================================================================
+# PROMPTER MESSAGE TABLE
+# =============================================================================
+
+
+class PromptMessageTable(Base):
+    """
+    Individual message within a Prompter conversation.
+
+    ``role`` is either ``"user"`` or ``"assistant"``.  Content stores the
+    full text of the message.  Messages are ordered by ``created_at``.
+    """
+
+    __tablename__ = "prompter_messages"
+
+    id: Mapped[UUID] = mapped_column(
+        UUID(as_uuid=True), primary_key=True, default=uuid4
+    )
+    conversation_id: Mapped[UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("prompter_conversations.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    role: Mapped[str] = mapped_column(String(20), nullable=False)
+    content: Mapped[str] = mapped_column(Text, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=lambda: datetime.now(UTC), nullable=False
+    )
+
+    # Relationship
+    conversation: Mapped["PromptConversationTable"] = relationship(
+        "PromptConversationTable", back_populates="messages"
+    )
+
+    __table_args__ = (
+        Index("ix_prompter_msg_conv_created", "conversation_id", "created_at"),
+    )
