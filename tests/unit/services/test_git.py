@@ -13,6 +13,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 from uuid import uuid4
 
 import pytest
+from roboco.config import settings
 from roboco.services.base import NotFoundError
 from roboco.services.git import GitService
 
@@ -247,3 +248,54 @@ async def test_pr_merge_returns_merge_commit_dict() -> None:
     with _patch_project_service(fake_project):
         out = await svc.pr_merge(11, target="master")
     assert out == {"merge_commit_sha": "abc123sha"}
+
+
+# ---------------------------------------------------------------------------
+# commit: stages + commits a large changeset with the longer git timeout
+# (issue #13 — the panel commit verb timed out on the 30s default budget).
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_commit_uses_longer_timeout_for_staging_and_commit() -> None:
+    """`add`/`commit` must run with the commit-timeout, not the default.
+
+    Large multi-file changesets exceeded the 30s default git timeout. The
+    staging (`git add`) and `git commit` ops now pass
+    `settings.git_commit_timeout_seconds` so big changesets don't time out.
+    """
+    svc = _service()
+    _bind(svc, "_workspace_for_branch", AsyncMock(return_value=Path("/tmp/ws")))
+    _bind(svc, "_assert_on_task_branch", AsyncMock())
+    _bind(svc, "_task_for_branch", AsyncMock(return_value=None))
+    _bind(svc, "_parse_commit_stats", MagicMock(return_value=(1, 0, 1)))
+
+    timeouts_by_subcmd: dict[str, int | None] = {}
+
+    async def _run_git(
+        _workspace: Path,
+        args: list[str],
+        check: bool = True,
+        token: str | None = None,
+        timeout: int | None = None,
+    ) -> MagicMock:
+        del check, token
+        timeouts_by_subcmd[args[0]] = timeout
+        if args[:2] == ["log", "-1"]:
+            return MagicMock(stdout="deadbeef|feat: big change\n", returncode=0)
+        return MagicMock(stdout="", returncode=0)
+
+    _bind(svc, "_run_git", AsyncMock(side_effect=_run_git))
+
+    out = await svc.commit(
+        branch_name="feature/frontend/abc12345",
+        message="implement the panel dashboard layout and routing",
+        task_id=uuid4(),
+    )
+
+    assert out["sha"] == "deadbeef"
+    # Staging + commit ran with the longer commit budget...
+    assert timeouts_by_subcmd["add"] == settings.git_commit_timeout_seconds
+    assert timeouts_by_subcmd["commit"] == settings.git_commit_timeout_seconds
+    # ...while the cheap read-only ops kept the default (None → default budget).
+    assert timeouts_by_subcmd["log"] is None

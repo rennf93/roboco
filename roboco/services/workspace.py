@@ -19,6 +19,7 @@ Example:
 """
 
 import asyncio
+import contextlib
 import math
 import os
 import re
@@ -187,6 +188,66 @@ class WorkspaceError(Exception):
     """Raised when workspace operations fail."""
 
     pass
+
+
+# Marker file recording the lockfile digest the dev-deps install last ran
+# against. Lives under .git/ so it never shows up in `git status` (the agent's
+# clean-tree checks would otherwise trip on it) and is wiped with the clone.
+_DEP_INSTALL_MARKER = ".git/.roboco-dep-install"
+
+
+def _lockfile_digest(workspace: Path) -> str | None:
+    """Hash the dependency lockfiles present in the workspace.
+
+    Returns a stable digest over whichever of `uv.lock` / `pnpm-lock.yaml` /
+    `package-lock.json` exist, or None when none do (nothing to install).
+    Used to make the post-clone install idempotent: if the digest matches
+    the marker from the previous run, the install is skipped.
+    """
+    import hashlib
+
+    lockfiles = ("uv.lock", "pnpm-lock.yaml", "package-lock.json", "package.json")
+    h = hashlib.sha256()
+    found = False
+    for name in lockfiles:
+        path = workspace / name
+        if not path.is_file():
+            continue
+        found = True
+        try:
+            h.update(name.encode())
+            h.update(path.read_bytes())
+        except OSError:
+            return None
+    return h.hexdigest() if found else None
+
+
+def _detect_dep_commands(workspace: Path) -> list[tuple[str, list[str]]]:
+    """Return the dev-dependency install commands for this workspace.
+
+    Detects project ecosystems by lockfile/manifest and returns
+    ``(label, argv)`` tuples to run from the workspace root:
+
+    - Python: `pyproject.toml` → ``uv sync`` (installs dev deps into a
+      `.venv` next to the project, giving the agent its own ruff/mypy/pytest).
+    - Node/TS: `pnpm-lock.yaml` → ``pnpm install``;
+      ``package-lock.json`` → ``npm ci``; bare `package.json` → ``npm install``.
+
+    A monorepo with both gets both commands. Empty list means nothing to do.
+    """
+    commands: list[tuple[str, list[str]]] = []
+
+    if (workspace / "pyproject.toml").is_file():
+        commands.append(("uv sync", ["uv", "sync"]))
+
+    if (workspace / "pnpm-lock.yaml").is_file():
+        commands.append(("pnpm install", ["pnpm", "install", "--frozen-lockfile"]))
+    elif (workspace / "package-lock.json").is_file():
+        commands.append(("npm ci", ["npm", "ci"]))
+    elif (workspace / "package.json").is_file():
+        commands.append(("npm install", ["npm", "install"]))
+
+    return commands
 
 
 class WorkspaceService:
@@ -489,6 +550,11 @@ class WorkspaceService:
                 # updates under .git/refs/remotes/origin/ land root-owned
                 # and undo the chown we just ran above.
                 await asyncio.to_thread(_ensure_agent_owned, workspace)
+                # Ensure dev deps are present even for workspaces cloned
+                # before this feature landed. Idempotent: the lockfile-digest
+                # marker makes this a no-op once installed, so it costs only a
+                # cheap hash on every healthy re-entry.
+                await self.install_dev_deps(workspace)
                 logger.debug(
                     "Workspace already exists",
                     workspace=str(workspace),
@@ -699,6 +765,123 @@ class WorkspaceService:
             raise WorkspaceError(
                 f"Clone timed out after {settings.workspace_clone_timeout}s"
             ) from e
+
+        # Install the project's dev dependencies into the workspace's own
+        # environment so the agent has ruff/mypy/pytest (Python) or the TS
+        # toolchain available for the `make quality` gate without
+        # re-downloading per task. Best-effort + idempotent. A clone is still
+        # usable if the install fails (the agent can install on the fly), so
+        # this must NOT abort workspace setup.
+        await self.install_dev_deps(workspace)
+
+    async def install_dev_deps(self, workspace: Path) -> bool:
+        """Install the project's dev dependencies into `workspace`.
+
+        Idempotent: hashes the lockfiles and skips the install when they
+        match the marker written by the previous successful run. Detects the
+        ecosystem (Python `uv sync`, Node/TS `pnpm install`/`npm ci`) and
+        runs each install from the workspace root. Best-effort — failures are
+        logged, never raised, so a missing toolchain on the host or a flaky
+        registry can't break the agent's clone.
+
+        Returns True when an install ran (and at least one command
+        succeeded), False when skipped (cache hit, disabled, or nothing to
+        install).
+        """
+        if not settings.workspace_install_dev_deps:
+            return False
+
+        commands = _detect_dep_commands(workspace)
+        if not commands:
+            return False
+
+        digest = _lockfile_digest(workspace)
+        marker = workspace / _DEP_INSTALL_MARKER
+        if digest is not None and marker.is_file():
+            try:
+                if marker.read_text().strip() == digest:
+                    logger.debug(
+                        "Dev-deps install skipped (lockfiles unchanged)",
+                        workspace=str(workspace),
+                    )
+                    return False
+            except OSError:
+                pass
+
+        any_ok = False
+        for label, argv in commands:
+            ok = await self._run_dep_install(workspace, label, argv)
+            any_ok = any_ok or ok
+
+        # Record the digest so a re-entry with the same lockfiles is a no-op.
+        # Only write on success — a failed install should retry next time.
+        if any_ok and digest is not None:
+            with contextlib.suppress(OSError):
+                marker.write_text(digest)
+
+        # The install runs as root (orchestrator); hand the freshly written
+        # .venv / node_modules back to the agent user.
+        await asyncio.to_thread(_ensure_agent_owned, workspace)
+        return any_ok
+
+    @staticmethod
+    async def _run_dep_install(workspace: Path, label: str, argv: list[str]) -> bool:
+        """Run one dep-install command; log and swallow all failures.
+
+        Returns True only when the tool exists and exited 0.
+        """
+
+        def _run() -> subprocess.CompletedProcess[str]:
+            return subprocess.run(
+                argv,
+                cwd=str(workspace),
+                capture_output=True,
+                text=True,
+                timeout=settings.workspace_dep_install_timeout_seconds,
+                check=False,
+            )
+
+        logger.info(
+            "Installing workspace dev dependencies",
+            workspace=str(workspace),
+            command=label,
+        )
+        try:
+            result = await asyncio.to_thread(_run)
+        except FileNotFoundError:
+            # The tool (uv/pnpm/npm) isn't on the orchestrator's PATH. Log and
+            # continue — the agent can still install on the fly inside its
+            # container, which has the toolchain.
+            logger.warning(
+                "Dev-deps install tool not found on host; skipping",
+                workspace=str(workspace),
+                command=label,
+            )
+            return False
+        except (subprocess.TimeoutExpired, OSError) as exc:
+            logger.warning(
+                "Dev-deps install failed",
+                workspace=str(workspace),
+                command=label,
+                error=str(exc),
+            )
+            return False
+
+        if result.returncode != 0:
+            logger.warning(
+                "Dev-deps install returned non-zero",
+                workspace=str(workspace),
+                command=label,
+                stderr=result.stderr.strip()[:2000],
+            )
+            return False
+
+        logger.info(
+            "Dev-deps install complete",
+            workspace=str(workspace),
+            command=label,
+        )
+        return True
 
     async def workspace_exists(
         self,

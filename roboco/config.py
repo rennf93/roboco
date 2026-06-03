@@ -220,6 +220,53 @@ class Settings(BaseSettings):
             "against a hung remote is operationally bad."
         ),
     )
+    workspace_install_dev_deps: bool = Field(
+        default=True,
+        description=(
+            "After cloning an agent workspace, install the project's dev "
+            "dependencies into the workspace's own environment so the "
+            "`make quality` gate (ruff/mypy/pytest for Python, the lint/"
+            "typecheck toolchain for the TS panel) is available without "
+            "the agent re-downloading tooling per task. Detects Python "
+            "(pyproject.toml → `uv sync`) and Node/TS (package.json → "
+            "`pnpm install`/`npm install`). Idempotent; skipped when the "
+            "relevant lockfile is unchanged since the last install."
+        ),
+    )
+    workspace_dep_install_timeout_seconds: int = Field(
+        default=600,
+        ge=30,
+        description=(
+            "Timeout in seconds for the post-clone dev-dependency install "
+            "(`uv sync` / `pnpm install`). Cold installs of a large TS "
+            "panel or a Python project with native wheels can take several "
+            "minutes; the default clone timeout is too short for this."
+        ),
+    )
+
+    # ==========================================================================
+    # Git command execution
+    # ==========================================================================
+    git_command_timeout_seconds: int = Field(
+        default=30,
+        ge=5,
+        description=(
+            "Default timeout in seconds for a single orchestrator-side git "
+            "subprocess (status, log, checkout, fetch, push, …). Short by "
+            "design — most git operations are sub-second."
+        ),
+    )
+    git_commit_timeout_seconds: int = Field(
+        default=180,
+        ge=30,
+        description=(
+            "Timeout in seconds for staging + committing a changeset "
+            "(`git add` / `git commit`). Large multi-file changesets (e.g. "
+            "the Next.js panel) can exceed the 30s default-git timeout while "
+            "git hashes every object and the orchestrator re-chowns the "
+            "tree, so the commit choreography uses this longer budget."
+        ),
+    )
 
     # ==========================================================================
     # Agent Guardrails (per-session budgets, loop detection, SLAs)
