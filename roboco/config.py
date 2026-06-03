@@ -267,6 +267,17 @@ class Settings(BaseSettings):
             "tree, so the commit choreography uses this longer budget."
         ),
     )
+    git_network_timeout_seconds: int = Field(
+        default=120,
+        ge=30,
+        description=(
+            "Timeout in seconds for git ops that talk to origin (fetch / pull "
+            "/ push). A push or fetch on a large private monorepo from a "
+            "self-hosted runner can far exceed the sub-second local-op "
+            "default; short-budgeting it is what made open_pr time out before "
+            "the branch reached the remote."
+        ),
+    )
 
     # ==========================================================================
     # Agent Guardrails (per-session budgets, loop detection, SLAs)

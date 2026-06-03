@@ -9,8 +9,11 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import os
 import re
 import subprocess
+import time
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, ClassVar, cast
@@ -78,6 +81,33 @@ def _default_git_timeout() -> int:
 
 def _commit_git_timeout() -> int:
     return settings.git_commit_timeout_seconds
+
+
+def _network_git_timeout() -> int:
+    """Budget for git ops that talk to origin (fetch / pull / push).
+
+    A push/fetch on a large private monorepo from a self-hosted runner can
+    take far longer than the sub-second local-op default — short-budgeting it
+    is what made open_pr time out before the branch ever reached the remote.
+    """
+    return settings.git_network_timeout_seconds
+
+
+# Dedicated thread pool for git subprocesses + the post-op ownership repair.
+# These run in threads (subprocess + an os.walk chown); under concurrent agent
+# load they must not queue behind — or starve — the event loop's default
+# executor that every other to_thread call shares. A bounded dedicated pool
+# isolates git work and caps host parallelism so a burst of commits/pushes
+# can't thrash the box. Never shut down: lives for the process.
+_GIT_EXECUTOR = ThreadPoolExecutor(
+    max_workers=int(os.environ.get("ROBOCO_GIT_EXECUTOR_WORKERS", "16")),
+    thread_name_prefix="git",
+)
+
+# A git subprocess or ownership repair slower than this is logged so a run can
+# pinpoint where time goes (e.g. a push to origin). Below it, the fast path
+# stays quiet.
+_SLOW_GIT_OP_MS = 1000.0
 
 
 # `_get_gh_env` and the gh-CLI code paths were removed in favor of direct
@@ -170,19 +200,38 @@ class GitService(BaseService):
                 check=check,
             )
 
+        loop = asyncio.get_running_loop()
+        op = " ".join(args[:2])
+        t0 = time.monotonic()
         try:
-            result = await asyncio.to_thread(_run)
+            result = await loop.run_in_executor(_GIT_EXECUTOR, _run)
         except subprocess.TimeoutExpired as e:
             raise GitTimeoutError(" ".join(args), effective_timeout) from e
         except subprocess.CalledProcessError as e:
             raise GitCommandError(
                 " ".join(args), e.stderr or e.stdout or "Unknown error"
             ) from e
+        git_ms = (time.monotonic() - t0) * 1000.0
 
-        # Chown after every command — cheap (a stat-check fast-path returns
-        # immediately if ownership is already correct, so repeated ops in
-        # a single flow don't re-walk the tree unnecessarily).
-        await asyncio.to_thread(_ensure_agent_owned, workspace)
+        # Hand .git (and tracked files) back to the agent: this root-run op
+        # created root-owned files under .git/. Runs in the dedicated git pool
+        # so it doesn't compete with the event loop's default executor.
+        t1 = time.monotonic()
+        await loop.run_in_executor(_GIT_EXECUTOR, _ensure_agent_owned, workspace)
+        chown_ms = (time.monotonic() - t1) * 1000.0
+
+        # Surface slow git/chown ops (instrumentation): a single line that
+        # pinpoints where an op's time went — the subprocess (e.g. a push to
+        # origin) vs the ownership repair — without flooding the fast path.
+        if git_ms > _SLOW_GIT_OP_MS or chown_ms > _SLOW_GIT_OP_MS:
+            self.log.warning(
+                "slow git op",
+                op=op,
+                git_ms=round(git_ms),
+                chown_ms=round(chown_ms),
+                timeout_s=effective_timeout,
+                workspace=str(workspace),
+            )
         return result
 
     async def _token_for_project(self, project_slug: str) -> str | None:
@@ -762,21 +811,36 @@ class GitService(BaseService):
                 )
                 base_branch = default_branch
 
-        # Fetch to ensure we have the latest refs (critical for parent branches)
-        await self._run_git(workspace, ["fetch", "origin"], token=project_token)
+        # Fetch ONLY the refs this path needs (base + default), not every
+        # remote branch — an all-refs `fetch origin` on a monorepo with dozens
+        # of stale branches (dependabot, feature, abandoned) is pure network
+        # cost on every branch creation. check=False so a base that isn't on
+        # the remote yet doesn't abort (the fallback below handles it).
+        fetch_refs = list(dict.fromkeys([base_branch, default_branch]))
+        await self._run_git(
+            workspace,
+            ["fetch", "origin", *fetch_refs],
+            token=project_token,
+            check=False,
+            timeout=_network_git_timeout(),
+        )
 
         base_branch = await self._checkout_base_with_fallback(
             workspace, base_branch, default_branch, task_id
         )
 
         await self._run_git(
-            workspace, ["pull", "origin", base_branch], token=project_token
+            workspace,
+            ["pull", "origin", base_branch],
+            token=project_token,
+            timeout=_network_git_timeout(),
         )
         await self._run_git(workspace, ["checkout", "-b", branch_name])
         await self._run_git(
             workspace,
             ["push", "-u", "origin", branch_name],
             token=project_token,
+            timeout=_network_git_timeout(),
         )
         # Ownership re-chown happens automatically inside `_run_git` now.
 
@@ -845,8 +909,16 @@ class GitService(BaseService):
         If the branch doesn't exist locally, creates a tracking branch from remote.
         """
         token = await self._token_for_workspace(workspace)
-        # Fetch to ensure we have the latest refs
-        await self._run_git(workspace, ["fetch", "origin"], token=token)
+        # Fetch just the branch we're about to check out, not every remote ref.
+        # check=False: a not-yet-pushed branch makes this a no-op, and the
+        # local/tracking checkout below still works.
+        await self._run_git(
+            workspace,
+            ["fetch", "origin", branch],
+            token=token,
+            check=False,
+            timeout=_network_git_timeout(),
+        )
 
         # Try direct checkout first (works if local branch exists)
         result = await self._run_git(workspace, ["checkout", branch], check=False)
@@ -943,7 +1015,9 @@ class GitService(BaseService):
         if force:
             args.insert(1, "--force")
 
-        await self._run_git(workspace, args, token=token)
+        await self._run_git(
+            workspace, args, token=token, timeout=_network_git_timeout()
+        )
 
         return branch, commits_to_push
 
