@@ -37,9 +37,8 @@ from roboco.models.base import (
 )
 from roboco.services.gateway.choreographer import Choreographer, ChoreographerDeps
 from roboco.services.task import TaskService
-from sqlalchemy import delete
 
-# #172: a developer fresh claim must carry a substantive step checklist.
+# A developer fresh claim must carry a substantive step checklist.
 _STEPS = [
     {
         "title": "Implement the change",
@@ -638,19 +637,11 @@ async def test_pm_complete_simple_task(
 ) -> None:
     """awaiting_pm_review → cell_pm complete → completed.
 
-    Post-#178: cell PM completing a non-root awaiting_pm_review task
-    always transitions straight to COMPLETED — there is no longer a
-    cell→main escalation in ``complete`` (the old branch is gone; the
-    cell→main hand-off, when intended, uses ``submit_up``). The
-    MAIN_PM deletion below is now a historical artifact (kept because
-    other tests in this file rely on the same isolation pattern); it
-    no longer affects this test's outcome.
+    A cell PM completing a non-root awaiting_pm_review task transitions
+    straight to COMPLETED — there is no cell→main escalation in
+    ``complete`` (the cell→main hand-off, when intended, uses
+    ``submit_up``).
     """
-    await db_session.execute(
-        delete(AgentTable).where(AgentTable.role == AgentRole.MAIN_PM)
-    )
-    await db_session.flush()
-
     task = lifecycle_setup["task"]
     cell_pm_agent = lifecycle_setup["cell_pm_agent"]
 
