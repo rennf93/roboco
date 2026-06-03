@@ -417,7 +417,7 @@ class ProjectTable(Base):
     # Git Configuration
     git_url: Mapped[str] = mapped_column(String(500), nullable=False)
     default_branch: Mapped[str] = mapped_column(
-        String(100), nullable=False, default="main"
+        String(100), nullable=False, default="master"
     )
     protected_branches: Mapped[list[str]] = mapped_column(
         ARRAY(String), default=lambda: ["main", "master"]

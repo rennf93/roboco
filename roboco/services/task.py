@@ -773,7 +773,7 @@ class TaskService(BaseService):
 
         if not parent_branch:
             default_branch = (
-                str(project.default_branch) if project.default_branch else "main"
+                str(project.default_branch) if project.default_branch else "master"
             )
             self.log.info(
                 "No ancestor branch found, using project default",
@@ -1326,9 +1326,9 @@ class TaskService(BaseService):
 
         # Determine target branch:
         # - For subtasks: merge into parent task's branch
-        # - For parent tasks: merge into default branch (main)
+        # - For parent tasks: merge into default branch (master)
         default_branch = project.default_branch
-        target_branch: str = str(default_branch) if default_branch else "main"
+        target_branch: str = str(default_branch) if default_branch else "master"
         if task.parent_task_id:
             # Get parent task's branch
             parent_id = cast("UUID", task.parent_task_id)

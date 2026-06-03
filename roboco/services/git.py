@@ -289,7 +289,7 @@ class GitService(BaseService):
                     project_slug=project_slug,
                     agent_id=agent_id,
                     git_url=project.git_url,
-                    default_branch=project.default_branch or "main",
+                    default_branch=project.default_branch or "master",
                 )
             else:
                 workspace = await workspace_service.resolve_workspace(
@@ -713,13 +713,13 @@ class GitService(BaseService):
         return await self._project_default_branch(project_slug)
 
     async def _project_default_branch(self, project_slug: str) -> str:
-        """Return the project's configured default branch, or 'main'."""
+        """Return the project's configured default branch, or 'master'."""
         project_service = get_project_service(self.session)
         project = await project_service.get_by_slug(project_slug)
         return (
             str(project.default_branch)
             if project and project.default_branch
-            else "main"
+            else "master"
         )
 
     async def _checkout_base_with_fallback(
