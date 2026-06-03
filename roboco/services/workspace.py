@@ -46,6 +46,26 @@ logger = get_logger(__name__)
 _AGENT_UID = int(os.environ.get("ROBOCO_AGENT_UID", "1000"))
 _AGENT_GID = int(os.environ.get("ROBOCO_AGENT_GID", "1000"))
 
+# Large, gitignored, agent-regenerated trees we never need to chown — they are
+# either absent or already agent-owned (the agent created them), and walking
+# node_modules alone cost 2.7-15.5s per git op. Pruning them keeps the
+# ownership walk fast while still handing the agent every tracked file + .git.
+_PRUNE_DIRS = frozenset(
+    {
+        "node_modules",
+        ".venv",
+        "venv",
+        "dist",
+        "build",
+        ".next",
+        ".turbo",
+        "__pycache__",
+        ".mypy_cache",
+        ".pytest_cache",
+        ".ruff_cache",
+    }
+)
+
 
 def _chown_entry(entry: str) -> bool:
     """Chown a single entry; return True on success (or already correct)."""
@@ -86,41 +106,47 @@ def _make_owner_and_group_rw(entry: str) -> None:
 
 
 def _ensure_agent_owned(workspace: Path) -> None:
-    """Chown + group-write the .git subtree for the agent user.
+    """Chown + group-write the agent's workspace so uid 1000 can read AND write.
 
-    Orchestrator runs as root so anything it clones or writes is root-owned.
-    Agent containers run as uid 1000 and must be able to create
-    .git/index.lock, refs, packed-refs, and objects — otherwise every git
-    operation fails with "Permission denied". Called after clone and on every
-    ensure_workspace so legacy (pre-fix) workspaces get repaired.
+    Orchestrator runs as root, so everything it clones is root-owned. Agent
+    containers run as uid 1000 and must be able to WRITE working-tree files
+    (create/edit source, design docs) AND .git internals (index.lock, refs,
+    packed-refs, objects) — otherwise writes fail with "Permission denied".
+    Called after clone and on every ensure_workspace so legacy workspaces get
+    repaired.
 
-    The walk is scoped to ``.git`` only. Working-tree files (and especially a
-    multi-thousand-entry ``node_modules/``) don't need chowning for git to
-    work, and walking them cost 2.7-15.5s per git op. If ``.git`` is absent
-    (never cloned), there is nothing to own and we no-op.
+    We walk the WHOLE workspace (so the working tree is writable) but prune the
+    large, gitignored, agent-regenerated trees in ``_PRUNE_DIRS`` so the walk
+    stays fast. Restricting the walk to ``.git`` only (the previous approach)
+    was fast but left the working tree root-owned — agents couldn't write any
+    file. If the workspace doesn't exist yet, we no-op.
 
-    Two defenses (both cheap, both idempotent), applied to every entry under
-    ``.git``:
-    1. chown to (AGENT_UID, AGENT_GID). On setups where user namespaces
-       silently remap or reject the chown (some NAS / rootless docker
-       configs), we log the failure instead of swallowing it — so when writes
-       still fail from the agent, we can actually see why.
-    2. chmod g+w. If chown doesn't take effect, having the group writable
-       (and with AGENT_GID) is enough for uid 1000 to write, provided agent
-       is in that group. Belt + suspenders.
+    Two cheap, idempotent defenses per entry:
+    1. chown to (AGENT_UID, AGENT_GID). If the chown is rejected (rootless /
+       userns hosts) we log the failure instead of swallowing it, so a
+       still-failing agent write is diagnosable rather than silent.
+    2. chmod owner+group rw. Belt + suspenders for ACL-inheriting NAS volumes.
     """
-    git_dir = workspace / ".git"
-    if not git_dir.exists():
+    if not workspace.exists():
         return
 
     failed_chowns = 0
-    for root, dirs, files in os.walk(git_dir):
-        entries = (
-            root,
+    # os.walk yields a directory's *contents*, not the directory entry itself,
+    # so chown the workspace root explicitly — the agent must be able to create
+    # new top-level files in it.
+    if not _chown_entry(str(workspace)):
+        failed_chowns += 1
+    _make_owner_and_group_rw(str(workspace))
+
+    for root, dirs, files in os.walk(workspace):
+        # Prune in place so os.walk never descends into the heavy dirs — this
+        # is the speed the .git-only walk bought, without giving up
+        # working-tree writability.
+        dirs[:] = [d for d in dirs if d not in _PRUNE_DIRS]
+        for entry in (
             *[str(Path(root) / d) for d in dirs],
             *[str(Path(root) / f) for f in files],
-        )
-        for entry in entries:
+        ):
             if not _chown_entry(entry):
                 failed_chowns += 1
             _make_owner_and_group_rw(entry)

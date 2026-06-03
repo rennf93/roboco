@@ -1,34 +1,41 @@
-"""Tests that _ensure_agent_owned only touches the .git subtree.
+"""Tests for _ensure_agent_owned: the agent's whole workspace must be writable.
 
-The agent only needs write ownership on .git/ (index.lock, refs, packed-refs,
-objects) during git ops. Walking the entire working tree — including a large
-node_modules/ — chown+chmod'ing every entry made every git op take seconds.
-The walk must be scoped to .git only.
+The orchestrator clones as root, so the working tree lands root-owned. The
+agent runs as uid 1000 and must be able to WRITE working-tree files (source,
+design docs) and .git internals — so the whole workspace is chowned, EXCEPT the
+large gitignored/agent-regenerated trees (node_modules, .venv, ...) which are
+pruned to keep the walk fast. Restricting the walk to .git only (the previous
+approach) left the working tree root-owned and broke every agent file write.
 """
 
 from __future__ import annotations
 
-from pathlib import Path
+from typing import TYPE_CHECKING
 
 import pytest
 from roboco.services import workspace as workspace_module
 from roboco.services.workspace import _ensure_agent_owned
 
+if TYPE_CHECKING:
+    from pathlib import Path
+
 
 def _build_workspace(root: Path) -> None:
-    """Create a workspace with a .git dir and a large node_modules tree."""
+    """Create a workspace: .git dir, working-tree source, and a heavy node_modules."""
     git_dir = root / ".git"
     (git_dir / "refs" / "heads").mkdir(parents=True)
     (git_dir / "objects").mkdir(parents=True)
     (git_dir / "config").write_text("[core]\n")
-    (git_dir / "HEAD").write_text("ref: refs/heads/main\n")
-    (git_dir / "refs" / "heads" / "main").write_text("abc123\n")
-    (git_dir / "packed-refs").write_text("# pack-refs\n")
+    (git_dir / "HEAD").write_text("ref: refs/heads/master\n")
+    (git_dir / "refs" / "heads" / "master").write_text("abc123\n")
 
-    # A large working tree with a deep node_modules/ that must NOT be walked.
-    src = root / "src"
+    # Working tree the agent must be able to write.
+    src = root / "roboco" / "services"
     src.mkdir(parents=True)
-    (src / "main.py").write_text("print('hi')\n")
+    (src / "thing.py").write_text("x = 1\n")
+    (root / "README.md").write_text("# hi\n")
+
+    # Heavy gitignored tree that must be pruned (not walked/chowned).
     node_modules = root / "node_modules"
     for pkg in range(20):
         pkg_dir = node_modules / f"pkg-{pkg}" / "dist"
@@ -53,43 +60,34 @@ def _record_touched(monkeypatch: pytest.MonkeyPatch) -> list[str]:
     return touched
 
 
-def test_ensure_agent_owned_scopes_to_git_only(
+def test_chowns_working_tree_and_git_but_prunes_node_modules(
     tmp_path: Path, _record_touched: list[str]
 ) -> None:
     _build_workspace(tmp_path)
 
     _ensure_agent_owned(tmp_path)
 
-    git_dir = tmp_path / ".git"
-    assert _record_touched, "expected .git entries to be touched"
+    touched = set(_record_touched)
 
-    # Every touched path must live inside .git/.
-    for entry in _record_touched:
-        resolved = Path(entry).resolve()
-        assert git_dir.resolve() in (resolved, *resolved.parents), (
-            f"{entry} is outside the .git subtree"
-        )
+    # The workspace root must be chowned so the agent can create top-level files
+    # (the EACCES that killed the run was the agent unable to mkdir/open here).
+    assert str(tmp_path) in touched
 
-    # No node_modules path may be touched.
+    # Working-tree files the agent edits must be chowned — this is the exact
+    # contract the .git-only regression broke.
+    assert str(tmp_path / "roboco" / "services" / "thing.py") in touched
+    assert str(tmp_path / "README.md") in touched
+
+    # .git internals must still be chowned so git ops work.
+    assert str(tmp_path / ".git" / "config") in touched
+    assert str(tmp_path / ".git" / "refs" / "heads" / "master") in touched
+
+    # node_modules must be PRUNED — not a single entry under it is touched
+    # (walking it was the 2.7-15.5s/op cost the .git-only walk tried to avoid).
     assert not any("node_modules" in entry for entry in _record_touched)
 
-    # The git internals that need agent ownership were in fact visited.
-    expected = {
-        str(git_dir / "config"),
-        str(git_dir / "HEAD"),
-        str(git_dir / "packed-refs"),
-        str(git_dir / "refs" / "heads" / "main"),
-    }
-    assert expected.issubset(set(_record_touched))
 
-
-def test_ensure_agent_owned_noop_when_git_absent(
-    tmp_path: Path, _record_touched: list[str]
-) -> None:
-    # Working tree with no .git/ — nothing to own.
-    (tmp_path / "node_modules" / "pkg").mkdir(parents=True)
-    (tmp_path / "node_modules" / "pkg" / "index.js").write_text("x\n")
-
-    _ensure_agent_owned(tmp_path)
-
+def test_noop_when_workspace_absent(tmp_path: Path, _record_touched: list[str]) -> None:
+    missing = tmp_path / "never_cloned"
+    _ensure_agent_owned(missing)
     assert _record_touched == []
