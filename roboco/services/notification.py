@@ -218,7 +218,7 @@ class NotificationService:
         CEO's Approve & Start gate (``TaskService.approve_and_start``). The
         Product Owner + Head of Marketing record their review via channel
         dialogue and journal notes, but that left the CEO with no actionable
-        signal — only buried chatter (cluster C5 / finding #2). This emits a
+        signal — only buried chatter. This emits a
         formal APPROVAL notification (ack-required) carrying ``related_task_id``
         so the handoff is a real signal the panel can surface, not channel
         noise. Board roles are exactly the senders permitted to notify, so the

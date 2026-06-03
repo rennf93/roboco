@@ -3529,6 +3529,22 @@ class TaskService(BaseService):
         )
         return task
 
+    async def mark_board_review_complete(self, task_id: UUID) -> bool:
+        """Flag a board task as board-reviewed without moving it off pending.
+
+        The task stays pending (that pending state is what makes
+        ``approve_and_start`` hand it to Main PM). This flag only unlocks the
+        CEO's Approve & Start button, so the button never shows on a board task
+        the PO + Head of Marketing haven't finished reviewing. Idempotent;
+        returns True when it flips the flag, False when already set or missing.
+        """
+        task = await self.get(task_id)
+        if task is None or task.board_review_complete:
+            return False
+        task.board_review_complete = True
+        await self.session.flush()
+        return True
+
     async def ceo_reject(
         self,
         task_id: UUID,

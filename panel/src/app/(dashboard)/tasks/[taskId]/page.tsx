@@ -364,16 +364,20 @@ export default function TaskDetailPage({ params }: TaskDetailPageProps) {
       {/* CEO gate #1: Approve & Start a board-reviewed coordination task.
           This is the handoff for a board/fan-out task (a product, no repo of its
           own) that the Board has reviewed and is waiting on the CEO to hand to
-          Main PM. The server's approve_and_start requires the task to still be
-          PENDING (it re-targets to Main PM without a status change), so we gate
-          on PENDING — NOT awaiting_ceo_approval, which is the unrelated
-          end-of-work CEO gate handled by the ceo-approve flow. We also require a
-          coordination task (no project_id, has product_id) so the button only
-          shows on the board's fan-out handoffs, not on every board-team task. */}
+          Main PM. The server's approve_and_start keeps the task PENDING (it
+          re-targets to Main PM without a status change — that pending state is
+          what drives Main PM dispatch), so we gate on PENDING here, NOT on
+          awaiting_ceo_approval (the unrelated end-of-work ceo-approve flow).
+          The button must not appear until the board has actually finished
+          reviewing, so we also require board_review_complete — the flag the
+          orchestrator sets once BOTH the PO and Head of Marketing are done. The
+          coordination predicate (no project_id, has product_id) keeps the
+          button to the board's fan-out handoffs, not every board-team task. */}
       {task.status === TaskStatus.PENDING &&
         task.team === Team.BOARD &&
         !task.project_id &&
-        !!task.product_id && (
+        !!task.product_id &&
+        task.board_review_complete === true && (
           <div className="flex justify-end">
             <ApproveAndStartButton task={task} />
           </div>

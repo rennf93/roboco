@@ -1,17 +1,18 @@
 """Board agents (Product Owner + Head of Marketing) review board-team tasks.
 
-Cluster C5:
 - A board/coordination task is a TWO-reviewer gate: BOTH the Product Owner and
-  the Head of Marketing must review it before it reaches the CEO (finding #4).
-  Each reviewer is dispatched ONCE — board roles have no verb to claim/plan/
-  delegate/complete, so a respawn cannot advance the task and would just loop.
-- Once BOTH reviewers have finished, the orchestrator emits exactly ONE formal
-  CEO notification so the handoff to Approve & Start is an actionable signal,
-  not buried channel chatter (finding #2).
+  the Head of Marketing must review it before it reaches the CEO. Each reviewer
+  is dispatched ONCE — board roles have no verb to claim/plan/delegate/complete,
+  so a respawn cannot advance the task and would just loop.
+- Once BOTH reviewers have finished, the orchestrator hands the review to the
+  CEO: it flags the (still-pending) task ``board_review_complete`` so the CEO's
+  Approve & Start button appears, and emits exactly one formal CEO notification
+  so the handoff is an actionable signal, not buried channel chatter.
 """
 
 from __future__ import annotations
 
+from contextlib import asynccontextmanager
 from typing import Any
 from unittest.mock import AsyncMock, patch
 from uuid import uuid4
@@ -39,10 +40,27 @@ def _board_task(assigned_to: str) -> dict[str, Any]:
     }
 
 
+def _patch_handoff_db(task_svc: AsyncMock):
+    """Patch the DB context + TaskService the handoff opens to flag the task.
+
+    Returns a tuple of context managers for the caller's ``with`` block so the
+    direct-call tests exercise the real handoff body without touching a DB.
+    """
+
+    @asynccontextmanager
+    async def _fake_ctx():
+        yield AsyncMock()
+
+    return (
+        patch("roboco.db.base.get_db_context", _fake_ctx),
+        patch("roboco.services.task.TaskService", return_value=task_svc),
+    )
+
+
 @pytest.mark.asyncio
 async def test_both_board_agents_dispatched_for_board_task() -> None:
     """A board task must dispatch BOTH the PO and the Head of Marketing — the
-    review is a two-reviewer gate, not a single-assignee claim (finding #4)."""
+    review is a two-reviewer gate, not a single-assignee claim."""
     orch = _make_orch()
     task = _board_task("product-owner")
     with (
@@ -50,7 +68,7 @@ async def test_both_board_agents_dispatched_for_board_task() -> None:
         patch.object(orch, "_task_git_context", return_value=None),
         patch.object(
             orch,
-            "_maybe_notify_ceo_board_review_complete",
+            "_maybe_handoff_board_review_to_ceo",
             new=AsyncMock(),
         ),
         patch.object(orch, "spawn_agent", new=AsyncMock()) as spawn,
@@ -73,7 +91,7 @@ async def test_each_board_agent_spawned_only_once() -> None:
         patch.object(orch, "_task_git_context", return_value=None),
         patch.object(
             orch,
-            "_maybe_notify_ceo_board_review_complete",
+            "_maybe_handoff_board_review_to_ceo",
             new=AsyncMock(),
         ),
         patch.object(orch, "spawn_agent", new=AsyncMock()) as spawn,
@@ -100,7 +118,7 @@ async def test_board_handler_skips_active_reviewer_but_dispatches_other() -> Non
         patch.object(orch, "_task_git_context", return_value=None),
         patch.object(
             orch,
-            "_maybe_notify_ceo_board_review_complete",
+            "_maybe_handoff_board_review_to_ceo",
             new=AsyncMock(),
         ),
         patch.object(orch, "spawn_agent", new=AsyncMock()) as spawn,
@@ -126,8 +144,8 @@ async def test_board_handler_ignores_non_board_assignee() -> None:
 @pytest.mark.asyncio
 async def test_unassigned_board_task_dispatches_both_via_board_handler() -> None:
     """An UNASSIGNED board task must route through the board handler so BOTH
-    reviewers are dispatched — not claimed + single-spawned for the PO only
-    (finding #4). The task stays unclaimed for the CEO's Approve & Start."""
+    reviewers are dispatched — not claimed + single-spawned for the PO only.
+    The task stays unclaimed for the CEO's Approve & Start."""
     orch = _make_orch()
     task = {
         "id": str(uuid4()),
@@ -144,7 +162,7 @@ async def test_unassigned_board_task_dispatches_both_via_board_handler() -> None
         patch.object(orch, "_task_git_context", return_value=None),
         patch.object(
             orch,
-            "_maybe_notify_ceo_board_review_complete",
+            "_maybe_handoff_board_review_to_ceo",
             new=AsyncMock(),
         ),
         patch.object(
@@ -190,26 +208,28 @@ def test_board_review_not_complete_while_a_reviewer_active() -> None:
 
 
 @pytest.mark.asyncio
-async def test_ceo_notified_once_when_board_review_complete() -> None:
-    """Finding #2: a formal CEO notification fires exactly once when both
-    board reviewers have finished."""
+async def test_ceo_handoff_once_when_board_review_complete() -> None:
+    """When both reviewers finish, the handoff flags the task board-reviewed and
+    fires exactly one CEO notification."""
     orch = _make_orch()
     task_id = str(uuid4())
     orch._board_dispatched.add(("product-owner", task_id))
     orch._board_dispatched.add(("head-marketing", task_id))
 
     svc = AsyncMock()
+    task_svc = AsyncMock()
+    db_ctx, task_ctx = _patch_handoff_db(task_svc)
     with (
         patch.object(orch, "_is_agent_active", return_value=False),
-        patch(
-            "roboco.services.notification.NotificationService",
-            return_value=svc,
-        ),
+        patch("roboco.services.notification.NotificationService", return_value=svc),
+        db_ctx,
+        task_ctx,
     ):
-        await orch._maybe_notify_ceo_board_review_complete(task_id)
-        # Second tick: already notified — must not re-emit.
-        await orch._maybe_notify_ceo_board_review_complete(task_id)
+        await orch._maybe_handoff_board_review_to_ceo(task_id)
+        # Second tick: already handed off — must not re-emit.
+        await orch._maybe_handoff_board_review_to_ceo(task_id)
 
+    task_svc.mark_board_review_complete.assert_awaited_once()
     svc.send_board_review_complete_notification.assert_awaited_once_with(
         task_id=task_id
     )
@@ -217,30 +237,32 @@ async def test_ceo_notified_once_when_board_review_complete() -> None:
 
 
 @pytest.mark.asyncio
-async def test_ceo_not_notified_while_review_incomplete() -> None:
-    """No CEO notification until BOTH reviewers are done."""
+async def test_ceo_not_handed_off_while_review_incomplete() -> None:
+    """No flag and no CEO notification until BOTH reviewers are done."""
     orch = _make_orch()
     task_id = str(uuid4())
     # Only PO has been dispatched/finished.
     orch._board_dispatched.add(("product-owner", task_id))
 
     svc = AsyncMock()
+    task_svc = AsyncMock()
+    db_ctx, task_ctx = _patch_handoff_db(task_svc)
     with (
         patch.object(orch, "_is_agent_active", return_value=False),
-        patch(
-            "roboco.services.notification.NotificationService",
-            return_value=svc,
-        ),
+        patch("roboco.services.notification.NotificationService", return_value=svc),
+        db_ctx,
+        task_ctx,
     ):
-        await orch._maybe_notify_ceo_board_review_complete(task_id)
+        await orch._maybe_handoff_board_review_to_ceo(task_id)
 
+    task_svc.mark_board_review_complete.assert_not_awaited()
     svc.send_board_review_complete_notification.assert_not_awaited()
     assert task_id not in orch._board_review_ceo_notified
 
 
 @pytest.mark.asyncio
-async def test_ceo_notify_failure_allows_retry() -> None:
-    """A notification failure clears the one-shot guard so a later tick retries."""
+async def test_ceo_handoff_failure_allows_retry() -> None:
+    """A handoff failure clears the one-shot guard so a later tick retries."""
     orch = _make_orch()
     task_id = str(uuid4())
     orch._board_dispatched.add(("product-owner", task_id))
@@ -248,16 +270,17 @@ async def test_ceo_notify_failure_allows_retry() -> None:
 
     svc = AsyncMock()
     svc.send_board_review_complete_notification.side_effect = RuntimeError("db down")
+    task_svc = AsyncMock()
+    db_ctx, task_ctx = _patch_handoff_db(task_svc)
     with (
         patch.object(orch, "_is_agent_active", return_value=False),
-        patch(
-            "roboco.services.notification.NotificationService",
-            return_value=svc,
-        ),
+        patch("roboco.services.notification.NotificationService", return_value=svc),
+        db_ctx,
+        task_ctx,
     ):
-        await orch._maybe_notify_ceo_board_review_complete(task_id)
+        await orch._maybe_handoff_board_review_to_ceo(task_id)
 
-    # Guard cleared so a later, healthy tick can re-emit.
+    # Guard cleared so a later, healthy tick can re-run the handoff.
     assert task_id not in orch._board_review_ceo_notified
 
 

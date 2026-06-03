@@ -229,6 +229,14 @@ class TaskTable(Base):
     docs_complete: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     pr_created: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
 
+    # Board review handoff: a board/coordination task stays pending while the
+    # Product Owner + Head of Marketing review it. Set True once both reviewers
+    # finish, so the CEO's Approve & Start button appears only after the board
+    # is actually done — never on a freshly created pending board task.
+    board_review_complete: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False
+    )
+
     # Ownership
     created_by: Mapped[UUID] = mapped_column(
         UUID(as_uuid=True), ForeignKey("agents.id"), nullable=False

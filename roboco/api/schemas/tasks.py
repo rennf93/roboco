@@ -270,6 +270,10 @@ class TaskResponse(BaseModel):
     docs_complete: bool = False  # Documenter has finished
     pr_created: bool = False  # Developer has created PR
 
+    # Board review handoff: True once PO + Head of Marketing have both reviewed
+    # a pending board/coordination task. Gates the CEO's Approve & Start button.
+    board_review_complete: bool = False
+
     # Ownership
     team: Team
     created_by: UUID
@@ -640,6 +644,7 @@ def task_to_response(task: "TaskTable") -> TaskResponse:
         ),
         docs_complete=task.docs_complete,
         pr_created=task.pr_created,
+        board_review_complete=task.board_review_complete,
         team=task.team,
         created_by=require_uuid(task.created_by),
         assigned_to=to_python_uuid(task.assigned_to),
