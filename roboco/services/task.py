@@ -36,6 +36,7 @@ from roboco.models.base import (
     BlockerResolverType,
     TaskNature,
     TaskStatus,
+    TaskType,
     Team,
 )
 from roboco.models.permissions import AgentContext, TaskAction
@@ -64,6 +65,36 @@ _ROLE_CLAIM_STATUSES: dict[str, set[TaskStatus]] = {
     "cell_pm": {TaskStatus.PENDING, TaskStatus.AWAITING_PM_REVIEW},
     "main_pm": {TaskStatus.PENDING, TaskStatus.AWAITING_PM_REVIEW},
 }
+
+
+# Board / advisory roles review and advise; they never own or execute a
+# descendant code task. Handing one to them (e.g. via the main_pm→product_owner
+# escalation rung) strands the work: the board has no verb to claim, build, or
+# complete it, and the dev's finished work deadlocks (#14). A descendant code
+# task that would otherwise land on one of these roles is instead released to
+# the pool for a role-matched cell agent to reclaim.
+_BOARD_ADVISORY_ROLES: frozenset[AgentRole] = frozenset(
+    {AgentRole.PRODUCT_OWNER, AgentRole.HEAD_MARKETING, AgentRole.AUDITOR}
+)
+
+
+def _is_descendant_code_task(task: TaskTable) -> bool:
+    """True for a child task that does actual code work (#14 guard).
+
+    A board/advisory role must never become the assignee of such a task: it has
+    no verb to build or complete it. ``task_type`` is a ``TaskType`` enum whose
+    CODE member is the only one routed to developer agents; ``parent_task_id``
+    being set makes it a descendant (a root task can legitimately escalate up
+    the chain — the CEO is its reviewer).
+    """
+    if task.parent_task_id is None:
+        return False
+    # task_type is a Mapped[TaskType] column; normalize to its string value so
+    # the comparison is robust whether SQLAlchemy hands back the enum or its raw
+    # string (the latter happens for detached/partially-hydrated rows in tests).
+    task_type: Any = task.task_type
+    type_value = task_type.value if isinstance(task_type, TaskType) else task_type
+    return str(type_value) == TaskType.CODE.value
 
 
 # Notes fields (dev_notes, qa_notes, quick_context) are append-only —
@@ -700,6 +731,28 @@ class TaskService(BaseService):
             current_parent_id = parent.parent_task_id
 
         return None
+
+    async def project_default_branch_for_task(self, task: Any) -> str | None:
+        """Default branch of the task's project, or None if it has no project.
+
+        Used by the gateway merge-target resolver
+        (:func:`roboco.services.gateway.merge_chain.resolve_parent_branch`) when
+        a child task's parent is branchless (a coordination/fan-out parent that
+        owns no repo): the real merge target is the child's own project default
+        branch — the branch the child was actually cut from — not a derived ref
+        the parent never created (#17). Returns None for a task with no
+        project_id (e.g. a coordination task itself).
+        """
+        project_id = getattr(task, "project_id", None)
+        if project_id is None:
+            return None
+        result = await self.session.execute(
+            select(ProjectTable.default_branch).where(
+                ProjectTable.id == UUID(str(project_id))
+            )
+        )
+        default_branch = result.scalar_one_or_none()
+        return str(default_branch) if default_branch else None
 
     async def _resolve_parent_branch(self, task: TaskTable, project: Any) -> str:
         """Pick parent branch for a new task branch, fall back to project default."""
@@ -3201,7 +3254,23 @@ class TaskService(BaseService):
         subsequent `unblock` call hands the task back to the original dev
         and the orchestrator re-spawns them. Without this, escalation
         loses the dev's identity permanently.
+
+        #14 invariant: a descendant code task is NEVER assigned to a
+        board/advisory role (they cannot own code work). Such an escalation is
+        diverted to a pool release so a role-matched cell agent reclaims it.
+        Enforced here — the single write primitive — so both the gateway
+        ``escalate`` verb and the HTTP escalate route are covered.
         """
+        if _is_descendant_code_task(task) and await self._is_board_advisory_agent(
+            target_agent_id
+        ):
+            await self._release_code_task_to_pool(
+                task=task,
+                escalator_slug=escalator_slug,
+                blocked_target_slug=target_slug,
+                reason=reason,
+            )
+            return
         if task.assigned_to and not task.blocker_raised_by:
             task.blocker_raised_by = cast("Any", task.assigned_to)
         task.assigned_to = cast("Any", target_agent_id)
@@ -5240,6 +5309,8 @@ class TaskService(BaseService):
         if target is None:
             return None
 
+        # The board/advisory guard (#14) lives in apply_escalation so the HTTP
+        # escalate route is covered too; nothing extra to do here.
         await self.apply_escalation(
             task=task,
             target_agent_id=UUID(str(target.id)),
@@ -5248,6 +5319,49 @@ class TaskService(BaseService):
             reason=reason,
         )
         return task
+
+    async def _is_board_advisory_agent(self, agent_id: UUID) -> bool:
+        """True if ``agent_id`` is a board/advisory role (PO / marketing / auditor)."""
+        result = await self.session.execute(
+            select(AgentTable.role).where(AgentTable.id == agent_id)
+        )
+        role = result.scalar_one_or_none()
+        return role in _BOARD_ADVISORY_ROLES
+
+    async def _release_code_task_to_pool(
+        self,
+        *,
+        task: TaskTable,
+        escalator_slug: str,
+        blocked_target_slug: str,
+        reason: str,
+    ) -> None:
+        """Release a descendant code task back to PENDING for a role-matched claim.
+
+        Used instead of escalating a code task onto a board/advisory role (#14).
+        Clears the assignee so the orchestrator's role-matched dispatch picks it
+        up cleanly, sets PENDING (a valid re-dispatch source), and appends an
+        audit note explaining why the board hand-off was refused.
+        """
+        task.assigned_to = cast("Any", None)
+        task.claimed_by = cast("Any", None)
+        task.active_claimant_id = cast("Any", None)
+        task.status = TaskStatus.PENDING
+        existing_notes = task.dev_notes or ""
+        note = (
+            f"\n\n[ESCALATION REDIRECTED] {escalator_slug} escalated this code task"
+            f" toward {blocked_target_slug} (a board/advisory role that cannot own"
+            f" code work). Released to the pool for a role-matched claim instead."
+            f"\nReason: {reason}"
+        )
+        task.dev_notes = existing_notes + note
+        await self.session.flush()
+        self.log.info(
+            "Descendant code task released to pool instead of board escalation",
+            task_id=str(task.id),
+            escalator=escalator_slug,
+            refused_target=blocked_target_slug,
+        )
 
     async def escalate_up_to_role(
         self,

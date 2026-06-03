@@ -150,6 +150,31 @@ def _is_coordination_task(task: dict[str, Any]) -> bool:
     return not task.get("project_id") and bool(task.get("product_id"))
 
 
+# A branch is auto-created only at CLAIM (the claimed->in_progress transition).
+# Before that — while a task is still pending/backlog awaiting first dispatch —
+# it legitimately has no branch_name, so the readiness / stuck / spawn checks
+# must NOT treat a missing branch as a defect. These are the only states where
+# a code task is expected to already own a branch.
+_BRANCH_EXPECTED_STATES: frozenset[str] = frozenset(
+    {"claimed", "in_progress", "verifying"}
+)
+
+
+def _branch_is_expected(task: dict[str, Any]) -> bool:
+    """True iff this task should already have a branch_name.
+
+    A branch only exists at/after claim, and a coordination/fan-out task never
+    gets one (it does no git of its own). Gating the "missing branch_name"
+    readiness/stuck condition on this predicate stops the orchestrator from
+    auto-blocking a never-claimed PENDING code task that simply hasn't reached
+    the claim transition yet (issue #18: a pending task sat 13min, auto-blocked
+    every 30s, never dispatched).
+    """
+    if _is_coordination_task(task):
+        return False
+    return str(task.get("status") or "") in _BRANCH_EXPECTED_STATES
+
+
 def _resolve_agent_cli_model(provider_type: str, model: str) -> str:
     """Translate an agent model name to the string Claude Code expects.
 
@@ -2087,9 +2112,10 @@ class AgentOrchestrator:
         if not _is_coordination_task(task):
             if not _read_project_slug(task):
                 return "task has no project"
-            if status in {"claimed", "in_progress", "verifying"} and not task.get(
-                "branch_name"
-            ):
+            # Branch is auto-created at claim, so only states at/after claim are
+            # expected to own one. _branch_is_expected centralizes this gate so
+            # the readiness and stuck-detection paths agree (#18).
+            if _branch_is_expected(task) and not task.get("branch_name"):
                 return f"state={status} but branch_name is unset"
         return self._readiness_check_role_for_status(agent_id, role, status)
 
@@ -3129,6 +3155,13 @@ Start by:
         if parent.get("branch_name"):
             return None
 
+        # A coordination/fan-out parent (product, no repo of its own) never gets
+        # a branch: the child resolves its own real project and cuts from that
+        # project's default branch, not from the parent. Blocking the child on a
+        # branch the parent will never have wedges the cell↔Main-PM loop (#17).
+        if _is_coordination_task(parent):
+            return None
+
         if parent.get("status") == "in_progress" and parent.get("assigned_to"):
             for _ in range(3):
                 await asyncio.sleep(0.25)
@@ -3962,6 +3995,10 @@ Start now: evidence(task_id="{task_id}")
                 ("pm_review_work", self._dispatch_pm_review_work(client)),
                 ("marketing_work", self._dispatch_marketing_work(client)),
                 ("blocker_work", self._dispatch_blocker_work(client)),
+                (
+                    "claimed_without_agent",
+                    self._dispatch_claimed_without_agent(client),
+                ),
                 ("escalation_work", self._dispatch_escalation_work(client)),
                 ("approval_work", self._dispatch_approval_work(client)),
                 ("a2a_work", self._dispatch_a2a_work(client)),
@@ -4980,21 +5017,44 @@ Never `commit`, never write code, never run `git`. PMs coordinate.
     # SMART DISPATCHER - EVENT-BASED DISPATCHERS
     # =========================================================================
 
+    def _blocker_resolver_slug(self, task: dict[str, Any]) -> str | None:
+        """Pick the agent that should be dispatched to unblock ``task``.
+
+        The unblock content gate (note/unblock) is assignee-only: the
+        dispatched agent must be the task's CURRENT ``assigned_to``, or its
+        required pre-unblock decision note returns not_authorized and the
+        orchestrator respawns it forever (#17 livelock — a task escalated to
+        Main PM kept respawning the ex-assignee cell PM, which could not author
+        the note). So whenever the blocked task carries an assignee that is a
+        PM or board role, dispatch THAT assignee. Only a task with no PM/board
+        assignee (e.g. still held by the dev who raised i_am_blocked) falls back
+        to the cell PM for its team.
+        """
+        assignee_uuid = task.get("assigned_to") or task.get("claimed_by")
+        if assignee_uuid:
+            assignee_slug = self._resolve_agent_slug(str(assignee_uuid))
+            if assignee_slug in self._PM_AGENTS or assignee_slug in self._BOARD_AGENTS:
+                return assignee_slug
+        team = task.get("team")
+        if team not in ("backend", "frontend", "ux_ui"):
+            return None
+        return self._select_agent_for_cell(team, "pm")
+
     async def _dispatch_blocker_work(self, client: httpx.AsyncClient) -> None:
         """
-        Dispatch blocker resolution to Cell PMs.
+        Dispatch blocker resolution to the task's current unblock authority.
 
         Monitors: blocked tasks
-        Spawns: be-pm, fe-pm, ux-pm
+        Spawns: the task's current PM/board assignee, else the cell PM
         """
         tasks = await self._fetch_tasks(client, "blocked")
 
         for task in tasks:
-            team = task.get("team")
-            if team not in ["backend", "frontend", "ux_ui"]:
+            # HITL-blocked tasks wait for a human; never spawn an agent on them.
+            if self._is_hitl_blocked(task):
                 continue
 
-            agent_id = self._select_agent_for_cell(team, "pm")
+            agent_id = self._blocker_resolver_slug(task)
             if not agent_id:
                 continue
 
@@ -5008,6 +5068,98 @@ Never `commit`, never write code, never run `git`. PMs coordinate.
                 git_context=self._task_git_context(task),
             )
             break
+
+    def _claimed_task_needs_agent(self, task: dict[str, Any]) -> str | None:
+        """Return the assignee slug to (re)spawn for an agentless claimed task.
+
+        #19: a task left CLAIMED/IN_PROGRESS with an assignee but no running
+        container (e.g. a reassignment that didn't spawn) is invisibly stuck —
+        only PENDING tasks get fresh dispatch, and the heartbeat reaper can't
+        see it because the claim seeded a fresh heartbeat. Returns the assignee
+        slug when the task has sat past the grace window with no active agent;
+        ``None`` when it is healthy, too fresh, or HITL-blocked.
+        """
+        if self._is_hitl_blocked(task):
+            return None
+        owner_uuid = task.get("assigned_to") or task.get("claimed_by")
+        if not owner_uuid:
+            return None
+        agent_slug = self._resolve_agent_slug(str(owner_uuid))
+        # The assignee is running, and on THIS task — healthy.
+        instance = self._instances.get(agent_slug)
+        if instance is not None and instance.state == AgentState.ACTIVE:
+            return None
+        # Grace window: a just-claimed task whose spawn is still in flight must
+        # not be churned. _time_in_state under-counts (any update bumps it),
+        # which biases toward "agent is working" — exactly the safe direction.
+        age = self._time_in_state(task)
+        grace = settings.claimed_no_agent_grace_seconds
+        if age is None or age.total_seconds() < grace:
+            return None
+        return agent_slug
+
+    async def _dispatch_claimed_without_agent(self, client: httpx.AsyncClient) -> None:
+        """(Re)spawn or release claimed/in_progress tasks that have no agent (#19).
+
+        Net for the invisible-stuck case the other dispatchers miss: a task
+        held CLAIMED/IN_PROGRESS by an assignee with no running container. If
+        the assignee is a known spawnable agent, respawn it on the task; if not
+        (unknown slug — e.g. a stale UUID), release the claim to PENDING so the
+        normal routing reclaims it with a role match.
+        """
+        tasks = await self._fetch_tasks(client, ["claimed", "in_progress"])
+        for task in tasks:
+            task_id = task.get("id")
+            if self._is_task_handled_this_tick(task_id):
+                continue
+            agent_slug = self._claimed_task_needs_agent(task)
+            if agent_slug is None:
+                continue
+            if get_agent_role(agent_slug) in (None, "unknown"):
+                # Unknown assignee — no agent to spawn; release for re-dispatch.
+                await self._release_claim_to_pending(str(task_id))
+                continue
+            logger.warning(
+                "Claimed/in_progress task has no running agent; respawning assignee",
+                task_id=task_id,
+                agent=agent_slug,
+                status=task.get("status"),
+            )
+            await self.spawn_agent(
+                agent_id=agent_slug,
+                task_id=str(task_id),
+                initial_prompt=self._get_prompt_for_agent(agent_slug, task),
+                git_context=self._task_git_context(task),
+            )
+
+    async def _release_claim_to_pending(self, task_id: str) -> None:
+        """Release a stuck claim back to PENDING via the lifecycle-safe path.
+
+        Reuses ``TaskService.unclaim_for_reaper`` (claimed/in_progress ->
+        pending, clears assignee + work session) so the state machine records
+        the transition rather than a raw status PATCH. Opens its own short-lived
+        session, mirroring ``_reap_stale_claims``.
+        """
+        from roboco.db.base import get_session_factory
+        from roboco.services.task import TaskService
+        from roboco.utils.converters import require_uuid
+
+        try:
+            factory = get_session_factory()
+            async with factory() as db:
+                svc = TaskService(db)
+                await svc.unclaim_for_reaper(require_uuid(task_id))
+                await db.commit()
+            logger.warning(
+                "Released agentless claim to pending for re-dispatch",
+                task_id=task_id,
+            )
+        except Exception as exc:
+            logger.error(
+                "Failed to release agentless claim; will retry next tick",
+                task_id=task_id,
+                error=str(exc),
+            )
 
     async def _dispatch_escalation_work(self, client: httpx.AsyncClient) -> None:
         """
@@ -5278,8 +5430,12 @@ Never `commit`, never write code, never run `git`. PMs coordinate.
     def _check_stuck_conditions(self, task: dict[str, Any]) -> list[str]:
         """Check for common stuck conditions (git, description)."""
         issues: list[str] = []
-        # A coordination task does no git, so it legitimately has no branch.
-        if not task.get("branch_name") and not _is_coordination_task(task):
+        # A branch only exists once a task is claimed; a coordination task does
+        # no git at all. A pending, never-claimed code task therefore has no
+        # branch by design — flagging that here auto-blocked tasks before their
+        # first dispatch (#18). Only flag a missing branch when the task is in a
+        # state where it should already own one.
+        if not task.get("branch_name") and _branch_is_expected(task):
             issues.append("Task missing branch_name")
         description = (task.get("description") or "").strip()
         if len(description) < self._MIN_DESCRIPTION_LEN:

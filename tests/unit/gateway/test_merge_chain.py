@@ -80,14 +80,34 @@ class TestResolveParentBranch:
         task_service.get.assert_not_called()
 
     @pytest.mark.asyncio
-    async def test_falls_back_when_parent_has_no_branch(self) -> None:
+    async def test_branchless_parent_uses_project_default_branch(self) -> None:
+        # #17: a branchless coordination parent never gets a branch. The child
+        # was cut from its own project's default branch, so that is the real
+        # merge target — NOT a string-derived ref the parent never created
+        # (which would have no valid merge target and wedge the cell↔Main-PM
+        # loop).
         task = MagicMock(
             parent_task_id=uuid4(),
             branch_name="feature/backend/ROOT0001--CELL0001",
         )
         task_service = AsyncMock()
         task_service.get = AsyncMock(return_value=MagicMock(branch_name=None))
-        # Parent exists but has no branch yet → string derivation.
+        task_service.project_default_branch_for_task = AsyncMock(return_value="master")
+        result = await resolve_parent_branch(task, task_service)
+        assert result == "master"
+        task_service.project_default_branch_for_task.assert_awaited_once_with(task)
+
+    @pytest.mark.asyncio
+    async def test_branchless_parent_falls_back_to_string_when_no_project(self) -> None:
+        # No project to consult (resolver returns None) → string derivation
+        # remains the last-resort fallback.
+        task = MagicMock(
+            parent_task_id=uuid4(),
+            branch_name="feature/backend/ROOT0001--CELL0001",
+        )
+        task_service = AsyncMock()
+        task_service.get = AsyncMock(return_value=MagicMock(branch_name=None))
+        task_service.project_default_branch_for_task = AsyncMock(return_value=None)
         result = await resolve_parent_branch(task, task_service)
         assert result == "feature/backend/ROOT0001"
 

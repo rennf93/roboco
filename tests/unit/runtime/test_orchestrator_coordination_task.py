@@ -13,7 +13,11 @@ from __future__ import annotations
 
 from typing import Any
 
-from roboco.runtime.orchestrator import AgentOrchestrator, _is_coordination_task
+from roboco.runtime.orchestrator import (
+    AgentOrchestrator,
+    _branch_is_expected,
+    _is_coordination_task,
+)
 
 
 def _bare_orchestrator() -> AgentOrchestrator:
@@ -128,14 +132,85 @@ def test_stuck_check_ignores_missing_branch_for_coordination_task() -> None:
     assert issues == []
 
 
-def test_stuck_check_flags_missing_branch_for_code_task() -> None:
+def test_stuck_check_flags_missing_branch_for_claimed_code_task() -> None:
+    # A claimed code task SHOULD already own a branch (auto-created on claim).
     orch = _bare_orchestrator()
     issues = orch._check_stuck_conditions(
         {
             "project_id": "r1",
             "product_id": None,
             "branch_name": None,
+            "status": "claimed",
             "description": _GOOD_DESC,
         }
     )
     assert "Task missing branch_name" in issues
+
+
+def test_stuck_check_ignores_missing_branch_for_pending_code_task() -> None:
+    # #18: a pending, never-claimed code task legitimately has no branch (the
+    # branch is created at claim). It must NOT be flagged/auto-blocked here —
+    # the proven-live bug was a pending task auto-blocked every 30s.
+    orch = _bare_orchestrator()
+    issues = orch._check_stuck_conditions(
+        {
+            "project_id": "r1",
+            "product_id": None,
+            "branch_name": None,
+            "status": "pending",
+            "description": _GOOD_DESC,
+        }
+    )
+    assert "Task missing branch_name" not in issues
+    assert issues == []
+
+
+# ---------------------------------------------------------------------------
+# _branch_is_expected (#18 gate)
+# ---------------------------------------------------------------------------
+
+
+def test_branch_not_expected_for_pending_code_task() -> None:
+    assert (
+        _branch_is_expected(
+            {"project_id": "r1", "product_id": None, "status": "pending"}
+        )
+        is False
+    )
+
+
+def test_branch_not_expected_for_backlog_code_task() -> None:
+    assert (
+        _branch_is_expected(
+            {"project_id": "r1", "product_id": None, "status": "backlog"}
+        )
+        is False
+    )
+
+
+def test_branch_expected_for_claimed_code_task() -> None:
+    assert (
+        _branch_is_expected(
+            {"project_id": "r1", "product_id": None, "status": "claimed"}
+        )
+        is True
+    )
+
+
+def test_branch_expected_for_in_progress_code_task() -> None:
+    assert (
+        _branch_is_expected(
+            {"project_id": "r1", "product_id": None, "status": "in_progress"}
+        )
+        is True
+    )
+
+
+def test_branch_never_expected_for_coordination_task() -> None:
+    # Even at in_progress, a coordination task does no git → never branch-gated.
+    assert (
+        _branch_is_expected(
+            {"project_id": None, "product_id": "p1", "status": "in_progress"}
+        )
+        is False
+    )

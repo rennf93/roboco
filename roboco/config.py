@@ -304,6 +304,22 @@ class Settings(BaseSettings):
             "override via ROBOCO_STALE_CLAIM_REAP_SECONDS"
         ),
     )
+    # A task left CLAIMED/IN_PROGRESS with an assignee but no running container
+    # (e.g. a reassignment that didn't spawn) is invisibly stuck — the heartbeat
+    # reaper can't see it because its heartbeat was seeded fresh at claim time.
+    # After this short grace window the dispatcher (re)spawns the assignee, or
+    # releases the task to pending for re-dispatch (#19). Shorter than the
+    # heartbeat reaper window: this is the "no agent at all" case, not the
+    # "agent went silent mid-run" case.
+    claimed_no_agent_grace_seconds: int = Field(
+        default=120,
+        ge=30,
+        description=(
+            "Grace window (seconds) before the orchestrator (re)spawns or "
+            "releases a claimed/in_progress task that has no running agent; "
+            "override via ROBOCO_CLAIMED_NO_AGENT_GRACE_SECONDS"
+        ),
+    )
     # Wave C8 (2026-05-12). Pre-gateway parity: PMs wrote a fresh
     # journal:decision around each decision point, not once at task
     # creation. The PM-decision tracing gate (delegate, unblock,

@@ -66,12 +66,45 @@ async def resolve_parent_branch(task: Any, task_service: Any) -> str:
     The parent task's stored ``branch_name`` is authoritative — branch
     creation already cuts and pushes each child from it
     (``TaskService._resolve_parent_branch``). Unlike :func:`parent_branch_for`
-    it is correct across a team boundary (#181). Falls back to string
-    derivation only when there is no parent or the parent has no branch yet.
+    it is correct across a team boundary (#181).
+
+    When the parent is a branchless coordination/fan-out task (it carries a
+    product but no repo of its own, so it never gets a branch), string
+    derivation off the child's own branch would yield a ref the parent never
+    created — the merge then has no valid target and the cell↔Main-PM loop
+    wedges (#17). In that case fall back to the child task's own project
+    default branch (e.g. master), which is what the child branch was actually
+    cut from. Only when there is genuinely no project to consult do we fall
+    back to pure string derivation.
     """
     parent_id = getattr(task, "parent_task_id", None)
     if parent_id is not None:
         parent = await task_service.get(UUID(str(parent_id)))
-        if parent is not None and parent.branch_name:
-            return str(parent.branch_name)
+        if parent is not None:
+            if parent.branch_name:
+                return str(parent.branch_name)
+            # Parent exists but owns no branch: a branchless coordination
+            # parent. The child was cut from its own project's default branch,
+            # so that is the real merge target.
+            default_branch = await _project_default_branch(task, task_service)
+            if default_branch is not None:
+                return default_branch
     return parent_branch_for(task.branch_name)
+
+
+async def _project_default_branch(task: Any, task_service: Any) -> str | None:
+    """Resolve a task's project default branch, or None if unavailable.
+
+    Prefers a dedicated TaskService resolver when present; otherwise reads the
+    eager-loaded ``task.project.default_branch`` relationship. Returns None when
+    no project can be resolved so the caller can fall back to string derivation.
+    """
+    resolver = getattr(task_service, "project_default_branch_for_task", None)
+    if resolver is not None:
+        branch = await resolver(task)
+        if branch:
+            return str(branch)
+        return None
+    project = getattr(task, "project", None)
+    default_branch = getattr(project, "default_branch", None) if project else None
+    return str(default_branch) if default_branch else None
