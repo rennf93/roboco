@@ -3560,6 +3560,20 @@ Start by:
         text = f"{title} {description}"
         complexity = task.get("estimated_complexity", "medium").lower()
 
+        # A code task that belongs to a CELL is implementation work and routes
+        # WITHIN that cell — never to the board, and never escalated to main_pm
+        # by keyword. A dev task whose description says "Create & Launch" or
+        # "auth/security" is still a dev task; letting the board/main_pm
+        # keyword heuristics fire on it is how a cell code task ended up
+        # "reviewed" by the board and a PM ended up owning (and deadlocking) a
+        # dev code task. The strategic heuristics below apply only to
+        # team-less / "all" top-level tasks.
+        cell_teams = frozenset(t.value for t in CELL_TEAMS)
+        if team in cell_teams:
+            if self._has_pm_keywords(text) or complexity == "high":
+                return "cell_pm"
+            return "dev"
+
         if self._has_board_keywords(text):
             return "board"
 
