@@ -42,7 +42,15 @@ function SessionDetailContent() {
   const queryClient = useQueryClient();
   const scrollRef = useRef<HTMLDivElement>(null);
 
-  // Fetch session details and messages
+  // Fetch session details and messages.
+  //
+  // The message query loads the transcript once and then holds it (staleTime
+  // Infinity, no focus/reconnect refetch), so an OPEN session is read exactly
+  // once and a CLOSED session's immutable transcript stays loaded for review.
+  // The hooks treat a 404 (reaped session) as terminal and never retry it, which
+  // is what stops the panel from accumulating a 404 storm across every dead
+  // session it has opened. `refetchMessages` (the manual Refresh button) stays
+  // available for live sessions.
   const { data: session, isLoading: loadingSession, refetch: refetchSession } = useSession(sessionId);
   const { data: messagesData, isLoading: loadingMessages, refetch: refetchMessages } = useSessionMessages(sessionId);
 

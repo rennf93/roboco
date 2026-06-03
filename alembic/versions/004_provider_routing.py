@@ -30,10 +30,13 @@ branch_labels = None
 depends_on = None
 
 
-# SQLAlchemy's default Enum binding serialises members by Python NAME
-# (uppercase), matching the 003_blocker_resolver_type convention.
-_PROVIDER_TYPES = ("ANTHROPIC", "OLLAMA_CLOUD", "OPENAI", "LOCAL")
-_ASSIGNMENT_SCOPES = ("GLOBAL", "ROLE", "AGENT_SLUG")
+# Enum labels are the StrEnum `.value` (lowercase) — matching the ORM's
+# `_str_enum` (values_callable=lambda obj: [m.value for m in obj]) and the
+# lowercase convention set by 001_initial_schema. The Python member NAMES are
+# uppercase, but the PERSISTED labels must be lowercase or the ORM cannot read
+# or write these rows (it binds/compares by `.value`).
+_PROVIDER_TYPES = ("anthropic", "ollama_cloud", "openai", "local")
+_ASSIGNMENT_SCOPES = ("global", "role", "agent_slug")
 
 
 def upgrade() -> None:
@@ -46,7 +49,7 @@ def upgrade() -> None:
             """
             DO $$ BEGIN
                 CREATE TYPE modelprovider AS ENUM (
-                    'ANTHROPIC', 'OLLAMA_CLOUD', 'OPENAI', 'LOCAL'
+                    'anthropic', 'ollama_cloud', 'openai', 'local'
                 );
             EXCEPTION WHEN duplicate_object THEN NULL;
             END $$;
@@ -58,7 +61,7 @@ def upgrade() -> None:
             """
             DO $$ BEGIN
                 CREATE TYPE assignmentscope AS ENUM (
-                    'GLOBAL', 'ROLE', 'AGENT_SLUG'
+                    'global', 'role', 'agent_slug'
                 );
             EXCEPTION WHEN duplicate_object THEN NULL;
             END $$;
@@ -194,7 +197,7 @@ def upgrade() -> None:
                 (
                     gen_random_uuid(),
                     'Anthropic (default)',
-                    'ANTHROPIC',
+                    'anthropic',
                     NULL,
                     NULL,
                     true,
@@ -203,7 +206,7 @@ def upgrade() -> None:
                 (
                     gen_random_uuid(),
                     'Ollama Cloud',
-                    'OLLAMA_CLOUD',
+                    'ollama_cloud',
                     'https://ollama.com',
                     NULL,
                     false,

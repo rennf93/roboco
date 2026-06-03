@@ -134,7 +134,7 @@ async def main(
     # Spawn requested agents
     if spawn_agents:
         startup_prompt = (
-            "You are starting up. Call roboco_task_scan() to look for pending work."
+            "You are starting up. Call give_me_work() to receive your next assignment."
         )
         for agent_id in spawn_agents:
             try:

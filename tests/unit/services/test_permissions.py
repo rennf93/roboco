@@ -122,24 +122,6 @@ def test_can_notify_pm_to_dev(svc: PermissionService) -> None:
 
 
 # ---------------------------------------------------------------------------
-# Communication matrix
-# ---------------------------------------------------------------------------
-
-
-def test_can_communicate_within_cell(svc: PermissionService) -> None:
-    dev = _ctx(AgentRole.DEVELOPER, team=Team.BACKEND)
-    qa = _ctx(AgentRole.QA, team=Team.BACKEND)
-    assert svc.can_communicate(dev, qa) is True
-
-
-def test_can_communicate_across_cells_via_pm(svc: PermissionService) -> None:
-    """Communication matrix returns a bool — exact result depends on the matrix."""
-    main_pm = _ctx(AgentRole.MAIN_PM)
-    dev = _ctx(AgentRole.DEVELOPER, team=Team.BACKEND)
-    assert isinstance(svc.can_communicate(main_pm, dev), bool)
-
-
-# ---------------------------------------------------------------------------
 # Task action permissions
 # ---------------------------------------------------------------------------
 
@@ -209,33 +191,6 @@ def test_check_all_returns_dict(svc: PermissionService) -> None:
 
 
 # ---------------------------------------------------------------------------
-# Slug-based shortcuts
-# ---------------------------------------------------------------------------
-
-
-def test_can_agent_read_channel_known_slug(svc: PermissionService) -> None:
-    """Pass a known agent slug; service should resolve role+team and decide."""
-    # be-dev-1 is in AGENT_ROLE_MAP as a developer in backend.
-    result = svc.can_agent_read_channel("be-dev-1", "backend-cell")
-    assert isinstance(result, bool)
-
-
-def test_can_agent_read_channel_unknown_slug(svc: PermissionService) -> None:
-    """Unknown slug → False (deny by default)."""
-    assert svc.can_agent_read_channel("ghost-agent", "backend-cell") is False
-
-
-def test_can_agent_send_notifications_known_slug(svc: PermissionService) -> None:
-    """main-pm slug should be able to send."""
-    assert svc.can_agent_send_notifications("main-pm") is True
-
-
-def test_can_agent_send_notifications_unknown_slug(svc: PermissionService) -> None:
-    """Unknown slug → False."""
-    assert svc.can_agent_send_notifications("ghost-agent") is False
-
-
-# ---------------------------------------------------------------------------
 # KB permissions
 # ---------------------------------------------------------------------------
 
@@ -285,37 +240,8 @@ def test_can_notify_cell_pm_to_dev_in_same_team(svc: PermissionService) -> None:
 
 
 # ---------------------------------------------------------------------------
-# Communication matrix edge cases
+# Channel bypass edge cases
 # ---------------------------------------------------------------------------
-
-
-def test_can_communicate_same_role_same_team(svc: PermissionService) -> None:
-    a = _ctx(AgentRole.DEVELOPER, team=Team.BACKEND)
-    b = _ctx(AgentRole.DEVELOPER, team=Team.BACKEND)
-    assert svc.can_communicate(a, b) is True
-
-
-def test_can_communicate_dev_to_qa_different_cells(
-    svc: PermissionService,
-) -> None:
-    """Cell members can't directly communicate cross-cell."""
-    a = _ctx(AgentRole.DEVELOPER, team=Team.BACKEND)
-    b = _ctx(AgentRole.QA, team=Team.FRONTEND)
-    assert svc.can_communicate(a, b) is False
-
-
-# ---------------------------------------------------------------------------
-# Slug-based shortcuts (more cases)
-# ---------------------------------------------------------------------------
-
-
-def test_can_agent_write_channel_known(svc: PermissionService) -> None:
-    """be-pm should be able to write to backend-cell."""
-    assert isinstance(svc.can_agent_write_channel("be-pm", "backend-cell"), bool)
-
-
-def test_can_agent_write_channel_unknown_slug(svc: PermissionService) -> None:
-    assert svc.can_agent_write_channel("ghost-agent", "any") is False
 
 
 def test_can_read_channel_for_main_pm_unknown_bypasses(
@@ -332,13 +258,6 @@ def test_can_write_channel_for_ceo_unknown_bypasses(
     """CEO has bypass — unknown channel returns True."""
     ceo = _ctx(AgentRole.CEO)
     assert svc.can_write_channel(ceo, "ghost-channel") is True
-
-
-def test_can_agent_write_channel_unknown_channel(
-    svc: PermissionService,
-) -> None:
-    """Unknown channel slug → False (no panic)."""
-    assert svc.can_agent_write_channel("be-dev-1", "ghost-channel") is False
 
 
 # ---------------------------------------------------------------------------
@@ -374,16 +293,6 @@ def test_can_notify_developer_returns_false(svc: PermissionService) -> None:
     dev = _ctx(AgentRole.DEVELOPER, team=Team.BACKEND)
     other = _ctx(AgentRole.QA, team=Team.BACKEND)
     assert svc.can_notify(dev, other) is False
-
-
-# ---------------------------------------------------------------------------
-# can_agent_read_channel for unknown channel (line 377)
-# ---------------------------------------------------------------------------
-
-
-def test_can_agent_read_channel_unknown_channel(svc: PermissionService) -> None:
-    """Channel not in CHANNEL_ACCESS → False (line 377)."""
-    assert svc.can_agent_read_channel("be-dev-1", "ghost-channel-z") is False
 
 
 # ---------------------------------------------------------------------------

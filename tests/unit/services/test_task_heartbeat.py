@@ -102,12 +102,10 @@ async def _seed_claimed_task(session: AsyncSession) -> UUID:
         sequence=0,
         plan={"steps": ["heartbeat"]},
         estimated_complexity=Complexity.LOW,
-        execution_log={},
         checkpoints=[],
         progress_updates=[],
         commits=[],
         documents=[],
-        outputs=[],
         last_heartbeat_at=None,
     )
     session.add(task)
@@ -220,12 +218,10 @@ async def _seed_pending_task_for_claim(
         sequence=0,
         plan=None,
         estimated_complexity=Complexity.LOW,
-        execution_log={},
         checkpoints=[],
         progress_updates=[],
         commits=[],
         documents=[],
-        outputs=[],
         last_heartbeat_at=None,
     )
     session.add(task)

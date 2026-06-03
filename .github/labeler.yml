@@ -1,0 +1,87 @@
+"area: api":
+  - changed-files:
+      - any-glob-to-any-file:
+          - roboco/api/**
+
+"area: services":
+  - changed-files:
+      - any-glob-to-any-file:
+          - roboco/services/**
+
+"area: gateway":
+  - changed-files:
+      - any-glob-to-any-file:
+          - roboco/services/gateway/**
+
+"area: orchestrator":
+  - changed-files:
+      - any-glob-to-any-file:
+          - roboco/runtime/**
+
+"area: enforcement":
+  - changed-files:
+      - any-glob-to-any-file:
+          - roboco/enforcement/**
+
+"area: db":
+  - changed-files:
+      - any-glob-to-any-file:
+          - roboco/db/**
+          - roboco/models/**
+
+"area: agents":
+  - changed-files:
+      - any-glob-to-any-file:
+          - agents/**
+
+"area: mcp":
+  - changed-files:
+      - any-glob-to-any-file:
+          - roboco/mcp/**
+
+"area: panel":
+  - changed-files:
+      - any-glob-to-any-file:
+          - panel/**
+
+"area: alembic":
+  - changed-files:
+      - any-glob-to-any-file:
+          - alembic/**
+
+tests:
+  - changed-files:
+      - any-glob-to-any-file:
+          - tests/**
+
+documentation:
+  - changed-files:
+      - any-glob-to-any-file:
+          - docs/**
+          - README.md
+          - CHANGELOG.md
+          - CONTRIBUTING.md
+          - SECURITY.md
+          - CODE_OF_CONDUCT.md
+          - LICENSE
+
+ci:
+  - changed-files:
+      - any-glob-to-any-file:
+          - .github/**
+
+build:
+  - changed-files:
+      - any-glob-to-any-file:
+          - Makefile
+          - docker/**
+          - docker-compose.yml
+          - docker-compose.yaml
+
+dependencies:
+  - changed-files:
+      - any-glob-to-any-file:
+          - pyproject.toml
+          - uv.lock
+          - panel/package.json
+          - panel/pnpm-lock.yaml

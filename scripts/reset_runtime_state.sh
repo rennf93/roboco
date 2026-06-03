@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
-# Reset the smoke-test runtime state (tasks, sessions, messages, journal
-# entries, notifications, audit, waiting, work_sessions) while preserving
-# the project scaffolding (agents, projects, channels, groups, journals).
+# Reset the smoke-test runtime state (tasks, sessions, messages, journals,
+# journal entries, notifications, audit, waiting, work_sessions, groups)
+# while preserving the project scaffolding (agents, projects, channels).
 #
 # Also resets agent git workspaces to a clean state on the default
 # branch — uncommitted edits or stale feature branches from prior runs

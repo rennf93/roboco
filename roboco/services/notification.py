@@ -206,6 +206,49 @@ class NotificationService:
             )
         )
 
+    async def send_board_review_complete_notification(
+        self,
+        task_id: str,
+        from_agent: str | None = None,
+        to_ceo: str = "ceo",
+    ) -> None:
+        """Tell the CEO a board review is complete and ready for Approve & Start.
+
+        Board-reviewed coordination tasks stay ``pending`` and wait for the
+        CEO's Approve & Start gate (``TaskService.approve_and_start``). The
+        Product Owner + Head of Marketing record their review via channel
+        dialogue and journal notes, but that left the CEO with no actionable
+        signal — only buried chatter (cluster C5 / finding #2). This emits a
+        formal APPROVAL notification (ack-required) carrying ``related_task_id``
+        so the handoff is a real signal the panel can surface, not channel
+        noise. Board roles are exactly the senders permitted to notify, so the
+        orchestrator emits it as ``system`` on their behalf once BOTH board
+        reviewers (PO + Head of Marketing) have finished.
+        """
+        logger.info(
+            "Sending board-review-complete notification to CEO",
+            task_id=task_id,
+            to_ceo=to_ceo,
+        )
+
+        body = (
+            f"Board review complete for task {task_id}.\n\n"
+            "The Product Owner and Head of Marketing have both reviewed and "
+            "recorded their requirements. The task is ready for your "
+            "Approve & Start decision (hand to Main PM) or rejection."
+        )
+        await self._create_notification(
+            CreateNotificationParams(
+                notification_type=NotificationType.APPROVAL,
+                priority=NotificationPriority.HIGH,
+                from_agent=from_agent or "system",
+                to_agents=[to_ceo],
+                subject=f"Board review complete: Task {task_id}",
+                body=body,
+                related_task_id=task_id,
+            )
+        )
+
     async def send_ack_notification(
         self,
         *,

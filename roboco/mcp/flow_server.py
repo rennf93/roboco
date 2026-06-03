@@ -116,7 +116,7 @@ def _post(path: str, body: dict[str, Any]) -> dict[str, Any]:
 def _verb_from_path(path: str) -> str:
     """Extract the verb name from a role-scoped flow path.
 
-    ``/api/v2/flow/<role>/<verb>`` → ``<verb>``. Returns the original
+    ``/api/v1/flow/<role>/<verb>`` → ``<verb>``. Returns the original
     path if it doesn't match the expected shape (defensive — the breaker
     falls open downstream when the verb is unrecognized).
     """
@@ -198,8 +198,8 @@ _ROUTE_PREFIX = _ROLE_TO_ROUTE_PREFIX.get(AGENT_ROLE, AGENT_ROLE)
 
 
 def _role_path(verb: str) -> str:
-    """Build the role-scoped /api/v2/flow/<route>/<verb> path."""
-    return f"/api/v2/flow/{_ROUTE_PREFIX}/{verb}"
+    """Build the role-scoped /api/v1/flow/<route>/<verb> path."""
+    return f"/api/v1/flow/{_ROUTE_PREFIX}/{verb}"
 
 
 # ---------- Dev verbs ----------

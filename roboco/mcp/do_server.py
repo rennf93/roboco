@@ -1,6 +1,6 @@
 """roboco-do MCP server — smart-wrapped content tools.
 
-Forwards to /api/v2/do/* on the orchestrator. Tools are role-scoped at *spawn*
+Forwards to /api/v1/do/* on the orchestrator. Tools are role-scoped at *spawn*
 time: the orchestrator writes ``do_tools`` into the per-agent manifest and we
 register only those names on this server. The orchestrator's API is not
 role-scoped here (any allowed role can call commit/note/say/dm/notify/evidence),
@@ -106,7 +106,7 @@ def _post(path: str, body: dict[str, Any]) -> dict[str, Any]:
 def _verb_from_path(path: str) -> str:
     """Extract the verb name from a do-server path.
 
-    ``/api/v2/do/<verb>`` → ``<verb>``. Returns the original path if it
+    ``/api/v1/do/<verb>`` → ``<verb>``. Returns the original path if it
     doesn't match the expected shape (defensive — breaker falls open
     downstream when the verb is unrecognized).
     """
@@ -178,7 +178,7 @@ def _record_and_check_circuit(
 
 def commit(message: str, files: list[str] | None = None) -> dict[str, Any]:
     """Make a git commit. [task-id] prefix auto-applied. Validates message."""
-    return _post("/api/v2/do/commit", {"message": message, "files": files})
+    return _post("/api/v1/do/commit", {"message": message, "files": files})
 
 
 def note(
@@ -187,32 +187,37 @@ def note(
     task_id: str | None = None,
     title: str | None = None,
     context: str = "",
-    options: list[dict[str, str]] | None = None,
+    options: list[dict[str, str]] | dict[str, str] | None = None,
     chosen: str = "",
     rationale: str = "",
-    consequences: list[str] | None = None,
+    consequences: list[str] | str | None = None,
     what_done: str = "",
     what_learned: str = "",
     what_struggled: str = "",
-    next_steps: list[str] | None = None,
+    next_steps: list[str] | str | None = None,
 ) -> dict[str, Any]:
     """Write a journal entry. scope in note|decision|reflect|learning|struggle.
 
     ``text`` is always the short summary (one paragraph max). For ``decision``
-    and ``reflect`` scopes the structured fields are REQUIRED — pre-gateway
-    parity. The gateway returns ``incomplete_input`` if any is missing.
+    and ``reflect`` scopes the structured fields are RECOMMENDED — fill what
+    you can. The note is always recorded; missing narrative fields default to
+    a visible placeholder rather than being rejected.
 
-    - decision: ``context`` (situation), ``options`` (list of ≥2 dicts
-      ``{name, pros, cons}``), ``chosen`` (which option), ``rationale``
-      (why), ``consequences`` (list of strings — what this commits us to)
+    - decision: ``context`` (situation), ``options`` (list of dicts
+      ``{name, pros, cons}`` — a single dict is accepted), ``chosen`` (which
+      option), ``rationale`` (why), ``consequences`` (list of strings — what
+      this commits us to; a single string is accepted)
     - reflect: ``what_done`` (literal output), ``what_learned`` (new info),
       ``what_struggled`` (where you got stuck), ``next_steps`` (list of
-      follow-up strings)
+      follow-up strings; a single string is accepted)
+
+    List-typed fields (``options``, ``consequences``, ``next_steps``) tolerate
+    a lone value — pass either a list or a single item.
 
     Other scopes (note / learning / struggle) just need ``text``.
     """
     return _post(
-        "/api/v2/do/note",
+        "/api/v1/do/note",
         {
             "text": text,
             "scope": scope,
@@ -247,7 +252,7 @@ def say(channel: str, text: str, task_id: str | None = None) -> dict[str, Any]:
         task_id: Optional; auto-filled from your active task if omitted.
     """
     return _post(
-        "/api/v2/do/say",
+        "/api/v1/do/say",
         {"channel": channel, "text": text, "task_id": task_id},
     )
 
@@ -267,7 +272,7 @@ def dm(
         skill: Optional skill slug to scope the conversation.
     """
     return _post(
-        "/api/v2/do/dm",
+        "/api/v1/do/dm",
         {"recipient": recipient, "text": text, "task_id": task_id, "skill": skill},
     )
 
@@ -285,7 +290,7 @@ def notify(
     normal|high|urgent. task_id auto-injected from active task when omitted.
     """
     return _post(
-        "/api/v2/do/notify",
+        "/api/v1/do/notify",
         {
             "target": target,
             "text": text,
@@ -297,7 +302,7 @@ def notify(
 
 def evidence(task_id: str) -> dict[str, Any]:
     """Inspect a task's PR diff, commits, files. Fetches dev branch into workspace."""
-    return _post("/api/v2/do/evidence", {"task_id": task_id})
+    return _post("/api/v1/do/evidence", {"task_id": task_id})
 
 
 # ---------- Wave 1 — pre-gateway parity ----------
@@ -338,7 +343,7 @@ def progress(
         body["plan_step"] = plan_step
     if percentage is not None:
         body["percentage"] = percentage
-    return _post("/api/v2/do/progress", body)
+    return _post("/api/v1/do/progress", body)
 
 
 def open_session(
@@ -362,7 +367,7 @@ def open_session(
     — devs / QA / docs participate via channels and DMs.
     """
     return _post(
-        "/api/v2/do/open_session",
+        "/api/v1/do/open_session",
         {
             "task_id": task_id,
             "channel": channel,
@@ -385,7 +390,7 @@ def link_session(
     own the task you're linking; cross-agent linking is denied.
     """
     return _post(
-        "/api/v2/do/link_session",
+        "/api/v1/do/link_session",
         {
             "session_id": session_id,
             "task_id": task_id,
@@ -407,7 +412,7 @@ def notify_list(
     ``notify_ack``, then idle again.
     """
     return _post(
-        "/api/v2/do/notify_list",
+        "/api/v1/do/notify_list",
         {
             "unread_only": unread_only,
             "pending_ack_only": pending_ack_only,
@@ -419,7 +424,7 @@ def notify_list(
 def notify_get(notification_id: str) -> dict[str, Any]:
     """Read one notification (marks it as read)."""
     return _post(
-        "/api/v2/do/notify_get",
+        "/api/v1/do/notify_get",
         {"notification_id": notification_id},
     )
 
@@ -432,7 +437,7 @@ def notify_ack(notification_id: str) -> dict[str, Any]:
     exit cleanly.
     """
     return _post(
-        "/api/v2/do/notify_ack",
+        "/api/v1/do/notify_ack",
         {"notification_id": notification_id},
     )
 
@@ -444,7 +449,7 @@ def channels() -> dict[str, Any]:
     inventing slugs returns ``Channel not found``. Returns
     ``{writable: [...], readable: [...]}``.
     """
-    return _post("/api/v2/do/channels", {})
+    return _post("/api/v1/do/channels", {})
 
 
 def pr_update(
@@ -474,7 +479,7 @@ def pr_update(
     receives ``not_authorized``.
     """
     return _post(
-        "/api/v2/do/pr_update",
+        "/api/v1/do/pr_update",
         {
             "task_id": task_id,
             "title": title,

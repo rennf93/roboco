@@ -252,18 +252,6 @@ class MentorResponse:
 
 
 @dataclass
-class ProactiveContext:
-    """Context package for proactive knowledge injection."""
-
-    similar_tasks: list[dict[str, Any]] = field(default_factory=list)
-    learnings: list[dict[str, Any]] = field(default_factory=list)
-    patterns: list[dict[str, Any]] = field(default_factory=list)
-    standards: list[Standard] = field(default_factory=list)
-    recent_decisions: list[Decision] = field(default_factory=list)
-    suggested_approach: str = ""
-
-
-@dataclass
 class CodeReviewRequest:
     """Request for code review assistance."""
 

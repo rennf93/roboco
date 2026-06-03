@@ -12,7 +12,6 @@ implemented in the service layer. See HandoffTable docstring for details.
 Current workflow uses simpler `dev_notes + handoff_summary` on tasks.
 """
 
-from dataclasses import dataclass, field
 from datetime import datetime
 from uuid import UUID, uuid4
 
@@ -176,45 +175,6 @@ class DocumenterHandoff(TimestampMixin):
     # NOTE: Handoff state mutations should be performed through a HandoffService.
     # Methods like claim, start, complete, add_required_doc, add_code_sample,
     # add_gotcha should be in a service layer.
-
-
-# =============================================================================
-# HANDOFF FACTORY
-# =============================================================================
-
-
-@dataclass
-class HandoffParams:
-    """Parameters for creating a handoff document."""
-
-    task_id: UUID
-    summary: str
-    commits: list[dict[str, str]]
-    dev_notes_location: str
-    new_functionality: list[str] = field(default_factory=list)
-    modified_behavior: list[str] = field(default_factory=list)
-    breaking_changes: list[str] = field(default_factory=list)
-
-
-def create_handoff(params: HandoffParams) -> DocumenterHandoff:
-    """Create a basic handoff document."""
-    # Create changelog documentation item inline
-    changelog_doc = DocumentationItem(
-        doc_type="changelog",
-        description="Changelog entry for this task",
-        priority=1,
-    )
-
-    return DocumenterHandoff(
-        task_id=params.task_id,
-        summary=params.summary,
-        commits=params.commits,
-        dev_notes_location=params.dev_notes_location,
-        new_functionality=params.new_functionality,
-        modified_behavior=params.modified_behavior,
-        breaking_changes=params.breaking_changes,
-        required_docs=[changelog_doc],  # Always include changelog as required
-    )
 
 
 # =============================================================================

@@ -333,7 +333,7 @@ async def smoke_test_batch(db_session: AsyncSession) -> AsyncIterator[list[UUID]
     ]
     task = TaskTable(
         id=uuid4(),
-        title="Add /api/v2/example endpoint",
+        title="Add /api/v1/example endpoint",
         description="Smoke task — synthetic happy path.",
         acceptance_criteria=criteria,
         status=TaskStatus.COMPLETED,
@@ -354,12 +354,10 @@ async def smoke_test_batch(db_session: AsyncSession) -> AsyncIterator[list[UUID]
         sequence=0,
         plan={"steps": ["draft", "implement", "test"]},
         estimated_complexity=Complexity.MEDIUM,
-        execution_log={},
         checkpoints=[],
         progress_updates=[{"at": "t0", "note": "started"}],
         commits=[{"sha": "abc123", "message": "[SMOKE001] initial"}],
         documents=[],
-        outputs=[],
         dev_notes="Built as planned.",
         qa_notes=(
             "Reviewed PR #1 carefully. Branch convention correct. Commit "

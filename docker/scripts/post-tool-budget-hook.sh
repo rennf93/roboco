@@ -73,10 +73,10 @@ elif [[ "$loop" == "true" ]]; then
         # Only fires when the SDK explicitly reports loop_action=="halt";
         # if the field is missing (older SDK / partial deploy), falls
         # through to the legacy warn-only branch below.
-        echo "[Loop] Same tool+args repeated in window — halting (BudgetPolicy.loop_action=halt). Escalate via roboco_task_escalate() or substitute." >&2
+        echo "[Loop] Same tool+args repeated in window — halting (BudgetPolicy.loop_action=halt). Release the task with unclaim() or stop with i_am_idle()." >&2
         exit 1
     fi
-    echo "[Loop] Same tool+args repeated in window. Stop looping — escalate via roboco_task_escalate() or substitute."
+    echo "[Loop] Same tool+args repeated in window. Stop looping — release the task with unclaim() or stop with i_am_idle()."
 elif [[ "$warn" == "true" ]]; then
     echo "[Budget] ${total}/${halt_threshold} tool calls used. Plan your remaining work carefully."
 fi

@@ -63,13 +63,13 @@ def test_create_app_registers_all_router_prefixes() -> None:
         )
 
 
-def test_create_app_includes_v2_flow_routes() -> None:
-    """API v2 (intent-verb) routers from `routes/v2/*` are mounted."""
+def test_create_app_includes_v1_flow_routes() -> None:
+    """API v1 (intent-verb) routers from `routes/v1/*` are mounted."""
     app = create_app()
     paths = {r.path for r in app.routes}  # type: ignore[attr-defined]
-    # v2 routers register their own prefixes; we just confirm /api/v2 paths
+    # v1 routers register their own prefixes; we just confirm /api/v1 paths
     # exist after include_router.
-    assert any(p.startswith("/api/v2") for p in paths)
+    assert any(p.startswith("/api/v1") for p in paths)
 
 
 def test_create_app_attaches_cors_middleware() -> None:

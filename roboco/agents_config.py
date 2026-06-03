@@ -123,15 +123,8 @@ AGENT_TEAM_MAP: dict[str, str] = {
 }
 
 CELL_MEMBERS: dict[str, list[str]] = {
-    _foundation.Team.BACKEND.value: sorted(
-        _foundation.slugs_for_team(_foundation.Team.BACKEND)
-    ),
-    _foundation.Team.FRONTEND.value: sorted(
-        _foundation.slugs_for_team(_foundation.Team.FRONTEND)
-    ),
-    _foundation.Team.UX_UI.value: sorted(
-        _foundation.slugs_for_team(_foundation.Team.UX_UI)
-    ),
+    team.value: sorted(_foundation.slugs_for_team(team))
+    for team in sorted(_foundation.CELL_TEAMS, key=lambda t: t.value)
 }
 
 
@@ -141,21 +134,8 @@ ALL_AGENTS: Final[list[str]] = list(AGENT_ROLE_MAP.keys())
 # Board members
 BOARD_MEMBERS: Final[list[str]] = ["product-owner", "head-marketing", "auditor"]
 
-# All PMs
-ALL_PMS: Final[list[str]] = ["be-pm", "fe-pm", "ux-pm", "main-pm"]
-
-# All by role (cross-cell)
-ALL_DEVS: Final[list[str]] = [
-    "be-dev-1",
-    "be-dev-2",
-    "fe-dev-1",
-    "fe-dev-2",
-    "ux-dev-1",
-    "ux-dev-2",
-]
-ALL_QA: Final[list[str]] = ["be-qa", "fe-qa", "ux-qa"]
+# All documenters (cross-cell) — used for docs-write workspace permissions
 ALL_DOCS: Final[list[str]] = ["be-doc", "fe-doc", "ux-doc"]
-CELL_PMS: Final[list[str]] = ["be-pm", "fe-pm", "ux-pm"]
 
 # `PM_ROLES` is canonical in foundation.identity (CELL_PM + MAIN_PM only).
 # This file's historical 5-role set is renamed to TASK_CREATOR_ROLES — it
@@ -648,7 +628,7 @@ def can_a2a_direct(from_agent: str, to_agent: str) -> tuple[bool, str | None]:
 
     # CEO is human - cannot A2A, use notifications
     if to_role == "ceo":
-        return False, "CEO is human. Use roboco_notify_send() instead of A2A."
+        return False, "CEO is human. Use notify() instead of A2A."
 
     # Board → board/main-pm (not CEO, not cells directly)
     if from_role in ("product_owner", "head_marketing", "auditor"):
@@ -681,7 +661,7 @@ def get_a2a_route_hint(from_agent: str, to_agent: str) -> str:
 
     # CEO is human - no A2A route, use notifications
     if to_role == "ceo":
-        return "CEO is human. Use roboco_notify_send() for CEO communication."
+        return "CEO is human. Use notify() for CEO communication."
 
     # Cross-cell routing
     if from_team and to_team and from_team != to_team:
@@ -694,4 +674,4 @@ def get_a2a_route_hint(from_agent: str, to_agent: str) -> str:
         cell_pm = get_pm_for_team(from_team)
         return f"Route: {from_agent}→{cell_pm}→main-pm→board"
 
-    return "Use roboco_task_escalate() for proper escalation."
+    return "Use escalate_up() for proper escalation."

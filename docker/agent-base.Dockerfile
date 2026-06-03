@@ -63,7 +63,6 @@ COPY --from=builder --chown=agent:agent /app /app
 # "Permission denied" (exit 126).
 COPY docker/scripts/sdk-startup-hook.sh /app/scripts/sdk-startup-hook.sh
 COPY docker/scripts/a2a-check-hook.sh /app/scripts/a2a-check-hook.sh
-COPY docker/scripts/traceability-hook.sh /app/scripts/traceability-hook.sh
 COPY docker/scripts/bash-guard-hook.sh /app/scripts/bash-guard-hook.sh
 COPY docker/scripts/post-tool-budget-hook.sh /app/scripts/post-tool-budget-hook.sh
 COPY docker/scripts/stop-hook.sh /app/scripts/stop-hook.sh

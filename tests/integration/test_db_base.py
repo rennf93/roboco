@@ -318,6 +318,7 @@ async def test_init_db_happy_path_runs_migrations() -> None:
 
     with (
         patch("roboco.db.base.get_engine", return_value=fake_engine),
+        patch("roboco.db.base._db_has_tables", new=AsyncMock(return_value=True)),
         patch("roboco.db.base.run_migrations", new=AsyncMock()) as rm,
     ):
         await init_db()
@@ -346,6 +347,7 @@ async def test_init_db_pgvector_failure_is_swallowed() -> None:
 
     with (
         patch("roboco.db.base.get_engine", return_value=fake_engine),
+        patch("roboco.db.base._db_has_tables", new=AsyncMock(return_value=True)),
         patch("roboco.db.base.run_migrations", new=AsyncMock()),
     ):
         await init_db()
@@ -354,7 +356,14 @@ async def test_init_db_pgvector_failure_is_swallowed() -> None:
 
 
 @pytest.mark.asyncio
-async def test_init_db_falls_back_to_create_all_when_migrations_fail() -> None:
+async def test_init_db_raises_when_migrations_fail_on_existing_db() -> None:
+    """A migration failure on an existing DB is RAISED, not masked.
+
+    The old `create_all` fallback was removed (2026-06-01): it swallowed the
+    error and, because create_all cannot ALTER an existing table, left the
+    schema half-built (the products-table crash loop). Failing loud surfaces the
+    real error instead.
+    """
     fake_conn = MagicMock()
     fake_conn.execute = AsyncMock()
     fake_conn.run_sync = AsyncMock()
@@ -368,19 +377,56 @@ async def test_init_db_falls_back_to_create_all_when_migrations_fail() -> None:
 
     fake_engine = MagicMock()
     fake_engine.begin = MagicMock(return_value=_ConnCm())
+    fake_engine.connect = MagicMock(return_value=_ConnCm())
     fake_engine.dispose = AsyncMock()
 
     with (
         patch("roboco.db.base.get_engine", return_value=fake_engine),
+        patch("roboco.db.base._db_has_tables", new=AsyncMock(return_value=True)),
         patch(
             "roboco.db.base.run_migrations",
             new=AsyncMock(side_effect=RuntimeError("alembic broken")),
         ),
+        pytest.raises(RuntimeError, match="alembic broken"),
     ):
         await init_db()
 
-    # create_all was called via run_sync.
-    fake_conn.run_sync.assert_awaited()
+    # No silent create_all fallback on the failure path.
+    fake_conn.run_sync.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_init_db_fresh_db_runs_migrations() -> None:
+    """A fresh DB (no tables) is built by running the complete migration chain
+    from base — NOT a bare create_all — so migration-embedded seed data (e.g. the
+    AI providers seeded in 004) is inserted. (A bare create_all skipped the seed,
+    which left provider_configs empty and 404'd the Ollama-key endpoint.)"""
+    fake_conn = MagicMock()
+    fake_conn.execute = AsyncMock()
+    fake_conn.run_sync = AsyncMock()
+
+    class _ConnCm:
+        async def __aenter__(self) -> object:
+            return fake_conn
+
+        async def __aexit__(self, *_args: object) -> None:
+            return None
+
+    fake_engine = MagicMock()
+    fake_engine.begin = MagicMock(return_value=_ConnCm())
+    fake_engine.connect = MagicMock(return_value=_ConnCm())
+    fake_engine.dispose = AsyncMock()
+
+    with (
+        patch("roboco.db.base.get_engine", return_value=fake_engine),
+        patch("roboco.db.base._db_has_tables", new=AsyncMock(return_value=False)),
+        patch("roboco.db.base.run_migrations", new=AsyncMock()) as rm,
+    ):
+        await init_db()
+
+    rm.assert_awaited_once()  # full chain from base -> schema + seeds
+    fake_conn.run_sync.assert_not_awaited()  # no bare create_all on the fresh path
+    fake_engine.dispose.assert_awaited_once()
 
 
 # ---------------------------------------------------------------------------

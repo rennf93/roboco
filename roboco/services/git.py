@@ -67,8 +67,17 @@ from roboco.templates.git.pr_internal import InternalCommitInfo
 from roboco.templates.git.pr_root import CommitInfo as PRCommitInfo
 from roboco.utils.converters import require_uuid
 
-# Git command timeout in seconds
-_GIT_TIMEOUT = 30
+
+# Git command timeout in seconds. Sourced from settings so operators can
+# raise it without a code change; `_run_git` accepts a per-call override for
+# the rare long-running op (staging/committing a large changeset). Read via a
+# helper rather than at import time so a test-time settings patch is honored.
+def _default_git_timeout() -> int:
+    return settings.git_command_timeout_seconds
+
+
+def _commit_git_timeout() -> int:
+    return settings.git_commit_timeout_seconds
 
 
 # `_get_gh_env` and the gh-CLI code paths were removed in favor of direct
@@ -109,6 +118,7 @@ class GitService(BaseService):
         args: list[str],
         check: bool = True,
         token: str | None = None,
+        timeout: int | None = None,
     ) -> subprocess.CompletedProcess[str]:
         """Run a git command in the workspace (non-blocking).
 
@@ -118,6 +128,13 @@ class GitService(BaseService):
         then forgets) and never touches `.git/config` on disk. Use this
         for push / fetch / ls-remote — any op that talks to origin.
 
+        `timeout` overrides the default per-command budget
+        (``settings.git_command_timeout_seconds``). Staging and committing
+        a large changeset (e.g. the Next.js panel) can exceed the short
+        default while git hashes every object and we re-chown the tree, so
+        the commit choreography passes the longer
+        ``settings.git_commit_timeout_seconds``.
+
         After every orchestrator-side git op, hand ownership back to the
         agent user. Git commands here run as root and create root-owned
         files under .git/ (refs, logs/refs, packed-refs, index, objects).
@@ -126,6 +143,8 @@ class GitService(BaseService):
         "unable to append to .git/logs/refs/heads/...".
         """
         from roboco.services.workspace import _ensure_agent_owned
+
+        effective_timeout = timeout if timeout is not None else _default_git_timeout()
 
         prefix: list[str] = []
         if token:
@@ -147,14 +166,14 @@ class GitService(BaseService):
                 cwd=workspace,
                 capture_output=True,
                 text=True,
-                timeout=_GIT_TIMEOUT,
+                timeout=effective_timeout,
                 check=check,
             )
 
         try:
             result = await asyncio.to_thread(_run)
         except subprocess.TimeoutExpired as e:
-            raise GitTimeoutError(" ".join(args), _GIT_TIMEOUT) from e
+            raise GitTimeoutError(" ".join(args), effective_timeout) from e
         except subprocess.CalledProcessError as e:
             raise GitCommandError(
                 " ".join(args), e.stderr or e.stdout or "Unknown error"
@@ -452,12 +471,15 @@ class GitService(BaseService):
         """
         task_id = request.task_id
 
-        # Stage files
+        # Stage files. Large changesets get the longer commit-timeout budget
+        # (see `git_commit_timeout_seconds`) — the same reason the gateway
+        # `commit()` adapter uses it.
+        commit_timeout = _commit_git_timeout()
         if request.files:
             for file in request.files:
-                await self._run_git(workspace, ["add", file])
+                await self._run_git(workspace, ["add", file], timeout=commit_timeout)
         else:
-            await self._run_git(workspace, ["add", "-A"])
+            await self._run_git(workspace, ["add", "-A"], timeout=commit_timeout)
 
         # Get task info for commit template
         task_service = get_task_service(self.session)
@@ -487,7 +509,9 @@ class GitService(BaseService):
         # Create commit with agent attribution
         author = f"{agent_id} <{agent_id}@roboco.ai>"
         await self._run_git(
-            workspace, ["commit", "-m", full_message, "--author", author]
+            workspace,
+            ["commit", "-m", full_message, "--author", author],
+            timeout=commit_timeout,
         )
 
         # Get commit info
@@ -1160,7 +1184,7 @@ class GitService(BaseService):
         git_token: str,
     ) -> dict[str, Any] | None:
         """Return the first open PR for head→base, or None."""
-        async with httpx.AsyncClient(timeout=_GIT_TIMEOUT) as client:
+        async with httpx.AsyncClient(timeout=_default_git_timeout()) as client:
             existing = await client.get(
                 f"https://api.github.com/repos/{owner}/{repo}/pulls",
                 headers={
@@ -1186,7 +1210,7 @@ class GitService(BaseService):
     ) -> httpx.Response:
         """POST the PR payload to GitHub; translate HTTP errors to GitError."""
         try:
-            async with httpx.AsyncClient(timeout=_GIT_TIMEOUT) as client:
+            async with httpx.AsyncClient(timeout=_default_git_timeout()) as client:
                 return await client.post(
                     f"https://api.github.com/repos/{owner}/{repo}/pulls",
                     headers={
@@ -1283,7 +1307,7 @@ class GitService(BaseService):
         other non-2xx surfaces the GitHub validation text inline.
         """
         try:
-            async with httpx.AsyncClient(timeout=_GIT_TIMEOUT) as client:
+            async with httpx.AsyncClient(timeout=_default_git_timeout()) as client:
                 resp = await client.patch(
                     f"https://api.github.com/repos/{owner}/{repo}/pulls/{pr_number}",
                     headers={
@@ -1324,7 +1348,7 @@ class GitService(BaseService):
         agent slugs onto GitHub usernames where the project records that.
         """
         try:
-            async with httpx.AsyncClient(timeout=_GIT_TIMEOUT) as client:
+            async with httpx.AsyncClient(timeout=_default_git_timeout()) as client:
                 resp = await client.post(
                     f"https://api.github.com/repos/{owner}/{repo}/pulls/"
                     f"{pr_number}/requested_reviewers",
@@ -1522,7 +1546,7 @@ class GitService(BaseService):
     ) -> httpx.Response:
         """PUT the merge request to GitHub; HTTP errors → GitError."""
         try:
-            async with httpx.AsyncClient(timeout=_GIT_TIMEOUT) as client:
+            async with httpx.AsyncClient(timeout=_default_git_timeout()) as client:
                 return await client.put(
                     f"https://api.github.com/repos/{owner}/{repo}/pulls/"
                     f"{pr_number}/merge",
@@ -2126,7 +2150,7 @@ class GitService(BaseService):
         git_token = await self._get_project_token_or_raise(project.slug)
 
         try:
-            async with httpx.AsyncClient(timeout=_GIT_TIMEOUT) as client:
+            async with httpx.AsyncClient(timeout=_default_git_timeout()) as client:
                 resp = await client.get(
                     f"https://api.github.com/repos/{owner}/{repo}/pulls/{pr_number}",
                     headers={
@@ -2355,16 +2379,22 @@ class GitService(BaseService):
 
         # Stage files explicitly when provided; otherwise stage everything
         # the agent has touched. Mirrors create_commit's staging logic.
+        # Staging + committing a large changeset (the Next.js panel runs into
+        # the hundreds of files) can exceed the short default git timeout, so
+        # these ops get the longer `git_commit_timeout_seconds` budget.
+        commit_timeout = _commit_git_timeout()
         if files:
             for file in files:
-                await self._run_git(workspace, ["add", file])
+                await self._run_git(workspace, ["add", file], timeout=commit_timeout)
         else:
-            await self._run_git(workspace, ["add", "-A"])
+            await self._run_git(workspace, ["add", "-A"], timeout=commit_timeout)
 
         # Free-form gateway commit — message is passed verbatim. The
         # gateway's commit_validator already rejected garbage messages
         # before we got here; we don't double-validate.
-        await self._run_git(workspace, ["commit", "-m", message])
+        await self._run_git(
+            workspace, ["commit", "-m", message], timeout=commit_timeout
+        )
 
         log_result = await self._run_git(workspace, ["log", "-1", "--format=%H|%s"])
         parts = log_result.stdout.strip().split("|", 1)

@@ -11,7 +11,7 @@ test's assertions. Journal/A2A/audit/evidence are mocked because they
 don't gate the lifecycle paths under test.
 
 When extended to all roles, this test catches:
-  - URL prefix mismatch (route-level coverage in test_v2_role_dep)
+  - URL prefix mismatch (route-level coverage in test_v1_role_dep)
   - i_will_work_on AttributeError on None (claim → start sequence is real)
   - heartbeat seeding (reaper cutoff)
   - active_claimant_id wired (single-claimant invariant)
@@ -49,6 +49,20 @@ _STEPS = [
             "edit the target file, add tests, run them, and stage the "
             "change for commit on the task branch"
         ),
+    }
+]
+
+_GOOD_PLAN = (
+    "Implement the task on its feature branch: edit the target module, add or "
+    "update unit tests covering the change, run the suite locally, then commit "
+    "on the branch and open a PR. Keep the diff focused on the acceptance "
+    "criteria and verify it before submitting for QA."
+)
+_GOOD_TC = ["Follow the existing module's patterns; keep the change minimal."]
+_GOOD_RISKS = [
+    {
+        "risk": "Scope creep balloons the diff and slows review.",
+        "mitigation": "Touch only the files the acceptance criteria require.",
     }
 ]
 
@@ -330,7 +344,12 @@ async def test_dev_can_claim_pending_task_via_gateway(
     c = Choreographer(deps)
 
     env = await c.i_will_work_on(
-        dev_agent.id, task.id, plan="add the route", steps=_STEPS
+        dev_agent.id,
+        task.id,
+        plan=_GOOD_PLAN,
+        steps=_STEPS,
+        technical_considerations=_GOOD_TC,
+        risks=_GOOD_RISKS,
     )
 
     assert env.error is None, f"claim failed: {env.message}"
@@ -374,7 +393,12 @@ async def test_dev_full_chain_through_awaiting_qa(
 
     # 1. Claim
     env = await c.i_will_work_on(
-        dev_agent.id, task.id, plan="add the route", steps=_STEPS
+        dev_agent.id,
+        task.id,
+        plan=_GOOD_PLAN,
+        steps=_STEPS,
+        technical_considerations=_GOOD_TC,
+        risks=_GOOD_RISKS,
     )
     assert env.error is None
     assert env.status == "in_progress"
@@ -439,7 +463,14 @@ async def test_full_chain_through_doc_handoff(
     c = Choreographer(deps)
 
     # Drive the dev side first (same as test_dev_full_chain_through_awaiting_qa).
-    await c.i_will_work_on(dev_agent.id, task.id, plan="add the route", steps=_STEPS)
+    await c.i_will_work_on(
+        dev_agent.id,
+        task.id,
+        plan=_GOOD_PLAN,
+        steps=_STEPS,
+        technical_considerations=_GOOD_TC,
+        risks=_GOOD_RISKS,
+    )
     await stub_git.commit(
         branch_name=_BRANCH,
         message=f"[{str(task.id)[:8]}] feat(api): add /healthz",

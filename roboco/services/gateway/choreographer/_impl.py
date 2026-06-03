@@ -5,7 +5,7 @@ implementation lands in its respective phase (Phase 1: dev verbs, Phase 2:
 QA verbs, Phase 3: doc + PM verbs, Phase 4: board verbs).
 
 The signatures are stable contracts that the MCP servers and the
-/api/v2/flow/* endpoints will call into. Phase 0 wires the dependency
+/api/v1/flow/* endpoints will call into. Phase 0 wires the dependency
 injection so later phases just fill in the bodies.
 """
 
@@ -214,6 +214,10 @@ class ChoreographerDeps:
     # don't exercise session propagation don't have to plumb it in. The
     # delegate() path uses it to thread parent sessions onto new subtasks.
     messaging: Any = None
+    # Per-cell project routing for the delegate verb. Optional so existing
+    # callsites / tests that don't exercise Product routing don't have to plumb
+    # it in; when None, delegate falls back to parent-project inheritance.
+    product: Any = None
 
 
 @dataclass(frozen=True)
@@ -275,7 +279,7 @@ class DelegateInputs:
     """Bundle of fields the ``delegate`` verb receives from the route layer.
 
     Mirrors :data:`roboco.foundation.policy.task_completeness.TASK_AT_CREATE`:
-    `task_type` and `nature` have no defaults — the v2 schema enforces both at
+    `task_type` and `nature` have no defaults — the v1 schema enforces both at
     the HTTP boundary (Task 15), and defaulting here too would let direct
     callers (tests, internal code) silently pick `'code'`/`'technical'` and
     recreate the 2026-05-08 deadlock.
@@ -295,6 +299,7 @@ class DelegateInputs:
     nature: str | None = None
     acceptance_criteria: list[str] | None = None
     estimated_complexity: str = "medium"
+    project_id: UUID | None = None
 
 
 class Choreographer:
@@ -349,6 +354,10 @@ class Choreographer:
     @property
     def messaging(self) -> Any:
         return self._deps.messaging
+
+    @property
+    def product(self) -> Any:
+        return self._deps.product
 
     async def _touch(self, task_id: UUID | None) -> None:
         """Best-effort heartbeat write; silent on missing task."""
@@ -958,6 +967,23 @@ class Choreographer:
             context_briefing=briefing,
         ).with_introspection(task=t, role=role_str)
 
+    @staticmethod
+    def _build_rich_plan(
+        plan: str | None,
+        steps: list[dict[str, Any]] | None,
+        technical_considerations: list[str] | None,
+        risks: list[dict[str, Any]] | None,
+        open_questions: list[dict[str, Any]] | None,
+    ) -> dict[str, Any]:
+        """Assemble the panel-shaped rich plan (#172) from a dev's inputs."""
+        return {
+            "approach": plan or "",
+            "sub_tasks": steps or [],
+            "technical_considerations": technical_considerations or [],
+            "risks": risks or [],
+            "open_questions": open_questions or [],
+        }
+
     async def i_will_work_on(
         self,
         agent_id: UUID,
@@ -1014,13 +1040,9 @@ class Choreographer:
         # via the panel-shaped path so the Plan tab renders identically and
         # feeds #173 progress. With no rich fields (re-entry/recovery) this
         # falls through to unchanged string behaviour.
-        rich_plan = {
-            "approach": plan or "",
-            "sub_tasks": steps or [],
-            "technical_considerations": technical_considerations or [],
-            "risks": risks or [],
-            "open_questions": open_questions or [],
-        }
+        rich_plan = self._build_rich_plan(
+            plan, steps, technical_considerations, risks, open_questions
+        )
         effective_plan: str | dict[str, Any] | None = self._resolve_effective_plan(
             plan or "", rich_plan
         )
@@ -2389,8 +2411,10 @@ class Choreographer:
            or @mentions (must address those first).
         2. Refuse with INVALID_STATE if the agent has any pending tasks
            assigned but never claimed — they must call i_will_work_on (dev/qa/
-           doc) or i_will_plan (pm) first. (Gate Set C, pre-gateway implicit
-           via the orchestrator's auto-respawn.)
+           doc) or i_will_plan (pm) first. Board/advisory roles (product_owner,
+           head_marketing, auditor) are exempt: they review without claiming.
+           (Gate Set C, pre-gateway implicit via the orchestrator's
+           auto-respawn.)
         3. Auto-pause every in_progress task this agent owns so the
            orchestrator's PM-closure dispatcher can wake them when subtasks
            finish, instead of leaving the parent stuck at ``in_progress``
@@ -2445,8 +2469,16 @@ class Choreographer:
         pending = [t for t in assigned if str(t.status) == "pending"]
         if not pending:
             return None
-        first = pending[0]
         agent = await self.task.agent_for(agent_id)
+        # Board/advisory roles (product_owner, head_marketing, auditor) review
+        # and advise without ever claiming — they have no i_will_work_on /
+        # i_will_plan verb. Their one-shot board dispatch is meant to leave the
+        # coordination task pending for the CEO to reassign to Main PM, so they
+        # must be allowed to idle after recording their review. Without this
+        # they wedge: the gate would demand a claim verb the role does not have.
+        if agent and agent.role in ("product_owner", "head_marketing", "auditor"):
+            return None
+        first = pending[0]
         verb = (
             "i_will_plan"
             if agent and agent.role in ("cell_pm", "main_pm")
@@ -2934,10 +2966,13 @@ class Choreographer:
         which is a strict subset of `AGENT_UUIDS` — so any AGENT_UUIDS
         check here was unreachable.
         """
-        if parent.project_id is None:
+        if parent.project_id is None and getattr(parent, "product_id", None) is None:
             return Envelope.invalid_state(
-                message="parent task has no project_id",
-                remediate="parent task must have a project to inherit",
+                message="parent task has neither a project_id nor a product_id",
+                remediate=(
+                    "the parent must have a project (single repo) or a product "
+                    "(cell->project map) so subtasks can resolve a repo"
+                ),
                 context_briefing=await self._briefing_for(pm_agent_id, parent_task_id),
             )
         try:
@@ -2953,11 +2988,7 @@ class Choreographer:
         ):
             return Envelope.invalid_state(
                 message=type_error,
-                remediate=(
-                    "Cell PMs (be-pm/fe-pm/ux-pm) own PLANNING tasks — they "
-                    "decompose the slice and delegate code work to devs. Pass "
-                    "task_type='planning' when delegating to a Cell PM."
-                ),
+                remediate=self._assignee_task_type_remediate(inputs.assigned_to),
                 context_briefing=await self._briefing_for(pm_agent_id, parent_task_id),
             )
         if str(inputs.task_type) == "documentation":
@@ -3003,11 +3034,19 @@ class Choreographer:
           The 'research' allowance covers genuine spike work (try a
           library, prototype an approach) — NOT coordination/handoff,
           which is PM work.
+        - (#7): the UX/UI cell's developers ARE its designers — for a
+          DEVELOPER on ``Team.UX_UI`` ``task_type='design'`` is legitimate
+          cell work (mockups, specs, design assets committed to the repo),
+          so ux-dev-1/ux-dev-2 also accept ``design``. Backend/frontend
+          devs still cannot be handed ``design`` — that routing belongs to
+          the UX cell. The orchestrator already dispatches a developer for a
+          ``design`` task (``_dev_dispatch_role_matches`` returns True), so
+          this does not create the orphan that blocks ``documentation``.
         - Delegating to a QA requires ``task_type='code'`` (their work is
           to review PRs of code changes).
         - Delegating to a Documenter requires ``task_type='documentation'``.
         """
-        from roboco.foundation.identity import AGENTS, Role
+        from roboco.foundation.identity import AGENTS, Role, Team
 
         if assigned_to in Choreographer._CELL_PM_SLUGS and task_type != "planning":
             return (
@@ -3017,16 +3056,12 @@ class Choreographer:
         agent = AGENTS.get(assigned_to)
         if agent is None:
             return None
-        if agent.role is Role.DEVELOPER and task_type not in {
-            "code",
-            "documentation",
-            "research",
-        }:
-            return (
-                f"task_type={task_type!r} is invalid for assignee {assigned_to!r}: "
-                f"Developers own code/documentation/research. Coordination, "
-                f"planning, design, and administrative work belong to PMs."
+        if agent.role is Role.DEVELOPER:
+            dev_err = Choreographer._developer_task_type_error(
+                assigned_to, agent.team is Team.UX_UI, task_type
             )
+            if dev_err is not None:
+                return dev_err
         if agent.role is Role.QA and task_type != "code":
             return (
                 f"task_type={task_type!r} is invalid for assignee {assigned_to!r}: "
@@ -3039,6 +3074,63 @@ class Choreographer:
                 f"'documentation'."
             )
         return None
+
+    @staticmethod
+    def _developer_task_type_error(
+        assigned_to: str, is_ux_dev: bool, task_type: str
+    ) -> str | None:
+        """Reject a developer's task_type. UX-cell developers additionally
+        accept 'design' (mockups/specs/design assets are their cell work)."""
+        allowed = {"code", "documentation", "research"}
+        owned = "code/documentation/research"
+        design_clause = "; design belongs to the UX cell."
+        if is_ux_dev:
+            allowed.add("design")
+            owned = "code/documentation/research/design"
+            design_clause = "."
+        if task_type in allowed:
+            return None
+        return (
+            f"task_type={task_type!r} is invalid for assignee "
+            f"{assigned_to!r}: Developers own {owned}. Coordination, "
+            f"planning, and administrative work belong to PMs{design_clause}"
+        )
+
+    @staticmethod
+    def _assignee_task_type_remediate(assigned_to: str) -> str:
+        """Per-assignee-class remediation for an assignee-vs-task_type reject.
+
+        The reject `message` is already case-specific; this gives the PM the
+        right *next call* for the kind of assignee it just mis-typed instead
+        of a one-size-fits-all 'pass planning to a Cell PM' hint.
+        """
+        from roboco.foundation.identity import AGENTS, Role, Team
+
+        if assigned_to in Choreographer._CELL_PM_SLUGS:
+            return (
+                "Cell PMs (be-pm/fe-pm/ux-pm) own PLANNING tasks — they "
+                "decompose the slice and delegate code work to devs. Pass "
+                "task_type='planning' when delegating to a Cell PM."
+            )
+        agent = AGENTS.get(assigned_to)
+        if agent is not None and agent.role is Role.DEVELOPER:
+            if agent.team is Team.UX_UI:
+                return (
+                    "UX developers take task_type in "
+                    "{'code','documentation','research','design'}. Use "
+                    "'design' for mockups/specs/design-asset work, 'code' "
+                    "for implementation."
+                )
+            return (
+                "Developers take task_type in "
+                "{'code','documentation','research'}. Use 'code' for "
+                "implementation; planning/administrative work stays with you "
+                "(the PM), and design work is routed to the UX cell."
+            )
+        return (
+            "Match task_type to the assignee's role: 'code' for devs/QA, "
+            "'documentation' for documenters, 'planning' for Cell PMs."
+        )
 
     async def _delegate_lifecycle_guards(
         self,
@@ -3220,6 +3312,39 @@ class Choreographer:
             context_briefing=briefing,
         ).with_introspection(task=new_task, role=role_str)
 
+    async def _resolve_subtask_project(
+        self, parent: Any, inputs: DelegateInputs
+    ) -> UUID:
+        """Resolve the project a delegated subtask lands in.
+
+        Priority: explicit inputs.project_id -> the parent's Product map for
+        this cell -> the parent's own project. Raises TaskCompletenessError only
+        for a fan-out parent (product, no own project) whose product has no
+        mapping for this cell — i.e. the subtask would have no repo to land in.
+        """
+        if inputs.project_id is not None:
+            return inputs.project_id
+        parent_product_id = getattr(parent, "product_id", None)
+        if self.product is not None and parent_product_id is not None:
+            mapped = await self.product.project_for(parent_product_id, inputs.team)
+            if mapped is not None:
+                return UUID(str(mapped))
+        if parent.project_id is not None:
+            return UUID(str(parent.project_id))
+        from roboco.foundation.policy.task_completeness import TaskCompletenessError
+
+        raise TaskCompletenessError(
+            missing=["project_id"],
+            field_hints={
+                "project_id": (
+                    f"no project for team {inputs.team!r}: add a "
+                    f"{inputs.team}->project mapping to the parent's product, or "
+                    "pass an explicit project_id on delegate"
+                )
+            },
+            message=f"cannot resolve a project for the {inputs.team} subtask",
+        )
+
     async def _create_subtask_from_inputs(
         self,
         pm_agent_id: UUID,
@@ -3280,13 +3405,15 @@ class Choreographer:
                 field_hints={"nature": "one of: technical | non_technical"},
                 message=f"invalid nature {inputs.nature!r}: {exc}",
             ) from exc
+        resolved_project_id = await self._resolve_subtask_project(parent, inputs)
         req = TaskCreateRequest(
             title=inputs.title,
             description=inputs.description,
             acceptance_criteria=inputs.acceptance_criteria,
             team=team_enum,
             created_by=pm_agent_id,
-            project_id=UUID(str(parent.project_id)),
+            project_id=resolved_project_id,
+            product_id=getattr(parent, "product_id", None),
             parent_task_id=parent_task_id,
             assigned_to=assignee_id,
             task_type=type_enum,

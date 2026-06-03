@@ -4,7 +4,9 @@ import { use, useState } from "react";
 import { useTask, useTaskLifecycle } from "@/hooks/use-tasks";
 import { useProject } from "@/hooks/use-projects";
 import { useCreateBranch, useCreatePR } from "@/hooks/use-git";
+import { Team, TaskStatus } from "@/types";
 import { TaskHeader, TaskMetadata, TaskTabs } from "@/components/tasks/task-detail";
+import { ApproveAndStartButton } from "@/components/tasks/approve-and-start-button";
 import {
   EscalateToCeoDialog,
   CeoApproveDialog,
@@ -358,6 +360,24 @@ export default function TaskDetailPage({ params }: TaskDetailPageProps) {
     <div className="space-y-6">
       {/* Header */}
       <TaskHeader task={task} onAction={handleAction} />
+
+      {/* CEO gate #1: Approve & Start a board-reviewed coordination task.
+          This is the handoff for a board/fan-out task (a product, no repo of its
+          own) that the Board has reviewed and is waiting on the CEO to hand to
+          Main PM. The server's approve_and_start requires the task to still be
+          PENDING (it re-targets to Main PM without a status change), so we gate
+          on PENDING — NOT awaiting_ceo_approval, which is the unrelated
+          end-of-work CEO gate handled by the ceo-approve flow. We also require a
+          coordination task (no project_id, has product_id) so the button only
+          shows on the board's fan-out handoffs, not on every board-team task. */}
+      {task.status === TaskStatus.PENDING &&
+        task.team === Team.BOARD &&
+        !task.project_id &&
+        !!task.product_id && (
+          <div className="flex justify-end">
+            <ApproveAndStartButton task={task} />
+          </div>
+        )}
 
       {/* Metadata Cards */}
       <TaskMetadata task={task} />

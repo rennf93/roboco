@@ -1,14 +1,12 @@
-"""Gateway cooldown is consulted only when ROBOCO_GATEWAY_ENABLED=true.
+"""Gateway spawn-cooldown gate.
 
-`gateway_pre_spawn_check` short-circuits to ``("spawn", ...)`` when
-``settings.gateway_enabled`` is False so the legacy spawn path stays
-unchanged. When the flag is True it must reach
-``roboco.services.gateway.trigger_filter.decide_spawn`` whose 4-rule
-cooldown machinery is the real spawn gate.
+`gateway_pre_spawn_check` always reaches
+``roboco.services.gateway.trigger_filter.decide_spawn`` (except the no-task
+carve-out), whose 4-rule cooldown machinery is the real spawn gate.
 
-Without these assertions a regression that flips the flag back to False
-(or drops the call site entirely) would leave the orchestrator with no
-server-side spawn cooldown beyond ``_pm_respawn_should_gate``.
+Without these assertions a regression that drops the call site would leave
+the orchestrator with no server-side spawn cooldown beyond
+``_pm_respawn_should_gate``.
 """
 
 from __future__ import annotations
@@ -17,39 +15,13 @@ from unittest.mock import AsyncMock, MagicMock, patch
 from uuid import uuid4
 
 import pytest
-from roboco.runtime import orchestrator as orchestrator_module
 from roboco.runtime.orchestrator import gateway_pre_spawn_check
 from roboco.services.gateway.trigger_filter import Decision, SpawnDecision
 
 
 @pytest.mark.asyncio
-async def test_gateway_disabled_short_circuits_without_calling_decide_spawn(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """Flag off -> short-circuit. ``decide_spawn`` must not be invoked."""
-    monkeypatch.setattr(orchestrator_module.settings, "gateway_enabled", False)
-
-    with patch(
-        "roboco.services.gateway.trigger_filter.decide_spawn"
-    ) as mock_decide_spawn:
-        outcome, reason = await gateway_pre_spawn_check(
-            task_id=str(uuid4()),
-            trigger_kind="scan",
-            target_role="developer",
-        )
-
-    assert outcome == "spawn"
-    assert "gateway disabled" in reason
-    mock_decide_spawn.assert_not_called()
-
-
-@pytest.mark.asyncio
-async def test_gateway_enabled_consults_decide_spawn(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """Flag on -> ``decide_spawn`` is invoked and its decision propagates."""
-    monkeypatch.setattr(orchestrator_module.settings, "gateway_enabled", True)
-
+async def test_gateway_enabled_consults_decide_spawn() -> None:
+    """``decide_spawn`` is invoked and its decision propagates."""
     task_id = str(uuid4())
 
     # Stub task row that decide_spawn will receive.
@@ -104,16 +76,11 @@ async def test_gateway_enabled_consults_decide_spawn(
 
 
 @pytest.mark.asyncio
-async def test_gateway_enabled_skips_decide_spawn_when_no_task_id(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
+async def test_gateway_enabled_skips_decide_spawn_when_no_task_id() -> None:
     """No task_id -> early return; ``decide_spawn`` not called.
 
-    Documents the no-task-spawn carve-out: idle PM ticks pass through
-    even with the gateway enabled.
+    Documents the no-task-spawn carve-out: idle PM ticks pass through.
     """
-    monkeypatch.setattr(orchestrator_module.settings, "gateway_enabled", True)
-
     with patch(
         "roboco.services.gateway.trigger_filter.decide_spawn"
     ) as mock_decide_spawn:

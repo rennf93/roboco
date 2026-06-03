@@ -235,11 +235,6 @@ services:
       ROBOCO_HOST_PROJECT_DIR: ${ROBOCO_HOST_PROJECT_DIR:-/volume1/roboco}
       ROBOCO_HOST_CLAUDE_DIR: ${ROBOCO_HOST_CLAUDE_DIR:-/home/renzof/.claude}
       ROBOCO_HOST_DATA_DIR: ${ROBOCO_HOST_DATA_DIR:-/volume1/roboco/data}
-      # Agent Gateway — enables trigger_filter.decide_spawn cooldown logic
-      # (4 rules: terminal-task drop, claimant-lock queue, per-task cooldown,
-      # per-role rate limit). Without this the legacy spawn path has only
-      # _pm_respawn_should_gate (PM-specific) + per-tick dedupe.
-      ROBOCO_GATEWAY_ENABLED: "true"
       # Public base URL for commit-trailer links. Default 127.0.0.1 produces
       # unusable links in commit message bodies; set to NAS LAN IP so
       # f"{api_base}/tasks/{task_id}" renders a reachable URL.

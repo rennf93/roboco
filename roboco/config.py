@@ -28,7 +28,6 @@ class Settings(BaseSettings):
     # ==========================================================================
     # Application
     # ==========================================================================
-    app_name: str = "RoboCo"
     app_version: str = "0.1.0"
     debug: bool = False
     environment: str = Field(
@@ -44,9 +43,6 @@ class Settings(BaseSettings):
         default=None,
         description="Override API URL for containerized agents (e.g., http://roboco-orchestrator:8000)",
     )
-    reload: bool = Field(default=True, description="Auto-reload on code changes")
-    workers: int = Field(default=1, ge=1)
-
     # CORS
     cors_origins: list[str] = Field(
         default=[
@@ -164,7 +160,6 @@ class Settings(BaseSettings):
     # AI/LLM Providers
     # ==========================================================================
     anthropic_api_key: str | None = None
-    openai_api_key: str | None = None  # For embeddings
 
     # Default models
     default_embedding_model: str = Field(
@@ -193,34 +188,10 @@ class Settings(BaseSettings):
     # ==========================================================================
     # Security
     # ==========================================================================
-    secret_key: str = Field(
-        default="change-me-in-production-this-is-insecure",
-        min_length=32,
-        description="Secret key for JWT signing",
-    )
     encryption_key: str = Field(
         default="",
         description="Fernet encryption key for secrets.",
     )
-    access_token_expire_minutes: int = Field(default=60 * 24, ge=1)  # 24 hours
-    algorithm: str = "HS256"
-
-    # ==========================================================================
-    # Logging
-    # ==========================================================================
-    log_level: str = Field(
-        default="INFO", pattern="^(DEBUG|INFO|WARNING|ERROR|CRITICAL)$"
-    )
-    log_format: str = Field(default="json", pattern="^(json|console)$")
-
-    # ==========================================================================
-    # Sessions & Messages
-    # ==========================================================================
-    session_default_timeout_seconds: int = Field(default=300, ge=0)
-    session_max_time_window_minutes: int = Field(default=30, ge=1)
-    session_max_message_count: int = Field(default=100, ge=1)
-    session_max_content_length: int = Field(default=50000, ge=1)
-    message_max_length: int = Field(default=10000, ge=1)
 
     # ==========================================================================
     # Workspaces (Multi-Agent Git)
@@ -249,6 +220,53 @@ class Settings(BaseSettings):
             "against a hung remote is operationally bad."
         ),
     )
+    workspace_install_dev_deps: bool = Field(
+        default=True,
+        description=(
+            "After cloning an agent workspace, install the project's dev "
+            "dependencies into the workspace's own environment so the "
+            "`make quality` gate (ruff/mypy/pytest for Python, the lint/"
+            "typecheck toolchain for the TS panel) is available without "
+            "the agent re-downloading tooling per task. Detects Python "
+            "(pyproject.toml → `uv sync`) and Node/TS (package.json → "
+            "`pnpm install`/`npm install`). Idempotent; skipped when the "
+            "relevant lockfile is unchanged since the last install."
+        ),
+    )
+    workspace_dep_install_timeout_seconds: int = Field(
+        default=600,
+        ge=30,
+        description=(
+            "Timeout in seconds for the post-clone dev-dependency install "
+            "(`uv sync` / `pnpm install`). Cold installs of a large TS "
+            "panel or a Python project with native wheels can take several "
+            "minutes; the default clone timeout is too short for this."
+        ),
+    )
+
+    # ==========================================================================
+    # Git command execution
+    # ==========================================================================
+    git_command_timeout_seconds: int = Field(
+        default=30,
+        ge=5,
+        description=(
+            "Default timeout in seconds for a single orchestrator-side git "
+            "subprocess (status, log, checkout, fetch, push, …). Short by "
+            "design — most git operations are sub-second."
+        ),
+    )
+    git_commit_timeout_seconds: int = Field(
+        default=180,
+        ge=30,
+        description=(
+            "Timeout in seconds for staging + committing a changeset "
+            "(`git add` / `git commit`). Large multi-file changesets (e.g. "
+            "the Next.js panel) can exceed the 30s default-git timeout while "
+            "git hashes every object and the orchestrator re-chowns the "
+            "tree, so the commit choreography uses this longer budget."
+        ),
+    )
 
     # ==========================================================================
     # Agent Guardrails (per-session budgets, loop detection, SLAs)
@@ -273,11 +291,6 @@ class Settings(BaseSettings):
         ge=2,
         description="How many recent tool calls to inspect for loop detection",
     )
-    agent_budget_sweep_interval_seconds: int = Field(
-        default=60,
-        ge=5,
-        description="Kill-switch sweep interval for budget-exceeded containers",
-    )
     agent_stop_attempt_allowance: int = Field(
         default=1,
         ge=1,
@@ -292,12 +305,8 @@ class Settings(BaseSettings):
     agent_sla_cell_pm_claimed: int = Field(default=4 * 3600, ge=60)
 
     # ==========================================================================
-    # Agent Gateway (Phase 0 introduces; Phase 1+ activates)
+    # Agent Gateway
     # ==========================================================================
-    gateway_enabled: bool = Field(
-        default=False,
-        description="Enable Agent Gateway feature (Phase 0 flag)",
-    )
     manifest_host_dir: str = Field(
         default="/app/manifests",
         description=(
@@ -342,6 +351,22 @@ class Settings(BaseSettings):
             "override via ROBOCO_STALE_CLAIM_REAP_SECONDS"
         ),
     )
+    # A task left CLAIMED/IN_PROGRESS with an assignee but no running container
+    # (e.g. a reassignment that didn't spawn) is invisibly stuck — the heartbeat
+    # reaper can't see it because its heartbeat was seeded fresh at claim time.
+    # After this short grace window the dispatcher (re)spawns the assignee, or
+    # releases the task to pending for re-dispatch (#19). Shorter than the
+    # heartbeat reaper window: this is the "no agent at all" case, not the
+    # "agent went silent mid-run" case.
+    claimed_no_agent_grace_seconds: int = Field(
+        default=120,
+        ge=30,
+        description=(
+            "Grace window (seconds) before the orchestrator (re)spawns or "
+            "releases a claimed/in_progress task that has no running agent; "
+            "override via ROBOCO_CLAIMED_NO_AGENT_GRACE_SECONDS"
+        ),
+    )
     # Wave C8 (2026-05-12). Pre-gateway parity: PMs wrote a fresh
     # journal:decision around each decision point, not once at task
     # creation. The PM-decision tracing gate (delegate, unblock,
@@ -379,11 +404,11 @@ class Settings(BaseSettings):
         description="Minimum characters for docs notes",
     )
 
-    # Commit-validator thresholds
+    # Commit-validator thresholds (wired into the gateway commit() gate)
     commit_subject_min_chars: int = Field(
         default=20,
         ge=1,
-        description="Minimum characters for commit subject",
+        description="Minimum characters for a commit subject",
     )
     commit_banned_words: tuple[str, ...] = Field(
         default=(
@@ -397,7 +422,7 @@ class Settings(BaseSettings):
             "stuff",
             "things",
         ),
-        description="Banned words in commit messages",
+        description="Banned single-word commit subjects",
     )
 
 

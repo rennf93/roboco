@@ -71,7 +71,7 @@ MODEL_CATALOG: tuple[CatalogEntry, ...] = (
     # the catalog is the single source of truth the Settings dropdown renders from.
     CatalogEntry("glm-5.1:cloud", ModelProvider.OLLAMA_CLOUD, "GLM 5.1"),
     CatalogEntry("kimi-k2.6:cloud", ModelProvider.OLLAMA_CLOUD, "Kimi K2.6"),
-    CatalogEntry("minimax-m2.7:cloud", ModelProvider.OLLAMA_CLOUD, "Minimax M2.7"),
+    CatalogEntry("minimax-m3:cloud", ModelProvider.OLLAMA_CLOUD, "Minimax M3"),
 )
 
 
@@ -92,13 +92,13 @@ def provider_type_for_model(model_name: str) -> ModelProvider | None:
 # Assignments reflect the 2026-04 public benchmarks for each cloud tag:
 #   Kimi K2.6 — HLE 44.9%, AIME 95.6%, Agent Swarm (100 parallel sub-agents),
 #     200-300 sequential tool calls. Best at reasoning, orchestration, tool use.
-#   MiniMax M2.7 — SWE-Bench 73.8%, SWE-Pro 56.2%, 10B active params (fastest,
+#   MiniMax M3 — SWE-Bench 73.8%, SWE-Pro 56.2%, 10B active params (fastest,
 #     cheapest). Explicitly "built for Max coding & agentic workflows".
 #   GLM 5.1 — SWE-Bench 77.8% (highest of the three, 94.6% of Claude Opus 4.6),
 #     self-correcting across hundreds of iterations, strong creative writing.
 OLLAMA_ROLE_DEFAULTS: dict[str, str] = {
-    # High-volume agentic coding — M2.7 is purpose-built for this.
-    "developer": "minimax-m2.7:cloud",
+    # High-volume agentic coding — M3 is purpose-built for this.
+    "developer": "minimax-m3:cloud",
     # Deep code review — GLM 5.1 has the highest SWE-Bench and iterates thoroughly.
     "qa": "glm-5.1:cloud",
     # Orchestration + tool coordination — Kimi K2.6's Agent Swarm is the exact fit.
