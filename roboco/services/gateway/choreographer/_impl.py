@@ -3305,12 +3305,77 @@ class Choreographer:
                 task_id=parent_task_id,
                 verb="delegate",
             )
+        await self._wire_ux_frontend_dependency(new_task, parent)
         return Envelope.ok(
             status="created",
             task_id=str(new_task.id),
             next=spec_module._INTENT_VERBS["delegate"].next_hint(new_task),
             context_briefing=briefing,
         ).with_introspection(task=new_task, role=role_str)
+
+    @staticmethod
+    def _team_value(value: Any) -> str:
+        return value.value if hasattr(value, "value") else str(value)
+
+    async def _wire_ux_frontend_dependency(self, new_task: Any, parent: Any) -> None:
+        """Cross-cell sequencing: in a product fan-out the FRONTEND cell task
+        depends on the UX/UI cell task — UX design is upstream of frontend
+        implementation, while backend runs in parallel. Wires the dependency in
+        either delegation order. Best-effort: never breaks delegate.
+        """
+        if parent is None or getattr(parent, "product_id", None) is None:
+            return
+        from roboco.foundation.identity import Team
+
+        nt_team = self._team_value(new_task.team)
+        try:
+            if nt_team == Team.FRONTEND.value:
+                await self._depend_frontend_on_ux(new_task, parent.id)
+            elif nt_team == Team.UX_UI.value:
+                await self._depend_pending_frontends_on_ux(new_task, parent.id)
+        except Exception as exc:
+            logger.warning(
+                "cross-cell UX->FE sequencing wiring failed",
+                error=str(exc),
+                parent_task_id=str(getattr(parent, "id", None)),
+            )
+
+    async def _depend_frontend_on_ux(self, fe_task: Any, parent_id: Any) -> None:
+        """Make a new FRONTEND cell task wait on its non-terminal UX/UI sibling."""
+        from roboco.foundation.identity import Team
+        from roboco.models.base import TaskStatus
+
+        terminal = {TaskStatus.COMPLETED, TaskStatus.CANCELLED}
+        siblings = await self.task.get_subtasks(parent_id)
+        ux = next(
+            (
+                s
+                for s in siblings
+                if self._team_value(s.team) == Team.UX_UI.value
+                and s.id != fe_task.id
+                and s.status not in terminal
+            ),
+            None,
+        )
+        if ux is not None:
+            await self.task.add_dependency(fe_task.id, ux.id)
+
+    async def _depend_pending_frontends_on_ux(
+        self, ux_task: Any, parent_id: Any
+    ) -> None:
+        """Retro-wire not-yet-started FRONTEND siblings onto a new UX/UI task."""
+        from roboco.foundation.identity import Team
+        from roboco.models.base import TaskStatus
+
+        not_started = {TaskStatus.BACKLOG, TaskStatus.PENDING}
+        siblings = await self.task.get_subtasks(parent_id)
+        for fe in siblings:
+            if (
+                self._team_value(fe.team) == Team.FRONTEND.value
+                and fe.id != ux_task.id
+                and fe.status in not_started
+            ):
+                await self.task.add_dependency(fe.id, ux_task.id)
 
     async def _resolve_subtask_project(
         self, parent: Any, inputs: DelegateInputs

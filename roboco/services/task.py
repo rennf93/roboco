@@ -4158,6 +4158,24 @@ class TaskService(BaseService):
         result = await self.session.execute(query)
         return list(result.scalars().all())
 
+    async def add_dependency(self, task_id: UUID, depends_on_id: UUID) -> None:
+        """Append a dependency to a task WITHOUT changing its status.
+
+        A PENDING task with unmet dependencies is held back by
+        `list_pending(filter_by_dependencies=True)` and released by
+        `_unblock_dependents` once the dependency reaches a terminal state.
+        Used for cross-cell sequencing — the frontend cell waits on the UX/UI
+        design before it dispatches.
+        """
+        if depends_on_id == task_id:
+            return
+        task = await self.get(task_id)
+        if task is None:
+            return
+        if depends_on_id not in task.dependency_ids:
+            task.dependency_ids = [*task.dependency_ids, depends_on_id]
+            await self.session.flush()
+
     async def get_subtasks(self, parent_task_id: UUID) -> list[TaskTable]:
         """Get all subtasks of a parent task."""
         result = await self.session.execute(
