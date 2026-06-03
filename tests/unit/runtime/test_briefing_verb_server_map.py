@@ -80,6 +80,15 @@ def test_qa_block_has_no_delegate_or_note_before_claim_noise() -> None:
     assert "shell" in block.lower()
 
 
+def test_head_marketing_block_lists_docs_server() -> None:
+    # Head of Marketing is handed the roboco-docs MCP at spawn for read-only
+    # oversight; the briefing must surface it (and the service READ_ROLES must
+    # agree, or list/read 403 against a tool the agent was given).
+    block = _orch()._build_verb_server_block("head_marketing")
+    assert "roboco-docs" in block
+    assert "roboco_docs_read" in block
+
+
 def test_unknown_role_returns_empty() -> None:
     assert _orch()._build_verb_server_block("nonexistent") == ""
 

@@ -75,7 +75,10 @@ TYPE_SUBFOLDERS: dict[str, str] = {
 # Roles that can write documentation
 WRITE_ROLES: frozenset[str] = frozenset({"documenter", "cell_pm"})
 
-# Roles that can read documentation
+# Roles that can read documentation. The Board (head_marketing) gets
+# read-only access for oversight — the spawn manifest mounts the roboco-docs
+# MCP for it, so this set must agree or list/read 403 against a tool the
+# agent was handed.
 READ_ROLES: frozenset[str] = frozenset(
     {
         "documenter",
@@ -85,6 +88,7 @@ READ_ROLES: frozenset[str] = frozenset(
         "qa",
         "auditor",
         "ceo",
+        "head_marketing",
     }
 )
 

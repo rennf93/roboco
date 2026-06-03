@@ -422,6 +422,22 @@ async def test_read_doc_unauthorized(docs_setup: dict) -> None:
 
 
 @pytest.mark.asyncio
+async def test_read_doc_head_marketing_authorized(
+    docs_setup: dict, tmp_path: Path
+) -> None:
+    """Head of Marketing has read-only docs access (Board oversight)."""
+    svc = docs_setup["svc"]
+    target = tmp_path / "board" / "design" / "brand.md"
+    target.parent.mkdir(parents=True)
+    target.write_text("# Brand", encoding="utf-8")
+    with patch("roboco.services.docs.DOCS_BASE_PATH", tmp_path):
+        content, _ = await svc.read_doc(
+            agent_id="head-marketing", path="board/design/brand.md"
+        )
+    assert content == "# Brand"
+
+
+@pytest.mark.asyncio
 async def test_read_doc_path_traversal(docs_setup: dict) -> None:
     svc = docs_setup["svc"]
     with pytest.raises(ValidationError, match="cannot contain"):
@@ -462,6 +478,17 @@ async def test_list_docs_unauthorized(docs_setup: dict) -> None:
     svc = docs_setup["svc"]
     with pytest.raises(UnauthorizedError):
         await svc.list_docs(agent_id="ghost-agent")
+
+
+@pytest.mark.asyncio
+async def test_list_docs_head_marketing_authorized(
+    docs_setup: dict, tmp_path: Path
+) -> None:
+    """Head of Marketing can list docs (read-only Board oversight)."""
+    svc = docs_setup["svc"]
+    with patch("roboco.services.docs.DOCS_BASE_PATH", tmp_path):
+        docs = await svc.list_docs(agent_id="head-marketing")
+    assert docs == []
 
 
 @pytest.mark.asyncio
