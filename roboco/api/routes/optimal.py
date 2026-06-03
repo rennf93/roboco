@@ -9,6 +9,7 @@ from datetime import UTC, datetime
 from typing import Any
 from uuid import uuid4
 
+import structlog
 from fastapi import APIRouter, HTTPException, status
 
 from roboco.api.deps import (
@@ -78,6 +79,8 @@ from roboco.services.optimal_brain import (
     get_reviewer_service,
     get_validator_service,
 )
+
+logger = structlog.get_logger()
 
 router = APIRouter()
 
@@ -768,12 +771,28 @@ async def mentor_ask(
             detail=f"Mentor service initialization failed: {e}",
         ) from e
 
-    response = await mentor.ask(
-        question=request.question,
-        agent_id=str(agent.agent_id),
-        conversation_id=request.conversation_id,
-        domain=request.domain,
-    )
+    try:
+        response = await mentor.ask(
+            question=request.question,
+            agent_id=str(agent.agent_id),
+            conversation_id=request.conversation_id,
+            domain=request.domain,
+        )
+    except Exception as e:
+        # Do NOT let this escape as a bare 500 that masks the real cause.
+        # Log the true upstream error (with stack) and surface it in the
+        # detail so the failure is diagnosable end-to-end.
+        logger.error(
+            "Mentor ask failed",
+            agent_id=str(agent.agent_id),
+            error=str(e),
+            error_type=type(e).__name__,
+            exc_info=True,
+        )
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Mentor ask failed: {e}",
+        ) from e
 
     return MentorAskResponse(
         answer=response.answer,

@@ -11,6 +11,7 @@ The service uses a plugin-based architecture where each index type is handled
 by a specialized plugin that implements the BaseIndexPlugin interface.
 """
 
+import asyncio
 import re
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -188,8 +189,6 @@ class OptimalService:
         # Track initialization results for reporting
         initialized_count = 0
         failed_plugins: list[tuple[IndexType, str]] = []
-
-        import asyncio
 
         # Per-plugin initialization timeout (embedding validation can be slow)
         plugin_init_timeout = 30.0
@@ -439,8 +438,6 @@ class OptimalService:
 
     async def _start_periodic_update(self) -> None:
         """Start periodic update task if enabled in config."""
-        import asyncio
-
         from roboco.config import get_settings
 
         settings = get_settings()
@@ -459,8 +456,6 @@ class OptimalService:
 
     async def _periodic_update_loop(self, interval: int) -> None:
         """Background loop that checks for file changes periodically."""
-        import asyncio
-
         while True:
             try:
                 await asyncio.sleep(interval)
@@ -560,7 +555,6 @@ class OptimalService:
 
     async def close(self) -> None:
         """Cleanup resources."""
-        import asyncio
         import contextlib
 
         # Cancel periodic update task
@@ -1249,8 +1243,6 @@ class OptimalService:
         (e.g., due to timeouts or errors). Includes retry logic for transient
         failures.
         """
-        import asyncio
-
         import httpx
 
         from roboco.config import settings
@@ -1734,8 +1726,6 @@ class OptimalService:
         self, details: dict[str, Any], timeout: float
     ) -> bool:
         """Test embedding model connectivity; record result in `details`."""
-        import asyncio
-
         from roboco.config import settings
         from roboco.services.optimal_brain.shared_embedder import get_shared_embedder
 
@@ -1791,8 +1781,6 @@ class OptimalService:
         self, details: dict[str, Any], timeout: float
     ) -> bool:
         """Test vector store connectivity + per-index search; record details."""
-        import asyncio
-
         try:
             async with asyncio.timeout(timeout):
                 stats = await self.get_stats()
@@ -1837,13 +1825,39 @@ class _OptimalServiceHolder:
     """Holder for singleton OptimalService instance."""
 
     instance: OptimalService | None = None
+    lock: asyncio.Lock | None = None
+
+
+def _get_init_lock() -> asyncio.Lock:
+    """Return the init lock, lazily bound to the running event loop.
+
+    The lock is created on first use (not at import time) so it binds to the
+    loop that is actually running; a lock created at import time would bind to
+    the wrong loop and raise "bound to a different event loop".
+    """
+    if _OptimalServiceHolder.lock is None:
+        _OptimalServiceHolder.lock = asyncio.Lock()
+    return _OptimalServiceHolder.lock
 
 
 async def get_optimal_service() -> OptimalService:
-    """Get or create the OptimalService instance."""
-    if _OptimalServiceHolder.instance is None:
-        _OptimalServiceHolder.instance = OptimalService()
-        await _OptimalServiceHolder.instance.initialize()
+    """Get or create the OptimalService instance.
+
+    The instance is only published *after* ``initialize()`` completes. A lock
+    serializes concurrent first-callers so a second coroutine can never observe
+    a half-built, ``_initialized == False`` singleton mid-initialization (which
+    previously surfaced as "OptimalService not initialized" during indexing).
+    """
+    if _OptimalServiceHolder.instance is not None:
+        return _OptimalServiceHolder.instance
+
+    async with _get_init_lock():
+        # Re-check under the lock: another coroutine may have built it while
+        # we waited to acquire.
+        if _OptimalServiceHolder.instance is None:
+            service = OptimalService()
+            await service.initialize()
+            _OptimalServiceHolder.instance = service
     return _OptimalServiceHolder.instance
 
 
@@ -1852,3 +1866,5 @@ async def close_optimal_service() -> None:
     if _OptimalServiceHolder.instance is not None:
         await _OptimalServiceHolder.instance.close()
         _OptimalServiceHolder.instance = None
+    # Drop the lock so the next initialization rebinds to the running loop.
+    _OptimalServiceHolder.lock = None
