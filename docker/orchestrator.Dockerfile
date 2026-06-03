@@ -46,7 +46,7 @@ FROM python:3.13-slim-bookworm AS runner
 # make (backstop for projects whose CI commands use make targets).
 # curl/gnupg/lsb-release are only needed to add the docker repo, then purged.
 RUN apt-get update && apt-get install -y --no-install-recommends \
-        curl ca-certificates gnupg lsb-release git make \
+        curl ca-certificates gnupg lsb-release git make nodejs npm \
     && curl -fsSL https://download.docker.com/linux/debian/gpg \
         | gpg --dearmor -o /usr/share/keyrings/docker-archive-keyring.gpg \
     && DEBIAN_CODENAME=$(lsb_release -cs) \
@@ -57,6 +57,13 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && apt-get install -y --no-install-recommends docker-ce-cli \
     && apt-get purge -y --auto-remove curl gnupg lsb-release \
     && rm -rf /var/lib/apt/lists/*
+
+# pnpm lets the orchestrator pre-install the frontend/panel cell's workspace
+# deps (`pnpm install`) the same way uv handles Python cells. Without it the
+# dep-install step gracefully skips (WorkspaceService._run_dep_install catches
+# the missing-tool OSError) and the fe-dev re-installs per task. node/npm come
+# from the apt layer above; pnpm matches how agent-dev-fe installs it.
+RUN npm install -g pnpm
 
 WORKDIR /app
 
