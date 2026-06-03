@@ -31,7 +31,7 @@ Cell PM merges leaf PR + transitions to completed; Main PM merges root PR + esca
 
 ## delegate
 
-Create a subtask under the current task. Validates the delegation chain (main_pm->cell_pm; cell_pm->its team's devs) and the assignee-vs-task_type rule (Cell PMs get planning-typed tasks; devs get code/documentation).
+Create a subtask under the current task. Validates the delegation chain (main_pm->cell_pm; cell_pm->its team's devs) and the assignee-vs-task_type rule (Cell PMs get planning-typed tasks; devs get code/research, UX devs also design). documentation is NOT delegatable — the lifecycle auto-creates the doc phase after the code subtask passes QA.
 
 **Allowed roles:** cell_pm, main_pm
 

@@ -2988,11 +2988,7 @@ class Choreographer:
         ):
             return Envelope.invalid_state(
                 message=type_error,
-                remediate=(
-                    "Cell PMs (be-pm/fe-pm/ux-pm) own PLANNING tasks — they "
-                    "decompose the slice and delegate code work to devs. Pass "
-                    "task_type='planning' when delegating to a Cell PM."
-                ),
+                remediate=self._assignee_task_type_remediate(inputs.assigned_to),
                 context_briefing=await self._briefing_for(pm_agent_id, parent_task_id),
             )
         if str(inputs.task_type) == "documentation":
@@ -3038,11 +3034,19 @@ class Choreographer:
           The 'research' allowance covers genuine spike work (try a
           library, prototype an approach) — NOT coordination/handoff,
           which is PM work.
+        - (#7): the UX/UI cell's developers ARE its designers — for a
+          DEVELOPER on ``Team.UX_UI`` ``task_type='design'`` is legitimate
+          cell work (mockups, specs, design assets committed to the repo),
+          so ux-dev-1/ux-dev-2 also accept ``design``. Backend/frontend
+          devs still cannot be handed ``design`` — that routing belongs to
+          the UX cell. The orchestrator already dispatches a developer for a
+          ``design`` task (``_dev_dispatch_role_matches`` returns True), so
+          this does not create the orphan that blocks ``documentation``.
         - Delegating to a QA requires ``task_type='code'`` (their work is
           to review PRs of code changes).
         - Delegating to a Documenter requires ``task_type='documentation'``.
         """
-        from roboco.foundation.identity import AGENTS, Role
+        from roboco.foundation.identity import AGENTS, Role, Team
 
         if assigned_to in Choreographer._CELL_PM_SLUGS and task_type != "planning":
             return (
@@ -3052,16 +3056,23 @@ class Choreographer:
         agent = AGENTS.get(assigned_to)
         if agent is None:
             return None
-        if agent.role is Role.DEVELOPER and task_type not in {
-            "code",
-            "documentation",
-            "research",
-        }:
-            return (
-                f"task_type={task_type!r} is invalid for assignee {assigned_to!r}: "
-                f"Developers own code/documentation/research. Coordination, "
-                f"planning, design, and administrative work belong to PMs."
-            )
+        if agent.role is Role.DEVELOPER:
+            is_ux_dev = agent.team is Team.UX_UI
+            allowed = {"code", "documentation", "research"}
+            owned = "code/documentation/research"
+            design_clause = "."
+            if is_ux_dev:
+                allowed.add("design")
+                owned = "code/documentation/research/design"
+            else:
+                design_clause = "; design belongs to the UX cell."
+            if task_type not in allowed:
+                return (
+                    f"task_type={task_type!r} is invalid for assignee "
+                    f"{assigned_to!r}: Developers own {owned}. Coordination, "
+                    f"planning, and administrative work belong to PMs"
+                    f"{design_clause}"
+                )
         if agent.role is Role.QA and task_type != "code":
             return (
                 f"task_type={task_type!r} is invalid for assignee {assigned_to!r}: "
@@ -3074,6 +3085,42 @@ class Choreographer:
                 f"'documentation'."
             )
         return None
+
+    @staticmethod
+    def _assignee_task_type_remediate(assigned_to: str) -> str:
+        """Per-assignee-class remediation for an assignee-vs-task_type reject.
+
+        The reject `message` is already case-specific; this gives the PM the
+        right *next call* for the kind of assignee it just mis-typed instead
+        of a one-size-fits-all 'pass planning to a Cell PM' hint.
+        """
+        from roboco.foundation.identity import AGENTS, Role, Team
+
+        if assigned_to in Choreographer._CELL_PM_SLUGS:
+            return (
+                "Cell PMs (be-pm/fe-pm/ux-pm) own PLANNING tasks — they "
+                "decompose the slice and delegate code work to devs. Pass "
+                "task_type='planning' when delegating to a Cell PM."
+            )
+        agent = AGENTS.get(assigned_to)
+        if agent is not None and agent.role is Role.DEVELOPER:
+            if agent.team is Team.UX_UI:
+                return (
+                    "UX developers take task_type in "
+                    "{'code','documentation','research','design'}. Use "
+                    "'design' for mockups/specs/design-asset work, 'code' "
+                    "for implementation."
+                )
+            return (
+                "Developers take task_type in "
+                "{'code','documentation','research'}. Use 'code' for "
+                "implementation; planning/administrative work stays with you "
+                "(the PM), and design work is routed to the UX cell."
+            )
+        return (
+            "Match task_type to the assignee's role: 'code' for devs/QA, "
+            "'documentation' for documenters, 'planning' for Cell PMs."
+        )
 
     async def _delegate_lifecycle_guards(
         self,
