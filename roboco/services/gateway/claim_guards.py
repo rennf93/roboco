@@ -81,6 +81,34 @@ def paused_tasks_guard(paused_tasks: list[Any]) -> Envelope | None:
     )
 
 
+def unmet_dependency_guard(
+    target_task: Any, unmet_dependency_ids: list[UUID]
+) -> Envelope | None:
+    """Refuse claim while the task has non-terminal dependencies.
+
+    A task may not be claimed until every task it ``depends_on`` reaches a
+    terminal state (completed/cancelled). This holds the pre-assigned dev
+    that arrives via the claim verb directly — the dependency filter on the
+    unassigned claim pool (``list_pending(filter_by_dependencies=True)``)
+    never sees a pre-assigned task. ``unmet_dependency_ids`` is resolved by
+    the caller (it requires a DB read) so this predicate stays pure.
+    """
+    if not unmet_dependency_ids:
+        return None
+    blockers = ", ".join(str(dep_id) for dep_id in unmet_dependency_ids)
+    return Envelope.invalid_state(
+        message=(
+            f"task {target_task.id} depends on unfinished work; "
+            f"{len(unmet_dependency_ids)} dependency(ies) not yet "
+            "completed/cancelled."
+        ),
+        remediate=(
+            f"wait for dependency task(s) {blockers} to reach "
+            "completed/cancelled before claiming this task"
+        ),
+    )
+
+
 def _earlier_blocking_sibling(
     target_task: Any, siblings: list[Any], my_sequence: int
 ) -> Any | None:
