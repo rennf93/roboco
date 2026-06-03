@@ -613,6 +613,29 @@ class Choreographer:
             return f"call i_will_plan(task_id='{tid}', plan='<plan>') to start"
         return f"call i_will_work_on(task_id='{tid}', plan='<plan>') to start"
 
+    async def _drop_dependency_held(self, tasks: list[Any]) -> list[Any]:
+        """Drop pre-assigned PENDING tasks whose non-terminal dependencies are
+        still unresolved.
+
+        ``give_me_work``'s ``list_assigned_for_agent`` fallback includes PENDING
+        rows with no dependency filter, so without this a held pre-assigned
+        subtask (e.g. a frontend dev's task waiting on the UX/UI design) would
+        still be offered and the agent only bounced at claim time. Mirrors the
+        gate in ``TaskService.list_pending_for_agent`` and ``_run_claim_guards``.
+        Only PENDING rows are gated — an already-claimed task is past the gate.
+        """
+        offerable: list[Any] = []
+        for task in tasks:
+            dep_ids = list(getattr(task, "dependency_ids", []) or [])
+            if (
+                str(task.status) == "pending"
+                and dep_ids
+                and await self._deps.task.unmet_dependency_ids(dep_ids)
+            ):
+                continue
+            offerable.append(task)
+        return offerable
+
     async def give_me_work(self, agent_id: UUID) -> Envelope:
         """Return the agent's most-actionable task or signal idle."""
         agent = await self._deps.task.agent_for(agent_id)
@@ -632,7 +655,9 @@ class Choreographer:
                 next=self._claim_verb_hint(role, t),
                 context_briefing=await self._briefing_for(agent_id, t.id),
             ).with_introspection(task=t, role=role)
-        assigned = await self._deps.task.list_assigned_for_agent(agent_id)
+        assigned = await self._drop_dependency_held(
+            await self._deps.task.list_assigned_for_agent(agent_id)
+        )
         if assigned:
             t = assigned[0]
             return Envelope.ok(
