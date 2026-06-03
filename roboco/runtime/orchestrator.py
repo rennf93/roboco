@@ -4189,11 +4189,11 @@ Start now: evidence(task_id="{task_id}")
     ) -> None:
         """Review an assigned board task with the FULL board (PO + HoM), ONCE each.
 
-        Cluster C5 / finding #4: a board/coordination task — especially one with
-        a UI / user-facing dimension — must be reviewed by BOTH the Product
-        Owner AND the Head of Marketing before it is handed to the CEO. The task
-        is assigned to one board agent, but the review is a two-reviewer gate, so
-        this dispatches both regardless of which one ``assigned_to`` names.
+        A board/coordination task — especially one with a UI / user-facing
+        dimension — must be reviewed by BOTH the Product Owner AND the Head of
+        Marketing before it is handed to the CEO. The task is assigned to one
+        board agent, but the review is a two-reviewer gate, so this dispatches
+        both regardless of which one ``assigned_to`` names.
 
         Board roles advise: they can triage, record notes, and discuss, but have
         NO verb to claim, plan, delegate, or complete. A respawn cannot advance
@@ -4202,8 +4202,9 @@ Start now: evidence(task_id="{task_id}")
         hands the task to Main PM for delegation to the cells.
 
         Once BOTH reviewers have finished (each dispatched and no longer active),
-        a single formal CEO notification is emitted (finding #2) so the handoff
-        to Approve & Start is an actionable signal rather than buried chatter.
+        the board-review handoff fires: the task is flagged board-reviewed and a
+        single formal CEO notification is emitted so Approve & Start is an
+        actionable signal rather than buried chatter.
         """
         # `assigned_to` only gates that this IS a board task; the review itself
         # always involves the whole board, not just the named assignee.
@@ -4212,7 +4213,7 @@ Start now: evidence(task_id="{task_id}")
         task_id = str(task.get("id"))
         for board_slug in sorted(self._BOARD_AGENTS):
             await self._dispatch_board_reviewer(board_slug, task_id, task)
-        await self._maybe_notify_ceo_board_review_complete(task_id)
+        await self._maybe_handoff_board_review_to_ceo(task_id)
 
     async def _dispatch_board_reviewer(
         self, board_slug: str, task_id: str, task: dict[str, Any]
@@ -4255,41 +4256,52 @@ Start now: evidence(task_id="{task_id}")
             for board_slug in self._BOARD_AGENTS
         )
 
-    async def _maybe_notify_ceo_board_review_complete(self, task_id: str) -> None:
-        """Emit a one-shot CEO notification when the board review is complete.
+    async def _maybe_handoff_board_review_to_ceo(self, task_id: str) -> None:
+        """Unlock the CEO's Approve & Start gate when the board review is done.
 
-        Board roles are exactly the senders permitted to issue formal
-        notifications, but the board agents only post channel dialogue + journal
-        notes during their review (finding #2: the CEO got count=0 notifications
-        after the PO finished). The orchestrator closes that gap: once both
-        reviewers are done, it emits an APPROVAL notification (ack-required, with
-        ``related_task_id``) to the CEO on the board's behalf. Fires exactly once
-        per task; notification failure is logged and swallowed so it never
-        blocks the dispatch loop.
+        Two one-shot effects fire once BOTH board reviewers have finished:
+          1. Persist ``board_review_complete`` on the task. The task stays
+             pending (its pending state is what hands it to Main PM on approval),
+             so this flag is the only thing that makes the CEO's Approve & Start
+             button appear — it never shows on a board task the board hasn't
+             finished reviewing.
+          2. Emit an ack-required APPROVAL notification to the CEO. Board agents
+             only post channel dialogue + journal notes during review, which
+             left the CEO with no actionable signal; this is that signal.
+
+        Fires at most once per task; a failure clears the guard so a later tick
+        retries, and never blocks the dispatch loop.
         """
         if task_id in self._board_review_ceo_notified:
             return
         if not self._board_review_complete(task_id):
             return
         self._board_review_ceo_notified.add(task_id)
+        from uuid import UUID
+
+        from roboco.db.base import get_db_context
         from roboco.services.notification import NotificationService
+        from roboco.services.task import TaskService
 
         try:
+            async with get_db_context() as db:
+                await TaskService(db).mark_board_review_complete(UUID(task_id))
+                await db.commit()
             await NotificationService().send_board_review_complete_notification(
                 task_id=task_id,
             )
         except Exception as exc:
-            # Don't wedge dispatch on a notification failure; allow a retry by
-            # clearing the one-shot guard so a later tick can re-emit.
+            # Don't wedge dispatch on a failure; allow a retry by clearing the
+            # one-shot guard so a later tick can re-run the handoff.
             self._board_review_ceo_notified.discard(task_id)
             logger.warning(
-                "Failed to notify CEO of board-review completion",
+                "Failed to hand board-review completion to CEO",
                 task_id=task_id,
                 error=str(exc),
             )
             return
         logger.info(
-            "Notified CEO that board review is complete (ready for Approve & Start)",
+            "Board review complete — CEO Approve & Start unlocked",
             task_id=task_id,
         )
 

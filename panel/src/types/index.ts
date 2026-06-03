@@ -280,6 +280,9 @@ export interface Task {
   // PR Tracking (parallel execution in awaiting_documentation)
   docs_complete: boolean;
   pr_created: boolean;
+  // True once PO + Head of Marketing have both reviewed a pending board task.
+  // Gates the CEO's Approve & Start button (the task stays pending throughout).
+  board_review_complete?: boolean;
   pm_approvals: Record<string, boolean>;
   // Planning
   plan: TaskPlan | null;
