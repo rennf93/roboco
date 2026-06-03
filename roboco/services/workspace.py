@@ -86,31 +86,35 @@ def _make_owner_and_group_rw(entry: str) -> None:
 
 
 def _ensure_agent_owned(workspace: Path) -> None:
-    """Recursively chown + group-write a workspace for the agent user.
+    """Chown + group-write the .git subtree for the agent user.
 
     Orchestrator runs as root so anything it clones or writes is root-owned.
     Agent containers run as uid 1000 and must be able to create
-    .git/index.lock, refs, packed-refs, and new source files — otherwise
-    every git operation (and even plain file writes) fails with
-    "Permission denied". Called after clone and on every ensure_workspace
-    so legacy (pre-fix) workspaces get repaired.
+    .git/index.lock, refs, packed-refs, and objects — otherwise every git
+    operation fails with "Permission denied". Called after clone and on every
+    ensure_workspace so legacy (pre-fix) workspaces get repaired.
 
-    Two defenses (both cheap, both idempotent):
-    1. chown every entry to (AGENT_UID, AGENT_GID). On setups where user
-       namespaces silently remap or reject the chown (some NAS / rootless
-       docker configs), we log the failure instead of swallowing it — so
-       when writes still fail from the agent, we can actually see why.
-    2. chmod g+w on every file/dir. If chown doesn't take effect, having
-       the group writable (and with AGENT_GID) is enough for uid 1000 to
-       write, provided agent is in that group. Belt + suspenders.
+    The walk is scoped to ``.git`` only. Working-tree files (and especially a
+    multi-thousand-entry ``node_modules/``) don't need chowning for git to
+    work, and walking them cost 2.7-15.5s per git op. If ``.git`` is absent
+    (never cloned), there is nothing to own and we no-op.
 
-    The previous fast-path (skip walk if top-level stat already matches)
-    was unsafe: a root-owned file deep under an agent-owned top dir would
-    not get repaired, which is exactly how README.md ends up root:root
-    even after ensure_workspace runs.
+    Two defenses (both cheap, both idempotent), applied to every entry under
+    ``.git``:
+    1. chown to (AGENT_UID, AGENT_GID). On setups where user namespaces
+       silently remap or reject the chown (some NAS / rootless docker
+       configs), we log the failure instead of swallowing it — so when writes
+       still fail from the agent, we can actually see why.
+    2. chmod g+w. If chown doesn't take effect, having the group writable
+       (and with AGENT_GID) is enough for uid 1000 to write, provided agent
+       is in that group. Belt + suspenders.
     """
+    git_dir = workspace / ".git"
+    if not git_dir.exists():
+        return
+
     failed_chowns = 0
-    for root, dirs, files in os.walk(workspace):
+    for root, dirs, files in os.walk(git_dir):
         entries = (
             root,
             *[str(Path(root) / d) for d in dirs],
