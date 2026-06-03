@@ -21,6 +21,7 @@ import {
   GitBranch,
   Database,
   Cpu,
+  MessageSquarePlus,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { ScrollArea } from "@/components/ui/scroll-area";
@@ -32,6 +33,7 @@ const navItems = [
 
   // Work Management
   { title: "Tasks", href: "/tasks", icon: ListTodo },
+  { title: "Task Chat", href: "/task-chat", icon: MessageSquarePlus },
   { title: "Kanban", href: "/kanban", icon: Kanban },
 
   // Development
