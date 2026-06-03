@@ -196,8 +196,11 @@ class _NonexistentPath:
 
 
 def test_resolve_log_dir_dev_fallback(monkeypatch: pytest.MonkeyPatch) -> None:
-    """When neither override nor container path exist, fall back to ./logs."""
+    """When neither override nor container path exist, fall back to the data dir's
+    logs (./data/logs) — the SAME directory the compose mount maps to /data/logs,
+    so a host-side run never creates a separate ./logs at the repo root."""
     monkeypatch.delenv("ROBOCO_LOG_DIR", raising=False)
+    monkeypatch.delenv("ROBOCO_DATA_DIR", raising=False)
 
     real_path = Path
 
@@ -209,7 +212,26 @@ def test_resolve_log_dir_dev_fallback(monkeypatch: pytest.MonkeyPatch) -> None:
     with patch("roboco.logging.Path", side_effect=fake_path):
         out = _resolve_log_dir()
     assert isinstance(out, Path)
-    assert str(out) == "logs"
+    assert str(out) == "data/logs"
+
+
+def test_resolve_log_dir_dev_fallback_honors_data_dir(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The host-side fallback honors $ROBOCO_DATA_DIR so it matches the mount."""
+    monkeypatch.delenv("ROBOCO_LOG_DIR", raising=False)
+    monkeypatch.setenv("ROBOCO_DATA_DIR", "/srv/roboco/data")
+
+    real_path = Path
+
+    def fake_path(p: str) -> object:
+        if str(p) == "/data/logs":
+            return _NonexistentPath()
+        return real_path(p)
+
+    with patch("roboco.logging.Path", side_effect=fake_path):
+        out = _resolve_log_dir()
+    assert str(out) == "/srv/roboco/data/logs"
 
 
 # ---------------------------------------------------------------------------

@@ -173,7 +173,11 @@ def _resolve_log_dir() -> Path | None:
     Order of precedence:
     1. $ROBOCO_LOG_DIR (explicit override).
     2. /data/logs — standard mount from docker-compose inside containers.
-    3. ./logs — local dev fallback, relative to CWD.
+    3. ${ROBOCO_DATA_DIR:-./data}/logs — host-side fallback. This is the SAME
+       directory the compose mount maps to /data/logs, so a host-side run
+       (pytest, a script, the dev orchestrator — where /data does not exist)
+       writes into ./data/logs instead of creating a separate ./logs at the
+       repo root that duplicates the real log location.
     4. None — disables file logging (caller just uses stdout).
     """
     override = os.environ.get("ROBOCO_LOG_DIR")
@@ -182,7 +186,7 @@ def _resolve_log_dir() -> Path | None:
     container_path = Path("/data/logs")
     if container_path.is_dir() or container_path.parent.is_dir():
         return container_path
-    return Path("./logs")
+    return Path(os.environ.get("ROBOCO_DATA_DIR", "./data")) / "logs"
 
 
 def get_logger(name: str | None = None) -> BoundLogger:
