@@ -81,7 +81,10 @@ async def test_commit_descriptive_with_active_task_succeeds() -> None:
     agent_id = uuid4()
     task_id = uuid4()
     task_obj = MagicMock(
-        id=task_id, status="in_progress", branch_name="feature/backend/abc"
+        id=task_id,
+        status="in_progress",
+        branch_name="feature/backend/abc",
+        active_claimant_id=agent_id,
     )
     task_svc = AsyncMock()
     task_svc.get_active_task_for_agent.return_value = task_obj
@@ -133,7 +136,10 @@ async def test_commit_strips_existing_task_prefix() -> None:
     task_id = uuid4()
     expected_prefix = f"[{str(task_id)[:8]}]"
     task_obj = MagicMock(
-        id=task_id, status="in_progress", branch_name="feature/backend/abc"
+        id=task_id,
+        status="in_progress",
+        branch_name="feature/backend/abc",
+        active_claimant_id=agent_id,
     )
     task_svc = AsyncMock()
     task_svc.get_active_task_for_agent.return_value = task_obj
@@ -214,7 +220,10 @@ async def test_commit_allows_documenter_role() -> None:
     agent_id = uuid4()
     task_id = uuid4()
     task_obj = MagicMock(
-        id=task_id, status="awaiting_documentation", branch_name="feature/backend/abc"
+        id=task_id,
+        status="awaiting_documentation",
+        branch_name="feature/backend/abc",
+        active_claimant_id=agent_id,
     )
     task_svc = AsyncMock()
     task_svc.agent_for.return_value = MagicMock(role="documenter")
@@ -747,7 +756,12 @@ async def test_reflect_thin_note_records_without_rejection() -> None:
 
 
 def _active_task(agent_id: object) -> MagicMock:
-    return MagicMock(id=uuid4(), assigned_to=agent_id, status="in_progress")
+    return MagicMock(
+        id=uuid4(),
+        assigned_to=agent_id,
+        active_claimant_id=agent_id,
+        status="in_progress",
+    )
 
 
 @pytest.mark.asyncio

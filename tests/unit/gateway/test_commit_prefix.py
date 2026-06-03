@@ -60,6 +60,7 @@ async def test_commit_prefixes_with_task_id_short() -> None:
     t = MagicMock(
         id=tid,
         assigned_to=aid,
+        active_claimant_id=aid,
         plan="x",
         status="in_progress",
         branch_name="feature/backend/abcd1234",
@@ -95,6 +96,7 @@ async def test_commit_strips_then_re_adds_prefix() -> None:
     t = MagicMock(
         id=tid,
         assigned_to=aid,
+        active_claimant_id=aid,
         plan="x",
         status="in_progress",
         branch_name="feature/backend/abcd1234",
@@ -127,6 +129,7 @@ async def test_commit_prefix_collapses_multiple_spaces() -> None:
     t = MagicMock(
         id=tid,
         assigned_to=aid,
+        active_claimant_id=aid,
         plan="x",
         status="in_progress",
         branch_name="feature/backend/abcd1234",

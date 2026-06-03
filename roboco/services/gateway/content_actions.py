@@ -11,9 +11,12 @@ Pure orchestration; no DB writes outside what the underlying services do.
 
 from __future__ import annotations
 
+import contextlib
 import re
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, ClassVar
+
+import structlog
 
 from roboco.config import settings
 from roboco.exceptions import GitError
@@ -25,6 +28,9 @@ from roboco.services.gateway.evidence_builder import build_evidence_for_task
 
 if TYPE_CHECKING:
     from uuid import UUID
+
+
+logger = structlog.get_logger()
 
 
 # Scope catalog is canonical in foundation.policy.journaling.
@@ -195,6 +201,27 @@ def _ownership_violation(task_id: UUID) -> Envelope:
     )
 
 
+def _not_active_claimant(task_id: UUID) -> Envelope:
+    """Envelope for a caller who holds no active claim on ``task_id``.
+
+    The caller may still be the historical ``assigned_to`` (e.g. its claim
+    was reaped for going silent, or the task was handed to another agent),
+    but ``active_claimant_id`` no longer points at it. Writing would race the
+    real claimant, so the write is refused.
+    """
+    return Envelope.not_authorized(
+        message=(
+            f"you do not hold the active claim on {task_id}; "
+            "another agent owns it now or your claim was released"
+        ),
+        remediate=(
+            "call i_am_idle() and give_me_work() to pick up fresh work; "
+            "if you believe this is your task, re-claim it before writing"
+        ),
+        context_briefing={},
+    )
+
+
 @dataclass(frozen=True)
 class ContentActionsDeps:
     """Service deps for ContentActions; bundled to keep init signature flat."""
@@ -255,6 +282,38 @@ class ContentActions:
     def evidence_repo(self) -> Any:
         return self._deps.evidence_repo
 
+    async def _touch_heartbeat(self, task_id: UUID | None) -> None:
+        """Best-effort heartbeat refresh on a content-write success path.
+
+        Mirrors the choreographer's rejection-path heartbeat: an agent that
+        is actively committing / posting progress is alive, so refresh
+        ``last_heartbeat_at`` here too — otherwise the reaper sees the claim
+        as stale between verb successes. Wrapped in ``suppress`` so a
+        heartbeat write failure can never alter the response the agent gets.
+        """
+        if task_id is None:
+            return
+        with contextlib.suppress(Exception):
+            await self.task.heartbeat(task_id)
+
+    async def _active_claim_violation(
+        self, agent_id: UUID, task: Any
+    ) -> Envelope | None:
+        """Refuse a content write when the caller is not the active claimant.
+
+        ``assigned_to`` alone is insufficient: a reaped or handed-off agent
+        keeps ``assigned_to`` until reassignment, but ``active_claimant_id``
+        is cleared the moment its claim is released. Only the holder of the
+        active claim may write. A board co-reviewer on a coordination task is
+        exempt (it shares the task with the other board member by design).
+        """
+        claimant = getattr(task, "active_claimant_id", None)
+        if claimant == agent_id:
+            return None
+        if await self._board_may_co_review(agent_id, task):
+            return None
+        return _not_active_claimant(task.id)
+
     async def commit(
         self,
         *,
@@ -301,6 +360,8 @@ class ContentActions:
                 remediate="call give_me_work() first",
                 context_briefing={},
             )
+        if reject := await self._active_claim_violation(agent_id, t):
+            return reject
         canonical_prefix = f"[{str(t.id)[:8]}]"
         final_message = f"{canonical_prefix} {subject}"
         commit_result = await self.git.commit(
@@ -313,6 +374,7 @@ class ContentActions:
         await self.task.add_progress(
             t.id, agent_id, f"committed {sha[:8]}: {final_message}"
         )
+        await self._touch_heartbeat(t.id)
         return Envelope.ok(
             status=str(t.status),
             task_id=str(t.id),
@@ -434,6 +496,7 @@ class ContentActions:
             title=title,
             content=content,
         )
+        await self._touch_heartbeat(task_id)
         return Envelope.ok(
             status="noted",
             task_id=str(task_id) if task_id else None,
@@ -710,6 +773,36 @@ class ContentActions:
         {"cell_pm", "main_pm", "product_owner", "head_marketing", "ceo"}
     )
 
+    _PROGRESS_ACTIVE_STATUSES: ClassVar[frozenset[str]] = frozenset(
+        {"in_progress", "verifying", "awaiting_qa", "awaiting_documentation"}
+    )
+
+    async def _progress_precondition_reject(
+        self, agent_id: UUID, task: Any
+    ) -> Envelope | None:
+        """Ownership + active-claim + active-status gate for progress().
+
+        Returns the rejection envelope, or None when all preconditions hold.
+        Extracted so ``progress`` stays under the return-count bound.
+        """
+        if task.assigned_to != agent_id:
+            return _ownership_violation(task.id)
+        if reject := await self._active_claim_violation(agent_id, task):
+            return reject
+        if str(task.status) not in self._PROGRESS_ACTIVE_STATUSES:
+            return Envelope.invalid_state(
+                message=(
+                    f"task is in {task.status!r}; progress updates only valid "
+                    f"in active statuses ({sorted(self._PROGRESS_ACTIVE_STATUSES)})"
+                ),
+                remediate=(
+                    "use evidence(task_id) to re-read state; if you're past "
+                    "i_am_done, the run has moved on — call i_am_idle()"
+                ),
+                context_briefing={},
+            )
+        return None
+
     async def progress(
         self,
         *,
@@ -728,32 +821,20 @@ class ContentActions:
         mid-step documentation and carries the current derived %.
         ``percentage`` is only a fallback for tasks with no checklist.
 
-        Caller must be the task's assignee and the task must be in an
-        active status — same constraints as the pre-gateway handler.
+        Omitting ``plan_step`` on a task that *has* steps is accepted (a
+        product decision — narrative mid-step updates are valid) but logs a
+        soft warning so the gap is visible. It is never rejected.
+
+        Caller must be the active claimant and the task must be in an
+        active status — same constraints as the pre-gateway handler, plus
+        the single-claimant guard so a reaped/handed-off assignee cannot
+        keep writing.
         """
-        active = {
-            "in_progress",
-            "verifying",
-            "awaiting_qa",
-            "awaiting_documentation",
-        }
         t = await self.task.get(task_id)
         if t is None:
             return Envelope.not_found(message=f"task {task_id} not found")
-        if t.assigned_to != agent_id:
-            return _ownership_violation(task_id)
-        if str(t.status) not in active:
-            return Envelope.invalid_state(
-                message=(
-                    f"task is in {t.status!r}; progress updates only valid "
-                    f"in active statuses ({sorted(active)})"
-                ),
-                remediate=(
-                    "use evidence(task_id) to re-read state; if you're past "
-                    "i_am_done, the run has moved on — call i_am_idle()"
-                ),
-                context_briefing={},
-            )
+        if reject := await self._progress_precondition_reject(agent_id, t):
+            return reject
         result = await self.task.record_plan_progress(
             task_id=task_id,
             agent_id=agent_id,
@@ -773,6 +854,14 @@ class ContentActions:
                 ),
                 context_briefing={},
             )
+        if plan_step is None and result["valid_steps"]:
+            logger.warning(
+                "progress() called without plan_step on a stepped task",
+                task_id=str(task_id),
+                agent_id=str(agent_id),
+                valid_steps=result["valid_steps"],
+            )
+        await self._touch_heartbeat(task_id)
         return Envelope.ok(
             status=str(t.status),
             task_id=str(task_id),

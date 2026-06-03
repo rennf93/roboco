@@ -78,6 +78,7 @@ async def test_commit_active_task_returned_must_be_caller_owned() -> None:
         id=task_id,
         status="in_progress",
         assigned_to=agent_id,
+        active_claimant_id=agent_id,
         branch_name="feature/backend/abc",
     )
     task_svc = AsyncMock()
