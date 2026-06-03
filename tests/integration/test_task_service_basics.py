@@ -3,7 +3,7 @@
 The service has 60+ methods covering the full task lifecycle. This file
 covers the read path and the simpler create/list helpers; lifecycle
 transitions (claim, submit_for_qa, complete, ...) are exercised by the
-existing v2-flow integration tests.
+existing v1-flow integration tests.
 """
 
 from __future__ import annotations

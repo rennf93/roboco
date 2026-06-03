@@ -16,6 +16,7 @@ import {
   Bot,
   Shield,
   BookOpen,
+  Boxes,
   FolderGit2,
   GitBranch,
   Database,
@@ -35,6 +36,7 @@ const navItems = [
 
   // Development
   { title: "Projects", href: "/projects", icon: FolderGit2 },
+  { title: "Products", href: "/products", icon: Boxes },
   { title: "Git", href: "/git", icon: GitBranch },
 
   // Team & Reference

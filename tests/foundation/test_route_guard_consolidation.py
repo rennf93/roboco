@@ -1,6 +1,6 @@
-"""Route-guard role-sets in api/deps + api/routes/v2/_role_dep derive from foundation.
+"""Route-guard role-sets in api/deps + api/routes/v1/_role_dep derive from foundation.
 
-The HTTP-layer guards in `roboco.api.deps` and `roboco.api.routes.v2._role_dep`
+The HTTP-layer guards in `roboco.api.deps` and `roboco.api.routes.v1._role_dep`
 historically used hand-written frozensets of role-name strings. Phase 4 Task 11
 moves those literals onto `foundation.identity` so adding/renaming a role only
 edits one file. These tests pin the foundation-derived membership and the
@@ -17,7 +17,7 @@ from roboco.api.deps import (
     _GLOBAL_CELL_ACCESS_ROLES,
     _PM_OR_ABOVE_ROLES,
 )
-from roboco.api.routes.v2 import _role_dep
+from roboco.api.routes.v1 import _role_dep
 from roboco.foundation.identity import BOARD_ROLES, DEV_ROLES, PM_ROLES, Role
 
 
@@ -56,13 +56,13 @@ def test_deps_module_imports_from_foundation() -> None:
 
 
 def test_role_dep_module_imports_from_foundation() -> None:
-    """`roboco.api.routes.v2._role_dep` sources its Role enum from foundation."""
+    """`roboco.api.routes.v1._role_dep` sources its Role enum from foundation."""
     src = inspect.getsource(_role_dep)
     assert "from roboco.foundation.identity import" in src
 
 
-def test_v2_role_dep_sets_match_foundation_roles() -> None:
-    """v2 single-role guards use foundation Role values, not raw strings."""
+def test_v1_role_dep_sets_match_foundation_roles() -> None:
+    """v1 single-role guards use foundation Role values, not raw strings."""
     # Single-role guards should pass through Role-typed frozensets so
     # renaming a role lives in foundation, not the guard literal.
     # The Depends() objects wrap the closure, so we can't introspect the

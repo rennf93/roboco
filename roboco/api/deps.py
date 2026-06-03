@@ -33,6 +33,7 @@ from roboco.services.messaging import MessagingService
 from roboco.services.notification import NotificationService
 from roboco.services.notification_delivery import NotificationDeliveryService
 from roboco.services.permissions import AgentContext, PermissionService
+from roboco.services.product import ProductService
 from roboco.services.repositories import resolve_agent_identity, resolve_agent_uuid
 from roboco.services.task import TaskService
 from roboco.services.work_session import WorkSessionService
@@ -513,6 +514,7 @@ async def get_choreographer(
             audit=get_audit_service(),
             evidence_repo=EvidenceRepo(db_session),
             messaging=MessagingService(db_session),
+            product=ProductService(db_session),
         )
     )
 

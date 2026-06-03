@@ -268,12 +268,10 @@ async def test_submit_for_qa_writes_audit_with_dev_agent_id(
         sequence=0,
         plan={"steps": ["impl"]},
         estimated_complexity=Complexity.MEDIUM,
-        execution_log={},
         checkpoints=[],
         progress_updates=[{"at": "t0", "note": "started"}],
         commits=[{"sha": "abc123", "message": "[AUDIT001] init"}],
         documents=[],
-        outputs=[],
         dev_notes="impl complete",
         self_verified=True,
     )

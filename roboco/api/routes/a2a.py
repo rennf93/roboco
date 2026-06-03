@@ -134,7 +134,8 @@ async def send_message(
                 "error": "TASK_ID_REQUIRED",
                 "message": "A2A requests must include task_id.",
                 "hint": "A2A is for communication about existing tasks. "
-                "Use roboco_task_create() first if you need a new task.",
+                "Ask your PM to create the task first if you need a new "
+                "task (PMs author tasks via the planning/delegation flow).",
             },
         )
 

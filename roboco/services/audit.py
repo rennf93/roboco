@@ -13,8 +13,6 @@ from uuid import UUID
 
 from roboco.models.audit import (
     AuditEventType,
-    PermissionDenialContext,
-    StateTransitionDenialContext,
 )
 from roboco.services.base import SingletonService
 
@@ -57,16 +55,17 @@ class AuditService(SingletonService):
     Usage:
         audit = AuditService()
 
-        # Log a permission denial
-        await audit.log_permission_denial(
+        # Log a task action denial
+        await audit.log_task_action_denial(
             agent_id=agent_id,
-            action="create_task",
-            resource="task",
+            agent_role="developer",
+            task_id=task_id,
+            action="claim",
             reason="Role not permitted",
         )
 
         # Query audit logs
-        logs = await audit.get_recent_denials(limit=50)
+        events = await audit.get_recent_events(limit=50)
     """
 
     service_name: ClassVar[str] = "audit"
@@ -109,73 +108,6 @@ class AuditService(SingletonService):
     # LOGGING METHODS
     # =========================================================================
 
-    async def log_permission_denial(
-        self,
-        ctx: PermissionDenialContext,
-    ) -> None:
-        """
-        Log a permission denial.
-
-        This is the primary method for logging when an agent is denied
-        permission to perform an action.
-        """
-        self.log.warning(
-            "Permission denied",
-            event_type=AuditEventType.PERMISSION_DENIED.value,
-            agent_id=str(ctx.agent_id),
-            action=ctx.action,
-            resource=ctx.resource,
-            resource_id=str(ctx.resource_id) if ctx.resource_id else None,
-            reason=ctx.reason,
-            details=ctx.details,
-            timestamp=datetime.now(UTC).isoformat(),
-        )
-        await self._persist(
-            _AuditEvent(
-                event_type=AuditEventType.PERMISSION_DENIED.value,
-                agent_id=ctx.agent_id,
-                target_type=ctx.resource,
-                target_id=ctx.resource_id,
-                severity="warning",
-                details={
-                    "action": ctx.action,
-                    "reason": ctx.reason,
-                    **(ctx.details or {}),
-                },
-            )
-        )
-
-    async def log_channel_access_denial(
-        self,
-        agent_id: str,
-        channel_slug: str,
-        access_type: str,
-        reason: str | None = None,
-    ) -> None:
-        """Log a channel access denial."""
-        self.log.warning(
-            "Channel access denied",
-            event_type=AuditEventType.CHANNEL_ACCESS_DENIED.value,
-            agent_id=str(agent_id),
-            channel_slug=channel_slug,
-            access_type=access_type,
-            reason=reason,
-            timestamp=datetime.now(UTC).isoformat(),
-        )
-        await self._persist(
-            _AuditEvent(
-                event_type=AuditEventType.CHANNEL_ACCESS_DENIED.value,
-                agent_id=agent_id,
-                target_type="channel",
-                severity="warning",
-                details={
-                    "channel_slug": channel_slug,
-                    "access_type": access_type,
-                    "reason": reason,
-                },
-            )
-        )
-
     async def log_task_action_denial(
         self,
         agent_id: str | UUID,
@@ -213,146 +145,6 @@ class AuditService(SingletonService):
                     "agent_role": actual_role,
                     "action": action,
                     "reason": reason,
-                },
-            )
-        )
-
-    async def log_state_transition_denial(
-        self,
-        ctx: StateTransitionDenialContext,
-    ) -> None:
-        """Log a state transition denial.
-
-        See log_task_action_denial: the persisted role is the actor's
-        actual role read from agents.role at write time, falling back
-        to ctx.agent_role only when the DB lookup fails.
-        """
-        actual_role = (
-            await self._resolve_actor_role_from_db(ctx.agent_id) or ctx.agent_role
-        )
-        self.log.warning(
-            "State transition denied",
-            event_type=AuditEventType.STATE_TRANSITION_DENIED.value,
-            agent_id=str(ctx.agent_id),
-            agent_role=actual_role,
-            task_id=str(ctx.task_id),
-            current_status=ctx.current_status,
-            target_status=ctx.target_status,
-            reason=ctx.reason,
-            timestamp=datetime.now(UTC).isoformat(),
-        )
-        await self._persist(
-            _AuditEvent(
-                event_type=AuditEventType.STATE_TRANSITION_DENIED.value,
-                agent_id=ctx.agent_id,
-                target_type="task",
-                target_id=ctx.task_id,
-                severity="warning",
-                details={
-                    "agent_role": actual_role,
-                    "current_status": ctx.current_status,
-                    "target_status": ctx.target_status,
-                    "reason": ctx.reason,
-                },
-            )
-        )
-
-    async def log_notification_denial(
-        self,
-        agent_id: str,
-        agent_role: str,
-        notification_type: str,
-        reason: str | None = None,
-    ) -> None:
-        """Log a notification permission denial.
-
-        See log_task_action_denial: the persisted role is the actor's
-        actual role read from agents.role at write time, falling back
-        to the supplied param only when the DB lookup fails.
-        """
-        actual_role = await self._resolve_actor_role_from_db(agent_id) or agent_role
-        self.log.warning(
-            "Notification permission denied",
-            event_type=AuditEventType.NOTIFICATION_DENIED.value,
-            agent_id=str(agent_id),
-            agent_role=actual_role,
-            notification_type=notification_type,
-            reason=reason,
-            timestamp=datetime.now(UTC).isoformat(),
-        )
-        await self._persist(
-            _AuditEvent(
-                event_type=AuditEventType.NOTIFICATION_DENIED.value,
-                agent_id=agent_id,
-                target_type="notification",
-                severity="warning",
-                details={
-                    "agent_role": actual_role,
-                    "notification_type": notification_type,
-                    "reason": reason,
-                },
-            )
-        )
-
-    async def log_security_event(
-        self,
-        event_type: AuditEventType,
-        agent_id: str | None,
-        description: str,
-        details: dict | None = None,
-    ) -> None:
-        """Log a general security event."""
-        self.log.warning(
-            "Security event",
-            event_type=event_type.value,
-            agent_id=str(agent_id) if agent_id else None,
-            description=description,
-            details=details,
-            timestamp=datetime.now(UTC).isoformat(),
-        )
-        await self._persist(
-            _AuditEvent(
-                event_type=event_type.value,
-                agent_id=agent_id,
-                severity="warning",
-                details={"description": description, **(details or {})},
-            )
-        )
-
-    async def log_pm_override(
-        self,
-        agent_id: str | UUID,
-        task_id: str | UUID,
-        action: str,
-        justification: str,
-        cancelled_subtask_ids: list[str] | None = None,
-    ) -> None:
-        """Log when a PM uses an override capability.
-
-        PM overrides are legitimate but need auditing - e.g., completing
-        a task despite cancelled subtasks when PM judges work is done.
-        """
-        self.log.info(
-            "PM override used",
-            event_type=AuditEventType.PM_OVERRIDE.value,
-            agent_id=str(agent_id),
-            task_id=str(task_id),
-            action=action,
-            justification=justification,
-            cancelled_subtask_ids=cancelled_subtask_ids,
-            timestamp=datetime.now(UTC).isoformat(),
-        )
-        await self._persist(
-            _AuditEvent(
-                event_type=AuditEventType.PM_OVERRIDE.value,
-                agent_id=agent_id,
-                target_type="task",
-                target_id=task_id,
-                severity="info",
-                details={
-                    "action": action,
-                    "justification": justification,
-                    "cancelled_subtask_ids": cancelled_subtask_ids or [],
                 },
             )
         )

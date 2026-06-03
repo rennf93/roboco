@@ -9,7 +9,7 @@ from pathlib import Path
 
 import pytest
 from roboco.api import deps as api_deps
-from roboco.api.routes.v2 import _role_dep as v2_role_dep
+from roboco.api.routes.v1 import _role_dep as v1_role_dep
 
 
 def test_lifecycle_module_lives_in_foundation():
@@ -69,9 +69,9 @@ def test_no_lifecycle_imports_in_production():
 
 
 def test_route_guard_role_sets_derive_from_foundation():
-    """api/deps.py + v2/_role_dep.py use foundation Role-set composition."""
+    """api/deps.py + v1/_role_dep.py use foundation Role-set composition."""
     deps_src = inspect.getsource(api_deps)
-    role_dep_src = inspect.getsource(v2_role_dep)
+    role_dep_src = inspect.getsource(v1_role_dep)
     assert (
         "from roboco.foundation.identity" in deps_src
         or "from roboco.foundation import" in deps_src

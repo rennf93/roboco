@@ -259,7 +259,7 @@ export function AIRoutingCard() {
               label="Ollama"
               description={
                 hasOllamaKey
-                  ? "Every agent uses Ollama Cloud (Minimax M2.7 default)."
+                  ? "Every agent uses Ollama Cloud (Minimax M3 default)."
                   : "Save the Ollama key first."
               }
               active={currentMode === "ollama"}

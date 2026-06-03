@@ -9,7 +9,7 @@ The orchestrator is the BRAIN of the system:
 - Claims tasks on behalf of agents before spawning
 - Agents receive their assignment at spawn time
 - Agents scan for more work after completing a task
-- Agents only call roboco_agent_idle() when truly no work remains
+- Agents only call i_am_idle() when truly no work remains
 """
 
 import asyncio
@@ -26,6 +26,8 @@ from typing import TYPE_CHECKING, Any, ClassVar
 import httpx
 
 if TYPE_CHECKING:
+    from collections.abc import Callable
+
     from roboco.services.llm import AgentRoute
     from roboco.services.task import TaskService
 import structlog
@@ -40,6 +42,7 @@ from roboco.agents_config import (
 )
 from roboco.config import settings
 from roboco.foundation import identity as _foundation
+from roboco.foundation.identity import CELL_TEAMS
 from roboco.foundation.policy.agent_loop import DEFAULT_BUDGET as _AGENT_LOOP_BUDGET
 from roboco.models import AgentRole, Team
 from roboco.models.runtime import (
@@ -94,21 +97,6 @@ AGENT_IMAGES: dict[str, str] = {
     "auditor": "roboco-agent-pm",
 }
 
-# Complete list of MCP tools that trigger traceability reminders.
-# Post-gateway: every state-changing verb agents call routes through
-# roboco-flow (intent verbs) or roboco-do (content tools). Read-only git
-# views (roboco-git-readonly) and KB queries (roboco-optimal) emit one
-# additional trigger because they are the inputs PMs/devs cite when they
-# justify their next move.
-TRACEABILITY_TRIGGER_TOOLS: list[str] = [
-    # === Intent verbs (all role-scoped lifecycle transitions) ===
-    "mcp__roboco-flow__*",
-    # === Content tools (commit/push/PR + journal/notify/message) ===
-    "mcp__roboco-do__*",
-    # === KB Tools ===
-    "mcp__roboco-optimal__roboco_ask_mentor",
-]
-
 
 def get_agent_image(agent_id: str) -> str:
     """Get the Docker image for an agent."""
@@ -149,6 +137,44 @@ def _read_project_slug(task: dict[str, Any]) -> str | None:
     project = task.get("project") or {}
     inner = project.get("slug") if isinstance(project, dict) else None
     return str(inner) if inner else None
+
+
+def _is_coordination_task(task: dict[str, Any]) -> bool:
+    """True for a board/fan-out task that carries a product but no repo of its own.
+
+    Such a task does no git work itself: its cell subtasks each resolve a real
+    project from the product's cell->project map (see TaskCreate's
+    project-or-product invariant and migration 018). It therefore has no
+    project_slug, branch_name, or git token, and must NOT be git-gated at the
+    spawn-readiness or stuck-detection checks the way a code task is. A task with
+    neither a project nor a product is genuinely unroutable and stays gated.
+    """
+    return not task.get("project_id") and bool(task.get("product_id"))
+
+
+# A branch is auto-created only at CLAIM (the claimed->in_progress transition).
+# Before that — while a task is still pending/backlog awaiting first dispatch —
+# it legitimately has no branch_name, so the readiness / stuck / spawn checks
+# must NOT treat a missing branch as a defect. These are the only states where
+# a code task is expected to already own a branch.
+_BRANCH_EXPECTED_STATES: frozenset[str] = frozenset(
+    {"claimed", "in_progress", "verifying"}
+)
+
+
+def _branch_is_expected(task: dict[str, Any]) -> bool:
+    """True iff this task should already have a branch_name.
+
+    A branch only exists at/after claim, and a coordination/fan-out task never
+    gets one (it does no git of its own). Gating the "missing branch_name"
+    readiness/stuck condition on this predicate stops the orchestrator from
+    auto-blocking a never-claimed PENDING code task that simply hasn't reached
+    the claim transition yet (issue #18: a pending task sat 13min, auto-blocked
+    every 30s, never dispatched).
+    """
+    if _is_coordination_task(task):
+        return False
+    return str(task.get("status") or "") in _BRANCH_EXPECTED_STATES
 
 
 def _resolve_agent_cli_model(provider_type: str, model: str) -> str:
@@ -285,7 +311,7 @@ def _build_manifest_for_agent(agent_id: str, model: str) -> Path | None:
 
 
 # =============================================================================
-# GATEWAY PRE-SPAWN CHECK (gated behind settings.gateway_enabled)
+# GATEWAY PRE-SPAWN CHECK (trigger_filter spawn cooldown)
 # =============================================================================
 
 
@@ -364,13 +390,8 @@ async def gateway_pre_spawn_check(
     Returns a ``(outcome, reason)`` tuple where ``outcome`` is one of
     ``"spawn"``, ``"queue"``, or ``"drop"``.
 
-    When ``settings.gateway_enabled`` is False (the default in Phase 0) this
-    function returns immediately with ``("spawn", "gateway disabled")`` so the
-    existing legacy dispatch path is **completely unchanged**.
+    The trigger_filter spawn cooldown runs unconditionally for every spawn.
     """
-    if not settings.gateway_enabled:
-        return "spawn", "gateway disabled (legacy path)"
-
     from roboco.db.base import get_session_factory
     from roboco.services.gateway.trigger_filter import (
         Decision,
@@ -504,6 +525,13 @@ class AgentOrchestrator:
         # delegate, or complete, so a respawn cannot advance the task and would
         # just loop. Tracks (agent_slug, task_id) already dispatched.
         self._board_dispatched: set[tuple[str, str]] = set()
+        # Cluster C5: a board review is a two-reviewer gate — BOTH the Product
+        # Owner and the Head of Marketing must review a board/coordination task
+        # before it is handed to the CEO for Approve & Start. Once both have
+        # finished (dispatched-and-no-longer-active), the orchestrator emits ONE
+        # formal CEO notification per task. Tracks task_ids already notified so
+        # the signal fires exactly once.
+        self._board_review_ceo_notified: set[str] = set()
         # Stale-claim reaper config. Wave C3 (2026-05-12): sourced from
         # stale_claim_reap_seconds (default 600) rather than
         # claim_stale_seconds (default 180). The two settings are now
@@ -576,40 +604,6 @@ class AgentOrchestrator:
             await self.stop_agent(agent_id)
 
         logger.info("Orchestrator stopped")
-
-    def get_running_agents(self) -> set[str]:
-        """Get set of currently running agent IDs."""
-        return set(self._instances.keys())
-
-    def is_agent_busy(self, agent_id: str) -> bool:
-        """
-        Check if agent has active work.
-
-        An agent is busy if:
-        1. They're in the running instances, AND
-        2. They have a task claimed/in_progress/verifying
-
-        Note: This is a lightweight check based on instance status.
-        For full busy detection, the event handler queries the database.
-        """
-        if agent_id not in self._instances:
-            return False
-        instance = self._instances[agent_id]
-        # If agent is running with a task, they're busy
-        return instance.current_task_id is not None
-
-    def queue_priority_work(self, agent_id: str, work: dict[str, Any]) -> None:
-        """
-        Queue priority work for an agent.
-
-        This is a placeholder for future priority queue functionality.
-        Currently logs the request for observability.
-        """
-        logger.info(
-            "Priority work queued (not yet implemented)",
-            agent_id=agent_id,
-            work_type=work.get("type", "unknown"),
-        )
 
     async def _ensure_agent_image(self, agent_id: str | None = None) -> None:
         """Ensure the agent Docker images are built.
@@ -925,16 +919,6 @@ class AgentOrchestrator:
                     },
                 ],
                 "PostToolUse": [
-                    # Traceability reminders (context-aware, runs on specific tools)
-                    {
-                        "matcher": "|".join(TRACEABILITY_TRIGGER_TOOLS),
-                        "hooks": [
-                            {
-                                "type": "command",
-                                "command": "/app/scripts/traceability-hook.sh",
-                            }
-                        ],
-                    },
                     # Check for incoming A2A messages after each tool use
                     {
                         "matcher": "*",
@@ -1182,12 +1166,10 @@ class AgentOrchestrator:
         remaining tasks were skipped until the next tick. This wrapper logs
         and returns None on failure so siblings still get dispatched.
 
-        When ``settings.gateway_enabled`` is True the gateway pre-spawn check
-        runs first; a QUEUE or DROP outcome skips the container launch.
-        When the flag is False (Phase 0 default) this block is a single
-        boolean test and the legacy path is completely unchanged.
+        The gateway pre-spawn check runs first; a QUEUE or DROP outcome skips
+        the container launch.
         """
-        # Gateway gate — zero-cost when gateway_enabled=False (Phase 0 default).
+        # Gateway pre-spawn cooldown gate.
         target_role = get_agent_role(agent_id) or "unknown"
         # Map context_label to one of the TriggerKind string values; unknown
         # labels fall back to "scan" which is the least-specific kind.
@@ -1693,10 +1675,10 @@ class AgentOrchestrator:
         return (
             "You may have been spawned without a specific task assignment. "
             "Follow your standard workflow:\n\n"
-            "1. Call `roboco_task_scan()` to find work for your role\n"
-            "2. If tasks found, claim with `roboco_task_claim(task_id)` "
-            "and begin: UNDERSTAND -> PLAN -> EXECUTE -> VERIFY -> HANDOFF\n"
-            "3. If no tasks available, call `roboco_agent_idle()` "
+            "1. Call `give_me_work()` to find work for your role\n"
+            "2. Begin the assigned task (its details arrive in the "
+            "response): UNDERSTAND -> PLAN -> EXECUTE -> VERIFY -> HANDOFF\n"
+            "3. If no tasks available, call `i_am_idle()` "
             "to shutdown gracefully\n\n"
             "Start now by scanning for work."
         )
@@ -1871,7 +1853,7 @@ class AgentOrchestrator:
             api_url = f"http://127.0.0.1:{settings.port}"
 
         agent_role = get_agent_role(agent_id) or ""
-        # Gateway v2 endpoints declare X-Agent-ID as Annotated[UUID, Header(...)],
+        # Gateway v1 endpoints declare X-Agent-ID as Annotated[UUID, Header(...)],
         # so the MCP server has to forward the agent's UUID — not the slug — or
         # every gateway call 422s on header parse. Resolve via AGENT_UUIDS map;
         # if the slug isn't in the map (custom agents), fall back to the slug
@@ -2049,10 +2031,15 @@ class AgentOrchestrator:
                 if persistent is not None:
                     return await self._readiness_block(client, task_id, persistent)
 
-                project_slug = _read_project_slug(task)
-                token_reason = await self._readiness_check_git_token(project_slug)
-                if token_reason is not None:
-                    return await self._readiness_block(client, task_id, token_reason)
+                # Skip the git-token gate for coordination tasks — they have no
+                # project of their own, so there's no token to require.
+                if not _is_coordination_task(task):
+                    project_slug = _read_project_slug(task)
+                    token_reason = await self._readiness_check_git_token(project_slug)
+                    if token_reason is not None:
+                        return await self._readiness_block(
+                            client, task_id, token_reason
+                        )
         except httpx.HTTPError as e:
             # Transient — retry on next dispatch without auto-blocking.
             return f"readiness check HTTP error: {e}"
@@ -2129,12 +2116,16 @@ class AgentOrchestrator:
 
         if reason := self._readiness_check_acceptance_criteria(task):
             return reason
-        if not _read_project_slug(task):
-            return "task has no project"
-        if status in {"claimed", "in_progress", "verifying"} and not task.get(
-            "branch_name"
-        ):
-            return f"state={status} but branch_name is unset"
+        # A coordination task (product, no repo of its own) does no git: skip the
+        # project-slug and branch-name gates that only apply to code tasks.
+        if not _is_coordination_task(task):
+            if not _read_project_slug(task):
+                return "task has no project"
+            # Branch is auto-created at claim, so only states at/after claim are
+            # expected to own one. _branch_is_expected centralizes this gate so
+            # the readiness and stuck-detection paths agree (#18).
+            if _branch_is_expected(task) and not task.get("branch_name"):
+                return f"state={status} but branch_name is unset"
         return self._readiness_check_role_for_status(agent_id, role, status)
 
     @staticmethod
@@ -2318,7 +2309,8 @@ class AgentOrchestrator:
         """Write a compact task briefing to be read by SessionStart hook.
 
         The briefing saves the agent from burning its first 2-3 tool calls on
-        `roboco_task_scan` + `roboco_task_get`. If `task_id` is known we fetch
+        `give_me_work` (whose Envelope already carries the task details). If
+        `task_id` is known we fetch
         the task and include title, status, branch, and acceptance criteria.
         On fetch failure we still emit the role-level part (role, escalation
         target, terminal tools, workspace path) — strictly better than nothing.
@@ -2756,7 +2748,7 @@ The blocker has been resolved: {resolution.get("details", "Resolved")}
 
 Resume by:
 1. Reading your checkpoint from .tasks/active/TASK-{record.task_id}/
-2. Call roboco_task_unblock("{record.task_id}")
+2. Call unblock("{record.task_id}")
 3. Continue from where you left off
 """
 
@@ -2765,7 +2757,7 @@ Resume by:
                 return f"""
 TASK-{record.task_id} has passed QA review.
 The task is now awaiting documentation.
-You may return to scanning for new work with roboco_task_scan().
+You may return to scanning for new work with give_me_work().
 """
             else:
                 return f"""
@@ -2793,7 +2785,7 @@ Resume by incorporating this information and continuing from where you stopped.
 You have been assigned a new task: TASK-{resolution.get("task_id")}
 
 Start by:
-1. Call roboco_task_get("{resolution.get("task_id")}") to get details
+1. Review the task details provided in your briefing / context_briefing
 2. Follow the standard workflow: UNDERSTAND → PLAN → EXECUTE → VERIFY → NOTES
 """
 
@@ -3096,10 +3088,6 @@ Start by:
         """Get instance for an agent."""
         return self._instances.get(agent_id)
 
-    def get_all_instances(self) -> dict[str, AgentInstance]:
-        """Get all agent instances."""
-        return dict(self._instances)
-
     def get_waiting_agents(self) -> dict[str, WaitingRecord]:
         """Get all waiting agents."""
         return dict(self._waiting_records)
@@ -3176,6 +3164,13 @@ Start by:
         if parent.get("branch_name"):
             return None
 
+        # A coordination/fan-out parent (product, no repo of its own) never gets
+        # a branch: the child resolves its own real project and cuts from that
+        # project's default branch, not from the parent. Blocking the child on a
+        # branch the parent will never have wedges the cell↔Main-PM loop (#17).
+        if _is_coordination_task(parent):
+            return None
+
         if parent.get("status") == "in_progress" and parent.get("assigned_to"):
             for _ in range(3):
                 await asyncio.sleep(0.25)
@@ -3245,9 +3240,13 @@ Start by:
                 f"Task {task_id} has inadequate description ({len(description)} chars)"
             )
 
-        if not task.get("project_id"):
-            await self._auto_block_task(client, task_id, "Task needs project_id")
-            return f"Task {task_id} needs project"
+        # A coordination task carries a product instead of a repo; only a task
+        # with neither is genuinely unroutable.
+        if not task.get("project_id") and not _is_coordination_task(task):
+            await self._auto_block_task(
+                client, task_id, "Task needs a project_id or product_id"
+            )
+            return f"Task {task_id} needs a project or product"
 
         parent_id = task.get("parent_task_id")
         if parent_id:
@@ -3544,7 +3543,9 @@ Start by:
     @staticmethod
     def _route_by_task_type(task_type: str, team: str | None) -> str | None:
         """Route based on task_type field alone; returns None if no match."""
-        cell_teams = ("backend", "frontend", "ux_ui")
+        cell_teams = tuple(
+            sorted(t.value for t in CELL_TEAMS)
+        )  # ("backend", "frontend", "ux_ui")
         if task_type in ("planning", "research", "administrative"):
             return "cell_pm" if team in cell_teams else "main_pm"
         if task_type == "design" and team not in ("backend", "frontend"):
@@ -4003,6 +4004,10 @@ Start now: evidence(task_id="{task_id}")
                 ("pm_review_work", self._dispatch_pm_review_work(client)),
                 ("marketing_work", self._dispatch_marketing_work(client)),
                 ("blocker_work", self._dispatch_blocker_work(client)),
+                (
+                    "claimed_without_agent",
+                    self._dispatch_claimed_without_agent(client),
+                ),
                 ("escalation_work", self._dispatch_escalation_work(client)),
                 ("approval_work", self._dispatch_approval_work(client)),
                 ("a2a_work", self._dispatch_a2a_work(client)),
@@ -4182,33 +4187,110 @@ Start now: evidence(task_id="{task_id}")
     async def _handle_board_assigned_task(
         self, task: dict[str, Any], assigned_to: str
     ) -> None:
-        """Spawn a board agent (Product Owner / Head of Marketing) ONCE to
-        review an assigned board task.
+        """Review an assigned board task with the FULL board (PO + HoM), ONCE each.
 
-        Board roles advise: they can triage, record notes, discuss, and
-        escalate_to_ceo, but have NO verb to claim, plan, delegate, or complete.
-        So a respawn cannot advance the task — it would just loop. The board
-        reviews and records requirements; the CEO then reassigns the task to
-        Main PM for delegation to the cells. Dispatch is therefore one-shot per
-        (agent, task).
+        Cluster C5 / finding #4: a board/coordination task — especially one with
+        a UI / user-facing dimension — must be reviewed by BOTH the Product
+        Owner AND the Head of Marketing before it is handed to the CEO. The task
+        is assigned to one board agent, but the review is a two-reviewer gate, so
+        this dispatches both regardless of which one ``assigned_to`` names.
+
+        Board roles advise: they can triage, record notes, and discuss, but have
+        NO verb to claim, plan, delegate, or complete. A respawn cannot advance
+        the task — it would just loop — so dispatch is one-shot per (agent, task).
+        The board reviews and records requirements; the CEO then approves and
+        hands the task to Main PM for delegation to the cells.
+
+        Once BOTH reviewers have finished (each dispatched and no longer active),
+        a single formal CEO notification is emitted (finding #2) so the handoff
+        to Approve & Start is an actionable signal rather than buried chatter.
         """
-        agent_slug = self._resolve_agent_slug(assigned_to)
-        if agent_slug not in self._BOARD_AGENTS or self._is_agent_active(agent_slug):
+        # `assigned_to` only gates that this IS a board task; the review itself
+        # always involves the whole board, not just the named assignee.
+        if self._resolve_agent_slug(assigned_to) not in self._BOARD_AGENTS:
             return
-        key = (agent_slug, str(task.get("id")))
+        task_id = str(task.get("id"))
+        for board_slug in sorted(self._BOARD_AGENTS):
+            await self._dispatch_board_reviewer(board_slug, task_id, task)
+        await self._maybe_notify_ceo_board_review_complete(task_id)
+
+    async def _dispatch_board_reviewer(
+        self, board_slug: str, task_id: str, task: dict[str, Any]
+    ) -> None:
+        """One-shot spawn of a single board reviewer for a board task.
+
+        Skips when the reviewer is already running or has already been
+        dispatched for this task (board roles have no progression verb, so a
+        respawn would loop). Records the (agent, task) pair so the
+        review-completion detector can tell which reviewers have run.
+        """
+        if self._is_agent_active(board_slug):
+            return
+        key = (board_slug, task_id)
         if key in self._board_dispatched:
             return
         self._board_dispatched.add(key)
         logger.info(
             "Spawning board agent for review",
-            task_id=task.get("id"),
-            agent_id=agent_slug,
+            task_id=task_id,
+            agent_id=board_slug,
         )
         await self.spawn_agent(
-            agent_id=agent_slug,
+            agent_id=board_slug,
             task_id=task["id"],
             initial_prompt=self._build_board_prompt(task),
             git_context=self._task_git_context(task),
+        )
+
+    def _board_review_complete(self, task_id: str) -> bool:
+        """True once EVERY board reviewer has reviewed and gone idle.
+
+        A reviewer has finished when it was dispatched for this task
+        (``_board_dispatched``) and is no longer running (``_is_agent_active``).
+        Both PO and HoM must satisfy this before the task is handoff-ready.
+        """
+        return all(
+            (board_slug, task_id) in self._board_dispatched
+            and not self._is_agent_active(board_slug)
+            for board_slug in self._BOARD_AGENTS
+        )
+
+    async def _maybe_notify_ceo_board_review_complete(self, task_id: str) -> None:
+        """Emit a one-shot CEO notification when the board review is complete.
+
+        Board roles are exactly the senders permitted to issue formal
+        notifications, but the board agents only post channel dialogue + journal
+        notes during their review (finding #2: the CEO got count=0 notifications
+        after the PO finished). The orchestrator closes that gap: once both
+        reviewers are done, it emits an APPROVAL notification (ack-required, with
+        ``related_task_id``) to the CEO on the board's behalf. Fires exactly once
+        per task; notification failure is logged and swallowed so it never
+        blocks the dispatch loop.
+        """
+        if task_id in self._board_review_ceo_notified:
+            return
+        if not self._board_review_complete(task_id):
+            return
+        self._board_review_ceo_notified.add(task_id)
+        from roboco.services.notification import NotificationService
+
+        try:
+            await NotificationService().send_board_review_complete_notification(
+                task_id=task_id,
+            )
+        except Exception as exc:
+            # Don't wedge dispatch on a notification failure; allow a retry by
+            # clearing the one-shot guard so a later tick can re-emit.
+            self._board_review_ceo_notified.discard(task_id)
+            logger.warning(
+                "Failed to notify CEO of board-review completion",
+                task_id=task_id,
+                error=str(exc),
+            )
+            return
+        logger.info(
+            "Notified CEO that board review is complete (ready for Approve & Start)",
+            task_id=task_id,
         )
 
     def _pm_spawn_prompt(
@@ -4234,6 +4316,16 @@ Start now: evidence(task_id="{task_id}")
                 task_id=task.get("id"),
                 routing=routing,
             )
+            return
+
+        # Board work is a two-reviewer gate (PO + Head of Marketing), not a
+        # single-assignee claim. Routing only ever names one board agent
+        # (product-owner), so claiming + spawning that one here would leave the
+        # Head of Marketing out (finding #4). Delegate to the board handler,
+        # which dispatches BOTH reviewers one-shot and leaves the task pending
+        # for the CEO's Approve & Start. ``agent_id`` is the routed board slug.
+        if routing == "board":
+            await self._handle_board_assigned_task(task, agent_id)
             return
 
         # Don't auto-claim back to the creator. A PM that just created this
@@ -4559,17 +4651,43 @@ Never `commit`, never write code, never run `git`. PMs coordinate.
 """
 
     def _get_prompt_for_agent(self, agent_slug: str, task: dict[str, Any]) -> str:
-        """Get the appropriate prompt based on agent role."""
+        """Get the prompt appropriate to the agent's ACTUAL role (#19).
+
+        A respawn must hand each role the prompt it can act on — a PM or board
+        agent handed the developer prompt is told to write code and call verbs
+        it does not own. Reuses the same per-role prompt builders the role
+        dispatchers use so a respawn matches a fresh dispatch:
+
+          developer      → dev prompt
+          qa             → QA prompt
+          documenter     → doc prompt
+          cell_pm        → cell-PM triage prompt
+          main_pm        → main-PM triage prompt
+          product_owner  → board-review prompt
+          head_marketing → marketing prompt for a marketing task, else board
+          auditor        → audit prompt
+
+        Unknown roles fall back to the dev prompt (safe default for an
+        executable task).
+        """
         role = get_agent_role(agent_slug)
-        if role == "developer":
-            return self._build_dev_prompt(task)
-        elif role == "documenter":
-            return self._build_doc_prompt(task)
-        elif role == "qa":
-            return self._build_qa_prompt(task)
-        else:
-            # PM or other - use dev prompt as fallback
-            return self._build_dev_prompt(task)
+        # head_marketing is the one role whose prompt depends on the task, so it
+        # is resolved before the static role→builder table.
+        if role == "head_marketing":
+            if task.get("team") == "marketing":
+                return self._build_marketing_prompt(task)
+            return self._build_board_prompt(task)
+        builders: dict[str, Callable[[dict[str, Any]], str]] = {
+            "developer": self._build_dev_prompt,
+            "qa": self._build_qa_prompt,
+            "documenter": self._build_doc_prompt,
+            "cell_pm": self._build_pm_triage_prompt,
+            "main_pm": self._build_main_pm_triage_prompt,
+            "product_owner": self._build_board_prompt,
+            "auditor": lambda _task: self._build_audit_prompt(),
+        }
+        builder = builders.get(role, self._build_dev_prompt)
+        return builder(task)
 
     async def _dispatch_dev_work(self, client: httpx.AsyncClient) -> None:
         """
@@ -5021,21 +5139,44 @@ Never `commit`, never write code, never run `git`. PMs coordinate.
     # SMART DISPATCHER - EVENT-BASED DISPATCHERS
     # =========================================================================
 
+    def _blocker_resolver_slug(self, task: dict[str, Any]) -> str | None:
+        """Pick the agent that should be dispatched to unblock ``task``.
+
+        The unblock content gate (note/unblock) is assignee-only: the
+        dispatched agent must be the task's CURRENT ``assigned_to``, or its
+        required pre-unblock decision note returns not_authorized and the
+        orchestrator respawns it forever (#17 livelock — a task escalated to
+        Main PM kept respawning the ex-assignee cell PM, which could not author
+        the note). So whenever the blocked task carries an assignee that is a
+        PM or board role, dispatch THAT assignee. Only a task with no PM/board
+        assignee (e.g. still held by the dev who raised i_am_blocked) falls back
+        to the cell PM for its team.
+        """
+        assignee_uuid = task.get("assigned_to") or task.get("claimed_by")
+        if assignee_uuid:
+            assignee_slug = self._resolve_agent_slug(str(assignee_uuid))
+            if assignee_slug in self._PM_AGENTS or assignee_slug in self._BOARD_AGENTS:
+                return assignee_slug
+        team = task.get("team")
+        if team not in ("backend", "frontend", "ux_ui"):
+            return None
+        return self._select_agent_for_cell(team, "pm")
+
     async def _dispatch_blocker_work(self, client: httpx.AsyncClient) -> None:
         """
-        Dispatch blocker resolution to Cell PMs.
+        Dispatch blocker resolution to the task's current unblock authority.
 
         Monitors: blocked tasks
-        Spawns: be-pm, fe-pm, ux-pm
+        Spawns: the task's current PM/board assignee, else the cell PM
         """
         tasks = await self._fetch_tasks(client, "blocked")
 
         for task in tasks:
-            team = task.get("team")
-            if team not in ["backend", "frontend", "ux_ui"]:
+            # HITL-blocked tasks wait for a human; never spawn an agent on them.
+            if self._is_hitl_blocked(task):
                 continue
 
-            agent_id = self._select_agent_for_cell(team, "pm")
+            agent_id = self._blocker_resolver_slug(task)
             if not agent_id:
                 continue
 
@@ -5049,6 +5190,106 @@ Never `commit`, never write code, never run `git`. PMs coordinate.
                 git_context=self._task_git_context(task),
             )
             break
+
+    def _claimed_task_needs_agent(self, task: dict[str, Any]) -> str | None:
+        """Return the assignee slug to (re)spawn for an agentless claimed task.
+
+        #19: a task left CLAIMED/IN_PROGRESS with an assignee but no running
+        container (e.g. a reassignment that didn't spawn) is invisibly stuck —
+        only PENDING tasks get fresh dispatch, and the heartbeat reaper can't
+        see it because the claim seeded a fresh heartbeat. Returns the assignee
+        slug when the task has sat past the grace window with no active agent;
+        ``None`` when it is healthy, too fresh, or HITL-blocked.
+        """
+        if self._is_hitl_blocked(task):
+            return None
+        owner_uuid = task.get("assigned_to") or task.get("claimed_by")
+        if not owner_uuid:
+            return None
+        agent_slug = self._resolve_agent_slug(str(owner_uuid))
+        # The assignee is running, and on THIS task — healthy.
+        instance = self._instances.get(agent_slug)
+        if instance is not None and instance.state == AgentState.ACTIVE:
+            return None
+        # Grace window: a just-claimed task whose spawn is still in flight must
+        # not be churned. _time_in_state under-counts (any update bumps it),
+        # which biases toward "agent is working" — exactly the safe direction.
+        age = self._time_in_state(task)
+        grace = settings.claimed_no_agent_grace_seconds
+        if age is None or age.total_seconds() < grace:
+            return None
+        return agent_slug
+
+    async def _dispatch_claimed_without_agent(self, client: httpx.AsyncClient) -> None:
+        """(Re)spawn or release claimed/in_progress tasks that have no agent (#19).
+
+        Net for the invisible-stuck case the other dispatchers miss: a task
+        held CLAIMED/IN_PROGRESS by an assignee with no running container. If
+        the assignee is a known spawnable agent, respawn it on the task; if not
+        (unknown slug — e.g. a stale UUID), release the claim to PENDING so the
+        normal routing reclaims it with a role match.
+
+        Throttle: spawns at most ONE container per tick (``break`` after the
+        first respawn), matching every sibling dispatcher. A restart leaves
+        many agentless claims at once; without the cap this single tick would
+        burst-spawn a container for every one of them. The release-to-pending
+        path spawns nothing, so it does not consume the per-tick spawn budget
+        and keeps draining stale claims.
+        """
+        tasks = await self._fetch_tasks(client, ["claimed", "in_progress"])
+        for task in tasks:
+            task_id = task.get("id")
+            if self._is_task_handled_this_tick(task_id):
+                continue
+            agent_slug = self._claimed_task_needs_agent(task)
+            if agent_slug is None:
+                continue
+            if get_agent_role(agent_slug) in (None, "unknown"):
+                # Unknown assignee — no agent to spawn; release for re-dispatch.
+                await self._release_claim_to_pending(str(task_id))
+                continue
+            logger.warning(
+                "Claimed/in_progress task has no running agent; respawning assignee",
+                task_id=task_id,
+                agent=agent_slug,
+                status=task.get("status"),
+            )
+            await self.spawn_agent(
+                agent_id=agent_slug,
+                task_id=str(task_id),
+                initial_prompt=self._get_prompt_for_agent(agent_slug, task),
+                git_context=self._task_git_context(task),
+            )
+            break
+
+    async def _release_claim_to_pending(self, task_id: str) -> None:
+        """Release a stuck claim back to PENDING via the lifecycle-safe path.
+
+        Reuses ``TaskService.unclaim_for_reaper`` (claimed/in_progress ->
+        pending, clears assignee + work session) so the state machine records
+        the transition rather than a raw status PATCH. Opens its own short-lived
+        session, mirroring ``_reap_stale_claims``.
+        """
+        from roboco.db.base import get_session_factory
+        from roboco.services.task import TaskService
+        from roboco.utils.converters import require_uuid
+
+        try:
+            factory = get_session_factory()
+            async with factory() as db:
+                svc = TaskService(db)
+                await svc.unclaim_for_reaper(require_uuid(task_id))
+                await db.commit()
+            logger.warning(
+                "Released agentless claim to pending for re-dispatch",
+                task_id=task_id,
+            )
+        except Exception as exc:
+            logger.error(
+                "Failed to release agentless claim; will retry next tick",
+                task_id=task_id,
+                error=str(exc),
+            )
 
     async def _dispatch_escalation_work(self, client: httpx.AsyncClient) -> None:
         """
@@ -5276,8 +5517,8 @@ Never `commit`, never write code, never run `git`. PMs coordinate.
         note = (
             f"[SLA] role={breach.role} status={breach.status} "
             f"time_in_state={age_mins}m sla={sla_mins}m. "
-            "Escalating — agent should call roboco_task_escalate "
-            "or roboco_task_substitute."
+            "Escalating — agent should call escalate_up() "
+            "or unclaim()."
         )
         try:
             await client.patch(
@@ -5319,7 +5560,12 @@ Never `commit`, never write code, never run `git`. PMs coordinate.
     def _check_stuck_conditions(self, task: dict[str, Any]) -> list[str]:
         """Check for common stuck conditions (git, description)."""
         issues: list[str] = []
-        if not task.get("branch_name"):
+        # A branch only exists once a task is claimed; a coordination task does
+        # no git at all. A pending, never-claimed code task therefore has no
+        # branch by design — flagging that here auto-blocked tasks before their
+        # first dispatch (#18). Only flag a missing branch when the task is in a
+        # state where it should already own one.
+        if not task.get("branch_name") and _branch_is_expected(task):
             issues.append("Task missing branch_name")
         description = (task.get("description") or "").strip()
         if len(description) < self._MIN_DESCRIPTION_LEN:
@@ -5626,11 +5872,17 @@ Never `commit`, never write code, never run `git`. PMs coordinate.
         description = task.get("description", "No description")
 
         return f"""\
-You are on the Board. This strategic task is assigned to YOU for review.
+You are on the Board. This strategic task is under board review.
 
 TASK: {task_id}
 TITLE: {title}
 DESCRIPTION: {description}
+
+THE BOARD REVIEWS AS A PAIR: the Product Owner AND the Head of Marketing both
+review every board task before it reaches the CEO. The Product Owner owns
+product requirements + acceptance scope; the Head of Marketing owns the UX /
+user-facing / positioning dimension. The CEO only gets the handoff after BOTH
+of you have recorded a review.
 
 YOUR ROLE: review and shape this work. You do NOT build, code, claim, or
 delegate — those verbs are not yours. Your deliverable is a recorded review.
@@ -5640,14 +5892,16 @@ delegate — those verbs are not yours. Your deliverable is a recorded review.
 1. triage()
      — see your board-level work and context.
 2. note(text="<the product requirements and acceptance criteria you expect, the
-        scope, the must-haves, and what 'done' looks like>",
+        scope, the must-haves, and what 'done' looks like — Head of Marketing:
+        the UX, user-facing impact, and how the feature is positioned>",
         scope='decision', task_id="{task_id}")
      — this recorded review is how the CEO and Main PM act on your input.
-3. say(...) in your board channel to flag UX, positioning, or risk concerns
-     (Head of Marketing: weigh in on UX + how the feature is positioned).
+3. say(...) in your board channel to flag UX, positioning, or risk concerns and
+     to coordinate with your fellow board reviewer.
 4. i_am_idle()
-     — when your review is recorded. The CEO routes the task to Main PM for
-       delegation to the cells; you do NOT hand it off yourself.
+     — when your review is recorded. Once both board reviewers are done, the
+       CEO is notified the task is ready for Approve & Start, then routes it to
+       Main PM for delegation to the cells; you do NOT hand it off yourself.
 
 Do NOT attempt to claim, plan, complete, or delegate — the gateway will reject
 those, and a substantive recorded note IS your job here.
@@ -5667,12 +5921,13 @@ DESCRIPTION: {description}
 
 Begin work:
 
-1. Call roboco_task_get("{task_id}") for full details and acceptance criteria
+1. Review the task details above (full acceptance criteria arrive in your
+   briefing / the give_me_work response)
 2. Execute the marketing task (content, campaigns, research, etc.)
 3. Coordinate with Product Owner or Main PM if needed
-4. Call roboco_task_complete("{task_id}") when done
-5. Call roboco_task_scan() to check for more marketing work
-6. If no more work, call roboco_agent_idle() to shutdown gracefully
+4. Call i_am_done() when done
+5. Call give_me_work() to check for more marketing work
+6. If no more work, call i_am_idle() to shutdown gracefully
 """
 
     def _build_pm_blocker_prompt(self, task: dict[str, Any]) -> str:
@@ -5697,9 +5952,9 @@ Your job:
 1. Understand the blocker by reviewing task details
 2. Communicate with the blocked developer if needed
 3. Resolve the blocker (coordinate resources, make decisions, escalate if needed)
-4. Once resolved, the developer can call roboco_task_unblock()
-5. Call roboco_task_scan() to check for other blocked tasks in your cell
-6. If no more blockers, call roboco_agent_idle() to shutdown gracefully
+4. Once resolved, call unblock("{task_id}") to release the task back to the developer
+5. Call triage() to check for other blocked tasks in your cell
+6. If no more blockers, call i_am_idle() to shutdown gracefully
 """
 
     def _build_escalation_prompt(self, notification: dict[str, Any]) -> str:
@@ -5721,12 +5976,12 @@ DETAILS:
 
 Your job:
 
-1. Acknowledge the notification with roboco_notify_ack("{notif_id}")
+1. Acknowledge the notification with notify_ack("{notif_id}")
 2. Assess the escalation and determine action needed
 3. Communicate decisions via appropriate channels
-4. If this requires further escalation, use roboco_escalate()
-5. When resolved, call roboco_task_scan() for other work
-6. If no more work, call roboco_agent_idle() to shutdown gracefully
+4. If this requires further escalation, use escalate_up()
+5. When resolved, call triage() for other work
+6. If no more work, call i_am_idle() to shutdown gracefully
 """
 
     def _build_approval_prompt(self, notification: dict[str, Any]) -> str:
@@ -5749,11 +6004,11 @@ REQUEST:
 Your job:
 
 1. Review the approval request carefully
-2. If related to a task, call roboco_task_get() for context
+2. If related to a task, use the task context provided in your briefing
 3. Make your decision and communicate it
-4. Acknowledge with roboco_notify_ack("{notif_id}")
-5. Call roboco_task_scan() for other work
-6. If no more work, call roboco_agent_idle() to shutdown gracefully
+4. Acknowledge with notify_ack("{notif_id}")
+5. Call triage() for other work
+6. If no more work, call i_am_idle() to shutdown gracefully
 """
 
     def _build_audit_prompt(self, alert: dict[str, Any] | None = None) -> str:
@@ -5773,7 +6028,7 @@ Your job:
 2. Review relevant channels and task history (you have read access to all)
 3. Compile your findings
 4. Report to CEO via appropriate channel
-5. Call roboco_agent_idle() when complete
+5. Call i_am_idle() when complete
 """
 
         return """Periodic AUDIT requested.
@@ -5784,7 +6039,7 @@ Your job:
 2. Check quality metrics (QA pass/fail rates, blocker frequency, etc.)
 3. Identify any concerns or patterns
 4. Compile audit report for CEO
-5. Call roboco_agent_idle() when complete
+5. Call i_am_idle() when complete
 """
 
     def _build_a2a_prompt(self, notification: dict[str, Any]) -> str:
@@ -5824,10 +6079,10 @@ REQUEST:
 
 Your job:
 
-1. Acknowledge the notification with roboco_notify_ack("{notif_id}")
+1. Acknowledge the notification with notify_ack("{notif_id}")
 2. Process the request using your {skill} capabilities
-3. Respond to {from_agent} using roboco_agent_request()
-4. If you need task context, call roboco_task_get("{related_task_id or "task_id"}")
-5. When done, call roboco_task_scan() for other work
-6. If no more work, call roboco_agent_idle() to shutdown gracefully
+3. Respond to {from_agent} using dm("{from_agent}", ...)
+4. If you need task context, it is provided in your briefing for the related task
+5. When done, call give_me_work() for other work
+6. If no more work, call i_am_idle() to shutdown gracefully
 """

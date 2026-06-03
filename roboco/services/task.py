@@ -36,6 +36,7 @@ from roboco.models.base import (
     BlockerResolverType,
     TaskNature,
     TaskStatus,
+    TaskType,
     Team,
 )
 from roboco.models.permissions import AgentContext, TaskAction
@@ -64,6 +65,47 @@ _ROLE_CLAIM_STATUSES: dict[str, set[TaskStatus]] = {
     "cell_pm": {TaskStatus.PENDING, TaskStatus.AWAITING_PM_REVIEW},
     "main_pm": {TaskStatus.PENDING, TaskStatus.AWAITING_PM_REVIEW},
 }
+
+
+# Board / advisory roles review and advise; they never own or execute a
+# descendant code task. Handing one to them (e.g. via the main_pm→product_owner
+# escalation rung) strands the work: the board has no verb to claim, build, or
+# complete it, and the dev's finished work deadlocks (#14). A descendant code
+# task that would otherwise land on one of these roles is instead released to
+# the pool for a role-matched cell agent to reclaim.
+_BOARD_ADVISORY_ROLES: frozenset[AgentRole] = frozenset(
+    {AgentRole.PRODUCT_OWNER, AgentRole.HEAD_MARKETING, AgentRole.AUDITOR}
+)
+
+
+# Task types a CELL agent (developer / documenter / designer) must own and a
+# board/advisory role has no verb to build or complete. CODE → developer,
+# DOCUMENTATION → documenter, DESIGN → UX/design cell. The remaining types
+# (PLANNING / RESEARCH / ADMINISTRATIVE) route to a PM, not a cell agent, and
+# are not diverted here — the #14 guard only fires for board/advisory targets.
+_DESCENDANT_EXECUTABLE_TASK_TYPES: frozenset[str] = frozenset(
+    {TaskType.CODE.value, TaskType.DOCUMENTATION.value, TaskType.DESIGN.value}
+)
+
+
+def _is_descendant_executable_task(task: TaskTable) -> bool:
+    """True for a child task that does cell-executed work (#14 guard).
+
+    A board/advisory role must never become the assignee of such a task: it has
+    no verb to build, document, or complete it. ``task_type`` is a ``TaskType``
+    enum; CODE / DOCUMENTATION / DESIGN are the members a cell agent (developer,
+    documenter, designer) — not a board role — must own. ``parent_task_id``
+    being set makes it a descendant (a root task can legitimately escalate up
+    the chain — the CEO is its reviewer).
+    """
+    if task.parent_task_id is None:
+        return False
+    # task_type is a Mapped[TaskType] column; normalize to its string value so
+    # the comparison is robust whether SQLAlchemy hands back the enum or its raw
+    # string (the latter happens for detached/partially-hydrated rows in tests).
+    task_type: Any = task.task_type
+    type_value = task_type.value if isinstance(task_type, TaskType) else task_type
+    return str(type_value) in _DESCENDANT_EXECUTABLE_TASK_TYPES
 
 
 # Notes fields (dev_notes, qa_notes, quick_context) are append-only —
@@ -328,6 +370,11 @@ class TaskService(BaseService):
             pr_created=bool(task.pr_created),
             pr_number=task.pr_number,
             branch_name=str(task.branch_name) if task.branch_name else None,
+            # A coordination/fan-out task (product, no repo of its own) does no
+            # git and never gets a branch — exempt it from the branch gate so it
+            # can reach in_progress and delegate. product_id is a plain column
+            # (no lazy load).
+            is_coordination=(task.project_id is None and task.product_id is not None),
         )
         validate_git_requirements(current, target, git_ctx)
 
@@ -449,6 +496,15 @@ class TaskService(BaseService):
         Default status is PENDING. PM can pass status=BACKLOG when creating
         subtasks that need session setup before activation.
         """
+        # Service-layer invariant (covers every create path — API, a2a,
+        # gateway): a task targets a single repo (project_id) or fans out across
+        # cells via a product (product_id). It must have one or the other.
+        if req.project_id is None and req.product_id is None:
+            raise ValueError(
+                "task needs a project_id (the repo it targets) or a product_id "
+                "(a cell->project map for a fan-out task)"
+            )
+
         if req.parent_task_id:
             await self._validate_parent_depth(req.parent_task_id)
 
@@ -470,6 +526,7 @@ class TaskService(BaseService):
             # Git configuration (all tasks follow git workflow)
             task_type=req.task_type,
             project_id=req.project_id,
+            product_id=req.product_id,
         )
         self.session.add(task)
         await self.session.flush()
@@ -582,15 +639,18 @@ class TaskService(BaseService):
         if not session_link:
             raise ValueError(
                 f"Task {task_id} has no linked session. "
-                "Create a session with roboco_session_create_for_tasks "
+                "Create a session with open_session() "
                 "before activating."
             )
 
-        # ENFORCEMENT: All tasks require project_id (double-check here)
-        if not task.project_id:
+        # ENFORCEMENT: a task needs a project (a repo) or a product (a
+        # cell->project map for a fan-out task). A coordination task carries a
+        # product and does no git itself.
+        if not task.project_id and not task.product_id:
             raise ValueError(
-                f"Cannot activate task '{task.title}' - no project set. "
-                "All tasks require a project for git workflow."
+                f"Cannot activate task '{task.title}' - no project or product "
+                "set. A task needs a project (a repo) or a product (a "
+                "cell->project map for a fan-out task)."
             )
 
         # NOTE: Git branch is auto-created on claim, not required at activation
@@ -616,7 +676,9 @@ class TaskService(BaseService):
 
         Strategy:
         - If branch exists: return it
-        - If no project: raise error (should not happen - project_id is required)
+        - Coordination/fan-out task (carries a product, no repo of its own): no
+          branch — it does no git work
+        - If neither project nor product: raise (genuinely misconfigured)
         - Create NEW branch (hierarchical name built by build_branch_name)
         - Branch created from parent's branch (or default if root)
 
@@ -627,9 +689,16 @@ class TaskService(BaseService):
             return str(task.branch_name)
 
         if not task.project_id:
+            # A coordination/fan-out task carries a product (a cell->project
+            # map) but no repo of its own, so it does no git work and has no
+            # branch — its cell subtasks each resolve a real project and get
+            # their own branches. Only a task with neither is misconfigured.
+            if task.product_id:
+                return ""
             raise ValueError(
-                "Task requires project_id to create branch. "
-                "Assign a project before claiming."
+                "Task requires a project_id (a repo) or a product_id (a "
+                "cell->project map) to create a branch. Assign one before "
+                "claiming."
             )
 
         return await self._auto_create_branch(task, agent_id)
@@ -673,6 +742,28 @@ class TaskService(BaseService):
             current_parent_id = parent.parent_task_id
 
         return None
+
+    async def project_default_branch_for_task(self, task: Any) -> str | None:
+        """Default branch of the task's project, or None if it has no project.
+
+        Used by the gateway merge-target resolver
+        (:func:`roboco.services.gateway.merge_chain.resolve_parent_branch`) when
+        a child task's parent is branchless (a coordination/fan-out parent that
+        owns no repo): the real merge target is the child's own project default
+        branch — the branch the child was actually cut from — not a derived ref
+        the parent never created (#17). Returns None for a task with no
+        project_id (e.g. a coordination task itself).
+        """
+        project_id = getattr(task, "project_id", None)
+        if project_id is None:
+            return None
+        result = await self.session.execute(
+            select(ProjectTable.default_branch).where(
+                ProjectTable.id == UUID(str(project_id))
+            )
+        )
+        default_branch = result.scalar_one_or_none()
+        return str(default_branch) if default_branch else None
 
     async def _resolve_parent_branch(self, task: TaskTable, project: Any) -> str:
         """Pick parent branch for a new task branch, fall back to project default."""
@@ -3174,7 +3265,24 @@ class TaskService(BaseService):
         subsequent `unblock` call hands the task back to the original dev
         and the orchestrator re-spawns them. Without this, escalation
         loses the dev's identity permanently.
+
+        #14 invariant: a descendant executable task (code / documentation /
+        design) is NEVER assigned to a board/advisory role (they cannot own
+        cell-executed work). Such an escalation is diverted to a pool release so
+        a role-matched cell agent reclaims it. Enforced here — the single write
+        primitive — so both the gateway ``escalate`` verb and the HTTP escalate
+        route are covered.
         """
+        if _is_descendant_executable_task(task) and await self._is_board_advisory_agent(
+            target_agent_id
+        ):
+            await self._release_code_task_to_pool(
+                task=task,
+                escalator_slug=escalator_slug,
+                blocked_target_slug=target_slug,
+                reason=reason,
+            )
+            return
         if task.assigned_to and not task.blocker_raised_by:
             task.blocker_raised_by = cast("Any", task.assigned_to)
         task.assigned_to = cast("Any", target_agent_id)
@@ -3361,6 +3469,63 @@ class TaskService(BaseService):
         self.log.info(
             "Task approved by CEO",
             task_id=str(task_id),
+        )
+        return task
+
+    async def approve_and_start(
+        self,
+        task_id: UUID,
+        notes: str | None = None,
+    ) -> TaskTable | None:
+        """CEO gate #1: hand a board-reviewed (pending) task to Main PM.
+
+        This is a reassignment, NOT a status transition. Board tasks live in
+        the pending pool; setting assigned_to -> main-pm (status unchanged at
+        pending) makes the orchestrator's _handle_pm_assigned_task spawn Main
+        PM on the next dispatch tick. Idempotent when already on main-pm;
+        returns None when the task is not in a startable (pending) state.
+        """
+        from roboco.services.agent import get_agent_service
+
+        task = await self.get(task_id)
+        if not task:
+            return None
+        if task.status != TaskStatus.PENDING:
+            self.log.warning(
+                "Cannot approve_and_start - task not pending",
+                task_id=str(task_id),
+                current_status=task.status.value,
+            )
+            return None
+
+        main_pm = await get_agent_service(self.session).get_by_slug("main-pm")
+        if main_pm is None:
+            self.log.error("approve_and_start - main-pm agent not found")
+            return None
+
+        already = task.assigned_to == main_pm.id
+        task.assigned_to = cast("Any", main_pm.id)
+        # The board-reviewed coordination task now belongs to Main PM, who will
+        # delegate it to the cells. Leaving team="board" is misleading once it's
+        # off the board — reflect the new owner. Team.MAIN_PM is a valid non-cell
+        # team and does not affect dispatch (which routes by assignee, not team).
+        task.team = cast("Any", Team.MAIN_PM)
+
+        if notes:
+            existing = task.quick_context or ""
+            entry = f"approve_and_start_notes:{notes}"
+            task.quick_context = f"{existing}\n{entry}".strip() if existing else entry
+
+        await self.session.flush()
+        await self._emit_task_event(
+            EventType.TASK_STARTED,
+            task_id,
+            {"action": "approve_and_start", "notes": notes, "idempotent": already},
+        )
+        self.log.info(
+            "Task handed to Main PM (approve_and_start)",
+            task_id=str(task_id),
+            idempotent=already,
         )
         return task
 
@@ -4258,7 +4423,7 @@ class TaskService(BaseService):
                 f"DOC_NOTES_REQUIRED: docs_complete must include notes "
                 f"(>={self.MIN_NOTES_CHARS} chars) listing what was "
                 "documented and where. "
-                "Use roboco_task_docs_complete(notes='...')."
+                "Use i_documented(notes='...')."
             )
 
         completed = await self.docs_complete(task_id, notes)
@@ -5156,6 +5321,8 @@ class TaskService(BaseService):
         if target is None:
             return None
 
+        # The board/advisory guard (#14) lives in apply_escalation so the HTTP
+        # escalate route is covered too; nothing extra to do here.
         await self.apply_escalation(
             task=task,
             target_agent_id=UUID(str(target.id)),
@@ -5164,6 +5331,51 @@ class TaskService(BaseService):
             reason=reason,
         )
         return task
+
+    async def _is_board_advisory_agent(self, agent_id: UUID) -> bool:
+        """True if ``agent_id`` is a board/advisory role (PO / marketing / auditor)."""
+        result = await self.session.execute(
+            select(AgentTable.role).where(AgentTable.id == agent_id)
+        )
+        role = result.scalar_one_or_none()
+        return role in _BOARD_ADVISORY_ROLES
+
+    async def _release_code_task_to_pool(
+        self,
+        *,
+        task: TaskTable,
+        escalator_slug: str,
+        blocked_target_slug: str,
+        reason: str,
+    ) -> None:
+        """Release a descendant executable task to PENDING for a role-matched claim.
+
+        Used instead of escalating a code / documentation / design task onto a
+        board/advisory role (#14). Clears the assignee so the orchestrator's
+        role-matched dispatch picks it up cleanly, sets PENDING (a valid
+        re-dispatch source), and appends an audit note explaining why the board
+        hand-off was refused.
+        """
+        task.assigned_to = cast("Any", None)
+        task.claimed_by = cast("Any", None)
+        task.active_claimant_id = cast("Any", None)
+        task.status = TaskStatus.PENDING
+        existing_notes = task.dev_notes or ""
+        note = (
+            f"\n\n[ESCALATION REDIRECTED] {escalator_slug} escalated this"
+            f" executable task toward {blocked_target_slug} (a board/advisory role"
+            f" that cannot own cell-executed work). Released to the pool for a"
+            f" role-matched claim instead."
+            f"\nReason: {reason}"
+        )
+        task.dev_notes = existing_notes + note
+        await self.session.flush()
+        self.log.info(
+            "Descendant executable task released to pool instead of board escalation",
+            task_id=str(task.id),
+            escalator=escalator_slug,
+            refused_target=blocked_target_slug,
+        )
 
     async def escalate_up_to_role(
         self,
@@ -5299,6 +5511,7 @@ class TaskService(BaseService):
             team=req.team,
             created_by=req.created_by,
             project_id=req.project_id,
+            product_id=req.product_id,
             parent_task_id=req.parent_task_id,
             assigned_to=req.assigned_to,
             estimated_complexity=req.estimated_complexity,

@@ -8,13 +8,6 @@ agent doesn't already know from its prompt.
 from __future__ import annotations
 
 
-def hint_for_missing_plan(*, task_id: str) -> str:
-    return (
-        f"call i_will_work_on(task_id='{task_id}', plan='<one-paragraph "
-        f"plan describing what you will do>')"
-    )
-
-
 def hint_for_missing_progress() -> str:
     return (
         "make at least one commit (use commit(message=...)) before i_am_done; "
@@ -37,14 +30,6 @@ def hint_for_unaddressed_acceptance_criteria(
         f"every acceptance criterion needs a referencing artifact (commit / "
         f"progress entry / note). Unaddressed for task {task_id}: {bullets}. "
         f"Add notes or commits referencing each before i_am_done."
-    )
-
-
-def hint_for_unread_a2a(*, count: int, task_id: str) -> str:
-    return (
-        f"you have {count} unread A2A message(s) about task {task_id}; "
-        f"read them via context_briefing.unread_a2a in your next verb response, "
-        f"then proceed"
     )
 
 

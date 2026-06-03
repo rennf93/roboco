@@ -197,11 +197,21 @@ class TaskTable(Base):
         _str_enum(TaskNature), nullable=False, default=TaskNature.TECHNICAL
     )
 
-    # Project & Branch (branch auto-created on claim)
-    project_id: Mapped[UUID] = mapped_column(
+    # Project & Branch (branch auto-created on claim).
+    # Nullable: a board/fan-out task carries `product_id` (a cell->project map)
+    # instead of a single project — it does no git itself; its cell subtasks
+    # each resolve a real project from the product. A task must have one or the
+    # other (enforced in TaskCreate).
+    project_id: Mapped[UUID | None] = mapped_column(
         UUID(as_uuid=True),
         ForeignKey("projects.id", ondelete="RESTRICT"),
-        nullable=False,
+        nullable=True,
+        index=True,
+    )
+    product_id: Mapped[UUID | None] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("products.id", ondelete="RESTRICT"),
+        nullable=True,
         index=True,
     )
     branch_name: Mapped[str | None] = mapped_column(String(500), nullable=True)
@@ -279,14 +289,12 @@ class TaskTable(Base):
     )
 
     # Execution (stored as JSON)
-    execution_log: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
     checkpoints: Mapped[list[dict[str, Any]]] = mapped_column(JSON, default=list)
     progress_updates: Mapped[list[dict[str, Any]]] = mapped_column(JSON, default=list)
 
     # Artifacts (stored as JSON)
     commits: Mapped[list[dict[str, Any]]] = mapped_column(JSON, default=list)
     documents: Mapped[list[dict[str, Any]]] = mapped_column(JSON, default=list)
-    outputs: Mapped[list[dict[str, Any]]] = mapped_column(JSON, default=list)
 
     # Documentation
     dev_notes: Mapped[str | None] = mapped_column(Text, nullable=True)
@@ -353,7 +361,7 @@ class TaskTable(Base):
     parent_task: Mapped["TaskTable | None"] = relationship(
         "TaskTable", remote_side=[id], lazy="select"
     )
-    project: Mapped["ProjectTable"] = relationship(
+    project: Mapped["ProjectTable | None"] = relationship(
         "ProjectTable", foreign_keys=[project_id], lazy="joined"
     )
     # Session links (many-to-many via SessionTaskTable).
@@ -375,6 +383,7 @@ class TaskTable(Base):
         Index("ix_tasks_assigned_status", "assigned_to", "status"),
         Index("ix_tasks_created_by_status", "created_by", "status"),
         Index("ix_tasks_project_status", "project_id", "status"),
+        Index("ix_tasks_product_status", "product_id", "status"),
     )
 
 
@@ -449,6 +458,74 @@ class ProjectTable(Base):
     __table_args__ = (
         Index("ix_projects_cell", "assigned_cell"),
         Index("ix_projects_active", "is_active"),
+    )
+
+
+class ProductTable(Base):
+    """A product groups a per-cell Project mapping (a repo topology)."""
+
+    __tablename__ = "products"
+
+    id: Mapped[UUID] = mapped_column(
+        UUID(as_uuid=True), primary_key=True, default=uuid4
+    )
+    name: Mapped[str] = mapped_column(String(100), nullable=False)
+    slug: Mapped[str] = mapped_column(
+        String(50), unique=True, nullable=False, index=True
+    )
+    description: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+    created_by: Mapped[UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("agents.id"), nullable=False
+    )
+
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=lambda: datetime.now(UTC), nullable=False
+    )
+    updated_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), onupdate=lambda: datetime.now(UTC), nullable=True
+    )
+
+    creator: Mapped["AgentTable"] = relationship("AgentTable", lazy="joined")
+    cells: Mapped[list["ProductProjectTable"]] = relationship(
+        "ProductProjectTable",
+        back_populates="product",
+        cascade="all, delete-orphan",
+        lazy="selectin",
+    )
+
+
+class ProductProjectTable(Base):
+    """One Project per cell per Product (the per-cell routing map)."""
+
+    __tablename__ = "product_projects"
+
+    id: Mapped[UUID] = mapped_column(
+        UUID(as_uuid=True), primary_key=True, default=uuid4
+    )
+    product_id: Mapped[UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("products.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    team: Mapped[Team] = mapped_column(_str_enum(Team), nullable=False)
+    project_id: Mapped[UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("projects.id", ondelete="RESTRICT"),
+        nullable=False,
+        index=True,
+    )
+
+    product: Mapped["ProductTable"] = relationship(
+        "ProductTable", back_populates="cells"
+    )
+    project: Mapped["ProjectTable"] = relationship(
+        "ProjectTable", foreign_keys=[project_id], lazy="joined"
+    )
+
+    __table_args__ = (
+        UniqueConstraint("product_id", "team", name="uq_product_projects_product_team"),
     )
 
 
@@ -1181,7 +1258,7 @@ class HandoffTable(Base):
 
     Current Implementation:
         Handoffs use the simpler `dev_notes` + `handoff_summary` parameters
-        in `roboco_task_submit_qa()`, stored directly on the task.
+        in the submit/open_pr flow, stored directly on the task.
 
     Future Enhancement:
         This table enables richer, structured handoff documents with:
@@ -1695,9 +1772,7 @@ class ModelAssignmentTable(Base):
 
 class GatewayTriggerTable(Base):
     """Records every dispatcher spawn-decision (spawn / queue / drop) for
-    observability and gateway-tuning.  Written only when
-    ``settings.gateway_enabled`` is True; the legacy spawn path never touches
-    this table.
+    observability and gateway-tuning.
     """
 
     __tablename__ = "gateway_triggers"

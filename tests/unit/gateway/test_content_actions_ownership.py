@@ -336,6 +336,110 @@ async def test_evidence_blocks_when_not_assignee() -> None:
     git_svc.diff.assert_not_awaited()
 
 
+# ---------------------------------------------------------------------------
+# Board co-review exemption (cluster C5): a board role may record its review
+# note/say on a board/coordination task held by the OTHER board member.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_board_role_may_note_coordination_task_held_by_other_board() -> None:
+    """A board/coordination task (project_id=None, product_id set) is reviewed
+    by BOTH board members; the non-assignee board reviewer may still note it."""
+    agent_id = uuid4()
+    other_board_id = uuid4()
+    task_id = uuid4()
+    coord_task = MagicMock(
+        id=task_id,
+        status="pending",
+        assigned_to=other_board_id,
+        project_id=None,
+        product_id=uuid4(),
+    )
+    task_svc = AsyncMock()
+    task_svc.get.return_value = coord_task
+    task_svc.get_active_task_for_agent.return_value = None
+    journal_svc = AsyncMock()
+    deps = _make_deps(task=task_svc, journal=journal_svc)
+    # _make_deps defaults agent_for to a developer; override AFTER so the
+    # board co-review exemption sees a board role.
+    task_svc.agent_for.return_value = MagicMock(role="head_marketing")
+    ca = ContentActions(deps)
+
+    env = await ca.note(
+        agent_id=agent_id,
+        text="UX + positioning review of the board task",
+        scope="note",
+        task_id=task_id,
+    )
+    assert env.error is None
+    journal_svc.write_entry.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_board_role_blocked_on_project_task_held_by_other() -> None:
+    """The exemption is narrow: a board role still cannot post to a normal
+    project-backed task assigned to someone else."""
+    agent_id = uuid4()
+    other_id = uuid4()
+    task_id = uuid4()
+    project_task = MagicMock(
+        id=task_id,
+        status="in_progress",
+        assigned_to=other_id,
+        project_id=uuid4(),
+        product_id=None,
+    )
+    task_svc = AsyncMock()
+    task_svc.get.return_value = project_task
+    journal_svc = AsyncMock()
+    deps = _make_deps(task=task_svc, journal=journal_svc)
+    # Board role, but a project-backed task — exemption must NOT apply.
+    task_svc.agent_for.return_value = MagicMock(role="product_owner")
+    ca = ContentActions(deps)
+
+    env = await ca.note(
+        agent_id=agent_id,
+        text="trying to note a code task I don't own",
+        scope="note",
+        task_id=task_id,
+    )
+    body = env.as_dict()
+    assert body["error"] == "not_authorized"
+    journal_svc.write_entry.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_non_board_role_blocked_on_coordination_task_held_by_other() -> None:
+    """The exemption is board-only: a developer cannot piggyback on it."""
+    agent_id = uuid4()
+    other_id = uuid4()
+    task_id = uuid4()
+    coord_task = MagicMock(
+        id=task_id,
+        status="pending",
+        assigned_to=other_id,
+        project_id=None,
+        product_id=uuid4(),
+    )
+    task_svc = AsyncMock()
+    task_svc.get.return_value = coord_task
+    task_svc.agent_for.return_value = MagicMock(role="developer")
+    journal_svc = AsyncMock()
+    deps = _make_deps(task=task_svc, journal=journal_svc)
+    ca = ContentActions(deps)
+
+    env = await ca.note(
+        agent_id=agent_id,
+        text="dev trying to note a coordination task",
+        scope="note",
+        task_id=task_id,
+    )
+    body = env.as_dict()
+    assert body["error"] == "not_authorized"
+    journal_svc.write_entry.assert_not_awaited()
+
+
 @pytest.mark.asyncio
 async def test_evidence_unassigned_task_allows_inspection() -> None:
     """A task with assigned_to=None (between handoffs) may be inspected.

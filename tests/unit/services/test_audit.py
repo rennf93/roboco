@@ -5,11 +5,6 @@ from __future__ import annotations
 from uuid import uuid4
 
 import pytest
-from roboco.models.audit import (
-    AuditEventType,
-    PermissionDenialContext,
-    StateTransitionDenialContext,
-)
 from roboco.services.audit import (
     AuditService,
     _AuditEvent,
@@ -56,28 +51,6 @@ def test_coerce_uuid_returns_none_for_invalid() -> None:
 
 
 @pytest.mark.asyncio
-async def test_log_permission_denial_does_not_raise(svc: AuditService) -> None:
-    await svc.log_permission_denial(
-        PermissionDenialContext(
-            agent_id=uuid4(),
-            action="create_task",
-            resource="task",
-            reason="not allowed",
-        )
-    )
-
-
-@pytest.mark.asyncio
-async def test_log_channel_access_denial(svc: AuditService) -> None:
-    await svc.log_channel_access_denial(
-        agent_id=str(uuid4()),
-        channel_slug="backend-cell",
-        access_type="write",
-        reason="not member",
-    )
-
-
-@pytest.mark.asyncio
 async def test_log_task_action_denial(svc: AuditService) -> None:
     await svc.log_task_action_denial(
         agent_id=uuid4(),
@@ -85,40 +58,6 @@ async def test_log_task_action_denial(svc: AuditService) -> None:
         task_id=uuid4(),
         action="claim",
         reason="wrong team",
-    )
-
-
-@pytest.mark.asyncio
-async def test_log_state_transition_denial(svc: AuditService) -> None:
-    await svc.log_state_transition_denial(
-        StateTransitionDenialContext(
-            agent_id=uuid4(),
-            agent_role="qa",
-            task_id=uuid4(),
-            current_status="pending",
-            target_status="completed",
-            reason="invalid transition",
-        )
-    )
-
-
-@pytest.mark.asyncio
-async def test_log_notification_denial(svc: AuditService) -> None:
-    await svc.log_notification_denial(
-        agent_id=str(uuid4()),
-        agent_role="developer",
-        notification_type="blocker",
-        reason="dev cannot notify qa directly",
-    )
-
-
-@pytest.mark.asyncio
-async def test_log_security_event(svc: AuditService) -> None:
-    await svc.log_security_event(
-        event_type=AuditEventType.PERMISSION_DENIED,
-        agent_id=str(uuid4()),
-        description="bad token",
-        details={"reason": "bad token"},
     )
 
 
@@ -139,27 +78,6 @@ async def test_log_agent_event(svc: AuditService) -> None:
         event_type="agent_spawned",
         agent_slug="be-dev-1",
         details={"role": "developer"},
-    )
-
-
-@pytest.mark.asyncio
-async def test_log_pm_override(svc: AuditService) -> None:
-    await svc.log_pm_override(
-        agent_id=uuid4(),
-        task_id=uuid4(),
-        action="complete_with_cancelled_subtasks",
-        justification="subtasks were superseded",
-        cancelled_subtask_ids=[str(uuid4())],
-    )
-
-
-@pytest.mark.asyncio
-async def test_log_pm_override_no_subtasks(svc: AuditService) -> None:
-    await svc.log_pm_override(
-        agent_id=uuid4(),
-        task_id=uuid4(),
-        action="force_complete",
-        justification="all done",
     )
 
 

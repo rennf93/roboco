@@ -50,6 +50,20 @@ _STEPS = [
     }
 ]
 
+_GOOD_PLAN = (
+    "Implement the task on its feature branch: edit the target module, add or "
+    "update unit tests covering the change, run the suite locally, then commit "
+    "on the branch and open a PR. Keep the diff focused on the acceptance "
+    "criteria and verify it before submitting for QA."
+)
+_GOOD_TC = ["Follow the existing module's patterns; keep the change minimal."]
+_GOOD_RISKS = [
+    {
+        "risk": "Scope creep balloons the diff and slows review.",
+        "mitigation": "Touch only the files the acceptance criteria require.",
+    }
+]
+
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator
 
@@ -399,7 +413,12 @@ async def test_dev_full_chain_through_awaiting_qa(
     c = Choreographer(deps)
 
     env = await c.i_will_work_on(
-        dev_agent.id, task.id, plan="add the route", steps=_STEPS
+        dev_agent.id,
+        task.id,
+        plan=_GOOD_PLAN,
+        steps=_STEPS,
+        technical_considerations=_GOOD_TC,
+        risks=_GOOD_RISKS,
     )
     assert env.error is None, f"i_will_work_on failed: {env.message}"
     assert env.status == Status.IN_PROGRESS.value
@@ -762,7 +781,12 @@ async def test_block_then_unblock_restore(
 
     # Drive into in_progress via the real claim+start sequence.
     env = await c.i_will_work_on(
-        dev_agent.id, task.id, plan="implement /healthz", steps=_STEPS
+        dev_agent.id,
+        task.id,
+        plan=_GOOD_PLAN,
+        steps=_STEPS,
+        technical_considerations=_GOOD_TC,
+        risks=_GOOD_RISKS,
     )
     assert env.error is None, f"i_will_work_on failed: {env.message}"
     assert env.status == Status.IN_PROGRESS.value
@@ -818,7 +842,12 @@ async def test_pause_then_resume(
     c = _build_choreographer(db_session, task, task_service)
 
     env = await c.i_will_work_on(
-        dev_agent.id, task.id, plan="implement /healthz", steps=_STEPS
+        dev_agent.id,
+        task.id,
+        plan=_GOOD_PLAN,
+        steps=_STEPS,
+        technical_considerations=_GOOD_TC,
+        risks=_GOOD_RISKS,
     )
     assert env.error is None, f"i_will_work_on failed: {env.message}"
     assert env.status == Status.IN_PROGRESS.value

@@ -10,7 +10,7 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from uuid import UUID, uuid4
 
-from pydantic import Field
+from pydantic import Field, model_validator
 
 from roboco.models.base import (
     Complexity,
@@ -59,15 +59,6 @@ class DocRef(RobocoBase):
     )
 
 
-class FileRef(RobocoBase):
-    """Reference to a file artifact."""
-
-    path: str = Field(..., description="Path to file")
-    description: str = Field(..., description="What this file is")
-    file_type: str = Field(..., description="File type/extension")
-    size_bytes: int | None = Field(default=None, description="File size in bytes")
-
-
 class ProgressUpdate(RobocoBase):
     """A progress update on a task."""
 
@@ -90,20 +81,6 @@ class Checkpoint(RobocoBase):
         default_factory=list, description="Remaining sub-tasks"
     )
     notes: str | None = Field(default=None, description="Additional notes")
-
-
-class ExecutionLog(RobocoBase):
-    """Log of task execution events."""
-
-    events: list[dict] = Field(
-        default_factory=list, description="List of execution events"
-    )
-    errors: list[dict] = Field(
-        default_factory=list, description="List of errors encountered"
-    )
-    total_duration_seconds: float | None = Field(
-        default=None, description="Total execution time"
-    )
 
 
 class SubTask(RobocoBase):
@@ -174,7 +151,14 @@ class Task(TimestampMixin):
     )
 
     # Project & Branch (branch auto-created on claim)
-    project_id: UUID = Field(..., description="Project this task works on")
+    project_id: UUID | None = Field(
+        default=None,
+        description="Target repo; None for a fan-out task that carries product_id",
+    )
+    product_id: UUID | None = Field(
+        default=None,
+        description="Product this task belongs to (additive; drives subtask routing)",
+    )
     branch_name: str | None = Field(
         default=None, description="Branch created for this task"
     )
@@ -221,14 +205,12 @@ class Task(TimestampMixin):
     estimated_complexity: Complexity = Field(default=Complexity.MEDIUM)
 
     # Execution
-    execution_log: ExecutionLog = Field(default_factory=ExecutionLog)
     checkpoints: list[Checkpoint] = Field(default_factory=list)
     progress_updates: list[ProgressUpdate] = Field(default_factory=list)
 
     # Artifacts
     commits: list[CommitRef] = Field(default_factory=list)
     documents: list[DocRef] = Field(default_factory=list)
-    outputs: list[FileRef] = Field(default_factory=list)
 
     # Documentation
     dev_notes: str | None = Field(
@@ -337,7 +319,20 @@ class TaskCreate(RobocoBase):
     # Git configuration (all tasks follow git workflow)
     task_type: TaskType = Field(...)
     nature: TaskNature = Field(...)
-    project_id: UUID  # Required - all tasks need a project
+    # A task targets a single repo (project_id) OR fans out across cells via a
+    # product (product_id, a cell->project map). Exactly one is needed; a
+    # board/coordination task uses product_id and has no project of its own.
+    project_id: UUID | None = None
+    product_id: UUID | None = None
+
+    @model_validator(mode="after")
+    def _project_or_product(self) -> "TaskCreate":
+        if self.project_id is None and self.product_id is None:
+            raise ValueError(
+                "a task needs either a project_id (the repo it targets) or a "
+                "product_id (a cell->project map for a fan-out task)"
+            )
+        return self
 
 
 class TaskUpdate(RobocoBase):
@@ -387,7 +382,6 @@ class TaskCreateRequest:
     acceptance_criteria: list[str]
     team: Team
     created_by: UUID
-    project_id: UUID  # Required - all tasks need a project for git workflow
     task_type: TaskType
     nature: TaskNature
     estimated_complexity: Complexity
@@ -398,6 +392,10 @@ class TaskCreateRequest:
     assigned_to: UUID | None = None
     target_date: datetime | None = None
     status: TaskStatus | None = None  # PM can set BACKLOG for subtasks
+    # A single-repo task sets project_id; a fan-out task sets product_id and the
+    # cells' subtasks resolve their own project from it.
+    project_id: UUID | None = None
+    product_id: UUID | None = None
 
     # Ordering and dependencies
     sequence: int = 0  # Order within siblings (lower = first)

@@ -1,0 +1,141 @@
+name: CI
+
+on:
+  push:
+    branches:
+      - master
+    paths:
+      - 'roboco/**'
+      - 'agents/**'
+      - 'alembic/**'
+      - 'tests/**'
+      - 'scripts/**'
+      - 'docker/**'
+      - 'docker-compose.yml'
+      - 'docker-compose.yaml'
+      - 'Makefile'
+      - 'pyproject.toml'
+      - 'uv.lock'
+      - 'alembic.ini'
+      - 'panel/**'
+      - '.github/workflows/ci.yml'
+  pull_request:
+    branches:
+      - master
+    paths:
+      - 'roboco/**'
+      - 'agents/**'
+      - 'alembic/**'
+      - 'tests/**'
+      - 'scripts/**'
+      - 'docker/**'
+      - 'docker-compose.yml'
+      - 'docker-compose.yaml'
+      - 'Makefile'
+      - 'pyproject.toml'
+      - 'uv.lock'
+      - 'alembic.ini'
+      - 'panel/**'
+      - '.github/workflows/ci.yml'
+  workflow_dispatch:
+
+jobs:
+  quality:
+    name: Python quality gate
+    runs-on: ubuntu-latest
+
+    services:
+      postgres:
+        image: pgvector/pgvector:pg16
+        env:
+          POSTGRES_USER: roboco
+          POSTGRES_PASSWORD: roboco
+          POSTGRES_DB: roboco
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U roboco"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+      redis:
+        image: redis:7
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+    env:
+      # Runtime settings (roboco.config.Settings reads ROBOCO_*).
+      ROBOCO_DATABASE_HOST: localhost
+      ROBOCO_DATABASE_PORT: '5432'
+      ROBOCO_DATABASE_USER: roboco
+      ROBOCO_DATABASE_PASSWORD: roboco
+      ROBOCO_DATABASE_NAME: roboco
+      ROBOCO_REDIS_HOST: localhost
+      ROBOCO_REDIS_PORT: '6379'
+      # Fernet key required by the security layer (utils/crypto). Test-only.
+      ROBOCO_ENCRYPTION_KEY: 'zZ9nHr0e8aQ1bV3cN6mP2kJ5gT7yW4dX8sL0fR2uA0='
+      # The pytest harness (tests/conftest.py) provisions its own ephemeral
+      # databases via an admin connection to the `postgres` DB and reads a
+      # separate ROBOCO_TEST_DB_* set. The pgvector image's POSTGRES_USER is a
+      # superuser, so it can CREATE/DROP DATABASE and enable the vector extension.
+      ROBOCO_TEST_DB_HOST: localhost
+      ROBOCO_TEST_DB_PORT: '5432'
+      ROBOCO_TEST_DB_USER: roboco
+      ROBOCO_TEST_DB_PASSWORD: roboco
+      ROBOCO_TEST_DB_ADMIN_DB: postgres
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+
+      - name: Install uv
+        run: pip install uv
+
+      - name: Install dependencies
+        run: uv sync --extra dev
+
+      - name: Apply database migrations
+        run: uv run alembic upgrade head
+
+      - name: Run quality gate
+        run: make quality
+
+  panel:
+    name: Panel (Next.js)
+    runs-on: ubuntu-latest
+
+    defaults:
+      run:
+        working-directory: panel
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Enable corepack (pnpm)
+        run: corepack enable
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Lint
+        run: pnpm lint
+
+      - name: Type-check
+        run: pnpm exec tsc --noEmit

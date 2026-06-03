@@ -29,7 +29,6 @@ from roboco.models.base import (
 from roboco.services.a2a import A2AService
 from sqlalchemy import select
 from sqlalchemy import select as _sel
-from sqlalchemy.exc import IntegrityError
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator
@@ -180,24 +179,6 @@ async def test_list_tasks_ascending(a2a_setup: dict) -> None:
     svc = a2a_setup["svc"]
     tasks, _ = await svc.list_tasks(order_by="created_at asc")
     assert isinstance(tasks, list)
-
-
-@pytest.mark.asyncio
-async def test_create_task_from_message_without_project_fails(a2a_setup: dict) -> None:
-    """Pre-existing bug: create_task_from_message doesn't set project_id (required FK).
-
-    We exercise the path so the lines are covered, but assert the IntegrityError
-    rather than success. Fixing the production code is a separate change.
-    """
-    svc = a2a_setup["svc"]
-    dev = a2a_setup["dev"]
-    with pytest.raises(IntegrityError):
-        await svc.create_task_from_message(
-            title="new task",
-            description="from a2a",
-            created_by=dev.id,
-            team=Team.BACKEND,
-        )
 
 
 @pytest.mark.asyncio
@@ -1353,35 +1334,6 @@ async def test_send_gateway_adapter_with_string_recipient(
 # ---------------------------------------------------------------------------
 # create_task_from_message — patched DB so flush succeeds
 # ---------------------------------------------------------------------------
-
-
-@pytest.mark.asyncio
-async def test_create_task_from_message_with_project_seeded(
-    a2a_setup: dict,
-) -> None:
-    """Bypass the project_id required FK by seeding then setting on add."""
-    svc = a2a_setup["svc"]
-    dev = a2a_setup["dev"]
-    # Wrap session.add so we can attach a project_id before flush.
-    db = a2a_setup["db"]
-    pid = (await db.execute(select(ProjectTable))).scalars().first().id
-
-    real_add = svc.session.add
-
-    def _add_with_project(obj):
-        if isinstance(obj, TaskTable):
-            obj.project_id = pid
-            obj.acceptance_criteria = ["x"]
-        return real_add(obj)
-
-    with patch.object(svc.session, "add", side_effect=_add_with_project):
-        a2a_task = await svc.create_task_from_message(
-            title="new",
-            description="from a2a",
-            created_by=dev.id,
-            team=Team.BACKEND,
-        )
-    assert a2a_task is not None
 
 
 # ---------------------------------------------------------------------------

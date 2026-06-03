@@ -164,26 +164,6 @@ async def test_get_channel_by_slug(msg_setup: dict) -> None:
 
 
 @pytest.mark.asyncio
-async def test_archive_channel(msg_setup: dict) -> None:
-    svc = msg_setup["svc"]
-    ch = await svc.create_channel(_channel_req(uuid4().hex[:6]))
-    archived = await svc.archive_channel(ch.id)
-    assert archived.is_archived is True
-
-
-@pytest.mark.asyncio
-async def test_add_and_remove_channel_member(msg_setup: dict) -> None:
-    svc = msg_setup["svc"]
-    ch = await svc.create_channel(_channel_req(uuid4().hex[:6]))
-    aid = msg_setup["agent_id"]
-    updated = await svc.add_channel_member(ch.id, aid, can_write=True)
-    assert aid in updated.members
-    assert aid in updated.writers
-    removed = await svc.remove_channel_member(ch.id, aid)
-    assert aid not in removed.members
-
-
-@pytest.mark.asyncio
 async def test_add_channel_member_or_raise(msg_setup: dict) -> None:
     svc = msg_setup["svc"]
     ch = await svc.create_channel(_channel_req(uuid4().hex[:6]))
@@ -201,18 +181,10 @@ async def test_remove_channel_member_or_raise(msg_setup: dict) -> None:
     svc = msg_setup["svc"]
     ch = await svc.create_channel(_channel_req(uuid4().hex[:6]))
     aid = msg_setup["agent_id"]
-    await svc.add_channel_member(ch.id, aid)
+    await svc.add_channel_member_or_raise(
+        channel_id=ch.id, member_id=aid, can_write=True
+    )
     await svc.remove_channel_member_or_raise(channel_id=ch.id, member_id=aid)
-
-
-@pytest.mark.asyncio
-async def test_list_channels_for_agent(msg_setup: dict) -> None:
-    svc = msg_setup["svc"]
-    aid = msg_setup["agent_id"]
-    ch = await svc.create_channel(_channel_req(uuid4().hex[:6]))
-    await svc.add_channel_member(ch.id, aid)
-    channels = await svc.list_channels_for_agent(aid)
-    assert ch.id in {c.id for c in channels}
 
 
 @pytest.mark.asyncio
@@ -491,20 +463,6 @@ async def test_get_channel_with_groups_or_raise_missing(msg_setup: dict) -> None
     svc = msg_setup["svc"]
     with pytest.raises(NotFoundError):
         await svc.get_channel_with_groups_or_raise(uuid4())
-
-
-@pytest.mark.asyncio
-async def test_archive_channel_missing_raises(msg_setup: dict) -> None:
-    svc = msg_setup["svc"]
-    with pytest.raises(ValueError, match="not found"):
-        await svc.archive_channel(uuid4())
-
-
-@pytest.mark.asyncio
-async def test_add_channel_member_missing_raises(msg_setup: dict) -> None:
-    svc = msg_setup["svc"]
-    with pytest.raises(ValueError, match="not found"):
-        await svc.add_channel_member(uuid4(), uuid4())
 
 
 @pytest.mark.asyncio
@@ -965,7 +923,9 @@ async def test_create_session_with_access_check_member_can_write(
     aid = msg_setup["agent_id"]
     ch = await svc.create_channel(_channel_req(uuid4().hex[:6]))
     # Add agent to writers list.
-    await svc.add_channel_member(ch.id, aid, can_write=True)
+    await svc.add_channel_member_or_raise(
+        channel_id=ch.id, member_id=aid, can_write=True
+    )
     grp = await svc.create_group(GroupCreateRequest(name="g1", channel_id=ch.id))
     sess = await svc.create_session_with_access_check(
         agent_id=aid,
@@ -988,7 +948,9 @@ async def test_list_group_sessions_for_agent_member(
     svc = msg_setup["svc"]
     aid = msg_setup["agent_id"]
     ch = await svc.create_channel(_channel_req(uuid4().hex[:6]))
-    await svc.add_channel_member(ch.id, aid)
+    await svc.add_channel_member_or_raise(
+        channel_id=ch.id, member_id=aid, can_write=True
+    )
     grp = await svc.create_group(GroupCreateRequest(name="g1", channel_id=ch.id))
     await svc.create_session(SessionCreateRequest(group_id=grp.id))
     sessions = await svc.list_group_sessions_for_agent(
@@ -1004,7 +966,9 @@ async def test_list_group_sessions_with_status_filter(
     svc = msg_setup["svc"]
     aid = msg_setup["agent_id"]
     ch = await svc.create_channel(_channel_req(uuid4().hex[:6]))
-    await svc.add_channel_member(ch.id, aid)
+    await svc.add_channel_member_or_raise(
+        channel_id=ch.id, member_id=aid, can_write=True
+    )
     grp = await svc.create_group(GroupCreateRequest(name="g1", channel_id=ch.id))
     await svc.create_session(SessionCreateRequest(group_id=grp.id))
     sessions = await svc.list_group_sessions_for_agent(
@@ -1283,18 +1247,6 @@ async def test_get_or_create_channel_by_slug_returns_existing(
     found = await svc.get_or_create_channel_by_slug(req.slug)
     assert found is not None
     assert found.id == created.id
-
-
-# ---------------------------------------------------------------------------
-# remove_channel_member — channel missing
-# ---------------------------------------------------------------------------
-
-
-@pytest.mark.asyncio
-async def test_remove_channel_member_missing(msg_setup: dict) -> None:
-    svc = msg_setup["svc"]
-    with pytest.raises(ValueError, match="not found"):
-        await svc.remove_channel_member(uuid4(), uuid4())
 
 
 # ---------------------------------------------------------------------------
@@ -1714,7 +1666,9 @@ async def test_create_session_with_access_check_closes_prior(
     svc = msg_setup["svc"]
     aid = msg_setup["agent_id"]
     ch = await svc.create_channel(_channel_req(uuid4().hex[:6]))
-    await svc.add_channel_member(ch.id, aid, can_write=True)
+    await svc.add_channel_member_or_raise(
+        channel_id=ch.id, member_id=aid, can_write=True
+    )
     grp = await svc.create_group(GroupCreateRequest(name="g1", channel_id=ch.id))
     # Pre-create active session.
     prior = await svc.create_session(SessionCreateRequest(group_id=grp.id))
@@ -2317,7 +2271,9 @@ async def test_post_to_channel_full_path(msg_setup: dict) -> None:
     aid = msg_setup["agent_id"]
     ch = await svc.create_channel(_channel_req(uuid4().hex[:6]))
     # Add agent to channel writers so write check passes.
-    await svc.add_channel_member(ch.id, aid, can_write=True)
+    await svc.add_channel_member_or_raise(
+        channel_id=ch.id, member_id=aid, can_write=True
+    )
     with (
         patch(
             "roboco.services.repositories.get_agent_slug",

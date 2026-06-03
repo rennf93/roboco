@@ -600,13 +600,18 @@ async def test_delegate_unknown_role_rejected() -> None:
 
 @pytest.mark.asyncio
 async def test_delegate_parent_no_project_rejected() -> None:
-    """Line 1306: parent.project_id is None → invalid_state."""
+    """A parent with NEITHER a project_id NOR a product_id → invalid_state.
+
+    (A parent with a product_id but no project is allowed — subtasks resolve a
+    repo from the product map — so the guard now requires both to be None.)
+    """
     pm_id = uuid4()
     parent_id = uuid4()
     parent = MagicMock(
         status="in_progress",
         assigned_to=pm_id,
         project_id=None,
+        product_id=None,
         title="p",
     )
     task_svc = AsyncMock()
@@ -629,7 +634,7 @@ async def test_delegate_parent_no_project_rejected() -> None:
     )
     body = env.as_dict()
     assert body["error"] == "invalid_state"
-    assert "no project_id" in body["message"]
+    assert "project_id" in body["message"] and "product_id" in body["message"]
 
 
 # ---------------------------------------------------------------------------
@@ -1325,3 +1330,38 @@ async def test_i_will_work_on_claimed_with_no_plan_accepts_recovery_plan() -> No
     body = env.as_dict()
     assert body["error"] is None, f"expected success, got {body}"
     task_svc.set_plan.assert_awaited_once()
+
+
+# ---------------------------------------------------------------------------
+# _pending_assignment_guard: board/advisory roles can idle without claiming
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("role", ["product_owner", "head_marketing", "auditor"])
+async def test_pending_assignment_guard_exempts_board_roles(role: str) -> None:
+    """A board/advisory agent that reviewed a still-pending coordination task
+    has no i_will_work_on/i_will_plan verb, so the idle gate must let it pass."""
+    task_svc = AsyncMock()
+    task_svc.list_assigned_for_agent.return_value = [
+        MagicMock(id=uuid4(), status="pending")
+    ]
+    task_svc.agent_for.return_value = MagicMock(role=role, team=None, slug=None)
+    c = Choreographer(_make_deps(task=task_svc))
+    assert await c._pending_assignment_guard(uuid4(), {}) is None
+
+
+@pytest.mark.asyncio
+async def test_pending_assignment_guard_still_blocks_developer() -> None:
+    """A developer holding a pending unclaimed task is still told to claim it."""
+    task_svc = AsyncMock()
+    task_svc.list_assigned_for_agent.return_value = [
+        MagicMock(id=uuid4(), status="pending")
+    ]
+    task_svc.agent_for.return_value = MagicMock(
+        role="developer", team="backend", slug=None
+    )
+    c = Choreographer(_make_deps(task=task_svc))
+    guard = await c._pending_assignment_guard(uuid4(), {})
+    assert guard is not None
+    assert guard.as_dict()["error"] == "invalid_state"

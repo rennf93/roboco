@@ -509,7 +509,7 @@ class NotificationDeliveryService(BaseService):
                 f"What's needed: {details.what_needed}\n\n"
                 "ACTION REQUIRED:\n"
                 "When resolved, you MUST call:\n"
-                f"  roboco_task_unblock('{task_id}')\n\n"
+                f"  unblock('{task_id}')\n\n"
                 "Verbal resolution in chat is NOT enough - "
                 "the task will remain blocked until you call the tool."
             ),
@@ -595,7 +595,7 @@ class NotificationDeliveryService(BaseService):
             subject=f"Task unblocked: {task.title or 'Unknown task'}",
             body=(
                 f"Task {task_id} has been unblocked and is ready to resume.\n\n"
-                "Use roboco_task_get to review the task and continue work."
+                "Review the task details in your briefing and continue work."
             ),
             related_task_id=task_id,
             requires_ack=ACK_REQUIRED_BY_TYPE[NotificationType.TASK_ASSIGNMENT],

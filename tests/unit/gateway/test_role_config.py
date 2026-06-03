@@ -67,6 +67,15 @@ class TestRoleConfigCatalog:
             assert "ToolSearch" not in cfg.flow_tools
             assert "ToolSearch" not in cfg.do_tools
 
+    def test_every_role_has_evidence(self) -> None:
+        # Issue #8: a developer container shipped without
+        # mcp__roboco-do__evidence. `evidence` is a read-only inspection
+        # tool every role needs (devs read their own PR diff, QA/PM review,
+        # the auditor inspects). Lock the invariant so no role's do-tool
+        # tuple can silently drop it again.
+        for role, cfg in ROLE_CONFIGS.items():
+            assert "evidence" in cfg.do_tools, f"{role} missing evidence do-tool"
+
 
 def test_dev_flow_matches_spec_intents_for_role() -> None:
     """role_config._DEV_FLOW must equal spec.intents_for_role(Role.DEVELOPER)."""

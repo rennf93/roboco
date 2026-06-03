@@ -1,7 +1,7 @@
 #!/bin/bash
 # SessionStart hook — starts the SDK server and prints the pre-rendered
 # task briefing into the session so Claude doesn't burn its first turns
-# on tool discovery (roboco_task_scan → roboco_task_get → read files).
+# on tool discovery (give_me_work → read files).
 #
 # The briefing is written by the orchestrator before the container spawns
 # (_write_agent_briefing) and mounted read-only at /app/briefing.md.

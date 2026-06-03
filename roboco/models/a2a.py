@@ -42,15 +42,6 @@ class A2ATaskState(StrEnum):
     AUTH_REQUIRED = "auth_required"  # Needs client authentication
 
 
-class A2APartType(StrEnum):
-    """Types of content parts in a message."""
-
-    TEXT = "text"
-    FILE = "file"
-    DATA = "data"
-    ARTIFACT = "artifact"
-
-
 # =============================================================================
 # AGENT CARD MODELS
 # =============================================================================
