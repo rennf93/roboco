@@ -70,6 +70,11 @@ WORKDIR /app
 # Copy the already-built venv + app tree from builder
 COPY --from=builder /app /app
 
+# uv is needed at runtime: WorkspaceService runs `uv sync` to pre-install
+# Python cell deps, and CI commands shell out to `uv run`. The builder stage
+# has it at /usr/local/bin/uv; carry it into the runner so it's on PATH.
+COPY --from=builder /usr/local/bin/uv /usr/local/bin/uv
+
 # Orchestrator clones workspaces as root, then chowns them to the agent
 # user (uid 1000) so the agent container can read/write. After the chown,
 # the orchestrator (still root) needs to run git commands (claim branch

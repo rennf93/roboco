@@ -235,6 +235,13 @@ services:
       ROBOCO_HOST_PROJECT_DIR: ${ROBOCO_HOST_PROJECT_DIR:-/volume1/roboco}
       ROBOCO_HOST_CLAUDE_DIR: ${ROBOCO_HOST_CLAUDE_DIR:-/home/renzof/.claude}
       ROBOCO_HOST_DATA_DIR: ${ROBOCO_HOST_DATA_DIR:-/volume1/roboco/data}
+      # Production environment selects structlog's JSONRenderer (machine-
+      # parseable logs) over the dev ConsoleRenderer.
+      ROBOCO_ENVIRONMENT: production
+    # Run in the host user namespace so the orchestrator's chown of cloned
+    # workspaces to the agent uid (1000) isn't blocked by docker's userns
+    # remap (which would shift ownership out of the expected uid range).
+    userns_mode: "host"
     volumes:
       # Docker socket - allows spawning agent containers
       - /var/run/docker.sock:/var/run/docker.sock
