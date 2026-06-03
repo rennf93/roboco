@@ -127,13 +127,15 @@ _reset_workspace() {
     fi
 
     # Find default branch once — `git remote show origin` can fail if
-    # the repo has no origin or auth is missing; fall back to main, then
-    # master. We swallow stderr because noisy auth failures are
-    # expected on first-time workspaces.
+    # the repo has no origin or auth is missing (private clones keep no
+    # persisted PAT), so fall back to main, then master. We swallow both
+    # stderr AND the exit code: under `set -e` + `pipefail` a 128 from a
+    # credential-less fetch would otherwise abort the whole reset before
+    # the local-branch fallback below.
     local default
     default=$(
-        $as_owner git -C "$workspace" remote show origin 2>/dev/null \
-            | awk '/HEAD branch/{print $3}'
+        { $as_owner git -C "$workspace" remote show origin 2>/dev/null \
+            | awk '/HEAD branch/{print $3}'; } || true
     )
     if [ -z "$default" ] || [ "$default" = "(unknown)" ]; then
         if $as_owner git -C "$workspace" show-ref --verify --quiet refs/heads/main; then
