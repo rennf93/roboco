@@ -13,7 +13,7 @@ from __future__ import annotations
 
 import re
 import sys
-from datetime import datetime
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -53,7 +53,7 @@ def update_changelog(version: str) -> bool:
     """
     path = PROJECT_ROOT / "CHANGELOG.md"
     content = path.read_text()
-    today = datetime.now(tz=datetime.UTC).strftime("%Y-%m-%d")
+    today = datetime.now(tz=UTC).strftime("%Y-%m-%d")
 
     if re.search(rf"^## \[{re.escape(version)}\]", content, re.MULTILINE):
         print(f"  CHANGELOG.md: [{version}] entry already exists")
@@ -116,7 +116,7 @@ def main() -> int:
             if not updater(version):
                 print(f"\n  FAILED: {name}")
                 all_ok = False
-        except Exception as exc:  # noqa: BLE001 - report and continue
+        except Exception as exc:  # report and continue past one bad updater
             print(f"\n  ERROR updating {name}: {exc}")
             all_ok = False
 
