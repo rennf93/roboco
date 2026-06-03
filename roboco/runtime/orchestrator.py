@@ -3674,28 +3674,24 @@ Start by:
             return "cell_pm"
         return None
 
-    def _classify_code_task(self, task: dict[str, Any]) -> str:
-        """Classify a generic `code` task via keyword/complexity heuristics."""
-        team = task.get("team")
-        title = (task.get("title") or "").lower()
-        description = (task.get("description") or "").lower()
-        text = f"{title} {description}"
-        complexity = task.get("estimated_complexity", "medium").lower()
+    def _classify_cell_code_task(self, text: str, complexity: str) -> str:
+        """Route a cell-owned code task WITHIN its cell (dev or cell_pm).
 
-        # A code task that belongs to a CELL is implementation work and routes
-        # WITHIN that cell — never to the board, and never escalated to main_pm
-        # by keyword. A dev task whose description says "Create & Launch" or
-        # "auth/security" is still a dev task; letting the board/main_pm
-        # keyword heuristics fire on it is how a cell code task ended up
-        # "reviewed" by the board and a PM ended up owning (and deadlocking) a
-        # dev code task. The strategic heuristics below apply only to
-        # team-less / "all" top-level tasks.
-        cell_teams = frozenset(t.value for t in CELL_TEAMS)
-        if team in cell_teams:
-            if self._has_pm_keywords(text) or complexity == "high":
-                return "cell_pm"
-            return "dev"
+        Implementation work that belongs to a CELL never escalates to the
+        board or main_pm by keyword — a dev task whose description says
+        "Create & Launch" or "auth/security" is still a dev task. Letting the
+        board/main_pm keyword heuristics fire on it is how a cell code task
+        ended up "reviewed" by the board and a PM ended up owning (and
+        deadlocking) a dev code task.
+        """
+        if self._has_pm_keywords(text) or complexity == "high":
+            return "cell_pm"
+        return "dev"
 
+    def _classify_strategic_code_task(
+        self, text: str, team: str | None, complexity: str
+    ) -> str:
+        """Route a team-less / "all" top-level code task by strategic heuristics."""
         if self._has_board_keywords(text):
             return "board"
 
@@ -3711,6 +3707,20 @@ Start by:
             return "cell_pm"
 
         return "dev"
+
+    def _classify_code_task(self, task: dict[str, Any]) -> str:
+        """Classify a generic `code` task via keyword/complexity heuristics."""
+        team = task.get("team")
+        title = (task.get("title") or "").lower()
+        description = (task.get("description") or "").lower()
+        text = f"{title} {description}"
+        complexity = task.get("estimated_complexity", "medium").lower()
+
+        cell_teams = frozenset(t.value for t in CELL_TEAMS)
+        if team in cell_teams:
+            return self._classify_cell_code_task(text, complexity)
+
+        return self._classify_strategic_code_task(text, team, complexity)
 
     def _classify_task_routing(self, task: dict[str, Any]) -> str:
         """
