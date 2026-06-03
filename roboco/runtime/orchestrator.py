@@ -3314,25 +3314,14 @@ Start by:
         """
         from roboco.agents_config import get_agent_role
 
-        task_id = task.get("id")
-        if not task_id:
-            return "Task missing ID"
-        min_description_len = 10
+        if shape_err := await self._check_spawn_task_shape(client, task):
+            return shape_err
 
-        description = (task.get("description") or "").strip()
-        if len(description) < min_description_len:
-            return (
-                f"Task {task_id} has inadequate description ({len(description)} chars)"
-            )
+        if dep_err := await self._check_dependencies_terminal(client, task):
+            return dep_err
 
-        # A coordination task carries a product instead of a repo; only a task
-        # with neither is genuinely unroutable.
-        if not task.get("project_id") and not _is_coordination_task(task):
-            await self._auto_block_task(
-                client, task_id, "Task needs a project_id or product_id"
-            )
-            return f"Task {task_id} needs a project or product"
-
+        # _check_spawn_task_shape guarantees a non-empty id past this point.
+        task_id = str(task.get("id"))
         parent_id = task.get("parent_task_id")
         if parent_id:
             err = await self._check_parent_branch_ready(client, task_id, parent_id)
@@ -3347,6 +3336,54 @@ Start by:
                 return err
 
         return None  # All validations passed
+
+    async def _check_spawn_task_shape(
+        self, client: httpx.AsyncClient, task: dict[str, Any]
+    ) -> str | None:
+        """Reject a task that is structurally unroutable (id/description/repo)."""
+        task_id = task.get("id")
+        if not task_id:
+            return "Task missing ID"
+        min_description_len = 10
+        description = (task.get("description") or "").strip()
+        if len(description) < min_description_len:
+            return (
+                f"Task {task_id} has inadequate description ({len(description)} chars)"
+            )
+        # A coordination task carries a product instead of a repo; only a task
+        # with neither is genuinely unroutable.
+        if not task.get("project_id") and not _is_coordination_task(task):
+            await self._auto_block_task(
+                client, task_id, "Task needs a project_id or product_id"
+            )
+            return f"Task {task_id} needs a project or product"
+        return None
+
+    async def _check_dependencies_terminal(
+        self, client: httpx.AsyncClient, task: dict[str, Any]
+    ) -> str | None:
+        """Hold a pre-assigned task whose dependencies are not yet terminal.
+
+        A dev subtask is always pre-assigned, so it never passes through the
+        unassigned claim pool's dependency filter. Without this gate the
+        dispatcher would spawn the dev container while a cross-cell dependency
+        (e.g. the UX/UI design the frontend dev waits on) is still open. Return
+        a skip reason while ANY dependency is non-terminal; allow the spawn
+        once every dependency reaches completed/cancelled.
+        """
+        dependency_ids = task.get("dependency_ids") or []
+        if not dependency_ids:
+            return None
+        terminal = ("completed", "cancelled")
+        for dep_id in dependency_ids:
+            dep_resp = await client.get(f"{self._api_url}/tasks/{dep_id}")
+            # A dependency we cannot read is treated as unmet — fail closed
+            # rather than spawn ahead of work whose state is unknown.
+            if not dep_resp.is_success or dep_resp.json().get("status") not in terminal:
+                return (
+                    f"Task {task.get('id')} waiting on non-terminal dependency {dep_id}"
+                )
+        return None
 
     async def _auto_block_task(
         self, client: httpx.AsyncClient, task_id: str, reason: str

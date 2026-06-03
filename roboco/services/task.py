@@ -4192,6 +4192,30 @@ class TaskService(BaseService):
             task.dependency_ids = [*task.dependency_ids, depends_on_id]
             await self.session.flush()
 
+    async def unmet_dependency_ids(self, dependency_ids: list[UUID]) -> list[UUID]:
+        """Return the subset of dependency IDs whose status is non-terminal.
+
+        A dependency is "met" only once it reaches a terminal state
+        (completed/cancelled). This is the single source of truth for the
+        "can a task that depends on these proceed?" question — reused by
+        `list_pending`, `list_pending_for_agent`, `inherit_unmet_dependencies`,
+        and the claim-time dependency guard. An empty input returns an empty
+        list (no dependencies = nothing unmet).
+        """
+        if not dependency_ids:
+            return []
+        terminal = {TaskStatus.COMPLETED, TaskStatus.CANCELLED}
+        dep_result = await self.session.execute(
+            select(TaskTable.id, TaskTable.status).where(
+                TaskTable.id.in_(dependency_ids)
+            )
+        )
+        return [
+            dep_id
+            for dep_id, dep_status in dep_result.all()
+            if dep_status not in terminal
+        ]
+
     async def inherit_unmet_dependencies(
         self, subtask_id: UUID, parent_id: UUID
     ) -> None:
@@ -4208,15 +4232,8 @@ class TaskService(BaseService):
         parent = await self.get(parent_id)
         if parent is None or not parent.dependency_ids:
             return
-        dep_result = await self.session.execute(
-            select(TaskTable.id, TaskTable.status).where(
-                TaskTable.id.in_(parent.dependency_ids)
-            )
-        )
-        terminal = {TaskStatus.COMPLETED, TaskStatus.CANCELLED}
-        for dep_id, dep_status in dep_result.all():
-            if dep_status not in terminal:
-                await self.add_dependency(subtask_id, dep_id)
+        for dep_id in await self.unmet_dependency_ids(list(parent.dependency_ids)):
+            await self.add_dependency(subtask_id, dep_id)
 
     async def get_subtasks(self, parent_task_id: UUID) -> list[TaskTable]:
         """Get all subtasks of a parent task."""
@@ -4990,6 +5007,13 @@ class TaskService(BaseService):
         assigned_to=<them> + status=pending got 'no work' until they
         triage()'d explicitly.
 
+        A pre-assigned task with unmet (non-terminal) dependencies is held
+        back: offering it would let the agent claim and work ahead of a
+        dependency that has not resolved (e.g. a frontend dev coding before
+        the UX/UI design lands). The pre-assigned path bypasses
+        `list_pending(filter_by_dependencies=True)`, so the dependency gate
+        must be applied here too.
+
         Ordered by sequence asc, then priority asc, then created_at asc so
         earlier-sequence tasks win.
         """
@@ -5006,7 +5030,13 @@ class TaskService(BaseService):
             )
         )
         result = await self.session.execute(query)
-        return list(result.scalars().all())
+        tasks = list(result.scalars().all())
+        available: list[TaskTable] = []
+        for task in tasks:
+            if await self.unmet_dependency_ids(list(task.dependency_ids)):
+                continue
+            available.append(task)
+        return available
 
     async def list_paused_for_agent(self, agent_id: UUID) -> list[TaskTable]:
         """Paused tasks assigned to the agent."""

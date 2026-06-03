@@ -25,6 +25,7 @@ from roboco.services.gateway.claim_guards import (
     already_active_guard,
     paused_tasks_guard,
     sibling_sequence_guard,
+    unmet_dependency_guard,
 )
 from roboco.services.gateway.envelope import Envelope
 from roboco.services.gateway.evidence_builder import (
@@ -700,6 +701,11 @@ class Choreographer:
         paused = await self.task.list_paused_for_agent(agent_id)
         if guard := paused_tasks_guard(paused):
             return guard
+        dep_ids = list(task.dependency_ids)
+        if dep_ids:
+            unmet = await self.task.unmet_dependency_ids(dep_ids)
+            if guard := unmet_dependency_guard(task, unmet):
+                return guard
         if not skip_sequence:
             siblings = await self._fetch_siblings(task)
             if guard := sibling_sequence_guard(task, siblings):
