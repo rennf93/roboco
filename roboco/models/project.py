@@ -46,7 +46,7 @@ class Project(TimestampMixin):
 
     # Git Configuration
     git_url: str = Field(..., description="Git repository URL")
-    default_branch: str = Field(default="main", description="Default branch name")
+    default_branch: str = Field(default="master", description="Default branch name")
     protected_branches: list[str] = Field(
         default_factory=lambda: ["main", "master"],
         description="Branches that cannot be pushed to directly",
@@ -104,7 +104,7 @@ class ProjectCreate(RobocoBase):
     name: str = Field(..., min_length=1, max_length=100)
     slug: str = Field(..., min_length=1, max_length=50, pattern=r"^[a-z0-9-]+$")
     git_url: str
-    default_branch: str = "main"
+    default_branch: str = "master"
     protected_branches: list[str] = Field(default_factory=lambda: ["main", "master"])
     assigned_cell: Team
 

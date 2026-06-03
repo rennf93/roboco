@@ -84,7 +84,7 @@ class ProjectCreateRequest(BaseModel):
     name: str = Field(..., min_length=1, max_length=100)
     slug: str = Field(..., min_length=1, max_length=50, pattern=r"^[a-z0-9-]+$")
     git_url: str
-    default_branch: str = "main"
+    default_branch: str = "master"
     protected_branches: list[str] | None = Field(
         default=None,
         description="Branches to protect. Defaults to [default_branch].",
@@ -156,7 +156,7 @@ def project_to_response(project: "ProjectTable") -> ProjectResponse:
         name=str(project.name),
         slug=str(project.slug),
         git_url=str(project.git_url),
-        default_branch=str(default_branch) if default_branch else "main",
+        default_branch=str(default_branch) if default_branch else "master",
         protected_branches=list(project.protected_branches or []),
         assigned_cell=project.assigned_cell,
         has_git_token=bool(project.git_token_encrypted),
@@ -183,7 +183,7 @@ def project_to_summary(project: "ProjectTable") -> ProjectSummaryResponse:
         name=str(project.name),
         slug=str(project.slug),
         git_url=str(project.git_url),
-        default_branch=str(default_branch) if default_branch else "main",
+        default_branch=str(default_branch) if default_branch else "master",
         assigned_cell=project.assigned_cell,
         is_active=bool(project.is_active),
         has_workspace=bool(project.workspace_path),

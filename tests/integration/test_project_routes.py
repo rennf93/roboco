@@ -157,6 +157,29 @@ async def test_list_projects_filter_by_cell(
 
 
 @pytest.mark.asyncio
+async def test_create_project_omitting_default_branch_yields_master(
+    project_client: AsyncClient,
+) -> None:
+    """Omitting ``default_branch`` on the create route resolves to ``master``.
+
+    Exercises the real API create path: ``ProjectCreateRequest`` (field
+    omitted) -> route ``create_project`` -> ``ProjectCreate`` -> service
+    ``create`` -> ``ProjectTable`` -> ``project_to_response``. None of these
+    must inject the legacy ``main`` default.
+    """
+    payload = _payload()
+    del payload["default_branch"]
+
+    response = await project_client.post("/api/projects", json=payload, headers=_HDR)
+    assert response.status_code == HTTPStatus.CREATED
+    assert response.json()["default_branch"] == "master"
+
+    fetched = await project_client.get(f"/api/projects/{payload['slug']}", headers=_HDR)
+    assert fetched.status_code == HTTPStatus.OK
+    assert fetched.json()["default_branch"] == "master"
+
+
+@pytest.mark.asyncio
 async def test_list_projects_includes_default_branch(
     project_client: AsyncClient,
 ) -> None:
