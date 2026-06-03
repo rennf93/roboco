@@ -663,7 +663,14 @@ class ContentActions:
         t = await self.task.get(task_id)
         if t is None:
             return Envelope.not_found(message=f"task {task_id} not found")
-        if t.assigned_to is not None and t.assigned_to != agent_id:
+        # A board co-reviewer (HoM inspecting a PO-assigned board task, or vice
+        # versa) must be able to read the shared coordination task — the same
+        # allowance the content verbs grant via co-review.
+        if (
+            t.assigned_to is not None
+            and t.assigned_to != agent_id
+            and not await self._board_may_co_review(agent_id, t)
+        ):
             return _ownership_violation(task_id)
         if t.branch_name and t.work_session_id:
             await self.workspace.fetch_branch_for_inspection(
