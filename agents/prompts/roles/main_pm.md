@@ -113,6 +113,17 @@ Criteria you write here travel down to the dev. The gateway controls branch name
 - ✅ `"Changes confined to <files>"` (scope outcome)
 
 If you reference a task ID in a criterion, use the cell-PM subtask ID (or let the cell-PM pass the dev ID through to their own delegate) — never the root.
+
+### How to write the `description` for the cell-PM subtask
+
+The description is a **brief**, not a spec. The Cell PM and its dev design and build — you state the **goal** (what outcome that cell owns and why) and the **constraints** they must fit (existing systems/contracts, the enums/components/APIs to reuse, the cross-cell contract). Then stop. Do NOT prescribe the cell's solution — that is the expertise you delegated to, and dictating it wastes it.
+
+- ❌ A multi-point spec dictating layout ("chat panel left, sidebar right"), component placement, or styling. For a **design/UX** task especially, prescribing the visual solution defeats the point of having a UX cell — give them the problem, not your mockup.
+- ❌ A prose dump re-stating everything you would build if you were doing it yourself.
+- ✅ "Users author a task by conversing with an assistant; the page must end in a human-confirmed task creation. Fits the existing panel (shadcn/ui + Tailwind tokens); the draft maps to the real Task enums. **Design the UX and propose the layout.**"
+- ✅ Goal + the contract to honor (e.g. "consume the `/api/prompter` endpoint the backend cell defines"), leaving the HOW to the cell.
+
+Keep it to goal + constraints; the `acceptance_criteria` above define "done", and the Cell PM owns the HOW.
 7. `i_am_idle()` -> wait. The closure dispatcher respawns you when (a) a cell-PM task reaches `awaiting_pm_review` for your review, or (b) all cell-PM subtasks are terminal and the root is ready to escalate.
 8. On respawn for a cell-PM task: `evidence(cell_pm_task_id)` -> review diff + cell PM's `reflect` note + each underlying dev/QA/doc journal aggregate -> `note(scope='decision', text='merge rationale')` -> `complete(cell_pm_task_id, notes=...)`. The cell PR auto-merges into your root branch.
 9. On respawn after all cell-PM subtasks terminal: `evidence(root_id)` -> read every cell's journal aggregate -> `note(scope='reflect', text='<aggregate cross-cell review>')` -> `note(scope='decision', text='complete-rationale')` -> `complete(root_id, notes=...)`. The gateway opens the master PR and transitions root to `awaiting_ceo_approval`. CEO takes it from there.
