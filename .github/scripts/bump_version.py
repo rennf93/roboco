@@ -13,13 +13,17 @@ from __future__ import annotations
 
 import re
 import sys
-from collections.abc import Callable
-from datetime import datetime, timezone
+from datetime import datetime
 from pathlib import Path
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from collections.abc import Callable
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
 
 VERSION_PATTERN = re.compile(r"^\d+\.\d+\.\d+$")
+_EXPECTED_ARGC = 2  # script name + version argument
 
 
 def update_pyproject_toml(version: str) -> bool:
@@ -49,7 +53,7 @@ def update_changelog(version: str) -> bool:
     """
     path = PROJECT_ROOT / "CHANGELOG.md"
     content = path.read_text()
-    today = datetime.now(tz=timezone.utc).strftime("%Y-%m-%d")
+    today = datetime.now(tz=datetime.UTC).strftime("%Y-%m-%d")
 
     if re.search(rf"^## \[{re.escape(version)}\]", content, re.MULTILINE):
         print(f"  CHANGELOG.md: [{version}] entry already exists")
@@ -88,7 +92,7 @@ def update_changelog(version: str) -> bool:
 
 def main() -> int:
     """Entry point: validate the version argument and run all updaters."""
-    if len(sys.argv) != 2:
+    if len(sys.argv) != _EXPECTED_ARGC:
         print("Usage: bump_version.py <version>")
         print("  version must be in X.Y.Z format")
         return 1
