@@ -15,3 +15,14 @@ updates:
           - "*"
     allow:
       - dependency-type: "all"
+
+  - package-ecosystem: "npm"
+    directory: "/panel"
+    schedule:
+      interval: "weekly"
+    groups:
+      dependencies:
+        patterns:
+          - "*"
+    allow:
+      - dependency-type: "all"

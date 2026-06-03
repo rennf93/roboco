@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: RoboCo Documentation
+    url: https://github.com/rennf93/roboco/tree/master/docs
+    about: Check the docs for architecture, deployment, and usage information
+  - name: Usage Questions & Discussions
+    url: https://github.com/rennf93/roboco/discussions
+    about: Please ask and answer questions in GitHub Discussions
