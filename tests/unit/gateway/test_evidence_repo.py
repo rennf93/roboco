@@ -1,13 +1,15 @@
-"""roboco.services.gateway.evidence_repo coverage — Phase 1 stubs.
+"""roboco.services.gateway.evidence_repo coverage.
 
-EvidenceRepo currently returns empty lists for every method (Phase 1).
-Tests confirm the contract and the constructor stores the session — when
-Phase 2+ wires real queries, these tests will need real-DB integration.
+Most methods are still Phase 1 stubs returning empty lists;
+``journal_highlights_for_task`` is wired to a real query, so it is tested
+against a mocked ``execute`` result that stands in for the DB rows.
 """
 
 from __future__ import annotations
 
-from unittest.mock import MagicMock
+from datetime import UTC, datetime
+from types import SimpleNamespace
+from unittest.mock import AsyncMock, MagicMock
 from uuid import uuid4
 
 import pytest
@@ -63,7 +65,42 @@ async def test_blockers_in_lane_returns_empty(repo: EvidenceRepo) -> None:
     assert out == []
 
 
+def _repo_with_rows(rows: list[object]) -> EvidenceRepo:
+    """EvidenceRepo whose db.execute() yields a result with the given rows."""
+    db = MagicMock()
+    result = MagicMock()
+    result.all.return_value = rows
+    db.execute = AsyncMock(return_value=result)
+    return EvidenceRepo(db)
+
+
 @pytest.mark.asyncio
-async def test_journal_highlights_for_task_returns_empty(repo: EvidenceRepo) -> None:
+async def test_journal_highlights_for_task_empty_when_no_entries() -> None:
+    repo = _repo_with_rows([])
     out = await repo.journal_highlights_for_task(uuid4())
     assert out == []
+
+
+@pytest.mark.asyncio
+async def test_journal_highlights_for_task_maps_rows_with_author() -> None:
+    ts = datetime(2026, 6, 3, 5, 30, tzinfo=UTC)
+    row = SimpleNamespace(
+        type="decision_log",
+        title="PO review",
+        content="Approve with scope amendments.",
+        timestamp=ts,
+        slug="product-owner",
+        role="product_owner",
+    )
+    repo = _repo_with_rows([row])
+    out = await repo.journal_highlights_for_task(uuid4())
+    assert out == [
+        {
+            "author": "product-owner",
+            "author_role": "product_owner",
+            "type": "decision_log",
+            "title": "PO review",
+            "content": "Approve with scope amendments.",
+            "timestamp": ts.isoformat(),
+        }
+    ]
