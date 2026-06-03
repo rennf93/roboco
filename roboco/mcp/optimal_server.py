@@ -44,6 +44,25 @@ class RecordDecisionInput(BaseModel):
     tags: list[str] | None = Field(None, description="Tags for categorization")
 
 
+# Legacy aliases agents commonly pass that are not valid IndexType values.
+# The only valid value for documentation is 'documentation' — 'docs' raises
+# ValueError at the route's IndexType(...) conversion, yielding a 400.
+_INDEX_TYPE_ALIASES = {"docs": "documentation"}
+
+
+def normalize_index_types(index_types: list[str] | None) -> list[str] | None:
+    """Map legacy index-type aliases to valid IndexType values.
+
+    Agents (and our own docstrings) historically used 'docs', which is not a
+    member of the ``IndexType`` enum. Translate it to 'documentation' before
+    the request leaves the client so the route's ``IndexType(...)`` conversion
+    succeeds instead of 400-ing.
+    """
+    if index_types is None:
+        return None
+    return [_INDEX_TYPE_ALIASES.get(t, t) for t in index_types]
+
+
 def _register_search_tools(mcp: FastMCP, client: ApiClient) -> None:
     """Register search tools available to all agents."""
 
@@ -66,7 +85,8 @@ def _register_search_tools(mcp: FastMCP, client: ApiClient) -> None:
             top_k: Number of results to return (1-20, default 5)
             project: Optional project filter
             task_id: Optional task filter
-            index_types: Index types to search (code, docs, decisions, learnings)
+            index_types: Index types to search (documentation, decisions,
+                learnings, standards, errors, reviews, journals, conversations)
 
         Returns:
             Search results with relevance scores and source info
@@ -79,8 +99,9 @@ def _register_search_tools(mcp: FastMCP, client: ApiClient) -> None:
             payload["project"] = project
         if task_id:
             payload["task_id"] = task_id
-        if index_types:
-            payload["index_types"] = index_types
+        normalized_index_types = normalize_index_types(index_types)
+        if normalized_index_types:
+            payload["index_types"] = normalized_index_types
 
         resp = await client.post("/optimal/kb/search", json=payload)
         if not resp.ok:
