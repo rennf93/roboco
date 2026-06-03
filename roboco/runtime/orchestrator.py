@@ -2314,7 +2314,7 @@ class AgentOrchestrator:
         ]
         if "i_will_work_on" in cfg.flow_tools:
             preconditions.append(
-                "note(scope='decision') is REQUIRED before i_will_work_on —"
+                "note(scope='note') is REQUIRED before i_will_work_on —"
                 " log your approach first or the claim is rejected."
             )
         if "i_will_plan" in cfg.flow_tools:

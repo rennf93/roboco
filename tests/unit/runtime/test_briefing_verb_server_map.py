@@ -15,6 +15,9 @@ import tempfile
 from pathlib import Path
 from unittest.mock import patch
 
+from roboco.foundation.policy.journaling import SCOPE_TO_TYPE, Scope
+from roboco.foundation.policy.tracing import Requirement
+from roboco.models.base import JournalEntryType
 from roboco.runtime.orchestrator import AgentOrchestrator
 from roboco.services.gateway.role_config import get_role_config
 
@@ -51,9 +54,39 @@ def test_developer_block_lists_git_readonly_and_optimal_servers() -> None:
 
 
 def test_developer_block_states_note_before_claim_precondition() -> None:
+    # The i_will_work_on claim gate is journal:note_at_claim, enforced via
+    # JournalService.has_note_for_task -> JournalEntryType.GENERAL. The only
+    # note scope that maps to GENERAL is scope='note' (scope='decision' maps
+    # to DECISION_LOG and is the PM's i_will_plan gate). The briefing MUST
+    # name the scope that actually satisfies the gate, not 'decision'.
     block = _orch()._build_verb_server_block("developer")
-    assert "note(scope='decision')" in block
-    assert "i_will_work_on" in block.split("note(scope='decision')", 1)[1]
+    assert "note(scope='note')" in block
+    assert "i_will_work_on" in block.split("note(scope='note')", 1)[1]
+    # The decision scope must NOT be the dev-claim precondition.
+    assert "note(scope='decision')" not in block
+
+
+def test_developer_claim_precondition_scope_matches_real_gate_type() -> None:
+    # Validate against the REAL boundary: the JOURNAL_NOTE_AT_CLAIM requirement
+    # on i_will_work_on is satisfied by has_note_for_task, which queries
+    # JournalEntryType.GENERAL. Whatever scope the briefing emits MUST be the
+    # scope whose SCOPE_TO_TYPE mapping equals the type the gate checks.
+    assert Requirement.JOURNAL_NOTE_AT_CLAIM.value == "journal:note_at_claim"
+    gate_type = JournalEntryType.GENERAL  # has_note_for_task checks this type
+    satisfying_scopes = {
+        scope.value for scope, jtype in SCOPE_TO_TYPE.items() if jtype is gate_type
+    }
+    assert satisfying_scopes == {Scope.NOTE.value}
+
+    block = _orch()._build_verb_server_block("developer")
+    for scope_value in satisfying_scopes:
+        assert f"note(scope='{scope_value}')" in block
+    # A scope that does NOT map to the gate type must not be presented as the
+    # i_will_work_on precondition.
+    non_satisfying = {s.value for s in Scope} - satisfying_scopes
+    for scope_value in non_satisfying:
+        claim_clause = f"note(scope='{scope_value}') is REQUIRED before i_will_work_on"
+        assert claim_clause not in block
 
 
 def test_developer_block_forbids_raw_bash_http_shell_git() -> None:
@@ -67,6 +100,23 @@ def test_pm_block_states_delegate_requires_nature() -> None:
     block = _orch()._build_verb_server_block("cell_pm")
     assert "delegate" in block
     assert "nature" in block
+
+
+def test_pm_plan_precondition_stays_decision_scope() -> None:
+    # The PM's i_will_plan gate is journal:decision_at_claim, enforced via
+    # has_decision_for_task -> JournalEntryType.DECISION_LOG. The only scope
+    # that maps to DECISION_LOG is scope='decision', so the i_will_plan
+    # precondition must keep scope='decision' (this branch is correct).
+    decision_scopes = {
+        scope.value
+        for scope, jtype in SCOPE_TO_TYPE.items()
+        if jtype is JournalEntryType.DECISION_LOG
+    }
+    assert decision_scopes == {Scope.DECISION.value}
+
+    block = _orch()._build_verb_server_block("cell_pm")
+    assert "note(scope='decision')" in block
+    assert "i_will_plan" in block.split("note(scope='decision')", 1)[1]
 
 
 def test_qa_block_has_no_delegate_or_note_before_claim_noise() -> None:
@@ -125,4 +175,7 @@ def test_block_is_embedded_in_written_briefing() -> None:
     content = Path(path).read_text()
     assert "roboco-flow" in content
     assert "roboco-do" in content
-    assert "note(scope='decision')" in content
+    # Developer briefing: the claim precondition is scope='note' (the GENERAL
+    # entry has_note_for_task checks), never scope='decision'.
+    assert "note(scope='note')" in content
+    assert "note(scope='decision')" not in content
