@@ -83,11 +83,10 @@ def test_blocked_task_non_cell_team_unassigned_is_unroutable() -> None:
 
 
 # ---------------------------------------------------------------------------
-# _claimed_task_needs_agent (#19)
+# _claimed_task_needs_agent — claimed-but-no-agent detection
 # ---------------------------------------------------------------------------
 
 _STALE = (datetime.now(UTC) - timedelta(minutes=30)).isoformat()
-_FRESH = datetime.now(UTC).isoformat()
 
 
 def test_claimed_task_with_no_agent_past_grace_returns_assignee() -> None:
@@ -119,7 +118,10 @@ def test_claimed_task_within_grace_window_is_skipped() -> None:
         "id": "t1",
         "status": "claimed",
         "assigned_to": AGENT_UUIDS["be-dev-1"],
-        "updated_at": _FRESH,
+        # Compute "fresh" at test time, not module load: the grace check uses
+        # wall-clock now(), so a module-level constant ages out of the window
+        # during a long full-suite run and flakes this assertion.
+        "updated_at": datetime.now(UTC).isoformat(),
     }
     # Fresh claim — spawn may still be in flight; do not churn.
     assert orch._claimed_task_needs_agent(task) is None

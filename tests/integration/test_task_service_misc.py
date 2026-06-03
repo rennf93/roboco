@@ -220,16 +220,15 @@ async def test_validate_parent_depth_exceeds_max(
 
 
 @pytest.mark.asyncio
-async def test_activate_without_project_id_raises(
+async def test_activate_without_project_or_product_raises(
     task_setup: dict, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Tasks with no project_id can't be activated.
+    """A task with neither a project nor a product cannot be activated.
 
-    Tests the defensive guard at line 550-554 by stubbing get() to return
-    a task synthetically built with project_id=None. The DB column is
-    NOT NULL so this code path can only be reached if the in-memory object
-    is mutated post-fetch (which the activate flow does after the session
-    check).
+    A task needs a project (a repo) OR a product (a cell->project map for a
+    fan-out/coordination task). Only when BOTH are missing is it genuinely
+    misconfigured and activation must raise. Stub get() to return a task with
+    project_id=None AND product_id=None so the guard is reached.
     """
     svc = task_setup["svc"]
 
@@ -238,6 +237,7 @@ async def test_activate_without_project_id_raises(
     fake_task.title = "fake"
     fake_task.status = TaskStatus.BACKLOG
     fake_task.project_id = None
+    fake_task.product_id = None
 
     async def _stub_get(tid):
         del tid
@@ -260,7 +260,7 @@ async def test_activate_without_project_id_raises(
         return await real_execute(stmt, *a, **kw)
 
     monkeypatch.setattr(db, "execute", _exec_stub)
-    with pytest.raises(ValueError, match="no project set"):
+    with pytest.raises(ValueError, match="no project or product"):
         await svc.activate(fake_task.id, agent_role="cell_pm")
 
 
