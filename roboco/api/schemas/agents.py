@@ -7,7 +7,7 @@ Request/response models for agent endpoints.
 from typing import Any, cast
 from uuid import UUID
 
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict
 
 from roboco.models import AgentRole, Team
 
@@ -21,10 +21,7 @@ class AgentResponse(BaseModel):
     role: AgentRole
     team: Team | None
 
-    class Config:
-        """Pydantic config."""
-
-        from_attributes = True
+    model_config = ConfigDict(from_attributes=True)
 
 
 def agent_to_response(agent: Any) -> AgentResponse:

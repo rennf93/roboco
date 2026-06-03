@@ -9,7 +9,7 @@ from datetime import datetime
 from typing import Any
 from uuid import UUID, uuid4
 
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 from sqlalchemy import inspect as sa_inspect
 from sqlalchemy import select
 
@@ -325,8 +325,7 @@ class TaskResponse(BaseModel):
     pr_number: int | None = None
     pr_url: str | None = None
 
-    class Config:
-        from_attributes = True
+    model_config = ConfigDict(from_attributes=True)
 
 
 class TaskSummaryResponse(BaseModel):
@@ -343,8 +342,7 @@ class TaskSummaryResponse(BaseModel):
     estimated_complexity: Complexity
     nature: TaskNature
 
-    class Config:
-        from_attributes = True
+    model_config = ConfigDict(from_attributes=True)
 
 
 class ProgressRequest(BaseModel):

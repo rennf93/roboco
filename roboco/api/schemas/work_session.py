@@ -9,7 +9,7 @@ from typing import TYPE_CHECKING
 from typing import cast as typing_cast
 from uuid import UUID
 
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict
 
 from roboco.models.work_session import WorkSessionStatus
 
@@ -56,10 +56,7 @@ class WorkSessionResponse(BaseModel):
     created_at: datetime
     updated_at: datetime | None = None
 
-    class Config:
-        """Pydantic config."""
-
-        from_attributes = True
+    model_config = ConfigDict(from_attributes=True)
 
 
 class WorkSessionSummaryResponse(BaseModel):
@@ -72,10 +69,7 @@ class WorkSessionSummaryResponse(BaseModel):
     started_at: datetime
     has_pr: bool = False
 
-    class Config:
-        """Pydantic config."""
-
-        from_attributes = True
+    model_config = ConfigDict(from_attributes=True)
 
 
 # =============================================================================

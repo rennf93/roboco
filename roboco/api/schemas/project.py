@@ -9,7 +9,7 @@ from typing import TYPE_CHECKING
 from typing import cast as typing_cast
 from uuid import UUID
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 from roboco.models.base import Team
 
@@ -54,10 +54,7 @@ class ProjectResponse(BaseModel):
     created_at: datetime
     updated_at: datetime | None = None
 
-    class Config:
-        """Pydantic config."""
-
-        from_attributes = True
+    model_config = ConfigDict(from_attributes=True)
 
 
 class ProjectSummaryResponse(BaseModel):
@@ -72,10 +69,7 @@ class ProjectSummaryResponse(BaseModel):
     has_workspace: bool = False
     has_git_token: bool = False
 
-    class Config:
-        """Pydantic config."""
-
-        from_attributes = True
+    model_config = ConfigDict(from_attributes=True)
 
 
 # =============================================================================

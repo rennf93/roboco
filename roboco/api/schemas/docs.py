@@ -7,7 +7,7 @@ Request/response models for documentation file management endpoints.
 from enum import StrEnum
 from uuid import UUID
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 # =============================================================================
 # ENUMS
@@ -91,8 +91,7 @@ class DocRefResponse(BaseModel):
     updated_by: str | None = None
     updated_at: str | None = None
 
-    class Config:
-        from_attributes = True
+    model_config = ConfigDict(from_attributes=True)
 
 
 class WriteDocResponse(BaseModel):

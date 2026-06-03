@@ -5,7 +5,7 @@ from typing import TYPE_CHECKING
 from typing import cast as typing_cast
 from uuid import UUID
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 from roboco.foundation.identity import Team
 
@@ -17,8 +17,7 @@ class CellMapping(BaseModel):
     team: Team
     project_id: UUID
 
-    class Config:
-        from_attributes = True
+    model_config = ConfigDict(from_attributes=True)
 
 
 class ProductResponse(BaseModel):
@@ -31,8 +30,7 @@ class ProductResponse(BaseModel):
     created_at: datetime
     updated_at: datetime | None = None
 
-    class Config:
-        from_attributes = True
+    model_config = ConfigDict(from_attributes=True)
 
 
 class ProductSummaryResponse(BaseModel):
@@ -41,8 +39,7 @@ class ProductSummaryResponse(BaseModel):
     slug: str
     cell_count: int = 0
 
-    class Config:
-        from_attributes = True
+    model_config = ConfigDict(from_attributes=True)
 
 
 class ProductCreateRequest(BaseModel):
