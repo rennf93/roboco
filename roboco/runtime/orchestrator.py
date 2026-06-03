@@ -2190,6 +2190,7 @@ class AgentOrchestrator:
             )
 
     _TOOL_LOAD_CACHE: ClassVar[dict[str, str]] = {}
+    _VERB_SERVER_CACHE: ClassVar[dict[str, str]] = {}
 
     # Per-role built-in tools, enumerated in the briefing so the agent
     # knows exactly what it has. These are pre-loaded at spawn via the
@@ -2253,6 +2254,88 @@ class AgentOrchestrator:
                 "\n"
             )
         self._TOOL_LOAD_CACHE[role] = block
+        return block
+
+    # Roles whose containers also mount the docs MCP server. Mirrors the
+    # gating in the MCP-server registration so the verb-server map stays
+    # accurate without re-deriving it.
+    _DOCS_SERVER_ROLES: ClassVar[tuple[str, ...]] = (
+        "documenter",
+        "cell_pm",
+        "main_pm",
+        "product_owner",
+        "head_marketing",
+    )
+
+    def _build_verb_server_block(self, role: str) -> str:
+        """Briefing block: which MCP server hosts each verb + key preconditions.
+
+        Agents fumble their first move — raw bash/http/shell-git, calling
+        ``evidence`` on roboco-flow when it lives on roboco-do, omitting the
+        ``nature`` argument on ``delegate``, or skipping the required journal
+        note before claiming. The role docs cover this but agents cannot read
+        them at spawn, so the map is generated here from the role's actual
+        manifest (``get_role_config``) and stays accurate as the spec changes.
+        Cached per role.
+        """
+        from roboco.services.gateway.role_config import ROLE_CONFIGS, get_role_config
+
+        if role in self._VERB_SERVER_CACHE:
+            return self._VERB_SERVER_CACHE[role]
+        if role not in ROLE_CONFIGS:
+            self._VERB_SERVER_CACHE[role] = ""
+            return ""
+
+        cfg = get_role_config(role)
+        lines = [
+            "## Which MCP server hosts each verb",
+            "",
+            "Call the verb on the right server — the server name is the MCP",
+            "tool prefix (`mcp__<server>__<verb>`). Never reach for raw bash,",
+            "raw http, or shell git (`git commit`/`push`/`checkout`); the",
+            "bash-guard blocks them. Use these verbs instead:",
+            "",
+            f"- **roboco-flow** (intent verbs): {', '.join(cfg.flow_tools)}",
+            f"- **roboco-do** (content tools): {', '.join(cfg.do_tools)}",
+            "- **roboco-git-readonly** (read-only git): roboco_git_status,"
+            " roboco_git_log, roboco_git_diff, roboco_git_branch_list",
+            "- **roboco-optimal** (knowledge base): roboco_ask_mentor,"
+            " roboco_kb_search",
+        ]
+        if role in self._DOCS_SERVER_ROLES:
+            lines.append(
+                "- **roboco-docs** (project docs files): roboco_docs_read,"
+                " roboco_docs_write, roboco_docs_list"
+            )
+
+        preconditions = [
+            "`evidence` lives on roboco-do, NOT roboco-flow — inspect a task"
+            " there before acting on it.",
+        ]
+        if "i_will_work_on" in cfg.flow_tools:
+            preconditions.append(
+                "note(scope='decision') is REQUIRED before i_will_work_on —"
+                " log your approach first or the claim is rejected."
+            )
+        if "i_will_plan" in cfg.flow_tools:
+            preconditions.append(
+                "note(scope='decision') is REQUIRED before i_will_plan /"
+                " complete / escalate — log the decision first."
+            )
+        if "delegate" in cfg.flow_tools:
+            preconditions.append(
+                "delegate requires `nature` (one of: technical |"
+                " non_technical) — omitting it is rejected."
+            )
+
+        lines.append("")
+        lines.append("### Key preconditions")
+        lines.extend(f"- {p}" for p in preconditions)
+        lines.append("")
+        lines.append("")
+
+        block = "\n".join(lines)
+        self._VERB_SERVER_CACHE[role] = block
         return block
 
     @staticmethod
@@ -2320,6 +2403,7 @@ class AgentOrchestrator:
         escalate_to = get_escalation_target(agent_id) or "main-pm"
 
         tool_load_block = self._build_tool_load_block(role)
+        verb_server_block = self._build_verb_server_block(role)
         task_block = ""
         if task_id:
             task = await self._fetch_task_for_briefing(agent_id, task_id)
@@ -2330,6 +2414,7 @@ class AgentOrchestrator:
             f"# Session briefing — {agent_id}\n"
             "\n"
             f"{tool_load_block}"
+            f"{verb_server_block}"
             "## You are\n"
             f"- **Agent:** `{agent_id}`\n"
             f"- **Role:** {role}\n"
