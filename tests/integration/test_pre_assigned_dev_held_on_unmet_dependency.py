@@ -274,10 +274,20 @@ async def test_all_three_dev_paths_gate_then_release(dep_gate_setup: dict) -> No
     assert issue is not None, "spawn validation must hold the dev while UX is unmet"
     assert "dependency" in issue
 
-    # --- (b) give_me_work: list_pending_for_agent ---
+    # --- (b) give_me_work has TWO offer paths and both must exclude the held
+    #     subtask: list_pending_for_agent (primary) and the
+    #     list_assigned_for_agent fallback (PENDING rows, no built-in dep filter).
     offered = await svc.list_pending_for_agent(fe_dev_db_id)
     assert dev_subtask.id not in {t.id for t in offered}, (
-        "give_me_work must not offer the dev subtask while UX is unmet"
+        "list_pending_for_agent must not offer the held dev subtask"
+    )
+    assigned = await svc.list_assigned_for_agent(fe_dev_db_id)
+    assert dev_subtask.id in {t.id for t in assigned}, (
+        "sanity: the held subtask is assigned+pending, so the fallback path is real"
+    )
+    offerable = await choreo._drop_dependency_held(assigned)
+    assert dev_subtask.id not in {t.id for t in offerable}, (
+        "give_me_work's list_assigned_for_agent fallback must not offer it"
     )
 
     # --- (c) claim: _run_claim_guards (the i_will_work_on guard set) ---
@@ -300,7 +310,13 @@ async def test_all_three_dev_paths_gate_then_release(dep_gate_setup: dict) -> No
     )
     offered_after = await svc.list_pending_for_agent(fe_dev_db_id)
     assert dev_subtask.id in {t.id for t in offered_after}, (
-        "give_me_work must offer the dev subtask once UX is terminal"
+        "list_pending_for_agent must offer the dev subtask once UX is terminal"
+    )
+    offerable_after = await choreo._drop_dependency_held(
+        await svc.list_assigned_for_agent(fe_dev_db_id)
+    )
+    assert dev_subtask.id in {t.id for t in offerable_after}, (
+        "the assigned-fallback gate must release the subtask once UX is terminal"
     )
     released = await svc.get(dev_subtask.id)
     assert (
