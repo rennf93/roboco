@@ -64,16 +64,7 @@ def update_changelog(version: str) -> bool:
         print("  ERROR: Could not find '## [Unreleased]' in CHANGELOG.md")
         return False
 
-    section = (
-        f"## [{version}] - {today}\n"
-        f"\n"
-        f"### Added\n"
-        f"\n"
-        f"### Changed\n"
-        f"\n"
-        f"### Fixed\n"
-        f"\n"
-    )
+    section = f"## [{version}] - {today}\n\n### Added\n\n### Changed\n\n### Fixed\n\n"
 
     # Find the next section header after Unreleased; insert the new section
     # immediately before it (or at end-of-file if Unreleased is the last one).

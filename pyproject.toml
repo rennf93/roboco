@@ -132,6 +132,15 @@ explicit = true
 torch = [{ index = "pytorch-cpu" }]
 
 # =============================================================================
+# uv: raise the floor on vulnerable transitive dependencies
+# =============================================================================
+# pyjwt is pulled in transitively (by mcp and msal). 2.12.1 carries four
+# disclosed CVEs that are fixed in 2.13.0; constrain the floor so the resolver
+# picks a patched release while leaving the direct dependents' own ranges intact.
+[tool.uv]
+constraint-dependencies = ["pyjwt>=2.13.0"]
+
+# =============================================================================
 # RUFF Configuration
 # =============================================================================
 [tool.ruff]
