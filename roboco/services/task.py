@@ -78,12 +78,23 @@ _BOARD_ADVISORY_ROLES: frozenset[AgentRole] = frozenset(
 )
 
 
-def _is_descendant_code_task(task: TaskTable) -> bool:
-    """True for a child task that does actual code work (#14 guard).
+# Task types a CELL agent (developer / documenter / designer) must own and a
+# board/advisory role has no verb to build or complete. CODE → developer,
+# DOCUMENTATION → documenter, DESIGN → UX/design cell. The remaining types
+# (PLANNING / RESEARCH / ADMINISTRATIVE) route to a PM, not a cell agent, and
+# are not diverted here — the #14 guard only fires for board/advisory targets.
+_DESCENDANT_EXECUTABLE_TASK_TYPES: frozenset[str] = frozenset(
+    {TaskType.CODE.value, TaskType.DOCUMENTATION.value, TaskType.DESIGN.value}
+)
+
+
+def _is_descendant_executable_task(task: TaskTable) -> bool:
+    """True for a child task that does cell-executed work (#14 guard).
 
     A board/advisory role must never become the assignee of such a task: it has
-    no verb to build or complete it. ``task_type`` is a ``TaskType`` enum whose
-    CODE member is the only one routed to developer agents; ``parent_task_id``
+    no verb to build, document, or complete it. ``task_type`` is a ``TaskType``
+    enum; CODE / DOCUMENTATION / DESIGN are the members a cell agent (developer,
+    documenter, designer) — not a board role — must own. ``parent_task_id``
     being set makes it a descendant (a root task can legitimately escalate up
     the chain — the CEO is its reviewer).
     """
@@ -94,7 +105,7 @@ def _is_descendant_code_task(task: TaskTable) -> bool:
     # string (the latter happens for detached/partially-hydrated rows in tests).
     task_type: Any = task.task_type
     type_value = task_type.value if isinstance(task_type, TaskType) else task_type
-    return str(type_value) == TaskType.CODE.value
+    return str(type_value) in _DESCENDANT_EXECUTABLE_TASK_TYPES
 
 
 # Notes fields (dev_notes, qa_notes, quick_context) are append-only —
@@ -3255,13 +3266,14 @@ class TaskService(BaseService):
         and the orchestrator re-spawns them. Without this, escalation
         loses the dev's identity permanently.
 
-        #14 invariant: a descendant code task is NEVER assigned to a
-        board/advisory role (they cannot own code work). Such an escalation is
-        diverted to a pool release so a role-matched cell agent reclaims it.
-        Enforced here — the single write primitive — so both the gateway
-        ``escalate`` verb and the HTTP escalate route are covered.
+        #14 invariant: a descendant executable task (code / documentation /
+        design) is NEVER assigned to a board/advisory role (they cannot own
+        cell-executed work). Such an escalation is diverted to a pool release so
+        a role-matched cell agent reclaims it. Enforced here — the single write
+        primitive — so both the gateway ``escalate`` verb and the HTTP escalate
+        route are covered.
         """
-        if _is_descendant_code_task(task) and await self._is_board_advisory_agent(
+        if _is_descendant_executable_task(task) and await self._is_board_advisory_agent(
             target_agent_id
         ):
             await self._release_code_task_to_pool(
@@ -5336,12 +5348,13 @@ class TaskService(BaseService):
         blocked_target_slug: str,
         reason: str,
     ) -> None:
-        """Release a descendant code task back to PENDING for a role-matched claim.
+        """Release a descendant executable task to PENDING for a role-matched claim.
 
-        Used instead of escalating a code task onto a board/advisory role (#14).
-        Clears the assignee so the orchestrator's role-matched dispatch picks it
-        up cleanly, sets PENDING (a valid re-dispatch source), and appends an
-        audit note explaining why the board hand-off was refused.
+        Used instead of escalating a code / documentation / design task onto a
+        board/advisory role (#14). Clears the assignee so the orchestrator's
+        role-matched dispatch picks it up cleanly, sets PENDING (a valid
+        re-dispatch source), and appends an audit note explaining why the board
+        hand-off was refused.
         """
         task.assigned_to = cast("Any", None)
         task.claimed_by = cast("Any", None)
@@ -5349,15 +5362,16 @@ class TaskService(BaseService):
         task.status = TaskStatus.PENDING
         existing_notes = task.dev_notes or ""
         note = (
-            f"\n\n[ESCALATION REDIRECTED] {escalator_slug} escalated this code task"
-            f" toward {blocked_target_slug} (a board/advisory role that cannot own"
-            f" code work). Released to the pool for a role-matched claim instead."
+            f"\n\n[ESCALATION REDIRECTED] {escalator_slug} escalated this"
+            f" executable task toward {blocked_target_slug} (a board/advisory role"
+            f" that cannot own cell-executed work). Released to the pool for a"
+            f" role-matched claim instead."
             f"\nReason: {reason}"
         )
         task.dev_notes = existing_notes + note
         await self.session.flush()
         self.log.info(
-            "Descendant code task released to pool instead of board escalation",
+            "Descendant executable task released to pool instead of board escalation",
             task_id=str(task.id),
             escalator=escalator_slug,
             refused_target=blocked_target_slug,

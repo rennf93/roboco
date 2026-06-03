@@ -26,6 +26,8 @@ from typing import TYPE_CHECKING, Any, ClassVar
 import httpx
 
 if TYPE_CHECKING:
+    from collections.abc import Callable
+
     from roboco.services.llm import AgentRoute
     from roboco.services.task import TaskService
 import structlog
@@ -4649,17 +4651,43 @@ Never `commit`, never write code, never run `git`. PMs coordinate.
 """
 
     def _get_prompt_for_agent(self, agent_slug: str, task: dict[str, Any]) -> str:
-        """Get the appropriate prompt based on agent role."""
+        """Get the prompt appropriate to the agent's ACTUAL role (#19).
+
+        A respawn must hand each role the prompt it can act on — a PM or board
+        agent handed the developer prompt is told to write code and call verbs
+        it does not own. Reuses the same per-role prompt builders the role
+        dispatchers use so a respawn matches a fresh dispatch:
+
+          developer      → dev prompt
+          qa             → QA prompt
+          documenter     → doc prompt
+          cell_pm        → cell-PM triage prompt
+          main_pm        → main-PM triage prompt
+          product_owner  → board-review prompt
+          head_marketing → marketing prompt for a marketing task, else board
+          auditor        → audit prompt
+
+        Unknown roles fall back to the dev prompt (safe default for an
+        executable task).
+        """
         role = get_agent_role(agent_slug)
-        if role == "developer":
-            return self._build_dev_prompt(task)
-        elif role == "documenter":
-            return self._build_doc_prompt(task)
-        elif role == "qa":
-            return self._build_qa_prompt(task)
-        else:
-            # PM or other - use dev prompt as fallback
-            return self._build_dev_prompt(task)
+        # head_marketing is the one role whose prompt depends on the task, so it
+        # is resolved before the static role→builder table.
+        if role == "head_marketing":
+            if task.get("team") == "marketing":
+                return self._build_marketing_prompt(task)
+            return self._build_board_prompt(task)
+        builders: dict[str, Callable[[dict[str, Any]], str]] = {
+            "developer": self._build_dev_prompt,
+            "qa": self._build_qa_prompt,
+            "documenter": self._build_doc_prompt,
+            "cell_pm": self._build_pm_triage_prompt,
+            "main_pm": self._build_main_pm_triage_prompt,
+            "product_owner": self._build_board_prompt,
+            "auditor": lambda _task: self._build_audit_prompt(),
+        }
+        builder = builders.get(role, self._build_dev_prompt)
+        return builder(task)
 
     async def _dispatch_dev_work(self, client: httpx.AsyncClient) -> None:
         """
@@ -5200,6 +5228,13 @@ Never `commit`, never write code, never run `git`. PMs coordinate.
         the assignee is a known spawnable agent, respawn it on the task; if not
         (unknown slug — e.g. a stale UUID), release the claim to PENDING so the
         normal routing reclaims it with a role match.
+
+        Throttle: spawns at most ONE container per tick (``break`` after the
+        first respawn), matching every sibling dispatcher. A restart leaves
+        many agentless claims at once; without the cap this single tick would
+        burst-spawn a container for every one of them. The release-to-pending
+        path spawns nothing, so it does not consume the per-tick spawn budget
+        and keeps draining stale claims.
         """
         tasks = await self._fetch_tasks(client, ["claimed", "in_progress"])
         for task in tasks:
@@ -5225,6 +5260,7 @@ Never `commit`, never write code, never run `git`. PMs coordinate.
                 initial_prompt=self._get_prompt_for_agent(agent_slug, task),
                 git_context=self._task_git_context(task),
             )
+            break
 
     async def _release_claim_to_pending(self, task_id: str) -> None:
         """Release a stuck claim back to PENDING via the lifecycle-safe path.

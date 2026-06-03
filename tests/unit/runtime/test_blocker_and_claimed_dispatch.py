@@ -14,7 +14,9 @@ from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
 from typing import Any
+from unittest.mock import AsyncMock, MagicMock
 
+import pytest
 from roboco.models.runtime import AgentInstance
 from roboco.runtime.orchestrator import AgentOrchestrator, AgentState
 from roboco.seeds.initial_data import AGENT_UUIDS
@@ -156,3 +158,136 @@ def test_in_progress_task_with_no_agent_returns_assignee() -> None:
         "updated_at": _STALE,
     }
     assert orch._claimed_task_needs_agent(task) == "fe-dev-2"
+
+
+# ---------------------------------------------------------------------------
+# _get_prompt_for_agent — role-appropriate respawn prompt (#19)
+# ---------------------------------------------------------------------------
+#
+# A respawn must hand each role the prompt it can act on. The bug: the PM/board
+# branch fell through to the developer prompt, telling a PM/board agent to write
+# code and call verbs it does not own.
+
+
+def _task(**over: Any) -> dict[str, Any]:
+    base: dict[str, Any] = {
+        "id": "t1",
+        "title": "T",
+        "status": "in_progress",
+        "team": "backend",
+    }
+    base.update(over)
+    return base
+
+
+@pytest.mark.parametrize(
+    ("agent_slug", "marker"),
+    [
+        ("be-dev-1", "development task"),
+        ("be-qa", "ready for QA review"),
+        ("be-doc", "ready for documentation"),
+        ("be-pm", "PM for backend team"),
+        ("main-pm", "MAIN PM at RoboCo"),
+        ("product-owner", "You are on the Board"),
+        ("auditor", "AUDIT"),
+    ],
+)
+def test_get_prompt_for_agent_routes_by_role(agent_slug: str, marker: str) -> None:
+    orch = _orch()
+    prompt = orch._get_prompt_for_agent(agent_slug, _task())
+    assert marker in prompt
+
+
+def test_get_prompt_for_pm_is_not_the_dev_prompt() -> None:
+    # Regression for #19: a respawned PM must NOT receive the developer prompt.
+    orch = _orch()
+    pm_prompt = orch._get_prompt_for_agent("be-pm", _task())
+    assert "development task" not in pm_prompt
+    assert "You do NOT code" in pm_prompt
+
+
+def test_get_prompt_for_board_is_not_the_dev_prompt() -> None:
+    orch = _orch()
+    board_prompt = orch._get_prompt_for_agent("product-owner", _task())
+    assert "development task" not in board_prompt
+    assert "do NOT build, code" in board_prompt
+
+
+def test_head_marketing_prompt_is_marketing_on_marketing_team() -> None:
+    orch = _orch()
+    prompt = orch._get_prompt_for_agent("head-marketing", _task(team="marketing"))
+    assert "marketing task" in prompt
+
+
+def test_head_marketing_prompt_is_board_off_marketing_team() -> None:
+    orch = _orch()
+    prompt = orch._get_prompt_for_agent("head-marketing", _task(team="backend"))
+    assert "You are on the Board" in prompt
+
+
+# ---------------------------------------------------------------------------
+# _dispatch_claimed_without_agent — one-spawn-per-tick throttle (#19)
+# ---------------------------------------------------------------------------
+#
+# `monkeypatch.setattr` is used to stub instance methods because direct
+# attribute assignment (`orch.spawn_agent = ...`) trips mypy's method-assign
+# check; the fixture is the type-safe, suppression-free way to do it.
+
+
+def _stub_git_context(orch: AgentOrchestrator, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(orch, "_task_git_context", lambda _task: None)
+
+
+@pytest.mark.asyncio
+async def test_dispatch_claimed_without_agent_spawns_at_most_one_per_tick(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    orch = _orch()
+    orch._tick_handled_tasks = set()
+    stale_tasks = [
+        {"id": f"t{i}", "status": "claimed", "assigned_to": AGENT_UUIDS["be-dev-1"]}
+        for i in range(3)
+    ]
+    monkeypatch.setattr(orch, "_fetch_tasks", AsyncMock(return_value=stale_tasks))
+    monkeypatch.setattr(orch, "_claimed_task_needs_agent", lambda _task: "be-dev-1")
+    _stub_git_context(orch, monkeypatch)
+    spawn = AsyncMock()
+    monkeypatch.setattr(orch, "spawn_agent", spawn)
+
+    await orch._dispatch_claimed_without_agent(client=MagicMock())
+
+    # Three agentless claims, but only ONE container spawned this tick.
+    spawn.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_dispatch_claimed_without_agent_releases_unknown_without_spending_budget(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # The release-to-pending path spawns nothing and must NOT consume the
+    # per-tick spawn budget — it keeps draining stale unknown claims, then
+    # spawns the first task with a known assignee.
+    orch = _orch()
+    orch._tick_handled_tasks = set()
+    tasks = [
+        {"id": "u1", "status": "claimed", "assigned_to": "ghost-uuid"},
+        {"id": "u2", "status": "claimed", "assigned_to": "ghost-uuid"},
+        {"id": "k1", "status": "claimed", "assigned_to": AGENT_UUIDS["be-dev-1"]},
+    ]
+    monkeypatch.setattr(orch, "_fetch_tasks", AsyncMock(return_value=tasks))
+
+    def _needs(task: dict[str, Any]) -> str:
+        return orch._resolve_agent_slug(str(task["assigned_to"]))
+
+    monkeypatch.setattr(orch, "_claimed_task_needs_agent", _needs)
+    _stub_git_context(orch, monkeypatch)
+    release = AsyncMock()
+    monkeypatch.setattr(orch, "_release_claim_to_pending", release)
+    spawn = AsyncMock()
+    monkeypatch.setattr(orch, "spawn_agent", spawn)
+
+    await orch._dispatch_claimed_without_agent(client=MagicMock())
+
+    expected_releases = 2  # both ghost claims released
+    assert release.await_count == expected_releases
+    spawn.assert_awaited_once()  # then one known assignee respawned

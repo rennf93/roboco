@@ -1,11 +1,13 @@
-"""#14: a descendant code task is never assigned to a board/advisory role.
+"""#14: a descendant executable task is never assigned to a board/advisory role.
 
 The main_pm -> product_owner escalation rung used to hand an in_progress child
 code task to the Product Owner and mark it BLOCKED. The board has no verb to
-claim/build/complete code work, so the dev's finished work deadlocked. The
-shared write primitive ``TaskService.apply_escalation`` now diverts such an
-escalation: the task is released to PENDING for a role-matched cell claim
-instead of being stranded on a board role.
+claim/build/complete cell-executed work, so the dev's finished work deadlocked.
+The guard covers every CELL-executed task type — code, documentation, AND
+design — because a board role has no verb to own any of them. The shared write
+primitive ``TaskService.apply_escalation`` now diverts such an escalation: the
+task is released to PENDING for a role-matched cell claim instead of being
+stranded on a board role.
 """
 
 from __future__ import annotations
@@ -15,7 +17,7 @@ from uuid import uuid4
 
 import pytest
 from roboco.models.base import AgentRole, TaskStatus, TaskType
-from roboco.services.task import TaskService, _is_descendant_code_task
+from roboco.services.task import TaskService, _is_descendant_executable_task
 
 
 def _bind(svc: TaskService, name: str, value: object) -> None:
@@ -29,35 +31,64 @@ def _service() -> TaskService:
 
 
 # ---------------------------------------------------------------------------
-# _is_descendant_code_task (pure)
+# _is_descendant_executable_task (pure)
 # ---------------------------------------------------------------------------
 
 
 def test_descendant_code_task_is_flagged() -> None:
     task = MagicMock(parent_task_id=uuid4(), task_type=TaskType.CODE)
-    assert _is_descendant_code_task(task) is True
+    assert _is_descendant_executable_task(task) is True
+
+
+def test_descendant_documentation_task_is_flagged() -> None:
+    # #14 broaden: documentation is cell-executed (documenter), not board work.
+    task = MagicMock(parent_task_id=uuid4(), task_type=TaskType.DOCUMENTATION)
+    assert _is_descendant_executable_task(task) is True
+
+
+def test_descendant_design_task_is_flagged() -> None:
+    # #14 broaden: design is cell-executed (UX/design cell), not board work.
+    task = MagicMock(parent_task_id=uuid4(), task_type=TaskType.DESIGN)
+    assert _is_descendant_executable_task(task) is True
 
 
 def test_root_code_task_is_not_descendant() -> None:
     # A root task can legitimately escalate up the chain (the CEO reviews it).
     task = MagicMock(parent_task_id=None, task_type=TaskType.CODE)
-    assert _is_descendant_code_task(task) is False
+    assert _is_descendant_executable_task(task) is False
 
 
-def test_descendant_doc_task_is_not_code() -> None:
-    task = MagicMock(parent_task_id=uuid4(), task_type=TaskType.DOCUMENTATION)
-    assert _is_descendant_code_task(task) is False
+def test_root_documentation_task_is_not_descendant() -> None:
+    # Roots are reviewed up the chain regardless of (executable) type.
+    task = MagicMock(parent_task_id=None, task_type=TaskType.DOCUMENTATION)
+    assert _is_descendant_executable_task(task) is False
 
 
-def test_descendant_planning_task_is_not_code() -> None:
+def test_descendant_planning_task_is_not_executable() -> None:
+    # PLANNING routes to a PM, not a cell agent — not diverted by the guard.
     task = MagicMock(parent_task_id=uuid4(), task_type=TaskType.PLANNING)
-    assert _is_descendant_code_task(task) is False
+    assert _is_descendant_executable_task(task) is False
+
+
+def test_descendant_research_task_is_not_executable() -> None:
+    task = MagicMock(parent_task_id=uuid4(), task_type=TaskType.RESEARCH)
+    assert _is_descendant_executable_task(task) is False
+
+
+def test_descendant_administrative_task_is_not_executable() -> None:
+    task = MagicMock(parent_task_id=uuid4(), task_type=TaskType.ADMINISTRATIVE)
+    assert _is_descendant_executable_task(task) is False
 
 
 def test_code_task_type_as_raw_string_is_flagged() -> None:
     # Detached/partially-hydrated rows may surface task_type as a raw string.
     task = MagicMock(parent_task_id=uuid4(), task_type="code")
-    assert _is_descendant_code_task(task) is True
+    assert _is_descendant_executable_task(task) is True
+
+
+def test_documentation_task_type_as_raw_string_is_flagged() -> None:
+    task = MagicMock(parent_task_id=uuid4(), task_type="documentation")
+    assert _is_descendant_executable_task(task) is True
 
 
 # ---------------------------------------------------------------------------
@@ -93,6 +124,100 @@ async def test_apply_escalation_diverts_descendant_code_to_board() -> None:
     release_mock.assert_awaited_once()
     assert task.status == TaskStatus.IN_PROGRESS  # untouched by the guard branch
     assert task.assigned_to != target_id
+
+
+@pytest.mark.asyncio
+async def test_apply_escalation_diverts_descendant_documentation_to_board() -> None:
+    # #14 broaden: a descendant DOCUMENTATION task escalated to a board role is
+    # diverted too — the board has no verb to write/complete docs either.
+    svc = _service()
+    target_id = uuid4()
+    task = MagicMock(
+        id=uuid4(),
+        parent_task_id=uuid4(),
+        task_type=TaskType.DOCUMENTATION,
+        assigned_to=uuid4(),
+        blocker_raised_by=None,
+        status=TaskStatus.IN_PROGRESS,
+    )
+    _bind(svc, "_is_board_advisory_agent", AsyncMock(return_value=True))
+    release_mock = AsyncMock()
+    _bind(svc, "_release_code_task_to_pool", release_mock)
+
+    await svc.apply_escalation(
+        task=task,
+        target_agent_id=target_id,
+        escalator_slug="main-pm",
+        target_slug="head-marketing",
+        reason="please review docs",
+    )
+
+    release_mock.assert_awaited_once()
+    assert task.status == TaskStatus.IN_PROGRESS  # untouched by the guard branch
+    assert task.assigned_to != target_id
+
+
+@pytest.mark.asyncio
+async def test_apply_escalation_diverts_descendant_design_to_board() -> None:
+    # #14 broaden: a descendant DESIGN task escalated to a board role is diverted.
+    svc = _service()
+    target_id = uuid4()
+    task = MagicMock(
+        id=uuid4(),
+        parent_task_id=uuid4(),
+        task_type=TaskType.DESIGN,
+        assigned_to=uuid4(),
+        blocker_raised_by=None,
+        status=TaskStatus.IN_PROGRESS,
+    )
+    _bind(svc, "_is_board_advisory_agent", AsyncMock(return_value=True))
+    release_mock = AsyncMock()
+    _bind(svc, "_release_code_task_to_pool", release_mock)
+
+    await svc.apply_escalation(
+        task=task,
+        target_agent_id=target_id,
+        escalator_slug="ux-pm",
+        target_slug="product-owner",
+        reason="please review design",
+    )
+
+    release_mock.assert_awaited_once()
+    assert task.status == TaskStatus.IN_PROGRESS
+    assert task.assigned_to != target_id
+
+
+@pytest.mark.asyncio
+async def test_apply_escalation_blocks_descendant_planning_to_board() -> None:
+    # PLANNING is NOT a cell-executed type — the guard does not divert it even to
+    # a board target, so it follows the normal block+reassign path.
+    svc = _service()
+    target_id = uuid4()
+    task = MagicMock(
+        id=uuid4(),
+        parent_task_id=uuid4(),
+        task_type=TaskType.PLANNING,
+        assigned_to=uuid4(),
+        blocker_raised_by=None,
+        dev_notes=None,
+        status=TaskStatus.IN_PROGRESS,
+    )
+    board_check = AsyncMock(return_value=True)
+    _bind(svc, "_is_board_advisory_agent", board_check)
+    release_mock = AsyncMock()
+    _bind(svc, "_release_code_task_to_pool", release_mock)
+
+    await svc.apply_escalation(
+        task=task,
+        target_agent_id=target_id,
+        escalator_slug="main-pm",
+        target_slug="product-owner",
+        reason="planning review",
+    )
+
+    release_mock.assert_not_called()
+    assert task.status == TaskStatus.BLOCKED
+    assert task.assigned_to == target_id
 
 
 @pytest.mark.asyncio
@@ -154,8 +279,8 @@ async def test_apply_escalation_blocks_root_code_task_to_board_target() -> None:
         reason="root review",
     )
 
-    # Guard short-circuits on _is_descendant_code_task BEFORE the board check,
-    # so a root task escalates normally.
+    # Guard short-circuits on _is_descendant_executable_task BEFORE the board
+    # check, so a root task escalates normally.
     board_check.assert_not_called()
     release_mock.assert_not_called()
     assert task.status == TaskStatus.BLOCKED
