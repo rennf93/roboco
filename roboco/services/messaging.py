@@ -1748,6 +1748,42 @@ class MessagingService(BaseService):
             )
         )
 
+    @staticmethod
+    def _task_group_name(task_id: UUID) -> str:
+        """Deterministic group name that threads a task's channel chatter.
+
+        Encoding the task id in the group name lets us locate the same
+        per-(channel, task) group on every post without a new column —
+        `GroupTable.name` is reused as the lookup key.
+        """
+        return f"task:{task_id}"
+
+    async def _task_group_for_channel(
+        self,
+        channel: ChannelTable,
+        task_id: UUID,
+    ) -> GroupTable:
+        """Return the per-(channel, task) group, creating it on first post.
+
+        A task's discussion on a given channel threads into ONE group so it
+        is not scattered across the channel's standing groups. The group is
+        keyed by `_task_group_name(task_id)` within the channel.
+        """
+        wanted = self._task_group_name(task_id)
+        groups = await self.list_groups_in_channel(cast("UUID", channel.id))
+        for group in groups:
+            if group.name == wanted:
+                return group
+        return await self.create_group(
+            GroupCreateRequest(
+                name=wanted,
+                channel_id=cast("UUID", channel.id),
+                allowed_roles=[],
+                hierarchy_level=4,
+                members=[],
+            )
+        )
+
     async def post_to_channel(
         self,
         *,
@@ -1760,23 +1796,24 @@ class MessagingService(BaseService):
 
         The gateway `say` verb addresses channels by slug (`backend-cell`,
         `all-hands`, ...) and doesn't carry session/group IDs. This adapter
-        resolves the channel by slug, picks the channel's default group,
-        gets or creates the active session for that group, then sends a
-        message via `send_message`.
+        resolves the channel by slug, picks the target group, gets or
+        creates the active session for that group, then sends a message via
+        `send_message`. When `task_id` is supplied the message threads into
+        the per-(channel, task) group so a task's discussion lives in one
+        place per channel rather than scattering across standing groups;
+        otherwise it falls back to the channel's default group.
 
-        Channel access is enforced inside `send_message` (channel writers
-        list + role rules) when `agent_slug` is supplied — this adapter
-        looks up the slug from `agent_id` and forwards it so the check
-        always runs. If the slug lookup returns None (unknown / removed
-        agent), we fail closed by raising ChannelAccessDeniedError rather
-        than letting send_message silently skip validate_channel_access.
+        Channel write-access is validated UP FRONT (before any group or
+        session is created) so a denied write leaves no side effects. The
+        agent slug is resolved from `agent_id`; if the lookup returns None
+        (unknown / removed agent) we fail closed by raising
+        ChannelAccessDeniedError. `send_message` re-validates access as
+        defense in depth.
         """
         from roboco.enforcement.channel_access import ChannelAccessDeniedError
         from roboco.services.repositories import get_agent_slug
 
         channel = await self.get_channel_by_slug_or_raise(channel_slug)
-        group = await self._default_group_for_channel(channel)
-        session = await self.get_or_create_active_session(cast("UUID", group.id))
         agent_slug = await get_agent_slug(self.session, agent_id)
         if agent_slug is None:
             raise ChannelAccessDeniedError(
@@ -1785,6 +1822,13 @@ class MessagingService(BaseService):
                 action="write",
                 message=(f"agent {agent_id} not found; cannot validate channel access"),
             )
+        validate_channel_access(agent_slug, channel_slug, "write")
+
+        if task_id is not None:
+            group = await self._task_group_for_channel(channel, task_id)
+        else:
+            group = await self._default_group_for_channel(channel)
+        session = await self.get_or_create_active_session(cast("UUID", group.id))
         return await self.send_message(
             MessageCreateRequest(
                 agent_id=agent_id,
