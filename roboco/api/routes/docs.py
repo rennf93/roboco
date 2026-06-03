@@ -7,7 +7,8 @@ Agents use these to write/read docs without path confusion.
 
 from uuid import UUID
 
-from fastapi import APIRouter, HTTPException, Query, status
+from fastapi import APIRouter, HTTPException, Query, Response, status
+from fastapi.responses import JSONResponse
 
 from roboco.agents_config import get_agent_team
 from roboco.api.deps import CurrentAgentContext, DbSession
@@ -20,8 +21,25 @@ from roboco.api.schemas.docs import (
 )
 from roboco.services.base import NotFoundError, UnauthorizedError, ValidationError
 from roboco.services.docs import WriteDocInput, get_docs_service
+from roboco.services.gateway.kb_authz import docs_denial_envelope
 
 router = APIRouter()
+
+
+def _unauthorized_response(err: UnauthorizedError) -> JSONResponse:
+    """Render a docs-service denial as the gateway Envelope (HTTP 403).
+
+    The RBAC decision is made in ``DocsService`` (it raises
+    ``UnauthorizedError``); this only renders that denial at the HTTP
+    boundary. The body is the Envelope wire-dict at top level so the agent
+    receives a non-null ``remediate`` instead of a bare ``detail`` string.
+    """
+    envelope = docs_denial_envelope(err.action, err.reason)
+    return JSONResponse(
+        status_code=status.HTTP_403_FORBIDDEN,
+        content=envelope.as_dict(),
+    )
+
 
 # Module-level Query defaults
 _list_task_id_query: UUID | None = Query(None, description="Filter by task ID")
@@ -40,7 +58,7 @@ async def write_doc(
     data: WriteDocRequest,
     db: DbSession,
     agent: CurrentAgentContext,
-) -> WriteDocResponse:
+) -> WriteDocResponse | JSONResponse:
     """
     Write a documentation file.
 
@@ -87,10 +105,7 @@ async def write_doc(
             detail=e.message,
         ) from e
     except UnauthorizedError as e:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail=e.message,
-        ) from e
+        return _unauthorized_response(e)
     except NotFoundError as e:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
@@ -108,7 +123,7 @@ async def read_doc(
     db: DbSession,
     agent: CurrentAgentContext,
     path: str = _read_path_query,
-) -> ReadDocResponse:
+) -> ReadDocResponse | JSONResponse:
     """
     Read a documentation file by path.
 
@@ -133,10 +148,7 @@ async def read_doc(
             detail=e.message,
         ) from e
     except UnauthorizedError as e:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail=e.message,
-        ) from e
+        return _unauthorized_response(e)
     except NotFoundError as e:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
@@ -154,7 +166,7 @@ async def list_docs(
     db: DbSession,
     agent: CurrentAgentContext,
     task_id: UUID | None = _list_task_id_query,
-) -> ListDocsResponse:
+) -> ListDocsResponse | JSONResponse:
     """
     List documentation files.
 
@@ -190,10 +202,7 @@ async def list_docs(
             count=len(docs),
         )
     except UnauthorizedError as e:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail=e.message,
-        ) from e
+        return _unauthorized_response(e)
     except NotFoundError as e:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
@@ -206,14 +215,17 @@ async def list_docs(
 # =============================================================================
 
 
-@router.delete("/delete", status_code=status.HTTP_204_NO_CONTENT)
+@router.delete("/delete")
 async def delete_doc(
     db: DbSession,
     agent: CurrentAgentContext,
     path: str = _read_path_query,
-) -> None:
+) -> Response:
     """
     Delete a documentation file.
+
+    Returns 204 on success; a denied delete returns the gateway Envelope
+    (HTTP 403) with a non-null remediate, like the other docs endpoints.
     """
     service = get_docs_service(db)
 
@@ -223,16 +235,14 @@ async def delete_doc(
             path=path,
         )
         await db.commit()
+        return Response(status_code=status.HTTP_204_NO_CONTENT)
     except ValidationError as e:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=e.message,
         ) from e
     except UnauthorizedError as e:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail=e.message,
-        ) from e
+        return _unauthorized_response(e)
     except NotFoundError as e:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,

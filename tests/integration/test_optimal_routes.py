@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from http import HTTPStatus
 from types import SimpleNamespace
 from typing import TYPE_CHECKING
@@ -10,7 +11,8 @@ from uuid import uuid4
 
 import pytest
 import pytest_asyncio
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI
+from fastapi.responses import JSONResponse
 from httpx import ASGITransport, AsyncClient
 from roboco.api.deps import get_agent_context
 from roboco.api.routes.optimal import check_staleness
@@ -82,6 +84,29 @@ async def test_index_code_forbidden(dev_optimal_client: AsyncClient) -> None:
         headers=_DEV_HDR,
     )
     assert response.status_code == HTTPStatus.FORBIDDEN
+
+
+@pytest.mark.asyncio
+async def test_index_code_forbidden_envelope_remediate(
+    dev_optimal_client: AsyncClient,
+) -> None:
+    """A denied KB call returns an Envelope-shaped body with a real remediate.
+
+    Agents go through the gateway Envelope contract: a denial must carry
+    error="not_authorized" plus a non-null remediate hint so the agent can
+    recover, not a bare {"detail": ...} HTTPException body.
+    """
+    response = await dev_optimal_client.post(
+        "/api/optimal/kb/index/code",
+        json={"sources": ["a.py"]},
+        headers=_DEV_HDR,
+    )
+    assert response.status_code == HTTPStatus.FORBIDDEN
+    body = response.json()
+    assert body["error"] == "not_authorized"
+    assert body["message"]
+    assert body["remediate"] is not None
+    assert body["remediate"].strip()
 
 
 @pytest.mark.asyncio
@@ -369,15 +394,24 @@ async def test_check_staleness_helper_authorized() -> None:
 
 @pytest.mark.asyncio
 async def test_check_staleness_helper_unauthorized() -> None:
-    """Lines 479-482: kb VIEW_STATS denied → HTTPException 403."""
+    """KB VIEW_STATS denied → gateway Envelope JSONResponse (HTTP 403).
+
+    The authorization decision now lives in the gateway; the route returns
+    the Envelope wire-dict (with a non-null remediate) at top level instead
+    of raising a bare HTTPException.
+    """
 
     agent = AgentContext(agent_id=uuid4(), role=AgentRole.DEVELOPER, team=Team.BACKEND)
 
     fake_perm = MagicMock()
     fake_perm.can_perform_kb_action.return_value = False
-    with pytest.raises(HTTPException) as exc:
-        await check_staleness(agent=agent, permissions=fake_perm)
-    assert exc.value.status_code == HTTPStatus.FORBIDDEN
+    result = await check_staleness(agent=agent, permissions=fake_perm)
+    assert isinstance(result, JSONResponse)
+    assert result.status_code == HTTPStatus.FORBIDDEN
+    body = json.loads(bytes(result.body))
+    assert body["error"] == "not_authorized"
+    assert body["remediate"] is not None
+    assert body["remediate"].strip()
 
 
 @pytest.mark.asyncio

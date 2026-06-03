@@ -111,6 +111,39 @@ async def test_write_doc_unauthorized(docs_client: AsyncClient) -> None:
 
 
 @pytest.mark.asyncio
+async def test_write_doc_unauthorized_envelope_remediate(
+    docs_client: AsyncClient,
+) -> None:
+    """A denied write returns an Envelope-shaped body with a real remediate.
+
+    The docs RBAC decision lives in the service (UnauthorizedError); the
+    route must surface it as the gateway Envelope contract — error +
+    non-null remediate — not a bare {"detail": ...} HTTPException body.
+    """
+    with patch("roboco.api.routes.docs.get_docs_service") as mock_get:
+        mock_service = AsyncMock()
+        mock_service.write_doc = AsyncMock(side_effect=UnauthorizedError("write_doc"))
+        mock_get.return_value = mock_service
+        response = await docs_client.post(
+            "/api/docs/write",
+            json={
+                "task_id": str(uuid4()),
+                "filename": "test.md",
+                "doc_type": "api",
+                "title": "Test",
+                "content": "Some content",
+            },
+            headers=_HDR,
+        )
+    assert response.status_code == HTTPStatus.FORBIDDEN
+    body = response.json()
+    assert body["error"] == "not_authorized"
+    assert body["message"]
+    assert body["remediate"] is not None
+    assert body["remediate"].strip()
+
+
+@pytest.mark.asyncio
 async def test_write_doc_not_found(docs_client: AsyncClient) -> None:
     """Service raises NotFoundError → 404."""
     with patch("roboco.api.routes.docs.get_docs_service") as mock_get:

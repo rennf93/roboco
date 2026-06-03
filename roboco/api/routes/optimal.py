@@ -11,6 +11,7 @@ from uuid import uuid4
 
 import structlog
 from fastapi import APIRouter, HTTPException, status
+from fastapi.responses import JSONResponse
 
 from roboco.api.deps import (
     CurrentAgentContext,
@@ -69,6 +70,7 @@ from roboco.models.optimal import (
     IndexErrorParams,
 )
 from roboco.models.permissions import KBAction
+from roboco.services.gateway.kb_authz import authorize_kb_action
 from roboco.services.optimal import (
     IndexType,
     QueryContext,
@@ -85,6 +87,28 @@ logger = structlog.get_logger()
 router = APIRouter()
 
 
+def _kb_denial_response(
+    permissions: PermissionServiceDep,
+    agent: CurrentAgentContext,
+    action: str,
+) -> JSONResponse | None:
+    """Gateway Envelope (HTTP 403) when the KB action is denied, else None.
+
+    The authorization decision itself lives in the gateway
+    (``authorize_kb_action``); this only renders a denial verdict at the HTTP
+    boundary. The body is the Envelope wire-dict at top level — not nested
+    under ``detail`` — so the agent receives a non-null ``remediate`` it can
+    act on, matching the gateway Envelope contract.
+    """
+    denial = authorize_kb_action(permissions, agent, action)
+    if denial is None:
+        return None
+    return JSONResponse(
+        status_code=status.HTTP_403_FORBIDDEN,
+        content=denial.as_dict(),
+    )
+
+
 # =============================================================================
 # INDEXING ENDPOINTS
 # =============================================================================
@@ -99,7 +123,7 @@ async def index_code(
     request: IndexCodeRequest,
     agent: CurrentAgentContext,
     permissions: PermissionServiceDep,
-) -> IndexResponse:
+) -> IndexResponse | JSONResponse:
     """
     Index code files/directories.
 
@@ -108,11 +132,9 @@ async def index_code(
     - Directories
     - Glob patterns (e.g., "src/**/*.py")
     """
-    if not permissions.can_perform_kb_action(agent, KBAction.INDEX_CODE):
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="Not authorized to index code",
-        )
+    denied = _kb_denial_response(permissions, agent, KBAction.INDEX_CODE)
+    if denied is not None:
+        return denied
 
     service = await get_optimal_service()
     count = await service.index_code(
@@ -135,7 +157,7 @@ async def index_documentation(
     request: IndexDocsRequest,
     agent: CurrentAgentContext,
     permissions: PermissionServiceDep,
-) -> IndexResponse:
+) -> IndexResponse | JSONResponse:
     """
     Index documentation files.
 
@@ -144,11 +166,9 @@ async def index_documentation(
     - URLs (single page or crawl with /**)
     - Glob patterns
     """
-    if not permissions.can_perform_kb_action(agent, KBAction.INDEX_DOCS):
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="Not authorized to index documentation",
-        )
+    denied = _kb_denial_response(permissions, agent, KBAction.INDEX_DOCS)
+    if denied is not None:
+        return denied
 
     service = await get_optimal_service()
     count = await service.index_documentation(
@@ -418,13 +438,11 @@ async def get_context(
 async def get_stats(
     agent: CurrentAgentContext,
     permissions: PermissionServiceDep,
-) -> IndexStatsResponse:
+) -> IndexStatsResponse | JSONResponse:
     """Get statistics about all indexes."""
-    if not permissions.can_perform_kb_action(agent, KBAction.VIEW_STATS):
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="Not authorized to view index statistics",
-        )
+    denied = _kb_denial_response(permissions, agent, KBAction.VIEW_STATS)
+    if denied is not None:
+        return denied
 
     service = await get_optimal_service()
     stats = await service.get_all_index_stats()
@@ -435,11 +453,11 @@ async def get_stats(
     )
 
 
-@router.get("/stats/staleness")
+@router.get("/stats/staleness", response_model=None)
 async def check_staleness(
     agent: CurrentAgentContext,
     permissions: PermissionServiceDep,
-) -> dict[str, Any]:
+) -> dict[str, Any] | JSONResponse:
     """
     Check if indexes are stale (source files modified after last indexing).
 
@@ -448,11 +466,9 @@ async def check_staleness(
     Declared BEFORE `/stats/{index_type}` so FastAPI matches the literal
     `staleness` segment instead of treating it as an `index_type` param.
     """
-    if not permissions.can_perform_kb_action(agent, KBAction.VIEW_STATS):
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="Not authorized to view index staleness",
-        )
+    denied = _kb_denial_response(permissions, agent, KBAction.VIEW_STATS)
+    if denied is not None:
+        return denied
 
     service = await get_optimal_service()
     return await service.check_index_staleness()
@@ -463,13 +479,11 @@ async def get_single_index_stats(
     index_type: str,
     agent: CurrentAgentContext,
     permissions: PermissionServiceDep,
-) -> SingleIndexStatsResponse:
+) -> SingleIndexStatsResponse | JSONResponse:
     """Get statistics for a specific index type."""
-    if not permissions.can_perform_kb_action(agent, KBAction.VIEW_STATS):
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="Not authorized to view index statistics",
-        )
+    denied = _kb_denial_response(permissions, agent, KBAction.VIEW_STATS)
+    if denied is not None:
+        return denied
 
     # Validate index type
     try:
@@ -511,17 +525,15 @@ async def clear_index(
     index_type: str,
     agent: CurrentAgentContext,
     permissions: PermissionServiceDep,
-) -> ClearIndexResponse:
+) -> ClearIndexResponse | JSONResponse:
     """
     Clear a specific index.
 
     Warning: This permanently deletes all documents in the index.
     """
-    if not permissions.can_perform_kb_action(agent, KBAction.CLEAR_INDEX):
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="Not authorized to clear indexes",
-        )
+    denied = _kb_denial_response(permissions, agent, KBAction.CLEAR_INDEX)
+    if denied is not None:
+        return denied
 
     try:
         idx_type = IndexType(index_type)
@@ -543,13 +555,11 @@ async def list_documents(
     agent: CurrentAgentContext,
     permissions: PermissionServiceDep,
     pagination: PaginationDep,
-) -> DocumentListResponse:
+) -> DocumentListResponse | JSONResponse:
     """List documents in a specific index (paginated)."""
-    if not permissions.can_perform_kb_action(agent, KBAction.VIEW_STATS):
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="Not authorized to view index documents",
-        )
+    denied = _kb_denial_response(permissions, agent, KBAction.VIEW_STATS)
+    if denied is not None:
+        return denied
     try:
         idx_type = IndexType(index_type)
     except ValueError as e:
@@ -589,17 +599,15 @@ async def refresh_index(
     request: RefreshRequest,
     agent: CurrentAgentContext,
     permissions: PermissionServiceDep,
-) -> RefreshIndexResponse:
+) -> RefreshIndexResponse | JSONResponse:
     """
     Refresh an index with updated sources.
 
     Re-indexes the specified sources to pick up changes.
     """
-    if not permissions.can_perform_kb_action(agent, KBAction.REFRESH_INDEX):
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="Not authorized to refresh indexes",
-        )
+    denied = _kb_denial_response(permissions, agent, KBAction.REFRESH_INDEX)
+    if denied is not None:
+        return denied
 
     try:
         idx_type = IndexType(request.index_type)
@@ -627,13 +635,13 @@ async def refresh_index(
     )
 
 
-@router.post("/kb/reindex")
+@router.post("/kb/reindex", response_model=None)
 async def reindex_all(
     agent: CurrentAgentContext,
     permissions: PermissionServiceDep,
     force: bool = False,
     timeout_seconds: int = 300,  # 5 minute default
-) -> dict[str, Any]:
+) -> dict[str, Any] | JSONResponse:
     """
     Trigger re-indexing of code and documentation.
 
@@ -650,11 +658,9 @@ async def reindex_all(
     """
     import asyncio
 
-    if not permissions.can_perform_kb_action(agent, KBAction.INDEX_CODE):
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="Not authorized to trigger reindexing",
-        )
+    denied = _kb_denial_response(permissions, agent, KBAction.INDEX_CODE)
+    if denied is not None:
+        return denied
 
     try:
         async with asyncio.timeout(timeout_seconds):
