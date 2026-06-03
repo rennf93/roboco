@@ -104,3 +104,22 @@ def test_developer_prompt_gives_sanctioned_secret_path_not_env() -> None:
     assert "in the task description" in prompt
     # Escalation route when the value is genuinely missing.
     assert "i_am_blocked" in prompt
+
+
+# --------------------------------------------------------------------------
+# Main PM delegation description = brief (goal + constraints), not a solution
+# --------------------------------------------------------------------------
+
+
+def test_main_pm_prompt_delegation_description_is_a_brief() -> None:
+    """The delegate description must be a goal+constraints brief, not a spec."""
+    prompt = _composed_prompt_for(AgentRole.MAIN_PM)
+    assert "The description is a **brief**, not a spec." in prompt
+    assert "Do NOT prescribe the cell's solution" in prompt
+
+
+def test_main_pm_prompt_forbids_dictating_the_cells_design() -> None:
+    """The design-task failure mode (PM dictating the UX layout) is called out."""
+    prompt = _composed_prompt_for(AgentRole.MAIN_PM)
+    assert "Design the UX and propose the layout" in prompt
+    assert "give them the problem, not your mockup" in prompt
