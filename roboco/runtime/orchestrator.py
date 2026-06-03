@@ -523,6 +523,13 @@ class AgentOrchestrator:
         # delegate, or complete, so a respawn cannot advance the task and would
         # just loop. Tracks (agent_slug, task_id) already dispatched.
         self._board_dispatched: set[tuple[str, str]] = set()
+        # Cluster C5: a board review is a two-reviewer gate — BOTH the Product
+        # Owner and the Head of Marketing must review a board/coordination task
+        # before it is handed to the CEO for Approve & Start. Once both have
+        # finished (dispatched-and-no-longer-active), the orchestrator emits ONE
+        # formal CEO notification per task. Tracks task_ids already notified so
+        # the signal fires exactly once.
+        self._board_review_ceo_notified: set[str] = set()
         # Stale-claim reaper config. Wave C3 (2026-05-12): sourced from
         # stale_claim_reap_seconds (default 600) rather than
         # claim_stale_seconds (default 180). The two settings are now
@@ -4178,33 +4185,110 @@ Start now: evidence(task_id="{task_id}")
     async def _handle_board_assigned_task(
         self, task: dict[str, Any], assigned_to: str
     ) -> None:
-        """Spawn a board agent (Product Owner / Head of Marketing) ONCE to
-        review an assigned board task.
+        """Review an assigned board task with the FULL board (PO + HoM), ONCE each.
 
-        Board roles advise: they can triage, record notes, discuss, and
-        escalate_to_ceo, but have NO verb to claim, plan, delegate, or complete.
-        So a respawn cannot advance the task — it would just loop. The board
-        reviews and records requirements; the CEO then reassigns the task to
-        Main PM for delegation to the cells. Dispatch is therefore one-shot per
-        (agent, task).
+        Cluster C5 / finding #4: a board/coordination task — especially one with
+        a UI / user-facing dimension — must be reviewed by BOTH the Product
+        Owner AND the Head of Marketing before it is handed to the CEO. The task
+        is assigned to one board agent, but the review is a two-reviewer gate, so
+        this dispatches both regardless of which one ``assigned_to`` names.
+
+        Board roles advise: they can triage, record notes, and discuss, but have
+        NO verb to claim, plan, delegate, or complete. A respawn cannot advance
+        the task — it would just loop — so dispatch is one-shot per (agent, task).
+        The board reviews and records requirements; the CEO then approves and
+        hands the task to Main PM for delegation to the cells.
+
+        Once BOTH reviewers have finished (each dispatched and no longer active),
+        a single formal CEO notification is emitted (finding #2) so the handoff
+        to Approve & Start is an actionable signal rather than buried chatter.
         """
-        agent_slug = self._resolve_agent_slug(assigned_to)
-        if agent_slug not in self._BOARD_AGENTS or self._is_agent_active(agent_slug):
+        # `assigned_to` only gates that this IS a board task; the review itself
+        # always involves the whole board, not just the named assignee.
+        if self._resolve_agent_slug(assigned_to) not in self._BOARD_AGENTS:
             return
-        key = (agent_slug, str(task.get("id")))
+        task_id = str(task.get("id"))
+        for board_slug in sorted(self._BOARD_AGENTS):
+            await self._dispatch_board_reviewer(board_slug, task_id, task)
+        await self._maybe_notify_ceo_board_review_complete(task_id)
+
+    async def _dispatch_board_reviewer(
+        self, board_slug: str, task_id: str, task: dict[str, Any]
+    ) -> None:
+        """One-shot spawn of a single board reviewer for a board task.
+
+        Skips when the reviewer is already running or has already been
+        dispatched for this task (board roles have no progression verb, so a
+        respawn would loop). Records the (agent, task) pair so the
+        review-completion detector can tell which reviewers have run.
+        """
+        if self._is_agent_active(board_slug):
+            return
+        key = (board_slug, task_id)
         if key in self._board_dispatched:
             return
         self._board_dispatched.add(key)
         logger.info(
             "Spawning board agent for review",
-            task_id=task.get("id"),
-            agent_id=agent_slug,
+            task_id=task_id,
+            agent_id=board_slug,
         )
         await self.spawn_agent(
-            agent_id=agent_slug,
+            agent_id=board_slug,
             task_id=task["id"],
             initial_prompt=self._build_board_prompt(task),
             git_context=self._task_git_context(task),
+        )
+
+    def _board_review_complete(self, task_id: str) -> bool:
+        """True once EVERY board reviewer has reviewed and gone idle.
+
+        A reviewer has finished when it was dispatched for this task
+        (``_board_dispatched``) and is no longer running (``_is_agent_active``).
+        Both PO and HoM must satisfy this before the task is handoff-ready.
+        """
+        return all(
+            (board_slug, task_id) in self._board_dispatched
+            and not self._is_agent_active(board_slug)
+            for board_slug in self._BOARD_AGENTS
+        )
+
+    async def _maybe_notify_ceo_board_review_complete(self, task_id: str) -> None:
+        """Emit a one-shot CEO notification when the board review is complete.
+
+        Board roles are exactly the senders permitted to issue formal
+        notifications, but the board agents only post channel dialogue + journal
+        notes during their review (finding #2: the CEO got count=0 notifications
+        after the PO finished). The orchestrator closes that gap: once both
+        reviewers are done, it emits an APPROVAL notification (ack-required, with
+        ``related_task_id``) to the CEO on the board's behalf. Fires exactly once
+        per task; notification failure is logged and swallowed so it never
+        blocks the dispatch loop.
+        """
+        if task_id in self._board_review_ceo_notified:
+            return
+        if not self._board_review_complete(task_id):
+            return
+        self._board_review_ceo_notified.add(task_id)
+        from roboco.services.notification import NotificationService
+
+        try:
+            await NotificationService().send_board_review_complete_notification(
+                task_id=task_id,
+            )
+        except Exception as exc:
+            # Don't wedge dispatch on a notification failure; allow a retry by
+            # clearing the one-shot guard so a later tick can re-emit.
+            self._board_review_ceo_notified.discard(task_id)
+            logger.warning(
+                "Failed to notify CEO of board-review completion",
+                task_id=task_id,
+                error=str(exc),
+            )
+            return
+        logger.info(
+            "Notified CEO that board review is complete (ready for Approve & Start)",
+            task_id=task_id,
         )
 
     def _pm_spawn_prompt(
@@ -4230,6 +4314,16 @@ Start now: evidence(task_id="{task_id}")
                 task_id=task.get("id"),
                 routing=routing,
             )
+            return
+
+        # Board work is a two-reviewer gate (PO + Head of Marketing), not a
+        # single-assignee claim. Routing only ever names one board agent
+        # (product-owner), so claiming + spawning that one here would leave the
+        # Head of Marketing out (finding #4). Delegate to the board handler,
+        # which dispatches BOTH reviewers one-shot and leaves the task pending
+        # for the CEO's Approve & Start. ``agent_id`` is the routed board slug.
+        if routing == "board":
+            await self._handle_board_assigned_task(task, agent_id)
             return
 
         # Don't auto-claim back to the creator. A PM that just created this
@@ -5742,11 +5836,17 @@ Never `commit`, never write code, never run `git`. PMs coordinate.
         description = task.get("description", "No description")
 
         return f"""\
-You are on the Board. This strategic task is assigned to YOU for review.
+You are on the Board. This strategic task is under board review.
 
 TASK: {task_id}
 TITLE: {title}
 DESCRIPTION: {description}
+
+THE BOARD REVIEWS AS A PAIR: the Product Owner AND the Head of Marketing both
+review every board task before it reaches the CEO. The Product Owner owns
+product requirements + acceptance scope; the Head of Marketing owns the UX /
+user-facing / positioning dimension. The CEO only gets the handoff after BOTH
+of you have recorded a review.
 
 YOUR ROLE: review and shape this work. You do NOT build, code, claim, or
 delegate — those verbs are not yours. Your deliverable is a recorded review.
@@ -5756,14 +5856,16 @@ delegate — those verbs are not yours. Your deliverable is a recorded review.
 1. triage()
      — see your board-level work and context.
 2. note(text="<the product requirements and acceptance criteria you expect, the
-        scope, the must-haves, and what 'done' looks like>",
+        scope, the must-haves, and what 'done' looks like — Head of Marketing:
+        the UX, user-facing impact, and how the feature is positioned>",
         scope='decision', task_id="{task_id}")
      — this recorded review is how the CEO and Main PM act on your input.
-3. say(...) in your board channel to flag UX, positioning, or risk concerns
-     (Head of Marketing: weigh in on UX + how the feature is positioned).
+3. say(...) in your board channel to flag UX, positioning, or risk concerns and
+     to coordinate with your fellow board reviewer.
 4. i_am_idle()
-     — when your review is recorded. The CEO routes the task to Main PM for
-       delegation to the cells; you do NOT hand it off yourself.
+     — when your review is recorded. Once both board reviewers are done, the
+       CEO is notified the task is ready for Approve & Start, then routes it to
+       Main PM for delegation to the cells; you do NOT hand it off yourself.
 
 Do NOT attempt to claim, plan, complete, or delegate — the gateway will reject
 those, and a substantive recorded note IS your job here.

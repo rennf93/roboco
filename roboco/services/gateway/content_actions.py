@@ -320,6 +320,41 @@ class ContentActions:
             context_briefing={},
         )
 
+    # Board roles co-review board/coordination tasks (cluster C5): a
+    # board/coordination task is dispatched to BOTH the Product Owner and the
+    # Head of Marketing, but it carries a single ``assigned_to``. The
+    # non-assignee reviewer must still be able to record its review note on
+    # that task, so a board role posting content to a board/coordination task
+    # is exempt from the strict single-assignee ownership gate.
+    _BOARD_ROLES: ClassVar[frozenset[str]] = frozenset(
+        {"product_owner", "head_marketing"}
+    )
+
+    @staticmethod
+    def _is_coordination_task(task: Any) -> bool:
+        """True for a board/fan-out task: carries a product but no repo of its own.
+
+        Mirrors the orchestrator's ``_is_coordination_task``. Such a task does
+        no git work of its own (no ``project_id``) and is the shared subject of
+        the two-reviewer board review, so both board members may attach content.
+        """
+        return getattr(task, "project_id", None) is None and bool(
+            getattr(task, "product_id", None)
+        )
+
+    async def _board_may_co_review(self, agent_id: UUID, task: Any) -> bool:
+        """True iff a board role is posting to a board/coordination task.
+
+        Lets the non-assignee board reviewer record its review on a task held
+        by the other board member, without widening ownership for any other
+        role or any project-backed task.
+        """
+        if not self._is_coordination_task(task):
+            return False
+        agent = await self.task.agent_for(agent_id)
+        role = str(agent.role) if agent is not None else ""
+        return role in self._BOARD_ROLES
+
     async def _verify_explicit_task_ownership(
         self, agent_id: UUID, task_id: UUID
     ) -> Envelope | None:
@@ -330,12 +365,16 @@ class ContentActions:
         self-owned and does not need a re-check.
 
         Allows ``assigned_to=None`` (post-handoff transient state) so QA /
-        documenter can still inspect tasks between reassignments.
+        documenter can still inspect tasks between reassignments. A board role
+        co-reviewing a board/coordination task is also allowed even when the
+        task is assigned to the other board member (cluster C5).
         """
         t = await self.task.get(task_id)
         if t is None:
             return Envelope.not_found(message=f"task {task_id} not found")
         if t.assigned_to is not None and t.assigned_to != agent_id:
+            if await self._board_may_co_review(agent_id, t):
+                return None
             return _ownership_violation(task_id)
         return None
 

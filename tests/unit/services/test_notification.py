@@ -222,6 +222,22 @@ async def test_send_a2a_notification(svc: NotificationService) -> None:
 
 
 @pytest.mark.asyncio
+async def test_send_board_review_complete_notification(
+    svc: NotificationService,
+) -> None:
+    """Board-review-complete handoff is an APPROVAL notification to the CEO
+    carrying the task_id (cluster C5 / finding #2)."""
+    aid = uuid4()
+    db = _FakeDb(agent_uuid=aid)
+    with _patch_db_context(db):
+        await svc.send_board_review_complete_notification(task_id="t1")
+    assert any("Board review complete" in row.subject for row in db.added)
+    assert any(row.type == NotificationType.APPROVAL for row in db.added)
+    assert any(row.priority == NotificationPriority.HIGH for row in db.added)
+    assert any(row.related_task_id == "t1" for row in db.added)
+
+
+@pytest.mark.asyncio
 async def test_send_ack_notification(svc: NotificationService) -> None:
     aid = uuid4()
     db = _FakeDb(agent_uuid=aid)
