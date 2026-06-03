@@ -796,17 +796,12 @@ class WorkspaceService:
             return False
 
         digest = _lockfile_digest(workspace)
-        marker = workspace / _DEP_INSTALL_MARKER
-        if digest is not None and marker.is_file():
-            try:
-                if marker.read_text().strip() == digest:
-                    logger.debug(
-                        "Dev-deps install skipped (lockfiles unchanged)",
-                        workspace=str(workspace),
-                    )
-                    return False
-            except OSError:
-                pass
+        if self._dep_install_cache_hit(workspace, digest):
+            logger.debug(
+                "Dev-deps install skipped (lockfiles unchanged)",
+                workspace=str(workspace),
+            )
+            return False
 
         any_ok = False
         for label, argv in commands:
@@ -817,12 +812,25 @@ class WorkspaceService:
         # Only write on success — a failed install should retry next time.
         if any_ok and digest is not None:
             with contextlib.suppress(OSError):
-                marker.write_text(digest)
+                (workspace / _DEP_INSTALL_MARKER).write_text(digest)
 
         # The install runs as root (orchestrator); hand the freshly written
         # .venv / node_modules back to the agent user.
         await asyncio.to_thread(_ensure_agent_owned, workspace)
         return any_ok
+
+    @staticmethod
+    def _dep_install_cache_hit(workspace: Path, digest: str | None) -> bool:
+        """True when the lockfile digest matches the marker from a prior run."""
+        if digest is None:
+            return False
+        marker = workspace / _DEP_INSTALL_MARKER
+        if not marker.is_file():
+            return False
+        try:
+            return marker.read_text().strip() == digest
+        except OSError:
+            return False
 
     @staticmethod
     async def _run_dep_install(workspace: Path, label: str, argv: list[str]) -> bool:

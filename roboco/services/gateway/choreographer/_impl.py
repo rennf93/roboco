@@ -3057,22 +3057,11 @@ class Choreographer:
         if agent is None:
             return None
         if agent.role is Role.DEVELOPER:
-            is_ux_dev = agent.team is Team.UX_UI
-            allowed = {"code", "documentation", "research"}
-            owned = "code/documentation/research"
-            design_clause = "."
-            if is_ux_dev:
-                allowed.add("design")
-                owned = "code/documentation/research/design"
-            else:
-                design_clause = "; design belongs to the UX cell."
-            if task_type not in allowed:
-                return (
-                    f"task_type={task_type!r} is invalid for assignee "
-                    f"{assigned_to!r}: Developers own {owned}. Coordination, "
-                    f"planning, and administrative work belong to PMs"
-                    f"{design_clause}"
-                )
+            dev_err = Choreographer._developer_task_type_error(
+                assigned_to, agent.team is Team.UX_UI, task_type
+            )
+            if dev_err is not None:
+                return dev_err
         if agent.role is Role.QA and task_type != "code":
             return (
                 f"task_type={task_type!r} is invalid for assignee {assigned_to!r}: "
@@ -3085,6 +3074,27 @@ class Choreographer:
                 f"'documentation'."
             )
         return None
+
+    @staticmethod
+    def _developer_task_type_error(
+        assigned_to: str, is_ux_dev: bool, task_type: str
+    ) -> str | None:
+        """Reject a developer's task_type. UX-cell developers additionally
+        accept 'design' (mockups/specs/design assets are their cell work)."""
+        allowed = {"code", "documentation", "research"}
+        owned = "code/documentation/research"
+        design_clause = "; design belongs to the UX cell."
+        if is_ux_dev:
+            allowed.add("design")
+            owned = "code/documentation/research/design"
+            design_clause = "."
+        if task_type in allowed:
+            return None
+        return (
+            f"task_type={task_type!r} is invalid for assignee "
+            f"{assigned_to!r}: Developers own {owned}. Coordination, "
+            f"planning, and administrative work belong to PMs{design_clause}"
+        )
 
     @staticmethod
     def _assignee_task_type_remediate(assigned_to: str) -> str:
