@@ -271,8 +271,13 @@ async def test_note_reflect_scope_succeeds() -> None:
 
 
 @pytest.mark.asyncio
-async def test_note_reflect_missing_required_fields_returns_incomplete_input() -> None:
-    """Pre-gateway parity: reflect without structured fields fails fast."""
+async def test_note_reflect_missing_fields_records_with_placeholder() -> None:
+    """Issue #15: a thin reflect note is recorded, not rejected.
+
+    Missing narrative fields are defaulted to a visible placeholder so the
+    entry still lands (audit value preserved) and the do-server circuit
+    breaker never fires on a well-intentioned note.
+    """
     agent_id = uuid4()
     task_id = uuid4()
     task_svc = AsyncMock()
@@ -293,15 +298,21 @@ async def test_note_reflect_missing_required_fields_returns_incomplete_input() -
     )
     body = env.as_dict()
 
-    assert body["error"] == "incomplete_input"
-    missing = set(body["missing"])
-    assert {"what_done", "what_learned", "what_struggled"}.issubset(missing)
-    journal_svc.write_entry.assert_not_awaited()
+    assert body["error"] is None
+    assert body["status"] == "noted"
+    journal_svc.write_entry.assert_awaited_once()
+    content = journal_svc.write_entry.call_args.kwargs["content"]
+    # Missing what_done/what_learned/what_struggled render as the placeholder.
+    assert "(not provided)" in content
 
 
 @pytest.mark.asyncio
-async def test_note_decision_requires_options_and_more() -> None:
-    """Pre-gateway parity: decision requires context/options(>=2)/chosen/rationale."""
+async def test_note_decision_thin_payload_records_not_rejected() -> None:
+    """Issue #15: decision with missing/thin fields is recorded, not rejected.
+
+    A single option is kept as-is (the min-2 gate no longer hard-blocks);
+    missing context/chosen/rationale default to a placeholder.
+    """
     agent_id = uuid4()
     task_id = uuid4()
     task_svc = AsyncMock()
@@ -314,7 +325,7 @@ async def test_note_decision_requires_options_and_more() -> None:
     deps = _make_deps(task=task_svc, journal=journal_svc)
     ca = ContentActions(deps)
 
-    # Missing everything structured → incomplete_input listing all required.
+    # Bare decision: no structured fields → still recorded with placeholders.
     env = await ca.note(
         agent_id=agent_id,
         text="bare decision",
@@ -322,10 +333,10 @@ async def test_note_decision_requires_options_and_more() -> None:
         task_id=task_id,
     )
     body = env.as_dict()
-    assert body["error"] == "incomplete_input"
-    assert {"context", "options", "chosen", "rationale"}.issubset(set(body["missing"]))
+    assert body["error"] is None
+    assert body["status"] == "noted"
 
-    # Single option still fails (min 2).
+    # Single option no longer fails — recorded as-is.
     env = await ca.note(
         agent_id=agent_id,
         text="decision with one option",
@@ -339,10 +350,10 @@ async def test_note_decision_requires_options_and_more() -> None:
         },
     )
     body = env.as_dict()
-    assert body["error"] == "incomplete_input"
-    assert "options" in body["missing"]
+    assert body["error"] is None
+    assert body["status"] == "noted"
 
-    # Two options + all required → success.
+    # Fully-filled decision still succeeds (no regression).
     env = await ca.note(
         agent_id=agent_id,
         text="real decision",
@@ -362,26 +373,48 @@ async def test_note_decision_requires_options_and_more() -> None:
     assert body["error"] is None
     assert body["status"] == "noted"
 
-    # Three+ options also pass — 2 is the floor, not the ceiling.
+
+@pytest.mark.asyncio
+async def test_note_decision_scalar_list_fields_are_coerced() -> None:
+    """Issue #15: lone-scalar options/consequences are wrapped into lists.
+
+    An agent that passes a single option dict or a single consequences
+    string must not be rejected — the value is wrapped into a one-element
+    list and rendered into the entry.
+    """
+    agent_id = uuid4()
+    task_id = uuid4()
+    task_svc = AsyncMock()
+    task_svc.get_active_task_for_agent.return_value = None
+    task_svc.get.return_value = MagicMock(
+        id=task_id, assigned_to=agent_id, status="in_progress"
+    )
+    journal_svc = AsyncMock()
+
+    deps = _make_deps(task=task_svc, journal=journal_svc)
+    ca = ContentActions(deps)
+
     env = await ca.note(
         agent_id=agent_id,
-        text="three-way decision",
+        text="decision with scalar fields",
         scope="decision",
         task_id=task_id,
         structured={
-            "context": "queue tech choice",
-            "options": [
-                {"name": "redis", "pros": "fast", "cons": "ephemeral"},
-                {"name": "postgres", "pros": "durable", "cons": "slower"},
-                {"name": "rabbitmq", "pros": "ordered", "cons": "ops overhead"},
-            ],
-            "chosen": "rabbitmq",
-            "rationale": "ordering matters more than raw speed here",
+            "context": "queue tech",
+            # single dict instead of a list
+            "options": {"name": "redis", "pros": "fast", "cons": "ephemeral"},
+            "chosen": "redis",
+            "rationale": "speed",
+            # single string instead of a list
+            "consequences": "we lose durability across restarts",
         },
     )
     body = env.as_dict()
     assert body["error"] is None
     assert body["status"] == "noted"
+    content = journal_svc.write_entry.call_args.kwargs["content"]
+    assert "redis" in content
+    assert "we lose durability across restarts" in content
 
 
 @pytest.mark.asyncio
@@ -660,17 +693,19 @@ async def test_verify_explicit_task_ownership_returns_not_found() -> None:
 
 
 # ---------------------------------------------------------------------------
-# B4 — decision/reflect remediate includes a literal call example
+# Issue #15 — thin decision/reflect notes are recorded, never rejected
 # ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
-async def test_decision_incomplete_input_includes_call_example() -> None:
-    """Decision rejection includes a literal note(scope='decision', ...) template."""
+async def test_decision_thin_note_records_without_rejection() -> None:
+    """A bare decision (no structured fields) is recorded, not rejected."""
     task = AsyncMock()
     task.get_active_task_for_agent.return_value = None
+    task.get_journal_context_task_for_agent.return_value = None
     task.agent_for.return_value = MagicMock(role="cell_pm")
-    deps = _make_deps(task=task)
+    journal_svc = AsyncMock()
+    deps = _make_deps(task=task, journal=journal_svc)
     ca = ContentActions(deps)
 
     env = await ca.note(
@@ -679,23 +714,20 @@ async def test_decision_incomplete_input_includes_call_example() -> None:
         scope="decision",
     )
     body = env.as_dict()
-    assert body["error"] == "incomplete_input"
-    remediate = body.get("remediate", "")
-    # Must include a literal call template, not just a field list
-    assert "note(scope='decision'" in remediate, remediate
-    assert "context=" in remediate, remediate
-    assert "options=[" in remediate, remediate
-    assert "chosen=" in remediate, remediate
-    assert "rationale=" in remediate, remediate
+    assert body["error"] is None
+    assert body["status"] == "noted"
+    journal_svc.write_entry.assert_awaited_once()
 
 
 @pytest.mark.asyncio
-async def test_reflect_incomplete_input_includes_call_example() -> None:
-    """Reflect rejection includes a literal note(scope='reflect', ...) call template."""
+async def test_reflect_thin_note_records_without_rejection() -> None:
+    """A bare reflect (no structured fields) is recorded, not rejected."""
     task = AsyncMock()
     task.get_active_task_for_agent.return_value = None
+    task.get_journal_context_task_for_agent.return_value = None
     task.agent_for.return_value = MagicMock(role="developer")
-    deps = _make_deps(task=task)
+    journal_svc = AsyncMock()
+    deps = _make_deps(task=task, journal=journal_svc)
     ca = ContentActions(deps)
 
     env = await ca.note(
@@ -704,12 +736,9 @@ async def test_reflect_incomplete_input_includes_call_example() -> None:
         scope="reflect",
     )
     body = env.as_dict()
-    assert body["error"] == "incomplete_input"
-    remediate = body.get("remediate", "")
-    assert "note(scope='reflect'" in remediate, remediate
-    assert "what_done=" in remediate, remediate
-    assert "what_learned=" in remediate, remediate
-    assert "what_struggled=" in remediate, remediate
+    assert body["error"] is None
+    assert body["status"] == "noted"
+    journal_svc.write_entry.assert_awaited_once()
 
 
 # ---------------------------------------------------------------------------

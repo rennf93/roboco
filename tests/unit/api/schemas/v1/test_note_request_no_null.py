@@ -91,3 +91,58 @@ def test_note_request_accepts_non_empty_strings() -> None:
     assert req.context == "We have a choice between A and B"
     assert req.chosen == "A"
     assert req.rationale.startswith("speed")
+
+
+# ---------------------------------------------------------------------------
+# Issue #15: list-typed fields tolerate a lone scalar (string or, for
+# options, a dict). Pre-coercion these 422'd at the route and the agent's
+# retry loop tripped the do-server circuit breaker.
+# ---------------------------------------------------------------------------
+
+
+def test_note_request_coerces_string_consequences_to_list() -> None:
+    """A single string for consequences is wrapped into a one-element list."""
+    req = NoteRequest.model_validate(
+        {"text": "x", "scope": "decision", "consequences": "we lose durability"}
+    )
+    assert req.consequences == ["we lose durability"]
+
+
+def test_note_request_coerces_string_next_steps_to_list() -> None:
+    """A single string for next_steps is wrapped into a one-element list."""
+    req = NoteRequest.model_validate(
+        {"text": "x", "scope": "reflect", "next_steps": "wait for QA"}
+    )
+    assert req.next_steps == ["wait for QA"]
+
+
+def test_note_request_coerces_single_option_dict_to_list() -> None:
+    """A single option dict (not wrapped in a list) is wrapped into a list."""
+    req = NoteRequest.model_validate(
+        {
+            "text": "x",
+            "scope": "decision",
+            "options": {"name": "redis", "pros": "fast", "cons": "ephemeral"},
+        }
+    )
+    assert req.options == [{"name": "redis", "pros": "fast", "cons": "ephemeral"}]
+
+
+def test_note_request_list_fields_pass_through_unchanged() -> None:
+    """Already-list values are not re-wrapped."""
+    req = NoteRequest.model_validate(
+        {
+            "text": "x",
+            "scope": "reflect",
+            "next_steps": ["step one", "step two"],
+        }
+    )
+    assert req.next_steps == ["step one", "step two"]
+
+
+def test_note_request_list_fields_accept_none() -> None:
+    """Omitted list fields stay None (default), not coerced."""
+    req = NoteRequest.model_validate({"text": "x", "scope": "note"})
+    assert req.consequences is None
+    assert req.next_steps is None
+    assert req.options is None

@@ -23,6 +23,9 @@ class TestBuildForRole:
         )
         assert "i_am_done" in m.flow_tools
         assert "commit" in m.do_tools
+        # Issue #8: the developer manifest must carry `evidence` so the
+        # do-server registers mcp__roboco-do__evidence inside the container.
+        assert "evidence" in m.do_tools
         assert "Edit" in m.write_tools
         assert m.subagent_allowed is False
         assert m.subagent_model is None  # devs don't dispatch

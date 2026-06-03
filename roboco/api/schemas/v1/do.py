@@ -1,9 +1,27 @@
 """Request schemas for /api/v1/do/* content tools."""
 
-from typing import Self
+from typing import Any, Self
 from uuid import UUID
 
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
+
+
+def _coerce_to_list(value: Any) -> Any:
+    """Wrap a lone scalar into a one-element list; pass lists/None through.
+
+    Agents routinely pass a single string (or a single dict for ``options``)
+    where the schema declares a list — ``consequences="ships v2"`` instead of
+    ``consequences=["ships v2"]``. Pre-coercion that 422'd at the route before
+    the agent ever saw a remediable envelope, and the retry loop tripped the
+    do-server circuit breaker. A bare scalar is the well-intentioned
+    single-item case, so wrap it rather than reject it. Lists, None, and other
+    shapes pass through untouched for normal field validation to handle.
+    """
+    if value is None or isinstance(value, list):
+        return value
+    if isinstance(value, str | dict):
+        return [value]
+    return value
 
 
 class CommitRequest(BaseModel):
@@ -47,6 +65,17 @@ class NoteRequest(BaseModel):
     what_learned: str = ""
     what_struggled: str = ""
     next_steps: list[str] | None = None
+
+    # List-typed fields tolerate a lone scalar: a single string (or, for
+    # ``options``, a single dict) is wrapped into a one-element list before
+    # field validation. Without this a well-intentioned ``consequences="x"``
+    # 422'd at the route and the agent's retry loop tripped the circuit
+    # breaker (issue #15). ``mode="before"`` runs ahead of type coercion so
+    # the wrapped value satisfies the declared ``list[...]`` type.
+    @field_validator("options", "consequences", "next_steps", mode="before")
+    @classmethod
+    def _wrap_scalar_in_list(cls, value: Any) -> Any:
+        return _coerce_to_list(value)
 
 
 class SayRequest(BaseModel):

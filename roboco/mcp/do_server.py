@@ -187,27 +187,32 @@ def note(
     task_id: str | None = None,
     title: str | None = None,
     context: str = "",
-    options: list[dict[str, str]] | None = None,
+    options: list[dict[str, str]] | dict[str, str] | None = None,
     chosen: str = "",
     rationale: str = "",
-    consequences: list[str] | None = None,
+    consequences: list[str] | str | None = None,
     what_done: str = "",
     what_learned: str = "",
     what_struggled: str = "",
-    next_steps: list[str] | None = None,
+    next_steps: list[str] | str | None = None,
 ) -> dict[str, Any]:
     """Write a journal entry. scope in note|decision|reflect|learning|struggle.
 
     ``text`` is always the short summary (one paragraph max). For ``decision``
-    and ``reflect`` scopes the structured fields are REQUIRED — pre-gateway
-    parity. The gateway returns ``incomplete_input`` if any is missing.
+    and ``reflect`` scopes the structured fields are RECOMMENDED — fill what
+    you can. The note is always recorded; missing narrative fields default to
+    a visible placeholder rather than being rejected.
 
-    - decision: ``context`` (situation), ``options`` (list of ≥2 dicts
-      ``{name, pros, cons}``), ``chosen`` (which option), ``rationale``
-      (why), ``consequences`` (list of strings — what this commits us to)
+    - decision: ``context`` (situation), ``options`` (list of dicts
+      ``{name, pros, cons}`` — a single dict is accepted), ``chosen`` (which
+      option), ``rationale`` (why), ``consequences`` (list of strings — what
+      this commits us to; a single string is accepted)
     - reflect: ``what_done`` (literal output), ``what_learned`` (new info),
       ``what_struggled`` (where you got stuck), ``next_steps`` (list of
-      follow-up strings)
+      follow-up strings; a single string is accepted)
+
+    List-typed fields (``options``, ``consequences``, ``next_steps``) tolerate
+    a lone value — pass either a list or a single item.
 
     Other scopes (note / learning / struggle) just need ``text``.
     """

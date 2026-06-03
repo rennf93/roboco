@@ -118,32 +118,31 @@ def _render_journal_content(scope: str, text: str, structured: dict[str, Any]) -
     return "\n\n".join(body_parts) if body_parts else text
 
 
-# Pre-gateway `DecisionLogInput.options` enforced `min_length=2`. Same here.
-_MIN_DECISION_OPTIONS = 2
+# Narrative fields that decision/reflect scopes want filled. Issue #15: a
+# missing or empty value used to hard-reject the note with `incomplete_input`
+# — and since that kind counts toward the do-server circuit breaker, three
+# well-intentioned-but-thin notes in a row tripped it. We now default the
+# field instead so the note is always recorded (audit value preserved) and
+# the breaker never fires on a note. The placeholder makes the gap visible in
+# the panel rather than silently dropping the section.
+_NARRATIVE_PLACEHOLDER = "(not provided)"
 
-
-_DECISION_REQUIRED: tuple[tuple[str, str], ...] = (
-    ("context", "What situation led to this decision"),
-    ("options", "At least 2 alternatives considered as list[{name,pros,cons}]"),
-    ("chosen", "Which option you took"),
-    ("rationale", "Why this option (cite trade-offs)"),
+_DECISION_NARRATIVE_FIELDS: tuple[str, ...] = ("context", "chosen", "rationale")
+_REFLECT_NARRATIVE_FIELDS: tuple[str, ...] = (
+    "what_done",
+    "what_learned",
+    "what_struggled",
 )
 
-_REFLECT_REQUIRED: tuple[tuple[str, str], ...] = (
-    ("what_done", "Literal output: what shipped, where (file:line / commit)"),
-    ("what_learned", "New info you didn't have before"),
-    ("what_struggled", "Where you got stuck (even briefly)"),
-)
+# List-typed structured fields. A lone scalar is wrapped into a one-element
+# list here too (defense-in-depth — the route schema coerces first, but the
+# service is called directly from the choreographer and tests).
+_LIST_FIELDS: tuple[str, ...] = ("options", "consequences", "next_steps")
 
-_OPTIONS_HINT = (
-    "options must be a list of at least 2 dicts with "
-    "shape {name: str, pros: str, cons: str}"
-)
-
-
-def _options_field_missing(value: Any) -> bool:
-    """True when decision.options is absent or under the minimum count."""
-    return not isinstance(value, list) or len(value) < _MIN_DECISION_OPTIONS
+_SCOPE_NARRATIVE_FIELDS: dict[str, tuple[str, ...]] = {
+    "decision": _DECISION_NARRATIVE_FIELDS,
+    "reflect": _REFLECT_NARRATIVE_FIELDS,
+}
 
 
 def _scalar_field_missing(value: Any) -> bool:
@@ -151,39 +150,32 @@ def _scalar_field_missing(value: Any) -> bool:
     return not value or not str(value).strip()
 
 
-def _collect_required(
-    required: tuple[tuple[str, str], ...], structured: dict[str, Any]
-) -> tuple[list[str], dict[str, str]]:
-    """Walk a (field, hint) table and collect missing fields with hints."""
-    missing: list[str] = []
-    hints: dict[str, str] = {}
-    for field, hint in required:
-        value = structured.get(field)
-        if field == "options":
-            if _options_field_missing(value):
-                missing.append(field)
-                hints[field] = _OPTIONS_HINT
-            continue
-        if _scalar_field_missing(value):
-            missing.append(field)
-            hints[field] = hint
-    return missing, hints
+def _coerce_scalar_to_list(value: Any) -> Any:
+    """Wrap a lone str/dict into a one-element list; pass lists/None through."""
+    if value is None or isinstance(value, list):
+        return value
+    if isinstance(value, str | dict):
+        return [value]
+    return value
 
 
-_SCOPE_REQUIRED: dict[str, tuple[tuple[str, str], ...]] = {
-    "decision": _DECISION_REQUIRED,
-    "reflect": _REFLECT_REQUIRED,
-}
+def _normalize_structured(scope: str, structured: dict[str, Any]) -> dict[str, Any]:
+    """Return a tolerant copy of ``structured`` for decision/reflect scopes.
 
-
-def _check_scope_required_fields(
-    scope: str, structured: dict[str, Any]
-) -> tuple[list[str], dict[str, str]]:
-    """Pre-gateway parity: decision/reflect scopes required structured fields."""
-    required = _SCOPE_REQUIRED.get(scope)
-    if required is None:
-        return [], {}
-    return _collect_required(required, structured)
+    Issue #15: stop rejecting thin notes. List-typed fields tolerate a lone
+    scalar (wrapped into a one-element list), and missing/blank narrative
+    fields are defaulted to a visible placeholder so the entry still records
+    instead of returning `incomplete_input` (which trips the circuit breaker).
+    Other scopes are returned unchanged.
+    """
+    normalized = dict(structured)
+    for field in _LIST_FIELDS:
+        if field in normalized:
+            normalized[field] = _coerce_scalar_to_list(normalized[field])
+    for field in _SCOPE_NARRATIVE_FIELDS.get(scope, ()):
+        if _scalar_field_missing(normalized.get(field)):
+            normalized[field] = _NARRATIVE_PLACEHOLDER
+    return normalized
 
 
 def _ownership_violation(task_id: UUID) -> Envelope:
@@ -358,10 +350,16 @@ class ContentActions:
     ) -> Envelope:
         """Write a journal entry. scope ∈ note|decision|reflect|learning|struggle.
 
-        ``structured`` carries scope-specific fields (pre-gateway parity):
+        ``structured`` carries scope-specific fields:
 
         - decision: context, options[], chosen, rationale, consequences
         - reflect: what_done, what_learned, what_struggled, next_steps
+
+        Issue #15: the note is always recorded. List-typed fields tolerate a
+        lone scalar (wrapped into a one-element list) and missing decision/
+        reflect narrative fields default to a visible placeholder, so a
+        well-intentioned note is never hard-rejected (which previously tripped
+        the do-server circuit breaker on repeated ``incomplete_input``).
 
         Non-None fields are formatted into the entry content as markdown
         sections so the panel's Decisions / Reflections views render
@@ -382,58 +380,12 @@ class ContentActions:
             t = await self.task.get_journal_context_task_for_agent(agent_id)
             if t is not None:
                 task_id = t.id
-        s = structured or {}
-        # Pre-gateway parity: decision and reflect scopes had required fields.
-        missing, hints = _check_scope_required_fields(scope, s)
-        if missing:
-            if scope == "decision":
-                remediate = (
-                    "DO NOT pass null. context / chosen / rationale must be "
-                    "non-empty strings — do not omit them or pass null. If you "
-                    "genuinely have no context, write context='(none — direct "
-                    "request)' or describe the task brief itself.\n\n"
-                    "re-issue note(scope='decision', ...) with these fields filled: "
-                    f"{', '.join(missing)}.\n\nExample (replace the angle-bracket "
-                    "placeholders with real strings — do NOT send the placeholders "
-                    "as-is and do NOT send null):\n"
-                    "note(\n"
-                    "  scope='decision',\n"
-                    "  text='Going with redis for the queue',\n"
-                    "  context='Need a queue for background work',\n"
-                    "  options=[\n"
-                    "    {'name': 'redis', 'pros': 'fast', 'cons': 'ephemeral'},\n"
-                    "    {'name': 'postgres', 'pros': 'durable', 'cons': 'slower'},\n"
-                    "  ],\n"
-                    "  chosen='redis',\n"
-                    "  rationale='speed beats durability for this experiment',\n"
-                    ")\n\n"
-                    "Pre-gateway parity — these populate the panel's Decisions view."
-                )
-            else:
-                remediate = (
-                    "DO NOT pass null. what_done / what_learned / what_struggled "
-                    "must be non-empty strings — do not omit them or pass null. "
-                    "If a field genuinely doesn't apply, write 'n/a' or 'nothing "
-                    "notable'.\n\n"
-                    "re-issue note(scope='reflect', ...) with these fields filled: "
-                    f"{', '.join(missing)}.\n\nExample (replace the placeholders "
-                    "with real strings — do NOT send null):\n"
-                    "note(\n"
-                    "  scope='reflect',\n"
-                    "  text='Smoke test pass on PR #17',\n"
-                    "  what_done='Edited README.md L42 and committed [abc12345]',\n"
-                    "  what_learned='The submit_for_qa verb requires reflect',\n"
-                    "  what_struggled='Initial commit message under 20 chars',\n"
-                    "  next_steps=['Wait for QA review'],\n"
-                    ")\n\n"
-                    "Pre-gateway parity — these populate the panel's Reflections view."
-                )
-            return Envelope.incomplete_input(
-                missing=missing,
-                field_hints=hints,
-                remediate=remediate,
-                context_briefing={},
-            )
+        # Issue #15: tolerate thin notes instead of rejecting them. List-typed
+        # fields accept a lone scalar; missing decision/reflect narrative fields
+        # are defaulted to a visible placeholder. The note is always recorded so
+        # the audit trail survives and a well-intentioned note never trips the
+        # do-server circuit breaker on repeated `incomplete_input`.
+        s = _normalize_structured(scope, structured or {})
         title = (s.get("title") or text.split("\n", 1)[0])[:200]
         content = _render_journal_content(scope, text, s)
         await self.journal.write_entry(
