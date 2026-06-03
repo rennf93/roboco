@@ -157,6 +157,22 @@ async def test_list_projects_filter_by_cell(
 
 
 @pytest.mark.asyncio
+async def test_list_projects_includes_default_branch(
+    project_client: AsyncClient,
+) -> None:
+    payload = _payload()
+    payload["default_branch"] = "master"
+    create = await project_client.post("/api/projects", json=payload, headers=_HDR)
+    assert create.status_code == HTTPStatus.CREATED
+
+    response = await project_client.get("/api/projects", headers=_HDR)
+    assert response.status_code == HTTPStatus.OK
+    listed = {p["slug"]: p for p in response.json()}
+    assert payload["slug"] in listed
+    assert listed[payload["slug"]]["default_branch"] == "master"
+
+
+@pytest.mark.asyncio
 async def test_get_project_by_slug_not_found(project_client: AsyncClient) -> None:
     response = await project_client.get(
         "/api/projects/ghost-project-slug", headers=_HDR

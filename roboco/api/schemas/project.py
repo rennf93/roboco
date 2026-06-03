@@ -64,6 +64,7 @@ class ProjectSummaryResponse(BaseModel):
     name: str
     slug: str
     git_url: str
+    default_branch: str
     assigned_cell: Team
     is_active: bool
     has_workspace: bool = False
@@ -176,11 +177,13 @@ def project_to_response(project: "ProjectTable") -> ProjectResponse:
 
 def project_to_summary(project: "ProjectTable") -> ProjectSummaryResponse:
     """Convert a ProjectTable to ProjectSummaryResponse."""
+    default_branch = project.default_branch
     return ProjectSummaryResponse(
         id=typing_cast("UUID", project.id),
         name=str(project.name),
         slug=str(project.slug),
         git_url=str(project.git_url),
+        default_branch=str(default_branch) if default_branch else "main",
         assigned_cell=project.assigned_cell,
         is_active=bool(project.is_active),
         has_workspace=bool(project.workspace_path),
