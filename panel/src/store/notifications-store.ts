@@ -21,11 +21,26 @@ export const useNotificationStore = create<NotificationState>((set) => ({
   pendingAckCount: 0,
 
   addNotification: (notification) =>
-    set((state) => ({
-      notifications: [notification, ...state.notifications].slice(0, 50),
-      unreadCount: state.unreadCount + (notification.is_read ? 0 : 1),
-      pendingAckCount: state.pendingAckCount + (notification.requires_ack && !notification.is_acknowledged ? 1 : 0),
-    })),
+    set((state) => {
+      // Dedupe by id. A notification re-delivered (re-fetch / WebSocket replay)
+      // must update in place, not stack a duplicate or re-increment the counts —
+      // otherwise already-acknowledged notifications re-surfaced to the CEO and
+      // the pending badge kept climbing.
+      if (state.notifications.some((n) => n.id === notification.id)) {
+        return {
+          notifications: state.notifications.map((n) =>
+            n.id === notification.id ? notification : n
+          ),
+        };
+      }
+      return {
+        notifications: [notification, ...state.notifications].slice(0, 50),
+        unreadCount: state.unreadCount + (notification.is_read ? 0 : 1),
+        pendingAckCount:
+          state.pendingAckCount +
+          (notification.requires_ack && !notification.is_acknowledged ? 1 : 0),
+      };
+    }),
 
   markAsRead: (id) =>
     set((state) => ({
