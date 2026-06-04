@@ -106,8 +106,10 @@ _GIT_EXECUTOR = ThreadPoolExecutor(
 
 # A git subprocess or ownership repair slower than this is logged so a run can
 # pinpoint where time goes (e.g. a push to origin). Below it, the fast path
-# stays quiet.
-_SLOW_GIT_OP_MS = 1000.0
+# stays quiet. Set above the normal cost of a push/fetch to a private monorepo
+# from a self-hosted runner (~1-2s) so routine ops don't spam "slow git op";
+# only a genuinely slow op (>5s) is worth a warning.
+_SLOW_GIT_OP_MS = 5000.0
 
 
 # `_get_gh_env` and the gh-CLI code paths were removed in favor of direct
