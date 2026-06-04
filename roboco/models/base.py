@@ -185,6 +185,14 @@ class HandoffStatus(StrEnum):
     COMPLETED = "completed"
 
 
+class PromptSessionStatus(StrEnum):
+    """Lifecycle states for a PromptSession."""
+
+    DRAFT = "draft"
+    LAUNCHED = "launched"
+    ABANDONED = "abandoned"
+
+
 class ModelProvider(StrEnum):
     """LLM provider options.
 
