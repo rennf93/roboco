@@ -248,6 +248,35 @@ async def test_unblock_restore_false_returns_legacy_message() -> None:
 
 
 @pytest.mark.asyncio
+async def test_unblock_refused_while_a_dependency_is_unfinished() -> None:
+    """A dependency block can't be force-cleared by a PM.
+
+    It auto-clears via _unblock_dependents once the upstream completes; manual
+    unblock would let the dependent proceed without the upstream's work.
+    """
+    pm_id = uuid4()
+    task_id = uuid4()
+    dep_id = uuid4()
+    t = MagicMock(id=task_id, status="blocked", dependency_ids=[dep_id])
+    task_svc = AsyncMock()
+    task_svc.get.return_value = t
+    task_svc.unmet_dependency_ids.return_value = [dep_id]
+    journal_svc = AsyncMock()
+    journal_svc.has_decision_for_task.return_value = True
+    journal_svc.latest_decision_at.return_value = datetime.now(UTC)
+    deps = _make_deps(task=task_svc, journal=journal_svc)
+    c = Choreographer(deps)
+
+    env = await c.unblock(pm_id, task_id)
+    body = env.as_dict()
+
+    assert body["error"] == "invalid_state"
+    assert "depends on" in body["message"]
+    # The task must not have been advanced out of blocked.
+    task_svc.unblock_with_restore.assert_not_awaited()
+
+
+@pytest.mark.asyncio
 async def test_cell_pm_complete_merges_then_completes() -> None:
     pm_id = uuid4()
     task_id = uuid4()

@@ -3930,6 +3930,32 @@ class Choreographer:
                 verb="unblock",
             )
 
+        # A dependency block must not be cleared by hand. It auto-clears via
+        # _unblock_dependents the moment its last dependency reaches a terminal
+        # state; forcing it now would let the dependent proceed without the
+        # upstream's work (e.g. a frontend task built before its UX design lands).
+        dep_ids = list(t.dependency_ids or [])
+        unmet = await self.task.unmet_dependency_ids(dep_ids) if dep_ids else []
+        if unmet:
+            return await self._emit_rejection(
+                Envelope.invalid_state(
+                    message=(
+                        f"task {task_id} still depends on {len(unmet)} "
+                        "unfinished task(s); a dependency block clears on its "
+                        "own once the upstream work completes"
+                    ),
+                    remediate=(
+                        "don't force this — let the dependency finish; the task "
+                        "auto-unblocks the moment its last dependency reaches "
+                        "completed/cancelled"
+                    ),
+                    context_briefing=await self._briefing_for(pm_agent_id, task_id),
+                ).with_introspection(task=t, role=role),
+                agent_id=pm_agent_id,
+                task_id=task_id,
+                verb="unblock",
+            )
+
         if env := await self._check_pm_decision_required(
             "unblock", pm_agent_id, task_id, t
         ):
