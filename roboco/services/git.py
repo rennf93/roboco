@@ -2177,6 +2177,23 @@ class GitService(BaseService):
         git_token = await self._get_project_token_or_raise(project.slug)
         owner, repo = self._parse_github_remote(workspace)
 
+        # CEO is the only one who merges to master. This agent-facing merge path
+        # (a cell PM merging a leaf/cell PR up the chain) may NEVER target a
+        # repo's default branch — a root→master PR is merged solely by the CEO
+        # via approve-&-merge (merge_pr_for_task, CEO-gated from
+        # awaiting_ceo_approval). Agents open the master PR and escalate.
+        default_branch = await self._project_default_branch(project.slug)
+        if target == default_branch:
+            raise UnauthorizedError(
+                action="pr_merge",
+                reason=(
+                    "CEO_ONLY: merging into the default branch "
+                    f"('{default_branch}') is reserved for the CEO via "
+                    "approve-&-merge from awaiting_ceo_approval. Open the PR "
+                    "and escalate; agents never merge to master."
+                ),
+            )
+
         parent_id = UUID(str(task.parent_task_id)) if task.parent_task_id else None
         await self._lock_parent_task_for_merge(parent_id)
 
