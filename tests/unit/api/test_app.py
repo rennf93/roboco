@@ -8,7 +8,7 @@ extraction, optimal-service).
 
 from __future__ import annotations
 
-from contextlib import asynccontextmanager
+from contextlib import ExitStack, asynccontextmanager
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -141,3 +141,61 @@ async def test_lifespan_handles_optimal_init_failure_gracefully() -> None:
         app = create_app()
         async with lifespan(app):
             assert app.state.optimal is None
+
+
+def _lifespan_io_patches() -> list:
+    transcription_mock = MagicMock()
+    transcription_mock.start = AsyncMock()
+    transcription_mock.stop = AsyncMock()
+    return [
+        patch("roboco.api.app.init_db", new=AsyncMock()),
+        patch("roboco.api.app.close_db", new=AsyncMock()),
+        patch("roboco.api.app.TranscriptionService", return_value=transcription_mock),
+        patch("roboco.api.app.ExtractionService"),
+        patch("roboco.api.app.ExtractionPipeline"),
+        patch(
+            "roboco.api.app.get_optimal_service",
+            new=AsyncMock(return_value=MagicMock()),
+        ),
+        patch("roboco.api.app.close_optimal_service", new=AsyncMock()),
+    ]
+
+
+def _header_trust_warnings(logger_mock: MagicMock) -> list:
+    return [
+        c
+        for c in logger_mock.warning.call_args_list
+        if c.args and "HEADER-TRUST" in c.args[0]
+    ]
+
+
+async def _run_lifespan_with(*, auth_required: bool, logger_mock: MagicMock) -> None:
+    """Run the lifespan with heavy I/O patched and the auth flag forced."""
+    with ExitStack() as stack:
+        for cm in _lifespan_io_patches():
+            stack.enter_context(cm)
+        stack.enter_context(
+            patch("roboco.api.app._auth_required", return_value=auth_required)
+        )
+        stack.enter_context(patch("roboco.api.app.logger", logger_mock))
+        app = create_app()
+        async with lifespan(app):
+            pass
+
+
+@pytest.mark.asyncio
+async def test_lifespan_warns_in_header_trust_mode() -> None:
+    """Startup warns when agent auth is not enforced (header-trust mode)."""
+    logger_mock = MagicMock()
+    await _run_lifespan_with(auth_required=False, logger_mock=logger_mock)
+    assert _header_trust_warnings(logger_mock), (
+        "header-trust startup warning expected when auth is not required"
+    )
+
+
+@pytest.mark.asyncio
+async def test_lifespan_no_header_trust_warning_when_auth_required() -> None:
+    """No header-trust warning when ROBOCO_AGENT_AUTH_REQUIRED enforces tokens."""
+    logger_mock = MagicMock()
+    await _run_lifespan_with(auth_required=True, logger_mock=logger_mock)
+    assert not _header_trust_warnings(logger_mock)

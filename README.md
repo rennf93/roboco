@@ -212,6 +212,30 @@ uv run mypy roboco/
 - [x] Frontend panel (vendored under `panel/`, served through nginx on :3000)
 - [ ] Full agent autonomy testing
 
+## Security
+
+> [!IMPORTANT]
+> **Do not expose RoboCo to the public internet as-is.** It is designed to run
+> on a trusted private network (homelab / LAN).
+
+**Agent authentication.** Requests identify the caller with `X-Agent-Id` /
+`X-Agent-Role` headers. The orchestrator issues each spawned agent an HMAC token
+(`X-Agent-Token`, signed with `ROBOCO_AGENT_AUTH_SECRET`) that binds its id, role
+and team. Token enforcement is gated by `ROBOCO_AGENT_AUTH_REQUIRED`:
+
+- **`ROBOCO_AGENT_AUTH_REQUIRED` unset/false (default):** *header-trust mode* —
+  the role headers are accepted without a token, so any client that can reach the
+  API may claim any role (including `ceo`). The API logs a warning at startup in
+  this mode. Acceptable only on a trusted network.
+- **`ROBOCO_AGENT_AUTH_REQUIRED=true`:** every request must carry a valid token;
+  an agent cannot spoof another agent's role. (Note: the control panel does not
+  yet attach a token, so enabling this currently affects the human/panel path — a
+  panel-token path is a known follow-up.)
+
+**Secrets** (the Fernet `ROBOCO_ENCRYPTION_KEY`, GitHub PATs) live encrypted in
+the database and in gitignored env files — never in the repo. Per-project git
+tokens are Fernet-encrypted at rest and never returned by the API.
+
 ## License
 
 Copyright (c) 2026 Renzo Franceschini

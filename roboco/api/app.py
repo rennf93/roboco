@@ -11,6 +11,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
+from roboco.api.deps import _auth_required
 from roboco.api.middleware import setup_middleware
 from roboco.api.routes.a2a import router as a2a_router
 from roboco.api.routes.a2a import wellknown_router as a2a_wellknown_router
@@ -75,6 +76,16 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None]:
         version=settings.app_version,
         environment=settings.environment,
     )
+
+    if not _auth_required():
+        logger.warning(
+            "Agent auth is in HEADER-TRUST mode (ROBOCO_AGENT_AUTH_REQUIRED is "
+            "not set to true): the API accepts X-Agent-Id / X-Agent-Role without "
+            "verifying a signed token, so any client that can reach it may act as "
+            "any role, including 'ceo'. Acceptable only on a trusted private "
+            "network. Set ROBOCO_AGENT_AUTH_REQUIRED=true and do NOT expose this "
+            "API to untrusted networks.",
+        )
 
     # Startup: apply Alembic migrations (+ create_all fallback for fresh DBs).
     # init_db runs on every environment now — migrations are idempotent via
