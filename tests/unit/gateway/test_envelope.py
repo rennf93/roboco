@@ -37,6 +37,12 @@ class TestEnvelopeError:
         assert body["error"] == "tracing_gap"
         assert body["missing"] == ["progress>=1", "journal:reflect"]
         assert "note(scope='reflect'" in body["remediate"]
+        # message must NOT be null — it carries the missing tokens + remediate so
+        # the agent and the audit log can see what to do (no more silent flailing).
+        assert body["message"] is not None
+        assert "progress>=1" in body["message"]
+        assert "journal:reflect" in body["message"]
+        assert "note(scope='reflect'" in body["message"]
 
     def test_invalid_state(self) -> None:
         env = Envelope.invalid_state(

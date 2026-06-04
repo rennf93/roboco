@@ -67,6 +67,21 @@ class Envelope:
             context_briefing=context_briefing or {},
         )
 
+    @staticmethod
+    def _missing_message(label: str, missing: list[str], remediate: str) -> str:
+        """Human-readable rejection summary so `message` is never null.
+
+        `tracing_gap`/`incomplete_input` historically left `message` unset, so
+        the agent (and the audit log, which records `message`) saw `null` and
+        could not see what to do — the agent then retried the same verb until it
+        burned out. This folds the missing tokens + the actionable `remediate`
+        into one line carried by `message`, so a client reading only `message`
+        still gets the full picture.
+        """
+        joined = ", ".join(missing) if missing else "(unspecified)"
+        base = f"blocked: {label} missing — {joined}"
+        return f"{base}. {remediate}" if remediate else base
+
     @classmethod
     def tracing_gap(
         cls,
@@ -77,6 +92,7 @@ class Envelope:
     ) -> Envelope:
         return cls(
             error="tracing_gap",
+            message=cls._missing_message("required tracing", missing, remediate),
             missing=missing,
             remediate=remediate,
             context_briefing=context_briefing or {},
@@ -99,6 +115,7 @@ class Envelope:
         """
         return cls(
             error="incomplete_input",
+            message=cls._missing_message("required input fields", missing, remediate),
             missing=missing,
             field_hints=field_hints,
             remediate=remediate,
@@ -181,10 +198,13 @@ class Envelope:
         ctx = briefing or {}
         kind = decision.rejection_kind
         if kind == "tracing_gap":
+            missing = list(decision.missing)
+            remediate = decision.remediate or ""
             return cls(
                 error="tracing_gap",
-                missing=list(decision.missing),
-                remediate=decision.remediate or "",
+                message=cls._missing_message("required tracing", missing, remediate),
+                missing=missing,
+                remediate=remediate,
                 context_briefing=ctx,
             )
         if kind == "self_review":
