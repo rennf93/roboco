@@ -47,6 +47,7 @@ from roboco.config import settings
 from roboco.db.base import close_db, init_db
 from roboco.logging import get_logger, setup_logging
 from roboco.services.extraction import ExtractionPipeline, ExtractionService
+from roboco.services.learning import get_learning_service
 from roboco.services.optimal import close_optimal_service, get_optimal_service
 from roboco.services.transcription import TranscriptionService
 
@@ -107,6 +108,17 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None]:
             error=str(e),
         )
         app.state.optimal = None
+
+    # Wire the learning-propagation singleton to OptimalService. Without this,
+    # record_learning() raises "not initialized" and every task completion logs
+    # "Failed to extract learnings". Skipped when RAG is disabled (no optimal).
+    if app.state.optimal is not None:
+        try:
+            learning_service = await get_learning_service()
+            await learning_service.initialize(app.state.optimal)
+            logger.info("LearningPropagationService initialized")
+        except Exception as e:
+            logger.warning("LearningPropagationService init failed", error=str(e))
 
     logger.info("All services initialized, API ready")
 
