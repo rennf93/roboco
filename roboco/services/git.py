@@ -1876,13 +1876,37 @@ class GitService(BaseService):
         )
         return result.scalar_one_or_none()
 
+    async def _project_for_task(self, task: Any) -> Any | None:
+        """Resolve the Project whose repo a task's branch lives in.
+
+        A normal task carries ``project_id``. A coordination root carries a
+        product (cell->repo map) but no project of its own — its
+        ``feature/main_pm/{root}`` integration branch lives in the product's
+        repo(s). Fall through to the product's first distinct repo (monorepo =>
+        the single repo) so root-level git ops (create_pr root->master, the CEO
+        merge) resolve a workspace. Purely additive: a task WITH project_id
+        resolves exactly as before.
+        """
+        project_service = get_project_service(self.session)
+        if task.project_id is not None:
+            return await project_service.get(UUID(str(task.project_id)))
+        product_id = getattr(task, "product_id", None)
+        if product_id is None:
+            return None
+        from roboco.services.product import get_product_service
+
+        product_service = get_product_service(self.session)
+        project_ids = await product_service.distinct_project_ids(UUID(str(product_id)))
+        if not project_ids:
+            return None
+        return await project_service.get(project_ids[0])
+
     async def _project_slug_for_branch(self, branch_name: str) -> str | None:
         """Resolve project slug via the task that owns the branch."""
         task = await self._task_for_branch(branch_name)
         if task is None:
             return None
-        project_service = get_project_service(self.session)
-        project = await project_service.get(UUID(str(task.project_id)))
+        project = await self._project_for_task(task)
         return project.slug if project else None
 
     @staticmethod
@@ -1920,8 +1944,7 @@ class GitService(BaseService):
         task = await self._task_for_branch(branch_name)
         if task is None:
             raise NotFoundError("Branch", branch_name)
-        project_service = get_project_service(self.session)
-        project = await project_service.get(UUID(str(task.project_id)))
+        project = await self._project_for_task(task)
         if project is None:
             raise NotFoundError("Project", str(task.project_id))
         workspace_agent_id = self._resolve_workspace_agent_id(task, actor_agent_id)

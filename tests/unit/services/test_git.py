@@ -98,6 +98,34 @@ async def test_project_slug_for_branch_none_when_no_task() -> None:
     assert await svc._project_slug_for_branch("missing") is None
 
 
+@pytest.mark.asyncio
+async def test_project_for_task_resolves_coordination_root_via_product() -> None:
+    """A project-less coordination root resolves its repo from the product map."""
+    pid = uuid4()
+    fake_project = MagicMock(slug="roboco")
+    task = MagicMock(project_id=None, product_id=uuid4())
+    svc = _service()
+    product_svc = MagicMock(distinct_project_ids=AsyncMock(return_value=[pid]))
+    with (
+        _patch_project_service(fake_project),
+        patch("roboco.services.product.get_product_service", return_value=product_svc),
+    ):
+        out = await svc._project_for_task(task)
+    assert out is fake_project
+    product_svc.distinct_project_ids.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_project_for_task_uses_project_id_when_present() -> None:
+    """A normal task resolves by project_id exactly as before (additive change)."""
+    fake_project = MagicMock(slug="roboco")
+    task = MagicMock(project_id=uuid4(), product_id=None)
+    svc = _service()
+    with _patch_project_service(fake_project):
+        out = await svc._project_for_task(task)
+    assert out is fake_project
+
+
 # ---------------------------------------------------------------------------
 # diff: derives parent + invokes git diff
 # ---------------------------------------------------------------------------
