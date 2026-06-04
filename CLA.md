@@ -10,12 +10,6 @@ below. By signing this Agreement (see [How to sign](#how-to-sign)), You accept
 and agree to its terms for Your past, present, and future Contributions to the
 Project.
 
-> **Note:** This document is provided as a starting point and has not been
-> reviewed by a lawyer. Before relying on it for a public launch, the
-> Maintainer should have it reviewed by qualified legal counsel — in
-> particular the [Governing law](#9-governing-law) section, which must be set
-> to a chosen jurisdiction.
-
 ## 1. Definitions
 
 - **"You"** (or **"Your"**) means the individual or legal entity that signs
@@ -120,11 +114,6 @@ This Agreement is governed by and construed in accordance with the laws of
 **Italy**, without regard to its conflict-of-law provisions. Any dispute
 arising out of or relating to this Agreement shall be subject to the exclusive
 jurisdiction of the competent courts of Italy.
-
-> Note: before public launch, have counsel confirm the specific venue (foro
-> competente) — typically the court of the Maintainer's place of residence or
-> the future entity's registered office — and whether to name it explicitly
-> here.
 
 ## 10. Entire agreement
 
