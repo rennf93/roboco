@@ -848,6 +848,22 @@ class GitService(BaseService):
         )
         if created.returncode != 0:
             await self._run_git(workspace, ["checkout", branch_name])
+            # The branch already existed on disk. If it carries no commits of
+            # its own — a dependency-blocked task branched before its upstream
+            # merged into the integration branch, then released and re-claimed —
+            # re-point it at the freshly-pulled base so the agent builds on the
+            # current integration tip, not a stale snapshot. Guarded on "no
+            # commits unique to the branch": a branch with real work is left
+            # exactly as-is.
+            unique = await self._run_git(
+                workspace,
+                ["rev-list", "--count", f"{base_branch}..{branch_name}"],
+                check=False,
+            )
+            if unique.returncode == 0 and unique.stdout.strip() == "0":
+                await self._run_git(
+                    workspace, ["reset", "--hard", base_branch], check=False
+                )
         await self._run_git(
             workspace,
             ["push", "-u", "origin", branch_name],

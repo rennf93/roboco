@@ -361,3 +361,7 @@ async def test_claimed_dependency_blocked_task_is_released_to_pending(
         "a claimed dependency-blocked task must be released to pending"
     )
     assert after.assigned_to is None, "release clears the assignee"
+    assert after.branch_name is None, (
+        "release clears branch_name so the re-claim cuts fresh off the current "
+        "integration tip (which by then includes the upstream's work)"
+    )

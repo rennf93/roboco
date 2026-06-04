@@ -445,3 +445,80 @@ async def test_create_branch_idempotent_when_branch_already_exists() -> None:
 
     assert ["checkout", "-b", branch] in calls, "checkout -b attempted"
     assert ["checkout", branch] in calls, "fell back to existing branch on 128"
+
+
+def _create_branch_stubs(svc: GitService) -> None:
+    object.__setattr__(svc, "_resolve_base_branch", AsyncMock(return_value="master"))
+    object.__setattr__(svc, "_project_default_branch", AsyncMock(return_value="master"))
+    object.__setattr__(svc, "_token_for_project", AsyncMock(return_value=None))
+    object.__setattr__(
+        svc, "_checkout_base_with_fallback", AsyncMock(return_value="master")
+    )
+
+
+async def _run_create_branch_with_existing_branch(
+    svc: GitService, branch: str, unique_commits: str
+) -> list[list[str]]:
+    """Drive create_branch where `checkout -b` fails (branch exists) and the
+    branch has `unique_commits` commits of its own. Returns the git argv calls.
+    """
+    calls: list[list[str]] = []
+
+    async def fake_run_git(
+        _workspace: object, args: list[str], **_kw: object
+    ) -> object:
+        calls.append(list(args))
+        if list(args[:2]) == ["checkout", "-b"]:
+            return MagicMock(stdout="", returncode=1)  # branch already exists
+        if list(args[:2]) == ["rev-list", "--count"]:
+            return MagicMock(stdout=f"{unique_commits}\n", returncode=0)
+        return MagicMock(stdout="", returncode=0)
+
+    object.__setattr__(svc, "_run_git", fake_run_git)
+    with (
+        patch("roboco.services.git.build_branch_name", AsyncMock(return_value=branch)),
+        patch(
+            "roboco.services.git.get_task_service",
+            MagicMock(return_value=MagicMock(update=AsyncMock())),
+        ),
+    ):
+        await svc.create_branch(
+            Path("/tmp/ws"),
+            "frontend",
+            GitCreateBranchRequest(
+                project_slug="roboco-panel",
+                task_id=uuid4(),
+                branch_type="feature",
+                agent_id=str(uuid4()),
+                parent_branch=None,
+            ),
+        )
+    return calls
+
+
+@pytest.mark.asyncio
+async def test_create_branch_refreshes_no_work_existing_branch_to_base() -> None:
+    """An existing branch with no commits of its own is re-pointed at the fresh
+    base — a dependency-blocked task re-claimed after its upstream merged must
+    not keep building on the stale snapshot."""
+    svc = _service()
+    _create_branch_stubs(svc)
+    calls = await _run_create_branch_with_existing_branch(
+        svc, "feature/frontend/abc12345--def67890", unique_commits="0"
+    )
+    assert ["reset", "--hard", "master"] in calls, (
+        "a no-work existing branch must be reset onto the fresh base"
+    )
+
+
+@pytest.mark.asyncio
+async def test_create_branch_keeps_existing_branch_that_has_work() -> None:
+    """An existing branch carrying its own commits is NOT reset (work preserved)."""
+    svc = _service()
+    _create_branch_stubs(svc)
+    calls = await _run_create_branch_with_existing_branch(
+        svc, "feature/frontend/abc12345--def67890", unique_commits="3"
+    )
+    assert not any(c[:2] == ["reset", "--hard"] for c in calls), (
+        "a branch with real work must never be reset"
+    )

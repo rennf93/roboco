@@ -2087,10 +2087,22 @@ class TaskService(BaseService):
         upstream completes so it re-dispatches on its own. ``claimed -> blocked``
         is not a legal transition, so pending (held by the dependency filter) is
         the lifecycle-correct resting state. No-op when not in a releasable state.
-        """
-        await self._force_unclaim_to_pending(task_id, reason="dependency-unmet")
 
-    async def _force_unclaim_to_pending(self, task_id: UUID, *, reason: str) -> None:
+        Also forgets ``branch_name`` so the eventual re-claim re-runs branch
+        creation and cuts the branch fresh off the current integration tip —
+        which by then includes the upstream's merged work — instead of reusing a
+        snapshot taken before the dependency landed. A dependency-blocked task
+        has done no work of its own, so nothing is lost; ``create_branch``
+        leaves any branch carrying real commits intact.
+        """
+        if not await self._force_unclaim_to_pending(task_id, reason="dependency-unmet"):
+            return
+        task = await self.get(task_id)
+        if task is not None and task.branch_name:
+            task.branch_name = None
+            await self.session.flush()
+
+    async def _force_unclaim_to_pending(self, task_id: UUID, *, reason: str) -> bool:
         """Force a claimed/in_progress task back to pending (system action).
 
         Shared core of ``unclaim_for_reaper`` and
@@ -2099,17 +2111,18 @@ class TaskService(BaseService):
         transition, clears assignee/heartbeat/claimant, and abandons the active
         WorkSession (best-effort, tagged with ``reason``) so a re-claim doesn't
         trip the uniqueness constraint. Bypasses ownership/role checks — the
-        system itself is performing the transition.
+        system itself is performing the transition. Returns True iff the task
+        was actually released (False when missing or not in a releasable state).
         """
         task = await self.get(task_id)
         if task is None:
-            return
+            return False
         if task.status not in (TaskStatus.CLAIMED, TaskStatus.IN_PROGRESS):
-            return
+            return False
         try:
             self._validate_and_set_status(task, TaskStatus.PENDING, None)
         except TaskLifecycleError:
-            return
+            return False
         if task.work_session_id:
             await self._abandon_work_session_best_effort(
                 task.work_session_id, reason=reason
@@ -2119,6 +2132,7 @@ class TaskService(BaseService):
         task.last_heartbeat_at = None
         task.active_claimant_id = cast("Any", None)
         await self.session.flush()
+        return True
 
     async def _abandon_work_session_best_effort(
         self, session_id: Any, *, reason: str
