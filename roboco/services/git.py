@@ -835,7 +835,17 @@ class GitService(BaseService):
             token=project_token,
             timeout=_network_git_timeout(),
         )
-        await self._run_git(workspace, ["checkout", "-b", branch_name])
+        # Idempotent branch creation: a prior attempt may have created the
+        # branch on disk but failed before the DB recorded branch_name (the
+        # claim rolls back its fields, but the on-disk branch persists). A
+        # plain `checkout -b` then fails "already exists" (exit 128), and the
+        # resulting error-handling cascade is how a retry spirals. Switch to
+        # the existing branch instead.
+        created = await self._run_git(
+            workspace, ["checkout", "-b", branch_name], check=False
+        )
+        if created.returncode != 0:
+            await self._run_git(workspace, ["checkout", branch_name])
         await self._run_git(
             workspace,
             ["push", "-u", "origin", branch_name],

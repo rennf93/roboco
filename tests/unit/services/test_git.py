@@ -299,3 +299,51 @@ async def test_commit_uses_longer_timeout_for_staging_and_commit() -> None:
     assert timeouts_by_subcmd["commit"] == settings.git_commit_timeout_seconds
     # ...while the cheap read-only ops kept the default (None → default budget).
     assert timeouts_by_subcmd["log"] is None
+
+
+@pytest.mark.asyncio
+async def test_create_branch_idempotent_when_branch_already_exists() -> None:
+    # A prior attempt may have created the branch on disk before the DB recorded
+    # branch_name; `checkout -b` then fails 128. create_branch must switch to the
+    # existing branch instead of raising (the raise triggered a retry cascade).
+    from roboco.api.schemas.git import GitCreateBranchRequest
+
+    branch = "feature/backend/abc12345--def67890"
+    svc = _service()
+    object.__setattr__(svc, "_resolve_base_branch", AsyncMock(return_value="master"))
+    object.__setattr__(svc, "_project_default_branch", AsyncMock(return_value="master"))
+    object.__setattr__(svc, "_token_for_project", AsyncMock(return_value=None))
+    object.__setattr__(
+        svc, "_checkout_base_with_fallback", AsyncMock(return_value="master")
+    )
+
+    calls: list[list[str]] = []
+
+    async def fake_run_git(_workspace: object, args: list[str], **_kw: object) -> object:
+        calls.append(list(args))
+        rc = 1 if list(args[:2]) == ["checkout", "-b"] else 0
+        return MagicMock(stdout="", returncode=rc)
+
+    object.__setattr__(svc, "_run_git", fake_run_git)
+
+    with (
+        patch("roboco.services.git.build_branch_name", AsyncMock(return_value=branch)),
+        patch(
+            "roboco.services.git.get_task_service",
+            MagicMock(return_value=MagicMock(update=AsyncMock())),
+        ),
+    ):
+        await svc.create_branch(
+            Path("/tmp/ws"),
+            "backend",
+            GitCreateBranchRequest(
+                project_slug="roboco-api",
+                task_id=uuid4(),
+                branch_type="feature",
+                agent_id=str(uuid4()),
+                parent_branch=None,
+            ),
+        )
+
+    assert ["checkout", "-b", branch] in calls, "checkout -b attempted"
+    assert ["checkout", branch] in calls, "fell back to existing branch on 128"
