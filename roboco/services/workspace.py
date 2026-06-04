@@ -422,11 +422,14 @@ class WorkspaceService:
 
         Called from `ensure_workspace`'s healthy short-circuit so that a
         respawned PM/Doc reads fresh `origin/<branch>` refs instead of
-        whatever the previous spawn left on disk. We deliberately omit a
-        positional refspec — `git fetch origin` (no args after `origin`)
-        updates every branch under `refs/remotes/origin/`, which is what
-        downstream `git diff origin/<branch>` and `git log origin/<branch>`
-        readers want.
+        whatever the previous spawn left on disk. The fetch is SCOPED to the
+        workspace's current branch + the repo's default branch (with
+        `--no-tags --prune`). An all-refs `git fetch origin` transfers every
+        accumulated `feature/*` on a monorepo and blows past the timeout, after
+        which the workspace silently keeps a stale base and the agent builds on
+        it. The refs a workspace's `git diff/log origin/<branch>` readers need
+        are its own branch and the default; the integration branch is refreshed
+        at branch-creation time (`create_branch_for_task`), not here.
 
         No `-c http.extraheader=…` token injection: the orchestrator did
         the original clone with a token but `_configure_git()` already
@@ -442,9 +445,31 @@ class WorkspaceService:
         remote is operationally bad.
         """
 
+        def _git(*args: str) -> subprocess.CompletedProcess[str]:
+            return subprocess.run(
+                ["git", *args],
+                cwd=str(workspace),
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+
+        def _scoped_refs() -> list[str]:
+            """The current branch + the repo's default branch, deduped."""
+            current = _git("rev-parse", "--abbrev-ref", "HEAD").stdout.strip()
+            origin_head = _git(
+                "symbolic-ref", "--short", "refs/remotes/origin/HEAD"
+            ).stdout.strip()
+            default = origin_head.split("/", 1)[1] if "/" in origin_head else "master"
+            refs: list[str] = []
+            for ref in (current, default):
+                if ref and ref != "HEAD" and ref not in refs:
+                    refs.append(ref)
+            return refs or ["master"]
+
         def _do_fetch() -> subprocess.CompletedProcess[str]:
             return subprocess.run(
-                ["git", "fetch", "origin"],
+                ["git", "fetch", "--no-tags", "--prune", "origin", *_scoped_refs()],
                 cwd=str(workspace),
                 capture_output=True,
                 text=True,

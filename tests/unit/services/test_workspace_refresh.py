@@ -106,16 +106,65 @@ async def test_ensure_workspace_fetches_origin_on_healthy_short_circuit(
         f"Expected `git fetch origin` on healthy short-circuit, "
         f"got subprocess calls: {captured}"
     )
-    # Specifically: `git fetch origin` with NO `-c` flag and no extra
-    # positional refspec. The `-c` check protects the docstring's
+    # Specifically: a SCOPED `git fetch --no-tags --prune origin <ref...>` with
+    # NO `-c` flag. The fetch is scoped to the workspace's branches (current +
+    # default) rather than all refs so it can't time out on a monorepo with many
+    # accumulated feature/* branches. The `-c` check protects the docstring's
     # no-token-injection invariant — a future refactor that added
-    # `git -c http.extraheader=...` would still satisfy a loose
-    # `a[-2:] == ["fetch", "origin"]` assertion, silently regressing
-    # the no-PAT-injection guarantee.
+    # `git -c http.extraheader=...` must not slip in unnoticed.
     assert any(
-        a[0] == "git" and "-c" not in a and a[-2:] == ["fetch", "origin"]
+        a[0] == "git"
+        and "-c" not in a
+        and "fetch" in a
+        and "--no-tags" in a
+        and "--prune" in a
+        and "origin" in a
+        and a.index("origin") < len(a) - 1  # ≥1 ref after origin → scoped
         for a in fetch_calls
-    ), f"Expected exact `git fetch origin` (no `-c`), got: {fetch_calls}"
+    ), f"Expected scoped `git fetch --no-tags --prune origin <ref>`, got: {fetch_calls}"
+
+
+@pytest.mark.asyncio
+async def test_refresh_fetch_is_scoped_to_current_and_default_branch(
+    healthy_workspace: Path,
+) -> None:
+    """The refresh fetch targets only the current branch + default, not all refs.
+
+    An all-refs fetch times out on a monorepo with many accumulated feature/*
+    branches, leaving the workspace silently stale.
+    """
+    svc = _service()
+    agent = _fake_agent()
+    _bind(svc, "_lookup_agent_or_raise", AsyncMock(return_value=agent))
+    _bind(svc, "get_workspace_path", MagicMock(return_value=healthy_workspace))
+
+    captured: list[list[str]] = []
+
+    def _fake_run(
+        args: list[str], **_kwargs: object
+    ) -> subprocess.CompletedProcess[str]:
+        captured.append(args)
+        out = ""
+        if "rev-parse" in args:
+            out = "feature/frontend/abc12345"
+        elif "symbolic-ref" in args:
+            out = "origin/master"
+        return subprocess.CompletedProcess(
+            args=args, returncode=0, stdout=out, stderr=""
+        )
+
+    with (
+        patch("roboco.services.workspace.subprocess.run", side_effect=_fake_run),
+        patch("roboco.services.workspace._ensure_agent_owned"),
+    ):
+        await svc.ensure_workspace(project_slug="roboco", agent_id=agent.id)
+
+    fetch = next(a for a in captured if a[0] == "git" and "fetch" in a)
+    after_origin = fetch[fetch.index("origin") + 1 :]
+    assert "feature/frontend/abc12345" in after_origin, (
+        f"current branch must be fetched, got: {fetch}"
+    )
+    assert "master" in after_origin, f"default branch must be fetched, got: {fetch}"
 
 
 @pytest.mark.asyncio
