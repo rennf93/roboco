@@ -41,6 +41,7 @@ from roboco.models.base import (
     ModelProvider,
     NotificationPriority,
     NotificationType,
+    PromptSessionStatus,
     SessionStatus,
     TaskNature,
     TaskStatus,
@@ -1806,4 +1807,85 @@ class GatewayTriggerTable(Base):
         Index("ix_gateway_triggers_task_id", "task_id"),
         Index("ix_gateway_triggers_created_at", "created_at"),
         Index("ix_gateway_triggers_kind_decision", "trigger_kind", "decision"),
+    )
+
+
+# =============================================================================
+# PROMPT SESSION TABLES
+# =============================================================================
+
+
+class PromptSessionTable(Base):
+    """Persisted LLM prompt session — container for a series of prompt turns."""
+
+    __tablename__ = "prompt_sessions"
+
+    id: Mapped[PyUUID] = mapped_column(
+        UUID(as_uuid=True), primary_key=True, default=uuid4
+    )
+    created_by: Mapped[PyUUID | None] = mapped_column(
+        UUID(as_uuid=True), nullable=True
+    )
+    status: Mapped[str] = mapped_column(
+        _str_enum(PromptSessionStatus),
+        nullable=False,
+        default=PromptSessionStatus.DRAFT,
+    )
+    system_prompt: Mapped[str | None] = mapped_column(Text, nullable=True)
+    model: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        default=lambda: datetime.now(UTC),
+        nullable=False,
+    )
+    updated_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True),
+        onupdate=lambda: datetime.now(UTC),
+        nullable=True,
+    )
+
+    turns: Mapped[list["PromptTurnTable"]] = relationship(
+        "PromptTurnTable",
+        back_populates="session",
+        cascade="all, delete-orphan",
+        order_by="PromptTurnTable.turn_index",
+    )
+
+    __table_args__ = (
+        Index("ix_prompt_sessions_created_by", "created_by"),
+        Index("ix_prompt_sessions_status", "status"),
+        Index("ix_prompt_sessions_created_at", "created_at"),
+    )
+
+
+class PromptTurnTable(Base):
+    """A single turn (message exchange) within a PromptSession."""
+
+    __tablename__ = "prompt_turns"
+
+    id: Mapped[PyUUID] = mapped_column(
+        UUID(as_uuid=True), primary_key=True, default=uuid4
+    )
+    session_id: Mapped[PyUUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("prompt_sessions.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    role: Mapped[str] = mapped_column(String(20), nullable=False)
+    content: Mapped[str] = mapped_column(Text, nullable=False)
+    turn_index: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        default=lambda: datetime.now(UTC),
+        nullable=False,
+    )
+
+    session: Mapped["PromptSessionTable"] = relationship(
+        "PromptSessionTable",
+        back_populates="turns",
+    )
+
+    __table_args__ = (
+        Index("ix_prompt_turns_session_id", "session_id"),
+        Index("ix_prompt_turns_session_index", "session_id", "turn_index"),
     )
