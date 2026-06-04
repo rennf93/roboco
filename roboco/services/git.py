@@ -2039,8 +2039,9 @@ class GitService(BaseService):
         task = await self._task_for_branch(branch_name)
         if task is None:
             raise NotFoundError("Branch", branch_name)
-        project_service = get_project_service(self.session)
-        project = await project_service.get(UUID(str(task.project_id)))
+        # Resolve via _project_for_task so a coordination root (project_id null)
+        # opening its root->master PR resolves the repo from its product.
+        project = await self._project_for_task(task)
         if project is None:
             raise NotFoundError("Project", str(task.project_id))
 
