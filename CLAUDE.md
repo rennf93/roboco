@@ -2,20 +2,6 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
-## IGNORING THESE WILL FORCE A COMPLETE SHUTDOWN OF CLAUDE CODE
-
-**A GOOD FUNCTION NAME IS SELF-EXPLANATORY. IF THE FUNCTION ONLY TAKES CARE OF A SINGLE THINGS, THEN EVEN BETTER BECAUSE THE NAME IS GOING TO BE THE ONLY DOCUMENTATION YOU NEED.**
-**DOING THINGS WRONGLY COST TWICE. DO THINGS RIGHT AT FIRST, AND YOU DON'T PAY THE PRICE**
-**ASK QUESTIONS BEFORE YOU DO ANYTHING**
-**YOU ARE NOT ALLOWED TO MAKE ASSUMPTIONS**
-**IGNORING != FIXING**
-**`# noqa` & `# type: ignore` != FIXING**
-**PRE-EXISTING ERRORS ARE STILL EXISTING ERRORS. I DON'T CARE IF THEY ARE PRE-EXISTING, THEY SHOULDN'T EXIST**
-**`uv run mypy ... --ignore-missing-imports` | ANY IGNORING AT ALL != GOOD PRACTICES**
-**`http://192.168.50.111:8000/docs` IS THE API DOCS**
-** You need `X-Agent-Id` and `X-Agent-Role` headers to be set as 'ceo' for all API calls **
-**`ssh renzof@renzof-nas.local` SSH TO THE SERVER**
-
 ## Licensing
 
 RoboCo is licensed under **AGPL-3.0** (see `LICENSE`). Copyright (c) 2026
