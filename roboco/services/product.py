@@ -100,6 +100,25 @@ class ProductService(BaseService):
         )
         return result.scalar_one_or_none()
 
+    async def distinct_project_ids(self, product_id: UUID) -> list[UUID]:
+        """Distinct repos a product spans — one Main-PM integration branch each.
+
+        The product's cell->project map may point several teams at the same
+        Project (the monorepo case) or at different ones (multi-repo). The
+        Main-PM root cuts one ``feature/main_pm/{root}`` integration branch per
+        DISTINCT project, so cells in that repo branch off it instead of master.
+        Ordered by the first team that references each project for determinism.
+        """
+        result = await self.session.execute(
+            select(ProductProjectTable.project_id)
+            .where(ProductProjectTable.product_id == product_id)
+            .order_by(ProductProjectTable.team)
+        )
+        seen: dict[UUID, None] = {}
+        for project_id in result.scalars().all():
+            seen.setdefault(project_id, None)
+        return list(seen)
+
     async def _replace_cells(
         self, product: ProductTable, cells: list[ProductCellMapping]
     ) -> None:
