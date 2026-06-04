@@ -523,6 +523,40 @@ async def test_unblock_with_restore_calls_legacy_unblock_when_restore_false() ->
     unblock_mock.assert_awaited_once()
 
 
+@pytest.mark.asyncio
+async def test_unblock_no_branch_returns_to_pending() -> None:
+    # A task blocked before it was ever claimed (a dependency-gated claim that
+    # got escalated) has no branch — unblock must return it to pending, not a
+    # branchless in_progress the dispatcher refuses to spawn (spawn-loop).
+    raiser = uuid4()
+    task = _build_task(
+        status=TaskStatus.BLOCKED, branch_name=None, blocker_raised_by=raiser
+    )
+    svc = TaskService(MagicMock(flush=AsyncMock()))
+    _bind(svc, "get", AsyncMock(return_value=task))
+    _bind(svc, "_index_lifecycle_event_background", AsyncMock())
+    out = await svc.unblock(task.id)
+    assert out is task
+    assert task.status == TaskStatus.PENDING
+    assert task.assigned_to == raiser
+
+
+@pytest.mark.asyncio
+async def test_unblock_with_branch_resumes_in_progress() -> None:
+    # A task claimed (has a branch) before it blocked resumes in_progress.
+    task = _build_task(
+        status=TaskStatus.BLOCKED,
+        branch_name="feature/backend/abc12345",
+        blocker_raised_by=uuid4(),
+    )
+    svc = TaskService(MagicMock(flush=AsyncMock()))
+    _bind(svc, "get", AsyncMock(return_value=task))
+    _bind(svc, "_index_lifecycle_event_background", AsyncMock())
+    out = await svc.unblock(task.id)
+    assert out is task
+    assert task.status == TaskStatus.IN_PROGRESS
+
+
 # ---------------------------------------------------------------------------
 # cell_pm_complete
 # ---------------------------------------------------------------------------

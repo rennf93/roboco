@@ -244,6 +244,10 @@ _STATUS_TRANSITIONS: tuple[StatusTransition, ...] = (
     StatusTransition(Status.IN_PROGRESS, Status.BLOCKED, "block", None),
     StatusTransition(Status.IN_PROGRESS, Status.PAUSED, "pause", None),
     StatusTransition(Status.BLOCKED, Status.IN_PROGRESS, "unblock", None),
+    # A task blocked before it was ever claimed (a dependency-gated claim that
+    # got escalated) has no branch — unblocking it returns it to the claim pool
+    # rather than a branchless in_progress the dispatcher refuses to spawn.
+    StatusTransition(Status.BLOCKED, Status.PENDING, "unblock", None),
     StatusTransition(Status.PAUSED, Status.IN_PROGRESS, "resume", None),
     # Dev verify + submit
     StatusTransition(Status.IN_PROGRESS, Status.VERIFYING, "submit_verification", None),

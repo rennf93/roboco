@@ -2349,7 +2349,14 @@ class TaskService(BaseService):
             task.blocker_raised_by = None
         # Clear resolver metadata — only meaningful while BLOCKED.
         task.blocker_resolver_type = None
-        self._validate_and_set_status(task, TaskStatus.IN_PROGRESS, agent_role)
+        # A task with a branch was claimed before it blocked, so resume it
+        # in_progress. A task with NO branch was blocked before it was ever
+        # claimed (e.g. a dependency-gated claim that got escalated); it cannot
+        # resume in_progress (the dispatcher refuses a branchless in_progress
+        # task and loops), so return it to pending to be freshly claimed — the
+        # claim gate then holds it cleanly if its dependency is still unmet.
+        target = TaskStatus.IN_PROGRESS if task.branch_name else TaskStatus.PENDING
+        self._validate_and_set_status(task, target, agent_role)
         await self.session.flush()
 
         self.log.info(
