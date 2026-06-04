@@ -3990,12 +3990,35 @@ Start now: evidence(task_id="{task_id}")
             await self._reap_with_service(svc)
             await db.commit()
 
+    def _assignee_has_active_instance(self, task: Any) -> bool:
+        """True if the task's assignee currently holds a live (ACTIVE) container.
+
+        The heartbeat only approximates liveness. A developer deep in an
+        edit/test cycle can go longer than the heartbeat TTL between gateway
+        calls, so a heartbeat-only reaper releases claims out from under agents
+        that are alive and working — churning the task (and risking a double
+        spawn against the still-running container). The agent-instance registry
+        is the ground truth; defer to it when present. Defensive on missing
+        fields so a heartbeat-only caller (and the reaper's own unit tests)
+        behave exactly as before.
+        """
+        owner = getattr(task, "assigned_to", None) or getattr(task, "claimed_by", None)
+        if not owner:
+            return False
+        instances = getattr(self, "_instances", None)
+        if not instances:
+            return False
+        instance = instances.get(self._resolve_agent_slug(str(owner)))
+        return instance is not None and instance.state == AgentState.ACTIVE
+
     async def _reap_with_service(self, svc: "TaskService") -> None:
         """Inner reap loop, parameterized by the TaskService to use.
 
         Wraps each ``unclaim_for_reaper`` in try/except so a single bad row
         doesn't abort the dispatch tick — the reaper must keep ticking even
-        if one task's release somehow fails.
+        if one task's release somehow fails. A claim whose assignee still has
+        a live container is skipped: the heartbeat is a stale proxy there, and
+        reaping a working agent only churns the task.
         """
         from roboco.utils.converters import require_uuid
 
@@ -4004,6 +4027,8 @@ Start now: evidence(task_id="{task_id}")
         for t in candidates:
             ts = t.last_heartbeat_at
             if ts is None or ts < cutoff:
+                if self._assignee_has_active_instance(t):
+                    continue
                 task_id = require_uuid(t.id)
                 try:
                     await svc.unclaim_for_reaper(task_id)

@@ -18,7 +18,9 @@ from unittest.mock import AsyncMock
 from uuid import uuid4
 
 import pytest
-from roboco.runtime.orchestrator import AgentOrchestrator
+from roboco.models.runtime import AgentInstance
+from roboco.runtime.orchestrator import AgentOrchestrator, AgentState
+from roboco.seeds.initial_data import AGENT_UUIDS
 
 
 @pytest.mark.asyncio
@@ -90,3 +92,51 @@ async def test_reap_stale_claims_swallows_unclaim_errors() -> None:
     # Both stale tasks attempted; second succeeded despite first raising.
     expected_attempts = 2
     assert svc.unclaim_for_reaper.await_count == expected_attempts
+
+
+@pytest.mark.asyncio
+async def test_reap_spares_claims_whose_assignee_container_is_alive() -> None:
+    """A stale-heartbeat task is NOT reaped while its assignee container lives.
+
+    A developer deep in a long edit/test cycle outruns the heartbeat TTL; the
+    running container is the ground truth, so the claim survives rather than
+    being churned out from under live work. A peer task whose assignee has no
+    live instance is still reaped.
+    """
+    now = datetime.now(UTC)
+    live_id = uuid4()
+    dead_id = uuid4()
+    live_task = type(
+        "T",
+        (),
+        {
+            "id": live_id,
+            "last_heartbeat_at": now - timedelta(seconds=600),
+            "assigned_to": AGENT_UUIDS["be-dev-1"],
+            "claimed_by": None,
+        },
+    )()
+    dead_task = type(
+        "T",
+        (),
+        {
+            "id": dead_id,
+            "last_heartbeat_at": now - timedelta(seconds=600),
+            "assigned_to": AGENT_UUIDS["be-dev-2"],
+            "claimed_by": None,
+        },
+    )()
+
+    orch = AgentOrchestrator.__new__(AgentOrchestrator)
+    orch._claim_heartbeat_ttl = 300
+    orch._instances = {
+        "be-dev-1": AgentInstance(agent_id="be-dev-1", state=AgentState.ACTIVE)
+    }
+    svc = AsyncMock()
+    svc.list_in_progress_or_claimed.return_value = [live_task, dead_task]
+    svc.unclaim_for_reaper = AsyncMock()
+
+    await orch._reap_with_service(svc)
+
+    # The live-assignee task is spared; only the dead one is reaped.
+    svc.unclaim_for_reaper.assert_awaited_once_with(dead_id)
