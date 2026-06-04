@@ -9,6 +9,7 @@ import {
   ListTodo,
   Kanban,
   MessageSquare,
+  MessageSquarePlus,
   Bell,
   Activity,
   ChevronLeft,
@@ -29,6 +30,9 @@ import { useUIStore } from "@/store";
 const navItems = [
   // Dashboard
   { title: "Overview", href: "/overview", icon: LayoutDashboard },
+
+  // AI Prompter (second position — speech-bubble icon)
+  { title: "Prompter", href: "/prompter", icon: MessageSquarePlus },
 
   // Work Management
   { title: "Tasks", href: "/tasks", icon: ListTodo },
