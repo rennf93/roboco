@@ -24,7 +24,6 @@ from roboco.services.gateway.choreographer._verb_runner import VerbRunner
 from roboco.services.gateway.claim_guards import (
     already_active_guard,
     paused_tasks_guard,
-    sibling_sequence_guard,
     unmet_dependency_guard,
 )
 from roboco.services.gateway.envelope import Envelope
@@ -704,7 +703,6 @@ class Choreographer:
         *,
         agent_id: UUID,
         task: Any,
-        skip_sequence: bool = False,
     ) -> Envelope | None:
         """Run concurrency-invariant claim guards. Returns rejection or None.
 
@@ -714,11 +712,7 @@ class Choreographer:
         in the verb's spec gate; the former role-typed and
         pm_cannot_execute_code guards have been deleted (Task 27, 2026-05-10).
 
-        Pre-gateway location: _helpers.py:124-204 + claim.py:121-180.
-
-        ``skip_sequence`` lets resumption-of-already-claimed-task call sites
-        skip the sibling-sequence check (the sequence was already validated
-        on the original claim).
+        Pre-gateway location: _helpers.py:124-204.
         """
         in_progress = await self.task.list_in_progress_for_agent(agent_id)
         if guard := already_active_guard(in_progress, task.id):
@@ -737,24 +731,7 @@ class Choreographer:
                 # task is currently claimed/in_progress.
                 await self.task.release_dependency_blocked_claim(task.id)
                 return guard
-        if not skip_sequence:
-            siblings = await self._fetch_siblings(task)
-            if guard := sibling_sequence_guard(task, siblings):
-                return guard
         return None
-
-    async def _fetch_siblings(self, task: Any) -> list[Any]:
-        """Fetch sibling tasks for the sequence-order guard.
-
-        Returns ``[]`` when the task has no parent (root task) so the
-        guard short-circuits. Otherwise returns the parent's subtasks via
-        ``TaskService.get_subtasks``.
-        """
-        parent_id = getattr(task, "parent_task_id", None)
-        if parent_id is None:
-            return []
-        siblings: list[Any] = await self.task.get_subtasks(parent_id)
-        return siblings
 
     async def _non_terminal_subtask_ids(self, parent_task_id: UUID) -> str:
         """Return a human-readable comma-separated list of non-terminal subtasks.
@@ -839,13 +816,11 @@ class Choreographer:
                 task_id=task_id,
                 verb=verb_name,
             )
-        # Concurrency guards still apply (paused / already-active in another
-        # task). Sibling sequence is skipped on resumption — see
-        # _run_claim_guards docstring.
+        # Concurrency guards still apply on resumption (paused / already-active
+        # in another task).
         if guard := await self._run_claim_guards(
             agent_id=agent_id,
             task=t,
-            skip_sequence=True,
         ):
             return await self._emit_rejection(
                 self._with_briefing(guard, briefing).with_introspection(
@@ -905,7 +880,7 @@ class Choreographer:
         """Run all gates for an ``i_will_work_on`` / ``i_will_plan`` call.
 
         Order: spec.can_invoke_intent -> behavioral claim guards
-        (already_active / paused / sibling_sequence). Any rejection
+        (already_active / paused / unmet_dependency). Any rejection
         short-circuits with the appropriate envelope.
 
         Per-role claim authority (CLAIM_RULES) is enforced inside
@@ -927,7 +902,7 @@ class Choreographer:
         # Behavioral pre-flight guards the spec doesn't yet model:
         # - already_active: agent has another in_progress task elsewhere
         # - paused_tasks: agent has a paused task they should resume first
-        # - sibling_sequence: an earlier-numbered sibling is still open
+        # - unmet_dependency: an upstream dependency is still non-terminal
         # The role/state/task_type checks already passed via the spec gate
         # above. These migrate into spec.extra_preconditions in a later
         # task; until then, keep them imperative so concurrency invariants

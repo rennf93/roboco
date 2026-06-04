@@ -72,7 +72,6 @@ class ChoreographerHelpers:
         *,
         agent_id: UUID,
         task: Any,
-        skip_sequence: bool = False,
     ) -> Envelope | None:
         raise NotImplementedError
 

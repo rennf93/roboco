@@ -1,15 +1,13 @@
 """Gate Set A: claim-time guards restored from pre-gateway _helpers.py:124-204.
 
 Predicates ported into Choreographer claim verbs:
-- SEQUENCE_ORDER_VIOLATION   (earlier sibling must be terminal)
 - ALREADY_ACTIVE              (no claim while in_progress task is open)
 - PAUSED_TASKS_EXIST          (no claim while paused tasks exist)
 - PM_CANNOT_EXECUTE_CODE      (cell_pm/main_pm cannot claim task_type=code)
 - ROLE_TYPED_CLAIM            (developer/qa/documenter cannot cross-claim)
 
 These mirror pre-gateway gates at commit 0c3d15a, file
-roboco/mcp/tasks/handlers/_helpers.py lines 124-204 plus
-roboco/mcp/tasks/handlers/claim.py:121-180 for the sibling sequence check.
+roboco/mcp/tasks/handlers/_helpers.py lines 124-204.
 """
 
 from __future__ import annotations
@@ -31,21 +29,6 @@ _STEPS = [
             "edit the target file, add tests, run them, and stage the "
             "change for commit on the task branch"
         ),
-    }
-]
-# Full parity: a fresh dev claim authors the same rich plan a PM does.
-# These satisfy _dev_plan_gate (plan/approach >= 150 chars,
-# technical_considerations, risks).
-_GOOD_PLAN = (
-    "Append the timestamp HTML comment to the very bottom of README.md without "
-    "touching any other line, then commit it on the task branch and open a PR. "
-    "Verify the diff is a single-line addition before submitting for QA."
-)
-_GOOD_TC = ["Use a trailing newline so the comment sits on its own line."]
-_GOOD_RISKS = [
-    {
-        "risk": "An accidental reformat of README.md balloons the diff.",
-        "mitigation": "Append only; assert the diff touches one line pre-commit.",
     }
 ]
 
@@ -120,138 +103,6 @@ def _task_svc_with(
     task_svc.list_paused_for_agent.return_value = lookups.get("paused", [])
     task_svc.get_subtasks.return_value = lookups.get("siblings", [])
     return task_svc
-
-
-# ---------------------------------------------------------------------------
-# A.1 SEQUENCE_ORDER_VIOLATION
-# ---------------------------------------------------------------------------
-
-
-@pytest.mark.asyncio
-async def test_i_will_work_on_blocks_when_earlier_sibling_open() -> None:
-    """Sequence=2 cannot be claimed while sequence=1 sibling is still open."""
-    agent_id = uuid4()
-    parent_id = uuid4()
-    target_id = uuid4()
-    earlier_id = uuid4()
-    target = MagicMock(
-        id=target_id,
-        status="pending",
-        plan=None,
-        assigned_to=None,
-        parent_task_id=parent_id,
-        sequence=2,
-        task_type="code",
-        team="backend",
-    )
-    earlier = MagicMock(
-        id=earlier_id,
-        status="in_progress",
-        sequence=1,
-        title="Earlier sibling",
-    )
-    later = MagicMock(
-        id=target_id,
-        status="pending",
-        sequence=2,
-    )
-    task_svc = _task_svc_with(target, lookups={"siblings": [earlier, later]})
-    deps = _make_deps(task=task_svc)
-    c = Choreographer(deps)
-
-    env = await c.i_will_work_on(agent_id, target_id, plan="x", steps=_STEPS)
-    body = env.as_dict()
-    assert body["error"] == "invalid_state"
-    assert "sequence" in body["message"].lower()
-    assert str(earlier_id) in body["remediate"]
-    task_svc.claim.assert_not_awaited()
-
-
-@pytest.mark.asyncio
-async def test_i_will_work_on_allows_when_earlier_sibling_terminal() -> None:
-    """Earlier siblings completed/cancelled do not block."""
-    agent_id = uuid4()
-    parent_id = uuid4()
-    target_id = uuid4()
-    target = MagicMock(
-        id=target_id,
-        status="pending",
-        plan={"x": 1},
-        assigned_to=None,
-        parent_task_id=parent_id,
-        sequence=2,
-        task_type="code",
-        team="backend",
-    )
-    earlier_done = MagicMock(id=uuid4(), status="completed", sequence=1)
-    earlier_cancelled = MagicMock(id=uuid4(), status="cancelled", sequence=0)
-    self_row = MagicMock(id=target_id, status="pending", sequence=2)
-    task_svc = _task_svc_with(
-        target,
-        agent_id=agent_id,
-        lookups={"siblings": [earlier_done, earlier_cancelled, self_row]},
-    )
-    task_svc.claim.return_value = MagicMock(
-        id=target_id,
-        status="claimed",
-        plan={"x": 1},
-        assigned_to=agent_id,
-        task_type="code",
-    )
-    task_svc.start.return_value = MagicMock(
-        id=target_id, status="in_progress", plan={"x": 1}, assigned_to=agent_id
-    )
-    deps = _make_deps(task=task_svc)
-    c = Choreographer(deps)
-
-    env = await c.i_will_work_on(
-        agent_id,
-        target_id,
-        plan=_GOOD_PLAN,
-        steps=_STEPS,
-        technical_considerations=_GOOD_TC,
-        risks=_GOOD_RISKS,
-    )
-    assert env.error is None
-    task_svc.claim.assert_awaited_once_with(target_id, agent_id)
-
-
-@pytest.mark.asyncio
-async def test_root_task_no_sequence_check() -> None:
-    """Root tasks (no parent) skip the sequence check entirely."""
-    agent_id = uuid4()
-    target_id = uuid4()
-    target = MagicMock(
-        id=target_id,
-        status="pending",
-        plan={"x": 1},
-        assigned_to=None,
-        parent_task_id=None,
-        sequence=5,
-        task_type="code",
-        team="backend",
-    )
-    task_svc = _task_svc_with(target, agent_id=agent_id)
-    task_svc.claim.return_value = MagicMock(
-        id=target_id, status="claimed", plan={"x": 1}, assigned_to=agent_id
-    )
-    task_svc.start.return_value = MagicMock(
-        id=target_id, status="in_progress", plan={"x": 1}, assigned_to=agent_id
-    )
-    deps = _make_deps(task=task_svc)
-    c = Choreographer(deps)
-
-    env = await c.i_will_work_on(
-        agent_id,
-        target_id,
-        plan=_GOOD_PLAN,
-        steps=_STEPS,
-        technical_considerations=_GOOD_TC,
-        risks=_GOOD_RISKS,
-    )
-    assert env.error is None
-    # Sequence check should not have queried siblings on a root task
-    task_svc.get_subtasks.assert_not_awaited()
 
 
 # ---------------------------------------------------------------------------

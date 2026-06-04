@@ -1231,8 +1231,8 @@ async def test_claim_review_matches_spec(role: str, status: str) -> None:
     The verb body owns dispatch via ``task.qa_claim`` (not the runner's
     claim+start chain) because the runtime semantic is "QA inspects,
     status stays at awaiting_qa" — see qa.py module docstring. The
-    behavioral claim guards (already_active / paused / sibling_sequence
-    skipped) run after the spec gate; they're not modelled by the spec.
+    behavioral claim guards (already_active / paused / unmet_dependency)
+    run after the spec gate; they're not modelled by the spec.
     """
     agent_id = uuid4()
     task_id = uuid4()

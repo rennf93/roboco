@@ -178,7 +178,6 @@ class DocMixin(_Base):
         guard = await self._run_claim_guards(
             agent_id=doc_agent_id,
             task=t,
-            skip_sequence=True,
         )
         if guard:
             guard.with_introspection(task=t, role=role_str)
