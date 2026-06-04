@@ -1840,12 +1840,21 @@ class GitService(BaseService):
             raise NotFoundError(resource_type="Task", resource_id=str(data.task_id))
         self._assert_merge_role(self._status_value(task), agent_role)
 
-        workspace = await self.get_workspace(data.project_slug, agent_id)
+        # A coordination root has no project of its own, so the CEO's merge
+        # request can't carry a project_slug. Resolve the root's repo from its
+        # product server-side; non-root tasks keep the client-provided slug.
+        project_slug = data.project_slug
+        if task.project_id is None:
+            root_project = await self._project_for_task(task)
+            if root_project is not None:
+                project_slug = root_project.slug
+
+        workspace = await self.get_workspace(project_slug, agent_id)
         target_branch, merge_commit = await self.merge_pull_request(
             workspace=workspace,
             pr_number=data.pr_number,
             merge_method=data.merge_method,
-            project_slug=data.project_slug,
+            project_slug=project_slug,
         )
 
         if task.work_session_id:
