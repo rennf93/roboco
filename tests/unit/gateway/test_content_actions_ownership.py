@@ -472,3 +472,41 @@ async def test_evidence_unassigned_task_allows_inspection() -> None:
 
     env = await ca.evidence(agent_id=agent_id, task_id=task_id)
     assert env.error is None
+
+
+@pytest.mark.asyncio
+async def test_evidence_allows_dependency_inspection() -> None:
+    """A caller whose own assigned task depends on the target may read it.
+
+    A frontend cell waiting on a UX design task must be able to inspect the
+    dependency it is blocked on, even though another agent owns it.
+    """
+    agent_id = uuid4()
+    other_id = uuid4()
+    dep_task_id = uuid4()
+    target = MagicMock(
+        id=dep_task_id,
+        status="in_progress",
+        assigned_to=other_id,
+        branch_name="feature/ux_ui/abc",
+        work_session_id=uuid4(),
+        commits=[],
+        pr_number=None,
+        pr_url="",
+        dev_notes="",
+        acceptance_criteria_status=[],
+    )
+    callers_task = MagicMock(id=uuid4(), dependency_ids=[dep_task_id])
+    task_svc = AsyncMock()
+    task_svc.get.return_value = target
+    task_svc.list_assigned_for_agent.return_value = [callers_task]
+    git_svc = AsyncMock()
+    git_svc.diff.return_value = ""
+    git_svc.list_changed_files.return_value = []
+    workspace_svc = AsyncMock()
+    deps = _make_deps(task=task_svc, git=git_svc, workspace=workspace_svc)
+    ca = ContentActions(deps)
+
+    env = await ca.evidence(agent_id=agent_id, task_id=dep_task_id)
+    assert env.error is None
+    task_svc.list_assigned_for_agent.assert_awaited()
