@@ -26,6 +26,7 @@ import re
 import shutil
 import subprocess
 import time
+from collections.abc import Iterator
 from pathlib import Path
 from typing import Any, cast
 from uuid import UUID
@@ -105,6 +106,29 @@ def _make_owner_and_group_rw(entry: str) -> None:
         pass
 
 
+def _own_and_grant_rw(entry: str) -> int:
+    """Chown + grant owner/group rw on one entry; return 1 if the chown failed."""
+    failed = 0 if _chown_entry(entry) else 1
+    _make_owner_and_group_rw(entry)
+    return failed
+
+
+def _iter_ownable_entries(workspace: Path) -> Iterator[str]:
+    """Yield the workspace root then every entry, pruning the heavy trees.
+
+    os.walk yields a directory's *contents*, not the directory entry itself, so
+    the root is yielded explicitly — the agent must be able to create new
+    top-level files in it. ``_PRUNE_DIRS`` are dropped in place so os.walk never
+    descends into them: that is the speed the old ``.git``-only walk bought,
+    without giving up working-tree writability.
+    """
+    yield str(workspace)
+    for root, dirs, files in os.walk(workspace):
+        dirs[:] = [d for d in dirs if d not in _PRUNE_DIRS]
+        for name in (*dirs, *files):
+            yield str(Path(root) / name)
+
+
 def _ensure_agent_owned(workspace: Path) -> None:
     """Chown + group-write the agent's workspace so uid 1000 can read AND write.
 
@@ -121,7 +145,7 @@ def _ensure_agent_owned(workspace: Path) -> None:
     was fast but left the working tree root-owned — agents couldn't write any
     file. If the workspace doesn't exist yet, we no-op.
 
-    Two cheap, idempotent defenses per entry:
+    Two cheap, idempotent defenses per entry (see ``_own_and_grant_rw``):
     1. chown to (AGENT_UID, AGENT_GID). If the chown is rejected (rootless /
        userns hosts) we log the failure instead of swallowing it, so a
        still-failing agent write is diagnosable rather than silent.
@@ -130,26 +154,9 @@ def _ensure_agent_owned(workspace: Path) -> None:
     if not workspace.exists():
         return
 
-    failed_chowns = 0
-    # os.walk yields a directory's *contents*, not the directory entry itself,
-    # so chown the workspace root explicitly — the agent must be able to create
-    # new top-level files in it.
-    if not _chown_entry(str(workspace)):
-        failed_chowns += 1
-    _make_owner_and_group_rw(str(workspace))
-
-    for root, dirs, files in os.walk(workspace):
-        # Prune in place so os.walk never descends into the heavy dirs — this
-        # is the speed the .git-only walk bought, without giving up
-        # working-tree writability.
-        dirs[:] = [d for d in dirs if d not in _PRUNE_DIRS]
-        for entry in (
-            *[str(Path(root) / d) for d in dirs],
-            *[str(Path(root) / f) for f in files],
-        ):
-            if not _chown_entry(entry):
-                failed_chowns += 1
-            _make_owner_and_group_rw(entry)
+    failed_chowns = sum(
+        _own_and_grant_rw(entry) for entry in _iter_ownable_entries(workspace)
+    )
 
     if failed_chowns:
         logger.warning(
