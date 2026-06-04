@@ -703,6 +703,17 @@ class ContentActions:
             context_briefing={},
         )
 
+    async def _is_caller_dependency(self, agent_id: UUID, task: Any) -> bool:
+        """True when ``task`` is a dependency of a task the caller is assigned to.
+
+        A dependent agent (e.g. a frontend cell waiting on a UX design task)
+        must be able to inspect what it is blocked on; read-only evidence is the
+        right tool, and the strict cross-agent ownership gate would otherwise
+        reject it.
+        """
+        assigned = await self.task.list_assigned_for_agent(agent_id)
+        return any(task.id in (a.dependency_ids or []) for a in assigned)
+
     async def evidence(
         self,
         *,
@@ -711,28 +722,28 @@ class ContentActions:
     ) -> Envelope:
         """Inspect a task's PR diff, commits, files.
 
-        Fetches dev branch into the agent's workspace before diffing.
-        Allows inspection when caller is assignee OR task is unassigned
-        (post-handoff transient state) — strict ownership only blocks
-        cross-agent inspection of an actively-owned task.
+        Fetches the dev branch into the agent's workspace before diffing.
+        Allows inspection when the caller is the assignee, the task is
+        unassigned, the caller co-reviews a shared board task, or the task is a
+        dependency the caller is waiting on — strict ownership only blocks
+        snooping an unrelated, actively-owned task.
 
-        Task #154: ``files_changed`` and ``pr_diff_summary`` are pulled
-        from git (against the branch's parent) — the authoritative source.
-        Earlier versions hard-coded ``files_changed=[]`` and used
-        ``HEAD~1`` for the diff base, so QA / reviewers saw an empty
-        change list and only the latest commit's delta even when the PR
-        on GitHub had a multi-commit change set.
+        ``files_changed`` and ``pr_diff_summary`` are pulled from git (against
+        the branch's parent — the authoritative source) rather than the latest
+        commit's delta, so reviewers see the full multi-commit change set.
         """
         t = await self.task.get(task_id)
         if t is None:
             return Envelope.not_found(message=f"task {task_id} not found")
-        # A board co-reviewer (HoM inspecting a PO-assigned board task, or vice
-        # versa) must be able to read the shared coordination task — the same
-        # allowance the content verbs grant via co-review.
+        # Reads are allowed for the assignee, an unassigned task, a board
+        # co-reviewer of a shared coordination task, OR a caller whose own work
+        # depends on this task. Strict ownership only blocks snooping an
+        # unrelated, actively-owned task.
         if (
             t.assigned_to is not None
             and t.assigned_to != agent_id
             and not await self._board_may_co_review(agent_id, t)
+            and not await self._is_caller_dependency(agent_id, t)
         ):
             return _ownership_violation(task_id)
         if t.branch_name and t.work_session_id:
