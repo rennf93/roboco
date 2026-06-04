@@ -690,11 +690,13 @@ class TaskService(BaseService):
 
         if not task.project_id:
             # A coordination/fan-out task carries a product (a cell->project
-            # map) but no repo of its own, so it does no git work and has no
-            # branch — its cell subtasks each resolve a real project and get
-            # their own branches. Only a task with neither is misconfigured.
+            # map) but no repo of its own. Per the CEO-locked branch model it is
+            # the Main-PM integration point: it cuts feature/main_pm/{root} off
+            # master in EACH repo the product spans, so cells branch off it
+            # (not off master) and only the CEO merges the root into master.
+            # Only a task with neither project nor product is misconfigured.
             if task.product_id:
-                return ""
+                return await self._ensure_coordination_root_branches(task, agent_id)
             raise ValueError(
                 "Task requires a project_id (a repo) or a product_id (a "
                 "cell->project map) to create a branch. Assign one before "
@@ -832,16 +834,32 @@ class TaskService(BaseService):
         Raises:
             ValueError: If branch cannot be created
         """
-        from roboco.api.schemas.git import GitCreateBranchRequest
-        from roboco.services.git import get_git_service
         from roboco.services.project import get_project_service
 
-        git_service = get_git_service(self.session)
         project_service = get_project_service(self.session)
-
         project = await project_service.get(UUID(str(task.project_id)))
         if not project:
             raise ValueError(f"Project {task.project_id} not found")
+        return await self._create_branch_in_project(task, agent_id, project)
+
+    async def _create_branch_in_project(
+        self,
+        task: TaskTable,
+        agent_id: UUID,
+        project: Any,
+    ) -> str:
+        """Create the task's hierarchical branch inside one resolved repo.
+
+        Split out of :meth:`_auto_create_branch` so a coordination root can cut
+        the same ``feature/main_pm/{root}`` integration branch in EACH repo its
+        product spans (monorepo: one call; multi-repo: one per repo). The branch
+        name is hierarchy-derived so it is identical across repos; the physical
+        branch is created in each.
+        """
+        from roboco.api.schemas.git import GitCreateBranchRequest
+        from roboco.services.git import get_git_service
+
+        git_service = get_git_service(self.session)
 
         parent_branch = await self._resolve_parent_branch(task, project)
         workspace = await git_service.get_workspace(project.slug, agent_id)
@@ -863,9 +881,45 @@ class TaskService(BaseService):
         self.log.info(
             "Auto-created hierarchical branch",
             task_id=str(task.id),
+            project_slug=project.slug,
             branch_name=branch_name,
             parent_branch=parent_branch or "default",
         )
+        return branch_name
+
+    async def _ensure_coordination_root_branches(
+        self,
+        task: TaskTable,
+        agent_id: UUID,
+    ) -> str:
+        """Cut the Main-PM integration branch in every repo the product spans.
+
+        The coordination root carries a product (a cell->repo map) but no
+        project of its own. Per the CEO-locked model, the Main-PM root branches
+        ``feature/main_pm/{root}`` OFF master in each distinct repo; cells then
+        branch off it (via the parent-branch resolution) instead of off master,
+        so cell work never targets master — only the CEO merges the root branch
+        into master, per repo. Monorepo => one branch; multi-repo => N.
+
+        Returns the shared branch name (identical across repos), or ``""`` when
+        the product has no cell->repo map yet (delegation then falls back to the
+        parent's project per the routing spec, and the root stays branchless).
+        """
+        from roboco.services.product import get_product_service
+        from roboco.services.project import get_project_service
+
+        product_service = get_product_service(self.session)
+        project_service = get_project_service(self.session)
+
+        project_ids = await product_service.distinct_project_ids(
+            UUID(str(task.product_id))
+        )
+        branch_name = ""
+        for project_id in project_ids:
+            project = await project_service.get(project_id)
+            if project is None:
+                continue
+            branch_name = await self._create_branch_in_project(task, agent_id, project)
         return branch_name
 
     async def get(self, task_id: UUID) -> TaskTable | None:

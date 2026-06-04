@@ -103,6 +103,44 @@ async def test_shared_project_across_cells(product_setup: dict) -> None:
 
 
 @pytest.mark.asyncio
+async def test_distinct_project_ids_monorepo_and_multirepo(product_setup: dict) -> None:
+    """One integration branch per DISTINCT repo: monorepo => 1, multi-repo => N."""
+    svc = product_setup["svc"]
+    projects = product_setup["projects"]
+    shared = projects[Team.BACKEND].id
+
+    mono = await svc.create(
+        ProductCreate(
+            name="Mono",
+            slug=f"mono-{uuid4().hex[:6]}",
+            cells=[
+                ProductCellMapping(team=c, project_id=shared)
+                for c in (Team.BACKEND, Team.FRONTEND, Team.UX_UI)
+            ],
+        ),
+        created_by=product_setup["creator"],
+    )
+    assert await svc.distinct_project_ids(mono.id) == [shared]
+
+    multi = await svc.create(
+        ProductCreate(
+            name="Multi",
+            slug=f"multi-{uuid4().hex[:6]}",
+            cells=[
+                ProductCellMapping(team=c, project_id=projects[c].id)
+                for c in (Team.BACKEND, Team.FRONTEND, Team.UX_UI)
+            ],
+        ),
+        created_by=product_setup["creator"],
+    )
+    assert set(await svc.distinct_project_ids(multi.id)) == {
+        projects[Team.BACKEND].id,
+        projects[Team.FRONTEND].id,
+        projects[Team.UX_UI].id,
+    }
+
+
+@pytest.mark.asyncio
 async def test_duplicate_slug_conflicts(product_setup: dict) -> None:
     svc = product_setup["svc"]
     slug = f"dup-{uuid4().hex[:6]}"
