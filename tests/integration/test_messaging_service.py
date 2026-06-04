@@ -1655,15 +1655,15 @@ async def test_close_session_handles_bus_failure(msg_setup: dict) -> None:
 
 
 # ---------------------------------------------------------------------------
-# create_session_with_access_check — closes prior active + privileged path
+# create_session_with_access_check — reuses the group's live session
 # ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
-async def test_create_session_with_access_check_closes_prior(
+async def test_create_session_with_access_check_reuses_active(
     msg_setup: dict,
 ) -> None:
-    """Existing ACTIVE session is closed before creating new one."""
+    """A group has ONE live session; opening again reuses it (no churn)."""
     svc = msg_setup["svc"]
     aid = msg_setup["agent_id"]
     ch = await svc.create_channel(_channel_req(uuid4().hex[:6]))
@@ -1683,7 +1683,11 @@ async def test_create_session_with_access_check_closes_prior(
             timeout_seconds=300,
         ),
     )
-    assert new_sess.id != prior.id
+    # Same live session is returned, not a fresh one — and it stays active.
+    assert new_sess.id == prior.id
+    refetched = await svc.get_session(prior.id)
+    assert refetched is not None
+    assert refetched.status == SessionStatus.ACTIVE
 
 
 # ---------------------------------------------------------------------------

@@ -389,10 +389,16 @@ class MessagingService(BaseService):
         if not group:
             raise ValueError(f"Group {req.group_id} not found")
 
-        # Close existing active session if any
+        # A group has ONE live session that all participants post into. Reuse it
+        # instead of closing it and opening a new one on every call — the
+        # close-and-recreate pattern churned a single conversation across many
+        # sessions (the smoke run showed ~one session per message, and the CEO
+        # could not hold a conversation). Only open a fresh session when none is
+        # currently active (the prior one closed via timeout / boundary / merge).
         if group.active_session_id:
-            session_id = cast("UUID", group.active_session_id)
-            await self.close_session(session_id, "New session started")
+            existing = await self.get_session(cast("UUID", group.active_session_id))
+            if existing is not None and existing.status == SessionStatus.ACTIVE:
+                return existing
 
         session = SessionTable(
             group_id=req.group_id,
@@ -619,9 +625,12 @@ class MessagingService(BaseService):
             )
         )
         active = active_result.scalar_one_or_none()
-        if active:
-            active.status = SessionStatus.CLOSED
-            active.closed_at = datetime.now(UTC)
+        if active is not None:
+            # Reuse the group's live session (see create_session). The CEO and
+            # agents post into one session per group, not a fresh one per open —
+            # closing + recreating here is what fragmented one conversation
+            # across many sessions.
+            return active
 
         new_session = SessionTable(
             group_id=request.group_id,
