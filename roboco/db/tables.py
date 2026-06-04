@@ -1799,3 +1799,101 @@ class GatewayTriggerTable(Base):
         Index("ix_gateway_triggers_created_at", "created_at"),
         Index("ix_gateway_triggers_kind_decision", "trigger_kind", "decision"),
     )
+
+
+# =============================================================================
+# PROMPTER TABLES
+# =============================================================================
+
+
+class PrompterConversationTable(Base):
+    """
+    A prompter conversation (a sequence of user/assistant messages).
+
+    Each conversation is a persistent chat thread.  Messages cascade-delete
+    when the conversation is removed.
+    """
+
+    __tablename__ = "prompter_conversations"
+
+    # Identity
+    id: Mapped[PyUUID] = mapped_column(
+        UUID(as_uuid=True), primary_key=True, default=uuid4
+    )
+
+    # Display
+    title: Mapped[str] = mapped_column(String(255), nullable=False, default="")
+
+    # Stats
+    message_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+
+    # Timestamps
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=lambda: datetime.now(UTC), nullable=False
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        default=lambda: datetime.now(UTC),
+        onupdate=lambda: datetime.now(UTC),
+        nullable=False,
+    )
+
+    # Relationships
+    messages: Mapped[list["PrompterMessageTable"]] = relationship(
+        "PrompterMessageTable",
+        back_populates="conversation",
+        lazy="select",
+        cascade="all, delete-orphan",
+    )
+
+    __table_args__ = (
+        Index("ix_prompter_conv_created_at", "created_at"),
+        Index("ix_prompter_conv_updated_at", "updated_at"),
+    )
+
+
+class PrompterMessageTable(Base):
+    """
+    A single message within a prompter conversation.
+
+    ``role`` is either ``'user'`` or ``'assistant'``.
+    ``model_used`` is populated only for assistant messages and records the
+    model name resolved by ModelRoutingService at call time.
+    """
+
+    __tablename__ = "prompter_messages"
+
+    # Identity
+    id: Mapped[PyUUID] = mapped_column(
+        UUID(as_uuid=True), primary_key=True, default=uuid4
+    )
+    conversation_id: Mapped[PyUUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("prompter_conversations.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+
+    # Content
+    role: Mapped[str] = mapped_column(String(20), nullable=False)
+    content: Mapped[str] = mapped_column(Text, nullable=False)
+
+    # Only set for assistant messages
+    model_used: Mapped[str | None] = mapped_column(String(100), nullable=True)
+
+    # Timestamps
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        default=lambda: datetime.now(UTC),
+        nullable=False,
+        index=True,
+    )
+
+    # Relationships
+    conversation: Mapped["PrompterConversationTable"] = relationship(
+        "PrompterConversationTable", back_populates="messages"
+    )
+
+    __table_args__ = (
+        Index("ix_prompter_msg_conv_created", "conversation_id", "created_at"),
+    )
