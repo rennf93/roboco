@@ -1475,7 +1475,10 @@ class Choreographer:
     async def _i_am_done_gate(self, ctx: _IAmDoneContext) -> Envelope | None:
         """Run defense-in-depth tracing + field-level gates the spec doesn't model.
 
-        Returns the rejection envelope if any gate fails; None on pass.
+        Also pushes the branch to origin so a task cannot reach awaiting_qa
+        with commits that exist only in the developer's local workspace.
+        Returns the rejection envelope if any gate fails; None on pass. Shared
+        by the normal and resume-from-verifying paths so both push.
         """
         if rejection := await self._check_tracing_gates(
             ctx.agent_id, ctx.task_id, ctx.task
@@ -1485,10 +1488,36 @@ class Choreographer:
             ctx.agent_id, ctx.task_id, ctx.task
         ):
             return await self._reject_i_am_done(ctx, rejection)
+        if rejection := await self._ensure_branch_pushed(ctx):
+            return await self._reject_i_am_done(ctx, rejection)
         # Wave C5 (2026-05-12) — pre-gateway parity. Persist per-criterion
         # status now that all gates have passed. The write runs AFTER the
         # verdict so it cannot change i_am_done's rejection behavior.
         await self._write_criteria_status(ctx.agent_id, ctx.task_id, ctx.task)
+        return None
+
+    async def _ensure_branch_pushed(self, ctx: _IAmDoneContext) -> Envelope | None:
+        """Push the task branch to origin before it reaches awaiting_qa.
+
+        QA reviews the remote PR branch. A fix committed during a revision
+        cycle lives only in the developer's local workspace until pushed —
+        without this, QA re-reviews the stale remote and fails the same task
+        every cycle (a non-converging loop). Idempotent: a no-op when nothing
+        is unpushed, so first-submit (already pushed by open_pr) is unaffected.
+        """
+        try:
+            await self.git.push_task_branch(ctx.agent_id, ctx.task_id)
+        except Exception as exc:
+            return Envelope.invalid_state(
+                message=f"could not push your branch to origin: {exc}",
+                remediate=(
+                    "your latest commits are local-only and QA reviews the "
+                    "pushed PR branch. resolve the push error (often a "
+                    "transient network / fetch timeout) and call i_am_done "
+                    "again."
+                ),
+                context_briefing=ctx.briefing,
+            )
         return None
 
     @staticmethod

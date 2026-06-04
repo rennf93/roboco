@@ -120,6 +120,10 @@ class _StubGit:
         del branch_name, actor_agent_id
         return ("ok", 0)
 
+    async def push_task_branch(self, agent_id: UUID, task_id: UUID) -> int:
+        del agent_id, task_id
+        return 0
+
     async def create_pr(
         self,
         branch_name: str,

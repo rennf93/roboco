@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime
+from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 from uuid import uuid4
 
@@ -694,3 +695,92 @@ async def test_i_am_idle_clean_returns_idle() -> None:
     env = await c.i_am_idle(agent_id)
     assert env.status == "idle"
     task_svc.mark_agent_idle.assert_awaited_once_with(agent_id)
+
+
+def _passing_i_am_done_task(agent_id: Any, task_id: Any) -> Any:
+    """A task that clears every i_am_done gate (so the flow reaches the push)."""
+    return MagicMock(
+        id=task_id,
+        status="in_progress",
+        assigned_to=agent_id,
+        plan={"x": 1},
+        branch_name="feature/backend/abc",
+        work_session_id=uuid4(),
+        self_verified=False,
+        progress_updates=[{"message": "p"}],
+        acceptance_criteria=["AC1"],
+        acceptance_criteria_status=[
+            {"criterion": "AC1", "referencing_artifact_id": "c1"}
+        ],
+        commits=[{"sha": "abc"}],
+        pr_number=8,
+        pr_url="https://x/pr/8",
+        team="backend",
+        documents=[],
+        dev_notes="",
+        qa_notes="",
+    )
+
+
+def _passing_i_am_done_deps(task: Any, **overrides: AsyncMock) -> ChoreographerDeps:
+    """Task + journal mocks set up so i_am_done passes through to the push."""
+    task_svc = AsyncMock()
+    task_svc.get.return_value = task
+    task_svc.agent_for.return_value = MagicMock(
+        id=task.assigned_to, role="developer", team="backend", slug=None
+    )
+    task_svc.submit_verification.return_value = task
+    task_svc.submit_qa.return_value = task
+    task_svc.submit_for_qa.return_value = task
+    journal_svc = AsyncMock()
+    journal_svc.has_reflect_for_task.return_value = True
+    journal_svc.has_decision_for_task.return_value = True
+    journal_svc.latest_decision_at.return_value = datetime.now(UTC)
+    journal_svc.has_learning_for_task.return_value = False
+    journal_svc.has_struggle_for_task.return_value = False
+    return _make_deps(task=task_svc, journal=journal_svc, **overrides)
+
+
+@pytest.mark.asyncio
+async def test_i_am_done_pushes_branch_before_qa_handoff() -> None:
+    """i_am_done pushes the task branch so QA reviews the latest commits.
+
+    A fix committed during a revision cycle is local-only until pushed; without
+    this push QA re-reviews the stale remote and re-fails the task every cycle.
+    """
+    agent_id = uuid4()
+    task_id = uuid4()
+    git_svc = AsyncMock()
+    git_svc.push_task_branch.return_value = 1
+    deps = _passing_i_am_done_deps(
+        _passing_i_am_done_task(agent_id, task_id), git=git_svc
+    )
+    c = Choreographer(deps)
+
+    env = await c.i_am_done(agent_id, task_id, "done")
+
+    assert env.error is None
+    git_svc.push_task_branch.assert_awaited_once_with(agent_id, task_id)
+
+
+@pytest.mark.asyncio
+async def test_i_am_done_blocks_when_branch_push_fails() -> None:
+    """A failed push aborts i_am_done — a task must not reach awaiting_qa with
+    commits that live only in the developer's local workspace."""
+    agent_id = uuid4()
+    task_id = uuid4()
+    git_svc = AsyncMock()
+    git_svc.push_task_branch.side_effect = RuntimeError("fetch timed out")
+    deps = _passing_i_am_done_deps(
+        _passing_i_am_done_task(agent_id, task_id), git=git_svc
+    )
+    c = Choreographer(deps)
+
+    env = await c.i_am_done(agent_id, task_id, "done")
+    body = env.as_dict()
+
+    assert body["error"] == "invalid_state"
+    assert "push" in body["message"].lower()
+    # The QA transition must not have run.
+    deps.task.submit_qa.assert_not_awaited()
+    deps.task.submit_for_qa.assert_not_awaited()

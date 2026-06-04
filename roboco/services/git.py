@@ -1065,6 +1065,26 @@ class GitService(BaseService):
 
         return await self.push(workspace, getattr(data, "force", False))
 
+    async def push_task_branch(self, agent_id: UUID, task_id: UUID) -> int:
+        """Idempotently push a task's branch to origin; return commits pushed.
+
+        Reviewers see the remote PR branch, not the developer's workspace. A
+        fix committed during a revision cycle lives only in that local clone
+        until it is pushed — so without an explicit push at the QA-submission
+        boundary, QA re-reviews the stale remote and fails the same task on
+        every cycle. Self-resolves the project/workspace from the task so the
+        choreographer can call it with just (agent, task). A no-op when there
+        is nothing unpushed; raises typed service errors on a real failure.
+        """
+        task = await self._assert_task_owned_with_branch(task_id, agent_id)
+        project = await self._project_for_task(task)
+        if project is None:
+            return 0
+        workspace = await self.get_workspace(project.slug, agent_id)
+        await self._assert_on_task_branch(workspace, task.branch_name)
+        _branch, pushed = await self.push(workspace)
+        return pushed
+
     # =========================================================================
     # PR METHODS
     # =========================================================================

@@ -22,6 +22,7 @@ if TYPE_CHECKING:
     from contextlib import AbstractContextManager
 
 _EXPECTED_PR_NUMBER = 7
+_PUSHED_COMMIT_COUNT = 2
 
 
 def _make_session(execute_returns: object | None = None) -> MagicMock:
@@ -124,6 +125,46 @@ async def test_project_for_task_uses_project_id_when_present() -> None:
     with _patch_project_service(fake_project):
         out = await svc._project_for_task(task)
     assert out is fake_project
+
+
+# ---------------------------------------------------------------------------
+# push_task_branch: idempotent push at the QA-submission boundary
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_push_task_branch_resolves_workspace_and_pushes() -> None:
+    """Resolves the task's project + workspace, then pushes; returns the count."""
+    task = MagicMock(branch_name="feature/backend/abc")
+    project = MagicMock(slug="roboco")
+    svc = _service()
+    _bind(svc, "_assert_task_owned_with_branch", AsyncMock(return_value=task))
+    _bind(svc, "_project_for_task", AsyncMock(return_value=project))
+    _bind(svc, "get_workspace", AsyncMock(return_value=Path("/tmp/ws")))
+    _bind(svc, "_assert_on_task_branch", AsyncMock())
+    push_mock = AsyncMock(return_value=("feature/backend/abc", _PUSHED_COMMIT_COUNT))
+    _bind(svc, "push", push_mock)
+
+    pushed = await svc.push_task_branch(uuid4(), uuid4())
+
+    assert pushed == _PUSHED_COMMIT_COUNT
+    push_mock.assert_awaited_once_with(Path("/tmp/ws"))
+
+
+@pytest.mark.asyncio
+async def test_push_task_branch_noop_for_project_less_task() -> None:
+    """A git-exempt task (no resolvable project) is a no-op, not an error."""
+    task = MagicMock(branch_name="feature/main_pm/abc")
+    svc = _service()
+    _bind(svc, "_assert_task_owned_with_branch", AsyncMock(return_value=task))
+    _bind(svc, "_project_for_task", AsyncMock(return_value=None))
+    push_mock = AsyncMock()
+    _bind(svc, "push", push_mock)
+
+    pushed = await svc.push_task_branch(uuid4(), uuid4())
+
+    assert pushed == 0
+    push_mock.assert_not_awaited()
 
 
 # ---------------------------------------------------------------------------
