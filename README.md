@@ -2,6 +2,17 @@
 
 AI Agents Company - A virtual organization of 18 AI agents + 1 human CEO, designed to operate as a complete software development workforce.
 
+<p align="center">
+  <img src="run.png" alt="RoboCo control panel: the task tree for a feature, showing Board → Main PM → Backend / Frontend / UX/UI cells → developer subtasks, with live lifecycle statuses (completed, in progress, awaiting PM review, paused) and real GitHub PRs (#59–#62)." width="100%">
+</p>
+
+> [!WARNING]
+> **RoboCo is early-stage, work-in-progress software (v0).** It's under active
+> development, runs in a homelab, and *will* have rough edges, breaking changes,
+> and bugs. It is **not production-ready** and the API/database schema are not
+> stable yet. Treat it as a working prototype to explore and build on — please
+> don't expose it to the public internet as-is. Issues and PRs very welcome.
+
 ## Overview
 
 RoboCo implements a structured organizational hierarchy with formal communication protocols, task management, and quality controls. The system enables a single human (CEO) to orchestrate complex multi-project development at scale.
