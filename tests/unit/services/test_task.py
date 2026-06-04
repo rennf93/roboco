@@ -8,7 +8,7 @@ session boundary and checks the method's contract.
 from __future__ import annotations
 
 from datetime import datetime
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 from uuid import uuid4
 
 import pytest
@@ -644,11 +644,32 @@ async def test_ensure_branch_returns_existing_branch() -> None:
 
 
 @pytest.mark.asyncio
-async def test_ensure_branch_skips_coordination_task() -> None:
-    """A product-backed task with no repo of its own gets no branch (not raised)."""
+async def test_ensure_branch_coordination_root_cuts_integration_branch() -> None:
+    """A product-backed root cuts feature/main_pm/{root} in each product repo."""
     svc = TaskService(MagicMock())
     task = MagicMock(branch_name=None, project_id=None, product_id=uuid4())
-    assert await svc._ensure_branch_for_task(task, uuid4()) == ""
+    create_in_project = AsyncMock(return_value="feature/main_pm/root1234")
+    _bind(svc, "_create_branch_in_project", create_in_project)
+    product_svc = MagicMock(distinct_project_ids=AsyncMock(return_value=[uuid4()]))
+    project_svc = MagicMock(get=AsyncMock(return_value=MagicMock()))
+    with (
+        patch("roboco.services.product.get_product_service", return_value=product_svc),
+        patch("roboco.services.project.get_project_service", return_value=project_svc),
+    ):
+        result = await svc._ensure_branch_for_task(task, uuid4())
+    assert result == "feature/main_pm/root1234"
+    create_in_project.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_ensure_branch_coordination_root_no_cell_map_stays_branchless() -> None:
+    """A product with no cell->repo map yet stays branchless (graceful fallback)."""
+    svc = TaskService(MagicMock())
+    task = MagicMock(branch_name=None, project_id=None, product_id=uuid4())
+    product_svc = MagicMock(distinct_project_ids=AsyncMock(return_value=[]))
+    with patch("roboco.services.product.get_product_service", return_value=product_svc):
+        result = await svc._ensure_branch_for_task(task, uuid4())
+    assert result == ""
 
 
 @pytest.mark.asyncio
