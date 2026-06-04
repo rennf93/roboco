@@ -875,6 +875,9 @@ async def test_unblock_restores_to_in_progress(
     task = await svc.create(_req(task_setup))
     task.status = TaskStatus.IN_PROGRESS
     task.assigned_to = task_setup["agent_id"]
+    # A claimed, actively-worked task has a branch; with one, unblock resumes
+    # in_progress (a never-claimed/no-branch task returns to pending instead).
+    task.branch_name = "feature/backend/abc12345"
     await db_session.flush()
     await svc.soft_block(
         task.id,

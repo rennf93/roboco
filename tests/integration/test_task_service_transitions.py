@@ -1462,6 +1462,9 @@ async def test_unblock_with_restore_with_invalid_pre_block_state(
     task = await svc.create(_req(task_setup))
     task.status = TaskStatus.BLOCKED
     task.pre_block_state = "garbage"
+    # Has a branch (was claimed before blocking) so legacy unblock resumes
+    # in_progress rather than returning a never-claimed task to pending.
+    task.branch_name = "feature/backend/abc12345"
     await db_session.flush()
     out = await svc.unblock_with_restore(
         pm_agent_id=task_setup["agent_id"], task_id=task.id, restore=True
