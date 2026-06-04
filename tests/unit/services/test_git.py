@@ -13,6 +13,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 from uuid import uuid4
 
 import pytest
+from roboco.api.schemas.git import GitCreateBranchRequest
 from roboco.config import settings
 from roboco.services.base import NotFoundError
 from roboco.services.git import GitService
@@ -306,8 +307,6 @@ async def test_create_branch_idempotent_when_branch_already_exists() -> None:
     # A prior attempt may have created the branch on disk before the DB recorded
     # branch_name; `checkout -b` then fails 128. create_branch must switch to the
     # existing branch instead of raising (the raise triggered a retry cascade).
-    from roboco.api.schemas.git import GitCreateBranchRequest
-
     branch = "feature/backend/abc12345--def67890"
     svc = _service()
     object.__setattr__(svc, "_resolve_base_branch", AsyncMock(return_value="master"))
