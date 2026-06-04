@@ -2074,6 +2074,33 @@ class TaskService(BaseService):
         ownership/role checks because the holder is provably dead (no
         heartbeat past TTL).
         """
+        await self._force_unclaim_to_pending(task_id, reason="reaper-unclaim")
+
+    async def release_dependency_blocked_claim(self, task_id: UUID) -> None:
+        """Release a claimed/in_progress task whose dependency is still unmet.
+
+        A task assigned with an unfinished dependency cannot proceed, but while
+        it sits claimed/in_progress the orchestrator keeps respawning its
+        assignee (the respawn loop targets only claimed/in_progress). Releasing
+        it to pending stops that churn: the dispatch dependency filter holds it
+        un-spawned, and ``_unblock_dependents`` clears the dependency once the
+        upstream completes so it re-dispatches on its own. ``claimed -> blocked``
+        is not a legal transition, so pending (held by the dependency filter) is
+        the lifecycle-correct resting state. No-op when not in a releasable state.
+        """
+        await self._force_unclaim_to_pending(task_id, reason="dependency-unmet")
+
+    async def _force_unclaim_to_pending(self, task_id: UUID, *, reason: str) -> None:
+        """Force a claimed/in_progress task back to pending (system action).
+
+        Shared core of ``unclaim_for_reaper`` and
+        ``release_dependency_blocked_claim``. Routes through
+        ``_validate_and_set_status`` so the state machine records the
+        transition, clears assignee/heartbeat/claimant, and abandons the active
+        WorkSession (best-effort, tagged with ``reason``) so a re-claim doesn't
+        trip the uniqueness constraint. Bypasses ownership/role checks — the
+        system itself is performing the transition.
+        """
         task = await self.get(task_id)
         if task is None:
             return
@@ -2085,7 +2112,7 @@ class TaskService(BaseService):
             return
         if task.work_session_id:
             await self._abandon_work_session_best_effort(
-                task.work_session_id, reason="reaper-unclaim"
+                task.work_session_id, reason=reason
             )
             task.work_session_id = cast("Any", None)
         task.assigned_to = cast("Any", None)

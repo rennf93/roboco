@@ -322,3 +322,42 @@ async def test_all_three_dev_paths_gate_then_release(dep_gate_setup: dict) -> No
     assert (
         await choreo._run_claim_guards(agent_id=fe_dev_db_id, task=released) is None
     ), "claim guard must allow once UX is terminal"
+
+
+@pytest.mark.asyncio
+async def test_claimed_dependency_blocked_task_is_released_to_pending(
+    dep_gate_setup: dict,
+) -> None:
+    """A CLAIMED task whose dependency is unmet is released back to pending.
+
+    Unlike the pre-assigned-but-pending dev subtask, a cell task can reach
+    CLAIMED with an unfinished dependency (the PM claims it before the upstream
+    resolves). Left claimed, the orchestrator's respawn loop churns its
+    assignee. The claim guard now releases it to pending — ``claimed -> blocked``
+    is not a legal transition, so pending (held by the dependency filter) is the
+    lifecycle-correct resting state, and ``_unblock_dependents`` re-dispatches it
+    once the upstream completes.
+    """
+    svc: TaskService = dep_gate_setup["svc"]
+    choreo: Choreographer = dep_gate_setup["choreo"]
+    fe_dev_db_id = dep_gate_setup["fe_dev_db_id"]
+
+    tree = await _seed_dev_subtask_with_unmet_dep(dep_gate_setup)
+    dev_subtask = tree["dev_subtask"]
+
+    # Force the held task to CLAIMED (the state a respawn loop churns on).
+    dev_subtask.status = TaskStatus.CLAIMED
+    dev_subtask.branch_name = "feature/frontend/DEVLEAF01"
+    await svc.session.flush()
+
+    held = await svc.get(dev_subtask.id)
+    guard = await choreo._run_claim_guards(agent_id=fe_dev_db_id, task=held)
+    assert guard is not None, "claim guard must still reject while UX is unmet"
+    assert guard.error == "invalid_state"
+
+    after = await svc.get(dev_subtask.id)
+    assert after is not None
+    assert after.status == TaskStatus.PENDING, (
+        "a claimed dependency-blocked task must be released to pending"
+    )
+    assert after.assigned_to is None, "release clears the assignee"

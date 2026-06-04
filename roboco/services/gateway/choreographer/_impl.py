@@ -730,6 +730,12 @@ class Choreographer:
         if dep_ids:
             unmet = await self.task.unmet_dependency_ids(dep_ids)
             if guard := unmet_dependency_guard(task, unmet):
+                # Park the dependency-gated task back to pending so the
+                # orchestrator stops respawning its assignee (the respawn loop
+                # targets only claimed/in_progress) and the dispatch dependency
+                # filter holds it until the upstream completes. No-op unless the
+                # task is currently claimed/in_progress.
+                await self.task.release_dependency_blocked_claim(task.id)
                 return guard
         if not skip_sequence:
             siblings = await self._fetch_siblings(task)
