@@ -19,6 +19,7 @@
 | backlog | pending | activate | any |
 | blocked | cancelled | cancel | cell_pm, ceo, main_pm |
 | blocked | in_progress | unblock | any |
+| blocked | pending | unblock | any |
 | claimed | cancelled | cancel | cell_pm, ceo, main_pm |
 | claimed | in_progress | start | any |
 | in_progress | awaiting_pm_review | submit_pm_review | any |

@@ -463,6 +463,12 @@
       "target": "in_progress"
     },
     {
+      "action": "unblock",
+      "roles": null,
+      "source": "blocked",
+      "target": "pending"
+    },
+    {
       "action": "cancel",
       "roles": [
         "cell_pm",
