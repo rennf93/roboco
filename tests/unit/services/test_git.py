@@ -319,7 +319,9 @@ async def test_create_branch_idempotent_when_branch_already_exists() -> None:
 
     calls: list[list[str]] = []
 
-    async def fake_run_git(_workspace: object, args: list[str], **_kw: object) -> object:
+    async def fake_run_git(
+        _workspace: object, args: list[str], **_kw: object
+    ) -> object:
         calls.append(list(args))
         rc = 1 if list(args[:2]) == ["checkout", "-b"] else 0
         return MagicMock(stdout="", returncode=rc)
