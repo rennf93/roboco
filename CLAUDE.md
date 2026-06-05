@@ -15,7 +15,7 @@ keep copyright assignment language intact. See `CONTRIBUTING.md`.
 
 ## Project Overview
 
-**RoboCo** is an AI Agentic Company - a virtual organization of 18 AI agents + 1 human CEO, designed to operate as a complete software development workforce. The system implements a structured organizational hierarchy with formal communication protocols, task management, and quality controls.
+**RoboCo** is an AI Agentic Company - a virtual organization of 19 AI agents + 1 human CEO, designed to operate as a complete software development workforce. The system implements a structured organizational hierarchy with formal communication protocols, task management, and quality controls.
 
 ### Core Architecture
 
@@ -31,7 +31,7 @@ CEO (Renzo - Human)
                    |
                    +-- Backend Cell (5 agents: 2 Devs, 1 QA, 1 PM, 1 Documenter)
                    +-- Frontend Cell (5 agents: 2 Devs, 1 QA, 1 PM, 1 Documenter)
-                   +-- UX/UI Cell (4 agents: 1 Dev, 1 QA, 1 PM, 1 Documenter)
+                   +-- UX/UI Cell (5 agents: 2 Devs, 1 QA, 1 PM, 1 Documenter)
 ```
 
 ### Hardware Infrastructure
@@ -182,7 +182,8 @@ Git authentication is managed **per-project** through encrypted GitHub PATs:
 
 ### Task States
 
-The complete task lifecycle is defined in `roboco/enforcement/task_lifecycle.py`:
+The complete task lifecycle is defined in `roboco/foundation/policy/lifecycle.py`
+(`roboco/enforcement/task_lifecycle.py` is a backwards-compat shim over it):
 
 ```
 backlog -> pending -> claimed -> in_progress -> [blocked|paused] -> verifying
@@ -340,7 +341,7 @@ read-only into the agent container.
 
 | Role          | Flow verbs                                                                                       |
 |---------------|--------------------------------------------------------------------------------------------------|
-| developer     | `give_me_work`, `i_will_work_on`, `submit_for_qa`, `i_am_done`, `i_am_blocked`                   |
+| developer     | `give_me_work`, `i_will_work_on`, `open_pr`, `i_am_done`, `i_am_blocked`                          |
 | qa            | `claim_review`, `pass`, `fail`                                                                   |
 | documenter    | `claim_doc_task`, `i_documented`                                                                 |
 | cell_pm       | `triage`, `unblock`, `complete`, `escalate_up`                                                   |

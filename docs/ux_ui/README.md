@@ -4,7 +4,7 @@ Documentation for the UX/UI Cell team.
 
 ## Access
 
-- **READ**: UX/UI Cell (developer, QA, PM, documenter)
+- **READ**: UX/UI Cell (2 developers, QA, PM, documenter)
 - **WRITE**: ux-doc only
 
 ## Contents

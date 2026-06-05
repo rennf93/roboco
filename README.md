@@ -1,6 +1,6 @@
 # RoboCo
 
-AI Agents Company - A virtual organization of 18 AI agents + 1 human CEO, designed to operate as a complete software development workforce.
+AI Agents Company - A virtual organization of 19 AI agents + 1 human CEO, designed to operate as a complete software development workforce.
 
 <p align="center">
   <img src="run.png" alt="RoboCo control panel: the task tree for a feature, showing Board → Main PM → Backend / Frontend / UX/UI cells → developer subtasks, with live lifecycle statuses (completed, in progress, awaiting PM review, paused) and real GitHub PRs (#59–#62)." width="100%">
@@ -18,19 +18,42 @@ AI Agents Company - A virtual organization of 18 AI agents + 1 human CEO, design
 RoboCo implements a structured organizational hierarchy with formal communication protocols, task management, and quality controls. The system enables a single human (CEO) to orchestrate complex multi-project development at scale.
 
 ```
-CEO (Renzo - Human)
+CEO (You, the human)
     │
     └── Board (3 agents)
          ├── Product Owner
          ├── Head of Marketing
-         └── Auditor (silent observer, reports to CEO)
+         └── Auditor (silent observer, reports to you)
               │
               └── Main PM (coordinates all cells)
                    │
                    ├── Backend Cell (5 agents: 2 Devs, 1 QA, 1 PM, 1 Documenter)
                    ├── Frontend Cell (5 agents: 2 Devs, 1 QA, 1 PM, 1 Documenter)
-                   └── UX/UI Cell (4 agents: 1 Dev, 1 QA, 1 PM, 1 Documenter)
+                   └── UX/UI Cell (5 agents: 2 Devs, 1 QA, 1 PM, 1 Documenter)
 ```
+
+## How it works
+
+You hand a task to the company; it runs through a real
+*build → review → document → merge* pipeline and comes back to you to approve.
+
+One full loop, put simply:
+
+1. **You give the Board a task — they review it.** The Product Owner and Head of
+   Marketing turn your ask into requirements and acceptance criteria.
+2. **You approve — the Main PM starts the work.** A notification asks for your
+   *Approve & Start* decision; approve, and the Main PM breaks it into per-cell
+   subtasks.
+3. **Each cell's PM delegates, supports, and triages** its developers (UX/UI,
+   Frontend, Backend).
+4. **Developers build it, QA verifies and gates it, Documenters keep the books.**
+5. **Cell PMs merge their PRs into the Main PM's branch.**
+6. **The Main PM opens the final PR and notifies you "It's done!"** — you approve
+   and merge, or send it back for rework. *(Only you ever merge to `master`.)*
+
+**— Full circle —**
+
+**[See the full walkthrough, with screenshots →](docs/how-to.md)**
 
 ## Project Structure
 
@@ -53,11 +76,10 @@ roboco/
 │   ├── mcp/                     # MCP server implementations
 │   └── config.py                # Application configuration
 ├── agents/
-│   ├── blueprints/              # Agent system prompts (18 agents)
-│   └── prompts/identities/      # Agent identity files
+│   └── prompts/                 # Agent system prompts (roles, teams, identities)
 ├── docs/
-│   ├── architecture/            # Architecture documentation
-│   └── workflows/               # Workflow documentation
+│   ├── how-to.md               # Visual walkthrough of the workflow
+│   └── rag/                     # Agent knowledge base (indexed into RAG)
 ├── alembic/                     # Database migrations
 ├── CLAUDE.md                    # Claude Code guidance
 └── docker-compose.yml           # Local development stack
@@ -79,7 +101,7 @@ uv run alembic upgrade head
 uv run python -m roboco.cli
 
 # Or just the API without orchestrator
-uv run uvicorn roboco.api:app --reload --host 0.0.0.0 --port 8000
+uv run uvicorn roboco.api.app:app --reload --host 0.0.0.0 --port 8000
 ```
 
 ## Configuration
@@ -137,18 +159,23 @@ cancelled                      blocked      needs_revision   awaiting_documentat
 
 ## API Endpoints
 
+Domain routes are mounted under `/api`:
+
 | Route Group | Description |
 |-------------|-------------|
-| `/api/v1/tasks` | Task CRUD, lifecycle, claiming |
-| `/api/v1/agents` | Agent management |
-| `/api/v1/git` | Git operations (status, commit, push, PR) |
-| `/api/v1/test` | Test/lint/format/build commands |
-| `/api/v1/sessions` | Communication sessions |
-| `/api/v1/messages` | Agent messages |
-| `/api/v1/projects` | Project (repo) management |
-| `/api/v1/work-sessions` | Git work session tracking |
-| `/api/v1/optimal` | RAG/Knowledge base queries |
-| `/api/v1/journals` | Agent journals/reflections |
+| `/api/tasks` | Task CRUD, lifecycle, claiming |
+| `/api/agents` | Agent management |
+| `/api/git` | Git operations (status, commit, push, PR) |
+| `/api/sessions` | Communication sessions |
+| `/api/messages` | Agent messages |
+| `/api/projects` | Project (repo) management |
+| `/api/work-sessions` | Git work session tracking |
+| `/api/optimal` | RAG/Knowledge base queries |
+| `/api/journals` | Agent journals/reflections |
+| `/api/orchestrator/status` | Orchestrator / dispatcher status |
+
+The agent **gateway** verbs are served separately under `/api/v1/flow/{role}/{verb}`
+(intent verbs) and `/api/v1/do` (content tools) — see the [Agent Gateway](CLAUDE.md#agent-gateway).
 
 ## Development
 
@@ -199,11 +226,10 @@ uv run mypy roboco/
 - [x] Database ORM (SQLAlchemy async)
 - [x] Task lifecycle state machine
 - [x] Multi-agent workspace management
-- [x] Agent blueprints (18 agents)
+- [x] Agent prompts (19 agents)
 - [x] Messaging API
 - [x] Task API with full lifecycle
 - [x] Git operations API
-- [x] Test/CI operations API
 - [x] RAG/Knowledge base (piragi + pgvector)
 - [x] Agent orchestrator
 - [x] CEO approval workflow

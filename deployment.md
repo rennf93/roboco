@@ -112,7 +112,7 @@ docker compose run orchestrator --spawn main-pm fe-dev-1 fe-qa
 curl http://localhost:8000/health
 
 # Orchestrator status (shows running containers)
-curl http://localhost:8000/api/v1/orchestrator/status | jq
+curl http://localhost:8000/api/orchestrator/status | jq
 
 # List all RoboCo containers
 docker ps --filter "name=roboco"

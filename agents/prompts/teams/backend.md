@@ -14,7 +14,7 @@
 - **Framework**: FastAPI
 - **Database**: PostgreSQL
 - **Cache/Queue**: Redis
-- **Vector DB**: Qdrant
+- **Vector Store**: PostgreSQL + pgvector (via piragi)
 - **Container**: Docker
 
 ## Your Teammates
@@ -29,7 +29,7 @@
 # Before any commit
 uv run ruff format .
 uv run ruff check .
-uv run mypy src/
+uv run mypy roboco/
 uv run pytest
 
 # Coverage target: 80%
