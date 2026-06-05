@@ -407,22 +407,44 @@ class TaskService(BaseService):
                 error=str(e),
             )
 
-        # Fire-and-forget audit write. Critical: we must hold a strong
-        # reference to the Task object (via `_background_tasks`) — the event
-        # loop only weak-refs tasks, so without this the audit write can be
-        # garbage-collected before it commits. That's why audit_log was
-        # coming up empty even though the log call ran.
+        self._emit_status_transition_audit(
+            task,
+            from_status=current,
+            to_status=target,
+            agent_role=agent_role,
+            audit_agent_id=audit_agent_id,
+        )
+
+    def _emit_status_transition_audit(
+        self,
+        task: TaskTable,
+        *,
+        from_status: str,
+        to_status: str,
+        agent_role: str | None,
+        audit_agent_id: str | UUID | None,
+    ) -> None:
+        """Emit the ``task.<status>`` audit row for a status transition.
+
+        Extracted from ``_validate_and_set_status`` so transition paths that
+        set ``task.status`` directly — e.g. ``apply_escalation``, which blocks a
+        task without routing through the strict transition validator — record
+        the same audit event. No status change may bypass the audit log.
+
+        Fire-and-forget, but we hold a strong reference to the background task
+        (via ``_background_tasks``): the event loop only weak-refs tasks, so
+        without it the audit write can be garbage-collected before it commits.
+
+        The explicit ``audit_agent_id`` (capture-before-mutate) wins: callers
+        like ``submit_for_qa`` clear ``task.claimed_by`` before transitioning
+        but still want the row attributed to the outgoing agent. Otherwise fall
+        back to ``task.claimed_by``.
+        """
         import asyncio
         import contextlib
 
         from roboco.services.audit import get_audit_service
 
-        # Prefer the explicit `audit_agent_id` when the caller passed one
-        # (capture-before-mutate pattern: callers like `submit_for_qa` and
-        # `pass_qa` clear `task.claimed_by` BEFORE calling us so the next
-        # role can claim, but still want the audit row attributed to the
-        # outgoing agent). Fall back to `task.claimed_by` for transitions
-        # where the assignment didn't change (claim, start_work, etc.).
         if audit_agent_id is not None:
             resolved_audit_agent_id: str | None = str(audit_agent_id)
         elif task.claimed_by is not None:
@@ -434,12 +456,12 @@ class TaskService(BaseService):
         with contextlib.suppress(RuntimeError):
             bg = asyncio.get_running_loop().create_task(
                 audit.log_task_event(
-                    event_type=f"task.{target}",
+                    event_type=f"task.{to_status}",
                     task_id=str(task.id),
                     agent_id=resolved_audit_agent_id,
                     details={
-                        "from_status": current,
-                        "to_status": target,
+                        "from_status": from_status,
+                        "to_status": to_status,
                         "agent_role": agent_role,
                         "team": (
                             task.team.value
@@ -3387,6 +3409,15 @@ class TaskService(BaseService):
             return
         if task.assigned_to and not task.blocker_raised_by:
             task.blocker_raised_by = cast("Any", task.assigned_to)
+        # Capture before mutating: the audit row must record the real prior
+        # status and attribute the block to the outgoing owner, not the
+        # escalation target we are about to assign.
+        pre_block_status = (
+            task.status.value
+            if isinstance(task.status, TaskStatus)
+            else str(task.status)
+        )
+        pre_block_owner = cast("Any", task.claimed_by)
         task.assigned_to = cast("Any", target_agent_id)
         task.claimed_by = cast("Any", target_agent_id)
         task.status = TaskStatus.BLOCKED
@@ -3396,6 +3427,16 @@ class TaskService(BaseService):
         )
         task.dev_notes = existing_notes + escalation_note
         await self.session.flush()
+        # This path sets BLOCKED directly (bypassing the strict transition
+        # validator), so emit the task.blocked audit explicitly — no status
+        # change may skip the audit log.
+        self._emit_status_transition_audit(
+            task,
+            from_status=pre_block_status,
+            to_status=TaskStatus.BLOCKED.value,
+            agent_role=None,
+            audit_agent_id=pre_block_owner,
+        )
         self.log.info(
             "Task escalated and blocked",
             task_id=str(task.id),

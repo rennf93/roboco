@@ -12,11 +12,12 @@ stranded on a board role.
 
 from __future__ import annotations
 
-from unittest.mock import AsyncMock, MagicMock
+import asyncio
+from unittest.mock import AsyncMock, MagicMock, patch
 from uuid import uuid4
 
 import pytest
-from roboco.models.base import AgentRole, TaskStatus, TaskType
+from roboco.models.base import AgentRole, TaskStatus, TaskType, Team
 from roboco.services.task import TaskService, _is_descendant_executable_task
 
 
@@ -327,3 +328,44 @@ async def test_is_board_advisory_agent_classifies_roles() -> None:
         session.execute = AsyncMock(return_value=result)
         svc = TaskService(session)
         assert await svc._is_board_advisory_agent(uuid4()) is expected
+
+
+@pytest.mark.asyncio
+async def test_apply_escalation_emits_blocked_audit_event() -> None:
+    """A non-divert escalation sets BLOCKED and MUST record a task.blocked audit
+    row. The escalate path sets status directly (bypassing the validated
+    transition), and used to skip the audit log entirely."""
+    svc = _service()
+    task = MagicMock(
+        id=uuid4(),
+        parent_task_id=uuid4(),
+        task_type=TaskType.PLANNING,  # not cell-executed → never diverted
+        assigned_to=uuid4(),
+        claimed_by=uuid4(),
+        blocker_raised_by=None,
+        dev_notes="",
+        team=Team.BACKEND,
+        status=TaskStatus.IN_PROGRESS,
+    )
+    _bind(svc, "_is_board_advisory_agent", AsyncMock(return_value=False))
+    audit_mock = MagicMock(log_task_event=AsyncMock())
+
+    with patch("roboco.services.audit.get_audit_service", return_value=audit_mock):
+        await svc.apply_escalation(
+            task=task,
+            target_agent_id=uuid4(),
+            escalator_slug="be-pm",
+            target_slug="main-pm",
+            reason="needs a decision",
+        )
+        # Drain the fire-and-forget audit task so the assertion sees the call.
+        pending = list(svc._background_tasks)
+        if pending:
+            await asyncio.gather(*pending, return_exceptions=True)
+
+    assert task.status == TaskStatus.BLOCKED
+    audit_mock.log_task_event.assert_awaited_once()
+    kwargs = audit_mock.log_task_event.await_args.kwargs
+    assert kwargs["event_type"] == "task.blocked"
+    assert kwargs["details"]["from_status"] == "in_progress"
+    assert kwargs["details"]["to_status"] == "blocked"
