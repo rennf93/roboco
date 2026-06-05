@@ -104,6 +104,30 @@ async def test_handle_notification_sent_broadcasts_when_connected() -> None:
     assert call_kwargs["agent_ids"] == [rid]
 
 
+@pytest.mark.asyncio
+async def test_handle_notification_acked_broadcasts_using_agent_id() -> None:
+    """ACKED events carry `agent_id`, not `recipient_id`; the shared handler
+    must still forward (to the acking agent) rather than log 'Incomplete
+    notification event' on every acknowledgement."""
+    nid = uuid4()
+    aid = uuid4()
+    event = _evt(
+        EventType.NOTIFICATION_ACKED,
+        {"notification_id": str(nid), "agent_id": str(aid), "ack_type": "read"},
+    )
+    bcast = AsyncMock()
+    with (
+        patch("roboco.api.websocket_bridge.broadcast_notification", bcast),
+        patch("roboco.api.websocket_bridge.manager") as mgr,
+    ):
+        mgr.notification_connections = {aid: {"socket-1"}}
+        await _handle_notification_sent(event)
+    bcast.assert_awaited_once()
+    call_kwargs = bcast.await_args.kwargs
+    assert call_kwargs["notification_id"] == nid
+    assert call_kwargs["agent_ids"] == [aid]
+
+
 # ---------------------------------------------------------------------------
 # _handle_session_event
 # ---------------------------------------------------------------------------

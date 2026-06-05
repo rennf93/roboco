@@ -22,7 +22,11 @@ async def _handle_notification_sent(event: Event) -> None:
     data = event.data
 
     notification_id_str = data.get("notification_id")
-    recipient_id_str = data.get("recipient_id")
+    # SENT events carry `recipient_id`; ACKED events carry `agent_id` (the
+    # agent who acknowledged). This handler serves both, so accept either —
+    # otherwise every acknowledgement logged a spurious "Incomplete
+    # notification event" and never reached the panel.
+    recipient_id_str = data.get("recipient_id") or data.get("agent_id")
     notification_type = data.get("type", "unknown")
     subject = data.get("subject", "")
     priority = data.get("priority", "normal")
