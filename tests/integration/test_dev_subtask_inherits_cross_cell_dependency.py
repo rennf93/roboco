@@ -77,13 +77,21 @@ async def fanout_setup(db_session: AsyncSession) -> AsyncIterator[dict]:
         assigned_cell=Team.UX_UI,
         created_by=system.id,
     )
+    be_project = ProjectTable(
+        id=uuid4(),
+        name="BE",
+        slug=f"be-{uuid4().hex[:6]}",
+        git_url="https://example.com/be.git",
+        assigned_cell=Team.BACKEND,
+        created_by=system.id,
+    )
     product = ProductTable(
         id=uuid4(),
         name="Prod",
         slug=f"prod-{uuid4().hex[:6]}",
         created_by=system.id,
     )
-    db_session.add_all([fe_project, ux_project, product])
+    db_session.add_all([fe_project, ux_project, be_project, product])
     await db_session.flush()
 
     svc = TaskService(db_session)
@@ -105,6 +113,7 @@ async def fanout_setup(db_session: AsyncSession) -> AsyncIterator[dict]:
         "fe_dev_id": fe_dev.id,
         "fe_project_id": fe_project.id,
         "ux_project_id": ux_project.id,
+        "be_project_id": be_project.id,
         "product_id": product.id,
     }
 
@@ -241,3 +250,128 @@ async def test_dependent_cell_sequence_follows_upstream_ux(
     assert fe_row.sequence == (ux_row.sequence or 0) + 1, (
         "the dependent frontend task must sort one step after its UX upstream"
     )
+
+
+@pytest.mark.asyncio
+async def test_backend_cell_also_depends_on_ux(fanout_setup: dict) -> None:
+    """UX/UI design defines the API contracts the backend builds against, so a
+    backend cell task in the same fan-out also waits on the UX cell task and
+    sorts after it."""
+    svc: TaskService = fanout_setup["svc"]
+    choreo: Choreographer = fanout_setup["choreo"]
+    tree = await _build_product_fanout(fanout_setup)
+    root = tree["root"]
+    ux_cell = tree["ux_cell"]
+
+    be_cell = await svc.create_subtask(
+        TaskCreateRequest(
+            title="Backend implementation for the feature",
+            description="a real backend cell task description over twenty chars",
+            acceptance_criteria=["endpoints satisfy the contract"],
+            team=Team.BACKEND,
+            created_by=fanout_setup["creator"],
+            project_id=fanout_setup["be_project_id"],
+            product_id=fanout_setup["product_id"],
+            parent_task_id=root.id,
+            task_type=TaskType.CODE,
+            nature=TaskNature.TECHNICAL,
+            estimated_complexity=Complexity.MEDIUM,
+        )
+    )
+    # Forward order: the backend cell is delegated after the UX cell exists.
+    await choreo._wire_ux_frontend_dependency(be_cell, root)
+    await svc.session.flush()
+
+    be_row = await svc.get(be_cell.id)
+    ux_row = await svc.get(ux_cell.id)
+    assert be_row is not None and ux_row is not None
+    assert ux_cell.id in be_row.dependency_ids, (
+        "backend cell task must depend on the UX cell task"
+    )
+    assert be_row.sequence == (ux_row.sequence or 0) + 1, (
+        "the backend task must sort one step after its UX upstream"
+    )
+
+
+@pytest.mark.asyncio
+async def test_pending_impl_cells_retrowired_when_ux_arrives_later(
+    fanout_setup: dict,
+) -> None:
+    """When the UX cell task is delegated AFTER still-pending frontend and
+    backend siblings, both are retro-wired onto UX and sorted after it — the
+    'either delegation order' guarantee, for both implementation cells."""
+    svc: TaskService = fanout_setup["svc"]
+    choreo: Choreographer = fanout_setup["choreo"]
+
+    root = await svc.create(
+        TaskCreateRequest(
+            title="Build the feature (board fan-out)",
+            description="a real coordination task description over twenty chars",
+            acceptance_criteria=["delegated to frontend + backend + ux_ui cells"],
+            team=Team.BOARD,
+            created_by=fanout_setup["creator"],
+            project_id=None,
+            product_id=fanout_setup["product_id"],
+            task_type=TaskType.CODE,
+            nature=TaskNature.NON_TECHNICAL,
+            estimated_complexity=Complexity.HIGH,
+        )
+    )
+    fe_cell = await svc.create_subtask(
+        TaskCreateRequest(
+            title="Frontend implementation for the feature",
+            description="a real frontend cell task description over twenty chars",
+            acceptance_criteria=["UI matches the design"],
+            team=Team.FRONTEND,
+            created_by=fanout_setup["creator"],
+            project_id=fanout_setup["fe_project_id"],
+            product_id=fanout_setup["product_id"],
+            parent_task_id=root.id,
+            task_type=TaskType.CODE,
+            nature=TaskNature.TECHNICAL,
+            estimated_complexity=Complexity.MEDIUM,
+        )
+    )
+    be_cell = await svc.create_subtask(
+        TaskCreateRequest(
+            title="Backend implementation for the feature",
+            description="a real backend cell task description over twenty chars",
+            acceptance_criteria=["endpoints satisfy the contract"],
+            team=Team.BACKEND,
+            created_by=fanout_setup["creator"],
+            project_id=fanout_setup["be_project_id"],
+            product_id=fanout_setup["product_id"],
+            parent_task_id=root.id,
+            task_type=TaskType.CODE,
+            nature=TaskNature.TECHNICAL,
+            estimated_complexity=Complexity.MEDIUM,
+        )
+    )
+    # UX is delegated LAST — both pending implementation cells must be wired.
+    ux_cell = await svc.create_subtask(
+        TaskCreateRequest(
+            title="UX/UI design for the feature",
+            description="a real ux design task description over twenty chars",
+            acceptance_criteria=["wireframes approved"],
+            team=Team.UX_UI,
+            created_by=fanout_setup["creator"],
+            project_id=fanout_setup["ux_project_id"],
+            product_id=fanout_setup["product_id"],
+            parent_task_id=root.id,
+            task_type=TaskType.DESIGN,
+            nature=TaskNature.TECHNICAL,
+            estimated_complexity=Complexity.MEDIUM,
+        )
+    )
+    await choreo._wire_ux_frontend_dependency(ux_cell, root)
+    await svc.session.flush()
+
+    fe_row = await svc.get(fe_cell.id)
+    be_row = await svc.get(be_cell.id)
+    ux_row = await svc.get(ux_cell.id)
+    assert fe_row is not None and be_row is not None and ux_row is not None
+    assert ux_cell.id in fe_row.dependency_ids, "frontend must retro-wire onto UX"
+    assert ux_cell.id in be_row.dependency_ids, "backend must retro-wire onto UX"
+    expected_sequence = (ux_row.sequence or 0) + 1
+    assert fe_row.sequence == expected_sequence
+    assert be_row.sequence == expected_sequence

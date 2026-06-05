@@ -3359,13 +3359,13 @@ class Choreographer:
         return value.value if hasattr(value, "value") else str(value)
 
     async def _wire_ux_frontend_dependency(self, new_task: Any, parent: Any) -> None:
-        """Cross-cell sequencing: in a product fan-out the FRONTEND cell task
-        depends on the UX/UI cell task — UX design is upstream of frontend
-        implementation, while backend runs in parallel. Wires the dependency in
-        either delegation order. A dev/code subtask delegated under a cell task
-        that is itself still waiting on that dependency inherits it, so the
-        developer is held until UX is done instead of coding ahead of the
-        design. Best-effort: never breaks delegate.
+        """Cross-cell sequencing: in a product fan-out the implementation cells
+        (FRONTEND and BACKEND) depend on the UX/UI cell task — UX design defines
+        the screens and API contracts both cells build against, so it is upstream
+        of implementation. Wires the dependency in either delegation order. A
+        dev/code subtask delegated under a cell task that is itself still waiting
+        on that dependency inherits it, so the developer is held until UX is done
+        instead of coding ahead of the design. Best-effort: never breaks delegate.
         """
         if parent is None or getattr(parent, "product_id", None) is None:
             return
@@ -3378,11 +3378,14 @@ class Choreographer:
             await self.task.inherit_unmet_dependencies(new_task.id, parent.id)
             if nt_team == Team.FRONTEND.value:
                 await self._depend_frontend_on_ux(new_task, parent.id)
+            elif nt_team == Team.BACKEND.value:
+                await self._depend_backend_on_ux(new_task, parent.id)
             elif nt_team == Team.UX_UI.value:
                 await self._depend_pending_frontends_on_ux(new_task, parent.id)
+                await self._depend_pending_backends_on_ux(new_task, parent.id)
         except Exception as exc:
             logger.warning(
-                "cross-cell UX->FE sequencing wiring failed",
+                "cross-cell UX->implementation sequencing wiring failed",
                 error=str(exc),
                 parent_task_id=str(getattr(parent, "id", None)),
             )
@@ -3410,6 +3413,29 @@ class Choreographer:
                 fe_task.id, (getattr(ux, "sequence", 0) or 0) + 1
             )
 
+    async def _depend_backend_on_ux(self, be_task: Any, parent_id: Any) -> None:
+        """Make a new BACKEND cell task wait on its non-terminal UX/UI sibling."""
+        from roboco.foundation.identity import Team
+        from roboco.models.base import TaskStatus
+
+        terminal = {TaskStatus.COMPLETED, TaskStatus.CANCELLED}
+        siblings = await self.task.get_subtasks(parent_id)
+        ux = next(
+            (
+                s
+                for s in siblings
+                if self._team_value(s.team) == Team.UX_UI.value
+                and s.id != be_task.id
+                and s.status not in terminal
+            ),
+            None,
+        )
+        if ux is not None:
+            await self.task.add_dependency(be_task.id, ux.id)
+            await self.task.set_sequence(
+                be_task.id, (getattr(ux, "sequence", 0) or 0) + 1
+            )
+
     async def _depend_pending_frontends_on_ux(
         self, ux_task: Any, parent_id: Any
     ) -> None:
@@ -3428,6 +3454,25 @@ class Choreographer:
             ):
                 await self.task.add_dependency(fe.id, ux_task.id)
                 await self.task.set_sequence(fe.id, ux_sequence)
+
+    async def _depend_pending_backends_on_ux(
+        self, ux_task: Any, parent_id: Any
+    ) -> None:
+        """Retro-wire not-yet-started BACKEND siblings onto a new UX/UI task."""
+        from roboco.foundation.identity import Team
+        from roboco.models.base import TaskStatus
+
+        not_started = {TaskStatus.BACKLOG, TaskStatus.PENDING}
+        ux_sequence = (getattr(ux_task, "sequence", 0) or 0) + 1
+        siblings = await self.task.get_subtasks(parent_id)
+        for be in siblings:
+            if (
+                self._team_value(be.team) == Team.BACKEND.value
+                and be.id != ux_task.id
+                and be.status in not_started
+            ):
+                await self.task.add_dependency(be.id, ux_task.id)
+                await self.task.set_sequence(be.id, ux_sequence)
 
     async def _resolve_subtask_project(
         self, parent: Any, inputs: DelegateInputs
