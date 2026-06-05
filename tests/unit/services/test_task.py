@@ -679,3 +679,35 @@ async def test_ensure_branch_raises_when_neither_project_nor_product() -> None:
     task = MagicMock(branch_name=None, project_id=None, product_id=None)
     with pytest.raises(ValueError, match="project_id"):
         await svc._ensure_branch_for_task(task, uuid4())
+
+
+# ---------------------------------------------------------------------------
+# _resolve_doc_abspath — normalize documenter-supplied paths under /app/docs
+# ---------------------------------------------------------------------------
+
+
+def test_resolve_doc_abspath_strips_redundant_docs_prefix() -> None:
+    """A `docs/`-rooted relative path must not double the base segment.
+
+    DOCS_BASE_PATH is /app/docs; joining it with `docs/design/x.md` produced
+    /app/docs/docs/design/x.md, so the file was never found and never indexed.
+    """
+    assert (
+        TaskService._resolve_doc_abspath("docs/design/spec.md")
+        == "/app/docs/design/spec.md"
+    )
+
+
+def test_resolve_doc_abspath_keeps_plain_relative_path() -> None:
+    """A relative path with no `docs/` prefix joins under the base unchanged."""
+    assert (
+        TaskService._resolve_doc_abspath("design/spec.md") == "/app/docs/design/spec.md"
+    )
+
+
+def test_resolve_doc_abspath_passes_absolute_path_through() -> None:
+    """An already-absolute path is trusted as-is (no re-rooting)."""
+    assert (
+        TaskService._resolve_doc_abspath("/app/docs/design/spec.md")
+        == "/app/docs/design/spec.md"
+    )

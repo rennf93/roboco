@@ -1719,13 +1719,33 @@ class TaskService(BaseService):
                 error=str(e),
             )
 
+    @staticmethod
+    def _resolve_doc_abspath(rel_path: str) -> str:
+        """Resolve a documenter-supplied doc path to its on-disk absolute path.
+
+        Docs live under ``DOCS_BASE_PATH`` (``/app/docs``). Agents sometimes
+        hand a path already rooted at ``docs/`` (or an absolute path); joining
+        ``DOCS_BASE_PATH`` with a ``docs/``-prefixed relative path doubles the
+        segment (``/app/docs/docs/...``), so the file is never found and the
+        docs never index into RAG. Normalize: trust an absolute path; otherwise
+        strip a single redundant leading ``docs/`` before joining.
+        """
+        from pathlib import Path
+
+        from roboco.services.docs import DOCS_BASE_PATH
+
+        path = Path(rel_path)
+        if path.is_absolute():
+            return str(path)
+        parts = path.parts
+        if parts and parts[0] == DOCS_BASE_PATH.name:
+            path = Path(*parts[1:]) if len(parts) > 1 else Path()
+        return str(DOCS_BASE_PATH / path)
+
     async def _index_docs_background(
         self, task_id: UUID, documents: list[dict[str, Any]]
     ) -> None:
         """Index documentation from completed doc task (fire-and-forget)."""
-        from pathlib import Path
-
-        from roboco.services.docs import DOCS_BASE_PATH
         from roboco.services.optimal import get_optimal_service
 
         try:
@@ -1736,8 +1756,7 @@ class TaskService(BaseService):
             for d in documents:
                 rel_path = d.get("path")
                 if rel_path:
-                    absolute_path = str(DOCS_BASE_PATH / Path(rel_path))
-                    doc_paths.append(absolute_path)
+                    doc_paths.append(self._resolve_doc_abspath(rel_path))
 
             if doc_paths:
                 count = await optimal.index_documentation(doc_paths, project="roboco")
