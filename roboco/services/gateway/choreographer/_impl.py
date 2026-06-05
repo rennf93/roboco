@@ -3406,6 +3406,9 @@ class Choreographer:
         )
         if ux is not None:
             await self.task.add_dependency(fe_task.id, ux.id)
+            await self.task.set_sequence(
+                fe_task.id, (getattr(ux, "sequence", 0) or 0) + 1
+            )
 
     async def _depend_pending_frontends_on_ux(
         self, ux_task: Any, parent_id: Any
@@ -3415,6 +3418,7 @@ class Choreographer:
         from roboco.models.base import TaskStatus
 
         not_started = {TaskStatus.BACKLOG, TaskStatus.PENDING}
+        ux_sequence = (getattr(ux_task, "sequence", 0) or 0) + 1
         siblings = await self.task.get_subtasks(parent_id)
         for fe in siblings:
             if (
@@ -3423,6 +3427,7 @@ class Choreographer:
                 and fe.status in not_started
             ):
                 await self.task.add_dependency(fe.id, ux_task.id)
+                await self.task.set_sequence(fe.id, ux_sequence)
 
     async def _resolve_subtask_project(
         self, parent: Any, inputs: DelegateInputs

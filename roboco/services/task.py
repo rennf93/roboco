@@ -4294,6 +4294,23 @@ class TaskService(BaseService):
             task.dependency_ids = [*task.dependency_ids, depends_on_id]
             await self.session.flush()
 
+    async def set_sequence(self, task_id: UUID, sequence: int) -> None:
+        """Set a task's sibling-ordering sequence (lower = first).
+
+        `sequence` is a display / dispatch-priority field only — it orders
+        siblings in `list_pending`, `list_for_team`, and the panel and carries
+        no claim-gating semantics (dependencies gate claims). Cross-cell
+        fan-out uses it so an upstream design task sorts ahead of the
+        implementation tasks that depend on it. No-op if the task is gone or
+        already at `sequence`.
+        """
+        task = await self.get(task_id)
+        if task is None:
+            return
+        if task.sequence != sequence:
+            task.sequence = sequence
+            await self.session.flush()
+
     async def unmet_dependency_ids(self, dependency_ids: list[UUID]) -> list[UUID]:
         """Return the subset of dependency IDs whose status is non-terminal.
 

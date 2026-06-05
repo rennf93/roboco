@@ -224,3 +224,20 @@ async def test_dev_subtask_held_until_ux_dependency_resolves(
     assert dev_subtask.id in pending_after_ids, (
         "dev subtask must become dispatchable once UX reaches a terminal state"
     )
+
+
+@pytest.mark.asyncio
+async def test_dependent_cell_sequence_follows_upstream_ux(
+    fanout_setup: dict,
+) -> None:
+    """The frontend cell task sorts after its UX upstream: wiring the
+    dependency also bumps its sequence to the UX task's sequence + 1, so
+    list ordering and the panel show UX before the work it gates."""
+    svc: TaskService = fanout_setup["svc"]
+    tree = await _build_product_fanout(fanout_setup)
+    ux_row = await svc.get(tree["ux_cell"].id)
+    fe_row = await svc.get(tree["fe_cell"].id)
+    assert ux_row is not None and fe_row is not None
+    assert fe_row.sequence == (ux_row.sequence or 0) + 1, (
+        "the dependent frontend task must sort one step after its UX upstream"
+    )
