@@ -4,7 +4,7 @@ Operating the AI company after deployment.
 
 ## The Organization
 
-18 AI agents organized as a company:
+19 AI agents organized as a company:
 
 ```
 CEO (You)
@@ -15,7 +15,7 @@ CEO (You)
         └── Main PM
             ├── Backend Cell (PM, 2 Devs, QA, Documenter)
             ├── Frontend Cell (PM, 2 Devs, QA, Documenter)
-            └── UX/UI Cell (PM, Dev, QA, Documenter)
+            └── UX/UI Cell (PM, 2 Devs, QA, Documenter)
 ```
 
 ## Agent IDs
@@ -63,7 +63,7 @@ uv run python -m roboco.cli --spawn \
 
 ```bash
 # Via API
-curl http://localhost:8000/api/v1/orchestrator/status | jq
+curl http://localhost:8000/api/orchestrator/status | jq
 
 # Via Docker
 docker ps --filter "name=roboco-agent"
@@ -94,14 +94,24 @@ docker ps --filter "name=roboco-agent" -q | xargs docker stop
 
 ## Creating Tasks
 
+`POST /api/tasks` has no silent defaults — `title`, `description` (min 20
+chars), `acceptance_criteria` (at least one), `team`, `task_type`, `nature`,
+and `estimated_complexity` are all required, plus exactly one of `project_id`
+(the repo this task targets) or `product_id` (a cell→project map for a fan-out
+task). See the `TaskCreate` schema in `roboco/models/task.py` (or the Swagger
+UI at `/docs`) for the full field list and enum values.
+
 ```bash
-curl -X POST http://localhost:8000/api/v1/tasks \
+curl -X POST http://localhost:8000/api/tasks \
   -H "Content-Type: application/json" \
   -d '{
     "title": "Implement user authentication",
-    "description": "Add JWT-based auth to the API",
+    "description": "Add JWT-based auth to the API endpoints",
     "team": "backend",
-    "complexity": "medium",
+    "task_type": "code",
+    "nature": "technical",
+    "estimated_complexity": "medium",
+    "project_id": "<project-uuid>",
     "acceptance_criteria": [
       "Users can register",
       "Users can login",
@@ -110,19 +120,23 @@ curl -X POST http://localhost:8000/api/v1/tasks \
   }'
 ```
 
+Enum values: `task_type` ∈ {`code`, `documentation`, `research`, `planning`,
+`design`, `administrative`}; `nature` ∈ {`technical`, `non_technical`};
+`estimated_complexity` ∈ {`low`, `medium`, `high`}.
+
 ## Task Lifecycle
 
 ```
-pending → claimed → in_progress → verifying → awaiting_qa → awaiting_docs → completed
+pending → claimed → in_progress → verifying → awaiting_qa → awaiting_documentation → completed
                          ↓
                     blocked/paused
 ```
 
 Agents automatically:
-1. Scan for pending tasks (`roboco_task_scan`)
-2. Claim tasks they can work on
+1. Pull pending work via the gateway verb `give_me_work()`
+2. Claim it with `i_will_work_on(task_id)` (auto-creates the feature branch)
 3. Follow the workflow: UNDERSTAND → PLAN → EXECUTE → VERIFY → NOTES
-4. Submit for QA when done
+4. Open a PR and submit for QA when done (`open_pr` / `i_am_done`)
 5. Move to next task
 
 ## API Endpoints
@@ -131,10 +145,10 @@ Agents automatically:
 |----------|-------------|
 | `GET /health` | Health check |
 | `GET /docs` | Swagger UI |
-| `GET /api/v1/orchestrator/status` | Agent states |
-| `GET /api/v1/tasks` | List tasks |
-| `POST /api/v1/tasks` | Create task |
-| `GET /api/v1/tasks/{id}` | Task details |
+| `GET /api/orchestrator/status` | Agent states |
+| `GET /api/tasks` | List tasks |
+| `POST /api/tasks` | Create task |
+| `GET /api/tasks/{id}` | Task details |
 
 ## Viewing the API
 
@@ -158,10 +172,19 @@ uv run python -m roboco.cli --spawn main-pm be-dev-1 be-qa
 ### Create and Monitor a Task
 
 ```bash
-# Create task
-curl -X POST http://localhost:8000/api/v1/tasks \
+# Create task (all fields below are required — see POST /api/tasks schema)
+curl -X POST http://localhost:8000/api/tasks \
   -H "Content-Type: application/json" \
-  -d '{"title": "Fix login bug", "team": "backend", "complexity": "trivial"}'
+  -d '{
+    "title": "Fix login bug",
+    "description": "Login fails on expired-token refresh path",
+    "team": "backend",
+    "task_type": "code",
+    "nature": "technical",
+    "estimated_complexity": "low",
+    "project_id": "<project-uuid>",
+    "acceptance_criteria": ["Expired token refreshes without 500"]
+  }'
 
 # Watch agent pick it up
 docker logs -f roboco-agent-be-dev-1
@@ -183,7 +206,7 @@ docker compose down
 
 ### Start Small
 
-Don't spawn all 18 agents at once. Start with:
+Don't spawn all 19 agents at once. Start with:
 1. `main-pm` alone - verify spawning works
 2. Add `be-dev-1` - verify task claiming
 3. Add `be-qa` - verify full workflow
@@ -192,7 +215,7 @@ Don't spawn all 18 agents at once. Start with:
 
 ```bash
 # Quick status
-curl -s http://localhost:8000/api/v1/orchestrator/status | jq '.agents'
+curl -s http://localhost:8000/api/orchestrator/status | jq '.agents'
 
 # Detailed container info
 docker inspect roboco-agent-be-dev-1
@@ -213,7 +236,7 @@ docker logs -f roboco-agent-be-dev-1
 Each agent container uses ~500MB-2GB RAM depending on context. With 128GB RAM:
 - 3 agents: ~6GB
 - 6 agents: ~12GB
-- 18 agents: ~36GB
+- 19 agents: ~38GB
 
 Monitor with:
 ```bash
