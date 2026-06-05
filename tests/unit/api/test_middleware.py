@@ -4,10 +4,16 @@ from __future__ import annotations
 
 from http import HTTPStatus
 
+# UUID annotates a Pydantic model field below, so it must stay a runtime import
+# (Pydantic resolves the annotation when building the model) despite `from
+# __future__ import annotations` making it look type-checking-only to ruff.
+from uuid import UUID  # noqa: TC003
+
 from fastapi import FastAPI, HTTPException
 from fastapi.testclient import TestClient
 from pydantic import BaseModel
 from roboco.api.middleware import (
+    _uuid_field_remediation,
     get_status_code,
     setup_middleware,
 )
@@ -191,6 +197,62 @@ def test_generic_exception_returns_500() -> None:
     assert response.status_code == HTTPStatus.INTERNAL_SERVER_ERROR
     body = response.json()
     assert "error" in body
+
+
+# ---------------------------------------------------------------------------
+# _uuid_field_remediation + truncated-task_id 422 remediation
+# ---------------------------------------------------------------------------
+
+
+def test_uuid_field_remediation_hits_truncated_task_id() -> None:
+    errors = [{"loc": ("body", "task_id"), "type": "uuid_parsing", "msg": "bad"}]
+    hint = _uuid_field_remediation(errors)
+    assert hint is not None
+    assert "full" in hint.lower()
+    assert "uuid" in hint.lower()
+
+
+def test_uuid_field_remediation_ignores_other_field_errors() -> None:
+    errors = [{"loc": ("body", "title"), "type": "string_too_short", "msg": "x"}]
+    assert _uuid_field_remediation(errors) is None
+
+
+def test_uuid_field_remediation_ignores_non_uuid_task_id_errors() -> None:
+    errors = [{"loc": ("body", "task_id"), "type": "missing", "msg": "required"}]
+    assert _uuid_field_remediation(errors) is None
+
+
+class _TaskIdBody(BaseModel):
+    task_id: UUID
+
+
+def _make_uuid_app() -> FastAPI:
+    app = FastAPI()
+
+    @app.post("/needs-uuid")
+    async def _need(body: _TaskIdBody) -> dict:
+        return {"task_id": str(body.task_id)}
+
+    setup_middleware(app)
+    return app
+
+
+def test_truncated_task_id_422_carries_remediation() -> None:
+    """An 8-char task_id (the recurring agent mistake) returns 422 + remediate."""
+    client = TestClient(_make_uuid_app(), raise_server_exceptions=False)
+    response = client.post("/needs-uuid", json={"task_id": "cee99ecc"})
+    assert response.status_code == HTTPStatus.UNPROCESSABLE_ENTITY
+    body = response.json()
+    assert "remediate" in body
+    assert "full" in body["remediate"].lower()
+
+
+def test_other_validation_422_omits_remediation() -> None:
+    """A non-task_id validation error keeps the standard 422 shape (no remediate)."""
+    client = TestClient(_make_uuid_app(), raise_server_exceptions=False)
+    response = client.post("/needs-uuid", json={})  # missing task_id entirely
+    assert response.status_code == HTTPStatus.UNPROCESSABLE_ENTITY
+    assert "remediate" not in response.json()
 
 
 def test_request_validation_handler_returns_422_with_details() -> None:

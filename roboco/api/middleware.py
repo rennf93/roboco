@@ -6,8 +6,8 @@ Request/response middleware for logging, error handling, and correlation IDs.
 
 import time
 import uuid
-from collections.abc import Callable
-from typing import cast
+from collections.abc import Callable, Sequence
+from typing import Any, cast
 
 import structlog
 from fastapi import FastAPI, HTTPException, Request, Response
@@ -303,6 +303,29 @@ async def http_exception_handler(request: Request, exc: Exception) -> JSONRespon
 # =============================================================================
 
 
+def _uuid_field_remediation(errors: Sequence[Any]) -> str | None:
+    """Spell out the fix when a truncated id is sent where a UUID is required.
+
+    Agents routinely copy the 8-character task prefix the system shows them
+    (e.g. the ``[cee99ecc]`` commit prefix) and send it as ``task_id``, which
+    fails UUID validation with an opaque "invalid length" message and wastes a
+    call. Detect that case and hand back an actionable remediation instead.
+    """
+    for err in errors:
+        if not isinstance(err, dict):
+            continue
+        loc = err.get("loc") or ()
+        field = loc[-1] if loc else None
+        if field == "task_id" and "uuid" in str(err.get("type", "")).lower():
+            return (
+                "Use the FULL 36-character task UUID, not the 8-character short "
+                "form shown in commit prefixes or summaries. The full id is in "
+                "the `task_id` field of the envelope returned by give_me_work "
+                "or your most recent verb."
+            )
+    return None
+
+
 async def request_validation_handler(request: Request, exc: Exception) -> JSONResponse:
     """Log the rejected body before returning the standard 422 response.
 
@@ -310,19 +333,27 @@ async def request_validation_handler(request: Request, exc: Exception) -> JSONRe
     nothing lands in server logs. During smoke tests this leaves us
     blind to which field actually broke. Log the body + the per-field
     errors so the next 422 is debuggable in one log scan.
+
+    When the failure is a truncated ``task_id`` (the recurring agent mistake),
+    add a ``remediate`` hint so the agent knows to retry with the full UUID.
     """
     rve = cast("RequestValidationError", exc)
     body = rve.body if isinstance(rve.body, str | bytes | dict | list) else None
+    errors = rve.errors()
     logger.warning(
         "Request validation failed",
         path=request.url.path,
         method=request.method,
         body=body,
-        errors=rve.errors(),
+        errors=errors,
     )
+    content: dict[str, Any] = {"detail": errors, "body": body}
+    remediate = _uuid_field_remediation(errors)
+    if remediate is not None:
+        content["remediate"] = remediate
     return JSONResponse(
         status_code=http_status.HTTP_422_UNPROCESSABLE_ENTITY,
-        content={"detail": rve.errors(), "body": body},
+        content=content,
     )
 
 
