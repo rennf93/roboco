@@ -1,111 +1,132 @@
 # Task Management Tools
 
-## Core Operations
+There is **no** `roboco_task_*` tool surface. Tasks move through the
+lifecycle via **flow verbs** on the `roboco-flow` MCP server. Each verb is
+role-scoped — you only see the ones your role is allowed to call (the
+spawn manifest registers them per role). Every verb returns an
+**Envelope** whose `next` field tells you what to call next; trust it
+rather than guessing state.
 
-| Tool | Purpose |
-|------|---------|
-| `roboco_task_get` | Get task details |
-| `roboco_task_scan` | Find available tasks |
-| `roboco_task_claim` | Take ownership |
-| `roboco_task_unclaim` | Release claimed task |
-| `roboco_task_start` | Begin work |
+The verbs below are grouped by who calls them.
 
-## Task Retrieval
-
-```python
-# Get specific task
-task = roboco_task_get(task_id)
-
-# Scan for available tasks
-tasks = roboco_task_scan(
-    team="backend",        # Optional filter
-    status="pending"       # Optional filter
-)
-```
-
-## Task Lifecycle
+## Developer flow
 
 ```python
-# Claim task
-roboco_task_claim(task_id)
-
-# Release if you shouldn't work on it
-roboco_task_unclaim(task_id)
-roboco_task_unclaim(task_id, hand_off_to="be-dev-2")
-
-# Start work (also resumes paused tasks)
-roboco_task_start(task_id)
-
-# Pause work
-roboco_task_pause(task_id, reason="Waiting for clarification")
-
-# Resume paused work (use start)
-roboco_task_start(task_id)  # Works on paused tasks
-
-# Block (waiting on another task)
-roboco_task_block(task_id, blocker_task_id, reason)
-
-# Unblock (PM only)
-roboco_task_unblock(task_id)
+give_me_work()                  # returns your most-actionable pending task
+i_will_work_on(task_id, plan="...")
+                                # claims + sets plan + starts; auto-creates and
+                                # checks out feature/{team}/{task-hierarchy}
+commit(message, files=None)     # content tool — repeat per change (auto-pushed)
+open_pr(task_id)                # pushes branch + opens the PR
+i_am_done(task_id, notes="")    # verifying -> awaiting_qa (PR must already be open)
+i_am_blocked(task_id, reason)   # external dependency; cell PM unblocks
+unclaim(task_id)                # release a claimed task back to the queue
+resume(task_id)                 # recover a paused task after compact/restart
+i_am_idle()                     # no work in your queue right now
 ```
 
-## Submission
+There is no separate claim / start / pause verb — `i_will_work_on`
+composes claim + set-plan + start atomically, and `i_am_done` composes
+verify + submit-qa. Branches are auto-created on `i_will_work_on`; do not
+checkout by hand.
+
+## QA flow
 
 ```python
-# Submit for verification
-roboco_task_submit_verification(task_id)
-
-# Submit for QA
-roboco_task_submit_qa(task_id, notes)
-
-# QA actions
-roboco_task_qa_pass(task_id, {notes: "..."})
-roboco_task_qa_fail(task_id, {notes: "...", issues: [...]})
-
-# Documentation complete
-roboco_task_docs_complete(task_id)
-
-# PM complete
-roboco_task_complete(task_id)
+give_me_work()                  # returns an awaiting_qa task
+claim_review(task_id)           # claim for review (auto-checks-out dev branch)
+pass(task_id, notes)            # awaiting_qa -> awaiting_documentation
+fail(task_id, issues=[...])     # awaiting_qa -> needs_revision (dev gets it back)
+unclaim(task_id) / resume(task_id) / i_am_idle()
 ```
 
-## PM Operations
+`notes` (on pass) and `issues` (on fail) must be substantive — the
+enforcement layer rejects empty or near-empty content. QA cannot review
+its own dev work (self-review guard rejects on `claim_review`).
+
+## Documenter flow
 
 ```python
-# Create SUBTASK (most common)
-roboco_task_create({
-    title: "Implement auth endpoint",
-    parent_task_id: my_task_id,  # REQUIRED for subtasks
-    team: "backend",
-    assigned_to: "be-dev-1"      # Use SLUG
-})
-
-# Create standalone task (rare)
-roboco_task_create({
-    title: "...",
-    team: "backend",
-    status: "backlog"
-})
-
-# Activate (backlog -> pending)
-roboco_task_activate(task_id)
-
-# Cancel
-roboco_task_cancel(task_id, reason)
-
-# Plan
-roboco_task_plan(task_id, approach, steps)
-
-# Escalate to CEO (parent tasks only)
-roboco_task_escalate_to_ceo(task_id, notes)
+give_me_work()                  # returns an awaiting_documentation task
+claim_doc_task(task_id)         # claim the doc phase
+commit(message, files)          # commit the doc files you write
+i_documented(task_id, notes, files)
+                                # awaiting_documentation -> awaiting_pm_review
 ```
 
-**CRITICAL**: When creating subtasks, ALWAYS include `parent_task_id`. Without it, you create orphan sibling tasks instead of linked subtasks.
+Documentation tasks are **not** delegated — the lifecycle auto-creates
+the doc phase after a code task passes QA.
 
-**Note**: `roboco_task_escalate_to_ceo` only works on parent tasks (tasks without a `parent_task_id`). Subtasks must have their parent task escalated instead.
-
-## Progress Updates
+## Cell PM flow
 
 ```python
-roboco_task_progress(task_id, "Implementing API", 50)
+triage()                        # list actionable tasks in your cell
+i_will_plan(task_id, plan, approach)
+                                # claim + plan + start a parent task
+delegate(parent_task_id, title, description, assigned_to, team,
+         task_type, nature, estimated_complexity, acceptance_criteria)
+                                # create a subtask under the current task
+unblock(task_id)                # blocked -> in_progress (PM only)
+submit_up(task_id, notes)       # open cell->root PR; -> awaiting_pm_review
+complete(task_id, notes)        # awaiting_pm_review -> completed (merges leaf PR)
+escalate_up(task_id, reason)    # escalate to your escalation target
 ```
+
+**Delegation rules** (enforced): `main_pm -> cell_pm`; `cell_pm -> its
+team's devs`. Cell PMs receive planning-typed parent tasks; devs get
+code/research (UX devs also design). Always create subtasks via
+`delegate` with `parent_task_id` set — there is no standalone task-create
+verb for agents.
+
+## Main PM flow
+
+The Main PM has the Cell PM verbs **plus**:
+
+```python
+triage_all()                    # list actionable tasks across all teams
+escalate_to_ceo(task_id, reason)
+                                # awaiting_pm_review -> awaiting_ceo_approval
+give_me_work()                  # Main PM may also pull work directly
+```
+
+`complete` for the Main PM merges the **root** PR. Only the CEO merges to
+`master`; agents stop at `escalate_to_ceo`.
+
+## Board flow (Product Owner / Head of Marketing)
+
+```python
+triage()                        # list actionable tasks in scope
+escalate_to_ceo(task_id, reason)
+i_am_idle()
+```
+
+The Board **cannot** claim, create, complete, or cancel tasks. Strategic
+decisions are escalated to the CEO.
+
+## Auditor flow
+
+```python
+triage()                        # read-only list of actionable tasks
+i_am_idle()
+```
+
+The Auditor is a silent observer: read-only `triage`, no `say`/`dm`/
+`notify`, no claim/complete/cancel.
+
+## Cancel
+
+Cancelling a task (any non-terminal status -> `cancelled`) is restricted
+to **PM roles and the CEO**. There is no agent verb to cancel — it is a
+PM/CEO operation through the lifecycle.
+
+## Progress
+
+Record progress against your plan with the `progress` content tool (on
+`roboco-do`), not a task verb:
+
+```python
+progress(task_id, message="API skeleton landed", plan_step="2")
+```
+
+Your plan's steps are the progress checklist; the percentage is derived
+from completed steps — you do not set it.

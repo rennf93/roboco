@@ -2,73 +2,68 @@
 
 ## Overview
 
-Agents communicate directly via SDK Server (port 9000) for true peer-to-peer messaging.
+Agents collaborate directly through two content tools on the `roboco-do`
+MCP server: `dm` for agent-to-agent messages and `say` for channel posts.
+Use `channels()` to discover the channels you can post to.
 
-**Key:** A2A requires `task_id` - it's about existing tasks, NOT task creation.
+**Key:** A2A is about *existing* tasks, NOT task creation. Pass the
+`task_id` you're collaborating on so the message is linked to it.
 
 ## Flow
 
 ```
-1. Discover → roboco_agent_discover(role, team, skill)
-2. Request  → roboco_agent_request(target, skill, message, task_id)
-3. Check    → roboco_a2a_check() polls your inbox (auto-notified via hook)
-4. Respond  → Work on task or reply via roboco_agent_request
+1. Discover → channels()  lists the channels visible to you
+2. Reach out → dm(recipient, text, task_id)  for a direct message
+            → say(channel, text, task_id)    to post to your cell channel
+3. Receive  → notify_list() / notify_get(id)  to read your inbox
 ```
 
-## Delivery
-
-| Target State | Delivery | Creates Notification? |
-|--------------|----------|----------------------|
-| Online | Direct HTTP to SDK | NO |
-| Offline | Fallback via API | YES (spawns target) |
-
-## Example
+## Direct Messages (same cell only)
 
 ```python
-# Request code review for task ABC123
-result = roboco_agent_request(
-    target_agent="be-qa",
-    skill="code_review",
-    message="Please review my changes",
-    task_id="ABC123"
+# Direct A2A inside your cell (same team — no policy gate)
+dm(
+    recipient="be-qa",
+    text="Quick sanity check on the rate-limit boundary before I open the PR?",
+    task_id="<task>",
 )
-# result.delivery = "direct" or "notification"
-
-# Check for incoming messages
-inbox = roboco_a2a_check()
-# inbox.messages = [{from, task_id, skill, message, priority}, ...]
 ```
 
-## Urgency
+Cross-cell `dm` is **denied by policy**. If you need something from
+another cell, route it through your Cell PM via `escalate_up(task_id,
+reason)` — the PM coordinates across cells.
+
+## Channel Posts
 
 ```python
-roboco_agent_request(..., options={"urgent": True})  # Priority queue
+# Visible to your whole cell
+say(
+    channel="backend-cell",
+    text="Started on <task> — anyone hit the Redis failover path before?",
+    task_id="<task>",
+)
 ```
 
-## Agent Skills
-
-| Role | Skills |
-|------|--------|
-| Developer | `code_review`, `implementation`, `debugging`, `revision` |
-| QA | `code_review`, `testing`, `qa_review` |
-| Documenter | `documentation`, `api_docs` |
-| PM | `task_planning`, `coordination`, `clarification` |
+Call `channels()` first if you're unsure of the exact slug — it returns
+the channels you're allowed to post to, so you don't have to guess.
 
 ## Task Creation Rules
 
-**Only PMs can create tasks.**
+**Only PMs create tasks** (via the `delegate` verb). Regular agents
+cannot create work from a `dm` or `say`.
 
-If you receive an A2A request that needs new work:
-1. Escalate: `roboco_task_escalate(task_id, "Needs subtask for X")`
-2. PM decides whether to create subtask
+If a conversation surfaces work that needs a new task:
+1. Escalate to your Cell PM: `escalate_up(task_id, reason="Needs a subtask for X")`
+2. The PM decides whether to `delegate` a subtask
 
 ## Permissions
 
-All agents can:
-- Discover other agents
-- Send A2A requests (must include task_id)
-- Check request status
+Most roles can `dm` (same-cell) and `say` to their channels, plus read
+their inbox with `notify_list` / `notify_get`.
 
-All agents CANNOT:
-- Create tasks via A2A (no automatic task creation)
-- Send A2A without a task_id
+The **Auditor** is a silent observer: it can read (`notify_list`,
+`notify_get`, `channels`) but has **no** `say`, `dm`, or `notify` — it
+never communicates outwardly.
+
+Only PMs and the Board can send ack-required `notify` signals; regular
+agents use `say` and `dm` only.

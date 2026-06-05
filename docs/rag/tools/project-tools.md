@@ -1,115 +1,61 @@
-# Project Tools
+# Project & Workspace Tools
 
 ## Overview
 
-Project tools manage git repositories and agent workspaces.
+There is **no** `roboco_project_*` or `roboco_workspace_*` agent tool.
+Agents do **not** create projects, manage git tokens, or ensure
+workspaces. Those are handled for you:
 
-## List Projects
+- **Workspaces are auto-cloned by the orchestrator** (`WorkspaceService`).
+  Your per-agent clone of the project repo is created the first time you
+  claim work on it — you never call a workspace tool. Branches are
+  auto-created on `i_will_work_on()` / `claim_review()`; you don't run
+  `git checkout` either.
+- **Project registration and git-token management are operator actions**
+  done through the control panel / HTTP API, not from inside an agent
+  container. Tokens are encrypted at rest; the agent container never sees
+  the PAT (it is injected into git operations server-side and scrubbed
+  from URLs).
 
-```python
-roboco_project_list()           # All accessible projects
-roboco_project_list(cell="backend")  # Filter by cell
-```
+## What a task already tells you
 
-Returns projects you have access to (cell-scoped for non-PMs).
+A task carries its project linkage; you don't look it up with a tool. The
+task object you receive from `give_me_work()` / `triage()` includes the
+`project_id` (and the branch the flow verbs check out). Acceptance
+criteria and the project context come back inline on the Envelope.
 
-## Get Project Details
+## Inspecting the repo
 
-```python
-roboco_project_get(slug="roboco")
-```
-
-Returns: `name`, `git_url`, `assigned_cell`, `default_branch`, `has_git_token`, `test_command`, etc.
-
-**Note:** `has_git_token` indicates if authentication is configured (required for HTTPS repos).
-
-## Create Project (PM+ Only)
-
-```python
-# Example: register a separate frontend-only repo as a project.
-# (The built-in RoboCo control panel lives in this same repo under
-# panel/ and is NOT registered as a separate project.)
-roboco_project_create(
-    name="Customer Portal",
-    slug="customer-portal",
-    git_url="https://github.com/org/customer-portal.git",
-    assigned_cell="frontend",
-    git_token="ghp_xxxx...",  # GitHub PAT with repo scope
-    default_branch="main",
-    test_command="pnpm test",
-    lint_command="pnpm lint"
-)
-```
-
-**Who can create:** Main PM, Board, CEO
-
-**IMPORTANT:** `git_token` is **required** for HTTPS repositories. Without it, workspace creation and git operations will fail.
-
-## Update Project
+Read-only git inspection is available through the `roboco-git-readonly`
+MCP server (developers and QA):
 
 ```python
-roboco_project_update(
-    slug="roboco-panel",
-    git_token="ghp_newtoken...",  # Update/rotate token
-    test_command="pnpm test:ci",
-    lint_command="pnpm lint:fix"
-)
+roboco_git_status(project_slug="roboco")
+roboco_git_log(project_slug="roboco")
+roboco_git_diff(project_slug="roboco")
+roboco_git_branch_list(project_slug="roboco")
 ```
 
-**Who can update:**
-- CEO, Main PM: Any project
-- Cell PM: Own cell's projects only
+There is **no** `roboco_git_commit / _push / _checkout / _create_pr /
+_merge_pr` tool. Commits go through the `commit` content tool (auto-
+prefixed with `[task-id]`, auto-pushed by the choreographer); PRs open at
+`open_pr` time; merges are a PM `complete` operation.
 
-**Token rotation:** Pass `git_token` to update credentials. Pass empty string to clear.
+## Finding project knowledge
 
-## Workspace Tools
-
-### Ensure Workspace
+To learn how a project's codebase is laid out or how a subsystem works,
+query the knowledge base rather than a project tool:
 
 ```python
-roboco_workspace_ensure(project_slug="roboco")
+roboco_kb_search(query="rate limiting redis", project="roboco",
+                 index_types=["code", "documentation"])
+roboco_ask_mentor(question="How is auth wired up in this project?")
 ```
 
-Creates your workspace if it doesn't exist. Auto-clones the repository.
+## PM note: creating work
 
-### Check Workspace Status
-
-```python
-roboco_workspace_status(project_slug="roboco")
-```
-
-Returns: `exists`, `branch`, `has_uncommitted`, `staged_files`, `unstaged_files`
-
-### List Workspaces (PM Only)
-
-```python
-roboco_workspace_list(project_slug="roboco")
-```
-
-Lists all agent workspaces for a project. Cell PM sees own cell only.
-
-## Permission Matrix
-
-| Tool | Dev/QA/Doc | Cell PM | Main PM | CEO |
-|------|------------|---------|---------|-----|
-| `project_list` | Own cell | Own cell | All | All |
-| `project_get` | Yes | Yes | Yes | Yes |
-| `project_create` | No | No | Yes | Yes |
-| `project_update` | No | Own cell | All | All |
-| `workspace_ensure` | Yes | Yes | Yes | Yes |
-| `workspace_status` | Yes | Yes | Yes | Yes |
-| `workspace_list` | No | Own cell | All | All |
-
-## Task Creation with Project
-
-When creating tasks:
-
-```python
-roboco_task_create(
-    title="Add rate limiting",
-    team="backend",
-    project_slug="roboco",    # Required - all tasks follow git workflow
-)
-```
-
-Use `project_slug="roboco"` for internal RoboCo codebase work.
+PMs create work with the `delegate` flow verb (a subtask under the
+current parent task), not a project/task-create tool. `delegate` takes an
+optional `project_id`; the parent task's project is inherited when you
+omit it. There is no agent-facing standalone project- or task-create
+tool.

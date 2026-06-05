@@ -43,27 +43,31 @@ Cell Members → Cell PM → Main PM → Product Owner → CEO
 ## Escalation Tool
 
 ```python
-roboco_task_escalate(
+escalate_up(
     task_id="uuid-here",
     reason="Need clarification on requirements"
 )
 ```
 
-Auto-routes to your escalation target. You CANNOT choose a different target.
+Auto-routes to your escalation target. You CANNOT choose a different
+target. `escalate_up` is a PM verb (Cell PM / Main PM); cell members
+(devs, QA, documenters) signal blockers with `i_am_blocked(task_id,
+reason)`, which their Cell PM resolves.
 
-## CEO Escalation (PM Only)
+## CEO Escalation (Main PM / Board Only)
 
 ```python
-roboco_task_escalate_to_ceo(
+escalate_to_ceo(
     task_id="uuid-here",
-    notes="Major feature ready for approval"
+    reason="Major feature ready for approval"
 )
 ```
 
 Requirements:
 - Task in `awaiting_pm_review`
 - PR exists
-- Only PMs can call this
+- Only Main PM, Product Owner, or Head of Marketing can call this
+  (Cell PMs cannot — they `escalate_up` to Main PM first)
 
 ## Cannot Skip Levels
 

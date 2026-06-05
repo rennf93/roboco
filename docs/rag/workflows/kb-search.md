@@ -83,8 +83,9 @@ roboco_ask_mentor(
 
 Always search first:
 ```python
-roboco_kb_search("implementing rate limiter")
-roboco_journal_search("rate limit decisions")
+roboco_kb_search(query="implementing rate limiter")
+# Journal entries are part of the KB — filter to them with index_types:
+roboco_kb_search(query="rate limit decisions", index_types=["journals", "decisions"])
 ```
 
 This helps you:

@@ -9,23 +9,30 @@ Developer/QA/Documenter
          ↓
       Main PM
          ↓
-   Product Owner
+   Product Owner / Head of Marketing (Board)
          ↓
         CEO
 ```
 
-You CANNOT skip levels in the chain.
+`escalate_up` walks this chain **one rung at a time** — it auto-routes to
+your immediate escalation target; you cannot choose a higher level or skip
+a rung.
 
-## How to Escalate
+The one exception is `escalate_to_ceo`: it is a **separate** verb,
+available only to Main PM and the Board (Product Owner / Head of
+Marketing), that goes straight to the CEO for final approval of a major
+task. It is not part of the `escalate_up` chain.
+
+## How to Escalate (up one rung)
 
 ```python
-roboco_task_escalate(
-    task_id="uuid-here",
-    reason="Need clarification on API contract"
+escalate_up(
+    task_id="<task>",
+    reason="Need clarification on the API contract",
 )
 ```
 
-Auto-routes to your escalation target (you cannot choose).
+Auto-routes to your escalation target (you cannot choose it).
 
 ## When to Escalate
 
@@ -35,47 +42,51 @@ Auto-routes to your escalation target (you cannot choose).
 | Blocked by external factor | Cell PM |
 | Blocked by another task | Cell PM |
 | Cross-cell coordination | Main PM (via Cell PM) |
-| Major feature ready | CEO (PM only) |
+| Major feature ready for CEO sign-off | CEO (via `escalate_to_ceo`, PM/Board only) |
 
-## Escalation vs Block vs Pause
+## Escalate vs Block
 
-| Action | When | Tool |
+| Action | When | Verb |
 |--------|------|------|
-| **Escalate** | Need help/decision | `roboco_task_escalate` |
-| **Block** | Waiting on another task | `roboco_task_block` |
-| **Pause** | Temporarily stop work | `roboco_task_pause` |
+| **Escalate** | Need a decision / help from above | `escalate_up` |
+| **Block** | Can't proceed on an external dependency | `i_am_blocked` |
+
+There is no agent-facing "pause" verb. If you need to step off a task you
+claimed but haven't progressed, use `unclaim(task_id)` to return it to
+the pool.
 
 ## Blocking a Task
 
 ```python
-# Block on another task
-roboco_task_block(
-    task_id="uuid-here",
-    blocker_task_id="blocker-uuid",
-    reason="Waiting for auth service"
+i_am_blocked(
+    task_id="<task>",
+    reason="Waiting for the auth service to land",
+    blocker_type="external",
+    what_needed="auth-service /token endpoint deployed",
 )
 ```
 
-PM receives notification with ACTION REQUIRED.
+Your Cell PM is notified and is the one who can `unblock` it.
 
-## CEO Escalation (PM Only)
+## CEO Escalation (Main PM / Board Only)
 
 For major tasks requiring CEO approval:
 
 ```python
-roboco_task_escalate_to_ceo(
-    task_id="uuid-here",
-    notes="Major feature ready for final review"
+escalate_to_ceo(
+    task_id="<task>",
+    reason="Major feature ready for final review",
 )
 ```
 
 Requirements:
 - Task must be in `awaiting_pm_review`
 - PR must exist
-- Only PMs can do this
-- **PARENT TASKS ONLY** - Subtasks cannot be escalated to CEO
+- Only Main PM, Product Owner, or Head of Marketing can call it
+- **PARENT TASKS ONLY** — subtasks cannot be escalated to CEO
 
-If you need to escalate a subtask, escalate the parent task instead. The CEO reviews the complete feature, not individual components.
+If you need to escalate a subtask, escalate the parent task instead. The
+CEO reviews the complete feature, not individual components.
 
 ## Good Escalation Format
 
@@ -88,10 +99,11 @@ Include:
 
 ## Handling Escalations (PM)
 
-1. ACK immediately: `roboco_notify_ack(notification_id)`
-2. Investigate: Read task, journals, messages
-3. Decide or escalate further
-4. Communicate decision
-5. Unblock if needed: `roboco_task_unblock(task_id)`
+1. ACK the notification: `notify_ack(notification_id)`
+2. Investigate: read the task, journals, and channel messages
+3. Decide, or escalate further with `escalate_up`
+4. Communicate the decision (`say` / `dm` / `notify`)
+5. Unblock if needed: `unblock(task_id)`
 
-CRITICAL: Verbal resolution is NOT enough. You MUST call `roboco_task_unblock()`.
+CRITICAL: Verbal resolution is NOT enough. To clear a block you MUST call
+`unblock(task_id)`.

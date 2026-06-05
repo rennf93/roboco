@@ -34,20 +34,20 @@ pending → claimed → in_progress → verifying → awaiting_qa
 
 ### QA Flow
 ```
-awaiting_qa → claimed → in_progress → pass/fail
-                                         ↓
-                        pass: awaiting_documentation
-                        fail: needs_revision
+awaiting_qa → claimed (claim_review) → pass/fail
+                                          ↓
+                         pass: awaiting_documentation
+                         fail: needs_revision
 ```
 
 ### Documenter Flow
 ```
-awaiting_documentation → claimed → in_progress → awaiting_pm_review
+awaiting_documentation → claimed (claim_doc_task) → awaiting_pm_review
 ```
 
 ### PM Activation
 ```
-backlog → pending (via roboco_task_activate)
+backlog → pending (a PM activates the task during `triage`)
 ```
 
 ## Role-Restricted Transitions
@@ -63,7 +63,7 @@ backlog → pending (via roboco_task_activate)
 | `awaiting_pm_review → awaiting_ceo_approval` | cell_pm, main_pm (parent tasks only) |
 | `awaiting_ceo_approval → completed` | ceo only |
 | `awaiting_ceo_approval → needs_revision` | ceo only |
-| `any → cancelled` | cell_pm, main_pm |
+| `any → cancelled` | cell_pm, main_pm, ceo |
 
 ## CEO Approval Notes
 
@@ -73,7 +73,8 @@ backlog → pending (via roboco_task_activate)
 
 ## Checking State
 
-```python
-task = roboco_task_get(task_id)
-# task.status contains current state
-```
+You don't poll task state directly — every flow verb returns a
+standardized envelope whose `status` and `next` fields tell you the
+task's current state and what to call next. Trust the envelope rather
+than guessing. To pull the full task context (criteria, prior notes,
+handoff), call `evidence(task_id)`.

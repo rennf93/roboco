@@ -1,84 +1,80 @@
 # Messaging Tools
 
-## Sending Messages
+There is **no** `roboco_message_*`, `roboco_notify_send`, or
+`roboco_session_*` tool. Messaging is a small set of **content tools** on
+the `roboco-do` MCP server. They are role-scoped at spawn time.
+
+## Channel post — `say`
 
 ```python
-roboco_message_send({
-    channel: "backend-cell",
-    content: "Starting work on rate limiting",
-    task_id: task_id
-})
+say(channel="backend-cell", text="Starting work on rate limiting", task_id=task_id)
 ```
 
-## Channel History
+- `channel` is the slug WITHOUT a leading `#`.
+- `task_id` is auto-filled from your active task if omitted.
+- Write access varies by role; the gateway returns `not_authorized` and
+  lists the channels you *can* write to.
+
+Don't invent channel slugs. Call `channels()` first if unsure:
 
 ```python
-# Read channel history
-roboco_channel_history(
-    channel="backend-cell",
-    limit=50
-)
+channels()   # -> {"writable": [...], "readable": [...]}
 ```
 
-## Notifications
+Valid slugs: cell channels (`backend-cell`, `frontend-cell`,
+`uxui-cell`); cross-cell (`dev-all`, `qa-all`, `pm-all`, `doc-all`);
+management (`main-pm-board`, `board-private`); broadcast
+(`announcements`, `all-hands`).
 
-### Sending (PM/Board only)
+## Direct message (A2A) — `dm`
 
 ```python
-roboco_notify_send({
-    recipient: "be-dev-1",
-    type: "task_assignment",
-    task_id: task_id,
-    message: "Task ready for you"
-})
+dm(recipient="be-qa", text="Quick sanity check: ...", task_id=task_id)
 ```
 
-### Receiving
+- `recipient` is an agent slug (`be-pm`, `be-dev-1`, `ceo`, ...).
+- Auto-creates the conversation; `task_id` auto-fills from your active task.
+- Same-cell only. Cross-cell DM is denied by policy — route through your
+  Cell PM via `escalate_up(task_id, reason)`.
+
+## Formal notification — `notify` (PM / Board only)
+
+`notify` creates an ack-required notification (distinct from the informal
+`say`/`dm`). Only PM roles and the Board may send it; devs / QA / docs use
+`say` and `dm`.
 
 ```python
-# List notifications
-notifications = roboco_notify_list()
-
-# Acknowledge
-roboco_notify_ack(notification_id)
+notify(target="be-dev-1", text="Task ready for you", priority="normal", task_id=task_id)
 ```
 
-### Notification Types
+`priority` is `normal | high | urgent`. `task_id` auto-injects from the
+active task when omitted.
 
-| Type | Purpose |
-|------|---------|
-| `task_assignment` | New task assigned |
-| `priority_change` | Priority updated |
-| `blocker_escalation` | Task blocked |
-| `review_request` | Review needed |
-| `documentation_request` | Docs needed |
-| `alert` | General alert |
-| `broadcast` | Org-wide message |
+## Receiving notifications
 
-## Sessions
+Every role with an inbox gets these (so `i_am_idle()` doesn't soft-block
+on unread items):
 
 ```python
-# Create session for tasks
-roboco_session_create_for_tasks({
-    title: "Feature X Implementation",
-    task_ids: [task_1_id, task_2_id]
-})
-
-# Start collaborative session
-roboco_session_start(
-    channel="backend-cell",
-    session_type="collaborative",
-    task_id=task_id
-)
+notify_list(unread_only=True, limit=20)   # your inbox
+notify_get(notification_id)               # read one (marks it read)
+notify_ack(notification_id)               # acknowledge after handling
 ```
 
-## Message Types
+When `i_am_idle()` reports unread A2A or @mentions, list -> get -> ack,
+then idle again. (The Auditor gets `notify_list`/`notify_get` for inbox
+visibility but does not ack.)
 
-| Type | Use For |
-|------|---------|
-| `reasoning` | Thought process |
-| `dialogue` | Discussion |
-| `decision` | Decisions made |
-| `action` | Actions taken |
-| `blocker` | Blocking issues |
-| `technical` | Technical details |
+## Sessions (PM-or-up only)
+
+Devs / QA / docs participate via channels and DMs and do **not** open
+sessions. PMs and the Board link discussion threads to tasks:
+
+```python
+open_session(task_id, channel="backend-cell", topic="Feature X kickoff",
+             relationship_type="discussion")
+link_session(session_id, task_id, is_primary=False)
+```
+
+`relationship_type` is `discussion | planning | review | retrospective`.
+`link_session` is idempotent; you must own the task you're linking.

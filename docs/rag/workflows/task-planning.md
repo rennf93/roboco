@@ -2,47 +2,63 @@
 
 ## Overview
 
-Planning is **required** before starting work. The workflow enforces:
-```
-CLAIM → PLAN → START → EXECUTE
-```
-
-## Workflow States
-
-| State | Meaning | Next Step |
-|-------|---------|-----------|
-| `NEEDS_PLAN` | Task claimed, no plan yet | Call `roboco_task_plan()` |
-| `READY_TO_START` | Plan approved, ready to work | Call `roboco_task_start()` |
-| `EXECUTING` | Work in progress | Continue development |
-| `REVISION_REQUIRED` | QA/PM requested changes | Reclaim and fix |
-
-## Submitting a Plan
+Planning is a **PM activity**. When a PM (Cell PM or Main PM) picks up a
+coordination or parent task, they record a plan with `i_will_plan` and
+then fan the work out into subtasks with `delegate`.
 
 ```
-roboco_task_plan(task_id, {
-    "approach": "High-level implementation strategy",
-    "sub_tasks": [
-        {"title": "Step 1", "description": "First action"},
-        {"title": "Step 2", "description": "Second action"}
+triage / give_me_work → i_will_plan → delegate (one per subtask) → i_am_idle
+```
+
+Developers do not have a separate planning verb — they pass a short
+`plan` argument directly to `i_will_work_on(task_id, plan="...")` when
+they claim a coding task.
+
+## Submitting a Plan (PM)
+
+```python
+i_will_plan(
+    task_id="<task>",
+    plan="One-paragraph summary of how this work will be broken down",
+    approach="High-level implementation strategy",
+    sub_tasks=[
+        "UX/UI: design the settings panel",
+        "Frontend: wire the panel to the API",
+        "Backend: add the settings endpoint",
     ],
-    "risks": ["Potential blockers or issues"],
-    "open_questions": ["Clarifications needed from PM"]
-})
+    technical_considerations=["Reuse the existing config service"],
+    risks=["Frontend depends on the UX design landing first"],
+    open_questions=["Confirm the default toggle state with the CEO"],
+)
 ```
 
-## Cannot Start Without Plan
+After `i_will_plan`, the envelope's `next` field points you at
+`delegate` — create one subtask per unit of work:
 
-Calling `roboco_task_start()` without a plan returns:
-- Error code: `NO_PLAN`
-- Message: "Cannot start without a plan"
-- Hint: Submit plan first
+```python
+delegate(
+    parent_task_id="<task>",
+    title="Add the settings endpoint",
+    description="...",
+    assigned_to="be-dev-1",
+    team="backend",
+    task_type="code",
+    nature="feature",
+    estimated_complexity="medium",
+    acceptance_criteria=["Endpoint returns 200 with the saved settings"],
+)
+```
 
 ## Git Workflow
 
-All tasks follow the git workflow:
-- **Branches are auto-created when you claim the task**
-- Root tasks: branch created from default branch (main/master)
-- Subtasks: branch forked from parent's branch
-- No manual `roboco_git_create_branch()` needed
+All code tasks follow the git workflow:
+- **Branches are auto-created when a developer claims the task** via
+  `i_will_work_on` — no manual branch creation
+- Root tasks: branch created from the default branch (main/master)
+- Subtasks: branch forked from the parent's branch
 
-Hierarchical branch naming: `feature/team/ROOT_ID/SUB_ID/SUBSUB_ID`
+Coordination/parent tasks that only plan and delegate (no code) do not
+need a branch of their own.
+
+Hierarchical branch naming uses `--` between task IDs to avoid git ref
+conflicts: `feature/{team}/{ROOT}--{SUB}--{SUBSUB}`.

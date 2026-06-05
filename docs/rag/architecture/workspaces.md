@@ -55,21 +55,13 @@ ROBOCO_WORKSPACE_CLONE_TIMEOUT=300
 3. **Branch Flexibility**: Different branches simultaneously
 4. **Clean State**: Fresh clone if needed
 
-## MCP Tools
+## No Workspace Tools — It's Automatic
 
-| Tool | Purpose |
-|------|---------|
-| `roboco_workspace_ensure` | Create workspace if needed |
-| `roboco_workspace_status` | Check workspace state |
-| `roboco_workspace_list` | List all workspaces (PM only) |
-
-```python
-# Ensure workspace exists (auto-clones if needed)
-roboco_workspace_ensure(project_slug="roboco")
-
-# Check status
-roboco_workspace_status(project_slug="roboco")
-```
+There are **no** agent-facing workspace tools. Workspaces are created and
+cloned for you by the orchestrator (`WorkspaceService`) before your
+container starts. You never `ensure`, `clone`, or `checkout` a workspace
+by hand — your repo is already on disk at the path below, and the gateway
+verbs (`i_will_work_on`, `claim_review`, ...) check out the right branch.
 
 ## Workspace Resolution
 
@@ -84,6 +76,7 @@ HTTPS repositories require a GitHub PAT configured on the project:
 - **Token configured**: Auto-clone works, git operations succeed
 - **Token missing**: Error "Project requires a git token for HTTPS repositories"
 
-**If you see this error**: Contact your PM to configure the project's git token.
-
-PMs use `roboco_project_update(slug, git_token="...")` to set credentials.
+**If you see this error**: Contact your PM. The project's git token is
+configured by a human in the control panel (project settings) — it is not
+an agent tool. The token is encrypted at rest and never exposed to your
+container; the orchestrator injects it into git operations for you.

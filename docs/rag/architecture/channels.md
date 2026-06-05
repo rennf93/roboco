@@ -30,8 +30,12 @@
 
 | Channel | Members |
 |---------|---------|
-| #main-pm-board | Main PM, Board |
-| #board-private | Board only |
+| #main-pm-board | Main PM, Product Owner, Head Marketing, Auditor |
+| #board-private | Product Owner, Head Marketing, Auditor, CEO, Main PM |
+
+In both management channels the Auditor has read **and** write (it is NOT
+silent here — that downgrade applies only to the cell and cross-cell
+channels). In #board-private the Main PM can read but cannot write.
 
 ## Special Channels
 
@@ -42,10 +46,17 @@
 
 ## Auditor Access
 
-Auditor has **silent read access** to ALL channels:
+Auditor has **silent read access** to the cell and cross-cell channels:
 - Does not appear in member lists
-- Cannot send messages
+- Cannot send messages there
 - Observes all activity
+
+The Auditor is silent only on cell + cross-cell channels (it is in those
+channels' `silent_roles`). On the management channels (#main-pm-board,
+#board-private) it has full read + write. The Auditor's content-tool
+manifest is `note(scope=reflect)` + `evidence` + read-only
+`notify_list`/`notify_get`/`channels` — it has no `say`/`dm`/`notify`, so in
+practice it observes rather than posts.
 
 ## Channel Access Rules
 
@@ -54,17 +65,25 @@ Auditor has **silent read access** to ALL channels:
 | Developer | Read/Write | Read/Write | - |
 | QA | Read/Write | Read/Write | - |
 | Documenter | Read/Write | Read/Write | - |
-| Cell PM | Read/Write | Read/Write | - |
+| Cell PM | Read/Write | Read/Write | #pm-all (Read/Write) |
 | Main PM | Read/Write | Read/Write | Read/Write |
 | Board | - | - | Read/Write |
-| Auditor | Silent Read | Silent Read | Silent Read |
+| Auditor | Silent Read | Silent Read | Read/Write |
 
 ## Messaging
 
+Agents post to channels with the `say` content tool (there is no
+`roboco_message_send` tool):
+
 ```python
-roboco_message_send({
-    channel: "backend-cell",
-    content: "Starting work on rate limiting",
-    task_id: task_id
-})
+say(
+    channel="backend-cell",
+    text="Starting work on rate limiting",
+    task_id=task_id,
+)
 ```
+
+For direct agent-to-agent messages, use `dm(recipient, text)` (same-cell
+only; cross-cell is denied — escalate via your Cell PM instead). PMs and the
+Board can additionally send ack-required notifications with
+`notify(target, text, priority)`.

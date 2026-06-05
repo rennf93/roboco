@@ -1,82 +1,58 @@
 # A2A (Agent-to-Agent) Tools
 
-## Overview
+A2A is direct peer-to-peer messaging between agents. There is **no**
+`roboco_agent_*` or `roboco_a2a_*` tool — A2A is the `dm` content tool on
+the `roboco-do` MCP server, with `channels()` for discovery and the
+notify inbox for receiving.
 
-A2A enables direct peer-to-peer communication between agents about existing tasks.
-
-**Key points:**
-- Direct HTTP when both agents online (no notification)
-- Fallback to notification only when target offline
-- All requests MUST reference an existing `task_id`
-
-## Tools
-
-### roboco_agent_discover
-
-Find agents by role, team, or skill.
+## Send a direct message — `dm`
 
 ```python
-roboco_agent_discover(
-    role="developer",      # Optional: developer, qa, documenter, cell_pm, etc.
-    team="backend",        # Optional: backend, frontend, ux_ui
-    skill="code_review"    # Optional: specific capability
+dm(
+    recipient="be-qa",          # target agent slug
+    text="Please review my changes",
+    task_id="abc123...",        # auto-filled from your active task if omitted
+    skill=None,                 # optional skill slug to scope the conversation
 )
 ```
 
-### roboco_agent_request
+- Auto-creates the conversation; auto-resolves the skill if needed.
+- **Same-cell only.** Cross-cell DM is denied by policy — route through
+  your Cell PM via `escalate_up(task_id, reason)`.
+- The recipient sees it in their notify inbox when offline.
 
-Send A2A message to another agent.
+## Discover who/where to message — `channels`
 
-```python
-roboco_agent_request(
-    target_agent="be-qa",
-    skill="code_review",
-    message="Please review my changes",
-    task_id="abc123...",              # REQUIRED
-    options={"urgent": False}         # Optional: priority queue
-)
-```
-
-**Returns:** `{status, delivery, message_id}` where `delivery` is `"direct"` or `"notification"`.
-
-### roboco_a2a_check
-
-Poll your inbox for incoming A2A messages.
+There is no agent-directory tool. Use `channels()` to see the channels
+you can read/write, and post to a channel when the audience is the whole
+cell rather than one peer:
 
 ```python
-roboco_a2a_check()
+channels()                      # -> {"writable": [...], "readable": [...]}
+say(channel="backend-cell", text="Anyone hit Y before? Starting task X.")
 ```
 
-**Returns:** `{messages: [...], count: N}` - messages from other agents.
+## Receive incoming messages
 
-**Note:** A hook automatically notifies you of pending messages after tool calls.
+Incoming A2A and @mentions land in your notify inbox. When `i_am_idle()`
+soft-blocks on unread items, drain the inbox:
 
-## Common Use Cases
+```python
+notify_list(unread_only=True)   # list pending items
+notify_get(notification_id)     # read one (marks it read)
+notify_ack(notification_id)     # acknowledge after handling
+```
 
-| Need | Action |
-|------|--------|
-| Code review | `roboco_agent_request("be-qa", "code_review", "...", task_id)` |
-| Clarification | `roboco_agent_request("be-pm", "clarification", "...", task_id)` |
-| Find reviewer | `roboco_agent_discover(skill="code_review")` |
-| Urgent help | `roboco_agent_request(..., options={"urgent": True})` |
+## When to use A2A
 
-## When to Use A2A
+- A quick question, sanity check, or hand-off about a task you own
+- Requesting code review or clarification from a same-cell peer
 
-- Communication about an existing task you're working on
-- Requesting code review, clarification, or help
-- Notifying another agent about task progress
-- Urgent questions needing immediate attention
+## When NOT to use A2A
 
-## When NOT to Use A2A
-
-- Creating new work → Only PMs create tasks via `roboco_task_create`
-- Task assignments → PM assigns via `roboco_task_assign`
-- Escalations → Use `roboco_task_escalate`
-- Formal notifications → Use `roboco_notify_send` (PM only)
-
-## Task Creation Rules
-
-Only Cell PMs and Main PM can create tasks (subtasks).
-If an agent receives an A2A request that requires new work:
-1. Escalate to PM: `roboco_task_escalate(task_id, "Needs subtask for...")`
-2. PM decides whether to create a subtask
+| Need | Do this instead |
+|------|-----------------|
+| Cross-cell question | `escalate_up(task_id, reason)` — DM is same-cell only |
+| New work / subtask | Only PMs create work, via `delegate(...)`; escalate to your PM |
+| Formal, ack-required signal | PM/Board `notify(target, text, ...)` |
+| Cell-wide broadcast | `say(channel=..., text=...)` |

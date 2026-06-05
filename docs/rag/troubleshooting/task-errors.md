@@ -10,16 +10,17 @@
 3. Wrong role for this task type
 
 **Solutions**:
-- Check task status: `roboco_task_get(task_id)`
-- Verify your role can claim from current status
+- Check what's actionable for you: `give_me_work()` (or `triage()` for PMs)
+- Verify your role can claim from the task's current status
 - Contact PM if task needs reassignment
 
 **Claimable Status by Role**:
-| Role | Can Claim From |
-|------|----------------|
-| Developer | pending, needs_revision |
-| QA | awaiting_qa |
-| Documenter | awaiting_documentation |
+| Role | Can Claim From | Verb |
+|------|----------------|------|
+| Developer | pending, needs_revision | `i_will_work_on(task_id)` |
+| QA | awaiting_qa | `claim_review(task_id)` |
+| Documenter | pending, awaiting_documentation | `claim_doc_task(task_id)` |
+| Cell PM / Main PM | pending | `i_will_plan(task_id)` |
 
 ## Cannot Start Task
 
@@ -30,7 +31,9 @@
 2. Task in wrong status
 
 **Solutions**:
-- Claim first: `roboco_task_claim(task_id)`
+- Claim + start in one step: `i_will_work_on(task_id, plan="...")`
+  (devs), `claim_review(task_id)` (QA), `claim_doc_task(task_id)` (doc),
+  or `i_will_plan(task_id, plan, approach)` (PMs)
 - Check current status
 
 Note: Git branches are auto-created on claim, no waiting needed.
@@ -54,9 +57,9 @@ Note: Git branches are auto-created on claim, no waiting needed.
 **Cause**: QA trying to claim, pass, or fail a task they originally developed
 
 **Solution**: Another QA must handle this task. Self-review prevention applies to:
-- Claiming the task
-- Passing QA (`roboco_task_qa_pass`)
-- Failing QA (`roboco_task_qa_fail`)
+- Claiming the task (`claim_review`)
+- Passing QA (`pass`)
+- Failing QA (`fail`)
 
 ## Cannot Escalate Subtask to CEO
 
@@ -64,15 +67,14 @@ Note: Git branches are auto-created on claim, no waiting needed.
 
 **Cause**: Attempting to escalate a task that has a `parent_task_id`
 
-**Solution**: Escalate the parent task instead:
+**Solution**: Escalate the parent task instead. Find the parent task ID
+(it's on the subtask's `parent_task_id` field, surfaced in your
+`give_me_work()` / `triage()` envelope), then escalate the parent:
 ```python
-# Get the parent task ID
-task = roboco_task_get(subtask_id)
-parent_id = task.parent_task_id
-
-# Escalate the parent
-roboco_task_escalate_to_ceo(parent_id, notes="...")
+escalate_to_ceo(task_id=parent_id, reason="...")
 ```
+`escalate_to_ceo` is Main PM / Board only; Cell PMs and cell members
+use `escalate_up(task_id, reason)` instead.
 
 ## Git Task: Parent Branch Required
 
@@ -91,8 +93,10 @@ roboco_task_escalate_to_ceo(parent_id, notes="...")
 **Cause**: Trying to complete a parent task while subtasks are still in progress
 
 **Solution**: The error message includes which subtask IDs are blocking. Either:
-1. Complete the blocking subtasks first
-2. Cancel them if no longer needed: `roboco_task_cancel(subtask_id, reason)`
+1. Complete the blocking subtasks first (drive them through QA → docs →
+   `complete(task_id, notes)`)
+2. Cancel them if no longer needed (PM/CEO only — cancellation is not an
+   agent verb; ask your PM)
 
 ## Invalid Task Status for Operation
 

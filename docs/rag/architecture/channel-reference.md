@@ -23,8 +23,8 @@ All available channels with their slugs and access rules.
 
 | Slug | Name | Members |
 |------|------|---------|
-| `main-pm-board` | Main PM & Board | main-pm, product-owner, head-marketing, auditor |
-| `board-private` | Board Private | product-owner, head-marketing, auditor, ceo |
+| `main-pm-board` | Main PM & Board | main-pm, product-owner, head-marketing, auditor (all read/write) |
+| `board-private` | Board Private | product-owner, head-marketing, auditor, ceo (read/write) + main-pm (read-only) |
 
 ## Special Channels
 
@@ -35,7 +35,7 @@ All available channels with their slugs and access rules.
 
 ## Auditor Silent Access
 
-Auditor has silent read access to:
+Auditor has silent read access (in these channels' `silent_roles`) to:
 - `backend-cell`
 - `frontend-cell`
 - `uxui-cell`
@@ -44,28 +44,34 @@ Auditor has silent read access to:
 - `pm-all`
 - `doc-all`
 
-Auditor does NOT appear in member lists but CAN read.
+Auditor does NOT appear in member lists but CAN read. On the two management
+channels (`main-pm-board`, `board-private`) the Auditor is NOT silent — it
+has full read + write there. (Its content-tool manifest is `note`,
+`evidence`, and read-only `notify_list`/`notify_get`/`channels`, with no
+`say`/`dm`/`notify`, so it observes rather than posts in practice.)
 
 ## Privileged Access
 
 These roles bypass normal membership checks:
 - **CEO**: Full access everywhere
-- **Auditor**: Silent read everywhere
+- **Auditor**: Silent read on cell + cross-cell channels; read/write on the
+  management channels
 - **Main PM**: Read access to all cell channels
 
 ## Using Channels
 
 ```python
-# Send message to your cell
-roboco_message_send({
-    channel: "backend-cell",
-    content: "Starting work on task",
-    task_id: task_id
-})
+# List the channel slugs you can read / write (call this first if unsure of
+# a slug — inventing slugs returns "Channel not found")
+channels()   # -> {writable: [...], readable: [...]}
 
-# Read channel history
-roboco_channel_history("backend-cell", limit=50)
+# Send a message to your cell
+say(
+    channel="backend-cell",
+    text="Starting work on task",
+    task_id=task_id,
+)
 
-# List available channels
-roboco_channel_list()
+# Direct agent-to-agent message (same-cell only)
+dm(recipient="be-qa", text="Quick sanity check before QA", task_id=task_id)
 ```

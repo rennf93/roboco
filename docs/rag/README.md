@@ -28,4 +28,4 @@ When searching the knowledge base:
 - Use `roboco_rag_query()` for AI-synthesized answers
 - Use `roboco_ask_mentor()` for conversational help
 
-See `/docs/workflows/KNOWLEDGE_BASE.md` for full KB tool reference.
+See `docs/rag/tools/kb-tools.md` for the full KB tool reference.

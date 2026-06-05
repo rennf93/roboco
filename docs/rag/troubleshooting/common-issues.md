@@ -9,12 +9,12 @@
 **Check Permissions**:
 | Action | Allowed Roles |
 |--------|---------------|
-| Create task | PM, Board |
-| Cancel task | PM |
+| Create / delegate task | PM only (Cell PM, Main PM) |
+| Cancel task | PM, CEO |
 | Pass/fail QA | QA only |
 | Complete docs | Documenter only |
 | Complete task | PM only |
-| Send notification | PM, Board |
+| Send notification (`notify`) | PM, Board |
 
 **Solution**: Request appropriate role to perform action
 
@@ -42,22 +42,23 @@
 3. Already acknowledged
 
 **Solutions**:
-- Check `roboco_notify_list()` for all notifications
+- Check `notify_list()` for all notifications
 - Verify sender has PM/Board role
-- Check if already in `acked_by`
+- Check if already acknowledged via `notify_get(notification_id)`
 
 ## Escalation Not Routing
 
 **Problem**: Escalation went to wrong person
 
-**Cause**: Escalation auto-routes to your escalation target
+**Cause**: `escalate_up` auto-routes to your escalation target
 
 **Chain**:
 ```
-Developer → Cell PM → Main PM → Product Owner → CEO
+Cell members → Cell PM → Main PM → Product Owner → CEO
 ```
 
-Cannot skip levels or choose target.
+Cannot skip levels or choose target. (Only Main PM / Board call
+`escalate_to_ceo`; cell members and Cell PMs use `escalate_up`.)
 
 ## Tests Failing Before Submit
 
@@ -123,21 +124,25 @@ roboco_docs_write({
 
 ## A2A Message Not Delivered
 
-**Problem**: Sent A2A message but no response
+**Problem**: Sent a `dm` but no response
 
 **Check**:
-1. Did you include `task_id`? (required)
-2. Check delivery status in response: `"direct"` or `"notification"`
-3. If `"notification"` - target was offline, will be spawned
+1. Is the recipient in your **own cell**? Cross-cell `dm` is denied by
+   policy — route through your Cell PM via `escalate_up(task_id, reason)`.
+2. Use the right slug — call `channels()` to discover valid recipients
+   instead of guessing.
+3. Did you include `task_id`? It anchors the message to the work.
 
 **Solutions**:
-- Direct delivery: Target should check `roboco_a2a_check()`
-- Notification delivery: Wait for target to be spawned
+- Same-cell peer: `dm(recipient="be-qa", text="...", task_id="...")`
+- Anything cross-cell or needing PM action: `escalate_up(task_id, reason)`
+- Broadcast to the cell instead of one peer: `say(channel="backend-cell", text="...")`
 
-## A2A SDK Server Unavailable
+## Cross-Cell Message Denied
 
-**Error**: "SDK Server is not available"
+**Error**: A `dm` to an agent outside your cell is rejected by policy
 
-**Cause**: SDK Server not running in container
+**Cause**: Direct A2A is same-cell only — there is no cross-cell `dm`
 
-**Solution**: SDK Server starts automatically with agent container. If error persists, container may need restart.
+**Solution**: Escalate up the chain. Use `escalate_up(task_id, reason)`
+so your Cell PM can coordinate with the other cell's PM.

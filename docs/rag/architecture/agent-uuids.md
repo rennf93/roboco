@@ -3,11 +3,11 @@
 **ALWAYS use SLUGS when assigning tasks.** The system resolves slugs to UUIDs automatically.
 
 ```python
-# CORRECT - Use slug
-roboco_task_create(assigned_to="be-dev-1", ...)
+# CORRECT - Use slug (PMs delegate work)
+delegate(assigned_to="be-dev-1", ...)
 
 # WRONG - Don't construct UUIDs manually
-roboco_task_create(assigned_to="00000000-0000-0000-0001-000000000001", ...)
+delegate(assigned_to="00000000-0000-0000-0001-000000000001", ...)
 ```
 
 ## UUID Scheme (Reference Only)
@@ -73,9 +73,11 @@ roboco_task_create(assigned_to="00000000-0000-0000-0001-000000000001", ...)
 
 ## Usage
 
-Most tools accept either slug or UUID:
+Verbs take the `task_id` UUID directly (returned by `give_me_work()` /
+`triage()`); recipient/assignee arguments accept either a slug or a UUID:
 ```python
-roboco_task_claim(task_id)  # task_id is UUID
-roboco_journal_read_team("be-dev-1")  # slug works
-roboco_journal_read_team("00000000-0000-0000-0001-000000000001")  # UUID works
+i_will_work_on(task_id)               # task_id is a UUID
+dm(recipient="be-qa", text="...", task_id="...")   # slug recipient
+delegate(assigned_to="be-dev-1", ...)              # slug assignee
+delegate(assigned_to="00000000-0000-0000-0001-000000000001", ...)  # UUID also works
 ```

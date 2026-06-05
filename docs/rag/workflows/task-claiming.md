@@ -2,26 +2,32 @@
 
 ## Who Can Claim What
 
-| Role | Can Claim From Status |
-|------|----------------------|
-| Developer | `pending`, `needs_revision` |
-| QA | `awaiting_qa` |
-| Documenter | `awaiting_documentation`, `pending` |
-| PM | `pending`, `backlog` |
+| Role | Claim verb | Can Claim From Status |
+|------|------------|----------------------|
+| Developer | `i_will_work_on` | `pending`, `needs_revision` |
+| QA | `claim_review` | `awaiting_qa` |
+| Documenter | `claim_doc_task` | `awaiting_documentation`, `pending` |
+| PM | `triage` / `give_me_work` | `pending` |
 
 ## Claiming a Task
 
 ```python
-# 1. Find available tasks
-roboco_task_scan(team="backend")
+# 1. Get a task assigned to you (returns a pending/awaiting task)
+give_me_work()
 
-# 2. Claim the task
-roboco_task_claim(task_id)
+# 2. Claim it. The claim verb is role-specific:
+i_will_work_on(task_id)    # Developer — claims + auto-creates the branch
+claim_review(task_id)      # QA — claims + auto-checks-out the dev's branch
+claim_doc_task(task_id)    # Documenter
 
 # Result:
-# - status: claimed
+# - status: claimed (then in_progress)
 # - assigned_to: your agent ID
 ```
+
+The claim verb both claims and starts the task — there is no separate
+`start` call. For developers, `i_will_work_on` also creates and checks
+out the `feature/{team}/{task-hierarchy}` branch.
 
 ## Before Claiming
 
@@ -31,17 +37,16 @@ roboco_task_claim(task_id)
 
 ## After Claiming
 
-1. Start work: `roboco_task_start(task_id)`
-2. Announce to cell: `roboco_message_send({channel, content, task_id})`
-3. Get proactive context: `roboco_get_proactive_context(task_id)`
-4. Search KB for similar work: `roboco_kb_search()`
+1. Announce to your cell: `say(channel="backend-cell", text="...", task_id=task_id)`
+2. Get proactive context: `roboco_get_proactive_context(task_id)`
+3. Search the KB for similar work: `roboco_kb_search(query="...")`
 
 ## Claiming Rules
 
-- **One at a time**: Don't claim multiple in_progress tasks
-- **Self-review prevention**: QA cannot claim tasks they developed
+- **One at a time**: Don't claim multiple in-progress tasks
+- **Self-review prevention**: QA cannot `claim_review` tasks they developed
 - **Self-documentation prevention**: Documenter cannot claim tasks they developed
-- **Branch requirement**: Branch auto-created on claim
+- **Branch requirement**: Branch auto-created on `i_will_work_on`
 
 ## Releasing a Claimed Task
 
@@ -49,16 +54,17 @@ If you claimed a task but realize you shouldn't work on it, use `unclaim`:
 
 ```python
 # Release back to pool
-roboco_task_unclaim(task_id)
-
-# Hand off to specific agent
-roboco_task_unclaim(task_id, hand_off_to="be-dev-2")
+unclaim(task_id)
 
 # Result:
 # - status: pending
-# - assigned_to: None (or hand_off_to agent)
+# - assigned_to: None
 # - You can now claim new work
 ```
+
+`unclaim` takes only the `task_id` — it returns the task to the pool for
+re-pickup. To hand a specific task to a specific agent, escalate to your
+PM (`escalate_up`) and let the PM re-`delegate` or reassign it.
 
 **When to use unclaim:**
 - Task is out of your team's scope
@@ -66,18 +72,13 @@ roboco_task_unclaim(task_id, hand_off_to="be-dev-2")
 - You need to prioritize other work
 - Better suited for another agent
 
-**Restrictions:**
-- Only works on `claimed` status (not yet started)
-- You must be the agent who claimed it
-- If task is `in_progress`, use `roboco_task_substitute` instead
-
 ## Status After Claim
 
 ```
-pending → claimed (Developer/PM)
-needs_revision → claimed (Developer)
-awaiting_qa → claimed (QA)
-awaiting_documentation → claimed (Documenter)
+pending → claimed (Developer via i_will_work_on / PM)
+needs_revision → claimed (Developer via i_will_work_on)
+awaiting_qa → claimed (QA via claim_review)
+awaiting_documentation → claimed (Documenter via claim_doc_task)
 ```
 
 ## Cannot Claim

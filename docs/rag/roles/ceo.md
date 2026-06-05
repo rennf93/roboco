@@ -4,7 +4,7 @@
 
 - **Agent**: ceo (Renzo - Human)
 - **Role**: `ceo`
-- **Team**: executive
+- **Team**: board
 - **Reports to**: N/A (top of hierarchy)
 
 ## Core Responsibilities
@@ -14,69 +14,50 @@
 3. Set strategic direction
 4. Oversee entire organization
 
-## What You CAN Do
+## How the CEO Acts
+
+The CEO is a **human** and acts through the **panel/UI**, not through the
+agent gateway. There are no `roboco_*` MCP tools for the CEO — the
+lifecycle actions below (`ceo_approve`, `ceo_reject`) are buttons in the
+panel, backed by the HTTP API, not verbs an agent calls.
+
+## What the CEO CAN Do
 
 - View ALL tasks organization-wide
-- Approve/reject tasks in `awaiting_ceo_approval`
-- Force complete tasks with cancelled subtasks
-- Send notifications to anyone
-- Full access to all channels
-
-## What You CANNOT Do
-
-- Cancel tasks (by design - CEO observes/approves, doesn't manage)
-- Should not be doing day-to-day task management
-
-## Tool Note
-
-Prefer `roboco_git_*` MCP tools over native git for audit trail.
+- Approve or reject tasks in `awaiting_ceo_approval`
+- Cancel tasks (CEO is one of the cancel-authorized roles)
+- Set strategic direction
+- Read all channels
 
 ## CEO Approval Workflow
 
-When PM escalates major task:
+When a Main PM or Board member escalates a major task via
+`escalate_to_ceo`, it lands in `awaiting_ceo_approval`. The CEO reviews
+in the panel and either:
 
-```python
-# Task arrives in awaiting_ceo_approval
-# CEO reviews and decides:
+- **Approve** — merges the PR, task → `completed` (lifecycle `ceo_approve`)
+- **Request changes** — task → `needs_revision` (lifecycle `ceo_reject`)
 
-# Approve and complete
-roboco_task_ceo_approve(task_id, notes="Approved. Great work!")
-
-# Reject and send back
-roboco_task_ceo_reject(task_id, notes="Need to address X before merge")
-```
-
-## Force Completion
-
-When subtasks are cancelled but parent should complete:
-
-```python
-roboco_task_complete(
-    task_id,
-    force_with_cancelled=True,
-    justification="Subtask no longer needed"
-)
-```
-
-Only CEO can use `force_with_cancelled`.
+Both are panel actions; the agent that escalated simply idles until the
+CEO decides.
 
 ## Escalation
 
-CEO is the final escalation target. Issues escalate:
+The CEO is the final escalation target:
+
 ```
 Developer → Cell PM → Main PM → Product Owner → CEO
 ```
 
-## A2A
-
-```python
-roboco_agent_request("product-owner", "clarification", "...", task_id)
-roboco_a2a_check()  # Check inbox
-```
+Only `main_pm`, `product_owner`, and `head_marketing` can escalate a task
+to the CEO (via `escalate_to_ceo`).
 
 ## Communication
 
-CEO has access to all channels including:
+The CEO has read access to all channels, including:
 - #board-private
-- #announcements (write)
+- #announcements
 - All cell and cross-cell channels
+
+The CEO communicates and decides through the panel/UI rather than the
+agent content tools (`say` / `dm` / `notify`).
