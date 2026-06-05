@@ -7,12 +7,15 @@
 
 | Verb | Body schema |
 |------|-------------|
-| `triage` | `triage()` |
 | `i_am_idle` | `i_am_idle()` |
+| `triage` | `triage()` |
 
 ### Content (do) tools
 
 | Tool | Body schema |
 |------|-------------|
-| `note` | `note(text: str, scope: str = 'note', task_id: UUID | None = None)` |
+| `note` | `note(text: str, scope: str = 'note', task_id: UUID | None = None, title: str | None = None, context: str = '', options: list[str | str] | None = None, chosen: str = '', rationale: str = '', consequences: list[str] | None = None, what_done: str = '', what_learned: str = '', what_struggled: str = '', next_steps: list[str] | None = None)` |
 | `evidence` | `evidence(task_id: UUID)` |
+| `notify_list` | `notify_list(unread_only: bool = True, pending_ack_only: bool = False, limit: int = 20)` |
+| `notify_get` | `notify_get(notification_id: UUID)` |
+| `channels` | `channels()` |

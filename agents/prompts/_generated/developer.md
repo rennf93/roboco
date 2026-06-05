@@ -8,20 +8,26 @@
 | Verb | Body schema |
 |------|-------------|
 | `give_me_work` | `give_me_work()` |
-| `i_will_work_on` | `i_will_work_on(task_id: UUID, plan: str | None = None)` |
-| `open_pr` | `open_pr(task_id: UUID)` |
+| `i_am_blocked` | `i_am_blocked(task_id: UUID, reason: str, blocker_type: str | None = None, what_needed: str | None = None)` |
 | `i_am_done` | `i_am_done(task_id: UUID, notes: str = '')` |
-| `i_am_blocked` | `i_am_blocked(task_id: UUID, reason: str)` |
-| `unclaim` | `unclaim(task_id: UUID)` |
-| `resume` | `resume(task_id: UUID)` |
 | `i_am_idle` | `i_am_idle()` |
+| `i_will_work_on` | `i_will_work_on(task_id: UUID, plan: str | None = None, steps: list[str | str] = PydanticUndefined, technical_considerations: list[str] = PydanticUndefined, risks: list[str | str] = PydanticUndefined, open_questions: list[str | str | bool] = PydanticUndefined)` |
+| `open_pr` | `open_pr(task_id: UUID)` |
+| `resume` | `resume(task_id: UUID)` |
+| `unclaim` | `unclaim(task_id: UUID)` |
 
 ### Content (do) tools
 
 | Tool | Body schema |
 |------|-------------|
 | `commit` | `commit(message: str, files: list[str] | None = None)` |
-| `note` | `note(text: str, scope: str = 'note', task_id: UUID | None = None)` |
+| `note` | `note(text: str, scope: str = 'note', task_id: UUID | None = None, title: str | None = None, context: str = '', options: list[str | str] | None = None, chosen: str = '', rationale: str = '', consequences: list[str] | None = None, what_done: str = '', what_learned: str = '', what_struggled: str = '', next_steps: list[str] | None = None)` |
 | `say` | `say(channel: str, text: str, task_id: UUID | None = None)` |
 | `dm` | `dm(recipient: str, text: str, task_id: UUID | None = None, skill: str | None = None)` |
 | `evidence` | `evidence(task_id: UUID)` |
+| `progress` | `progress(task_id: UUID, message: str, plan_step: str | None = None, percentage: int | None = None)` |
+| `pr_update` | `pr_update(see do_server)` |
+| `notify_list` | `notify_list(unread_only: bool = True, pending_ack_only: bool = False, limit: int = 20)` |
+| `notify_get` | `notify_get(notification_id: UUID)` |
+| `notify_ack` | `notify_ack(notification_id: UUID)` |
+| `channels` | `channels()` |
