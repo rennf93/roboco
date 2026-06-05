@@ -228,9 +228,11 @@ and team. Token enforcement is gated by `ROBOCO_AGENT_AUTH_REQUIRED`:
   API may claim any role (including `ceo`). The API logs a warning at startup in
   this mode. Acceptable only on a trusted network.
 - **`ROBOCO_AGENT_AUTH_REQUIRED=true`:** every request must carry a valid token;
-  an agent cannot spoof another agent's role. (Note: the control panel does not
-  yet attach a token, so enabling this currently affects the human/panel path — a
-  panel-token path is a known follow-up.)
+  an agent cannot spoof another agent's role. The control panel keeps working
+  because **nginx** — the only trusted hop between the browser and the API —
+  injects the CEO token (`X-Agent-Token`) on `/api` and `/ws`, so the browser
+  never holds the signing secret. Generate that token with `make panel-token`
+  and set it as `ROBOCO_PANEL_AGENT_TOKEN` in `.env` before enabling secure mode.
 
 **Secrets** (the Fernet `ROBOCO_ENCRYPTION_KEY`, GitHub PATs) live encrypted in
 the database and in gitignored env files — never in the repo. Per-project git

@@ -386,6 +386,13 @@ prune:
 clean:
 	@find . | grep -E "(__pycache__|\.pyc|\.pyo|\.pytest_cache|\.ruff_cache|\.mypy_cache)" | xargs rm -rf
 
+# Security
+.PHONY: panel-token
+panel-token:
+	@SECRET="$$(grep -E '^ROBOCO_AGENT_AUTH_SECRET=' .env 2>/dev/null | head -1 | cut -d= -f2-)"; \
+	ROBOCO_AGENT_AUTH_SECRET="$${SECRET:-$$ROBOCO_AGENT_AUTH_SECRET}" \
+	uv run python -c "import sys; from roboco.agents_config import issue_panel_token; tok = issue_panel_token(); print(tok) if tok != 'UNSIGNED' else sys.exit('ERROR: ROBOCO_AGENT_AUTH_SECRET not set (in .env or environment) - the panel token would be unsigned')"
+
 # Help
 .PHONY: help
 help:
@@ -422,6 +429,7 @@ help:
 	@echo "  make quality                  - Run all quality checks"
 	@echo "  make security                 - Run security checks (bandit, safety, pip-audit)"
 	@echo "  make check-all                - Run ALL checks"
+	@echo "  make panel-token              - Print the panel's CEO token for secure mode"
 	@echo ""
 	@echo "Testing:"
 	@echo "  make test                     - Run tests (Python $(DEFAULT_PYTHON))"

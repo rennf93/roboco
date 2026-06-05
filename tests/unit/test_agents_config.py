@@ -24,8 +24,10 @@ from roboco.agents_config import (
     is_management,
     is_pm,
     issue_agent_token,
+    issue_panel_token,
     verify_agent_token,
 )
+from roboco.seeds.initial_data import CEO_AGENT_ID
 
 if TYPE_CHECKING:
     import pytest
@@ -293,6 +295,39 @@ def test_verify_agent_token_rejects_mismatched_signature(
     tok = issue_agent_token("be-dev-1", "developer", "backend")
     # Verify with different role → mismatch.
     assert verify_agent_token(tok, "be-dev-1", "qa", "backend") is False
+
+
+# ---------------------------------------------------------------------------
+# issue_panel_token — the panel's CEO credential for secure mode
+# ---------------------------------------------------------------------------
+
+
+def test_issue_panel_token_verifies_under_panel_headers(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The panel token must verify under the EXACT headers the panel sends:
+    X-Agent-Id = CEO uuid, X-Agent-Role = ceo, and NO team (empty)."""
+    monkeypatch.setenv("ROBOCO_AGENT_AUTH_SECRET", "panel-secret")
+    tok = issue_panel_token()
+    assert verify_agent_token(tok, CEO_AGENT_ID, "ceo", "") is True
+
+
+def test_issue_panel_token_unsigned_without_secret(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("ROBOCO_AGENT_AUTH_SECRET", raising=False)
+    assert issue_panel_token() == "UNSIGNED"
+
+
+def test_panel_token_does_not_grant_other_roles_or_identities(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The panel token is bound to the CEO identity — it cannot be replayed to
+    claim a different role or agent id."""
+    monkeypatch.setenv("ROBOCO_AGENT_AUTH_SECRET", "panel-secret")
+    tok = issue_panel_token()
+    assert verify_agent_token(tok, CEO_AGENT_ID, "developer", "") is False
+    assert verify_agent_token(tok, "be-dev-1", "ceo", "") is False
 
 
 # ---------------------------------------------------------------------------

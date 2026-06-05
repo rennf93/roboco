@@ -304,8 +304,16 @@ services:
     restart: unless-stopped
     ports:
       - "3000:80"
+    environment:
+      # Rendered into the proxy config by the nginx image's envsubst
+      # entrypoint so the human panel authenticates in secure mode. The
+      # filter limits substitution to ROBOCO_* vars, leaving nginx's own
+      # $host / $remote_addr runtime variables untouched. Get the value
+      # with `make panel-token`.
+      ROBOCO_PANEL_AGENT_TOKEN: ${ROBOCO_PANEL_AGENT_TOKEN:-}
+      NGINX_ENVSUBST_FILTER: "^ROBOCO_"
     volumes:
-      - ./docker/nginx.conf:/etc/nginx/conf.d/default.conf:ro
+      - ./docker/nginx.conf:/etc/nginx/templates/default.conf.template:ro
     depends_on:
       - panel
       - orchestrator

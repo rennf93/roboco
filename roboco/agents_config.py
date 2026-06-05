@@ -33,7 +33,7 @@ from typing import Final
 from roboco.foundation import identity as _foundation
 from roboco.foundation.policy import communications as _comms
 from roboco.models.base import NotificationPriority, NotificationType
-from roboco.seeds.initial_data import AGENT_UUIDS
+from roboco.seeds.initial_data import AGENT_UUIDS, CEO_AGENT_ID
 
 # Env var containing the HMAC secret used to sign agent auth tokens.
 # Must be set in orchestrator + API container environments; if missing,
@@ -89,6 +89,20 @@ def verify_agent_token(token: str, agent_id: str, role: str, team: str = "") -> 
         secret, _signing_payload(agent_id, role, team), hashlib.sha256
     ).hexdigest()
     return hmac.compare_digest(expected, token)
+
+
+def issue_panel_token() -> str:
+    """Mint the token the control panel presents to act as the CEO.
+
+    The panel calls the API as the CEO identity — ``X-Agent-Id`` = the CEO
+    UUID, ``X-Agent-Role`` = ``ceo``, and no team header — so the token is
+    signed for exactly those values (empty team). In secure mode nginx injects
+    it as ``X-Agent-Token`` so the browser never holds the signing secret;
+    this is just the existing per-agent token issued for the CEO identity, so
+    the verification path is unchanged. Returns ``UNSIGNED`` when the secret is
+    unset (same fail-closed contract as ``issue_agent_token``).
+    """
+    return issue_agent_token(CEO_AGENT_ID, "ceo", "")
 
 
 # Reverse mapping: UUID -> slug (computed from seeds)
