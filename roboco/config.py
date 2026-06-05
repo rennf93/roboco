@@ -323,7 +323,7 @@ class Settings(BaseSettings):
         description=(
             "Orchestrator-side directory where per-agent tool manifests are "
             "written. Must be a path that's bind-mounted from the host "
-            "(see docker-compose.yaml) so the docker daemon can in turn mount "
+            "(see docker-compose.yml) so the docker daemon can in turn mount "
             "the file into spawned agent containers as /app/tool-manifest.json."
         ),
     )

@@ -76,7 +76,6 @@ build:
           - Makefile
           - docker/**
           - docker-compose.yml
-          - docker-compose.yaml
 
 dependencies:
   - changed-files:
