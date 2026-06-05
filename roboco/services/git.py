@@ -831,11 +831,21 @@ class GitService(BaseService):
             workspace, base_branch, default_branch, task_id
         )
 
+        # Fast-forward the checked-out base to the freshly-fetched remote tip.
+        # A plain `git pull origin <base>` is fragile in automation: if the
+        # local base has diverged at all it aborts with exit 128 ("Need to
+        # specify how to reconcile divergent branches" / refusing to merge
+        # unrelated histories), which then blows up the whole claim. We only
+        # ever want the latest remote base before cutting a branch, so a local
+        # `merge --ff-only origin/<base>` is the right intent — and it uses the
+        # ref the scoped fetch above already updated (no second network call).
+        # check=False: a non-fast-forward (divergent local) or a base that
+        # isn't on the remote yet leaves the checked-out base as the branch
+        # point instead of aborting branch creation.
         await self._run_git(
             workspace,
-            ["pull", "origin", base_branch],
-            token=project_token,
-            timeout=_network_git_timeout(),
+            ["merge", "--ff-only", f"origin/{base_branch}"],
+            check=False,
         )
         # Idempotent branch creation: a prior attempt may have created the
         # branch on disk but failed before the DB recorded branch_name (the

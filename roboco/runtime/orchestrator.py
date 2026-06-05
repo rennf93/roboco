@@ -485,12 +485,10 @@ class AgentOrchestrator:
 
     def __init__(
         self,
-        blueprints_dir: Path | None = None,
         mcp_config_dir: Path | None = None,
         project_root: Path | None = None,
         dispatcher_interval: int = 30,
     ):
-        self.blueprints_dir = blueprints_dir or Path("agents/blueprints")
         self.mcp_config_dir = mcp_config_dir or Path(".mcp")
         self.project_root = project_root or Path.cwd()
         self.dispatcher_interval = dispatcher_interval
@@ -1450,7 +1448,6 @@ class AgentOrchestrator:
         mcp_name = config.mcp_config_path.name if config.mcp_config_path else ""
         if PROJECT_HOST_PATH:
             return {
-                "blueprints": f"{PROJECT_HOST_PATH}/agents/blueprints",
                 "docs": f"{PROJECT_HOST_PATH}/docs",
                 "workspaces": f"{DATA_HOST_PATH}/workspaces",
                 "claude": CLAUDE_AUTH_HOST_PATH,
@@ -1470,8 +1467,7 @@ class AgentOrchestrator:
                 ),
             }
         return {
-            "blueprints": str(self.blueprints_dir.absolute()),
-            "docs": str(self.blueprints_dir.parent / "docs"),
+            "docs": str((self.project_root / "docs").absolute()),
             "workspaces": str(Path(settings.workspaces_root)),
             "claude": CLAUDE_AUTH_HOST_PATH,
             "mcp_config": str(config.mcp_config_path),
@@ -1538,13 +1534,11 @@ class AgentOrchestrator:
     def _core_volume_and_env_args(
         config: AgentConfig, hosts: dict[str, str | None], role: str
     ) -> list[str]:
-        """The always-on -v/-e block (prompt, blueprints, docs, workspaces, env)."""
+        """The always-on -v/-e block (prompt, docs, workspaces, env)."""
         docs_ro = "" if config.agent_id in ALL_DOCS else ":ro"
         return [
             "-v",
             f"{hosts['prompt']}:/app/system-prompt.md:ro",
-            "-v",
-            f"{hosts['blueprints']}:/app/agents/blueprints:ro",
             "-v",
             f"{hosts['docs']}:/app/docs{docs_ro}",
             "-v",
@@ -2375,69 +2369,6 @@ class AgentOrchestrator:
             has_task=bool(task_block),
         )
         return path
-
-    def _get_blueprint_path(self, agent_id: str) -> Path:
-        """Get blueprint path for an agent.
-
-        DEPRECATED: Use _generate_composed_prompt() instead.
-        Kept for backwards compatibility.
-        """
-        role = self._get_blueprint_role(agent_id)
-        team = self._get_agent_team(agent_id)
-
-        if team == "backend":
-            cell_dir = "backend"
-        elif team == "frontend":
-            cell_dir = "frontend"
-        elif team == "ux_ui":
-            cell_dir = "ux_ui"
-        else:
-            cell_dir = "board"
-
-        blueprint_file = f"{role.replace('_', '-')}.md"
-        return self.blueprints_dir / cell_dir / blueprint_file
-
-    def _get_blueprint_rel_path(self, agent_id: str) -> str:
-        """Get relative blueprint path for container mount."""
-        role = self._get_blueprint_role(agent_id)
-        team = self._get_agent_team(agent_id)
-
-        if team == "backend":
-            cell_dir = "backend"
-        elif team == "frontend":
-            cell_dir = "frontend"
-        elif team == "ux_ui":
-            cell_dir = "ux_ui"
-        else:
-            cell_dir = "board"
-
-        blueprint_file = f"{role.replace('_', '-')}.md"
-        return f"{cell_dir}/{blueprint_file}"
-
-    def _get_blueprint_role(self, agent_id: str) -> str:
-        """Get blueprint-specific role name from agent_id (used for file paths)."""
-        role_map = {
-            "be-dev-1": "be-dev",
-            "be-dev-2": "be-dev",
-            "fe-dev-1": "fe-dev",
-            "fe-dev-2": "fe-dev",
-            "ux-dev-1": "ux-dev",
-            "ux-dev-2": "ux-dev",
-            "be-qa": "be-qa",
-            "fe-qa": "fe-qa",
-            "ux-qa": "ux-qa",
-            "be-pm": "be-pm",
-            "fe-pm": "fe-pm",
-            "ux-pm": "ux-pm",
-            "be-doc": "be-documenter",
-            "fe-doc": "fe-documenter",
-            "ux-doc": "ux-documenter",
-            "main-pm": "main-pm",
-            "product-owner": "product-owner",
-            "head-marketing": "head-marketing",
-            "auditor": "auditor",
-        }
-        return role_map.get(agent_id, agent_id)
 
     # Slug -> team string for ROUTING purposes. Derived from
     # foundation.AGENTS so adding/renaming an agent edits exactly one

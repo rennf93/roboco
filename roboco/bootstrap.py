@@ -7,7 +7,6 @@ Data constants are in roboco/seeds/, database operations in roboco/db/seed.py.
 
 import asyncio
 from http import HTTPStatus
-from pathlib import Path
 
 import httpx
 import structlog
@@ -103,9 +102,7 @@ async def main(
     logger.info("Event bus initialized (Redis Streams)")
 
     # Initialize orchestrator
-    orchestrator = AgentOrchestrator(
-        blueprints_dir=Path("agents/blueprints"),
-    )
+    orchestrator = AgentOrchestrator()
     _BootstrapHolder.orchestrator = orchestrator
 
     # Set orchestrator in API routes

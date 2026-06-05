@@ -239,14 +239,19 @@ class Envelope:
         """
         from roboco.foundation.policy import lifecycle as spec
 
-        self.current_state = str(getattr(task, "status", "") or "") or None
         try:
+            self.current_state = str(getattr(task, "status", "") or "") or None
             role_enum = spec.Role(role)
             self.valid_next_verbs = spec.valid_next_verbs(role_enum, task)
-        except (ValueError, TypeError):
-            # Unknown role string OR task.status not a Status enum value
-            # (e.g. AsyncMock in tests, partial fixtures). Match legacy
-            # verb_gates semantics: best-effort, never raise.
+        except Exception:
+            # Introspection is best-effort and NEVER raises. Failure modes:
+            # an unknown role string (ValueError); a mock/partial task
+            # (TypeError); OR — critically, on an error path after a
+            # rolled-back async session — reading task.status hits an EXPIRED
+            # ORM attribute whose lazy reload fires outside the greenlet and
+            # raises sqlalchemy MissingGreenlet. Any of these must degrade to
+            # empty introspection rather than mask the real error this
+            # envelope is reporting. (current_state defaults to None.)
             self.valid_next_verbs = []
         return self
 
