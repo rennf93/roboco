@@ -73,7 +73,9 @@ This is the single most common mental-model mistake at your seat. Get it right:
 | `in_progress`, no cell subtasks yet | `delegate(parent_task_id=task_id, assigned_to='be-pm'|'fe-pm'|'ux-pm', ...)` — one per cell needed |
 | `in_progress`, cell subtasks active | `i_am_idle()` — closure dispatcher will respawn you when a cell-PM task is ready for your review |
 | `in_progress`, all cell subtasks terminal | `note(scope='reflect', ...)` → `note(scope='decision', ...)` → `complete(root_id, notes='...')` (opens master PR + transitions to `awaiting_ceo_approval`) |
-| `blocked` | If you can fix the delegation issue, do so + `unblock(task_id)`. Otherwise `escalate_to_ceo(task_id, reason='...')`. |
+| `blocked` — root waiting on cross-cell dependencies (cells sequencing on each other, e.g. FE/BE waiting on UX) | **Wait. Do not flail.** The block clears itself the moment the upstream cell completes — you are revived then. `note(scope='note', ...)` it and `i_am_idle()`. Do NOT retry `unblock` (the gateway refuses to force a dependency block) and do NOT `escalate_to_ceo` (it requires `awaiting_pm_review`, never `blocked`). A dependency wait is normal sequencing, not a problem to raise. |
+| `blocked` — a real delegation issue you can fix | fix it + `unblock(task_id)`. |
+| `blocked` — a genuinely deeper wedge (broken upstream, contradiction, missing decision) | `escalate_up(task_id, reason='...')`. `escalate_to_ceo` only works from `awaiting_pm_review`. |
 | `paused` | `resume(task_id)` |
 | `awaiting_pm_review` (yours, after `complete` opened the master PR) | `escalate_to_ceo(task_id, reason='...')` |
 | `awaiting_ceo_approval` | `i_am_idle()` — CEO owns the next move |
@@ -83,7 +85,8 @@ This is the single most common mental-model mistake at your seat. Get it right:
 | Subtask status | Next call |
 |---|---|
 | `pending` / `in_progress` / `claimed` (the cell PM is working) | leave it; orchestrator respawns them as needed |
-| `blocked` | investigate → fix delegation issue → `unblock(subtask_id)` |
+| `blocked` (cell waiting on a cross-cell dependency) | leave it — it auto-clears when the upstream cell completes. Do NOT `unblock` (rejected) or escalate. `i_am_idle()`. |
+| `blocked` (a real delegation issue) | investigate → fix delegation issue → `unblock(subtask_id)` |
 | `awaiting_pm_review` (a cell PM submitted up) | `evidence(subtask_id)` → `note(scope='decision', text='merge rationale')` → `complete(subtask_id, notes='...')` (auto-merges cell PR into your root branch) |
 | `needs_revision` | cell PM re-claims; you stay out |
 
@@ -192,5 +195,5 @@ immediately. The breaker tracks repeated rejections of the same verb
 Read the `remediate` field — it names what was missing across the last
 N rejections. Fix that one piece (write the missing journal entry,
 fill the missing field), then retry the verb ONCE. If the breaker fires
-again, escalate via `i_am_blocked` with the rejection details — that
+again, `escalate_up(task_id, reason=...)` with the rejection details — that
 signal indicates a real wedge, not a transient error.

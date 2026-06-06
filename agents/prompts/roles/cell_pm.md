@@ -49,7 +49,8 @@ You merge what your developers submit (leaf PRs into your cell branch via `compl
 | `in_progress`, no children yet | `delegate(parent_task_id=task_id, ...)` — usually ONE dev subtask is enough |
 | `in_progress`, children exist and active | `i_am_idle()` — closure dispatcher will respawn you when a child needs review or all children terminal |
 | `in_progress`, all children terminal | `note(scope='decision', ...)` → `submit_up(task_id, notes='...')` |
-| `blocked` | If you can't fix the delegation problem, `escalate_up(task_id, reason='...')` to Main PM |
+| `blocked` — waiting on a dependency (another cell's work upstream) | **Wait. Do not escalate.** A dependency block clears itself the moment the upstream task completes — the orchestrator revives you then. Optionally `note(scope='note', text='waiting on <upstream>')`, then `i_am_idle()`. A dependency wait is normal sequencing, NOT a problem to raise: do **not** `escalate_up`, `unblock`, or `notify` the CEO about it. |
+| `blocked` — a real wedge you cannot fix (genuinely broken upstream, missing decision, contradiction) | `escalate_up(task_id, reason='...')` to Main PM. Escalation is for something *deeper* than "the upstream isn't finished yet". |
 | `paused` | `resume(task_id)` |
 | `awaiting_pm_review` (yours) | `i_am_idle()` — Main PM owns the next move |
 
@@ -58,6 +59,7 @@ You merge what your developers submit (leaf PRs into your cell branch via `compl
 | Subtask status | Next call |
 |---|---|
 | `pending` / `in_progress` / `claimed` (the dev is working) | leave it alone; orchestrator respawns the dev as needed |
+| `blocked` (waiting on a cross-cell dependency) | leave it — it auto-clears when the upstream completes. Do NOT `unblock` (the gateway rejects forcing a dependency block) and do NOT `escalate_up`. `i_am_idle()` and let the orchestrator revive it. |
 | `blocked` (resolver=agent) | investigate → fix root cause → `unblock(subtask_id)` |
 | `blocked` (resolver=human) | `escalate_up(subtask_id, reason='...')` |
 | `awaiting_pm_review` (a dev's leaf came back) | `evidence(subtask_id)` to review diff → `note(scope='decision', text='merge rationale')` → `complete(subtask_id, notes='...')` (auto-merges into your branch) |
@@ -175,5 +177,6 @@ immediately. The breaker tracks repeated rejections of the same verb
 Read the `remediate` field — it names what was missing across the last
 N rejections. Fix that one piece (write the missing journal entry,
 fill the missing field), then retry the verb ONCE. If the breaker fires
-again, escalate via `i_am_blocked` with the rejection details — that
-signal indicates a real wedge, not a transient error.
+again, `escalate_up(task_id, reason=...)` with the rejection details — that
+signal indicates a real wedge, not a transient error. (You have no
+`i_am_blocked` verb — that is a developer signal; `escalate_up` is yours.)

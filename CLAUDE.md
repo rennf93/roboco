@@ -337,15 +337,15 @@ the verbs its role is allowed to call. The orchestrator builds the
 manifest from `roboco/services/gateway/role_config.py` and mounts it
 read-only into the agent container.
 
-### Verb surface (all roles get `i_am_idle`; the rest are role-scoped)
+### Verb surface (canonical source: `lifecycle.spec.intents_for_role`; every role also gets `i_am_idle`)
 
-| Role          | Flow verbs                                                                                       |
+| Role          | Flow verbs (beyond `i_am_idle`)                                                                  |
 |---------------|--------------------------------------------------------------------------------------------------|
-| developer     | `give_me_work`, `i_will_work_on`, `open_pr`, `i_am_done`, `i_am_blocked`                          |
-| qa            | `claim_review`, `pass`, `fail`                                                                   |
-| documenter    | `claim_doc_task`, `i_documented`                                                                 |
-| cell_pm       | `triage`, `unblock`, `complete`, `escalate_up`                                                   |
-| main_pm       | `triage_all`, `unblock`, `complete`, `escalate_up`, `escalate_to_ceo`                            |
+| developer     | `give_me_work`, `i_will_work_on`, `open_pr`, `i_am_done`, `i_am_blocked`, `resume`, `unclaim`     |
+| qa            | `give_me_work`, `claim_review`, `pass_review`, `fail_review`, `i_am_blocked`, `resume`, `unclaim` |
+| documenter    | `give_me_work`, `claim_doc_task`, `i_documented`, `i_am_blocked`, `resume`, `unclaim`             |
+| cell_pm       | `give_me_work`, `i_will_plan`, `delegate`, `complete`, `submit_up`, `triage`, `unblock`, `escalate_up`, `resume`, `unclaim` |
+| main_pm       | `give_me_work`, `i_will_plan`, `delegate`, `complete`, `triage`, `triage_all`, `unblock`, `escalate_up`, `escalate_to_ceo`, `resume`, `unclaim` |
 | product_owner | `triage`, `escalate_to_ceo`                                                                      |
 | head_marketing| `triage`, `escalate_to_ceo`                                                                      |
 | auditor       | `triage` (read-only — no `say`/`dm`)                                                             |
