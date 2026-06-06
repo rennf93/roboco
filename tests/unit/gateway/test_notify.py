@@ -306,3 +306,75 @@ async def test_notify_priority_high_passed_through() -> None:
     assert body["error"] is None
     call_kwargs = notif_svc.send_ack_notification.call_args.kwargs
     assert call_kwargs["priority"] == "high"
+
+
+# ---------------------------------------------------------------------------
+# A dependency block is never a CEO signal — notify(target="ceo") is refused
+# while the related task is waiting on an unfinished upstream.
+# ---------------------------------------------------------------------------
+
+
+def _ca_for_notify(
+    role: str, task: object, unmet: list[object]
+) -> tuple[ContentActions, AsyncMock]:
+    task_svc = AsyncMock()
+    task_svc.agent_for.return_value = MagicMock(role=role)
+    task_svc.get.return_value = task
+    task_svc.unmet_dependency_ids.return_value = unmet
+    notif_svc = AsyncMock()
+    ca = ContentActions(_make_deps(task=task_svc, notifications=notif_svc))
+    # Ownership is exercised elsewhere; isolate the dependency-block gate.
+    object.__setattr__(
+        ca, "_verify_explicit_task_ownership", AsyncMock(return_value=None)
+    )
+    return ca, notif_svc
+
+
+@pytest.mark.asyncio
+async def test_notify_ceo_about_dependency_block_refused() -> None:
+    """PO cannot page the CEO about a task that is just waiting on an upstream."""
+    dep_id = uuid4()
+    task = MagicMock(id=uuid4(), dependency_ids=[dep_id])
+    ca, notif_svc = _ca_for_notify("product_owner", task, unmet=[dep_id])
+    env = await ca.notify(
+        agent_id=uuid4(),
+        target="ceo",
+        text="URGENT: relax the backend dependency so the cell can resume.",
+        priority="urgent",
+        task_id=task.id,
+    )
+    body = env.as_dict()
+    assert body["error"] == "invalid_state"
+    assert "dependency block" in body["message"]
+    notif_svc.send_ack_notification.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_notify_ceo_about_unblocked_task_allowed() -> None:
+    """A CEO notification about a task with no open dependency still goes through."""
+    task = MagicMock(id=uuid4(), dependency_ids=[])
+    ca, notif_svc = _ca_for_notify("product_owner", task, unmet=[])
+    env = await ca.notify(
+        agent_id=uuid4(),
+        target="ceo",
+        text="Product review complete — ready for your go/no-go.",
+        task_id=task.id,
+    )
+    assert env.as_dict()["error"] is None
+    notif_svc.send_ack_notification.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_notify_noncel_target_about_blocked_task_allowed() -> None:
+    """The gate is CEO-scoped: notifying another PM about a block is unaffected."""
+    dep_id = uuid4()
+    task = MagicMock(id=uuid4(), dependency_ids=[dep_id])
+    ca, notif_svc = _ca_for_notify("main_pm", task, unmet=[dep_id])
+    env = await ca.notify(
+        agent_id=uuid4(),
+        target="be-pm",
+        text="Heads up: this task is waiting on the UX design.",
+        task_id=task.id,
+    )
+    assert env.as_dict()["error"] is None
+    notif_svc.send_ack_notification.assert_awaited_once()

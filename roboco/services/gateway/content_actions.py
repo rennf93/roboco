@@ -689,6 +689,11 @@ class ContentActions:
             t = await self.task.get_journal_context_task_for_agent(agent_id)
             if t is not None:
                 task_id = t.id
+        # A dependency block is a "wait silently" situation — never a CEO signal.
+        # An agent must not page the CEO to relax or escalate a task that is
+        # simply waiting on an unfinished upstream; that wait clears on its own.
+        if reject := await self._reject_ceo_dependency_notify(target, task_id):
+            return reject
         await self.notifications.send_ack_notification(
             from_agent=agent_id,
             to_agent=target,
@@ -702,6 +707,51 @@ class ContentActions:
             next="continue",
             context_briefing={},
         )
+
+    async def _reject_ceo_dependency_notify(
+        self, target: str, task_id: UUID | None
+    ) -> Envelope | None:
+        """Rejection envelope if this is a CEO notification about a dep block.
+
+        A dependency block clears when the upstream completes — paging the CEO
+        about it is pure noise and burn. Returns None when the notification is
+        allowed (non-CEO target, no task, or no open dependency).
+        """
+        from roboco.agents_config import is_ceo
+
+        if task_id is None or not is_ceo(target):
+            return None
+        dep_block = await self._dependency_block_reason(task_id)
+        if not dep_block:
+            return None
+        return Envelope.invalid_state(
+            message=f"cannot notify the CEO about a dependency block — {dep_block}",
+            remediate=(
+                "a dependency block clears automatically when the upstream task "
+                "completes — do not notify or escalate. Call i_am_idle() and "
+                "wait; the task resumes on its own."
+            ),
+            context_briefing={},
+        )
+
+    async def _dependency_block_reason(self, task_id: UUID) -> str | None:
+        """Reason string if ``task_id`` is waiting on an unfinished dependency.
+
+        Used to refuse CEO notifications about a dependency block: such a block
+        is resolved by the upstream completing, not by a human, so paging the
+        CEO is pure noise and burn.
+        """
+        task = await self.task.get(task_id)
+        if task is None:
+            return None
+        dep_ids = list(task.dependency_ids or [])
+        if not dep_ids:
+            return None
+        unmet = await self.task.unmet_dependency_ids(dep_ids)
+        if unmet:
+            noun = "dependency" if len(unmet) == 1 else "dependencies"
+            return f"{len(unmet)} {noun} not yet completed"
+        return None
 
     async def _is_caller_dependency(self, agent_id: UUID, task: Any) -> bool:
         """True when ``task`` is a dependency of a task the caller is assigned to.

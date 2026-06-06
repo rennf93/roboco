@@ -2021,19 +2021,26 @@ class AgentOrchestrator:
                     return task_or_reason
                 task = task_or_reason
 
-                persistent = self._readiness_check_task(agent_id, task)
-                if persistent is not None:
-                    return await self._readiness_block(client, task_id, persistent)
+                # Universal dependency gate: refuse to spawn an agent of ANY role
+                # onto a task whose cross-task dependencies are not yet terminal.
+                # This check previously lived only on the dev dispatch path, so
+                # cell-PM, Main-PM and board agents were spawned onto
+                # dependency-blocked tasks and flailed unblock / escalate / notify
+                # against an unfinished upstream. Auto-block so the task leaves the
+                # pending pool (no per-tick spawn-refusal that would starve
+                # siblings); `_unblock_dependents` revives it the moment the
+                # upstream reaches a terminal state.
+                if dep_reason := await self._check_dependencies_terminal(client, task):
+                    return await self._readiness_block(client, task_id, dep_reason)
 
+                persistent = self._readiness_check_task(agent_id, task)
                 # Skip the git-token gate for coordination tasks — they have no
                 # project of their own, so there's no token to require.
-                if not _is_coordination_task(task):
+                if persistent is None and not _is_coordination_task(task):
                     project_slug = _read_project_slug(task)
-                    token_reason = await self._readiness_check_git_token(project_slug)
-                    if token_reason is not None:
-                        return await self._readiness_block(
-                            client, task_id, token_reason
-                        )
+                    persistent = await self._readiness_check_git_token(project_slug)
+                if persistent is not None:
+                    return await self._readiness_block(client, task_id, persistent)
         except httpx.HTTPError as e:
             # Transient — retry on next dispatch without auto-blocking.
             return f"readiness check HTTP error: {e}"
@@ -2103,12 +2110,39 @@ class AgentOrchestrator:
             f"but agent {agent_id} is {role!r}"
         )
 
+    @staticmethod
+    def _readiness_check_cell_ownership(
+        agent_id: str, task: dict[str, Any]
+    ) -> str | None:
+        """A cell implementation task may only be worked by its own cell.
+
+        Board (product-owner / head-marketing) and Main-PM agents must never be
+        spawned onto a backend / frontend / ux_ui task. The proven-live failure:
+        a board role took ownership of cell work it structurally cannot drive
+        (dev -> QA -> docs), so when the upstream cleared the task sat paused
+        under an owner that could not progress it — a deadlock plus a
+        respawn/escalation burn loop. The auditor is exempt: a silent observer
+        with read access to every task.
+        """
+        team = task.get("team")
+        if team not in ("backend", "frontend", "ux_ui"):
+            return None
+        role = get_agent_role(agent_id) or ""
+        if role in ("product_owner", "head_marketing", "main_pm"):
+            return (
+                f"cell task (team={team}) cannot be worked by a {role} agent — "
+                f"only the {team} cell may own it"
+            )
+        return None
+
     def _readiness_check_task(self, agent_id: str, task: dict[str, Any]) -> str | None:
         """Return a persistent blocker reason on the task itself, else None."""
         status = task.get("status", "")
         role = get_agent_role(agent_id) or ""
 
         if reason := self._readiness_check_acceptance_criteria(task):
+            return reason
+        if reason := self._readiness_check_cell_ownership(agent_id, task):
             return reason
         # A coordination task (product, no repo of its own) does no git: skip the
         # project-slug and branch-name gates that only apply to code tasks.
