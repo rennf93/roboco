@@ -309,6 +309,7 @@ VERBS_WITHOUT_TRACING: frozenset[str] = frozenset(
         "evidence",  # read-only evidence dump
         "i_am_idle",  # signal only
         "unclaim",  # voluntary release; no rationale required
+        "reassign",  # mechanical intra-cell hand-off; branch/WIP preserved
         "resume",  # pure state move paused→in_progress
         # claim_review's tracing applies on pass_review / fail_review.
         "claim_review",

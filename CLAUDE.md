@@ -344,7 +344,7 @@ read-only into the agent container.
 | developer     | `give_me_work`, `i_will_work_on`, `open_pr`, `i_am_done`, `i_am_blocked`, `resume`, `unclaim`     |
 | qa            | `give_me_work`, `claim_review`, `pass_review`, `fail_review`, `i_am_blocked`, `resume`, `unclaim` |
 | documenter    | `give_me_work`, `claim_doc_task`, `i_documented`, `i_am_blocked`, `resume`, `unclaim`             |
-| cell_pm       | `give_me_work`, `i_will_plan`, `delegate`, `complete`, `submit_up`, `triage`, `unblock`, `escalate_up`, `resume`, `unclaim` |
+| cell_pm       | `give_me_work`, `i_will_plan`, `delegate`, `complete`, `submit_up`, `triage`, `unblock`, `escalate_up`, `reassign`, `resume`, `unclaim` |
 | main_pm       | `give_me_work`, `i_will_plan`, `delegate`, `complete`, `triage`, `triage_all`, `unblock`, `escalate_up`, `escalate_to_ceo`, `resume`, `unclaim` |
 | product_owner | `triage`, `escalate_to_ceo`                                                                      |
 | head_marketing| `triage`, `escalate_to_ceo`                                                                      |

@@ -28,6 +28,7 @@ You merge what your developers submit (leaf PRs into your cell branch via `compl
 | `submit_up(task_id, notes)` | Open your cell-level PR up to Main PM's branch; transition YOUR task to `awaiting_pm_review`. | All your subtasks terminal; `notes` >= 20 chars; journal `decision` recorded. |
 | `escalate_up(task_id, reason)` | Escalate to Main PM. | Task is yours or assigned to your cell. |
 | `unclaim(task_id)` | Release this claim back to pending. Use sparingly — your work-in-progress branch survives but the task is unassigned. | Task assigned to you and in claimed/in_progress. |
+| `reassign(task_id, new_assignee)` | Hand a claimed/in_progress dev subtask to ANOTHER developer in your OWN cell (e.g. the assigned dev went idle mid-task). The branch is keyed to the task, so the work-in-progress is preserved — the new dev continues it and is respawned automatically. Prefer this over `unclaim` when a specific dev should take over without dropping the work back to the pool. `new_assignee` is a dev slug in your cell (`be-dev-2`, `fe-dev-1`, …). | Subtask in your cell, claimed/in_progress; `new_assignee` is a developer in your cell. |
 | `resume(task_id)` | Resume a paused task. Transitions paused → in_progress. | Task assigned to you and in paused state. |
 | `note(text, scope?, task_id?)` | Journal. Required: `scope='decision'` before `i_will_plan` / `delegate` / `unblock` / `complete` / `submit_up` / `escalate_up`. | None. |
 | `say(channel, text)` / `dm(recipient, text)` | Channel post / DM. **Channel slug without `#`. Valid slugs:** cell channels (`backend-cell`, `frontend-cell`, `uxui-cell`), cross-cell (`dev-all`, `qa-all`, `pm-all`, `doc-all`), management (`main-pm-board`, `board-private`), broadcast (`announcements`, `all-hands`). Inventing a slug ("backend-dev", "backend") returns `Channel not found`. | None. |
@@ -58,7 +59,7 @@ You merge what your developers submit (leaf PRs into your cell branch via `compl
 
 | Subtask status | Next call |
 |---|---|
-| `pending` / `in_progress` / `claimed` (the dev is working) | leave it alone; orchestrator respawns the dev as needed |
+| `pending` / `in_progress` / `claimed` (the dev is working) | leave it alone; orchestrator respawns the dev as needed. If the assigned dev has gone idle and another dev in your cell should take over, `reassign(subtask_id, new_assignee)` — the branch (and WIP) is preserved. |
 | `blocked` (waiting on a cross-cell dependency) | leave it — it auto-clears when the upstream completes. Do NOT `unblock` (the gateway rejects forcing a dependency block) and do NOT `escalate_up`. `i_am_idle()` and let the orchestrator revive it. |
 | `blocked` (resolver=agent) | investigate → fix root cause → `unblock(subtask_id)` |
 | `blocked` (resolver=human) | `escalate_up(subtask_id, reason='...')` |

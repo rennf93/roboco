@@ -108,6 +108,7 @@ as the source of truth for verb signatures.
 | `give_me_work` | `give_me_work()` |
 | `i_am_idle` | `i_am_idle()` |
 | `i_will_plan` | `i_will_plan(task_id: UUID, plan: str, approach: str, sub_tasks: list[str | str] = PydanticUndefined, technical_considerations: list[str] = PydanticUndefined, risks: list[str | str] = PydanticUndefined, open_questions: list[str | str | bool] = PydanticUndefined)` |
+| `reassign` | `reassign(task_id: UUID, new_assignee: str)` |
 | `resume` | `resume(task_id: UUID)` |
 | `submit_up` | `submit_up(task_id: UUID, notes: str)` |
 | `triage` | `triage()` |

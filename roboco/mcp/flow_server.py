@@ -303,6 +303,17 @@ def unclaim(task_id: str) -> dict[str, Any]:
     return _post(_role_path("unclaim"), {"task_id": task_id})
 
 
+def reassign(task_id: str, new_assignee: str) -> dict[str, Any]:
+    """Cell PM: hand a claimed/in_progress task to another dev in your own cell.
+
+    The branch is keyed to the task, so the work-in-progress survives;
+    `new_assignee` is a developer slug in your cell (e.g. `be-dev-2`).
+    """
+    return _post(
+        _role_path("reassign"), {"task_id": task_id, "new_assignee": new_assignee}
+    )
+
+
 def resume(task_id: str) -> dict[str, Any]:
     """Resume a paused task. Transitions paused → in_progress for the assignee."""
     return _post(_role_path("resume"), {"task_id": task_id})
@@ -492,6 +503,7 @@ _TOOLS: dict[str, Any] = {
     "i_am_done": i_am_done,
     "i_am_blocked": i_am_blocked,
     "unclaim": unclaim,
+    "reassign": reassign,
     "resume": resume,
     "i_am_idle": i_am_idle,
     # qa — keys are the public MCP tool names (what agents see and prompts

@@ -9,6 +9,7 @@ other verb will be rejected with a Decision telling you the right one.
 - **give_me_work**: Return your most-actionable task or signal idle.
 - **i_am_idle**: Signal you have no active work. PMs auto-pause owned in_progress tasks.
 - **i_will_plan**: PM mirror of i_will_work_on for parent tasks. Claim, plan, transition to in_progress; from there delegate subtasks.
+- **reassign**: Hand a claimed/in_progress task to another developer in your own cell. The branch is keyed to the task (not the agent), so it is preserved — the new developer continues the work-in-progress. No status change.
 - **resume**: Resume a paused task you own. paused -> in_progress.
 - **submit_up**: Cell PM opens the cell→root PR and moves the cell task to awaiting_pm_review. The same Cell PM then completes it.
 - **triage**: List actionable tasks in your scope.

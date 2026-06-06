@@ -14,6 +14,7 @@ from roboco.api.schemas.v1.flow import (
     GiveMeWorkRequest,
     IAmIdleRequest,
     IWillPlanRequest,
+    ReassignRequest,
     ResumeRequest,
     SubmitUpRequest,
     TriageRequest,
@@ -151,6 +152,17 @@ async def unclaim(
     choreographer: _ChoreographerDep,
 ) -> dict:
     env = await choreographer.unclaim(x_agent_id, body.task_id)
+    return envelope_to_response(env, request)
+
+
+@router.post("/reassign")
+async def reassign(
+    request: Request,
+    body: ReassignRequest,
+    x_agent_id: _AgentIdHeader,
+    choreographer: _ChoreographerDep,
+) -> dict:
+    env = await choreographer.reassign(x_agent_id, body.task_id, body.new_assignee)
     return envelope_to_response(env, request)
 
 

@@ -156,6 +156,15 @@ Pass QA. Transitions awaiting_qa -> awaiting_documentation.
 **Composes:** qa_pass
 
 
+## reassign
+
+Hand a claimed/in_progress task to another developer in your own cell. The branch is keyed to the task (not the agent), so it is preserved — the new developer continues the work-in-progress. No status change.
+
+**Allowed roles:** cell_pm
+
+**Composes:** (no atomic actions)
+
+
 ## resume
 
 Resume a paused task you own. paused -> in_progress.

@@ -864,6 +864,22 @@ _INTENT_VERBS: dict[str, IntentSpec] = {
             "task returned to pending; another agent (or you, fresh) can claim"
         ),
     ),
+    "reassign": IntentSpec(
+        name="reassign",
+        allowed_roles=frozenset({Role.CELL_PM}),
+        description=(
+            "Hand a claimed/in_progress task to another developer in your own"
+            " cell. The branch is keyed to the task (not the agent), so it is"
+            " preserved — the new developer continues the work-in-progress. No"
+            " status change."
+        ),
+        composes=(),  # special — the verb body owns the assignee write
+        extra_preconditions=(),
+        side_effects=(),
+        next_hint=lambda _t: (
+            "reassigned; the new developer will be respawned to continue"
+        ),
+    ),
     "resume": IntentSpec(
         name="resume",
         allowed_roles=frozenset(_DEV_ROLES | _QA_ROLES | _DOC_ROLES | _PM_ROLES),

@@ -2337,6 +2337,141 @@ class Choreographer:
             context_briefing=briefing,
         ).with_introspection(task=after, role=role_str)
 
+    @staticmethod
+    def _validate_reassign(
+        t: Any, agent_id: UUID, new_assignee: str
+    ) -> Envelope | None:
+        """Intra-cell guard for ``reassign`` (verb body owns it — composes=()).
+
+        The task must be claimed/in_progress and in the caller's own cell, and
+        ``new_assignee`` must be a developer of that same cell. Returns a
+        rejection envelope, or None when the hand-off is allowed.
+        """
+        from roboco.agents_config import get_agent_role, get_agent_team
+        from roboco.seeds.initial_data import AGENT_UUIDS
+
+        caller_team = get_agent_team(str(agent_id))
+        task_team = getattr(t.team, "value", t.team)
+        status = str(getattr(t.status, "value", t.status))
+        if status not in ("claimed", "in_progress"):
+            return Envelope.invalid_state(
+                message=f"cannot reassign a task in status {status!r}",
+                remediate=(
+                    "reassign only a claimed or in_progress task; review/terminal"
+                    " states are owned by their lifecycle role"
+                ),
+                context_briefing={},
+            )
+        if task_team is None or task_team != caller_team:
+            return Envelope.not_authorized(
+                message=f"task team {task_team!r} is not your cell ({caller_team!r})",
+                remediate="you can only reassign tasks inside your own cell",
+                context_briefing={},
+            )
+        if new_assignee not in AGENT_UUIDS:
+            return Envelope.invalid_state(
+                message=f"unknown agent slug {new_assignee!r}",
+                remediate=(
+                    "new_assignee must be a developer slug in your cell, e.g. be-dev-2"
+                ),
+                context_briefing={},
+            )
+        if get_agent_role(new_assignee) != "developer":
+            return Envelope.not_authorized(
+                message=f"{new_assignee!r} is not a developer",
+                remediate=(
+                    "reassign hands work to a developer in your cell;"
+                    " only dev slugs are valid"
+                ),
+                context_briefing={},
+            )
+        if get_agent_team(new_assignee) != caller_team:
+            return Envelope.not_authorized(
+                message=f"{new_assignee!r} is not in your cell ({caller_team!r})",
+                remediate="reassign only to a developer in your own cell",
+                context_briefing={},
+            )
+        return None
+
+    async def reassign(
+        self, agent_id: UUID, task_id: UUID, new_assignee: str
+    ) -> Envelope:
+        """A cell PM hands a claimed/in_progress task to another dev in its cell.
+
+        Intra-cell only (see ``_validate_reassign``). The branch is keyed to the
+        task, not the agent, so it survives — the new developer continues the
+        work-in-progress and is respawned by the orchestrator.
+        """
+        from roboco.seeds.initial_data import AGENT_UUIDS
+
+        t = await self.task.get(task_id)
+        briefing = await self._briefing_for(agent_id, task_id)
+        if t is None:
+            return await self._emit_rejection(
+                Envelope.not_found(message=f"task {task_id} not found"),
+                agent_id=agent_id,
+                task_id=task_id,
+                verb="reassign",
+            )
+        agent = await self.task.agent_for(agent_id)
+        role_str = str(agent.role) if agent is not None else "cell_pm"
+        try:
+            role = spec_module.Role(role_str)
+        except ValueError:
+            return await self._emit_rejection(
+                Envelope.not_authorized(
+                    message=f"unknown role '{role_str}'",
+                    remediate="role is not declared in the lifecycle spec",
+                    context_briefing=briefing,
+                ).with_introspection(task=t, role=role_str),
+                agent_id=agent_id,
+                task_id=task_id,
+                verb="reassign",
+            )
+        spec_ctx = spec_module.Context(
+            actor_id=agent_id,
+            actor_slug=getattr(agent, "slug", None) if agent is not None else None,
+            original_developer_slug=_extract_original_developer(t),
+        )
+        decision = spec_module.can_invoke_intent(role, "reassign", t, spec_ctx)
+        if not decision.allowed:
+            return await self._emit_rejection(
+                Envelope.from_decision(decision, briefing=briefing).with_introspection(
+                    task=t, role=role_str
+                ),
+                agent_id=agent_id,
+                task_id=task_id,
+                verb="reassign",
+            )
+        guard = self._validate_reassign(t, agent_id, new_assignee)
+        if guard is not None:
+            return await self._emit_rejection(
+                guard.with_introspection(task=t, role=role_str),
+                agent_id=agent_id,
+                task_id=task_id,
+                verb="reassign",
+            )
+        after = await self.task.reassign_active_claim(
+            task_id, UUID(AGENT_UUIDS[new_assignee])
+        )
+        if after is None:
+            return await self._emit_rejection(
+                Envelope.invalid_state(
+                    message=f"cannot reassign from status {t.status}",
+                    remediate="only a claimed / in_progress task can be reassigned",
+                    context_briefing=briefing,
+                ).with_introspection(task=t, role=role_str),
+                agent_id=agent_id,
+                task_id=task_id,
+                verb="reassign",
+            )
+        return Envelope.ok(
+            status=str(after.status),
+            task_id=str(task_id),
+            next=spec_module._INTENT_VERBS["reassign"].next_hint(after),
+            context_briefing=briefing,
+        ).with_introspection(task=after, role=role_str)
+
     async def resume(self, agent_id: UUID, task_id: UUID) -> Envelope:
         """Resume a paused task this agent owns; transitions paused → in_progress.
 

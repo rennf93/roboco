@@ -84,6 +84,17 @@ class UnclaimRequest(BaseModel):
     task_id: UUID
 
 
+class ReassignRequest(BaseModel):
+    """HTTP body for the cell_pm `reassign` verb.
+
+    ``new_assignee`` is a developer slug in the caller's own cell (e.g.
+    ``be-dev-2``). The choreographer resolves and validates it.
+    """
+
+    task_id: UUID
+    new_assignee: str = Field(..., min_length=1)
+
+
 class ResumeRequest(BaseModel):
     task_id: UUID
 

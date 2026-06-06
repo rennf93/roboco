@@ -5364,6 +5364,37 @@ class TaskService(BaseService):
         )
         return task
 
+    async def reassign_active_claim(
+        self, task_id: UUID, new_assignee: UUID
+    ) -> TaskTable | None:
+        """Hand an active (claimed/in_progress) task to a new claimant.
+
+        Distinct from ``reassign`` (review-state handoffs): this reseeds
+        ``claimed_at`` / ``last_heartbeat_at`` / ``active_claimant_id`` so the
+        new claimant isn't immediately stale to the reaper (the prior dev that
+        prompted the reassignment often has a stale heartbeat). The branch is
+        keyed to the task, so the work-in-progress survives. Returns None if the
+        task is gone or no longer in an active dev-owned state.
+        """
+        task = await self.get(task_id)
+        if task is None:
+            return None
+        if task.status not in (TaskStatus.CLAIMED, TaskStatus.IN_PROGRESS):
+            return None
+        now = datetime.now(UTC)
+        task.assigned_to = cast("Any", new_assignee)
+        task.claimed_by = cast("Any", new_assignee)
+        task.claimed_at = now
+        task.last_heartbeat_at = now
+        task.active_claimant_id = cast("Any", new_assignee)
+        await self.session.flush()
+        self.log.info(
+            "Active task reassigned to a fresh claimant",
+            task_id=str(task_id),
+            new_assignee=str(new_assignee),
+        )
+        return task
+
     async def mark_agent_idle(self, agent_id: UUID) -> None:
         """Set agent.status = IDLE."""
         result = await self.session.execute(
