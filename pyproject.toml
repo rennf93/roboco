@@ -101,9 +101,9 @@ roboco = "roboco.cli:main"
 roboco-bootstrap = "roboco.bootstrap:cli"
 
 [project.urls]
-Homepage = "https://github.com/renzof/roboco"
+Homepage = "https://github.com/rennf93/roboco"
 Documentation = "https://roboco.dev/docs"
-Repository = "https://github.com/renzof/roboco"
+Repository = "https://github.com/rennf93/roboco"
 
 [build-system]
 requires = ["hatchling"]
