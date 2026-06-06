@@ -55,7 +55,7 @@ One full loop, put simply:
 
 **[See the full walkthrough, with screenshots →](docs/how-to.md)**
 
-**[Or watch the full panel walkthrough (video) →](docs/videos/panel-full-walkthrough.mov)**
+**[Or watch the full panel walkthrough (video) →](docs/videos/panel-full-walkthrough.mp4)**
 
 ## Project Structure
 

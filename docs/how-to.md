@@ -10,7 +10,7 @@ the control panel.
 > The panel is your one window into the company. Every task, agent, message,
 > journal, and pull request is live in front of you.
 
-**Prefer video?** A [full screen-recording of the panel](videos/panel-full-walkthrough.mov)
+**Prefer video?** A [full screen-recording of the panel](videos/panel-full-walkthrough.mp4)
 walks through every page and detail end-to-end — useful as a first tour before
 diving into the screenshots below.
 
