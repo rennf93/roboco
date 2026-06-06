@@ -2110,39 +2110,12 @@ class AgentOrchestrator:
             f"but agent {agent_id} is {role!r}"
         )
 
-    @staticmethod
-    def _readiness_check_cell_ownership(
-        agent_id: str, task: dict[str, Any]
-    ) -> str | None:
-        """A cell implementation task may only be worked by its own cell.
-
-        Board (product-owner / head-marketing) and Main-PM agents must never be
-        spawned onto a backend / frontend / ux_ui task. The proven-live failure:
-        a board role took ownership of cell work it structurally cannot drive
-        (dev -> QA -> docs), so when the upstream cleared the task sat paused
-        under an owner that could not progress it — a deadlock plus a
-        respawn/escalation burn loop. The auditor is exempt: a silent observer
-        with read access to every task.
-        """
-        team = task.get("team")
-        if team not in ("backend", "frontend", "ux_ui"):
-            return None
-        role = get_agent_role(agent_id) or ""
-        if role in ("product_owner", "head_marketing", "main_pm"):
-            return (
-                f"cell task (team={team}) cannot be worked by a {role} agent — "
-                f"only the {team} cell may own it"
-            )
-        return None
-
     def _readiness_check_task(self, agent_id: str, task: dict[str, Any]) -> str | None:
         """Return a persistent blocker reason on the task itself, else None."""
         status = task.get("status", "")
         role = get_agent_role(agent_id) or ""
 
         if reason := self._readiness_check_acceptance_criteria(task):
-            return reason
-        if reason := self._readiness_check_cell_ownership(agent_id, task):
             return reason
         # A coordination task (product, no repo of its own) does no git: skip the
         # project-slug and branch-name gates that only apply to code tasks.

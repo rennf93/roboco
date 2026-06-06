@@ -3973,27 +3973,12 @@ class TaskService(BaseService):
             ]
             # If no more dependencies, unblock (system action - no role validation)
             if not task.dependency_ids and task.status == TaskStatus.BLOCKED:
-                # If a wrong-role owner crept onto this cell task while it was
-                # blocked, do NOT revive it in_progress under that owner (it
-                # cannot drive cell work and the task would deadlock paused).
-                # Clear the owner and send it back to its cell's pending pool so
-                # the dispatcher re-homes it to the right cell.
-                if self._is_noncell_owner(task, task.assigned_to):
-                    task.assigned_to = cast("Any", None)
-                    task.claimed_by = cast("Any", None)
-                    self._validate_and_set_status(task, TaskStatus.PENDING, None)
-                    self.log.info(
-                        "Cell task auto-unblocked + re-homed to its cell pool",
-                        task_id=str(task.id),
-                        completed_dependency=str(completed_task_id),
-                    )
-                else:
-                    self._validate_and_set_status(task, TaskStatus.IN_PROGRESS, None)
-                    self.log.info(
-                        "Task auto-unblocked",
-                        task_id=str(task.id),
-                        completed_dependency=str(completed_task_id),
-                    )
+                self._validate_and_set_status(task, TaskStatus.IN_PROGRESS, None)
+                self.log.info(
+                    "Task auto-unblocked",
+                    task_id=str(task.id),
+                    completed_dependency=str(completed_task_id),
+                )
 
         await self.session.flush()
 
@@ -5353,50 +5338,6 @@ class TaskService(BaseService):
         await self.session.flush()
         return task
 
-    @staticmethod
-    def _is_noncell_owner(task: TaskTable, assignee: UUID | Any | None) -> bool:
-        """True if ``assignee`` is a board / Main-PM role on a cell task.
-
-        A backend / frontend / ux_ui task can only be driven by its own cell; a
-        board (product-owner / head-marketing) or Main-PM owner cannot run it
-        through dev -> QA -> docs and would deadlock it under an owner that
-        cannot progress it.
-        """
-        if assignee is None:
-            return False
-        team_val = getattr(task.team, "value", task.team)
-        if team_val not in ("backend", "frontend", "ux_ui"):
-            return False
-        from roboco.agents_config import get_agent_role
-
-        return get_agent_role(str(assignee)) in (
-            "product_owner",
-            "head_marketing",
-            "main_pm",
-        )
-
-    def _guard_cell_owner(
-        self, task: TaskTable, new_assignee: UUID | None
-    ) -> UUID | None:
-        """Refuse to set a board / Main-PM owner on a cell task.
-
-        If a handoff tries to assign such an owner, clear the assignment so the
-        task re-dispatches to its own cell rather than parking under a role that
-        cannot drive it. Legitimate same-cell handoffs (dev -> QA -> doc ->
-        cell_pm) pass through unchanged.
-        """
-        if new_assignee is None:
-            return None
-        if self._is_noncell_owner(task, new_assignee):
-            self.log.error(
-                "Refused reassign of cell task to non-cell owner; cleared",
-                task_id=str(task.id),
-                team=getattr(task.team, "value", task.team),
-                attempted_assignee=str(new_assignee),
-            )
-            return None
-        return new_assignee
-
     async def reassign(
         self, task_id: UUID, new_assignee: UUID | None
     ) -> TaskTable | None:
@@ -5406,16 +5347,13 @@ class TaskService(BaseService):
         that should drive the next lifecycle stage (e.g. dev → qa, qa →
         documenter, doc → cell_pm). Pass ``None`` to clear assignment so
         no agent gets respawned (e.g. after escalating to CEO, who acts
-        via the UI). A cell task may only be handed to its own cell; an
-        attempt to assign a board / Main-PM owner is refused and cleared
-        (see ``_guard_cell_owner``).
+        via the UI).
 
         Returns the refreshed task, or None if the task no longer exists.
         """
         task = await self.get(task_id)
         if task is None:
             return None
-        new_assignee = self._guard_cell_owner(task, new_assignee)
         task.assigned_to = cast("Any", new_assignee) if new_assignee else None
         task.claimed_by = cast("Any", new_assignee) if new_assignee else None
         await self.session.flush()
