@@ -278,14 +278,33 @@ async def test_create_session_missing_group_raises(msg_setup: dict) -> None:
 
 
 @pytest.mark.asyncio
-async def test_create_session_replaces_active(msg_setup: dict) -> None:
-    """Second create_session against same group still produces an ACTIVE session."""
+async def test_create_session_reuses_active(msg_setup: dict) -> None:
+    """A group has ONE live session: a second create reuses it, never a new one."""
     svc = msg_setup["svc"]
     ch = await svc.create_channel(_channel_req(uuid4().hex[:6]))
     grp = await svc.create_group(GroupCreateRequest(name="g1", channel_id=ch.id))
-    await svc.create_session(SessionCreateRequest(group_id=grp.id))
+    first = await svc.create_session(SessionCreateRequest(group_id=grp.id))
     second = await svc.create_session(SessionCreateRequest(group_id=grp.id))
+    assert second.id == first.id
     assert second.status == SessionStatus.ACTIVE
+
+
+@pytest.mark.asyncio
+async def test_create_session_persists_group_active_pointer(msg_setup: dict) -> None:
+    """create_session must persist group.active_session_id to the DB.
+
+    The pointer is what every post keys off to find the live session; if it is
+    left NULL (e.g. assigned before the session id is flushed), the group opens a
+    brand-new session on each post and one conversation fragments across many.
+    """
+    svc = msg_setup["svc"]
+    ch = await svc.create_channel(_channel_req(uuid4().hex[:6]))
+    grp = await svc.create_group(GroupCreateRequest(name="g1", channel_id=ch.id))
+    sess = await svc.create_session(SessionCreateRequest(group_id=grp.id))
+    # Re-read the pointer from the DB (async-safe) to prove it actually persisted,
+    # not just the in-memory object.
+    await svc.session.refresh(grp, ["active_session_id"])
+    assert grp.active_session_id == sess.id
 
 
 @pytest.mark.asyncio
@@ -423,14 +442,15 @@ async def test_get_or_create_active_session_returns_active(
 async def test_get_or_create_active_session_returns_existing(
     msg_setup: dict,
 ) -> None:
-    """Lines 802-804: returns the existing active session when one is registered."""
+    """Returns the existing active session instead of opening a new one.
+
+    No manual pointer-setting: the first call must itself register
+    group.active_session_id so the second call finds and reuses it.
+    """
     svc = msg_setup["svc"]
     ch = await svc.create_channel(_channel_req(uuid4().hex[:6]))
     grp = await svc.create_group(GroupCreateRequest(name="g1", channel_id=ch.id))
-    # First call creates and registers active_session_id on the group.
     first = await svc.get_or_create_active_session(grp.id)
-    # Make sure DB sees the active_session_id set.
-    grp.active_session_id = first.id
     second = await svc.get_or_create_active_session(grp.id)
     assert second.id == first.id
 
@@ -1157,7 +1177,10 @@ async def test_validate_reply_target_wrong_session_raises(
     msg = await svc.send_message(
         MessageCreateRequest(agent_id=aid, session_id=sess1.id, content="msg")
     )
-    sess2 = await svc.create_session(SessionCreateRequest(group_id=grp.id))
+    # A genuinely different session: a group holds ONE live session, so use a
+    # second group. The reply target must be rejected as not belonging to it.
+    grp2 = await svc.create_group(GroupCreateRequest(name="g2", channel_id=ch.id))
+    sess2 = await svc.create_session(SessionCreateRequest(group_id=grp2.id))
     with pytest.raises(ValueError, match="not found in this session"):
         await svc._validate_reply_target(msg.id, sess2.id)
 
@@ -1808,9 +1831,11 @@ async def test_link_session_to_task_primary_conflict(
     aid = msg_setup["agent_id"]
     tid = msg_setup["task_id"]
     ch = await svc.create_channel(_channel_req(uuid4().hex[:6]))
+    # Two distinct live sessions: a group holds ONE live session, so use two groups.
     grp = await svc.create_group(GroupCreateRequest(name="g1", channel_id=ch.id))
+    grp2 = await svc.create_group(GroupCreateRequest(name="g2", channel_id=ch.id))
     sess1 = await svc.create_session(SessionCreateRequest(group_id=grp.id))
-    sess2 = await svc.create_session(SessionCreateRequest(group_id=grp.id))
+    sess2 = await svc.create_session(SessionCreateRequest(group_id=grp2.id))
     await svc.link_session_to_task(sess1.id, tid, aid, is_primary=True)
     with pytest.raises(ConflictError):
         await svc.link_session_to_task(sess2.id, tid, aid, is_primary=True)

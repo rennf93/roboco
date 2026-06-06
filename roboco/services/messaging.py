@@ -410,6 +410,12 @@ class MessagingService(BaseService):
         )
 
         self.session.add(session)
+        # Flush so session.id (a flush-time uuid4 default) is materialized BEFORE we
+        # link it on the group. active_session_id is a plain scalar FK with no
+        # relationship, so SQLAlchemy cannot defer-populate it — assigning session.id
+        # while it is still None persists active_session_id as NULL, and the group then
+        # opens a brand-new session on every post instead of reusing this one.
+        await self.session.flush()
 
         # Update group
         group.active_session_id = session.id
@@ -641,6 +647,10 @@ class MessagingService(BaseService):
             status=SessionStatus.ACTIVE,
         )
         self.session.add(new_session)
+        # Flush so new_session.id is materialized before we link it on the group;
+        # assigning it pre-flush persists active_session_id as NULL (see
+        # create_session).
+        await self.session.flush()
         group.active_session_id = new_session.id
         group.total_sessions += 1
         await self.session.flush()
