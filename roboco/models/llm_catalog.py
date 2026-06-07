@@ -118,7 +118,7 @@ OLLAMA_ROLE_DEFAULTS: dict[str, str] = {
 }
 
 # The Ollama model picked for "pure Ollama" mode's GLOBAL row when the
-# caller doesn't override. Kimi K2.6 wins as the generalist because it has
+# caller doesn't override. Minimax M3 wins as the generalist because it has
 # the strongest reasoning/tool-use profile and can fall back to coding/writing
 # adequately if a role ends up mapped to the global default.
-OLLAMA_DEFAULT_MODEL: str = "kimi-k2.6:cloud"
+OLLAMA_DEFAULT_MODEL: str = "minimax-m3:cloud"

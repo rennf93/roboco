@@ -98,4 +98,3 @@ panel/.env.local
 panel/.env.*.local
 # Internal-only: strategy/scratch/reference dumps — never publish
 docs/internal/
-SMOKE_FINDINGS_*.md
