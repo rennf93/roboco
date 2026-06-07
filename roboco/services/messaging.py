@@ -20,6 +20,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import joinedload, selectinload
 
+from roboco.config import settings
 from roboco.db.tables import (
     ChannelTable,
     GroupTable,
@@ -378,6 +379,19 @@ class MessagingService(BaseService):
     # SESSION OPERATIONS (TASK-015)
     # =========================================================================
 
+    @staticmethod
+    def _resolve_session_timeout(requested: int | None) -> int:
+        """Resolve a session's idle-timeout, defaulting to the configurable value.
+
+        An unset timeout previously fell through to the column default of 300s,
+        which is shorter than a human conversation pause — the session was swept
+        between messages and a new one opened on the next post. Resolve it to
+        ``session_idle_timeout_seconds`` so human-paced chats stay on one session.
+        """
+        if requested is not None:
+            return requested
+        return settings.session_idle_timeout_seconds
+
     async def create_session(self, req: SessionCreateRequest) -> SessionTable:
         """
         Create a new session in a group.
@@ -404,7 +418,7 @@ class MessagingService(BaseService):
             group_id=req.group_id,
             max_message_count=req.max_message_count,
             max_content_length=req.max_content_length,
-            timeout_seconds=req.timeout_seconds,
+            timeout_seconds=self._resolve_session_timeout(req.timeout_seconds),
             status=SessionStatus.ACTIVE,
             scope=req.scope,
         )
@@ -643,7 +657,7 @@ class MessagingService(BaseService):
             max_time_window=(_minutes_to_timedelta(request.max_time_window_minutes)),
             max_message_count=request.max_message_count,
             max_content_length=request.max_content_length,
-            timeout_seconds=request.timeout_seconds,
+            timeout_seconds=self._resolve_session_timeout(request.timeout_seconds),
             status=SessionStatus.ACTIVE,
         )
         self.session.add(new_session)
@@ -1141,7 +1155,11 @@ class MessagingService(BaseService):
             group_id=cast("UUID", group.id),
             max_message_count=(req.config.max_message_count if req.config else None),
             max_content_length=(req.config.max_content_length if req.config else None),
-            timeout_seconds=(req.config.timeout_seconds if req.config else 300),
+            timeout_seconds=(
+                req.config.timeout_seconds
+                if req.config and req.config.timeout_seconds is not None
+                else settings.session_idle_timeout_seconds
+            ),
             scope=req.scope,
         )
 

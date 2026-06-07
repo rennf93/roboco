@@ -11,6 +11,7 @@ from uuid import uuid4 as _u
 
 import pytest
 import pytest_asyncio
+from roboco.config import settings
 from roboco.db.tables import AgentTable, MessageTable, ProjectTable, TaskTable
 from roboco.db.tables import AgentTable as _AgentTable
 from roboco.enforcement.channel_access import ChannelAccessDeniedError
@@ -2705,3 +2706,14 @@ async def test_post_to_channel_permitted_agent_succeeds(
     )
     assert msg.content == "hello cell"
     assert msg.task_id == task.id
+
+
+def test_resolve_session_timeout_uses_configurable_default() -> None:
+    """An unset session timeout resolves to the configurable default instead of
+    the old 300s that swept human chats between messages."""
+    explicit = settings.session_idle_timeout_seconds + 60
+    assert MessagingService._resolve_session_timeout(explicit) == explicit
+    assert (
+        MessagingService._resolve_session_timeout(None)
+        == settings.session_idle_timeout_seconds
+    )
