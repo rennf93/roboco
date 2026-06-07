@@ -706,8 +706,27 @@ def test_resolve_doc_abspath_keeps_plain_relative_path() -> None:
 
 
 def test_resolve_doc_abspath_passes_absolute_path_through() -> None:
-    """An already-absolute path is trusted as-is (no re-rooting)."""
+    """An absolute path already correctly rooted under the base is unchanged."""
     assert (
         TaskService._resolve_doc_abspath("/app/docs/design/spec.md")
         == "/app/docs/design/spec.md"
     )
+
+
+def test_resolve_doc_abspath_collapses_doubled_absolute_docs() -> None:
+    """An absolute path that doubled the base segment is collapsed.
+
+    The documenter sometimes records `/app/docs/docs/...`; previously it was
+    returned verbatim and never resolved on disk (the recurring "Source not
+    found" warning).
+    """
+    assert (
+        TaskService._resolve_doc_abspath("/app/docs/docs/backend/api/prompter.md")
+        == "/app/docs/backend/api/prompter.md"
+    )
+
+
+def test_resolve_doc_abspath_leaves_external_absolute_path() -> None:
+    """An absolute path outside the docs root is left as-is for the indexer to skip."""
+    external = "/data/workspaces/panel/frontend/fe-dev-1/src/page.tsx"
+    assert TaskService._resolve_doc_abspath(external) == external

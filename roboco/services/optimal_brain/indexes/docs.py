@@ -85,8 +85,16 @@ class DocsIndexPlugin(BaseIndexPlugin):
             ]
             return md_files + txt_files
         if source_path.exists():
-            return [source_path]
-        logger.warning(f"Source not found: {source}")
+            # Only markdown/text files are docs; a recorded path to a source
+            # file (e.g. a .tsx) is not indexable and is skipped quietly.
+            if source_path.suffix.lower() in {".md", ".txt"}:
+                return [source_path]
+            logger.debug(f"Skipping non-doc source path: {source}")
+            return []
+        # A documenter may record a path for a doc that was not written under
+        # the docs root; this is not actionable at index time, so log at debug
+        # instead of flooding a warning on every pass.
+        logger.debug(f"Doc source not found, skipping: {source}")
         return []
 
     def _read_file_record(

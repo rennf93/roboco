@@ -1776,8 +1776,16 @@ class TaskService(BaseService):
         from roboco.services.docs import DOCS_BASE_PATH
 
         path = Path(rel_path)
+        # An absolute path already rooted at the docs base may double the
+        # segment (``/app/docs/docs/...``) or simply be re-anchored here; reduce
+        # it to a path relative to the base so the normalization below applies
+        # uniformly. An absolute path OUTSIDE the docs root (e.g. a workspace
+        # source file) is returned as-is for the indexer to skip.
         if path.is_absolute():
-            return str(path)
+            try:
+                path = path.relative_to(DOCS_BASE_PATH)
+            except ValueError:
+                return str(path)
         parts = path.parts
         if parts and parts[0] == DOCS_BASE_PATH.name:
             path = Path(*parts[1:]) if len(parts) > 1 else Path()
