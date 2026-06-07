@@ -22,6 +22,11 @@
 #     if none exist).
 #   SKIP_WORKSPACE_RESET=1 — skip the workspace cleanup step entirely
 #     (DB + Redis only).
+#   FULL_RESET=1 — opt-in aggressive clean-slate: after the DB + Redis wipe,
+#     delete everything under the roboco data root EXCEPT ollama/postgres/redis
+#     (overridable via ROBOCO_DATA_ROOT) and clear the persisted agent Claude
+#     session dirs listed in ROBOCO_CLAUDE_STATE_DIRS (space-separated). Skips
+#     the per-workspace git reset (the clones are removed and re-cloned).
 
 set -euo pipefail
 
@@ -69,6 +74,50 @@ $DOCKER exec -i roboco-postgres psql -U roboco -d roboco < "$SQL_FILE"
 if $DOCKER ps --format '{{.Names}}' | grep -q '^roboco-redis$'; then
     echo ">>> Flushing Redis cache..."
     $DOCKER exec roboco-redis redis-cli FLUSHDB | sed 's/^/    /'
+fi
+
+# Optional full clean-slate (opt-in via FULL_RESET=1): wipe everything under the
+# roboco data root EXCEPT the persistent service stores (ollama / postgres /
+# redis), and clear any persisted agent Claude session state that would
+# otherwise replay across runs. Default OFF — the workspace git-reset below is
+# the usual path. The data root is resolved from the workspaces root's parent
+# (or ROBOCO_DATA_ROOT); the Claude-state paths come from ROBOCO_CLAUDE_STATE_DIRS
+# (space-separated) so nothing is guessed.
+if [ "${FULL_RESET:-0}" = "1" ]; then
+    DATA_ROOT="${ROBOCO_DATA_ROOT:-}"
+    if [ -z "$DATA_ROOT" ]; then
+        for candidate in /volume1/roboco/data /data; do
+            if [ -d "$candidate/workspaces" ]; then
+                DATA_ROOT="$candidate"
+                break
+            fi
+        done
+    fi
+    if [ -n "$DATA_ROOT" ] && [ -d "$DATA_ROOT" ]; then
+        echo ">>> FULL_RESET: wiping $DATA_ROOT/* except ollama/postgres/redis ..."
+        for entry in "$DATA_ROOT"/*; do
+            [ -e "$entry" ] || continue
+            case "$(basename "$entry")" in
+                ollama | postgres | redis)
+                    echo "    keep $(basename "$entry")"
+                    ;;
+                *)
+                    echo "    wipe $(basename "$entry")"
+                    rm -rf "$entry"
+                    ;;
+            esac
+        done
+    else
+        echo ">>> FULL_RESET: no data root resolved — skipping data wipe."
+    fi
+    for cdir in ${ROBOCO_CLAUDE_STATE_DIRS:-}; do
+        if [ -e "$cdir" ]; then
+            echo "    clearing Claude session state $cdir"
+            rm -rf "$cdir"
+        fi
+    done
+    echo ">>> FULL_RESET done."
+    exit 0
 fi
 
 # Workspace reset — each agent has a private git clone at
