@@ -5,6 +5,7 @@ Structured exception hierarchy for the AI Agents Company system.
 All exceptions include context for debugging and logging.
 """
 
+import re
 from typing import Any, ClassVar
 from uuid import UUID
 
@@ -435,16 +436,41 @@ class GitError(ServiceError):
         )
 
 
+def _scrub_git_secrets(text: str) -> str:
+    """Redact credentials a git command may echo into stderr.
+
+    Push/fetch run with the PAT injected via a URL or an ``http.extraheader``
+    Basic header; never surface those verbatim in an error message or log.
+    """
+    if not text:
+        return text
+    text = re.sub(r"(://)[^/@\s]+@", r"\1***@", text)
+    text = re.sub(r"(?i)(authorization:\s*basic\s+)\S+", r"\1***", text)
+    text = re.sub(r"(?i)(extraheader=\S*?basic\s+)\S+", r"\1***", text)
+    text = re.sub(
+        r"\b(gh[pousr]_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,})\b", "***", text
+    )
+    return text
+
+
 class GitCommandError(GitError):
     """Git command execution failed."""
 
     def __init__(self, command: str, stderr: str) -> None:
+        scrubbed = _scrub_git_secrets(stderr or "")
+        # Surface a short, secret-free tail of git's own stderr in the message so
+        # the real reason (403, non-fast-forward, ...) is visible to callers that
+        # only render ``.message`` instead of swallowing it as "Command failed".
+        tail = " ".join(scrubbed.split())[-300:]
+        message = f"Command failed: {command}"
+        if tail:
+            message = f"{message} — {tail}"
         super().__init__(
-            message=f"Command failed: {command}",
-            details={"command": command, "stderr": stderr},
+            message=message,
+            details={"command": command, "stderr": scrubbed},
         )
         self.command = command
-        self.stderr = stderr
+        self.stderr = scrubbed
 
 
 class GitTimeoutError(GitError):

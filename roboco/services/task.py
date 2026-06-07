@@ -5656,6 +5656,12 @@ class TaskService(BaseService):
         re-dispatch source), and appends an audit note explaining why the board
         hand-off was refused.
         """
+        pre_status = (
+            task.status.value
+            if isinstance(task.status, TaskStatus)
+            else str(task.status)
+        )
+        prior_owner = cast("Any", task.claimed_by or task.assigned_to)
         task.assigned_to = cast("Any", None)
         task.claimed_by = cast("Any", None)
         task.active_claimant_id = cast("Any", None)
@@ -5670,6 +5676,16 @@ class TaskService(BaseService):
         )
         task.dev_notes = existing_notes + note
         await self.session.flush()
+        # This path sets PENDING directly (bypassing the strict transition
+        # validator), so emit the task.pending audit explicitly — no status
+        # change may skip the audit log.
+        self._emit_status_transition_audit(
+            task,
+            from_status=pre_status,
+            to_status=TaskStatus.PENDING.value,
+            agent_role=None,
+            audit_agent_id=prior_owner,
+        )
         self.log.info(
             "Descendant executable task released to pool instead of board escalation",
             task_id=str(task.id),

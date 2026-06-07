@@ -294,6 +294,29 @@ def test_git_command_error() -> None:
     assert err.details["command"] == "git push"
 
 
+def test_git_command_error_surfaces_stderr_in_message() -> None:
+    err = GitCommandError(
+        command="push -u origin feature/x",
+        stderr="remote: Permission to owner/repo.git denied.\nfatal: unable to access",
+    )
+    # The real reason must reach callers that only render ``.message``.
+    assert "Command failed: push -u origin feature/x" in err.message
+    assert "Permission to owner/repo.git denied" in err.message
+
+
+def test_git_command_error_scrubs_credentials() -> None:
+    leaky = (
+        "fatal: unable to access "
+        "'https://x-access-token:ghp_AbC123456789012345678901234567890@github.com/o/r.git'"
+    )
+    err = GitCommandError(command="push", stderr=leaky)
+    # The injected PAT must never survive into the message, stderr, or details.
+    assert "ghp_" not in err.message
+    assert "ghp_" not in err.stderr
+    assert "ghp_" not in err.details["stderr"]
+    assert "https://***@github.com" in err.stderr
+
+
 def test_git_timeout_error() -> None:
     err = GitTimeoutError(command="git fetch", timeout=_TIMEOUT_SECONDS)
     assert err.command == "git fetch"

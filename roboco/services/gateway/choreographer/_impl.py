@@ -2707,11 +2707,18 @@ class Choreographer:
         Failure is logged and swallowed — the pause already happened and the
         caller must not be affected by a checkpoint DB error.
         """
-        commit_refs = [c.sha for c in (task.commits or [])[-3:]]
-        commit_count = len(task.commits or [])
-        state_summary = f"auto-paused on i_am_idle (commits: {commit_count})"
-        remaining_work = commit_refs if commit_refs else ["no commits yet"]
         try:
+            commits = task.commits or []
+            # commits may be hydrated as CommitRef objects or as plain dicts
+            # (JSON column round-trip); tolerate both rather than assuming `.sha`.
+            commit_refs = [
+                c.get("sha") if isinstance(c, dict) else getattr(c, "sha", None)
+                for c in commits[-3:]
+            ]
+            commit_refs = [ref for ref in commit_refs if ref]
+            commit_count = len(commits)
+            state_summary = f"auto-paused on i_am_idle (commits: {commit_count})"
+            remaining_work = commit_refs if commit_refs else ["no commits yet"]
             await self.task.add_checkpoint(
                 task_id=task.id,
                 agent_id=agent_id,

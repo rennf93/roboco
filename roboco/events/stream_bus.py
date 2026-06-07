@@ -15,6 +15,7 @@ from typing import Any
 import redis.asyncio as redis
 import structlog
 from redis.exceptions import ResponseError
+from redis.exceptions import TimeoutError as RedisTimeoutError
 
 from roboco.config import settings
 from roboco.models.events import Event, EventType
@@ -219,6 +220,12 @@ class StreamEventBus:
                 if await self._handle_response_error(e, streams):
                     continue
                 await asyncio.sleep(1)
+            except (RedisTimeoutError, TimeoutError):
+                # An idle XREADGROUP(block=...) hits the client read-timeout when
+                # no new message arrives within the block window. This is the
+                # normal idle path, not an error — re-block on the next iteration
+                # without logging or back-off.
+                continue
             except Exception as e:
                 logger.error("Error in stream event loop", error=str(e))
                 await asyncio.sleep(1)
