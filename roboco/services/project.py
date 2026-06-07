@@ -11,7 +11,9 @@ from uuid import UUID
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from roboco.config import settings
 from roboco.db.tables import ProjectTable
+from roboco.exceptions import ValidationError
 from roboco.models.base import Team
 from roboco.models.project import ProjectCreate, ProjectUpdate
 from roboco.services.base import BaseService, ConflictError, NotFoundError
@@ -34,6 +36,22 @@ class ProjectService(BaseService):
     # =========================================================================
     # CRUD OPERATIONS
     # =========================================================================
+
+    def _assert_git_url_allowed(self, git_url: str | None) -> None:
+        """Reject a project repo URL that matches a protected (denylisted) repo.
+
+        Keeps agent commits/merges out of a repository that must not receive
+        them — e.g. the roboco source repo during a smoke run.
+        """
+        if not git_url:
+            return
+        for protected in settings.protected_git_urls:
+            if protected and protected in git_url:
+                raise ValidationError(
+                    "Project git_url may not point at a protected repository "
+                    f"('{protected}').",
+                    field="git_url",
+                )
 
     async def create(
         self,
@@ -60,6 +78,8 @@ class ProjectService(BaseService):
                 f"Project with slug '{data.slug}' already exists",
                 resource_type="project",
             )
+
+        self._assert_git_url_allowed(data.git_url)
 
         # Encrypt git token if provided
         encrypted_token = None
@@ -140,6 +160,8 @@ class ProjectService(BaseService):
         project = await self.get(project_id)
         if not project:
             return None
+
+        self._assert_git_url_allowed(data.git_url)
 
         # Handle git_token specially (empty string clears, None leaves unchanged)
         token_updated = False

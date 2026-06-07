@@ -289,6 +289,15 @@ class Settings(BaseSettings):
         ),
     )
 
+    protected_git_urls: list[str] = Field(
+        default_factory=list,
+        description=(
+            "Repo URL substrings a project may not point at (e.g. the roboco "
+            "source repo). Blocks agent commits/merges from reaching a protected "
+            "repository; set this to sandbox smoke-test projects."
+        ),
+    )
+
     # ==========================================================================
     # Agent Guardrails (per-session budgets, loop detection, SLAs)
     # ==========================================================================

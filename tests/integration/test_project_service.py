@@ -12,7 +12,9 @@ from uuid import uuid4
 
 import pytest
 import pytest_asyncio
+from roboco.config import settings
 from roboco.db.tables import AgentTable
+from roboco.exceptions import ValidationError
 from roboco.models import AgentRole, AgentStatus, Team
 from roboco.models.project import ProjectCreate, ProjectUpdate
 from roboco.services.base import ConflictError, NotFoundError
@@ -87,6 +89,19 @@ async def test_create_project_duplicate_slug_raises(project_setup: dict) -> None
     await svc.create(payload, project_setup["creator_id"])
     with pytest.raises(ConflictError):
         await svc.create(payload, project_setup["creator_id"])
+
+
+@pytest.mark.asyncio
+async def test_create_project_rejects_protected_git_url(
+    project_setup: dict, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A project may not point at a denylisted repo (keeps agent merges out of it)."""
+    monkeypatch.setattr(settings, "protected_git_urls", ["github.com/owner/roboco"])
+    svc = project_setup["svc"]
+    payload_dict = _project_payload(uuid4().hex[:6]).model_dump()
+    payload_dict["git_url"] = "https://github.com/owner/roboco.git"
+    with pytest.raises(ValidationError):
+        await svc.create(ProjectCreate(**payload_dict), project_setup["creator_id"])
 
 
 @pytest.mark.asyncio
