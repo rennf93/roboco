@@ -359,6 +359,14 @@ class TaskTable(Base):
         Boolean, nullable=False, default=False
     )
 
+    # Prompter origin tracking: tasks drafted by the Prompter LLM assistant
+    # require human confirmation before entering the workflow. The task creation
+    # route enforces that prompter-originated tasks cannot bypass human review.
+    source: Mapped[str] = mapped_column(String(50), nullable=False, default="manual")
+    confirmed_by_human: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False
+    )
+
     # Relationships
     creator: Mapped["AgentTable"] = relationship(
         "AgentTable", foreign_keys=[created_by], lazy="joined"

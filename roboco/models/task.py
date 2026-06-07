@@ -265,6 +265,16 @@ class Task(TimestampMixin):
         description="True after QA inspects inline diff via claim_review.",
     )
 
+    # Prompter origin tracking
+    source: str = Field(
+        default="manual",
+        description="Origin of the task: 'manual', 'prompter', etc.",
+    )
+    confirmed_by_human: bool = Field(
+        default=False,
+        description="Whether a human has confirmed this prompter-originated task.",
+    )
+
     # NOTE: Task state mutations should be performed through TaskService,
     # not directly on the model. See roboco/services/task.py for:
     # - claim(), start(), block(), pause(), resume()
@@ -324,6 +334,10 @@ class TaskCreate(RobocoBase):
     # board/coordination task uses product_id and has no project of its own.
     project_id: UUID | None = None
     product_id: UUID | None = None
+
+    # Prompter origin tracking
+    source: str = Field(default="manual")
+    confirmed_by_human: bool = Field(default=False)
 
     @model_validator(mode="after")
     def _project_or_product(self) -> "TaskCreate":
@@ -400,3 +414,7 @@ class TaskCreateRequest:
     # Ordering and dependencies
     sequence: int = 0  # Order within siblings (lower = first)
     dependency_ids: list[UUID] = field(default_factory=list)
+
+    # Prompter origin tracking
+    source: str = "manual"
+    confirmed_by_human: bool = False
