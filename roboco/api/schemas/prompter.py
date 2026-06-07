@@ -3,20 +3,26 @@ Prompter API Schemas
 
 Request/response models for the conversational Prompter assistant
 that helps users draft tasks through natural language.
+
+Includes both the session-based schemas (for the DB-persisted approach)
+and the legacy stateless schemas retained for backward compatibility.
 """
 
-from __future__ import annotations
-
-from typing import TYPE_CHECKING, Any
+from datetime import datetime
+from typing import Any
+from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
-if TYPE_CHECKING:
-    from roboco.models.base import Complexity, TaskNature, TaskType, Team
-
+from roboco.models.base import (
+    Complexity,
+    TaskNature,
+    TaskType,
+    Team,
+)
 
 # =============================================================================
-# CHAT SCHEMAS
+# SHARED MESSAGE SCHEMA
 # =============================================================================
 
 
@@ -34,53 +40,82 @@ class ChatMessage(BaseModel):
         return v
 
 
-class PrompterChatRequest(BaseModel):
-    """Request to continue a Prompter conversation."""
+# =============================================================================
+# SESSION-BASED SCHEMAS (acceptance-criteria-required names)
+# =============================================================================
 
-    messages: list[ChatMessage] = Field(
-        ...,
-        min_length=1,
-        description="Conversation history including the new user message",
-    )
+
+class PrompterSessionCreateRequest(BaseModel):
+    """Request body for POST /api/prompter/sessions."""
+
     context: dict[str, Any] = Field(
         default_factory=dict,
-        description="Optional context (project_id, team, prior drafts, etc.)",
+        description="Optional bootstrap context (project_id, team, etc.)",
     )
 
 
-class PrompterChatResponse(BaseModel):
-    """Response from the Prompter chat endpoint."""
+class PrompterSessionResponse(BaseModel):
+    """Response for session creation and retrieval."""
 
-    message: str = Field(..., description="Assistant's reply")
-    conversation_id: str | None = Field(
-        default=None, description="Client-managed conversation identifier"
+    id: UUID
+    agent_id: UUID
+    status: str
+    created_at: datetime
+    updated_at: datetime | None = None
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+class PrompterMessageRequest(BaseModel):
+    """Request body for POST /api/prompter/sessions/{id}/messages."""
+
+    content: str = Field(..., min_length=1, description="The user's message text")
+    context: dict[str, Any] = Field(
+        default_factory=dict,
+        description="Optional per-turn context overrides",
     )
-    # If the assistant has gathered enough info to propose a draft,
-    # it signals this so the frontend can offer a "Generate Draft" CTA.
-    draft_ready: bool = Field(
-        default=False,
-        description=(
-            "True when the assistant believes enough context exists "
-            "to draft a task"
-        ),
+
+
+class PrompterMessageResponse(BaseModel):
+    """A single message record returned to the client."""
+
+    id: UUID
+    session_id: UUID
+    role: str
+    content: str
+    created_at: datetime
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+class TaskConfirmRequest(BaseModel):
+    """Request body for POST /api/prompter/sessions/{id}/confirm.
+
+    Allows the frontend to pass overrides that should be applied
+    to the draft before the real task is created.
+    """
+
+    project_id: UUID | None = Field(
+        default=None,
+        description="Override project_id from the draft (required if draft omits it)",
+    )
+    product_id: UUID | None = Field(
+        default=None,
+        description="Override product_id from the draft",
+    )
+    assigned_to: str | None = Field(
+        default=None,
+        description="Agent slug or UUID to assign the task to",
+    )
+    overrides: dict[str, Any] = Field(
+        default_factory=dict,
+        description="Additional fields to override in the draft before task creation",
     )
 
 
 # =============================================================================
-# DRAFT SCHEMAS
+# DRAFT TASK SCHEMA  (shared between session and legacy paths)
 # =============================================================================
-
-
-class PrompterDraftRequest(BaseModel):
-    """Request to generate a structured task draft from conversation context."""
-
-    messages: list[ChatMessage] = Field(
-        ..., min_length=1, description="Full conversation used as drafting context"
-    )
-    context: dict[str, Any] = Field(
-        default_factory=dict,
-        description="Optional overrides (project_id, team, assigned_to, etc.)",
-    )
 
 
 class PrompterDraftTask(BaseModel):
@@ -98,7 +133,7 @@ class PrompterDraftTask(BaseModel):
     task_type: TaskType = Field(...)
     nature: TaskNature = Field(...)
     estimated_complexity: Complexity = Field(...)
-    project_id: str | None = Field(  # UUID string; route layer converts if needed
+    project_id: str | None = Field(
         default=None,
         description=(
             "Project UUID as string; exactly one of project_id or "
@@ -126,8 +161,67 @@ class PrompterDraftTask(BaseModel):
     confirmed_by_human: bool = False
 
 
+class TaskDraftResponse(BaseModel):
+    """Response for GET /api/prompter/sessions/{id}/draft."""
+
+    id: UUID
+    session_id: UUID
+    draft: PrompterDraftTask
+    confirmed_at: datetime | None = None
+    task_id: UUID | None = None
+    created_at: datetime
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+# =============================================================================
+# LEGACY STATELESS SCHEMAS (retained for backward compatibility)
+# =============================================================================
+
+
+class PrompterChatRequest(BaseModel):
+    """Request to continue a Prompter conversation (stateless)."""
+
+    messages: list[ChatMessage] = Field(
+        ...,
+        min_length=1,
+        description="Conversation history including the new user message",
+    )
+    context: dict[str, Any] = Field(
+        default_factory=dict,
+        description="Optional context (project_id, team, prior drafts, etc.)",
+    )
+
+
+class PrompterChatResponse(BaseModel):
+    """Response from the Prompter chat endpoint (stateless)."""
+
+    message: str = Field(..., description="Assistant's reply")
+    conversation_id: str | None = Field(
+        default=None, description="Client-managed conversation identifier"
+    )
+    draft_ready: bool = Field(
+        default=False,
+        description=(
+            "True when the assistant believes enough context exists to draft a task"
+        ),
+    )
+
+
+class PrompterDraftRequest(BaseModel):
+    """Request to generate a task draft from conversation context (stateless)."""
+
+    messages: list[ChatMessage] = Field(
+        ..., min_length=1, description="Full conversation used as drafting context"
+    )
+    context: dict[str, Any] = Field(
+        default_factory=dict,
+        description="Optional overrides (project_id, team, assigned_to, etc.)",
+    )
+
+
 class PrompterDraftResponse(BaseModel):
-    """Response from the Prompter draft endpoint."""
+    """Response from the Prompter draft endpoint (stateless)."""
 
     draft: PrompterDraftTask = Field(..., description="Structured task draft")
     reasoning: str = Field(

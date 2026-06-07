@@ -4,20 +4,54 @@ Prompter Service
 Conversational LLM assistant that helps users draft tasks.
 Uses Anthropic Claude for natural-language interaction and
 structured JSON draft generation.
+
+Provides both a session-based approach (DB-persisted) and a
+legacy stateless interface for backward compatibility.
 """
 
 from __future__ import annotations
 
+import contextlib
 import json
-from typing import Any, ClassVar
+from dataclasses import dataclass, field
+from datetime import UTC, datetime
+from typing import TYPE_CHECKING, Any
+from uuid import UUID, uuid4
 
 import structlog
 from anthropic import AsyncAnthropic
+from sqlalchemy import select
 
 from roboco.config import settings
-from roboco.services.base import ServiceError, ValidationError
+from roboco.db.tables import (
+    PrompterMessageTable,
+    PrompterSessionTable,
+    TaskDraftTable,
+    TaskTable,
+)
+from roboco.models.base import Complexity, TaskNature, TaskType, Team
+from roboco.models.task import TaskCreateRequest
+from roboco.services.base import NotFoundError, ServiceError, ValidationError
+
+if TYPE_CHECKING:
+    from sqlalchemy.ext.asyncio import AsyncSession
 
 logger = structlog.get_logger()
+
+
+# ---------------------------------------------------------------------------
+# Input types
+# ---------------------------------------------------------------------------
+
+
+@dataclass
+class ConfirmOverrides:
+    """Optional overrides applied when confirming a draft to create a task."""
+
+    project_id: UUID | None = None
+    product_id: UUID | None = None
+    assigned_to: str | None = None
+    extra: dict[str, Any] = field(default_factory=dict)
 
 
 # ---------------------------------------------------------------------------
@@ -46,8 +80,9 @@ _PROMPTER_SYSTEM_PROMPT = (
     "nature.\n"
     "- If the user describes a feature, determine whether it's backend, "
     "frontend, or UX/UI work.\n\n"
-    "When you have enough information to produce a complete draft, set "
-    "draft_ready=true in your reasoning."
+    "When you have enough information to produce a complete draft, say so "
+    "explicitly with 'I have enough information to draft a task' or "
+    "'ready to draft'."
 )
 
 _DRAFT_SYSTEM_PROMPT = (
@@ -79,26 +114,18 @@ _DRAFT_SYSTEM_PROMPT = (
 )
 
 
-class _PrompterServiceHolder:
-    """Lazy singleton holder for PrompterService."""
-
-    _instance: PrompterService | None = None
-
-    @classmethod
-    def get(cls) -> PrompterService:
-        if cls._instance is None:
-            cls._instance = PrompterService()
-        return cls._instance
-
-
 class PrompterService:
-    """Service for Prompter chat and structured draft generation."""
+    """Service for Prompter chat, session management, and structured draft generation.
 
-    service_name: ClassVar[str] = "prompter"
+    Accepts an optional SQLAlchemy ``AsyncSession`` for the session-based
+    (DB-persisted) interface. When no session is provided, only the legacy
+    stateless ``chat()`` and ``draft()`` methods are available.
+    """
 
-    def __init__(self) -> None:
+    def __init__(self, db: AsyncSession | None = None) -> None:
         self.log = logger.bind(component="prompter_service")
         self._client: AsyncAnthropic | None = None
+        self._db = db
 
     def _get_client(self) -> AsyncAnthropic:
         """Lazy-init Anthropic client."""
@@ -109,37 +136,298 @@ class PrompterService:
             self._client = AsyncAnthropic(api_key=api_key)
         return self._client
 
+    @property
+    def _session(self) -> AsyncSession:
+        """Return DB session, raising if not configured."""
+        if self._db is None:
+            raise ServiceError(
+                "PrompterService was created without a DB session; "
+                "session-based methods are unavailable"
+            )
+        return self._db
+
     # -----------------------------------------------------------------------
-    # Chat
+    # Session-based interface
     # -----------------------------------------------------------------------
 
-    async def chat(
+    async def create_session(
+        self,
+        agent_id: UUID,
+        context: dict[str, Any] | None = None,  # noqa: ARG002
+    ) -> PrompterSessionTable:
+        """Create a new Prompter conversation session."""
+        session = PrompterSessionTable(
+            id=uuid4(),
+            agent_id=agent_id,
+            status="active",
+            created_at=datetime.now(UTC),
+        )
+        self._session.add(session)
+        await self._session.flush()
+        self.log.info("Prompter session created", session_id=str(session.id))
+        return session
+
+    async def send_message(
+        self,
+        session_id: UUID,
+        agent_id: UUID,
+        content: str,
+        context: dict[str, Any] | None = None,
+    ) -> list[PrompterMessageTable]:
+        """
+        Append a user message, call the LLM for a reply, persist both,
+        and return all messages in the session.
+        """
+        session = await self._get_session(session_id, agent_id)
+
+        # Persist the user message first
+        user_msg = PrompterMessageTable(
+            id=uuid4(),
+            session_id=session_id,
+            role="user",
+            content=content,
+            created_at=datetime.now(UTC),
+        )
+        self._session.add(user_msg)
+        await self._session.flush()
+
+        # Load full conversation history for the LLM call
+        history = await self._load_messages(session_id)
+        chat_messages = [{"role": m.role, "content": m.content} for m in history]
+
+        # Call the LLM
+        llm_reply = await self._llm_chat(
+            messages=chat_messages,
+            context=context,
+        )
+
+        # Persist the assistant reply
+        assistant_msg = PrompterMessageTable(
+            id=uuid4(),
+            session_id=session_id,
+            role="assistant",
+            content=llm_reply["message"],
+            created_at=datetime.now(UTC),
+        )
+        self._session.add(assistant_msg)
+
+        # Update session status if draft is ready
+        if llm_reply["draft_ready"] and session.status == "active":
+            session.status = "draft_ready"
+
+        await self._session.flush()
+        self.log.info(
+            "Message processed",
+            session_id=str(session_id),
+            draft_ready=llm_reply["draft_ready"],
+        )
+
+        # Return all messages in order
+        return await self._load_messages(session_id)
+
+    async def get_or_generate_draft(
+        self,
+        session_id: UUID,
+        agent_id: UUID,
+    ) -> TaskDraftTable:
+        """
+        Return an existing draft for the session, or generate one via LLM
+        if none exists yet.
+        """
+        await self._get_session(session_id, agent_id)
+
+        # Check for an existing draft
+        result = await self._session.execute(
+            select(TaskDraftTable)
+            .where(TaskDraftTable.session_id == session_id)
+            .order_by(TaskDraftTable.created_at.desc())
+            .limit(1)
+        )
+        existing = result.scalar_one_or_none()
+        if existing is not None:
+            return existing
+
+        # No draft yet — generate one from conversation history
+        history = await self._load_messages(session_id)
+        if not history:
+            raise ValidationError(
+                message=(
+                    "Cannot generate a draft from an empty conversation; "
+                    "send at least one message first."
+                ),
+                field="messages",
+            )
+
+        chat_messages = [{"role": m.role, "content": m.content} for m in history]
+        draft_result = await self._llm_draft(
+            messages=chat_messages,
+        )
+
+        draft_record = TaskDraftTable(
+            id=uuid4(),
+            session_id=session_id,
+            draft_data=draft_result["draft"],
+            created_at=datetime.now(UTC),
+        )
+        self._session.add(draft_record)
+        await self._session.flush()
+        return draft_record
+
+    async def confirm_draft(
+        self,
+        session_id: UUID,
+        agent_id: UUID,
+        confirm_overrides: ConfirmOverrides | None = None,
+    ) -> UUID:
+        """
+        Validate the draft and create a real Task via the TaskService.
+
+        Returns the newly created task's UUID.
+        """
+        session_rec = await self._get_session(session_id, agent_id)
+        ov = confirm_overrides or ConfirmOverrides()
+
+        # Get or generate the draft
+        draft_record = await self.get_or_generate_draft(session_id, agent_id)
+        draft_data: dict[str, Any] = dict(draft_record.draft_data)
+
+        # Apply overrides
+        if ov.project_id is not None:
+            draft_data["project_id"] = str(ov.project_id)
+        if ov.product_id is not None:
+            draft_data["product_id"] = str(ov.product_id)
+        if ov.assigned_to is not None:
+            draft_data["assigned_to"] = ov.assigned_to
+        if ov.extra:
+            draft_data.update(ov.extra)
+
+        # Resolve project/product IDs
+        resolved_project_id: UUID | None = None
+        resolved_product_id: UUID | None = None
+        if draft_data.get("project_id"):
+            try:
+                resolved_project_id = UUID(str(draft_data["project_id"]))
+            except ValueError as exc:
+                raise ValidationError(
+                    message=f"Invalid project_id UUID: {draft_data['project_id']}",
+                    field="project_id",
+                ) from exc
+        if draft_data.get("product_id"):
+            try:
+                resolved_product_id = UUID(str(draft_data["product_id"]))
+            except ValueError as exc:
+                raise ValidationError(
+                    message=f"Invalid product_id UUID: {draft_data['product_id']}",
+                    field="product_id",
+                ) from exc
+
+        if resolved_project_id is None and resolved_product_id is None:
+            raise ValidationError(
+                message=(
+                    "The draft must have either project_id or product_id set. "
+                    "Pass one via the confirm request body."
+                ),
+                field="project_id",
+            )
+
+        # Validate and coerce required fields
+        try:
+            team = Team(draft_data["team"])
+            task_type = TaskType(draft_data["task_type"])
+            nature = TaskNature(draft_data["nature"])
+            complexity = Complexity(draft_data["estimated_complexity"])
+        except (KeyError, ValueError) as exc:
+            raise ValidationError(
+                message=f"Draft has invalid or missing required fields: {exc}",
+                field="draft",
+            ) from exc
+
+        # Resolve assigned_to as UUID if possible
+        resolved_assigned_to: UUID | None = None
+        if draft_data.get("assigned_to"):
+            with contextlib.suppress(ValueError):
+                resolved_assigned_to = UUID(str(draft_data["assigned_to"]))
+
+        req = TaskCreateRequest(
+            title=draft_data["title"],
+            description=draft_data["description"],
+            acceptance_criteria=draft_data["acceptance_criteria"],
+            team=team,
+            created_by=agent_id,
+            task_type=task_type,
+            nature=nature,
+            estimated_complexity=complexity,
+            priority=int(draft_data.get("priority", 2)),
+            assigned_to=resolved_assigned_to,
+            project_id=resolved_project_id,
+            product_id=resolved_product_id,
+            source="prompter",
+            confirmed_by_human=True,
+        )
+
+        # Import TaskService lazily to avoid circular imports
+        from roboco.services.task import get_task_service
+
+        task_service = get_task_service(self._session)
+        task: TaskTable = await task_service.create(req)
+
+        # Mark draft as confirmed
+        now = datetime.now(UTC)
+        draft_record.confirmed_at = now
+        draft_record.task_id = task.id
+        session_rec.status = "confirmed"
+        await self._session.flush()
+
+        self.log.info(
+            "Draft confirmed — task created",
+            session_id=str(session_id),
+            task_id=str(task.id),
+        )
+        return task.id  # type: ignore[return-value]
+
+    # -----------------------------------------------------------------------
+    # Private helpers (session-based)
+    # -----------------------------------------------------------------------
+
+    async def _get_session(
+        self, session_id: UUID, agent_id: UUID
+    ) -> PrompterSessionTable:
+        """Load and authorize a PrompterSession."""
+        result = await self._session.execute(
+            select(PrompterSessionTable).where(PrompterSessionTable.id == session_id)
+        )
+        rec = result.scalar_one_or_none()
+        if rec is None:
+            raise NotFoundError(f"Prompter session {session_id} not found")
+        if rec.agent_id != agent_id:
+            raise ServiceError(
+                f"Session {session_id} does not belong to agent {agent_id}"
+            )
+        return rec
+
+    async def _load_messages(self, session_id: UUID) -> list[PrompterMessageTable]:
+        """Return all messages for a session ordered by creation time."""
+        result = await self._session.execute(
+            select(PrompterMessageTable)
+            .where(PrompterMessageTable.session_id == session_id)
+            .order_by(PrompterMessageTable.created_at)
+        )
+        return list(result.scalars().all())
+
+    # -----------------------------------------------------------------------
+    # Shared LLM helpers
+    # -----------------------------------------------------------------------
+
+    async def _llm_chat(
         self,
         messages: list[dict[str, str]],
         context: dict[str, Any] | None = None,
         model: str = "claude-3-5-sonnet-20241022",
         max_tokens: int = 2048,
     ) -> dict[str, Any]:
-        """
-        Continue a Prompter conversation.
-
-        Args:
-            messages: Conversation history as {role, content} dicts.
-            context: Optional context dict (project_id, team, etc.).
-            model: Anthropic model identifier.
-            max_tokens: Maximum tokens in the response.
-
-        Returns:
-            dict with keys: message (str), draft_ready (bool).
-
-        Raises:
-            ServiceError: If the LLM call fails or returns malformed output.
-        """
+        """Call the LLM for a chat response. Returns {message, draft_ready}."""
         client = self._get_client()
-
-        # Build the user prompt with context if provided
-        user_prompt = self._build_chat_prompt(messages, context)
-
+        user_prompt = _build_chat_prompt(messages, context)
         try:
             response = await client.messages.create(
                 model=model,
@@ -151,51 +439,25 @@ class PrompterService:
             self.log.error("Prompter chat LLM call failed", error=str(e))
             raise ServiceError(f"LLM chat failed: {e}") from e
 
-        # Extract text from response blocks
-        content = self._extract_text(response)
+        content = _extract_text(response)
         if not content:
             raise ServiceError("LLM returned empty content")
 
-        # Heuristic: detect draft-ready signal in the response
-        draft_ready = self._detect_draft_ready(content)
-
         return {
             "message": content,
-            "draft_ready": draft_ready,
+            "draft_ready": _detect_draft_ready(content),
         }
 
-    # -----------------------------------------------------------------------
-    # Draft
-    # -----------------------------------------------------------------------
-
-    async def draft(
+    async def _llm_draft(
         self,
         messages: list[dict[str, str]],
         context: dict[str, Any] | None = None,
         model: str = "claude-3-5-sonnet-20241022",
         max_tokens: int = 4096,
     ) -> dict[str, Any]:
-        """
-        Generate a structured task draft from conversation context.
-
-        Args:
-            messages: Full conversation used as drafting context.
-            context: Optional overrides (project_id, team, etc.).
-            model: Anthropic model identifier.
-            max_tokens: Maximum tokens in the response.
-
-        Returns:
-            dict with keys: draft (dict), reasoning (str).
-
-        Raises:
-            ValidationError: If the LLM output does not conform to the schema.
-            ServiceError: If the LLM call fails.
-        """
+        """Call the LLM to generate a structured draft. Returns {draft, reasoning}."""
         client = self._get_client()
-
-        # Serialize conversation into a single prompt
-        user_prompt = self._build_draft_prompt(messages, context)
-
+        user_prompt = _build_draft_prompt(messages, context)
         try:
             response = await client.messages.create(
                 model=model,
@@ -207,126 +469,157 @@ class PrompterService:
             self.log.error("Prompter draft LLM call failed", error=str(e))
             raise ServiceError(f"LLM draft generation failed: {e}") from e
 
-        content = self._extract_text(response)
+        content = _extract_text(response)
         if not content:
             raise ServiceError("LLM returned empty content for draft")
 
-        # Parse JSON from the response
         try:
             draft_data = json.loads(content)
         except json.JSONDecodeError as e:
-            self.log.warning(
-                "Draft JSON parse failed", content_preview=content[:200]
-            )
+            self.log.warning("Draft JSON parse failed", content_preview=content[:200])
             raise ValidationError(
                 message=f"Draft response was not valid JSON: {e}",
                 field="draft",
             ) from e
 
-        # Ensure provenance fields are set correctly regardless of LLM output
         draft_data["source"] = "prompter"
         draft_data["confirmed_by_human"] = False
-
-        # Derive a short reasoning string
-        reasoning = self._build_reasoning(messages, draft_data)
-
         return {
             "draft": draft_data,
-            "reasoning": reasoning,
+            "reasoning": _build_reasoning(messages, draft_data),
         }
 
     # -----------------------------------------------------------------------
-    # Helpers
+    # Legacy stateless interface
     # -----------------------------------------------------------------------
 
-    @staticmethod
-    def _build_chat_prompt(
+    async def chat(
+        self,
         messages: list[dict[str, str]],
-        context: dict[str, Any] | None,
-    ) -> str:
-        """Serialize messages + context into a single user prompt."""
-        lines: list[str] = []
-        if context:
-            lines.append("Context:")
-            for key, value in context.items():
-                lines.append(f"  {key}: {value}")
-            lines.append("")
-        lines.append("Conversation:")
-        for msg in messages:
-            role = msg.get("role", "user")
-            content = msg.get("content", "")
-            lines.append(f"{role}: {content}")
+        context: dict[str, Any] | None = None,
+        model: str = "claude-3-5-sonnet-20241022",
+        max_tokens: int = 2048,
+    ) -> dict[str, Any]:
+        """Continue a Prompter conversation (stateless)."""
+        return await self._llm_chat(
+            messages=messages,
+            context=context,
+            model=model,
+            max_tokens=max_tokens,
+        )
+
+    async def draft(
+        self,
+        messages: list[dict[str, str]],
+        context: dict[str, Any] | None = None,
+        model: str = "claude-3-5-sonnet-20241022",
+        max_tokens: int = 4096,
+    ) -> dict[str, Any]:
+        """Generate a structured task draft from conversation context (stateless)."""
+        return await self._llm_draft(
+            messages=messages,
+            context=context,
+            model=model,
+            max_tokens=max_tokens,
+        )
+
+
+# ---------------------------------------------------------------------------
+# Module-level helpers (pure functions, no state)
+# ---------------------------------------------------------------------------
+
+
+def _build_chat_prompt(
+    messages: list[dict[str, str]],
+    context: dict[str, Any] | None,
+) -> str:
+    lines: list[str] = []
+    if context:
+        lines.append("Context:")
+        for key, value in context.items():
+            lines.append(f"  {key}: {value}")
         lines.append("")
-        lines.append(
-            "Continue the conversation as the Prompter assistant. "
-            "If you have enough information to draft a complete task, "
-            "say so explicitly and set draft_ready=true in your reasoning."
-        )
-        return "\n".join(lines)
+    lines.append("Conversation:")
+    for msg in messages:
+        role = msg.get("role", "user")
+        content = msg.get("content", "")
+        lines.append(f"{role}: {content}")
+    lines.append("")
+    lines.append(
+        "Continue the conversation as the Prompter assistant. "
+        "If you have enough information to draft a complete task, "
+        "say so explicitly."
+    )
+    return "\n".join(lines)
 
-    @staticmethod
-    def _build_draft_prompt(
-        messages: list[dict[str, str]],
-        context: dict[str, Any] | None,
-    ) -> str:
-        """Serialize conversation into a draft-generation prompt."""
-        lines: list[str] = []
-        lines.append(
-            "Produce a JSON task draft from the following conversation. "
-            "Return ONLY valid JSON — no markdown, no preamble."
-        )
-        if context:
-            lines.append("")
-            lines.append("Overrides:")
-            for key, value in context.items():
-                lines.append(f"  {key}: {value}")
+
+def _build_draft_prompt(
+    messages: list[dict[str, str]],
+    context: dict[str, Any] | None,
+) -> str:
+    lines: list[str] = []
+    lines.append(
+        "Produce a JSON task draft from the following conversation. "
+        "Return ONLY valid JSON — no markdown, no preamble."
+    )
+    if context:
         lines.append("")
-        lines.append("Conversation:")
-        for msg in messages:
-            role = msg.get("role", "user")
-            content = msg.get("content", "")
-            lines.append(f"{role}: {content}")
-        return "\n".join(lines)
-
-    @staticmethod
-    def _extract_text(response: Any) -> str:
-        """Extract text from Anthropic message response."""
-        text_parts: list[str] = []
-        for block in getattr(response, "content", []):
-            if hasattr(block, "text"):
-                text_parts.append(block.text)
-        return "\n".join(text_parts).strip()
-
-    @staticmethod
-    def _detect_draft_ready(content: str) -> bool:
-        """Heuristic: assistant signals readiness with explicit phrases."""
-        signals = [
-            "i have enough information",
-            "ready to generate a draft",
-            "ready to draft",
-            "i can now draft",
-            "draft_ready=true",
-            "draft ready",
-        ]
-        lower = content.lower()
-        return any(sig in lower for sig in signals)
-
-    @staticmethod
-    def _build_reasoning(
-        messages: list[dict[str, str]],
-        draft_data: dict[str, Any],
-    ) -> str:
-        """Derive a short reasoning summary from the conversation and draft."""
-        title = draft_data.get("title", "Untitled")
-        team = draft_data.get("team", "unknown")
-        complexity = draft_data.get("estimated_complexity", "unknown")
-        return (
-            f"Draft generated from conversation of {len(messages)} messages. "
-            f"Proposed task '{title}' for team {team} "
-            f"with complexity {complexity}."
-        )
+        lines.append("Overrides:")
+        for key, value in context.items():
+            lines.append(f"  {key}: {value}")
+    lines.append("")
+    lines.append("Conversation:")
+    for msg in messages:
+        role = msg.get("role", "user")
+        content = msg.get("content", "")
+        lines.append(f"{role}: {content}")
+    return "\n".join(lines)
 
 
-def get_prompter_service() -> PrompterService:
-    """Get or create the PrompterService singleton."""
-    return _PrompterServiceHolder.get()
+def _extract_text(response: Any) -> str:
+    text_parts: list[str] = []
+    for block in getattr(response, "content", []):
+        if hasattr(block, "text"):
+            text_parts.append(block.text)
+    return "\n".join(text_parts).strip()
+
+
+def _detect_draft_ready(content: str) -> bool:
+    signals = [
+        "i have enough information",
+        "ready to generate a draft",
+        "ready to draft",
+        "i can now draft",
+        "draft_ready=true",
+        "draft ready",
+    ]
+    lower = content.lower()
+    return any(sig in lower for sig in signals)
+
+
+def _build_reasoning(
+    messages: list[dict[str, str]],
+    draft_data: dict[str, Any],
+) -> str:
+    title = draft_data.get("title", "Untitled")
+    team = draft_data.get("team", "unknown")
+    complexity = draft_data.get("estimated_complexity", "unknown")
+    return (
+        f"Draft generated from conversation of {len(messages)} messages. "
+        f"Proposed task '{title}' for team {team} "
+        f"with complexity {complexity}."
+    )
+
+
+# ---------------------------------------------------------------------------
+# Factory
+# ---------------------------------------------------------------------------
+
+
+def get_prompter_service(db: AsyncSession | None = None) -> PrompterService:
+    """Create a PrompterService instance.
+
+    Pass ``db`` for the session-based interface; omit for the stateless
+    legacy interface.
+    """
+    return PrompterService(db=db)
