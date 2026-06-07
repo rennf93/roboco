@@ -267,7 +267,7 @@ async def test_get_draft_generates_from_conversation(prompter_client: dict) -> N
     body = response.json()
     assert body["draft"]["title"] == "Add login page"
     assert body["draft"]["source"] == "prompter"
-    assert body["draft"]["confirmed_at"] is None
+    assert body["confirmed_at"] is None
     assert body["draft"]["confirmed_by_human"] is False
     assert body["session_id"] == session_id
 
