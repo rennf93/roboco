@@ -2287,6 +2287,37 @@ class TaskService(BaseService):
             task.active_claimant_id = cast("Any", None)
             await self.session.flush()
             return task
+        # A task the agent owns but cannot advance — it is `blocked` (a blocker
+        # it cannot self-resolve, or a dependency block) — is otherwise a trap:
+        # from `blocked` the agent has no legal forward verb and the dispatcher
+        # keeps respawning it. Releasing the claim returns the task to the pool
+        # for the cell PM to re-delegate. Audited; the active WorkSession is
+        # abandoned so a re-claim does not trip the uniqueness constraint.
+        if task.status == TaskStatus.BLOCKED:
+            pre_status = (
+                task.status.value
+                if isinstance(task.status, TaskStatus)
+                else str(task.status)
+            )
+            prior_owner = cast("Any", task.claimed_by or task.assigned_to)
+            if task.work_session_id:
+                await self._abandon_work_session_best_effort(
+                    task.work_session_id, reason="agent-unclaim-from-blocked"
+                )
+                task.work_session_id = cast("Any", None)
+            task.status = TaskStatus.PENDING
+            task.assigned_to = cast("Any", None)
+            task.claimed_by = cast("Any", None)
+            task.active_claimant_id = cast("Any", None)
+            await self.session.flush()
+            self._emit_status_transition_audit(
+                task,
+                from_status=pre_status,
+                to_status=TaskStatus.PENDING.value,
+                agent_role=None,
+                audit_agent_id=prior_owner,
+            )
+            return task
         if task.status not in (TaskStatus.CLAIMED, TaskStatus.IN_PROGRESS):
             return None
 

@@ -1247,6 +1247,24 @@ async def test_unclaim_for_agent_releases_claim(
 
 
 @pytest.mark.asyncio
+async def test_unclaim_for_agent_releases_blocked_to_pool(
+    task_setup: dict, db_session: AsyncSession
+) -> None:
+    """An agent trapped on a `blocked` task can release it back to the pool
+    (returns to pending, assignment cleared) instead of churning with no move."""
+    svc = task_setup["svc"]
+    task = await svc.create(_req(task_setup))
+    task.status = TaskStatus.BLOCKED
+    task.assigned_to = task_setup["agent_id"]
+    task.claimed_by = task_setup["agent_id"]
+    await db_session.flush()
+    result = await svc.unclaim_for_agent(task.id, agent_id=task_setup["agent_id"])
+    assert result is not None
+    assert result.status == TaskStatus.PENDING
+    assert result.assigned_to is None
+
+
+@pytest.mark.asyncio
 async def test_unclaim_for_reaper_resets(
     task_setup: dict, db_session: AsyncSession
 ) -> None:
