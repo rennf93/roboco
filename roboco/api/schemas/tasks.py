@@ -218,6 +218,11 @@ class TaskUpdate(BaseModel):
     auditor_notes: str | None = None
     quick_context: str | None = None
 
+    # Lifecycle override — privileged/admin only. Applied by the route as an
+    # audited force-transition (so an operator can recover a task wedged in a
+    # state with no valid in-band move), never as a free-form field set.
+    status: TaskStatus | None = None
+
     @model_validator(mode="before")
     @classmethod
     def _reject_explicit_blank_acceptance_criteria(cls, data: Any) -> Any:

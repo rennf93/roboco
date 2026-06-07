@@ -515,12 +515,35 @@ async def update_task(
     # Transform input data for database storage
     updates = transform_update_data(data)
 
+    # `status` is not a free-form field — it is an audited admin override so a
+    # privileged operator can recover a task wedged in a state with no valid
+    # in-band transition. Pop it out of the generic field update and apply it
+    # through the audited path, gated on elevated permissions.
+    new_status = updates.pop("status", None)
+
     task = await service.update(task_id, **updates)
     if not task:
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Task update failed unexpectedly",
         )
+    if new_status is not None and new_status != task.status:
+        if not has_higher_perms:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Only privileged roles may override task status.",
+            )
+        task = await service.admin_set_status(
+            task_id,
+            new_status,
+            actor_id=agent.agent_id,
+            actor_role=getattr(agent, "role", None),
+        )
+        if not task:
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail="Task status override failed unexpectedly",
+            )
     await db.commit()
     return task_to_response(task)
 

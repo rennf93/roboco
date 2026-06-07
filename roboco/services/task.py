@@ -974,6 +974,47 @@ class TaskService(BaseService):
         )
         return task
 
+    async def admin_set_status(
+        self,
+        task_id: UUID,
+        new_status: TaskStatus,
+        *,
+        actor_id: str | UUID | None = None,
+        actor_role: str | None = None,
+    ) -> TaskTable | None:
+        """Privileged override: set a task's status directly, always audited.
+
+        Bypasses the strict transition validator so an operator can recover a
+        task wedged in a state with no valid in-band move (e.g. a ``blocked``
+        task whose work already merged out-of-band). The change is recorded in
+        the audit log like any other transition — no status change may skip it.
+        """
+        task = await self.get(task_id)
+        if not task:
+            return None
+        from_status = (
+            task.status.value
+            if isinstance(task.status, TaskStatus)
+            else str(task.status)
+        )
+        task.status = new_status
+        await self.session.flush()
+        self._emit_status_transition_audit(
+            task,
+            from_status=from_status,
+            to_status=new_status.value,
+            agent_role=actor_role,
+            audit_agent_id=actor_id,
+        )
+        self.log.info(
+            "Task status set via admin override",
+            task_id=str(task_id),
+            from_status=from_status,
+            to_status=new_status.value,
+            actor=str(actor_id) if actor_id else None,
+        )
+        return task
+
     async def delete(self, task_id: UUID) -> bool:
         """Delete a task and all its descendants."""
         task = await self.get(task_id)

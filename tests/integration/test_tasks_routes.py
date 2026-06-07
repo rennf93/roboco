@@ -265,6 +265,23 @@ async def test_update_task(task_client: dict) -> None:
 
 
 @pytest.mark.asyncio
+async def test_update_task_status_override_recovers_blocked(task_client: dict) -> None:
+    """A privileged PATCH with ``status`` is applied as an audited override, so an
+    operator can recover a task wedged in ``blocked`` (which ``/complete`` refuses)
+    instead of the status being silently dropped."""
+    client = task_client["client"]
+    task = _seed_task(task_client, status=TaskStatus.BLOCKED)
+    await task_client["db"].flush()
+    response = await client.patch(
+        f"/api/tasks/{task.id}",
+        json={"status": "completed"},
+        headers=_HDR,
+    )
+    assert response.status_code == HTTPStatus.OK
+    assert response.json()["status"] == "completed"
+
+
+@pytest.mark.asyncio
 async def test_delete_task(task_client: dict) -> None:
     client = task_client["client"]
     task = _seed_task(task_client)
