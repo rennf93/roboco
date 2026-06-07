@@ -4808,11 +4808,16 @@ Never `commit`, never write code, never run `git`. PMs coordinate.
     async def _handle_dev_existing_owner(
         self, task: dict[str, Any], status: str, agent_slug: str
     ) -> None:
-        """Respawn existing dev for needs_revision / in_progress / claimed / blocked."""
+        """Respawn existing dev for needs_revision / in_progress / claimed."""
+        # A `blocked` task is waiting for its blocker to clear (PM / dependency);
+        # the owner has no legal move from `blocked`, so respawning it does
+        # nothing but churn. It is revived only when unblocked back to
+        # in_progress, or released to the pool (unclaim) for re-delegation.
+        if status == "blocked":
+            return
         if status in (
             "in_progress",
             "claimed",
-            "blocked",
         ) and not self._is_agent_active(agent_slug):
             logger.info(
                 "Respawning agent for orphaned task",

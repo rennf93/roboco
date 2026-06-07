@@ -87,6 +87,12 @@ _DESCENDANT_EXECUTABLE_TASK_TYPES: frozenset[str] = frozenset(
     {TaskType.CODE.value, TaskType.DOCUMENTATION.value, TaskType.DESIGN.value}
 )
 
+# Implementation-cell teams. A board/advisory role must never own a cell task —
+# including the cell's own coordination/planning task (which carries a cell team
+# but not a CODE/DOC/DESIGN type), so escalating one toward a board role is
+# diverted to the cell pool instead of handing ownership up.
+_CELL_TEAMS: frozenset[str] = frozenset({"backend", "frontend", "ux_ui"})
+
 
 def _is_descendant_executable_task(task: TaskTable) -> bool:
     """True for a child task that does cell-executed work (#14 guard).
@@ -106,6 +112,19 @@ def _is_descendant_executable_task(task: TaskTable) -> bool:
     task_type: Any = task.task_type
     type_value = task_type.value if isinstance(task_type, TaskType) else task_type
     return str(type_value) in _DESCENDANT_EXECUTABLE_TASK_TYPES
+
+
+def _is_cell_team_task(task: TaskTable) -> bool:
+    """True for a descendant task owned by an implementation cell.
+
+    Complements ``_is_descendant_executable_task``: a cell's coordination /
+    planning task carries a cell ``team`` but not a CODE/DOC/DESIGN ``task_type``,
+    so the executable-type check alone would let it escalate onto a board role.
+    """
+    if task.parent_task_id is None:
+        return False
+    team_value = getattr(task.team, "value", task.team)
+    return str(team_value) in _CELL_TEAMS
 
 
 # Notes fields (dev_notes, qa_notes, quick_context) are append-only —
@@ -3496,9 +3515,9 @@ class TaskService(BaseService):
         primitive — so both the gateway ``escalate`` verb and the HTTP escalate
         route are covered.
         """
-        if _is_descendant_executable_task(task) and await self._is_board_advisory_agent(
-            target_agent_id
-        ):
+        if (
+            _is_descendant_executable_task(task) or _is_cell_team_task(task)
+        ) and await self._is_board_advisory_agent(target_agent_id):
             await self._release_code_task_to_pool(
                 task=task,
                 escalator_slug=escalator_slug,

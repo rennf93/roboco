@@ -18,7 +18,11 @@ from uuid import uuid4
 
 import pytest
 from roboco.models.base import AgentRole, TaskStatus, TaskType, Team
-from roboco.services.task import TaskService, _is_descendant_executable_task
+from roboco.services.task import (
+    TaskService,
+    _is_cell_team_task,
+    _is_descendant_executable_task,
+)
 
 
 def _bind(svc: TaskService, name: str, value: object) -> None:
@@ -39,6 +43,26 @@ def _service() -> TaskService:
 def test_descendant_code_task_is_flagged() -> None:
     task = MagicMock(parent_task_id=uuid4(), task_type=TaskType.CODE)
     assert _is_descendant_executable_task(task) is True
+
+
+def test_descendant_cell_team_task_is_flagged() -> None:
+    # A cell's own coordination task carries a cell team but a non-executable
+    # type; it must still not be handed to a board role on escalation.
+    task = MagicMock(
+        parent_task_id=uuid4(), team=Team.FRONTEND, task_type=TaskType.PLANNING
+    )
+    assert _is_cell_team_task(task) is True
+
+
+def test_root_cell_team_task_is_not_flagged() -> None:
+    # A root task can legitimately escalate up the chain (the CEO reviews it).
+    task = MagicMock(parent_task_id=None, team=Team.FRONTEND)
+    assert _is_cell_team_task(task) is False
+
+
+def test_non_cell_team_task_is_not_flagged() -> None:
+    task = MagicMock(parent_task_id=uuid4(), team=Team.BOARD)
+    assert _is_cell_team_task(task) is False
 
 
 def test_descendant_documentation_task_is_flagged() -> None:
