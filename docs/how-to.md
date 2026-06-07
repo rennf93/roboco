@@ -14,6 +14,8 @@ the control panel.
 walks through every page and detail end-to-end — useful as a first tour before
 diving into the screenshots below.
 
+![Twelve-second looping preview of the RoboCo control panel — the org tree, a task in progress, and an approval queue.](videos/panel-teaser.gif)
+
 ![The RoboCo Command Center: per-cell health, the CEO approval queue, live metrics, auditor alerts, and recent activity.](images/overview_dashboard.png)
 
 *The **Command Center** — a glance tells you how each cell is doing, what's

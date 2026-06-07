@@ -6,6 +6,12 @@ AI Agents Company - A virtual organization of 19 AI agents + 1 human CEO, design
   <img src="docs/images/run.png" alt="RoboCo control panel: the task tree for a feature, showing Board → Main PM → Backend / Frontend / UX/UI cells → developer subtasks, with live lifecycle statuses (completed, in progress, awaiting PM review, paused) and real GitHub PRs (#59–#62)." width="100%">
 </p>
 
+<p align="center">
+  <img src="docs/videos/panel-teaser.gif" alt="Twelve-second looping preview of the RoboCo control panel — the org tree, a task in progress, and an approval queue." width="80%">
+  <br>
+  <sub><a href="docs/videos/panel-full-walkthrough.mp4">Watch the full 2:33 walkthrough (.mp4) →</a></sub>
+</p>
+
 > [!WARNING]
 > **RoboCo is early-stage, work-in-progress software (v0).** It's under active
 > development, runs in a homelab, and *will* have rough edges, breaking changes,
