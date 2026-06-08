@@ -1,10 +1,18 @@
 import api from "./client";
-import type { Team, TaskType, Complexity } from "@/types";
+import type { Team, TaskType, TaskNature, Complexity } from "@/types";
 
 // ---------------------------------------------------------------------------
 // Types
 // ---------------------------------------------------------------------------
 
+/** One cell's slice of the work — the per-cell breakdown of The Work. */
+export interface CellWork {
+  team: Team;
+  summary: string;
+  items: string[];
+}
+
+/** A structured GOLD task draft, mirroring the backend PrompterDraftTask. */
 export interface DraftProposal {
   title: string;
   description: string;
@@ -12,17 +20,37 @@ export interface DraftProposal {
   team: Team;
   priority?: number;
   task_type?: TaskType;
+  nature?: TaskNature;
   estimated_complexity?: Complexity;
+  // Structured GOLD fields
+  objective?: string | null;
+  what_this_builds?: string[];
+  the_work?: CellWork[];
+  notes?: string[];
+  // Targeting (resolved at confirm time)
+  project_id?: string | null;
+  product_id?: string | null;
 }
+
+export type DraftScale = "single" | "multi";
 
 export interface ChatResponse {
   reply: string;
   draft?: DraftProposal | null;
+  draftReady: boolean;
+  scale: DraftScale | null;
   session_id: string;
 }
 
 export interface CreateSessionResponse {
   session_id: string;
+}
+
+/** What the human picked/edited at confirm time. */
+export interface ConfirmPayload {
+  project_id?: string;
+  product_id?: string;
+  draft?: DraftProposal;
 }
 
 // A message record as returned by the backend (PrompterMessageResponse).
@@ -34,21 +62,13 @@ interface BackendMessage {
   created_at: string;
 }
 
-// Mirrors the backend's draft-ready signal phrases (services/prompter.py).
-// If the backend list ever drifts, the draft simply doesn't auto-surface (the
-// user can keep chatting) — it never breaks the conversation flow.
-const DRAFT_READY_SIGNALS = [
-  "i have enough information",
-  "ready to generate a draft",
-  "ready to draft",
-  "i can now draft",
-  "draft_ready=true",
-  "draft ready",
-];
-
-function replyLooksDraftReady(reply: string): boolean {
-  const lower = reply.toLowerCase();
-  return DRAFT_READY_SIGNALS.some((s) => lower.includes(s));
+// The turn envelope returned by POST /sessions/{id}/messages
+// (PrompterTurnResponse). The backend now owns the draft-ready judgement, so
+// the frontend no longer re-derives it by matching phrases.
+interface TurnResponse {
+  messages: BackendMessage[];
+  draft_ready: boolean;
+  scale: DraftScale | null;
 }
 
 // ---------------------------------------------------------------------------
@@ -57,9 +77,9 @@ function replyLooksDraftReady(reply: string): boolean {
 
 export const prompterApi = {
   /**
-   * Create a new prompter session, returning a session ID.
-   * The endpoint requires a JSON body (optional `context`), so send `{}`, and
-   * map the backend's `id` field onto our `session_id`.
+   * Create a new prompter session, returning a session ID. The endpoint
+   * requires a JSON body (optional `context`), so send `{}`, and map the
+   * backend's `id` field onto our `session_id`.
    */
   createSession: async (): Promise<CreateSessionResponse> => {
     const { data } = await api.post<{ id: string }>("/prompter/sessions", {});
@@ -68,36 +88,42 @@ export const prompterApi = {
 
   /**
    * Send a chat message in an existing session. The backend appends the user
-   * message, replies, and returns the full message list. We surface the latest
-   * assistant message as the reply and, when it signals readiness, fetch the
-   * structured draft.
+   * message, replies, and returns the turn envelope. We surface the latest
+   * assistant message as the reply and, when the backend signals readiness,
+   * fetch the structured draft.
    */
   sendMessage: async (
     sessionId: string,
     message: string
   ): Promise<ChatResponse> => {
-    const { data: messages } = await api.post<BackendMessage[]>(
+    const { data } = await api.post<TurnResponse>(
       `/prompter/sessions/${sessionId}/messages`,
       { content: message }
     );
-    const lastAssistant = [...messages]
+    const lastAssistant = [...data.messages]
       .reverse()
       .find((m) => m.role === "assistant");
     const reply = lastAssistant?.content ?? "";
 
     let draft: DraftProposal | null = null;
-    if (replyLooksDraftReady(reply)) {
+    if (data.draft_ready) {
       try {
         draft = await prompterApi.getDraft(sessionId);
       } catch {
         draft = null;
       }
     }
-    return { reply, draft, session_id: sessionId };
+    return {
+      reply,
+      draft,
+      draftReady: data.draft_ready,
+      scale: data.scale,
+      session_id: sessionId,
+    };
   },
 
   /**
-   * Fetch the current draft for a session (if the LLM has produced one).
+   * Fetch the current structured draft for a session (if one exists).
    * The backend returns a TaskDraftResponse whose `draft` field holds the task.
    */
   getDraft: async (sessionId: string): Promise<DraftProposal | null> => {
@@ -105,5 +131,22 @@ export const prompterApi = {
       `/prompter/sessions/${sessionId}/draft`
     );
     return data.draft;
+  },
+
+  /**
+   * Confirm the draft → create the real task through the Prompter's own
+   * confirm endpoint (which routes single-cell vs board-led multi-cell and
+   * sets confirmed_by_human). The human's project/product choice and any
+   * edits to the structured draft travel in the payload.
+   */
+  confirm: async (
+    sessionId: string,
+    payload: ConfirmPayload
+  ): Promise<{ task_id: string }> => {
+    const { data } = await api.post<{ task_id: string }>(
+      `/prompter/sessions/${sessionId}/confirm`,
+      payload
+    );
+    return data;
   },
 };

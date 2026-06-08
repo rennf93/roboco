@@ -13,15 +13,17 @@ from uuid import uuid4
 
 import pytest
 from roboco.db.tables import AgentTable
-from roboco.models.base import AgentRole, AgentStatus
+from roboco.models.base import AgentRole, AgentStatus, Team
 from roboco.services.base import NotFoundError, ServiceError, ValidationError
 from roboco.services.prompter import (
     PrompterService,
     _build_chat_prompt,
     _build_draft_prompt,
     _build_reasoning,
-    _detect_draft_ready,
+    compose_description,
+    derive_scale,
     get_prompter_service,
+    parse_readiness,
 )
 
 # =============================================================================
@@ -29,27 +31,111 @@ from roboco.services.prompter import (
 # =============================================================================
 
 
-def test_detect_draft_ready_signals() -> None:
-    signals = [
-        "I have enough information to proceed",
-        "Ready to generate a draft now.",
-        "ready to draft the task",
-        "i can now draft this.",
-        "draft_ready=true",
-        "The task is draft ready",
-    ]
-    for text in signals:
-        assert _detect_draft_ready(text), f"Expected True for: {text!r}"
+def test_parse_readiness_extracts_and_strips_tag() -> None:
+    content = (
+        "Here is my question about scope.\n\n"
+        '```roboco-meta\n{"covered": ["objective", "scope"], '
+        '"ready": true, "scale": "multi"}\n```'
+    )
+    clean, tag = parse_readiness(content)
+    assert clean == "Here is my question about scope."
+    assert tag is not None
+    assert tag.ready is True
+    assert tag.scale == "multi"
+    assert tag.covered == ["objective", "scope"]
+    # The control block must not leak into the user-visible text.
+    assert "roboco-meta" not in clean
 
 
-def test_detect_draft_ready_negative() -> None:
-    not_signals = [
-        "Tell me more about the feature.",
-        "Could you clarify the acceptance criteria?",
-        "Let's continue the conversation.",
-    ]
-    for text in not_signals:
-        assert not _detect_draft_ready(text), f"Expected False for: {text!r}"
+def test_parse_readiness_absent_block_is_not_ready() -> None:
+    clean, tag = parse_readiness("Just a plain reply, no control block.")
+    assert clean == "Just a plain reply, no control block."
+    assert tag is None
+
+
+def test_parse_readiness_malformed_json_is_graceful() -> None:
+    content = "Reply text.\n```roboco-meta\n{not valid json]\n```"
+    clean, tag = parse_readiness(content)
+    assert "roboco-meta" not in clean
+    assert clean == "Reply text."
+    assert tag is None
+
+
+def test_parse_readiness_uses_last_block() -> None:
+    content = (
+        '```roboco-meta\n{"ready": false, "scale": "single"}\n```\n'
+        "Final answer.\n"
+        '```roboco-meta\n{"ready": true, "scale": "multi"}\n```'
+    )
+    clean, tag = parse_readiness(content)
+    assert tag is not None
+    assert tag.ready is True
+    assert tag.scale == "multi"
+    assert "roboco-meta" not in clean
+
+
+def test_derive_scale_single_vs_multi() -> None:
+    assert derive_scale([{"team": "backend"}]) == "single"
+    assert derive_scale([{"team": "backend"}, {"team": "frontend"}]) == "multi"
+    # Non-cell teams (e.g. main_pm) do not count toward cell breadth.
+    assert derive_scale([{"team": "backend"}, {"team": "main_pm"}]) == "single"
+    assert derive_scale([]) == "single"
+
+
+def test_compose_description_single_cell_gold_markdown() -> None:
+    draft = {
+        "objective": "Let humans track token usage.",
+        "what_this_builds": ["A usage panel on the Metrics page"],
+        "the_work": [
+            {
+                "team": "frontend",
+                "summary": "Render the usage panel",
+                "items": ["Add the chart", "Wire the API"],
+            }
+        ],
+        "notes": ["Reuse the existing Metrics layout"],
+        "acceptance_criteria": ["Panel shows totals", "Panel filters by range"],
+    }
+    md = compose_description(draft)
+    assert "## Objective" in md
+    assert "## What This Builds" in md
+    assert "## The Work" in md
+    assert "**Frontend** — Render the usage panel" in md
+    assert "## Notes" in md
+    assert "## Success Criteria" in md
+    assert "- Panel shows totals" in md
+    # Single-cell tasks get no board-led lead line.
+    assert "Board-led" not in md
+
+
+def test_compose_description_multi_cell_has_board_led_lead() -> None:
+    draft = {
+        "objective": "Ship the Prompter.",
+        "the_work": [
+            {"team": "backend", "summary": "Chat endpoint", "items": []},
+            {"team": "frontend", "summary": "Chat UI", "items": []},
+            {"team": "ux_ui", "summary": "Interaction design", "items": []},
+        ],
+        "acceptance_criteria": ["It works end to end"],
+    }
+    md = compose_description(draft)
+    assert "Board-led" in md
+    assert "**Backend**" in md
+    assert "**UX/UI**" in md
+
+
+def test_compose_description_falls_back_to_provided_description() -> None:
+    # Sparse structured fields → fall back to a model-provided description.
+    draft = {"description": "A perfectly adequate fallback description here."}
+    md = compose_description(draft)
+    assert md == "A perfectly adequate fallback description here."
+
+
+def test_lead_cell_team_prefers_the_work_cell() -> None:
+    draft = {"the_work": [{"team": "frontend"}], "team": "backend"}
+    assert PrompterService._lead_cell_team(draft, default=Team.BACKEND) is Team.FRONTEND
+    # Empty the_work falls back to the provided default.
+    assert PrompterService._lead_cell_team({}, default=Team.BACKEND) is Team.BACKEND
 
 
 def test_build_chat_prompt_basic() -> None:
@@ -131,17 +217,26 @@ async def test_chat_success_with_mock_llm() -> None:
 async def test_chat_draft_ready_signal() -> None:
     service = get_prompter_service()
 
+    reply = (
+        "Got it — I have what I need.\n\n"
+        '```roboco-meta\n{"covered": ["objective", "scope", "surface", '
+        '"acceptance"], "ready": true, "scale": "single"}\n```'
+    )
     with patch.object(
         service,
         "_create_message",
         new_callable=AsyncMock,
-        return_value="I have enough information. Ready to draft.",
+        return_value=reply,
     ):
         result = await service.chat(
             messages=[{"role": "user", "content": "I need a feature"}]
         )
 
     assert result["draft_ready"] is True
+    assert result["scale"] == "single"
+    # The control block is stripped from the user-visible reply.
+    assert "roboco-meta" not in result["message"]
+    assert result["message"] == "Got it — I have what I need."
 
 
 @pytest.mark.asyncio

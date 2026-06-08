@@ -10,11 +10,13 @@ from uuid import uuid4
 import pytest
 from pydantic import ValidationError as PydanticValidationError
 from roboco.api.schemas.prompter import (
+    CellWork,
     ChatMessage,
     PrompterChatRequest,
     PrompterDraftTask,
     PrompterMessageRequest,
     PrompterSessionCreateRequest,
+    PrompterTurnResponse,
     TaskConfirmRequest,
 )
 
@@ -194,6 +196,80 @@ def test_draft_task_priority_bounds() -> None:
             estimated_complexity="medium",
             priority=4,
         )
+
+
+# =============================================================================
+# Structured GOLD fields
+# =============================================================================
+
+
+def test_cell_work_valid() -> None:
+    cw = CellWork(team="backend", summary="Build the endpoint", items=["Route", "Test"])
+    assert cw.team.value == "backend"
+    assert cw.items == ["Route", "Test"]
+
+
+def test_cell_work_requires_summary() -> None:
+    with pytest.raises(PydanticValidationError):
+        CellWork(team="backend", summary="")
+
+
+def test_draft_task_structured_fields_default_empty() -> None:
+    draft = PrompterDraftTask(
+        title="Add login page",
+        description="Implement a secure login page with email and password",
+        acceptance_criteria=["User can log in"],
+        team="frontend",
+        task_type="code",
+        nature="technical",
+        estimated_complexity="medium",
+    )
+    assert draft.objective is None
+    assert draft.what_this_builds == []
+    assert draft.the_work == []
+    assert draft.notes == []
+
+
+def test_draft_task_with_structured_fields() -> None:
+    draft = PrompterDraftTask(
+        title="Ship the Prompter",
+        description="A board-led feature spanning three cells, fully wired.",
+        acceptance_criteria=["It works end to end"],
+        team="backend",
+        task_type="code",
+        nature="technical",
+        estimated_complexity="high",
+        objective="Let humans chat a task into existence.",
+        what_this_builds=["A /prompter page", "A chat endpoint"],
+        the_work=[
+            CellWork(team="backend", summary="Chat endpoint", items=["Route"]),
+            CellWork(team="frontend", summary="Chat UI", items=["Page"]),
+        ],
+        notes=["Reuse the LLM service"],
+    )
+    assert [w.team.value for w in draft.the_work] == ["backend", "frontend"]
+
+
+def test_confirm_request_carries_edited_draft() -> None:
+    draft = PrompterDraftTask(
+        title="Edited title",
+        description="An edited description that clears the minimum length.",
+        acceptance_criteria=["Done"],
+        team="frontend",
+        task_type="code",
+        nature="technical",
+        estimated_complexity="low",
+    )
+    req = TaskConfirmRequest(project_id=uuid4(), draft=draft)
+    assert req.draft is not None
+    assert req.draft.title == "Edited title"
+
+
+def test_turn_response_shape() -> None:
+    resp = PrompterTurnResponse(messages=[], draft_ready=True, scale="multi")
+    assert resp.draft_ready is True
+    assert resp.scale == "multi"
+    assert resp.messages == []
 
 
 # =============================================================================

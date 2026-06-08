@@ -177,24 +177,28 @@ async def test_send_message_success(prompter_client: dict) -> None:
         )
 
     assert response.status_code == HTTPStatus.OK
-    messages = response.json()
+    body = response.json()
+    messages = body["messages"]
     assert len(messages) == _SINGLE_TURN_MSGS
     roles = [m["role"] for m in messages]
     assert "user" in roles
     assert "assistant" in roles
     assert messages[-1]["content"] == "Great! Let's gather requirements."
+    assert body["draft_ready"] is False
 
 
 @pytest.mark.asyncio
 async def test_send_message_marks_draft_ready(prompter_client: dict) -> None:
-    """draft_ready signal in LLM response updates session status."""
+    """A ready roboco-meta control block flips draft_ready and session status."""
     client = prompter_client["client"]
 
     session_resp = await client.post("/api/prompter/sessions", json={}, headers=_HDR)
     session_id = session_resp.json()["id"]
 
     mock_response = (
-        "I have enough information to draft a task now. Ready to draft when you are."
+        "Understood — I have what I need.\n\n"
+        '```roboco-meta\n{"covered": ["objective", "scope", "surface", '
+        '"acceptance"], "ready": true, "scale": "single"}\n```'
     )
 
     with patch(
@@ -209,8 +213,12 @@ async def test_send_message_marks_draft_ready(prompter_client: dict) -> None:
         )
 
     assert response.status_code == HTTPStatus.OK
-    messages = response.json()
-    assert len(messages) == _SINGLE_TURN_MSGS
+    body = response.json()
+    assert len(body["messages"]) == _SINGLE_TURN_MSGS
+    assert body["draft_ready"] is True
+    assert body["scale"] == "single"
+    # The control block must not leak into the persisted assistant message.
+    assert "roboco-meta" not in body["messages"][-1]["content"]
 
 
 @pytest.mark.asyncio
@@ -500,7 +508,7 @@ async def test_full_happy_path(
             headers=_HDR,
         )
     assert step2b.status_code == HTTPStatus.OK
-    messages = step2b.json()
+    messages = step2b.json()["messages"]
     assert len(messages) == _DOUBLE_TURN_MSGS
 
     # Step 3: Get draft
@@ -578,7 +586,9 @@ async def test_prompter_chat_draft_ready(prompter_client: dict) -> None:
     client = prompter_client["client"]
 
     mock_response = (
-        "I have enough information. draft_ready=true. Ready to generate a draft."
+        "Understood.\n\n"
+        '```roboco-meta\n{"covered": ["objective", "scope", "surface", '
+        '"acceptance"], "ready": true, "scale": "single"}\n```'
     )
 
     with patch(

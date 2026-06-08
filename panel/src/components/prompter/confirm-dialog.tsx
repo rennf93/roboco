@@ -11,6 +11,8 @@ import {
 } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { Textarea } from "@/components/ui/textarea";
+import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import {
   Select,
   SelectContent,
@@ -18,10 +20,12 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import { AcceptanceCriteriaEditor } from "@/components/tasks/acceptance-criteria-editor";
-import { MarkdownEditor } from "@/components/tasks/markdown-editor";
 import { Team, TaskType, Complexity } from "@/types";
-import type { EditableDraft } from "@/hooks/use-prompter";
+import type { EditableDraft, TargetKind } from "@/hooks/use-prompter";
+import { useProjects } from "@/hooks/use-projects";
+import { useProducts } from "@/hooks/use-products";
+import { StringListEditor } from "./string-list-editor";
+import { TheWorkEditor } from "./the-work-editor";
 
 interface ConfirmDialogProps {
   open: boolean;
@@ -35,6 +39,16 @@ interface ConfirmDialogProps {
 
 const WARNING_BANNER_ID = "prompter-warning-banner";
 
+// 0 is the highest priority, 3 the lowest — matches the backend contract.
+const PRIORITY_OPTIONS: { value: string; label: string }[] = [
+  { value: "0", label: "Urgent (P0)" },
+  { value: "1", label: "High (P1)" },
+  { value: "2", label: "Medium (P2)" },
+  { value: "3", label: "Low (P3)" },
+];
+
+const CELL_TEAMS: Team[] = [Team.BACKEND, Team.FRONTEND, Team.UX_UI];
+
 export function ConfirmDialog({
   open,
   draft,
@@ -44,11 +58,19 @@ export function ConfirmDialog({
   isLaunching,
   isValid,
 }: ConfirmDialogProps) {
+  const { data: projects = [] } = useProjects();
+  const { data: products = [] } = useProducts();
+
   return (
-    <Dialog open={open} onOpenChange={(o) => { if (!o && !isLaunching) onClose(); }}>
+    <Dialog
+      open={open}
+      onOpenChange={(o) => {
+        if (!o && !isLaunching) onClose();
+      }}
+    >
       <DialogContent className="max-w-2xl max-h-[90vh] overflow-y-auto">
         <DialogHeader>
-          <DialogTitle>Review &amp; Confirm Task</DialogTitle>
+          <DialogTitle>Review &amp; Launch Task</DialogTitle>
         </DialogHeader>
 
         {/* Warning banner */}
@@ -58,11 +80,12 @@ export function ConfirmDialog({
         >
           <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" />
           <span>
-            This will create a real task and notify the team. It cannot be undone from this screen.
+            This creates a real task and notifies the team. It cannot be undone
+            from this screen.
           </span>
         </div>
 
-        {/* Form fields — NOT wrapped in a <form> to prevent Enter-key submission bypass */}
+        {/* Fields — NOT wrapped in a <form> to prevent Enter-key submission */}
         <div className="space-y-5 py-2">
           {/* Title */}
           <div className="space-y-1.5">
@@ -78,46 +101,144 @@ export function ConfirmDialog({
             />
           </div>
 
-          {/* Description */}
-          <MarkdownEditor
-            label="Description"
-            value={draft.description}
-            onChange={(v) => onUpdate({ description: v })}
-            placeholder="Describe what needs to be done…"
-            required
-            minLength={20}
+          {/* Objective */}
+          <div className="space-y-1.5">
+            <Label htmlFor="prompter-objective">Objective</Label>
+            <Textarea
+              id="prompter-objective"
+              value={draft.objective}
+              onChange={(e) => onUpdate({ objective: e.target.value })}
+              placeholder="The outcome this task delivers…"
+              rows={2}
+              disabled={isLaunching}
+            />
+          </div>
+
+          {/* What This Builds */}
+          <StringListEditor
+            label="What This Builds"
+            items={draft.what_this_builds}
+            onChange={(what_this_builds) => onUpdate({ what_this_builds })}
+            placeholder="Add an artifact…"
+            disabled={isLaunching}
           />
 
-          {/* Acceptance Criteria */}
-          <AcceptanceCriteriaEditor
-            criteria={draft.acceptance_criteria}
-            onChange={(criteria) => onUpdate({ acceptance_criteria: criteria })}
+          {/* The Work (per-cell) */}
+          <TheWorkEditor
+            cells={draft.the_work}
+            onChange={(the_work) => onUpdate({ the_work })}
+            disabled={isLaunching}
           />
 
-          {/* Metadata row */}
-          <div className="grid grid-cols-3 gap-4">
-            {/* Team */}
-            <div className="space-y-1.5">
-              <Label>
-                Team <span className="text-destructive">*</span>
-              </Label>
+          {/* Notes */}
+          <StringListEditor
+            label="Notes"
+            items={draft.notes}
+            onChange={(notes) => onUpdate({ notes })}
+            placeholder="Add a constraint or reuse pointer…"
+            disabled={isLaunching}
+          />
+
+          {/* Success Criteria (the task's acceptance criteria) */}
+          <StringListEditor
+            label="Success Criteria"
+            items={draft.acceptance_criteria}
+            onChange={(acceptance_criteria) => onUpdate({ acceptance_criteria })}
+            placeholder="Add a verifiable criterion…"
+            disabled={isLaunching}
+          />
+
+          {/* Target: single-cell project vs board-led product */}
+          <div className="space-y-2">
+            <Label>
+              Target <span className="text-destructive">*</span>
+            </Label>
+            <Tabs
+              value={draft.targetKind}
+              onValueChange={(v) => onUpdate({ targetKind: v as TargetKind })}
+            >
+              <TabsList className="grid w-full grid-cols-2">
+                <TabsTrigger value="project" disabled={isLaunching}>
+                  Single cell (Project)
+                </TabsTrigger>
+                <TabsTrigger value="product" disabled={isLaunching}>
+                  Board-led (Product)
+                </TabsTrigger>
+              </TabsList>
+            </Tabs>
+
+            {draft.targetKind === "project" ? (
               <Select
-                value={draft.team}
-                onValueChange={(v) => onUpdate({ team: v as Team })}
+                value={draft.projectId}
+                onValueChange={(v) => onUpdate({ projectId: v })}
                 disabled={isLaunching}
               >
                 <SelectTrigger>
-                  <SelectValue placeholder="Select team" />
+                  <SelectValue placeholder="Select a project…" />
                 </SelectTrigger>
                 <SelectContent>
-                  {Object.values(Team).map((t) => (
-                    <SelectItem key={t} value={t}>
-                      {t.replace("_", " ")}
+                  {projects.map((p) => (
+                    <SelectItem key={p.id} value={p.id}>
+                      {p.name}
                     </SelectItem>
                   ))}
                 </SelectContent>
               </Select>
-            </div>
+            ) : (
+              <>
+                <Select
+                  value={draft.productId}
+                  onValueChange={(v) => onUpdate({ productId: v })}
+                  disabled={isLaunching}
+                >
+                  <SelectTrigger>
+                    <SelectValue placeholder="Select a product…" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {products.map((p) => (
+                      <SelectItem key={p.id} value={p.id}>
+                        {p.name} ({p.cell_count} cells)
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+                {products.length === 0 && (
+                  <p className="text-xs text-muted-foreground">
+                    No products exist yet. A board-led feature needs a product
+                    (a cell→repo map) — create one under Products, or target a
+                    single project instead.
+                  </p>
+                )}
+              </>
+            )}
+          </div>
+
+          {/* Metadata row */}
+          <div className="grid grid-cols-3 gap-4">
+            {/* Team — only meaningful for a single-cell project task */}
+            {draft.targetKind === "project" && (
+              <div className="space-y-1.5">
+                <Label>
+                  Cell <span className="text-destructive">*</span>
+                </Label>
+                <Select
+                  value={draft.team}
+                  onValueChange={(v) => onUpdate({ team: v as Team })}
+                  disabled={isLaunching}
+                >
+                  <SelectTrigger>
+                    <SelectValue placeholder="Select cell" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {CELL_TEAMS.map((t) => (
+                      <SelectItem key={t} value={t}>
+                        {t.replace("_", " ")}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
+            )}
 
             {/* Priority */}
             <div className="space-y-1.5">
@@ -131,10 +252,11 @@ export function ConfirmDialog({
                   <SelectValue />
                 </SelectTrigger>
                 <SelectContent>
-                  <SelectItem value="0">Low</SelectItem>
-                  <SelectItem value="1">Medium</SelectItem>
-                  <SelectItem value="2">High</SelectItem>
-                  <SelectItem value="3">Urgent</SelectItem>
+                  {PRIORITY_OPTIONS.map((o) => (
+                    <SelectItem key={o.value} value={o.value}>
+                      {o.label}
+                    </SelectItem>
+                  ))}
                 </SelectContent>
               </Select>
             </div>
@@ -166,7 +288,9 @@ export function ConfirmDialog({
             <Label>Estimated Complexity</Label>
             <Select
               value={draft.estimated_complexity || ""}
-              onValueChange={(v) => onUpdate({ estimated_complexity: v as Complexity })}
+              onValueChange={(v) =>
+                onUpdate({ estimated_complexity: v as Complexity })
+              }
               disabled={isLaunching}
             >
               <SelectTrigger className="w-48">
@@ -184,11 +308,7 @@ export function ConfirmDialog({
         </div>
 
         <DialogFooter className="gap-2">
-          <Button
-            variant="outline"
-            onClick={onClose}
-            disabled={isLaunching}
-          >
+          <Button variant="outline" onClick={onClose} disabled={isLaunching}>
             Back
           </Button>
           <Button
@@ -199,7 +319,7 @@ export function ConfirmDialog({
             {isLaunching ? (
               <>
                 <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-                Creating…
+                Launching…
               </>
             ) : (
               "Confirm & Launch"

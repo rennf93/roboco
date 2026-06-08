@@ -88,6 +88,21 @@ class PrompterMessageResponse(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
 
+class PrompterTurnResponse(BaseModel):
+    """Result of a chat turn: the full message list plus the readiness signal.
+
+    Carries ``draft_ready`` (and the coarse ``scale`` hint) so the frontend
+    consumes the backend's judgement instead of re-deriving it by string match.
+    """
+
+    messages: list[PrompterMessageResponse]
+    draft_ready: bool = False
+    scale: str | None = Field(
+        default=None,
+        description="Coarse size hint from the assistant: 'single' or 'multi'",
+    )
+
+
 class TaskConfirmRequest(BaseModel):
     """Request body for POST /api/prompter/sessions/{id}/confirm.
 
@@ -111,6 +126,14 @@ class TaskConfirmRequest(BaseModel):
         default_factory=dict,
         description="Additional fields to override in the draft before task creation",
     )
+    draft: "PrompterDraftTask | None" = Field(
+        default=None,
+        description=(
+            "The human-edited structured draft. When present it replaces the "
+            "stored draft (after re-validation and description re-composition) "
+            "before the task is created."
+        ),
+    )
 
 
 # =============================================================================
@@ -118,11 +141,35 @@ class TaskConfirmRequest(BaseModel):
 # =============================================================================
 
 
+class CellWork(BaseModel):
+    """One cell's slice of a task's work — the per-cell breakdown of The Work.
+
+    For a single-cell task there is exactly one entry; a board-led feature
+    carries one entry per participating cell.
+    """
+
+    team: Team = Field(
+        ..., description="The cell (or coordinating team) doing this work"
+    )
+    summary: str = Field(
+        ..., min_length=1, description="One-line summary of this cell's slice"
+    )
+    items: list[str] = Field(
+        default_factory=list, description="Concrete deliverables for this cell"
+    )
+
+
 class PrompterDraftTask(BaseModel):
     """A task draft produced by the Prompter.
 
     Mirrors TaskCreate fields so the frontend can POST /api/tasks
     with confirmed_by_human=True after human review.
+
+    The structured GOLD fields (``objective``, ``what_this_builds``,
+    ``the_work``, ``notes``) are first-class in this contract but persisted
+    inside the existing ``draft_data`` JSONB column — no migration. The backend
+    composes ``description`` deterministically from them; ``acceptance_criteria``
+    renders as Success Criteria.
     """
 
     title: str = Field(..., min_length=1, max_length=200)
@@ -133,6 +180,23 @@ class PrompterDraftTask(BaseModel):
     task_type: TaskType = Field(...)
     nature: TaskNature = Field(...)
     estimated_complexity: Complexity = Field(...)
+
+    # Structured GOLD fields — optional for backward compatibility.
+    objective: str | None = Field(
+        default=None,
+        description="The outcome this task delivers, in one or two sentences",
+    )
+    what_this_builds: list[str] = Field(
+        default_factory=list, description="Concrete artifacts this task produces"
+    )
+    the_work: list[CellWork] = Field(
+        default_factory=list,
+        description="Per-cell breakdown; length drives single vs multi-cell",
+    )
+    notes: list[str] = Field(
+        default_factory=list,
+        description="Constraints, reuse pointers, things to confirm with the human",
+    )
     project_id: str | None = Field(
         default=None,
         description=(
@@ -159,6 +223,10 @@ class PrompterDraftTask(BaseModel):
     # Provenance — always set by the prompter backend
     source: str = "prompter"
     confirmed_by_human: bool = False
+
+
+# Resolve TaskConfirmRequest.draft now that PrompterDraftTask exists.
+TaskConfirmRequest.model_rebuild()
 
 
 class TaskDraftResponse(BaseModel):

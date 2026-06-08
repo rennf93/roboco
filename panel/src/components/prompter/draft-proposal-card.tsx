@@ -12,19 +12,24 @@ interface DraftProposalCardProps {
   onOpenReview: () => void;
 }
 
+// 0 is the highest priority, 3 the lowest — matches the backend contract.
 const PRIORITY_LABELS: Record<number, string> = {
-  0: "Low",
-  1: "Medium",
-  2: "High",
-  3: "Urgent",
+  0: "Urgent",
+  1: "High",
+  2: "Medium",
+  3: "Low",
 };
+
+const cellLabel = (team: string) =>
+  team === "ux_ui" ? "UX/UI" : team.charAt(0).toUpperCase() + team.slice(1);
 
 export function DraftProposalCard({
   draft,
   onKeepChatting,
   onOpenReview,
 }: DraftProposalCardProps) {
-  const priorityLabel = PRIORITY_LABELS[draft.priority ?? 2] ?? "High";
+  const priorityLabel = PRIORITY_LABELS[draft.priority ?? 2] ?? "Medium";
+  const cells = draft.the_work ?? [];
 
   return (
     <Card className="border-primary/30 bg-primary/5">
@@ -52,18 +57,32 @@ export function DraftProposalCard({
       </CardHeader>
 
       <CardContent className="pb-3 space-y-3">
-        {/* Description excerpt */}
-        {draft.description && (
+        {/* Objective (falls back to a description excerpt) */}
+        {(draft.objective || draft.description) && (
           <p className="text-sm text-muted-foreground line-clamp-3">
-            {draft.description}
+            {draft.objective || draft.description}
           </p>
+        )}
+
+        {/* The Work — participating cells */}
+        {cells.length > 0 && (
+          <div className="flex flex-wrap items-center gap-1.5">
+            <span className="text-xs font-medium text-muted-foreground">
+              {cells.length > 1 ? "Board-led across" : "Cell:"}
+            </span>
+            {cells.map((c, i) => (
+              <Badge key={`${c.team}-${i}`} variant="outline" className="text-xs">
+                {cellLabel(c.team)}
+              </Badge>
+            ))}
+          </div>
         )}
 
         {/* Acceptance criteria */}
         {draft.acceptance_criteria.length > 0 && (
           <div>
             <p className="text-xs font-medium text-muted-foreground mb-1.5">
-              Acceptance criteria ({draft.acceptance_criteria.length})
+              Success criteria ({draft.acceptance_criteria.length})
             </p>
             <ul className="space-y-1">
               {draft.acceptance_criteria.slice(0, 4).map((criterion, i) => (

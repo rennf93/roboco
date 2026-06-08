@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import contextlib
 import json
+import re
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
@@ -30,6 +31,7 @@ from roboco.db.tables import (
     TaskDraftTable,
     TaskTable,
 )
+from roboco.foundation.identity import CELL_TEAMS
 from roboco.models.base import Complexity, TaskNature, TaskType, Team
 from roboco.models.task import TaskCreateRequest
 from roboco.services.base import NotFoundError, ServiceError, ValidationError
@@ -53,6 +55,25 @@ class ConfirmOverrides:
     product_id: UUID | None = None
     assigned_to: str | None = None
     extra: dict[str, Any] = field(default_factory=dict)
+    draft: dict[str, Any] | None = None
+
+
+@dataclass
+class ReadinessTag:
+    """Parsed contents of an assistant turn's trailing roboco-meta block."""
+
+    covered: list[str] = field(default_factory=list)
+    ready: bool = False
+    scale: str | None = None
+
+
+@dataclass
+class TurnResult:
+    """Outcome of a chat turn: the message list plus the readiness signal."""
+
+    messages: list[PrompterMessageTable]
+    draft_ready: bool = False
+    scale: str | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -60,58 +81,91 @@ class ConfirmOverrides:
 # ---------------------------------------------------------------------------
 
 _PROMPTER_SYSTEM_PROMPT = (
-    "You are the RoboCo Prompter — a conversational assistant that helps "
-    "users draft tasks for an AI agentic company.\n\n"
-    "Your job is to:\n"
-    "1. Ask clarifying questions to gather requirements.\n"
-    "2. Keep the conversation focused on producing a well-scoped task.\n"
-    "3. When you believe you have enough context, signal that a draft is "
-    "ready.\n"
-    "4. Never create the task yourself — only help the user articulate what "
-    "needs to be built.\n\n"
-    "Key rules:\n"
-    "- Be concise but thorough.\n"
-    "- Always ask for acceptance criteria if the user hasn't provided them.\n"
-    "- Suggest a team (backend, frontend, ux_ui) based on the work "
-    "described.\n"
-    "- Estimate complexity (low, medium, high) and task type (code, "
-    "documentation, research, planning, design, administrative).\n"
-    "- Determine nature (technical vs non_technical).\n"
-    "- If the user describes a bug, suggest a code task with technical "
-    "nature.\n"
-    "- If the user describes a feature, determine whether it's backend, "
-    "frontend, or UX/UI work.\n\n"
-    "When you have enough information to produce a complete draft, say so "
-    "explicitly with 'I have enough information to draft a task' or "
-    "'ready to draft'."
+    "You are the RoboCo Prompter — the intake interviewer for an AI agentic "
+    "software company. A human describes something they want built; you ask a "
+    "few sharp questions, then a launch-ready task spec is handed to the dev "
+    "teams.\n\n"
+    "How RoboCo is organized:\n"
+    "- A human CEO sits above a Board (Product Owner, Head of Marketing, "
+    "Auditor).\n"
+    "- The Main PM coordinates three delivery cells — Backend, Frontend, and "
+    "UX/UI. Each cell has developers, a QA, a PM, and a documenter.\n"
+    "- Small, single-domain work (a bug fix, one endpoint, one component) is "
+    "one task owned by one cell.\n"
+    "- A real feature is board-led: the Board sets requirements, the Main PM "
+    "delegates one subtask per participating cell, and the cells deliver in "
+    "parallel.\n\n"
+    "What a GOLD task looks like (the house standard):\n"
+    "- Objective — the outcome, not the implementation.\n"
+    "- What This Builds — the concrete artifacts.\n"
+    "- The Work — the per-cell breakdown (one cell for small work; Backend, "
+    "Frontend, UX/UI for a feature).\n"
+    "- Notes — constraints, what to reuse, anything to confirm with the human.\n"
+    "- Success Criteria — verifiable acceptance criteria.\n\n"
+    "Your interview discipline:\n"
+    "- Open by reflecting back, in one or two sentences, what you understand "
+    "they want, so they can correct course immediately.\n"
+    "- Then ask only the highest-leverage questions you are actually missing — "
+    "one or two per turn. Never dump a checklist.\n"
+    "- Before you can draft, cover: (1) the true objective, (2) scope "
+    "boundaries — what is explicitly out, (3) the surface — which page, "
+    "endpoint, or component, grounded in the projects/products you are shown, "
+    "(4) reuse vs build — what existing code or services to lean on, "
+    "(5) the audience, (6) what 'done' looks like.\n"
+    "- Stop as soon as objective, scope, surface, and acceptance are clear. "
+    "Aim for two to four turns total. Do not pad the conversation.\n"
+    "- Use the real project and product names you are given; prefer an "
+    "existing surface over inventing one.\n\n"
+    "Every reply ends with exactly one fenced control block the human never "
+    "sees, reporting coverage and readiness:\n"
+    "```roboco-meta\n"
+    '{"covered": ["objective", "scope", "surface", "acceptance"], '
+    '"ready": false, "scale": "single"}\n'
+    "```\n"
+    "- covered: which of objective / scope / surface / reuse / audience / "
+    "acceptance you have nailed down.\n"
+    "- ready: true only when you could write a complete GOLD spec right now.\n"
+    "- scale: 'single' for one-cell work, 'multi' for a board-led feature "
+    "across cells.\n"
+    "Write nothing after that block."
 )
 
 _DRAFT_SYSTEM_PROMPT = (
-    "You are the RoboCo Prompter — an expert at converting conversations "
-    "into structured task drafts.\n\n"
-    "Given a conversation between a user and the Prompter assistant, "
-    "produce a JSON task draft that conforms to the RoboCo task schema.\n\n"
+    "You are the RoboCo Prompter's drafting engine. Given a finished "
+    "conversation, output a single JSON object — a structured GOLD task "
+    "draft. No markdown, no prose, no code fence.\n\n"
     "Required fields:\n"
-    "- title: concise, actionable task title (max 200 chars)\n"
-    "- description: detailed description, min 20 chars, explaining what "
-    "needs to be done\n"
-    "- acceptance_criteria: list of strings, each a verifiable criterion "
-    "(min 1)\n"
-    "- team: one of backend, frontend, ux_ui\n"
+    "- title: concise, actionable (max 200 chars).\n"
+    "- objective: the outcome in one or two sentences.\n"
+    "- what_this_builds: array of concrete artifacts (strings).\n"
+    "- the_work: array of per-cell slices. Each item is "
+    '{"team": backend|frontend|ux_ui, "summary": one line, '
+    '"items": [deliverables]}. One entry for single-cell work; one entry per '
+    "participating cell for a board-led feature.\n"
+    "- acceptance_criteria: array of verifiable criteria (at least one) — "
+    "these become Success Criteria.\n"
+    "- notes: array of constraints, reuse pointers, things to confirm (may be "
+    "empty).\n"
+    "- team: the primary cell (backend|frontend|ux_ui). For a multi-cell "
+    "feature set the lead cell here; the backend routes it through the Main "
+    "PM.\n"
     "- task_type: one of code, documentation, research, planning, design, "
-    "administrative\n"
-    "- nature: one of technical, non_technical\n"
-    "- estimated_complexity: one of low, medium, high\n"
-    "- priority: integer 0-3 (0=P0 highest, 3=P3 lowest)\n\n"
-    "Optional fields:\n"
-    "- project_id: UUID string if known from context\n"
-    "- product_id: UUID string if known from context (only one of "
-    "project_id/product_id should be set)\n"
-    "- assigned_to: agent slug or UUID if the user specified one\n"
-    "- target_date: ISO-8601 date string if mentioned\n\n"
-    'Always set source="prompter" and confirmed_by_human=false.\n\n'
-    "Return ONLY valid JSON matching the PrompterDraftTask schema. No "
-    "markdown, no preamble."
+    "administrative.\n"
+    "- nature: technical or non_technical.\n"
+    "- estimated_complexity: low, medium, high.\n"
+    "- priority: integer 0-3 (0 highest, 3 lowest).\n\n"
+    "Optional, only if unambiguous from context: project_id, product_id, "
+    "assigned_to, target_date.\n\n"
+    "Do NOT write a 'description' field — the backend composes it from your "
+    "structured fields.\n\n"
+    "Example shape (abbreviated):\n"
+    '{"title": "...", "objective": "...", "what_this_builds": ["..."], '
+    '"the_work": [{"team": "backend", "summary": "...", "items": ["..."]}, '
+    '{"team": "frontend", "summary": "...", "items": ["..."]}], '
+    '"acceptance_criteria": ["..."], "notes": ["..."], "team": "backend", '
+    '"task_type": "code", "nature": "technical", '
+    '"estimated_complexity": "high", "priority": 1}\n\n'
+    "Return ONLY the JSON object."
 )
 
 
@@ -188,10 +242,10 @@ class PrompterService:
         agent_id: UUID,
         content: str,
         context: dict[str, Any] | None = None,
-    ) -> list[PrompterMessageTable]:
+    ) -> TurnResult:
         """
-        Append a user message, call the LLM for a reply, persist both,
-        and return all messages in the session.
+        Append a user message, call the LLM for a reply, persist both, and
+        return all messages plus the readiness signal for this turn.
         """
         session = await self._get_session(session_id, agent_id)
 
@@ -210,13 +264,17 @@ class PrompterService:
         history = await self._load_messages(session_id)
         chat_messages = [{"role": m.role, "content": m.content} for m in history]
 
+        # Ground the interview in the real projects/products the human can target
+        live_context = await self._assemble_live_context()
+
         # Call the LLM
         llm_reply = await self._llm_chat(
             messages=chat_messages,
             context=context,
+            live_context=live_context,
         )
 
-        # Persist the assistant reply
+        # Persist the assistant reply (control block already stripped)
         assistant_msg = PrompterMessageTable(
             id=uuid4(),
             session_id=session_id,
@@ -237,8 +295,11 @@ class PrompterService:
             draft_ready=llm_reply["draft_ready"],
         )
 
-        # Return all messages in order
-        return await self._load_messages(session_id)
+        return TurnResult(
+            messages=await self._load_messages(session_id),
+            draft_ready=bool(llm_reply["draft_ready"]),
+            scale=llm_reply.get("scale"),
+        )
 
     async def get_or_generate_draft(
         self,
@@ -302,23 +363,46 @@ class PrompterService:
         session_rec = await self._get_session(session_id, agent_id)
         ov = confirm_overrides or ConfirmOverrides()
 
-        # Get or generate the draft, then merge confirm-time overrides
+        # Get or generate the draft. A human-edited structured draft, if passed,
+        # replaces the stored one before overrides and re-composition.
         draft_record = await self.get_or_generate_draft(session_id, agent_id)
-        draft_data: dict[str, Any] = dict(draft_record.draft_data)
+        if ov.draft is not None:
+            draft_data: dict[str, Any] = dict(ov.draft)
+            draft_data["source"] = "prompter"
+            draft_data["confirmed_by_human"] = False
+        else:
+            draft_data = dict(draft_record.draft_data)
         self._apply_overrides(draft_data, ov)
+
+        # Recompose the GOLD body from the (possibly edited) structured fields —
+        # the task always carries a freshly-composed, consistent description.
+        draft_data["description"] = compose_description(draft_data)
 
         resolved_project_id = self._resolve_uuid_field(draft_data, "project_id")
         resolved_product_id = self._resolve_uuid_field(draft_data, "product_id")
         if resolved_project_id is None and resolved_product_id is None:
             raise ValidationError(
                 message=(
-                    "The draft must have either project_id or product_id set. "
-                    "Pass one via the confirm request body."
+                    "The draft must target a project (single-cell) or a product "
+                    "(board-led, multi-cell). Pick one in the confirm step."
                 ),
                 field="project_id",
             )
+        if resolved_project_id is not None and resolved_product_id is not None:
+            raise ValidationError(
+                message="Set exactly one of project_id or product_id, not both.",
+                field="product_id",
+            )
 
-        team, task_type, nature, complexity = self._coerce_draft_enums(draft_data)
+        _lead, task_type, nature, complexity = self._coerce_draft_enums(draft_data)
+
+        # Adaptive routing: a product target is a board-led coordination root
+        # owned by the Main PM (who fans out per cell); a project target is a
+        # single-cell executable task owned by the cell doing the work.
+        if resolved_product_id is not None:
+            team = Team.MAIN_PM
+        else:
+            team = self._lead_cell_team(draft_data, default=_lead)
 
         # Resolve assigned_to as UUID if possible
         resolved_assigned_to: UUID | None = None
@@ -342,6 +426,9 @@ class PrompterService:
             source="prompter",
             confirmed_by_human=True,
         )
+
+        # Persist the launched draft so the stored record reflects reality.
+        draft_record.draft_data = draft_data
 
         # Import TaskService lazily to avoid circular imports
         from roboco.services.task import get_task_service
@@ -390,6 +477,12 @@ class PrompterService:
             ) from exc
 
     @staticmethod
+    def _lead_cell_team(draft_data: dict[str, Any], default: Team) -> Team:
+        """Owner of a single-cell task: the first cell in the_work, else default."""
+        cells = _cell_teams(draft_data.get("the_work") or [])
+        return Team(cells[0]) if cells else default
+
+    @staticmethod
     def _coerce_draft_enums(
         draft_data: dict[str, Any],
     ) -> tuple[Team, TaskType, TaskNature, Complexity]:
@@ -436,6 +529,48 @@ class PrompterService:
         )
         return list(result.scalars().all())
 
+    async def _assemble_live_context(self) -> str | None:
+        """Build a compact 'Available projects / products' block for the interview.
+
+        Grounds the assistant in the real targets the human can launch against,
+        so it references existing surfaces and can resolve project/product
+        itself. Best-effort: a lookup failure degrades to no context rather than
+        breaking the chat. Returns None when nothing is registered.
+        """
+        if self._db is None:
+            return None
+
+        from roboco.services.product import get_product_service
+        from roboco.services.project import get_project_service
+
+        lines: list[str] = []
+        try:
+            projects = await get_project_service(self._session).list_all(
+                active_only=True, limit=50
+            )
+        except Exception as exc:
+            self.log.warning("Live project list unavailable", error=str(exc))
+            projects = []
+        if projects:
+            lines.append("Available projects (single-cell tasks target one of these):")
+            lines.extend(f"  - {p.name} (slug: {p.slug}, id: {p.id})" for p in projects)
+
+        try:
+            products = await get_product_service(self._session).list_all(limit=50)
+        except Exception as exc:
+            self.log.warning("Live product list unavailable", error=str(exc))
+            products = []
+        if products:
+            lines.append(
+                "Available products (board-led multi-cell features target one "
+                "of these):"
+            )
+            lines.extend(
+                f"  - {pr.name} (slug: {pr.slug}, id: {pr.id})" for pr in products
+            )
+
+        return "\n".join(lines) if lines else None
+
     # -----------------------------------------------------------------------
     # Shared LLM helpers
     # -----------------------------------------------------------------------
@@ -445,9 +580,14 @@ class PrompterService:
         messages: list[dict[str, str]],
         context: dict[str, Any] | None = None,
         max_tokens: int = 2048,
+        live_context: str | None = None,
     ) -> dict[str, Any]:
-        """Call the LLM for a chat response. Returns {message, draft_ready}."""
-        user_prompt = _build_chat_prompt(messages, context)
+        """Call the LLM for a chat response.
+
+        Returns ``{message, draft_ready, scale}`` where ``message`` is the
+        user-visible reply with the trailing roboco-meta control block stripped.
+        """
+        user_prompt = _build_chat_prompt(messages, context, live_context)
         try:
             content = await self._create_message(
                 messages=[
@@ -463,9 +603,14 @@ class PrompterService:
         if not content:
             raise ServiceError("LLM returned empty content")
 
+        clean, tag = parse_readiness(content)
+        # If the model omitted the control block, fall back to the clean text
+        # so the user still sees a reply rather than an empty bubble.
+        message = clean or content
         return {
-            "message": content,
-            "draft_ready": _detect_draft_ready(content),
+            "message": message,
+            "draft_ready": bool(tag and tag.ready),
+            "scale": tag.scale if tag else None,
         }
 
     async def _llm_draft(
@@ -502,6 +647,9 @@ class PrompterService:
 
         draft_data["source"] = "prompter"
         draft_data["confirmed_by_human"] = False
+        # Compose the GOLD markdown body from the structured fields — the model
+        # never hand-formats it, so the description is always consistent.
+        draft_data["description"] = compose_description(draft_data)
         return {
             "draft": draft_data,
             "reasoning": _build_reasoning(messages, draft_data),
@@ -546,8 +694,12 @@ class PrompterService:
 def _build_chat_prompt(
     messages: list[dict[str, str]],
     context: dict[str, Any] | None,
+    live_context: str | None = None,
 ) -> str:
     lines: list[str] = []
+    if live_context:
+        lines.append(live_context)
+        lines.append("")
     if context:
         lines.append("Context:")
         for key, value in context.items():
@@ -560,9 +712,9 @@ def _build_chat_prompt(
         lines.append(f"{role}: {content}")
     lines.append("")
     lines.append(
-        "Continue the conversation as the Prompter assistant. "
-        "If you have enough information to draft a complete task, "
-        "say so explicitly."
+        "Continue the conversation as the Prompter assistant. End with the "
+        "roboco-meta control block. If you can write a complete GOLD spec now, "
+        "set ready to true."
     )
     return "\n".join(lines)
 
@@ -604,17 +756,145 @@ def _strip_code_fences(content: str) -> str:
     return text.strip()
 
 
-def _detect_draft_ready(content: str) -> bool:
-    signals = [
-        "i have enough information",
-        "ready to generate a draft",
-        "ready to draft",
-        "i can now draft",
-        "draft_ready=true",
-        "draft ready",
-    ]
-    lower = content.lower()
-    return any(sig in lower for sig in signals)
+_META_FENCE_RE = re.compile(r"```roboco-meta\s*(.*?)```", re.DOTALL)
+
+# Mirror of PrompterDraftTask.description min_length — below this the composed
+# body is too thin to be a valid task, so we fall back to any provided text.
+_MIN_DESCRIPTION_LEN = 20
+
+_TEAM_LABELS: dict[str, str] = {
+    "backend": "Backend",
+    "frontend": "Frontend",
+    "ux_ui": "UX/UI",
+    "main_pm": "Main PM",
+    "board": "Board",
+}
+
+
+def parse_readiness(content: str) -> tuple[str, ReadinessTag | None]:
+    """Split an assistant reply into (clean_text, readiness_tag).
+
+    The interview prompt instructs the model to end each turn with a fenced
+    ``roboco-meta`` JSON block. This extracts the last such block, strips it
+    from the user-visible text, and parses it. A missing or malformed block
+    yields ``None`` (treated as not-ready) so the conversation never breaks.
+    """
+    matches = list(_META_FENCE_RE.finditer(content))
+    if not matches:
+        return content.strip(), None
+
+    # Strip every control block from the visible text (a well-behaved model
+    # emits one; remove any strays too), and read readiness from the last.
+    clean = _META_FENCE_RE.sub("", content).strip()
+    try:
+        data = json.loads(matches[-1].group(1).strip())
+    except (json.JSONDecodeError, ValueError):
+        return clean, None
+    if not isinstance(data, dict):
+        return clean, None
+
+    raw_scale = data.get("scale")
+    scale = str(raw_scale) if raw_scale in ("single", "multi") else None
+    covered = [str(c) for c in data.get("covered") or [] if isinstance(c, str)]
+    return clean, ReadinessTag(
+        covered=covered,
+        ready=bool(data.get("ready", False)),
+        scale=scale,
+    )
+
+
+def _cell_teams(the_work: list[dict[str, Any]]) -> list[str]:
+    """Distinct cell teams (backend/frontend/ux_ui) present in the_work, in order."""
+    cell_values = {t.value for t in CELL_TEAMS}
+    seen: list[str] = []
+    for entry in the_work:
+        team = str(entry.get("team", ""))
+        if team in cell_values and team not in seen:
+            seen.append(team)
+    return seen
+
+
+def derive_scale(the_work: list[dict[str, Any]]) -> str:
+    """'multi' when more than one cell participates, else 'single'."""
+    return "multi" if len(_cell_teams(the_work)) > 1 else "single"
+
+
+def _clean_list(value: Any) -> list[str]:
+    """Trimmed, non-empty string items from a possibly-missing list field."""
+    return [str(i).strip() for i in (value or []) if str(i).strip()]
+
+
+def _text(value: Any) -> str:
+    """Trimmed string from a possibly-missing scalar field."""
+    return str(value or "").strip()
+
+
+def _bullets(items: list[str]) -> str:
+    """Render a markdown bullet list."""
+    return "\n".join(f"- {i}" for i in items)
+
+
+def _cell_label(team: str) -> str:
+    """Display label for a team value."""
+    return _TEAM_LABELS.get(team) or team.replace("_", " ").title() or "Work"
+
+
+def _render_work_entry(entry: dict[str, Any]) -> str:
+    """Render one cell's slice: a bold heading and its deliverables."""
+    head = f"**{_cell_label(_text(entry.get('team')))}**"
+    summary = _text(entry.get("summary"))
+    if summary:
+        head = f"{head} — {summary}"
+    items = _clean_list(entry.get("items"))
+    return f"{head}\n{_bullets(items)}" if items else head
+
+
+def _render_the_work(the_work: list[dict[str, Any]]) -> str:
+    """Render The Work section, with a board-led lead line when multi-cell."""
+    blocks = [_render_work_entry(e) for e in the_work]
+    if len(_cell_teams(the_work)) > 1:
+        blocks.insert(
+            0,
+            "Board-led: the Board sets requirements and the Main PM "
+            "delegates one subtask per cell.",
+        )
+    return "\n\n".join(blocks)
+
+
+def _section(sections: list[str], heading: str, body: str) -> None:
+    """Append a markdown section when its body is non-empty."""
+    if body:
+        sections.append(f"## {heading}\n\n{body}")
+
+
+def compose_description(draft: dict[str, Any]) -> str:
+    """Build the GOLD markdown description deterministically from structured fields.
+
+    Sections present only when their field has content. ``acceptance_criteria``
+    renders under Success Criteria. A multi-cell task gets a board-led lead
+    line. Falls back to any model-provided ``description`` if the structured
+    fields are too sparse to clear the schema's 20-char minimum.
+    """
+    the_work = draft.get("the_work") or []
+    sections: list[str] = []
+    _section(sections, "Objective", _text(draft.get("objective")))
+    _section(
+        sections,
+        "What This Builds",
+        _bullets(_clean_list(draft.get("what_this_builds"))),
+    )
+    _section(sections, "The Work", _render_the_work(the_work) if the_work else "")
+    _section(sections, "Notes", _bullets(_clean_list(draft.get("notes"))))
+    _section(
+        sections,
+        "Success Criteria",
+        _bullets(_clean_list(draft.get("acceptance_criteria"))),
+    )
+
+    composed = "\n\n".join(sections).strip()
+    if len(composed) >= _MIN_DESCRIPTION_LEN:
+        return composed
+    return _text(draft.get("description")) or composed
 
 
 def _build_reasoning(

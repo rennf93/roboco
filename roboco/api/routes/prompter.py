@@ -28,6 +28,7 @@ from roboco.api.schemas.prompter import (
     PrompterMessageResponse,
     PrompterSessionCreateRequest,
     PrompterSessionResponse,
+    PrompterTurnResponse,
     TaskConfirmRequest,
     TaskDraftResponse,
 )
@@ -95,21 +96,22 @@ async def create_session(
 
 @router.post(
     "/sessions/{session_id}/messages",
-    response_model=list[PrompterMessageResponse],
+    response_model=PrompterTurnResponse,
 )
 async def send_message(
     session_id: UUID,
     data: PrompterMessageRequest,
     db: DbSession,
     agent: CurrentAgentContext,
-) -> list[PrompterMessageResponse]:
+) -> PrompterTurnResponse:
     """
     Accept a user message, append it and an AI assistant response to the
-    conversation, and return the updated message list.
+    conversation, and return the updated message list plus the readiness
+    signal (``draft_ready`` and the coarse ``scale`` hint) for this turn.
     """
     service = get_prompter_service(db)
     try:
-        messages = await service.send_message(
+        turn = await service.send_message(
             session_id=session_id,
             agent_id=agent.agent_id,
             content=data.content,
@@ -118,16 +120,20 @@ async def send_message(
     except ServiceError as e:
         raise _translate_error(e) from e
 
-    return [
-        PrompterMessageResponse(
-            id=msg.id,  # type: ignore[arg-type]
-            session_id=msg.session_id,  # type: ignore[arg-type]
-            role=msg.role,
-            content=msg.content,
-            created_at=msg.created_at,
-        )
-        for msg in messages
-    ]
+    return PrompterTurnResponse(
+        messages=[
+            PrompterMessageResponse(
+                id=msg.id,  # type: ignore[arg-type]
+                session_id=msg.session_id,  # type: ignore[arg-type]
+                role=msg.role,
+                content=msg.content,
+                created_at=msg.created_at,
+            )
+            for msg in turn.messages
+        ],
+        draft_ready=turn.draft_ready,
+        scale=turn.scale,
+    )
 
 
 @router.get(
@@ -203,6 +209,7 @@ async def confirm_draft(
                 product_id=data.product_id,
                 assigned_to=data.assigned_to,
                 extra=data.overrides,
+                draft=data.draft.model_dump(mode="json") if data.draft else None,
             ),
         )
     except ServiceError as e:

@@ -2,10 +2,16 @@
 
 import { useState, useCallback, useRef } from "react";
 import { toast } from "sonner";
-import { prompterApi, type DraftProposal } from "@/lib/api/prompter";
+import {
+  prompterApi,
+  type DraftProposal,
+  type CellWork,
+  type DraftScale,
+  type ConfirmPayload,
+} from "@/lib/api/prompter";
 import { getErrorMessage } from "@/lib/api/client";
-import { useCreateTask } from "@/hooks/use-tasks";
-import type { TaskCreate, Team, TaskType, Complexity } from "@/types";
+import { Team } from "@/types";
+import type { TaskType, TaskNature, Complexity } from "@/types";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -29,6 +35,9 @@ export interface ChatMessage {
   draft?: DraftProposal;
 }
 
+/** Which target the human picked for this task. */
+export type TargetKind = "project" | "product";
+
 export interface EditableDraft {
   title: string;
   description: string;
@@ -36,7 +45,56 @@ export interface EditableDraft {
   team: Team | "";
   priority: number;
   task_type: TaskType | "";
+  nature: TaskNature | "";
   estimated_complexity: Complexity | "";
+  // Structured GOLD fields
+  objective: string;
+  what_this_builds: string[];
+  the_work: CellWork[];
+  notes: string[];
+  // Targeting
+  targetKind: TargetKind;
+  projectId: string;
+  productId: string;
+}
+
+const EMPTY_DRAFT: EditableDraft = {
+  title: "",
+  description: "",
+  acceptance_criteria: [],
+  team: "",
+  priority: 2,
+  task_type: "",
+  nature: "",
+  estimated_complexity: "",
+  objective: "",
+  what_this_builds: [],
+  the_work: [],
+  notes: [],
+  targetKind: "project",
+  projectId: "",
+  productId: "",
+};
+
+function toEditable(draft: DraftProposal, scale: DraftScale | null): EditableDraft {
+  return {
+    title: draft.title,
+    description: draft.description,
+    acceptance_criteria: draft.acceptance_criteria,
+    team: draft.team ?? "",
+    priority: draft.priority ?? 2,
+    task_type: draft.task_type ?? "",
+    nature: draft.nature ?? "",
+    estimated_complexity: draft.estimated_complexity ?? "",
+    objective: draft.objective ?? "",
+    what_this_builds: draft.what_this_builds ?? [],
+    the_work: draft.the_work ?? [],
+    notes: draft.notes ?? [],
+    // A multi-cell feature defaults to picking a Product; single-cell a Project.
+    targetKind: scale === "multi" ? "product" : "project",
+    projectId: "",
+    productId: "",
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -44,12 +102,11 @@ export interface EditableDraft {
 // ---------------------------------------------------------------------------
 
 export function usePrompter() {
-  const createTask = useCreateTask();
-
   const [state, setState] = useState<PrompterState>("empty");
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [sessionId, setSessionId] = useState<string | null>(null);
   const [isSending, setIsSending] = useState(false);
+  const [isLaunching, setIsLaunching] = useState(false);
   const [createdTaskId, setCreatedTaskId] = useState<string | null>(null);
   const [createdTaskTitle, setCreatedTaskTitle] = useState<string | null>(null);
   const [createdTaskTeam, setCreatedTaskTeam] = useState<Team | null>(null);
@@ -58,15 +115,7 @@ export function usePrompter() {
   const [draftProposal, setDraftProposal] = useState<DraftProposal | null>(null);
 
   /** Editable copy used in the confirmation dialog */
-  const [editableDraft, setEditableDraft] = useState<EditableDraft>({
-    title: "",
-    description: "",
-    acceptance_criteria: [],
-    team: "",
-    priority: 2,
-    task_type: "",
-    estimated_complexity: "",
-  });
+  const [editableDraft, setEditableDraft] = useState<EditableDraft>(EMPTY_DRAFT);
 
   // Keep a ref to sessionId for callbacks to avoid stale closures
   const sessionIdRef = useRef<string | null>(null);
@@ -91,14 +140,10 @@ export function usePrompter() {
 
       setIsSending(true);
       setState("chatting");
-
-      // Add user message to chat
       addMessage({ role: "user", content: text.trim() });
 
       try {
         let sid = sessionIdRef.current;
-
-        // Create session on first message
         if (!sid) {
           const { session_id } = await prompterApi.createSession();
           sid = session_id;
@@ -106,38 +151,23 @@ export function usePrompter() {
           setSessionId(sid);
         }
 
-        // Send message and get reply
         const response = await prompterApi.sendMessage(sid, text.trim());
 
         if (response.draft) {
-          // LLM produced a draft — add assistant message with embedded draft
           addMessage({
             role: "assistant",
             content: response.reply,
             draft: response.draft,
           });
           setDraftProposal(response.draft);
-          setEditableDraft({
-            title: response.draft.title,
-            description: response.draft.description,
-            acceptance_criteria: response.draft.acceptance_criteria,
-            team: response.draft.team ?? "",
-            priority: response.draft.priority ?? 2,
-            task_type: response.draft.task_type ?? "",
-            estimated_complexity: response.draft.estimated_complexity ?? "",
-          });
+          setEditableDraft(toEditable(response.draft, response.scale));
           setState("draft_preview");
         } else {
-          // Plain text reply
           addMessage({ role: "assistant", content: response.reply });
           setState("chatting");
         }
       } catch (err) {
-        const msg = getErrorMessage(err);
-        addMessage({
-          role: "error",
-          content: msg,
-        });
+        addMessage({ role: "error", content: getErrorMessage(err) });
         setState("chatting");
       } finally {
         setIsSending(false);
@@ -150,17 +180,9 @@ export function usePrompter() {
   // Review & Confirm actions
   // -----------------------------------------------------------------------
 
-  const openReview = useCallback(() => {
-    setState("review_modal");
-  }, []);
-
-  const closeReview = useCallback(() => {
-    setState("draft_preview");
-  }, []);
-
-  const keepChatting = useCallback(() => {
-    setState("chatting");
-  }, []);
+  const openReview = useCallback(() => setState("review_modal"), []);
+  const closeReview = useCallback(() => setState("draft_preview"), []);
+  const keepChatting = useCallback(() => setState("chatting"), []);
 
   const updateDraft = useCallback((updates: Partial<EditableDraft>) => {
     setEditableDraft((prev) => ({ ...prev, ...updates }));
@@ -171,48 +193,73 @@ export function usePrompter() {
   // -----------------------------------------------------------------------
 
   const isValidForLaunch = useCallback((): boolean => {
-    return (
+    const base =
       editableDraft.title.trim().length > 0 &&
       editableDraft.description.trim().length >= 20 &&
-      editableDraft.acceptance_criteria.length > 0 &&
-      editableDraft.team !== ""
-    );
+      editableDraft.acceptance_criteria.length > 0;
+    // A board-led feature needs a product; a single-cell task needs a project
+    // and a cell team.
+    const targeted =
+      editableDraft.targetKind === "product"
+        ? editableDraft.productId !== ""
+        : editableDraft.projectId !== "" && editableDraft.team !== "";
+    return base && targeted;
   }, [editableDraft]);
 
   // -----------------------------------------------------------------------
-  // Launch (create task)
+  // Launch — create the task through the Prompter confirm endpoint
   // -----------------------------------------------------------------------
 
   const launchTask = useCallback(async () => {
-    if (!isValidForLaunch()) return;
+    const sid = sessionIdRef.current;
+    if (!sid || !isValidForLaunch()) return;
 
+    setIsLaunching(true);
     setState("launching");
 
-    const payload: TaskCreate = {
+    const draft: DraftProposal = {
       title: editableDraft.title.trim(),
       description: editableDraft.description.trim(),
       acceptance_criteria: editableDraft.acceptance_criteria,
       team: editableDraft.team as Team,
       priority: editableDraft.priority,
-      ...(editableDraft.task_type ? { task_type: editableDraft.task_type as TaskType } : {}),
+      objective: editableDraft.objective.trim() || null,
+      what_this_builds: editableDraft.what_this_builds,
+      the_work: editableDraft.the_work,
+      notes: editableDraft.notes,
+      ...(editableDraft.task_type ? { task_type: editableDraft.task_type } : {}),
+      ...(editableDraft.nature ? { nature: editableDraft.nature } : {}),
       ...(editableDraft.estimated_complexity
-        ? { estimated_complexity: editableDraft.estimated_complexity as Complexity }
+        ? { estimated_complexity: editableDraft.estimated_complexity }
         : {}),
     };
 
+    const payload: ConfirmPayload =
+      editableDraft.targetKind === "product"
+        ? { product_id: editableDraft.productId, draft }
+        : { project_id: editableDraft.projectId, draft };
+
+    // A product target is routed through the Main PM; a project target stays
+    // with the chosen cell.
+    const effectiveTeam =
+      editableDraft.targetKind === "product"
+        ? Team.MAIN_PM
+        : (editableDraft.team as Team);
+
     try {
-      const task = await createTask.mutateAsync(payload);
-      setCreatedTaskId(task.id);
-      setCreatedTaskTitle(task.title);
-      setCreatedTaskTeam(task.team as Team);
-      toast.success("Task created successfully!");
+      const { task_id } = await prompterApi.confirm(sid, payload);
+      setCreatedTaskId(task_id);
+      setCreatedTaskTitle(draft.title);
+      setCreatedTaskTeam(effectiveTeam);
+      toast.success("Task created and launched!");
       setState("success");
     } catch (err) {
-      const msg = getErrorMessage(err);
-      toast.error(`Failed to create task: ${msg}`);
+      toast.error(`Failed to launch task: ${getErrorMessage(err)}`);
       setState("review_modal");
+    } finally {
+      setIsLaunching(false);
     }
-  }, [editableDraft, isValidForLaunch, createTask]);
+  }, [editableDraft, isValidForLaunch]);
 
   // -----------------------------------------------------------------------
   // Reset to start another conversation
@@ -223,15 +270,7 @@ export function usePrompter() {
     setSessionId(null);
     sessionIdRef.current = null;
     setDraftProposal(null);
-    setEditableDraft({
-      title: "",
-      description: "",
-      acceptance_criteria: [],
-      team: "",
-      priority: 2,
-      task_type: "",
-      estimated_complexity: "",
-    });
+    setEditableDraft(EMPTY_DRAFT);
     setCreatedTaskId(null);
     setCreatedTaskTitle(null);
     setCreatedTaskTeam(null);
@@ -259,6 +298,6 @@ export function usePrompter() {
     isValidForLaunch,
     launchTask,
     startAnother,
-    isLaunching: createTask.isPending,
+    isLaunching,
   };
 }
