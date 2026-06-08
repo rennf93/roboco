@@ -13,7 +13,7 @@ from __future__ import annotations
 import json
 from http import HTTPStatus
 from typing import TYPE_CHECKING, Any
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, patch
 from uuid import uuid4
 
 import pytest
@@ -163,8 +163,7 @@ async def test_send_message_success(prompter_client: dict) -> None:
     session_resp = await client.post("/api/prompter/sessions", json={}, headers=_HDR)
     session_id = session_resp.json()["id"]
 
-    mock_response = MagicMock()
-    mock_response.content = [MagicMock(text="Great! Let's gather requirements.")]
+    mock_response = "Great! Let's gather requirements."
 
     with patch(
         "roboco.services.prompter.PrompterService._create_message",
@@ -194,15 +193,9 @@ async def test_send_message_marks_draft_ready(prompter_client: dict) -> None:
     session_resp = await client.post("/api/prompter/sessions", json={}, headers=_HDR)
     session_id = session_resp.json()["id"]
 
-    mock_response = MagicMock()
-    mock_response.content = [
-        MagicMock(
-            text=(
-                "I have enough information to draft a task now. "
-                "Ready to draft when you are."
-            )
-        )
-    ]
+    mock_response = (
+        "I have enough information to draft a task now. Ready to draft when you are."
+    )
 
     with patch(
         "roboco.services.prompter.PrompterService._create_message",
@@ -254,11 +247,9 @@ async def test_get_draft_generates_from_conversation(prompter_client: dict) -> N
         "priority": 2,
     }
 
-    chat_response = MagicMock()
-    chat_response.content = [MagicMock(text="Tell me more about the requirements.")]
+    chat_response = "Tell me more about the requirements."
 
-    draft_response = MagicMock()
-    draft_response.content = [MagicMock(text=json.dumps(draft_json))]
+    draft_response = json.dumps(draft_json)
 
     with patch(
         "roboco.services.prompter.PrompterService._create_message",
@@ -308,10 +299,8 @@ async def test_get_draft_cached(prompter_client: dict) -> None:
         "estimated_complexity": "medium",
         "priority": 2,
     }
-    chat_response = MagicMock()
-    chat_response.content = [MagicMock(text="Got it.")]
-    draft_response = MagicMock()
-    draft_response.content = [MagicMock(text=json.dumps(draft_json))]
+    chat_response = "Got it."
+    draft_response = json.dumps(draft_json)
 
     with patch(
         "roboco.services.prompter.PrompterService._create_message",
@@ -326,7 +315,7 @@ async def test_get_draft_cached(prompter_client: dict) -> None:
 
     call_count = 0
 
-    async def _mock_create(**_kwargs: Any) -> MagicMock:
+    async def _mock_create(**_kwargs: Any) -> str:
         nonlocal call_count
         call_count += 1
         return draft_response
@@ -382,10 +371,8 @@ async def test_confirm_draft_creates_task(
         "priority": 2,
     }
 
-    chat_response = MagicMock()
-    chat_response.content = [MagicMock(text="Got it.")]
-    draft_response = MagicMock()
-    draft_response.content = [MagicMock(text=json.dumps(draft_json))]
+    chat_response = "Got it."
+    draft_response = json.dumps(draft_json)
 
     with patch(
         "roboco.services.prompter.PrompterService._create_message",
@@ -438,10 +425,8 @@ async def test_confirm_draft_requires_project_or_product(
         "priority": 2,
     }
 
-    chat_response = MagicMock()
-    chat_response.content = [MagicMock(text="Got it.")]
-    draft_response = MagicMock()
-    draft_response.content = [MagicMock(text=json.dumps(draft_json))]
+    chat_response = "Got it."
+    draft_response = json.dumps(draft_json)
 
     with patch(
         "roboco.services.prompter.PrompterService._create_message",
@@ -489,10 +474,7 @@ async def test_full_happy_path(
     session_id = step1.json()["id"]
 
     # Step 2: Send messages
-    chat_mock = MagicMock()
-    chat_mock.content = [
-        MagicMock(text="Please describe the acceptance criteria for this feature.")
-    ]
+    chat_mock = "Please describe the acceptance criteria for this feature."
 
     with patch(
         "roboco.services.prompter.PrompterService._create_message",
@@ -506,10 +488,7 @@ async def test_full_happy_path(
         )
     assert step2a.status_code == HTTPStatus.OK
 
-    chat_mock2 = MagicMock()
-    chat_mock2.content = [
-        MagicMock(text="I have enough information to draft a task now.")
-    ]
+    chat_mock2 = "I have enough information to draft a task now."
     with patch(
         "roboco.services.prompter.PrompterService._create_message",
         new_callable=AsyncMock,
@@ -538,8 +517,7 @@ async def test_full_happy_path(
         "estimated_complexity": "low",
         "priority": 2,
     }
-    draft_mock = MagicMock()
-    draft_mock.content = [MagicMock(text=json.dumps(draft_json))]
+    draft_mock = json.dumps(draft_json)
 
     with patch(
         "roboco.services.prompter.PrompterService._create_message",
@@ -574,8 +552,7 @@ async def test_full_happy_path(
 async def test_prompter_chat_success(prompter_client: dict) -> None:
     client = prompter_client["client"]
 
-    mock_response = MagicMock()
-    mock_response.content = [MagicMock(text="Great! Let's gather requirements.")]
+    mock_response = "Great! Let's gather requirements."
 
     with patch(
         "roboco.services.prompter.PrompterService._create_message",
@@ -600,15 +577,9 @@ async def test_prompter_chat_success(prompter_client: dict) -> None:
 async def test_prompter_chat_draft_ready(prompter_client: dict) -> None:
     client = prompter_client["client"]
 
-    mock_response = MagicMock()
-    mock_response.content = [
-        MagicMock(
-            text=(
-                "I have enough information. draft_ready=true."
-                " Ready to generate a draft."
-            )
-        )
-    ]
+    mock_response = (
+        "I have enough information. draft_ready=true. Ready to generate a draft."
+    )
 
     with patch(
         "roboco.services.prompter.PrompterService._create_message",
@@ -672,8 +643,7 @@ async def test_prompter_draft_success(prompter_client: dict) -> None:
         "priority": 2,
     }
 
-    mock_response = MagicMock()
-    mock_response.content = [MagicMock(text=json.dumps(draft_json))]
+    mock_response = json.dumps(draft_json)
 
     with patch(
         "roboco.services.prompter.PrompterService._create_message",
@@ -702,8 +672,7 @@ async def test_prompter_draft_success(prompter_client: dict) -> None:
 async def test_prompter_draft_invalid_json_from_llm(prompter_client: dict) -> None:
     client = prompter_client["client"]
 
-    mock_response = MagicMock()
-    mock_response.content = [MagicMock(text="not valid json")]
+    mock_response = "not valid json"
 
     with patch(
         "roboco.services.prompter.PrompterService._create_message",
@@ -732,8 +701,7 @@ async def test_prompter_draft_schema_mismatch(prompter_client: dict) -> None:
         "description": "too short",
     }
 
-    mock_response = MagicMock()
-    mock_response.content = [MagicMock(text=json.dumps(bad_draft))]
+    mock_response = json.dumps(bad_draft)
 
     with patch(
         "roboco.services.prompter.PrompterService._create_message",

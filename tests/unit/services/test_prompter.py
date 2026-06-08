@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import json
 from typing import Any
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, patch
 from uuid import uuid4
 
 import pytest
@@ -21,7 +21,6 @@ from roboco.services.prompter import (
     _build_draft_prompt,
     _build_reasoning,
     _detect_draft_ready,
-    _extract_text,
     get_prompter_service,
 )
 
@@ -51,30 +50,6 @@ def test_detect_draft_ready_negative() -> None:
     ]
     for text in not_signals:
         assert not _detect_draft_ready(text), f"Expected False for: {text!r}"
-
-
-def test_extract_text_with_blocks() -> None:
-    block1 = MagicMock()
-    block1.text = "Hello, "
-    block2 = MagicMock()
-    block2.text = "world!"
-    response = MagicMock()
-    response.content = [block1, block2]
-    result = _extract_text(response)
-    assert result == "Hello, \nworld!"
-
-
-def test_extract_text_empty_response() -> None:
-    response = MagicMock()
-    response.content = []
-    assert _extract_text(response) == ""
-
-
-def test_extract_text_no_text_attr() -> None:
-    block = MagicMock(spec=[])  # no 'text' attribute
-    response = MagicMock()
-    response.content = [block]
-    assert _extract_text(response) == ""
 
 
 def test_build_chat_prompt_basic() -> None:
@@ -138,14 +113,12 @@ def test_get_prompter_service_raises_without_db_for_session_methods() -> None:
 async def test_chat_success_with_mock_llm() -> None:
     service = get_prompter_service()
 
-    mock_response = MagicMock()
-    mock_response.content = [MagicMock(text="Great, let's continue!")]
-
-    with patch.object(service, "_get_client") as mock_get_client:
-        mock_client = AsyncMock()
-        mock_client.messages.create = AsyncMock(return_value=mock_response)
-        mock_get_client.return_value = mock_client
-
+    with patch.object(
+        service,
+        "_create_message",
+        new_callable=AsyncMock,
+        return_value="Great, let's continue!",
+    ):
         result = await service.chat(
             messages=[{"role": "user", "content": "I need a feature"}]
         )
@@ -158,16 +131,12 @@ async def test_chat_success_with_mock_llm() -> None:
 async def test_chat_draft_ready_signal() -> None:
     service = get_prompter_service()
 
-    mock_response = MagicMock()
-    mock_response.content = [
-        MagicMock(text="I have enough information. Ready to draft.")
-    ]
-
-    with patch.object(service, "_get_client") as mock_get_client:
-        mock_client = AsyncMock()
-        mock_client.messages.create = AsyncMock(return_value=mock_response)
-        mock_get_client.return_value = mock_client
-
+    with patch.object(
+        service,
+        "_create_message",
+        new_callable=AsyncMock,
+        return_value="I have enough information. Ready to draft.",
+    ):
         result = await service.chat(
             messages=[{"role": "user", "content": "I need a feature"}]
         )
@@ -179,31 +148,29 @@ async def test_chat_draft_ready_signal() -> None:
 async def test_chat_raises_on_empty_response() -> None:
     service = get_prompter_service()
 
-    mock_response = MagicMock()
-    mock_response.content = []  # Empty content blocks
-
-    with patch.object(service, "_get_client") as mock_get_client:
-        mock_client = AsyncMock()
-        mock_client.messages.create = AsyncMock(return_value=mock_response)
-        mock_get_client.return_value = mock_client
-
-        with pytest.raises(ServiceError, match="LLM returned empty content"):
-            await service.chat(messages=[{"role": "user", "content": "Hello"}])
+    with (
+        patch.object(
+            service, "_create_message", new_callable=AsyncMock, return_value=""
+        ),
+        pytest.raises(ServiceError, match="LLM returned empty content"),
+    ):
+        await service.chat(messages=[{"role": "user", "content": "Hello"}])
 
 
 @pytest.mark.asyncio
 async def test_chat_raises_on_llm_error() -> None:
     service = get_prompter_service()
 
-    with patch.object(service, "_get_client") as mock_get_client:
-        mock_client = AsyncMock()
-        mock_client.messages.create = AsyncMock(
-            side_effect=Exception("API unavailable")
-        )
-        mock_get_client.return_value = mock_client
-
-        with pytest.raises(ServiceError, match="LLM chat failed"):
-            await service.chat(messages=[{"role": "user", "content": "Hello"}])
+    with (
+        patch.object(
+            service,
+            "_create_message",
+            new_callable=AsyncMock,
+            side_effect=Exception("API unavailable"),
+        ),
+        pytest.raises(ServiceError, match="LLM chat failed"),
+    ):
+        await service.chat(messages=[{"role": "user", "content": "Hello"}])
 
 
 @pytest.mark.asyncio
@@ -220,14 +187,12 @@ async def test_draft_success_with_mock_llm() -> None:
         "estimated_complexity": "medium",
     }
 
-    mock_response = MagicMock()
-    mock_response.content = [MagicMock(text=json.dumps(draft_data))]
-
-    with patch.object(service, "_get_client") as mock_get_client:
-        mock_client = AsyncMock()
-        mock_client.messages.create = AsyncMock(return_value=mock_response)
-        mock_get_client.return_value = mock_client
-
+    with patch.object(
+        service,
+        "_create_message",
+        new_callable=AsyncMock,
+        return_value=json.dumps(draft_data),
+    ):
         result = await service.draft(
             messages=[{"role": "user", "content": "I need a login feature"}]
         )
@@ -242,46 +207,32 @@ async def test_draft_success_with_mock_llm() -> None:
 async def test_draft_raises_on_invalid_json() -> None:
     service = get_prompter_service()
 
-    mock_response = MagicMock()
-    mock_response.content = [MagicMock(text="Not JSON at all")]
-
-    with patch.object(service, "_get_client") as mock_get_client:
-        mock_client = AsyncMock()
-        mock_client.messages.create = AsyncMock(return_value=mock_response)
-        mock_get_client.return_value = mock_client
-
-        with pytest.raises(ValidationError, match="not valid JSON"):
-            await service.draft(messages=[{"role": "user", "content": "Hello"}])
+    with (
+        patch.object(
+            service,
+            "_create_message",
+            new_callable=AsyncMock,
+            return_value="Not JSON at all",
+        ),
+        pytest.raises(ValidationError, match="not valid JSON"),
+    ):
+        await service.draft(messages=[{"role": "user", "content": "Hello"}])
 
 
 @pytest.mark.asyncio
 async def test_draft_raises_on_llm_error() -> None:
     service = get_prompter_service()
 
-    with patch.object(service, "_get_client") as mock_get_client:
-        mock_client = AsyncMock()
-        mock_client.messages.create = AsyncMock(
-            side_effect=Exception("API unavailable")
-        )
-        mock_get_client.return_value = mock_client
-
-        with pytest.raises(ServiceError, match="LLM draft generation failed"):
-            await service.draft(messages=[{"role": "user", "content": "Hello"}])
-
-
-# =============================================================================
-# API key validation
-# =============================================================================
-
-
-def test_get_client_raises_without_api_key() -> None:
-    service = get_prompter_service()
-    service._client = None  # Force fresh init
-
-    with patch("roboco.services.prompter.settings") as mock_settings:
-        mock_settings.anthropic_api_key = None
-        with pytest.raises(ServiceError, match="Anthropic API key not configured"):
-            service._get_client()
+    with (
+        patch.object(
+            service,
+            "_create_message",
+            new_callable=AsyncMock,
+            side_effect=Exception("API unavailable"),
+        ),
+        pytest.raises(ServiceError, match="LLM draft generation failed"),
+    ):
+        await service.draft(messages=[{"role": "user", "content": "Hello"}])
 
 
 # =============================================================================

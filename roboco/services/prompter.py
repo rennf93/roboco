@@ -2,8 +2,9 @@
 Prompter Service
 
 Conversational LLM assistant that helps users draft tasks.
-Uses Anthropic Claude for natural-language interaction and
-structured JSON draft generation.
+Uses the project's local LLM (Ollama, OpenAI-compatible) for
+natural-language interaction and structured JSON draft generation —
+the same engine as RAG/HyDE, so no external API key is required.
 
 Provides both a session-based approach (DB-persisted) and a
 legacy stateless interface for backward compatibility.
@@ -18,8 +19,8 @@ from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 from uuid import UUID, uuid4
 
+import httpx
 import structlog
-from anthropic import AsyncAnthropic
 from sqlalchemy import select
 
 from roboco.config import settings
@@ -124,26 +125,31 @@ class PrompterService:
 
     def __init__(self, db: AsyncSession | None = None) -> None:
         self.log = logger.bind(component="prompter_service")
-        self._client: AsyncAnthropic | None = None
         self._db = db
 
-    def _get_client(self) -> AsyncAnthropic:
-        """Lazy-init Anthropic client."""
-        if self._client is None:
-            api_key = settings.anthropic_api_key
-            if not api_key:
-                raise ServiceError("Anthropic API key not configured")
-            self._client = AsyncAnthropic(api_key=api_key)
-        return self._client
+    async def _create_message(
+        self, *, messages: list[dict[str, str]], max_tokens: int
+    ) -> str:
+        """Call the local LLM and return the reply text.
 
-    async def _create_message(self, **kwargs: Any) -> Any:
-        """Single seam for the Anthropic ``messages.create`` call.
-
-        The SDK exposes ``messages`` as a cached_property, so it can't be
-        patched at the client-class level; tests substitute this method.
+        Uses the project's local LLM — the same OpenAI-compatible Ollama
+        endpoint as RAG/HyDE (``settings.local_llm_*``), so no external API key
+        is required. ``messages`` is an OpenAI-style list (system + turns). This
+        is the single seam the prompter tests substitute.
         """
-        client = self._get_client()
-        return await client.messages.create(**kwargs)
+        async with httpx.AsyncClient(timeout=120.0) as client:
+            resp = await client.post(
+                f"{settings.local_llm_base_url}/chat/completions",
+                json={
+                    "model": settings.local_llm_model,
+                    "messages": messages,
+                    "max_tokens": max_tokens,
+                    "options": {"num_ctx": 8192},
+                },
+            )
+        resp.raise_for_status()
+        data = resp.json()
+        return str(data["choices"][0]["message"]["content"] or "").strip()
 
     @property
     def _session(self) -> AsyncSession:
@@ -438,23 +444,22 @@ class PrompterService:
         self,
         messages: list[dict[str, str]],
         context: dict[str, Any] | None = None,
-        model: str = "claude-3-5-sonnet-20241022",
         max_tokens: int = 2048,
     ) -> dict[str, Any]:
         """Call the LLM for a chat response. Returns {message, draft_ready}."""
         user_prompt = _build_chat_prompt(messages, context)
         try:
-            response = await self._create_message(
-                model=model,
+            content = await self._create_message(
+                messages=[
+                    {"role": "system", "content": _PROMPTER_SYSTEM_PROMPT},
+                    {"role": "user", "content": user_prompt},
+                ],
                 max_tokens=max_tokens,
-                system=_PROMPTER_SYSTEM_PROMPT,
-                messages=[{"role": "user", "content": user_prompt}],
             )
         except Exception as e:
             self.log.error("Prompter chat LLM call failed", error=str(e))
             raise ServiceError(f"LLM chat failed: {e}") from e
 
-        content = _extract_text(response)
         if not content:
             raise ServiceError("LLM returned empty content")
 
@@ -467,28 +472,27 @@ class PrompterService:
         self,
         messages: list[dict[str, str]],
         context: dict[str, Any] | None = None,
-        model: str = "claude-3-5-sonnet-20241022",
         max_tokens: int = 4096,
     ) -> dict[str, Any]:
         """Call the LLM to generate a structured draft. Returns {draft, reasoning}."""
         user_prompt = _build_draft_prompt(messages, context)
         try:
-            response = await self._create_message(
-                model=model,
+            content = await self._create_message(
+                messages=[
+                    {"role": "system", "content": _DRAFT_SYSTEM_PROMPT},
+                    {"role": "user", "content": user_prompt},
+                ],
                 max_tokens=max_tokens,
-                system=_DRAFT_SYSTEM_PROMPT,
-                messages=[{"role": "user", "content": user_prompt}],
             )
         except Exception as e:
             self.log.error("Prompter draft LLM call failed", error=str(e))
             raise ServiceError(f"LLM draft generation failed: {e}") from e
 
-        content = _extract_text(response)
         if not content:
             raise ServiceError("LLM returned empty content for draft")
 
         try:
-            draft_data = json.loads(content)
+            draft_data = json.loads(_strip_code_fences(content))
         except json.JSONDecodeError as e:
             self.log.warning("Draft JSON parse failed", content_preview=content[:200])
             raise ValidationError(
@@ -511,14 +515,12 @@ class PrompterService:
         self,
         messages: list[dict[str, str]],
         context: dict[str, Any] | None = None,
-        model: str = "claude-3-5-sonnet-20241022",
         max_tokens: int = 2048,
     ) -> dict[str, Any]:
         """Continue a Prompter conversation (stateless)."""
         return await self._llm_chat(
             messages=messages,
             context=context,
-            model=model,
             max_tokens=max_tokens,
         )
 
@@ -526,14 +528,12 @@ class PrompterService:
         self,
         messages: list[dict[str, str]],
         context: dict[str, Any] | None = None,
-        model: str = "claude-3-5-sonnet-20241022",
         max_tokens: int = 4096,
     ) -> dict[str, Any]:
         """Generate a structured task draft from conversation context (stateless)."""
         return await self._llm_draft(
             messages=messages,
             context=context,
-            model=model,
             max_tokens=max_tokens,
         )
 
@@ -590,12 +590,18 @@ def _build_draft_prompt(
     return "\n".join(lines)
 
 
-def _extract_text(response: Any) -> str:
-    text_parts: list[str] = []
-    for block in getattr(response, "content", []):
-        if hasattr(block, "text"):
-            text_parts.append(block.text)
-    return "\n".join(text_parts).strip()
+def _strip_code_fences(content: str) -> str:
+    """Strip a wrapping markdown code fence (```json ... ```) if present.
+
+    Local models often wrap JSON output in a fenced block; drop the opening
+    fence line and the closing fence so the body parses cleanly as JSON.
+    """
+    text = content.strip()
+    if text.startswith("```"):
+        text = text.split("\n", 1)[1] if "\n" in text else text[3:]
+        if text.rstrip().endswith("```"):
+            text = text.rstrip()[:-3]
+    return text.strip()
 
 
 def _detect_draft_ready(content: str) -> bool:
