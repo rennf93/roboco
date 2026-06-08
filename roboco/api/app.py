@@ -30,6 +30,7 @@ from roboco.api.routes.optimal import router as optimal_router
 from roboco.api.routes.orchestrator import router as orchestrator_router
 from roboco.api.routes.product import router as product_router
 from roboco.api.routes.project import router as project_router
+from roboco.api.routes.prompter import router as prompter_router
 from roboco.api.routes.provider import router as provider_router
 from roboco.api.routes.sessions import router as sessions_router
 from roboco.api.routes.stream import router as stream_router
@@ -309,6 +310,13 @@ def create_app() -> FastAPI:
         provider_router,
         prefix=f"{api_prefix}/providers",
         tags=["Providers"],
+    )
+
+    # Prompter — conversational task drafting assistant
+    app.include_router(
+        prompter_router,
+        prefix=f"{api_prefix}/prompter",
+        tags=["Prompter"],
     )
 
     # Work Sessions

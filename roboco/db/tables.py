@@ -359,6 +359,14 @@ class TaskTable(Base):
         Boolean, nullable=False, default=False
     )
 
+    # Prompter origin tracking: tasks drafted by the Prompter LLM assistant
+    # require human confirmation before entering the workflow. The task creation
+    # route enforces that prompter-originated tasks cannot bypass human review.
+    source: Mapped[str] = mapped_column(String(50), nullable=False, default="manual")
+    confirmed_by_human: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False
+    )
+
     # Relationships
     creator: Mapped["AgentTable"] = relationship(
         "AgentTable", foreign_keys=[created_by], lazy="joined"
@@ -1806,4 +1814,134 @@ class GatewayTriggerTable(Base):
         Index("ix_gateway_triggers_task_id", "task_id"),
         Index("ix_gateway_triggers_created_at", "created_at"),
         Index("ix_gateway_triggers_kind_decision", "trigger_kind", "decision"),
+    )
+
+
+# =============================================================================
+# PROMPTER TABLES
+# =============================================================================
+
+
+class PrompterSessionTable(Base):
+    """A Prompter conversation session owned by an agent."""
+
+    __tablename__ = "prompter_sessions"
+
+    id: Mapped[UUID] = mapped_column(
+        UUID(as_uuid=True), primary_key=True, default=uuid4
+    )
+    agent_id: Mapped[UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("agents.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    status: Mapped[str] = mapped_column(
+        Enum(
+            "active",
+            "draft_ready",
+            "confirmed",
+            "abandoned",
+            name="promptersessionstatus",
+        ),
+        nullable=False,
+        default="active",
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=lambda: datetime.now(UTC), nullable=False
+    )
+    updated_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), onupdate=lambda: datetime.now(UTC), nullable=True
+    )
+
+    # Relationships
+    messages: Mapped[list["PrompterMessageTable"]] = relationship(
+        "PrompterMessageTable",
+        back_populates="session",
+        order_by="PrompterMessageTable.created_at",
+        cascade="all, delete-orphan",
+        lazy="select",
+    )
+    drafts: Mapped[list["TaskDraftTable"]] = relationship(
+        "TaskDraftTable",
+        back_populates="session",
+        cascade="all, delete-orphan",
+        lazy="select",
+    )
+
+    __table_args__ = (
+        Index("ix_prompter_sessions_agent_id", "agent_id"),
+        Index("ix_prompter_sessions_status", "status"),
+    )
+
+
+class PrompterMessageTable(Base):
+    """A single message turn within a Prompter conversation session."""
+
+    __tablename__ = "prompter_messages"
+
+    id: Mapped[UUID] = mapped_column(
+        UUID(as_uuid=True), primary_key=True, default=uuid4
+    )
+    session_id: Mapped[UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("prompter_sessions.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    role: Mapped[str] = mapped_column(
+        Enum("user", "assistant", "system", name="promptermessagerole"),
+        nullable=False,
+    )
+    content: Mapped[str] = mapped_column(Text, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=lambda: datetime.now(UTC), nullable=False
+    )
+
+    # Relationships
+    session: Mapped["PrompterSessionTable"] = relationship(
+        "PrompterSessionTable", back_populates="messages"
+    )
+
+    __table_args__ = (
+        Index("ix_prompter_messages_session_id", "session_id"),
+        Index("ix_prompter_messages_session_created", "session_id", "created_at"),
+    )
+
+
+class TaskDraftTable(Base):
+    """A structured task draft extracted from a Prompter conversation."""
+
+    __tablename__ = "task_drafts"
+
+    id: Mapped[UUID] = mapped_column(
+        UUID(as_uuid=True), primary_key=True, default=uuid4
+    )
+    session_id: Mapped[UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("prompter_sessions.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    draft_data: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False)
+    confirmed_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    task_id: Mapped[UUID | None] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("tasks.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=lambda: datetime.now(UTC), nullable=False
+    )
+    updated_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), onupdate=lambda: datetime.now(UTC), nullable=True
+    )
+
+    # Relationships
+    session: Mapped["PrompterSessionTable"] = relationship(
+        "PrompterSessionTable", back_populates="drafts"
+    )
+
+    __table_args__ = (
+        Index("ix_task_drafts_session_id", "session_id"),
+        Index("ix_task_drafts_task_id", "task_id"),
     )

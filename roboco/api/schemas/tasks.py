@@ -330,6 +330,10 @@ class TaskResponse(BaseModel):
     pr_number: int | None = None
     pr_url: str | None = None
 
+    # Prompter origin tracking
+    source: str = "manual"
+    confirmed_by_human: bool = False
+
     model_config = ConfigDict(from_attributes=True)
 
 
@@ -676,6 +680,8 @@ def task_to_response(task: "TaskTable") -> TaskResponse:
         branch_name=getattr(task, "branch_name", None),
         pr_number=getattr(task, "pr_number", None),
         pr_url=getattr(task, "pr_url", None),
+        source=getattr(task, "source", "manual"),
+        confirmed_by_human=getattr(task, "confirmed_by_human", False),
     )
 
 

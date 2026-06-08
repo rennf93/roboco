@@ -167,6 +167,14 @@ async def create_task(
                 ) from None
             assigned_to_uuid = cast("UUID", agent_row.id)
 
+    # Prompter origin tracking: enforce human confirmation gate so
+    # LLM-drafted tasks cannot bypass review and enter the workflow.
+    if data.source == "prompter" and not data.confirmed_by_human:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Prompter-originated tasks require human confirmation",
+        )
+
     service = get_task_service(db)
     req = TaskCreateRequest(
         title=data.title,
@@ -187,6 +195,9 @@ async def create_task(
         task_type=data.task_type,
         project_id=data.project_id,
         product_id=data.product_id,
+        # Prompter origin tracking
+        source=data.source,
+        confirmed_by_human=data.confirmed_by_human,
     )
     task = await service.create(req)
     await db.commit()

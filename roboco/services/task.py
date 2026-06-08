@@ -568,6 +568,9 @@ class TaskService(BaseService):
             task_type=req.task_type,
             project_id=req.project_id,
             product_id=req.product_id,
+            # Prompter origin tracking
+            source=req.source,
+            confirmed_by_human=req.confirmed_by_human,
         )
         self.session.add(task)
         await self.session.flush()
