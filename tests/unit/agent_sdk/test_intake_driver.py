@@ -133,9 +133,10 @@ class _FakeSession:
 
 
 class _RaisingSession:
+    """Streams one chunk, then fails mid-turn (faithful to a live SDK error)."""
+
     async def send(self, _text: str) -> AsyncIterator[StreamChunk]:
-        if False:  # make this an async generator
-            yield StreamChunk(kind="text")
+        yield StreamChunk(kind="text", text="partial")
         raise RuntimeError("boom")
 
 
@@ -191,6 +192,7 @@ async def test_driver_turn_failure_emits_error_and_continues() -> None:
     driver = IntakeDriver(factory, _source(["boom-please", None]), emit)
     await driver.run()  # must not raise
 
-    assert len(collected) == 1
-    assert collected[0].kind == "error"
-    assert "boom" in collected[0].text
+    # The partial chunk made it out, then the failure surfaced as an error chunk.
+    assert [c.kind for c in collected] == ["text", "error"]
+    assert collected[0].text == "partial"
+    assert "boom" in collected[1].text
