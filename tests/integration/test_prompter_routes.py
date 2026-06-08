@@ -23,7 +23,7 @@ from httpx import ASGITransport, AsyncClient
 from roboco.api.deps import get_agent_context, get_db
 from roboco.api.routes.prompter import router as prompter_router
 from roboco.db.tables import AgentTable, ProjectTable
-from roboco.models.base import AgentRole, AgentStatus
+from roboco.models.base import AgentRole, AgentStatus, Team
 from roboco.models.permissions import AgentContext
 
 if TYPE_CHECKING:
@@ -85,12 +85,30 @@ async def prompter_client(
 @pytest_asyncio.fixture
 async def project_fixture(db_session: AsyncSession) -> ProjectTable:
     """Create a minimal project for task creation in confirm tests."""
+    creator = AgentTable(
+        id=uuid4(),
+        name="ProjectCreator",
+        slug=f"proj-creator-{uuid4().hex[:8]}",
+        role=AgentRole.MAIN_PM,
+        team=Team.BACKEND,
+        status=AgentStatus.ACTIVE,
+        model_config={},
+        system_prompt="pm",
+        capabilities=[],
+        permissions={},
+        metrics={},
+    )
+    db_session.add(creator)
+    await db_session.flush()
+
     project = ProjectTable(
         id=uuid4(),
         name="Test Project",
         slug=f"test-project-{uuid4().hex[:8]}",
         git_url="https://github.com/test/repo.git",
-        git_branch="main",
+        default_branch="main",
+        assigned_cell=Team.BACKEND,
+        created_by=creator.id,
     )
     db_session.add(project)
     await db_session.flush()
@@ -149,7 +167,7 @@ async def test_send_message_success(prompter_client: dict) -> None:
     mock_response.content = [MagicMock(text="Great! Let's gather requirements.")]
 
     with patch(
-        "roboco.services.prompter.AsyncAnthropic.messages.create",
+        "roboco.services.prompter.PrompterService._create_message",
         new_callable=AsyncMock,
         return_value=mock_response,
     ):
@@ -187,7 +205,7 @@ async def test_send_message_marks_draft_ready(prompter_client: dict) -> None:
     ]
 
     with patch(
-        "roboco.services.prompter.AsyncAnthropic.messages.create",
+        "roboco.services.prompter.PrompterService._create_message",
         new_callable=AsyncMock,
         return_value=mock_response,
     ):
@@ -243,7 +261,7 @@ async def test_get_draft_generates_from_conversation(prompter_client: dict) -> N
     draft_response.content = [MagicMock(text=json.dumps(draft_json))]
 
     with patch(
-        "roboco.services.prompter.AsyncAnthropic.messages.create",
+        "roboco.services.prompter.PrompterService._create_message",
         new_callable=AsyncMock,
         return_value=chat_response,
     ):
@@ -254,7 +272,7 @@ async def test_get_draft_generates_from_conversation(prompter_client: dict) -> N
         )
 
     with patch(
-        "roboco.services.prompter.AsyncAnthropic.messages.create",
+        "roboco.services.prompter.PrompterService._create_message",
         new_callable=AsyncMock,
         return_value=draft_response,
     ):
@@ -296,7 +314,7 @@ async def test_get_draft_cached(prompter_client: dict) -> None:
     draft_response.content = [MagicMock(text=json.dumps(draft_json))]
 
     with patch(
-        "roboco.services.prompter.AsyncAnthropic.messages.create",
+        "roboco.services.prompter.PrompterService._create_message",
         new_callable=AsyncMock,
         return_value=chat_response,
     ):
@@ -314,7 +332,7 @@ async def test_get_draft_cached(prompter_client: dict) -> None:
         return draft_response
 
     with patch(
-        "roboco.services.prompter.AsyncAnthropic.messages.create",
+        "roboco.services.prompter.PrompterService._create_message",
         side_effect=_mock_create,
     ):
         await client.get(f"/api/prompter/sessions/{session_id}/draft", headers=_HDR)
@@ -370,7 +388,7 @@ async def test_confirm_draft_creates_task(
     draft_response.content = [MagicMock(text=json.dumps(draft_json))]
 
     with patch(
-        "roboco.services.prompter.AsyncAnthropic.messages.create",
+        "roboco.services.prompter.PrompterService._create_message",
         new_callable=AsyncMock,
         return_value=chat_response,
     ):
@@ -381,7 +399,7 @@ async def test_confirm_draft_creates_task(
         )
 
     with patch(
-        "roboco.services.prompter.AsyncAnthropic.messages.create",
+        "roboco.services.prompter.PrompterService._create_message",
         new_callable=AsyncMock,
         return_value=draft_response,
     ):
@@ -426,7 +444,7 @@ async def test_confirm_draft_requires_project_or_product(
     draft_response.content = [MagicMock(text=json.dumps(draft_json))]
 
     with patch(
-        "roboco.services.prompter.AsyncAnthropic.messages.create",
+        "roboco.services.prompter.PrompterService._create_message",
         new_callable=AsyncMock,
         return_value=chat_response,
     ):
@@ -437,7 +455,7 @@ async def test_confirm_draft_requires_project_or_product(
         )
 
     with patch(
-        "roboco.services.prompter.AsyncAnthropic.messages.create",
+        "roboco.services.prompter.PrompterService._create_message",
         new_callable=AsyncMock,
         return_value=draft_response,
     ):
@@ -477,7 +495,7 @@ async def test_full_happy_path(
     ]
 
     with patch(
-        "roboco.services.prompter.AsyncAnthropic.messages.create",
+        "roboco.services.prompter.PrompterService._create_message",
         new_callable=AsyncMock,
         return_value=chat_mock,
     ):
@@ -493,7 +511,7 @@ async def test_full_happy_path(
         MagicMock(text="I have enough information to draft a task now.")
     ]
     with patch(
-        "roboco.services.prompter.AsyncAnthropic.messages.create",
+        "roboco.services.prompter.PrompterService._create_message",
         new_callable=AsyncMock,
         return_value=chat_mock2,
     ):
@@ -524,7 +542,7 @@ async def test_full_happy_path(
     draft_mock.content = [MagicMock(text=json.dumps(draft_json))]
 
     with patch(
-        "roboco.services.prompter.AsyncAnthropic.messages.create",
+        "roboco.services.prompter.PrompterService._create_message",
         new_callable=AsyncMock,
         return_value=draft_mock,
     ):
@@ -560,7 +578,7 @@ async def test_prompter_chat_success(prompter_client: dict) -> None:
     mock_response.content = [MagicMock(text="Great! Let's gather requirements.")]
 
     with patch(
-        "roboco.services.prompter.AsyncAnthropic.messages.create",
+        "roboco.services.prompter.PrompterService._create_message",
         new_callable=AsyncMock,
         return_value=mock_response,
     ):
@@ -593,7 +611,7 @@ async def test_prompter_chat_draft_ready(prompter_client: dict) -> None:
     ]
 
     with patch(
-        "roboco.services.prompter.AsyncAnthropic.messages.create",
+        "roboco.services.prompter.PrompterService._create_message",
         new_callable=AsyncMock,
         return_value=mock_response,
     ):
@@ -619,7 +637,7 @@ async def test_prompter_chat_llm_failure(prompter_client: dict) -> None:
     client = prompter_client["client"]
 
     with patch(
-        "roboco.services.prompter.AsyncAnthropic.messages.create",
+        "roboco.services.prompter.PrompterService._create_message",
         new_callable=AsyncMock,
         side_effect=Exception("Anthropic API unavailable"),
     ):
@@ -658,7 +676,7 @@ async def test_prompter_draft_success(prompter_client: dict) -> None:
     mock_response.content = [MagicMock(text=json.dumps(draft_json))]
 
     with patch(
-        "roboco.services.prompter.AsyncAnthropic.messages.create",
+        "roboco.services.prompter.PrompterService._create_message",
         new_callable=AsyncMock,
         return_value=mock_response,
     ):
@@ -688,7 +706,7 @@ async def test_prompter_draft_invalid_json_from_llm(prompter_client: dict) -> No
     mock_response.content = [MagicMock(text="not valid json")]
 
     with patch(
-        "roboco.services.prompter.AsyncAnthropic.messages.create",
+        "roboco.services.prompter.PrompterService._create_message",
         new_callable=AsyncMock,
         return_value=mock_response,
     ):
@@ -718,7 +736,7 @@ async def test_prompter_draft_schema_mismatch(prompter_client: dict) -> None:
     mock_response.content = [MagicMock(text=json.dumps(bad_draft))]
 
     with patch(
-        "roboco.services.prompter.AsyncAnthropic.messages.create",
+        "roboco.services.prompter.PrompterService._create_message",
         new_callable=AsyncMock,
         return_value=mock_response,
     ):
@@ -740,7 +758,7 @@ async def test_prompter_draft_llm_failure(prompter_client: dict) -> None:
     client = prompter_client["client"]
 
     with patch(
-        "roboco.services.prompter.AsyncAnthropic.messages.create",
+        "roboco.services.prompter.PrompterService._create_message",
         new_callable=AsyncMock,
         side_effect=Exception("Anthropic API unavailable"),
     ):

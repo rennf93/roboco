@@ -136,6 +136,15 @@ class PrompterService:
             self._client = AsyncAnthropic(api_key=api_key)
         return self._client
 
+    async def _create_message(self, **kwargs: Any) -> Any:
+        """Single seam for the Anthropic ``messages.create`` call.
+
+        The SDK exposes ``messages`` as a cached_property, so it can't be
+        patched at the client-class level; tests substitute this method.
+        """
+        client = self._get_client()
+        return await client.messages.create(**kwargs)
+
     @property
     def _session(self) -> AsyncSession:
         """Return DB session, raising if not configured."""
@@ -287,40 +296,13 @@ class PrompterService:
         session_rec = await self._get_session(session_id, agent_id)
         ov = confirm_overrides or ConfirmOverrides()
 
-        # Get or generate the draft
+        # Get or generate the draft, then merge confirm-time overrides
         draft_record = await self.get_or_generate_draft(session_id, agent_id)
         draft_data: dict[str, Any] = dict(draft_record.draft_data)
+        self._apply_overrides(draft_data, ov)
 
-        # Apply overrides
-        if ov.project_id is not None:
-            draft_data["project_id"] = str(ov.project_id)
-        if ov.product_id is not None:
-            draft_data["product_id"] = str(ov.product_id)
-        if ov.assigned_to is not None:
-            draft_data["assigned_to"] = ov.assigned_to
-        if ov.extra:
-            draft_data.update(ov.extra)
-
-        # Resolve project/product IDs
-        resolved_project_id: UUID | None = None
-        resolved_product_id: UUID | None = None
-        if draft_data.get("project_id"):
-            try:
-                resolved_project_id = UUID(str(draft_data["project_id"]))
-            except ValueError as exc:
-                raise ValidationError(
-                    message=f"Invalid project_id UUID: {draft_data['project_id']}",
-                    field="project_id",
-                ) from exc
-        if draft_data.get("product_id"):
-            try:
-                resolved_product_id = UUID(str(draft_data["product_id"]))
-            except ValueError as exc:
-                raise ValidationError(
-                    message=f"Invalid product_id UUID: {draft_data['product_id']}",
-                    field="product_id",
-                ) from exc
-
+        resolved_project_id = self._resolve_uuid_field(draft_data, "project_id")
+        resolved_product_id = self._resolve_uuid_field(draft_data, "product_id")
         if resolved_project_id is None and resolved_product_id is None:
             raise ValidationError(
                 message=(
@@ -330,17 +312,7 @@ class PrompterService:
                 field="project_id",
             )
 
-        # Validate and coerce required fields
-        try:
-            team = Team(draft_data["team"])
-            task_type = TaskType(draft_data["task_type"])
-            nature = TaskNature(draft_data["nature"])
-            complexity = Complexity(draft_data["estimated_complexity"])
-        except (KeyError, ValueError) as exc:
-            raise ValidationError(
-                message=f"Draft has invalid or missing required fields: {exc}",
-                field="draft",
-            ) from exc
+        team, task_type, nature, complexity = self._coerce_draft_enums(draft_data)
 
         # Resolve assigned_to as UUID if possible
         resolved_assigned_to: UUID | None = None
@@ -385,6 +357,50 @@ class PrompterService:
         )
         return task.id  # type: ignore[return-value]
 
+    @staticmethod
+    def _apply_overrides(draft_data: dict[str, Any], ov: ConfirmOverrides) -> None:
+        """Merge confirm-time overrides onto the draft data in place."""
+        if ov.project_id is not None:
+            draft_data["project_id"] = str(ov.project_id)
+        if ov.product_id is not None:
+            draft_data["product_id"] = str(ov.product_id)
+        if ov.assigned_to is not None:
+            draft_data["assigned_to"] = ov.assigned_to
+        if ov.extra:
+            draft_data.update(ov.extra)
+
+    @staticmethod
+    def _resolve_uuid_field(draft_data: dict[str, Any], key: str) -> UUID | None:
+        """Parse ``draft_data[key]`` as a UUID; None if absent, raises if malformed."""
+        raw = draft_data.get(key)
+        if not raw:
+            return None
+        try:
+            return UUID(str(raw))
+        except ValueError as exc:
+            raise ValidationError(
+                message=f"Invalid {key} UUID: {raw}",
+                field=key,
+            ) from exc
+
+    @staticmethod
+    def _coerce_draft_enums(
+        draft_data: dict[str, Any],
+    ) -> tuple[Team, TaskType, TaskNature, Complexity]:
+        """Coerce the draft's required enum fields, raising on missing/invalid."""
+        try:
+            return (
+                Team(draft_data["team"]),
+                TaskType(draft_data["task_type"]),
+                TaskNature(draft_data["nature"]),
+                Complexity(draft_data["estimated_complexity"]),
+            )
+        except (KeyError, ValueError) as exc:
+            raise ValidationError(
+                message=f"Draft has invalid or missing required fields: {exc}",
+                field="draft",
+            ) from exc
+
     # -----------------------------------------------------------------------
     # Private helpers (session-based)
     # -----------------------------------------------------------------------
@@ -426,10 +442,9 @@ class PrompterService:
         max_tokens: int = 2048,
     ) -> dict[str, Any]:
         """Call the LLM for a chat response. Returns {message, draft_ready}."""
-        client = self._get_client()
         user_prompt = _build_chat_prompt(messages, context)
         try:
-            response = await client.messages.create(
+            response = await self._create_message(
                 model=model,
                 max_tokens=max_tokens,
                 system=_PROMPTER_SYSTEM_PROMPT,
@@ -456,10 +471,9 @@ class PrompterService:
         max_tokens: int = 4096,
     ) -> dict[str, Any]:
         """Call the LLM to generate a structured draft. Returns {draft, reasoning}."""
-        client = self._get_client()
         user_prompt = _build_draft_prompt(messages, context)
         try:
-            response = await client.messages.create(
+            response = await self._create_message(
                 model=model,
                 max_tokens=max_tokens,
                 system=_DRAFT_SYSTEM_PROMPT,
