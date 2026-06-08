@@ -82,7 +82,7 @@ def test_derive_scale_single_vs_multi() -> None:
     assert derive_scale([]) == "single"
 
 
-def test_compose_description_single_cell_gold_markdown() -> None:
+def test_compose_description_single_cell_markdown() -> None:
     draft = {
         "objective": "Let humans track token usage.",
         "what_this_builds": ["A usage panel on the Metrics page"],

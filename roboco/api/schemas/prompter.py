@@ -165,7 +165,7 @@ class PrompterDraftTask(BaseModel):
     Mirrors TaskCreate fields so the frontend can POST /api/tasks
     with confirmed_by_human=True after human review.
 
-    The structured GOLD fields (``objective``, ``what_this_builds``,
+    The structured spec fields (``objective``, ``what_this_builds``,
     ``the_work``, ``notes``) are first-class in this contract but persisted
     inside the existing ``draft_data`` JSONB column — no migration. The backend
     composes ``description`` deterministically from them; ``acceptance_criteria``
@@ -181,7 +181,7 @@ class PrompterDraftTask(BaseModel):
     nature: TaskNature = Field(...)
     estimated_complexity: Complexity = Field(...)
 
-    # Structured GOLD fields — optional for backward compatibility.
+    # Structured spec fields — optional for backward compatibility.
     objective: str | None = Field(
         default=None,
         description="The outcome this task delivers, in one or two sentences",

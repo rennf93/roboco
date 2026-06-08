@@ -12,7 +12,7 @@ export interface CellWork {
   items: string[];
 }
 
-/** A structured GOLD task draft, mirroring the backend PrompterDraftTask. */
+/** A structured task draft, mirroring the backend PrompterDraftTask. */
 export interface DraftProposal {
   title: string;
   description: string;
@@ -22,7 +22,7 @@ export interface DraftProposal {
   task_type?: TaskType;
   nature?: TaskNature;
   estimated_complexity?: Complexity;
-  // Structured GOLD fields
+  // Structured spec fields
   objective?: string | null;
   what_this_builds?: string[];
   the_work?: CellWork[];

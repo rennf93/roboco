@@ -95,7 +95,7 @@ _PROMPTER_SYSTEM_PROMPT = (
     "- A real feature is board-led: the Board sets requirements, the Main PM "
     "delegates one subtask per participating cell, and the cells deliver in "
     "parallel.\n\n"
-    "What a GOLD task looks like (the house standard):\n"
+    "What a well-formed task looks like (the house standard):\n"
     "- Objective — the outcome, not the implementation.\n"
     "- What This Builds — the concrete artifacts.\n"
     "- The Work — the per-cell breakdown (one cell for small work; Backend, "
@@ -124,7 +124,7 @@ _PROMPTER_SYSTEM_PROMPT = (
     "```\n"
     "- covered: which of objective / scope / surface / reuse / audience / "
     "acceptance you have nailed down.\n"
-    "- ready: true only when you could write a complete GOLD spec right now.\n"
+    "- ready: true only when you could write a complete task spec right now.\n"
     "- scale: 'single' for one-cell work, 'multi' for a board-led feature "
     "across cells.\n"
     "Write nothing after that block."
@@ -132,7 +132,7 @@ _PROMPTER_SYSTEM_PROMPT = (
 
 _DRAFT_SYSTEM_PROMPT = (
     "You are the RoboCo Prompter's drafting engine. Given a finished "
-    "conversation, output a single JSON object — a structured GOLD task "
+    "conversation, output a single JSON object — a structured task "
     "draft. No markdown, no prose, no code fence.\n\n"
     "Required fields:\n"
     "- title: concise, actionable (max 200 chars).\n"
@@ -374,7 +374,7 @@ class PrompterService:
             draft_data = dict(draft_record.draft_data)
         self._apply_overrides(draft_data, ov)
 
-        # Recompose the GOLD body from the (possibly edited) structured fields —
+        # Recompose the description from the (possibly edited) structured fields —
         # the task always carries a freshly-composed, consistent description.
         draft_data["description"] = compose_description(draft_data)
 
@@ -647,7 +647,7 @@ class PrompterService:
 
         draft_data["source"] = "prompter"
         draft_data["confirmed_by_human"] = False
-        # Compose the GOLD markdown body from the structured fields — the model
+        # Compose the markdown description from the structured fields — the model
         # never hand-formats it, so the description is always consistent.
         draft_data["description"] = compose_description(draft_data)
         return {
@@ -713,7 +713,7 @@ def _build_chat_prompt(
     lines.append("")
     lines.append(
         "Continue the conversation as the Prompter assistant. End with the "
-        "roboco-meta control block. If you can write a complete GOLD spec now, "
+        "roboco-meta control block. If you can write a complete task spec now, "
         "set ready to true."
     )
     return "\n".join(lines)
@@ -868,7 +868,7 @@ def _section(sections: list[str], heading: str, body: str) -> None:
 
 
 def compose_description(draft: dict[str, Any]) -> str:
-    """Build the GOLD markdown description deterministically from structured fields.
+    """Build the markdown description deterministically from structured fields.
 
     Sections present only when their field has content. ``acceptance_criteria``
     renders under Success Criteria. A multi-cell task gets a board-led lead

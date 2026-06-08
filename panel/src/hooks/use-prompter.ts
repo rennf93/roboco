@@ -47,7 +47,7 @@ export interface EditableDraft {
   task_type: TaskType | "";
   nature: TaskNature | "";
   estimated_complexity: Complexity | "";
-  // Structured GOLD fields
+  // Structured spec fields
   objective: string;
   what_this_builds: string[];
   the_work: CellWork[];
