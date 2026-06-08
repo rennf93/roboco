@@ -1,0 +1,97 @@
+"""Unit tests for the live intake-session relay (orchestrator side)."""
+
+from __future__ import annotations
+
+import asyncio
+import json
+
+import httpx
+import pytest
+from roboco.services.prompter_live import (
+    PrompterLiveRegistry,
+    get_live_registry,
+)
+
+
+def test_open_get_close() -> None:
+    reg = PrompterLiveRegistry()
+    session = reg.open("s1", "intake-1")
+    assert session.agent_id == "intake-1"
+    assert reg.get("s1") is session
+    reg.close("s1")
+    assert reg.get("s1") is None
+
+
+def test_push_to_unknown_or_closed_returns_false() -> None:
+    reg = PrompterLiveRegistry()
+    assert reg.push("nope", {"event": "text"}) is False
+    reg.open("s1", "intake-1")
+    assert reg.push("s1", {"event": "text"}) is True
+    reg.close("s1")
+    assert reg.push("s1", {"event": "text"}) is False
+
+
+@pytest.mark.asyncio
+async def test_stream_yields_queued_events_then_ends_on_close() -> None:
+    reg = PrompterLiveRegistry()
+    reg.open("s1", "intake-1")
+
+    async def collect() -> list[dict]:
+        return [ev async for ev in reg.stream("s1")]
+
+    task = asyncio.create_task(collect())
+    await asyncio.sleep(0)  # let the stream capture the session + block on get()
+
+    reg.push("s1", {"event": "text", "data": "hel"})
+    reg.push("s1", {"event": "turn_end", "data": "{}"})
+    reg.close("s1")  # sentinel ends the stream
+
+    result = await asyncio.wait_for(task, timeout=1.0)
+    assert result == [
+        {"event": "text", "data": "hel"},
+        {"event": "turn_end", "data": "{}"},
+    ]
+
+
+@pytest.mark.asyncio
+async def test_stream_unknown_session_is_empty() -> None:
+    reg = PrompterLiveRegistry()
+    assert [ev async for ev in reg.stream("nope")] == []
+
+
+@pytest.mark.asyncio
+async def test_deliver_posts_to_the_container_receiver() -> None:
+    seen: dict[str, object] = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen["host"] = request.url.host
+        seen["path"] = request.url.path
+        seen["body"] = json.loads(request.content)
+        return httpx.Response(200, json={"ok": True})
+
+    client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    reg = PrompterLiveRegistry(http_client=client)
+    reg.open("s1", "intake-1")
+
+    assert await reg.deliver("s1", "hello there") is True
+    assert seen["host"] == "roboco-agent-intake-1"
+    assert seen["path"] == "/turn"
+    assert seen["body"] == {"text": "hello there"}
+    await client.aclose()
+
+
+@pytest.mark.asyncio
+async def test_deliver_to_unknown_or_failing_returns_false() -> None:
+    def fail(_request: httpx.Request) -> httpx.Response:
+        return httpx.Response(500)
+
+    client = httpx.AsyncClient(transport=httpx.MockTransport(fail))
+    reg = PrompterLiveRegistry(http_client=client)
+    assert await reg.deliver("nope", "hi") is False  # unknown session
+    reg.open("s1", "intake-1")
+    assert await reg.deliver("s1", "hi") is False  # 500 from container
+    await client.aclose()
+
+
+def test_registry_singleton() -> None:
+    assert get_live_registry() is get_live_registry()

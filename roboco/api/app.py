@@ -31,6 +31,7 @@ from roboco.api.routes.orchestrator import router as orchestrator_router
 from roboco.api.routes.product import router as product_router
 from roboco.api.routes.project import router as project_router
 from roboco.api.routes.prompter import router as prompter_router
+from roboco.api.routes.prompter_live import router as prompter_live_router
 from roboco.api.routes.provider import router as provider_router
 from roboco.api.routes.sessions import router as sessions_router
 from roboco.api.routes.stream import router as stream_router
@@ -315,6 +316,12 @@ def create_app() -> FastAPI:
     # Prompter — conversational task drafting assistant
     app.include_router(
         prompter_router,
+        prefix=f"{api_prefix}/prompter",
+        tags=["Prompter"],
+    )
+    # Prompter live chat — panel <-> spawned intake agent (SSE + relay)
+    app.include_router(
+        prompter_live_router,
         prefix=f"{api_prefix}/prompter",
         tags=["Prompter"],
     )
