@@ -113,7 +113,9 @@ _AUDITOR_FLOW = spec.intents_for_role(spec.Role.AUDITOR)
 # no ack (silent observer — wouldn't ack notifications). channels for read map.
 _AUDITOR_DO = ("note", "evidence", "notify_list", "notify_get", *_CHANNEL_DISCOVERY)
 
-_PROMPTER_FLOW = spec.intents_for_role(spec.Role.PROMPTER)  # none — not a lifecycle role
+_PROMPTER_FLOW = spec.intents_for_role(
+    spec.Role.PROMPTER
+)  # none — not a lifecycle role
 # Intake interviewer: human-only. It journals (note) and cites sources
 # (evidence) but has NO outward agent comms — no say (channels), no dm/notify
 # (agents), no channel discovery. Its conversation with the human runs over the

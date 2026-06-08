@@ -195,7 +195,10 @@ AGENTS: dict[str, AgentRow] = {
     # (deliberately absent from BOARD_ROLES). Spawned on demand to chat with the
     # human and draft a task; talks to no other agent.
     "intake-1": AgentRow(
-        "intake-1", Role.PROMPTER, Team.BOARD, _u("00000000-0000-0000-0004-000000000005")
+        "intake-1",
+        Role.PROMPTER,
+        Team.BOARD,
+        _u("00000000-0000-0000-0004-000000000005"),
     ),
 }
 
