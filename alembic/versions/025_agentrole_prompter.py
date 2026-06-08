@@ -11,7 +11,7 @@ Create Date: 2026-06-08
 
 from __future__ import annotations
 
-from alembic import context, op
+from alembic import op
 
 revision = "025_agentrole_prompter"
 down_revision = "024_add_prompter_tables"
@@ -20,10 +20,9 @@ depends_on = None
 
 
 def upgrade() -> None:
-    if context.is_offline_mode():
-        # Offline mode: skip — only runs when connected to a real DB.
-        return
-    # ADD VALUE IF NOT EXISTS is idempotent in postgres >= 9.6.
+    # Unguarded (renders in offline --sql so the enum-migration-parity test
+    # sees it) and idempotent. PG 16 permits ADD VALUE inside a transaction —
+    # same pattern as migration 020's backfill.
     op.execute("ALTER TYPE agentrole ADD VALUE IF NOT EXISTS 'prompter'")
 
 
