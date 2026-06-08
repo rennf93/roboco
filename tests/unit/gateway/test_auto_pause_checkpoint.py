@@ -144,7 +144,10 @@ async def test_i_am_idle_with_commits_includes_last_three_in_remaining_work() ->
     agent_id = uuid4()
     task_id = uuid4()
 
-    commits = [MagicMock(sha=f"sha{i}") for i in range(5)]
+    # Production shape: task.commits is a JSON list[dict] keyed by `hash`
+    # (CommitRef.hash) — NOT `sha`. A prior fix read `sha` and silently lost
+    # every ref; this test uses the real shape so the regression can't hide.
+    commits = [{"hash": f"hash{i}", "message": f"c{i}"} for i in range(5)]
     task_obj = MagicMock()
     task_obj.id = task_id
     task_obj.status = "in_progress"
@@ -163,12 +166,10 @@ async def test_i_am_idle_with_commits_includes_last_three_in_remaining_work() ->
 
     call_kwargs = task_svc.add_checkpoint.await_args
     remaining = call_kwargs.kwargs.get("remaining_work", [])
-    # Last 3 commit SHAs should appear somewhere in remaining_work entries
-    last_3_shas = {c.sha for c in commits[-3:]}
-    mentioned_shas = {entry for entry in remaining if isinstance(entry, str)}
-    assert last_3_shas & mentioned_shas or any(
-        sha in str(remaining) for sha in last_3_shas
-    )
+    # Last 3 commit hashes (the real persisted key) must appear in remaining_work.
+    last_3 = {c["hash"] for c in commits[-3:]}
+    mentioned = {entry for entry in remaining if isinstance(entry, str)}
+    assert last_3 & mentioned or any(h in str(remaining) for h in last_3)
 
 
 @pytest.mark.asyncio

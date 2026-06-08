@@ -5643,6 +5643,12 @@ class TaskService(BaseService):
         except ValueError:
             return await self.unblock(task_id, agent_role="cell_pm")
 
+        pre_status = (
+            task.status.value
+            if isinstance(task.status, TaskStatus)
+            else str(task.status)
+        )
+        restored_owner = cast("Any", task.pre_block_assignee or task.claimed_by)
         task.status = restored_status
         if task.pre_block_assignee:
             task.assigned_to = cast("Any", task.pre_block_assignee)
@@ -5653,6 +5659,16 @@ class TaskService(BaseService):
         task.blocker_resolver_type = None
         task.blocker_raised_by = None
         await self.session.flush()
+        # This restore path sets the status directly (bypassing the strict
+        # transition validator), so emit the audit explicitly — no status
+        # change may skip the audit log.
+        self._emit_status_transition_audit(
+            task,
+            from_status=pre_status,
+            to_status=restored_status.value,
+            agent_role=None,
+            audit_agent_id=restored_owner,
+        )
         return task
 
     async def cell_pm_complete(

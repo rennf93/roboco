@@ -1503,14 +1503,14 @@ class Choreographer:
 
     @staticmethod
     def _extract_first_commit_sha(t: Any) -> str | None:
-        """Read the first commit sha off the task, dict or model alike."""
+        """Read the first commit hash off the task, dict or model alike."""
         commits: list[Any] = list(getattr(t, "commits", []) or [])
         if not commits:
             return None
         first = commits[0]
         if isinstance(first, dict):
-            return first.get("sha")
-        return getattr(first, "sha", None)
+            return first.get("hash") or first.get("sha")
+        return getattr(first, "hash", None) or getattr(first, "sha", None)
 
     @staticmethod
     def _already_addressed_criteria(existing_status: list[dict[str, Any]]) -> set[str]:
@@ -2710,9 +2710,12 @@ class Choreographer:
         try:
             commits = task.commits or []
             # commits may be hydrated as CommitRef objects or as plain dicts
-            # (JSON column round-trip); tolerate both rather than assuming `.sha`.
+            # (JSON column round-trip); the identifier field is `hash` (a stray
+            # `sha` only ever appears on a gateway return value, never persisted).
             commit_refs = [
-                c.get("sha") if isinstance(c, dict) else getattr(c, "sha", None)
+                (c.get("hash") or c.get("sha"))
+                if isinstance(c, dict)
+                else (getattr(c, "hash", None) or getattr(c, "sha", None))
                 for c in commits[-3:]
             ]
             commit_refs = [ref for ref in commit_refs if ref]

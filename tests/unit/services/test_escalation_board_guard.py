@@ -393,3 +393,32 @@ async def test_apply_escalation_emits_blocked_audit_event() -> None:
     assert kwargs["event_type"] == "task.blocked"
     assert kwargs["details"]["from_status"] == "in_progress"
     assert kwargs["details"]["to_status"] == "blocked"
+
+
+@pytest.mark.asyncio
+async def test_unblock_with_restore_emits_audit_event() -> None:
+    """The PM restore path sets status directly (bypassing the validated
+    transition) and used to skip the audit log; it must record the transition."""
+    svc = _service()
+    task = MagicMock(
+        id=uuid4(),
+        status=TaskStatus.BLOCKED,
+        pre_block_state="in_progress",
+        pre_block_assignee=None,
+        claimed_by=uuid4(),
+    )
+    _bind(svc, "get", AsyncMock(return_value=task))
+    audit_mock = MagicMock(log_task_event=AsyncMock())
+
+    with patch("roboco.services.audit.get_audit_service", return_value=audit_mock):
+        await svc.unblock_with_restore(uuid4(), uuid4(), restore=True)
+        pending = list(svc._background_tasks)
+        if pending:
+            await asyncio.gather(*pending, return_exceptions=True)
+
+    assert task.status == TaskStatus.IN_PROGRESS
+    audit_mock.log_task_event.assert_awaited_once()
+    kwargs = audit_mock.log_task_event.await_args.kwargs
+    assert kwargs["event_type"] == "task.in_progress"
+    assert kwargs["details"]["from_status"] == "blocked"
+    assert kwargs["details"]["to_status"] == "in_progress"
