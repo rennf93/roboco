@@ -21,11 +21,9 @@ dependencies = [
     "sqlalchemy[asyncio]",
     "asyncpg",  # PostgreSQL async driver
     "alembic",  # Migrations
-
     # Cache/Queue
     "redis",
     "hiredis",  # Redis performance
-
     # RAG (piragi with PostgreSQL/pgvector backend)
     "piragi[postgres]",
     # AI/LLM
@@ -33,7 +31,6 @@ dependencies = [
     "openai",  # For embeddings
     "tiktoken",  # Token counting
     "python-toon",  # Token-efficient LLM serialization
-
     # MCP (Model Context Protocol)
     "mcp",
     # Utilities
@@ -43,19 +40,17 @@ dependencies = [
     "passlib[bcrypt]",  # Password hashing
     "tenacity",  # Retry logic
     "structlog",  # Structured logging
-
     # Streaming
     "sse-starlette",  # Server-Sent Events for A2A streaming
-
     # Direct imports (promoted from transitive)
     "cryptography",  # utils/crypto.py — Fernet-encrypted project git tokens
-
     # Build-time pin (not imported). Verified empirically: removing this
     # entry causes uv to ignore the [tool.uv.sources.torch] CPU-only
     # redirect and pull ~2.5GB of unused CUDA wheels. The entry has to
     # appear in direct deps for the source override to bind. deptry's
     # DEP002 ignore for `torch` below documents the same reality.
     "torch",
+    "claude-agent-sdk>=0.2.94",
 ]
 
 [project.optional-dependencies]
@@ -218,6 +213,7 @@ module = [
     "toon.*",
     "sse_starlette.*",
     "asyncpg.*",
+    "claude_agent_sdk.*",  # third-party SDK, ships no type stubs
 ]
 ignore_missing_imports = true
 

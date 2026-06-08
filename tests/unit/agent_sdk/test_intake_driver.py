@@ -1,0 +1,196 @@
+"""Unit tests for the intake driver loop + event normalization.
+
+SDK-free: the `claude-agent-sdk` message types are stood in by tiny fakes named
+the same way `normalize` keys off (`StreamEvent`, `AssistantMessage`, ...), and
+the driver loop runs against a fake session/source/sink. The real
+`SdkIntakeSession` adapter needs the live `claude` binary and is excluded from
+coverage.
+"""
+
+from __future__ import annotations
+
+from contextlib import asynccontextmanager
+from typing import TYPE_CHECKING
+
+import pytest
+from roboco.agent_sdk.intake_driver import (
+    IntakeDriver,
+    StreamChunk,
+    normalize,
+)
+
+if TYPE_CHECKING:
+    from collections.abc import AsyncIterator
+
+# ---------------------------------------------------------------------------
+# Fakes mirroring the claude-agent-sdk message/block shapes
+# ---------------------------------------------------------------------------
+
+
+class StreamEvent:
+    def __init__(self, event: dict) -> None:
+        self.event = event
+
+
+class AssistantMessage:
+    def __init__(self, content: list) -> None:
+        self.content = content
+
+
+class ResultMessage:
+    def __init__(self, session_id: str, total_cost_usd: float | None = None) -> None:
+        self.session_id = session_id
+        self.total_cost_usd = total_cost_usd
+
+
+class SystemMessage:
+    def __init__(self, subtype: str) -> None:
+        self.subtype = subtype
+
+
+class TextBlock:
+    def __init__(self, text: str) -> None:
+        self.text = text
+
+
+class ThinkingBlock:
+    def __init__(self, thinking: str) -> None:
+        self.thinking = thinking
+
+
+class ToolUseBlock:
+    def __init__(self, name: str, tool_input: dict) -> None:
+        self.name = name
+        self.input = tool_input
+
+
+# ---------------------------------------------------------------------------
+# normalize()
+# ---------------------------------------------------------------------------
+
+
+def test_normalize_stream_event_text_delta() -> None:
+    msg = StreamEvent({"delta": {"type": "text_delta", "text": "hel"}})
+    chunks = normalize(msg)
+    assert chunks == [StreamChunk(kind="text", text="hel")]
+
+
+def test_normalize_stream_event_non_text_delta_is_dropped() -> None:
+    assert normalize(StreamEvent({"delta": {"type": "input_json_delta"}})) == []
+    assert normalize(StreamEvent({})) == []
+
+
+def test_normalize_assistant_message_blocks() -> None:
+    msg = AssistantMessage(
+        [
+            TextBlock("hello"),
+            ThinkingBlock("hmm"),
+            ToolUseBlock("Read", {"file": "metrics.tsx"}),
+        ]
+    )
+    chunks = normalize(msg)
+    assert [c.kind for c in chunks] == ["text", "thinking", "tool_use"]
+    assert chunks[0].text == "hello"
+    assert chunks[1].text == "hmm"
+    assert chunks[2].tool == "Read"
+    assert chunks[2].data["input"] == {"file": "metrics.tsx"}
+
+
+def test_normalize_result_message_carries_session_id() -> None:
+    cost = 0.01
+    chunks = normalize(ResultMessage(session_id="sess-123", total_cost_usd=cost))
+    assert len(chunks) == 1
+    assert chunks[0].kind == "turn_end"
+    assert chunks[0].data["session_id"] == "sess-123"
+    assert chunks[0].data["cost_usd"] == cost
+
+
+def test_normalize_system_message() -> None:
+    chunks = normalize(SystemMessage(subtype="init"))
+    assert chunks == [StreamChunk(kind="system", data={"subtype": "init"})]
+
+
+def test_normalize_unknown_message_is_empty() -> None:
+    assert normalize(object()) == []
+
+
+# ---------------------------------------------------------------------------
+# IntakeDriver loop
+# ---------------------------------------------------------------------------
+
+
+class _FakeSession:
+    """Scripts each input text to a list of chunks to stream back."""
+
+    def __init__(self, scripted: dict[str, list[StreamChunk]]) -> None:
+        self.scripted = scripted
+        self.seen: list[str] = []
+
+    async def send(self, text: str) -> AsyncIterator[StreamChunk]:
+        self.seen.append(text)
+        for chunk in self.scripted.get(text, []):
+            yield chunk
+
+
+class _RaisingSession:
+    async def send(self, _text: str) -> AsyncIterator[StreamChunk]:
+        if False:  # make this an async generator
+            yield StreamChunk(kind="text")
+        raise RuntimeError("boom")
+
+
+def _source(messages: list[str | None]):
+    queue = list(messages)
+
+    async def _next() -> str | None:
+        return queue.pop(0) if queue else None
+
+    return _next
+
+
+@pytest.mark.asyncio
+async def test_driver_streams_turns_until_shutdown() -> None:
+    session = _FakeSession(
+        {
+            "hi": [StreamChunk(kind="text", text="hello there")],
+            "more": [
+                StreamChunk(kind="tool_use", tool="Read"),
+                StreamChunk(kind="text", text="done"),
+            ],
+        }
+    )
+
+    @asynccontextmanager
+    async def factory():
+        yield session
+
+    collected: list[StreamChunk] = []
+
+    async def emit(chunk: StreamChunk) -> None:
+        collected.append(chunk)
+
+    driver = IntakeDriver(factory, _source(["hi", "more", None]), emit)
+    await driver.run()
+
+    assert session.seen == ["hi", "more"]  # stopped on None, did not call send(None)
+    assert [c.kind for c in collected] == ["text", "tool_use", "text"]
+    assert collected[0].text == "hello there"
+
+
+@pytest.mark.asyncio
+async def test_driver_turn_failure_emits_error_and_continues() -> None:
+    @asynccontextmanager
+    async def factory():
+        yield _RaisingSession()
+
+    collected: list[StreamChunk] = []
+
+    async def emit(chunk: StreamChunk) -> None:
+        collected.append(chunk)
+
+    driver = IntakeDriver(factory, _source(["boom-please", None]), emit)
+    await driver.run()  # must not raise
+
+    assert len(collected) == 1
+    assert collected[0].kind == "error"
+    assert "boom" in collected[0].text
