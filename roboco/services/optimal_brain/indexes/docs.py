@@ -73,17 +73,20 @@ class DocsIndexPlugin(BaseIndexPlugin):
         if "*" in source:
             return list(Path().glob(source))
         if source_path.is_dir():
-            md_files = [
-                f
-                for f in source_path.rglob("*.md")
-                if not any(skip in f.parts for skip in SKIP_DIRECTORIES)
-            ]
-            txt_files = [
-                f
-                for f in source_path.rglob("*.txt")
-                if not any(skip in f.parts for skip in SKIP_DIRECTORIES)
-            ]
-            return md_files + txt_files
+            return self._expand_directory(source_path)
+        return self._expand_file(source_path, source)
+
+    def _expand_directory(self, source_path: Path) -> list[Path]:
+        """Recursively collect indexable doc files under a directory."""
+        return [
+            f
+            for pattern in ("*.md", "*.txt")
+            for f in source_path.rglob(pattern)
+            if not any(skip in f.parts for skip in SKIP_DIRECTORIES)
+        ]
+
+    def _expand_file(self, source_path: Path, source: str) -> list[Path]:
+        """Resolve a single source path to an indexable doc file, or nothing."""
         if source_path.exists():
             # Only markdown/text files are docs; a recorded path to a source
             # file (e.g. a .tsx) is not indexable and is skipped quietly.

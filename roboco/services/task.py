@@ -70,9 +70,9 @@ _ROLE_CLAIM_STATUSES: dict[str, set[TaskStatus]] = {
 # Board / advisory roles review and advise; they never own or execute a
 # descendant code task. Handing one to them (e.g. via the main_pm→product_owner
 # escalation rung) strands the work: the board has no verb to claim, build, or
-# complete it, and the dev's finished work deadlocks (#14). A descendant code
-# task that would otherwise land on one of these roles is instead released to
-# the pool for a role-matched cell agent to reclaim.
+# complete it, and the dev's finished work deadlocks. A descendant code task
+# that would otherwise land on one of these roles is instead released to the
+# pool for a role-matched cell agent to reclaim.
 _BOARD_ADVISORY_ROLES: frozenset[AgentRole] = frozenset(
     {AgentRole.PRODUCT_OWNER, AgentRole.HEAD_MARKETING, AgentRole.AUDITOR}
 )
@@ -82,7 +82,7 @@ _BOARD_ADVISORY_ROLES: frozenset[AgentRole] = frozenset(
 # board/advisory role has no verb to build or complete. CODE → developer,
 # DOCUMENTATION → documenter, DESIGN → UX/design cell. The remaining types
 # (PLANNING / RESEARCH / ADMINISTRATIVE) route to a PM, not a cell agent, and
-# are not diverted here — the #14 guard only fires for board/advisory targets.
+# are not diverted here — the guard only fires for board/advisory targets.
 _DESCENDANT_EXECUTABLE_TASK_TYPES: frozenset[str] = frozenset(
     {TaskType.CODE.value, TaskType.DOCUMENTATION.value, TaskType.DESIGN.value}
 )
@@ -95,7 +95,7 @@ _CELL_TEAMS: frozenset[str] = frozenset({"backend", "frontend", "ux_ui"})
 
 
 def _is_descendant_executable_task(task: TaskTable) -> bool:
-    """True for a child task that does cell-executed work (#14 guard).
+    """True for a child task that does cell-executed work.
 
     A board/advisory role must never become the assignee of such a task: it has
     no verb to build, document, or complete it. ``task_type`` is a ``TaskType``
@@ -2292,51 +2292,10 @@ class TaskService(BaseService):
         task = await self.get(task_id)
         if task is None or task.assigned_to != agent_id:
             return None
-        # #176: an agent assigned a `pending` task it never claimed (any
-        # persistent claim-time rejection — e.g. a gate the agent cannot
-        # satisfy) is otherwise trapped: unclaim/i_am_idle/i_am_blocked all
-        # reject from pending-assigned, so it loops until budget-reap and
-        # the task is left orphaned (pending, assigned, no progress).
-        # Releasing the assignment is a no-status-change escape (the row is
-        # already pending; no transition, so no lifecycle validation and no
-        # WorkSession to abandon — it was never claimed). The task returns
-        # to the pool for the dispatcher to reassign.
         if task.status == TaskStatus.PENDING:
-            task.assigned_to = cast("Any", None)
-            task.active_claimant_id = cast("Any", None)
-            await self.session.flush()
-            return task
-        # A task the agent owns but cannot advance — it is `blocked` (a blocker
-        # it cannot self-resolve, or a dependency block) — is otherwise a trap:
-        # from `blocked` the agent has no legal forward verb and the dispatcher
-        # keeps respawning it. Releasing the claim returns the task to the pool
-        # for the cell PM to re-delegate. Audited; the active WorkSession is
-        # abandoned so a re-claim does not trip the uniqueness constraint.
+            return await self._unclaim_pending_assignment(task)
         if task.status == TaskStatus.BLOCKED:
-            pre_status = (
-                task.status.value
-                if isinstance(task.status, TaskStatus)
-                else str(task.status)
-            )
-            prior_owner = cast("Any", task.claimed_by or task.assigned_to)
-            if task.work_session_id:
-                await self._abandon_work_session_best_effort(
-                    task.work_session_id, reason="agent-unclaim-from-blocked"
-                )
-                task.work_session_id = cast("Any", None)
-            task.status = TaskStatus.PENDING
-            task.assigned_to = cast("Any", None)
-            task.claimed_by = cast("Any", None)
-            task.active_claimant_id = cast("Any", None)
-            await self.session.flush()
-            self._emit_status_transition_audit(
-                task,
-                from_status=pre_status,
-                to_status=TaskStatus.PENDING.value,
-                agent_role=None,
-                audit_agent_id=prior_owner,
-            )
-            return task
+            return await self._unclaim_from_blocked(task)
         if task.status not in (TaskStatus.CLAIMED, TaskStatus.IN_PROGRESS):
             return None
 
@@ -2362,7 +2321,7 @@ class TaskService(BaseService):
         # _validate_and_set_status only updates `status`; clearing the
         # claim is the unclaim's specific side effect. Also abandon the
         # active WorkSession so a re-claim doesn't trip the uniqueness
-        # constraint (audit D-41).
+        # constraint.
         if task.work_session_id:
             await self._abandon_work_session_best_effort(
                 task.work_session_id, reason="agent-unclaim"
@@ -2371,6 +2330,57 @@ class TaskService(BaseService):
         task.assigned_to = cast("Any", None)
         task.active_claimant_id = cast("Any", None)
         await self.session.flush()
+        return task
+
+    async def _unclaim_pending_assignment(self, task: TaskTable) -> TaskTable:
+        """Release a never-claimed ``pending`` assignment (no status change).
+
+        An agent assigned a ``pending`` task it never claimed (a persistent
+        claim-time rejection it cannot satisfy) is otherwise trapped: unclaim /
+        i_am_idle / i_am_blocked all reject from pending-assigned, so it loops
+        until budget-reap and the task is orphaned. The row is already pending,
+        so clearing the assignment is a no-status-change escape — no transition,
+        no lifecycle validation, no WorkSession to abandon (it was never
+        claimed). The task returns to the pool for the dispatcher to reassign.
+        """
+        task.assigned_to = cast("Any", None)
+        task.active_claimant_id = cast("Any", None)
+        await self.session.flush()
+        return task
+
+    async def _unclaim_from_blocked(self, task: TaskTable) -> TaskTable:
+        """Release a ``blocked`` claim back to the pool (audited).
+
+        A task the agent owns but cannot advance (a blocker it cannot
+        self-resolve, or a dependency block) is otherwise a trap: from
+        ``blocked`` the agent has no legal forward verb and the dispatcher keeps
+        respawning it. Releasing the claim returns the task to the pool for the
+        cell PM to re-delegate. The active WorkSession is abandoned so a re-claim
+        does not trip the uniqueness constraint.
+        """
+        pre_status = (
+            task.status.value
+            if isinstance(task.status, TaskStatus)
+            else str(task.status)
+        )
+        prior_owner = cast("Any", task.claimed_by or task.assigned_to)
+        if task.work_session_id:
+            await self._abandon_work_session_best_effort(
+                task.work_session_id, reason="agent-unclaim-from-blocked"
+            )
+            task.work_session_id = cast("Any", None)
+        task.status = TaskStatus.PENDING
+        task.assigned_to = cast("Any", None)
+        task.claimed_by = cast("Any", None)
+        task.active_claimant_id = cast("Any", None)
+        await self.session.flush()
+        self._emit_status_transition_audit(
+            task,
+            from_status=pre_status,
+            to_status=TaskStatus.PENDING.value,
+            agent_role=None,
+            audit_agent_id=prior_owner,
+        )
         return task
 
     async def resume_for_agent(self, task_id: UUID, agent_id: UUID) -> TaskTable | None:
@@ -3508,7 +3518,7 @@ class TaskService(BaseService):
         and the orchestrator re-spawns them. Without this, escalation
         loses the dev's identity permanently.
 
-        #14 invariant: a descendant executable task (code / documentation /
+        Invariant: a descendant executable task (code / documentation /
         design) is NEVER assigned to a board/advisory role (they cannot own
         cell-executed work). Such an escalation is diverted to a pool release so
         a role-matched cell agent reclaims it. Enforced here — the single write
@@ -4072,7 +4082,7 @@ class TaskService(BaseService):
             ]
             # If no more dependencies, unblock (system action - no role validation)
             if not task.dependency_ids and task.status == TaskStatus.BLOCKED:
-                self._validate_and_set_status(task, TaskStatus.IN_PROGRESS, None)
+                await self._revive_unblocked_dependent(task)
                 self.log.info(
                     "Task auto-unblocked",
                     task_id=str(task.id),
@@ -4080,6 +4090,30 @@ class TaskService(BaseService):
                 )
 
         await self.session.flush()
+
+    async def _revive_unblocked_dependent(self, task: TaskTable) -> None:
+        """Resume — or re-home — a task whose last dependency just cleared.
+
+        Resume in place when a workable owner still holds it. Re-home to the
+        pool when the owner is board/advisory or absent on a cell task: such an
+        owner has no verb to work it, so resuming would re-deadlock the task the
+        instant its dependency lands.
+        """
+        owner = cast("Any", task.claimed_by or task.assigned_to)
+        needs_rehome = owner is None or await self._is_board_advisory_agent(owner)
+        if needs_rehome and (
+            _is_descendant_executable_task(task) or _is_cell_team_task(task)
+        ):
+            await self._divert_owned_task_to_pool(
+                task,
+                note=(
+                    "\n\n[REVIVAL REDIRECTED] dependency cleared but the owner"
+                    " could not work this cell task (board/advisory or"
+                    " unassigned). Released to the pool for a role-matched claim."
+                ),
+            )
+        else:
+            self._validate_and_set_status(task, TaskStatus.IN_PROGRESS, None)
 
     # =========================================================================
     # PROGRESS AND CHECKPOINTS
@@ -5453,6 +5487,31 @@ class TaskService(BaseService):
         task = await self.get(task_id)
         if task is None:
             return None
+        # Invariant backstop: never plant a board/advisory role as the owner of a
+        # cell task. `apply_escalation` guards the escalate path; this guards the
+        # direct reassign setter (gateway handoffs + HTTP route). A refused
+        # hand-off is diverted to the pool for a role-matched claim. Normal
+        # handoff targets (qa/documenter/cell_pm) are not board roles, so the
+        # guard never fires for them.
+        if (
+            new_assignee is not None
+            and (_is_descendant_executable_task(task) or _is_cell_team_task(task))
+            and await self._is_board_advisory_agent(new_assignee)
+        ):
+            await self._divert_owned_task_to_pool(
+                task,
+                note=(
+                    "\n\n[REASSIGN REDIRECTED] attempted to assign this cell task"
+                    " to a board/advisory role that cannot own cell-executed work."
+                    " Released to the pool for a role-matched claim instead."
+                ),
+            )
+            self.log.info(
+                "Cell task reassign to a board/advisory role diverted to pool",
+                task_id=str(task_id),
+                refused_assignee=str(new_assignee),
+            )
+            return task
         task.assigned_to = cast("Any", new_assignee) if new_assignee else None
         task.claimed_by = cast("Any", new_assignee) if new_assignee else None
         await self.session.flush()
@@ -5480,6 +5539,25 @@ class TaskService(BaseService):
             return None
         if task.status not in (TaskStatus.CLAIMED, TaskStatus.IN_PROGRESS):
             return None
+        # Invariant backstop (mirrors `reassign`): an active claim must not be
+        # handed to a board/advisory role on a cell task — divert to the pool.
+        if (
+            _is_descendant_executable_task(task) or _is_cell_team_task(task)
+        ) and await self._is_board_advisory_agent(new_assignee):
+            await self._divert_owned_task_to_pool(
+                task,
+                note=(
+                    "\n\n[REASSIGN REDIRECTED] attempted to hand this active cell"
+                    " task to a board/advisory role that cannot own cell-executed"
+                    " work. Released to the pool for a role-matched claim instead."
+                ),
+            )
+            self.log.info(
+                "Active cell task reassign to a board/advisory role diverted",
+                task_id=str(task_id),
+                refused_assignee=str(new_assignee),
+            )
+            return task
         now = datetime.now(UTC)
         task.assigned_to = cast("Any", new_assignee)
         task.claimed_by = cast("Any", new_assignee)
@@ -5736,7 +5814,7 @@ class TaskService(BaseService):
         if target is None:
             return None
 
-        # The board/advisory guard (#14) lives in apply_escalation so the HTTP
+        # The board/advisory guard lives in apply_escalation so the HTTP
         # escalate route is covered too; nothing extra to do here.
         await self.apply_escalation(
             task=task,
@@ -5755,21 +5833,16 @@ class TaskService(BaseService):
         role = result.scalar_one_or_none()
         return role in _BOARD_ADVISORY_ROLES
 
-    async def _release_code_task_to_pool(
-        self,
-        *,
-        task: TaskTable,
-        escalator_slug: str,
-        blocked_target_slug: str,
-        reason: str,
-    ) -> None:
-        """Release a descendant executable task to PENDING for a role-matched claim.
+    async def _divert_owned_task_to_pool(self, task: TaskTable, *, note: str) -> None:
+        """Clear ownership and return ``task`` to PENDING for a role-matched claim.
 
-        Used instead of escalating a code / documentation / design task onto a
-        board/advisory role (#14). Clears the assignee so the orchestrator's
-        role-matched dispatch picks it up cleanly, sets PENDING (a valid
-        re-dispatch source), and appends an audit note explaining why the board
-        hand-off was refused.
+        Shared backstop for the cell-ownership invariant: a board/advisory
+        role must never own — or be revived as the owner of — a cell task. The
+        escalation, reassign, and dependency-revival write-sites all funnel a
+        refused hand-off here. Sets PENDING directly (bypassing the strict
+        transition validator), so emits the ``task.pending`` audit explicitly —
+        no status change may skip the audit log. ``note`` is appended to
+        ``dev_notes`` explaining why the hand-off was refused.
         """
         pre_status = (
             task.status.value
@@ -5781,25 +5854,41 @@ class TaskService(BaseService):
         task.claimed_by = cast("Any", None)
         task.active_claimant_id = cast("Any", None)
         task.status = TaskStatus.PENDING
-        existing_notes = task.dev_notes or ""
-        note = (
-            f"\n\n[ESCALATION REDIRECTED] {escalator_slug} escalated this"
-            f" executable task toward {blocked_target_slug} (a board/advisory role"
-            f" that cannot own cell-executed work). Released to the pool for a"
-            f" role-matched claim instead."
-            f"\nReason: {reason}"
-        )
-        task.dev_notes = existing_notes + note
+        task.dev_notes = (task.dev_notes or "") + note
         await self.session.flush()
-        # This path sets PENDING directly (bypassing the strict transition
-        # validator), so emit the task.pending audit explicitly — no status
-        # change may skip the audit log.
         self._emit_status_transition_audit(
             task,
             from_status=pre_status,
             to_status=TaskStatus.PENDING.value,
             agent_role=None,
             audit_agent_id=prior_owner,
+        )
+
+    async def _release_code_task_to_pool(
+        self,
+        *,
+        task: TaskTable,
+        escalator_slug: str,
+        blocked_target_slug: str,
+        reason: str,
+    ) -> None:
+        """Release a descendant executable task to PENDING for a role-matched claim.
+
+        Used instead of escalating a code / documentation / design task onto a
+        board/advisory role. Clears the assignee so the orchestrator's
+        role-matched dispatch picks it up cleanly, sets PENDING (a valid
+        re-dispatch source), and appends an audit note explaining why the board
+        hand-off was refused.
+        """
+        await self._divert_owned_task_to_pool(
+            task,
+            note=(
+                f"\n\n[ESCALATION REDIRECTED] {escalator_slug} escalated this"
+                f" executable task toward {blocked_target_slug} (a board/advisory"
+                f" role that cannot own cell-executed work). Released to the pool"
+                f" for a role-matched claim instead."
+                f"\nReason: {reason}"
+            ),
         )
         self.log.info(
             "Descendant executable task released to pool instead of board escalation",

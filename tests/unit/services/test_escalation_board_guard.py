@@ -1,4 +1,4 @@
-"""#14: a descendant executable task is never assigned to a board/advisory role.
+"""A descendant executable task is never assigned to a board/advisory role.
 
 The main_pm -> product_owner escalation rung used to hand an in_progress child
 code task to the Product Owner and mark it BLOCKED. The board has no verb to
@@ -66,13 +66,13 @@ def test_non_cell_team_task_is_not_flagged() -> None:
 
 
 def test_descendant_documentation_task_is_flagged() -> None:
-    # #14 broaden: documentation is cell-executed (documenter), not board work.
+    # Documentation is cell-executed (documenter), not board work.
     task = MagicMock(parent_task_id=uuid4(), task_type=TaskType.DOCUMENTATION)
     assert _is_descendant_executable_task(task) is True
 
 
 def test_descendant_design_task_is_flagged() -> None:
-    # #14 broaden: design is cell-executed (UX/design cell), not board work.
+    # Design is cell-executed (UX/design cell), not board work.
     task = MagicMock(parent_task_id=uuid4(), task_type=TaskType.DESIGN)
     assert _is_descendant_executable_task(task) is True
 
@@ -153,8 +153,8 @@ async def test_apply_escalation_diverts_descendant_code_to_board() -> None:
 
 @pytest.mark.asyncio
 async def test_apply_escalation_diverts_descendant_documentation_to_board() -> None:
-    # #14 broaden: a descendant DOCUMENTATION task escalated to a board role is
-    # diverted too — the board has no verb to write/complete docs either.
+    # A descendant DOCUMENTATION task escalated to a board role is diverted too
+    # — the board has no verb to write/complete docs either.
     svc = _service()
     target_id = uuid4()
     task = MagicMock(
@@ -184,7 +184,7 @@ async def test_apply_escalation_diverts_descendant_documentation_to_board() -> N
 
 @pytest.mark.asyncio
 async def test_apply_escalation_diverts_descendant_design_to_board() -> None:
-    # #14 broaden: a descendant DESIGN task escalated to a board role is diverted.
+    # A descendant DESIGN task escalated to a board role is diverted.
     svc = _service()
     target_id = uuid4()
     task = MagicMock(
@@ -422,3 +422,253 @@ async def test_unblock_with_restore_emits_audit_event() -> None:
     assert kwargs["event_type"] == "task.in_progress"
     assert kwargs["details"]["from_status"] == "blocked"
     assert kwargs["details"]["to_status"] == "in_progress"
+
+
+# ---------------------------------------------------------------------------
+# reassign / reassign_active_claim board-role divert — same invariant at the
+# direct reassign setters, not just the escalate path
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_reassign_diverts_cell_task_to_board_role() -> None:
+    svc = _service()
+    task = MagicMock(
+        id=uuid4(),
+        parent_task_id=uuid4(),
+        task_type=TaskType.CODE,
+        assigned_to=uuid4(),
+        claimed_by=uuid4(),
+        active_claimant_id=uuid4(),
+        dev_notes="prior",
+        status=TaskStatus.IN_PROGRESS,
+    )
+    _bind(svc, "get", AsyncMock(return_value=task))
+    _bind(svc, "_is_board_advisory_agent", AsyncMock(return_value=True))
+
+    out = await svc.reassign(task.id, uuid4())
+
+    assert out is task
+    assert task.status == TaskStatus.PENDING
+    assert task.assigned_to is None
+    assert task.claimed_by is None
+    assert task.active_claimant_id is None
+    assert "REASSIGN REDIRECTED" in task.dev_notes
+
+
+@pytest.mark.asyncio
+async def test_reassign_assigns_non_board_target_normally() -> None:
+    svc = _service()
+    new_assignee = uuid4()
+    task = MagicMock(
+        id=uuid4(),
+        parent_task_id=uuid4(),
+        task_type=TaskType.CODE,
+        assigned_to=uuid4(),
+        claimed_by=uuid4(),
+        status=TaskStatus.IN_PROGRESS,
+    )
+    _bind(svc, "get", AsyncMock(return_value=task))
+    _bind(svc, "_is_board_advisory_agent", AsyncMock(return_value=False))
+
+    out = await svc.reassign(task.id, new_assignee)
+
+    assert out is task
+    assert task.assigned_to == new_assignee
+    assert task.claimed_by == new_assignee
+    assert task.status == TaskStatus.IN_PROGRESS  # status untouched by a handoff
+
+
+@pytest.mark.asyncio
+async def test_reassign_none_clears_without_consulting_board_check() -> None:
+    svc = _service()
+    task = MagicMock(
+        id=uuid4(),
+        parent_task_id=uuid4(),
+        task_type=TaskType.CODE,
+        assigned_to=uuid4(),
+        claimed_by=uuid4(),
+        status=TaskStatus.IN_PROGRESS,
+    )
+    _bind(svc, "get", AsyncMock(return_value=task))
+    board_check = AsyncMock(return_value=True)
+    _bind(svc, "_is_board_advisory_agent", board_check)
+
+    out = await svc.reassign(task.id, None)
+
+    # new_assignee=None short-circuits the guard (clearing assignment is the
+    # documented "escalated to CEO, acts via UI" path).
+    board_check.assert_not_called()
+    assert out is task
+    assert task.assigned_to is None
+    assert task.claimed_by is None
+
+
+@pytest.mark.asyncio
+async def test_reassign_active_claim_diverts_cell_task_to_board_role() -> None:
+    svc = _service()
+    task = MagicMock(
+        id=uuid4(),
+        parent_task_id=uuid4(),
+        task_type=TaskType.CODE,
+        assigned_to=uuid4(),
+        claimed_by=uuid4(),
+        active_claimant_id=uuid4(),
+        dev_notes="prior",
+        status=TaskStatus.IN_PROGRESS,
+    )
+    _bind(svc, "get", AsyncMock(return_value=task))
+    _bind(svc, "_is_board_advisory_agent", AsyncMock(return_value=True))
+
+    out = await svc.reassign_active_claim(task.id, uuid4())
+
+    assert out is task
+    assert task.status == TaskStatus.PENDING
+    assert task.assigned_to is None
+    assert "REASSIGN REDIRECTED" in task.dev_notes
+
+
+@pytest.mark.asyncio
+async def test_reassign_active_claim_assigns_non_board_target_normally() -> None:
+    svc = _service()
+    new_assignee = uuid4()
+    task = MagicMock(
+        id=uuid4(),
+        parent_task_id=uuid4(),
+        task_type=TaskType.CODE,
+        assigned_to=uuid4(),
+        claimed_by=uuid4(),
+        active_claimant_id=uuid4(),
+        status=TaskStatus.IN_PROGRESS,
+    )
+    _bind(svc, "get", AsyncMock(return_value=task))
+    _bind(svc, "_is_board_advisory_agent", AsyncMock(return_value=False))
+
+    out = await svc.reassign_active_claim(task.id, new_assignee)
+
+    assert out is task
+    assert task.assigned_to == new_assignee
+    assert task.claimed_by == new_assignee
+    assert task.active_claimant_id == new_assignee
+
+
+# ---------------------------------------------------------------------------
+# _unblock_dependents revival re-home — a dependency clearing must not revive a
+# cell task under a board/advisory or absent owner
+# ---------------------------------------------------------------------------
+
+
+def _blocked_dependent(task: MagicMock) -> AsyncMock:
+    """A session.execute that yields ``task`` as the only dependency-blocked row."""
+    result = MagicMock()
+    result.scalars.return_value.all.return_value = [task]
+    return AsyncMock(return_value=result)
+
+
+@pytest.mark.asyncio
+async def test_unblock_dependents_rehomes_board_owned_cell_task() -> None:
+    svc = _service()
+    completed_id = uuid4()
+    board_owner = uuid4()
+    task = MagicMock(
+        id=uuid4(),
+        parent_task_id=uuid4(),
+        task_type=TaskType.CODE,
+        dependency_ids=[completed_id],
+        status=TaskStatus.BLOCKED,
+        assigned_to=board_owner,
+        claimed_by=board_owner,
+        active_claimant_id=board_owner,
+        dev_notes="prior",
+    )
+    svc.session.execute = _blocked_dependent(task)
+    _bind(svc, "_is_board_advisory_agent", AsyncMock(return_value=True))
+
+    await svc._unblock_dependents(completed_id)
+
+    assert task.dependency_ids == []
+    assert task.status == TaskStatus.PENDING
+    assert task.assigned_to is None
+    assert task.claimed_by is None
+    assert "REVIVAL REDIRECTED" in task.dev_notes
+
+
+@pytest.mark.asyncio
+async def test_unblock_dependents_rehomes_ownerless_cell_task() -> None:
+    svc = _service()
+    completed_id = uuid4()
+    task = MagicMock(
+        id=uuid4(),
+        parent_task_id=uuid4(),
+        task_type=TaskType.CODE,
+        dependency_ids=[completed_id],
+        status=TaskStatus.BLOCKED,
+        assigned_to=None,
+        claimed_by=None,
+        active_claimant_id=None,
+        dev_notes="",
+    )
+    svc.session.execute = _blocked_dependent(task)
+    board_check = AsyncMock(return_value=False)
+    _bind(svc, "_is_board_advisory_agent", board_check)
+
+    await svc._unblock_dependents(completed_id)
+
+    # owner is None → needs_rehome short-circuits True without the board check.
+    board_check.assert_not_called()
+    assert task.status == TaskStatus.PENDING
+    assert "REVIVAL REDIRECTED" in task.dev_notes
+
+
+@pytest.mark.asyncio
+async def test_unblock_dependents_resumes_dev_owned_cell_task() -> None:
+    svc = _service()
+    completed_id = uuid4()
+    dev_owner = uuid4()
+    task = MagicMock(
+        id=uuid4(),
+        parent_task_id=uuid4(),
+        task_type=TaskType.CODE,
+        dependency_ids=[completed_id],
+        status=TaskStatus.BLOCKED,
+        assigned_to=dev_owner,
+        claimed_by=dev_owner,
+    )
+    svc.session.execute = _blocked_dependent(task)
+    _bind(svc, "_is_board_advisory_agent", AsyncMock(return_value=False))
+    validate_mock = MagicMock()
+    _bind(svc, "_validate_and_set_status", validate_mock)
+
+    await svc._unblock_dependents(completed_id)
+
+    # Workable owner → resume in place, owner preserved (not cleared).
+    validate_mock.assert_called_once()
+    assert validate_mock.call_args.args[1] == TaskStatus.IN_PROGRESS
+    assert task.assigned_to == dev_owner
+
+
+@pytest.mark.asyncio
+async def test_unblock_dependents_resumes_board_owned_root_task() -> None:
+    # A ROOT task legitimately owned by a board role (e.g. a product root the PO
+    # reviews) must resume in place — the cell guard targets descendants only.
+    svc = _service()
+    completed_id = uuid4()
+    task = MagicMock(
+        id=uuid4(),
+        parent_task_id=None,
+        task_type=TaskType.CODE,
+        team=Team.BOARD,
+        dependency_ids=[completed_id],
+        status=TaskStatus.BLOCKED,
+        assigned_to=uuid4(),
+        claimed_by=uuid4(),
+    )
+    svc.session.execute = _blocked_dependent(task)
+    _bind(svc, "_is_board_advisory_agent", AsyncMock(return_value=True))
+    validate_mock = MagicMock()
+    _bind(svc, "_validate_and_set_status", validate_mock)
+
+    await svc._unblock_dependents(completed_id)
+
+    validate_mock.assert_called_once()
+    assert validate_mock.call_args.args[1] == TaskStatus.IN_PROGRESS
