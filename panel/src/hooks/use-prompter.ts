@@ -76,6 +76,12 @@ const EMPTY_DRAFT: EditableDraft = {
   productId: "",
 };
 
+/** True when a request failed because the server has no such prompter session. */
+function isSessionGone(err: unknown): boolean {
+  const status = (err as { response?: { status?: number } })?.response?.status;
+  return status === 404;
+}
+
 function toEditable(draft: DraftProposal, scale: DraftScale | null): EditableDraft {
   return {
     title: draft.title,
@@ -130,28 +136,47 @@ export function usePrompter() {
     return id;
   }, []);
 
+  /** Return the current session id, creating one on first use. */
+  const ensureSession = useCallback(async (): Promise<string> => {
+    const existing = sessionIdRef.current;
+    if (existing) return existing;
+    const { session_id } = await prompterApi.createSession();
+    sessionIdRef.current = session_id;
+    setSessionId(session_id);
+    return session_id;
+  }, []);
+
   // -----------------------------------------------------------------------
   // Send a chat message
   // -----------------------------------------------------------------------
 
   const send = useCallback(
     async (text: string) => {
-      if (!text.trim() || isSending) return;
+      const trimmed = text.trim();
+      if (!trimmed || isSending) return;
 
       setIsSending(true);
       setState("chatting");
-      addMessage({ role: "user", content: text.trim() });
+      addMessage({ role: "user", content: trimmed });
 
       try {
-        let sid = sessionIdRef.current;
-        if (!sid) {
-          const { session_id } = await prompterApi.createSession();
-          sid = session_id;
-          sessionIdRef.current = sid;
-          setSessionId(sid);
-        }
+        let sid = await ensureSession();
 
-        const response = await prompterApi.sendMessage(sid, text.trim());
+        let response;
+        try {
+          response = await prompterApi.sendMessage(sid, trimmed);
+        } catch (err) {
+          // The server no longer has this session (e.g. it was created before
+          // a restart/reset). Start a fresh one and retry the message once,
+          // so the user isn't dead-ended on a stale session id.
+          if (isSessionGone(err)) {
+            sessionIdRef.current = null;
+            sid = await ensureSession();
+            response = await prompterApi.sendMessage(sid, trimmed);
+          } else {
+            throw err;
+          }
+        }
 
         if (response.draft) {
           addMessage({
@@ -173,7 +198,7 @@ export function usePrompter() {
         setIsSending(false);
       }
     },
-    [isSending, addMessage]
+    [isSending, addMessage, ensureSession]
   );
 
   // -----------------------------------------------------------------------

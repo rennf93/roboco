@@ -25,6 +25,7 @@ from roboco.api.routes.prompter import router as prompter_router
 from roboco.db.tables import AgentTable, ProjectTable
 from roboco.models.base import AgentRole, AgentStatus, Team
 from roboco.models.permissions import AgentContext
+from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator
@@ -116,6 +117,94 @@ async def project_fixture(db_session: AsyncSession) -> ProjectTable:
 
 
 _HDR = {"X-Agent-ID": "be-dev-1", "X-Agent-Role": "developer"}
+
+
+@pytest_asyncio.fixture
+async def cross_request_client(
+    _test_database_url: str,
+) -> AsyncIterator[dict[str, Any]]:
+    """Client whose DB dependency yields a fresh, NON-auto-committing session
+    per request.
+
+    This is the boundary the shared-session ``prompter_client`` fixture can't
+    exercise: here a write is only visible to the next request if the route
+    committed it explicitly. The seed agent is committed up front so both
+    requests can resolve it.
+    """
+    engine = create_async_engine(_test_database_url, future=True, pool_pre_ping=True)
+    maker = async_sessionmaker(bind=engine, expire_on_commit=False)
+
+    agent_id = uuid4()
+    async with maker() as seed:
+        seed.add(
+            AgentTable(
+                id=agent_id,
+                name="XReqAgent",
+                slug=f"xreq-agent-{uuid4().hex[:8]}",
+                role=AgentRole.DEVELOPER,
+                team=None,
+                status=AgentStatus.ACTIVE,
+                model_config={},
+                system_prompt="dev",
+                capabilities=[],
+                permissions={},
+                metrics={},
+            )
+        )
+        await seed.commit()
+
+    app = FastAPI()
+    app.include_router(prompter_router, prefix="/api/prompter")
+
+    async def _override_db() -> AsyncIterator[AsyncSession]:
+        # A fresh session per request that does NOT commit on teardown, so
+        # persistence depends solely on the route's explicit commit.
+        async with maker() as session:
+            yield session
+
+    async def _override_agent() -> AgentContext:
+        return AgentContext(agent_id=agent_id, role=AgentRole.DEVELOPER, team=None)
+
+    app.dependency_overrides[get_db] = _override_db
+    app.dependency_overrides[get_agent_context] = _override_agent
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        yield {"client": client, "agent_id": agent_id}
+    app.dependency_overrides.clear()
+    await engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_session_persists_across_requests(cross_request_client: dict) -> None:
+    """A created session must survive into the next request's own DB session.
+
+    Regression for the production 404: the create returned 201 but the session
+    write was never committed, so the immediately-following /messages call could
+    not find it. Without the route's explicit commit, this is a 404.
+    """
+    client = cross_request_client["client"]
+
+    create = await client.post("/api/prompter/sessions", json={}, headers=_HDR)
+    assert create.status_code == HTTPStatus.CREATED
+    session_id = create.json()["id"]
+
+    reply = (
+        'ack\n```roboco-meta\n{"covered": [], "ready": false, "scale": "single"}\n```'
+    )
+    with patch(
+        "roboco.services.prompter.PrompterService._create_message",
+        new_callable=AsyncMock,
+        return_value=reply,
+    ):
+        msg = await client.post(
+            f"/api/prompter/sessions/{session_id}/messages",
+            json={"content": "hello"},
+            headers=_HDR,
+        )
+
+    assert msg.status_code == HTTPStatus.OK, msg.json()
+    assert len(msg.json()["messages"]) == _SINGLE_TURN_MSGS
 
 
 # =============================================================================

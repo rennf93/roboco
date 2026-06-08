@@ -84,6 +84,11 @@ async def create_session(
         )
     except ServiceError as e:
         raise _translate_error(e) from e
+    # Commit explicitly: the rest of the write surface (tasks, a2a, ...) does
+    # the same rather than rely on the request-teardown auto-commit, which is
+    # sensitive to middleware/teardown ordering. Without this the 201 is
+    # returned but the row may never persist, so the next request 404s.
+    await db.commit()
 
     return PrompterSessionResponse(
         id=session.id,  # type: ignore[arg-type]
@@ -119,6 +124,7 @@ async def send_message(
         )
     except ServiceError as e:
         raise _translate_error(e) from e
+    await db.commit()
 
     return PrompterTurnResponse(
         messages=[
@@ -159,6 +165,8 @@ async def get_draft(
         )
     except ServiceError as e:
         raise _translate_error(e) from e
+    # Persist a newly generated draft (no-op when it was already cached).
+    await db.commit()
 
     # Parse the stored draft_data into PrompterDraftTask for validation
     try:
@@ -214,6 +222,7 @@ async def confirm_draft(
         )
     except ServiceError as e:
         raise _translate_error(e) from e
+    await db.commit()
 
     return {"task_id": str(task_id)}
 

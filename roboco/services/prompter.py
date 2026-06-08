@@ -513,7 +513,7 @@ class PrompterService:
         )
         rec = result.scalar_one_or_none()
         if rec is None:
-            raise NotFoundError(f"Prompter session {session_id} not found")
+            raise NotFoundError("Prompter session", str(session_id))
         if rec.agent_id != agent_id:
             raise ServiceError(
                 f"Session {session_id} does not belong to agent {agent_id}"
