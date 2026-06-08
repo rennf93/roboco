@@ -1,6 +1,6 @@
 # RoboCo
 
-AI Agents Company - A virtual organization of 19 AI agents + 1 human CEO, designed to operate as a complete software development workforce.
+AI Agents Company - A virtual organization of 20 AI agents + 1 human CEO, designed to operate as a complete software development workforce.
 
 <p align="center">
   <img src="docs/images/run.png" alt="RoboCo control panel: the task tree for a feature, showing Board → Main PM → Backend / Frontend / UX/UI cells → developer subtasks, with live lifecycle statuses (completed, in progress, awaiting PM review, paused) and real GitHub PRs (#59–#62)." width="100%">
@@ -25,6 +25,8 @@ RoboCo implements a structured organizational hierarchy with formal communicatio
 
 ```
 CEO (You, the human)
+    │
+    ├── Intake (on-demand interviewer: chats only with you to draft a task)
     │
     └── Board (3 agents)
          ├── Product Owner
@@ -234,7 +236,7 @@ uv run mypy roboco/
 - [x] Database ORM (SQLAlchemy async)
 - [x] Task lifecycle state machine
 - [x] Multi-agent workspace management
-- [x] Agent prompts (19 agents)
+- [x] Agent prompts (20 agents)
 - [x] Messaging API
 - [x] Task API with full lifecycle
 - [x] Git operations API

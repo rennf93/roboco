@@ -107,6 +107,7 @@ _AGENT_PRESENTATION: dict[str, dict[str, Any]] = {
     "product-owner": {"name": "Product Owner"},
     "head-marketing": {"name": "Head of Marketing"},
     "auditor": {"name": "Auditor"},
+    "intake-1": {"name": "Intake"},
 }
 
 

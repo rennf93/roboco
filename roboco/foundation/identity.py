@@ -28,6 +28,7 @@ class Role(StrEnum):
     PRODUCT_OWNER = "product_owner"
     HEAD_MARKETING = "head_marketing"
     AUDITOR = "auditor"
+    PROMPTER = "prompter"  # intake interviewer — talks only to the human, drafts tasks
     CEO = "ceo"
     SYSTEM = "system"  # sentinel only — used for orchestrator-generated rows
 
@@ -53,6 +54,7 @@ CELL_TEAMS: frozenset[Team] = frozenset({Team.BACKEND, Team.FRONTEND, Team.UX_UI
 
 class RoleLevel(IntEnum):
     SYSTEM = -1
+    INTAKE = 0  # read-only intake interviewer — lowest real-agent authority
     DEV = 1
     QA = 2
     DOCUMENTER = 3
@@ -189,6 +191,12 @@ AGENTS: dict[str, AgentRow] = {
     "auditor": AgentRow(
         "auditor", Role.AUDITOR, Team.BOARD, _u("00000000-0000-0000-0004-000000000004")
     ),
+    # Intake interviewer — CEO-adjacent (board team), but NOT a board reviewer
+    # (deliberately absent from BOARD_ROLES). Spawned on demand to chat with the
+    # human and draft a task; talks to no other agent.
+    "intake-1": AgentRow(
+        "intake-1", Role.PROMPTER, Team.BOARD, _u("00000000-0000-0000-0004-000000000005")
+    ),
 }
 
 
@@ -213,6 +221,7 @@ ROLE_LEVEL: dict[Role, RoleLevel] = {
     Role.PRODUCT_OWNER: RoleLevel.BOARD,
     Role.HEAD_MARKETING: RoleLevel.BOARD,
     Role.AUDITOR: RoleLevel.AUDITOR,
+    Role.PROMPTER: RoleLevel.INTAKE,
     Role.CEO: RoleLevel.CEO,
 }
 

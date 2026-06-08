@@ -15,12 +15,14 @@ keep copyright assignment language intact. See `CONTRIBUTING.md`.
 
 ## Project Overview
 
-**RoboCo** is an AI Agentic Company - a virtual organization of 19 AI agents + 1 human CEO, designed to operate as a complete software development workforce. The system implements a structured organizational hierarchy with formal communication protocols, task management, and quality controls.
+**RoboCo** is an AI Agentic Company - a virtual organization of 20 AI agents + 1 human CEO, designed to operate as a complete software development workforce. The system implements a structured organizational hierarchy with formal communication protocols, task management, and quality controls.
 
 ### Core Architecture
 
 ```
 CEO (Renzo - Human)
+    |
+    +-- Intake (on-demand interviewer: chats only with the CEO to draft a task)
     |
     +-- Board (3 agents)
          +-- Product Owner
@@ -349,9 +351,11 @@ read-only into the agent container.
 | product_owner | `triage`, `escalate_to_ceo`                                                                      |
 | head_marketing| `triage`, `escalate_to_ceo`                                                                      |
 | auditor       | `triage` (read-only — no `say`/`dm`)                                                             |
+| prompter      | (none beyond `i_am_idle` — not a delivery-lifecycle role; intake interviewer, human-only)        |
 
 Content tools (do_server) — most roles: `commit`, `note`, `say`, `dm`, `evidence`.
-Auditor is restricted to `note` (scope=reflect) + `evidence`.
+Auditor is restricted to `note` (scope=reflect) + `evidence`. The `prompter`
+(intake) is restricted to `note` + `evidence` — human-only, no `say`/`dm`/`notify`.
 
 ### MCP servers running per agent container
 

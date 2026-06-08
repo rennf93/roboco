@@ -31,6 +31,7 @@ def test_role_enum_has_every_pre_gateway_role() -> None:
         "product_owner",
         "head_marketing",
         "auditor",
+        "prompter",  # post-gateway intake role (human-only, drafts tasks)
         "ceo",
         "system",
     }

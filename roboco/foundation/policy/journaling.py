@@ -58,6 +58,9 @@ ROLE_READ_TIERS: dict[Role, ReadTier] = {
     Role.PRODUCT_OWNER: ReadTier.ALL_CELLS,
     Role.HEAD_MARKETING: ReadTier.ALL_CELLS,
     Role.AUDITOR: ReadTier.ALL,
+    # Intake interviewer is isolated — talks only to the human, reads only its
+    # own journal.
+    Role.PROMPTER: ReadTier.OWN,
     Role.CEO: ReadTier.ALL,
 }
 

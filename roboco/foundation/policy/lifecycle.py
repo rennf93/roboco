@@ -906,7 +906,12 @@ _INTENT_VERBS: dict[str, IntentSpec] = {
             | _QA_ROLES
             | _DOC_ROLES
             | _PM_ROLES
-            | {Role.PRODUCT_OWNER, Role.HEAD_MARKETING, Role.AUDITOR}
+            | {
+                Role.PRODUCT_OWNER,
+                Role.HEAD_MARKETING,
+                Role.AUDITOR,
+                Role.PROMPTER,
+            }
         ),
         description=(
             "Signal you have no active work. PMs auto-pause owned in_progress tasks."

@@ -4,10 +4,11 @@ Operating the AI company after deployment.
 
 ## The Organization
 
-19 AI agents organized as a company:
+20 AI agents organized as a company:
 
 ```
 CEO (You)
+├── Intake (on-demand interviewer: chats only with you to draft a task)
 └── Board
     ├── Product Owner
     ├── Head of Marketing
@@ -38,6 +39,7 @@ CEO (You)
 | `product-owner` | Product Owner | Board |
 | `head-marketing` | Head of Marketing | Board |
 | `auditor` | Auditor | Board |
+| `intake-1` | Intake (interviewer) | Board |
 
 ## Spawning Agents
 
@@ -206,7 +208,7 @@ docker compose down
 
 ### Start Small
 
-Don't spawn all 19 agents at once. Start with:
+Don't spawn the whole fleet at once. Start with:
 1. `main-pm` alone - verify spawning works
 2. Add `be-dev-1` - verify task claiming
 3. Add `be-qa` - verify full workflow
@@ -236,7 +238,7 @@ docker logs -f roboco-agent-be-dev-1
 Each agent container uses ~500MB-2GB RAM depending on context. With 128GB RAM:
 - 3 agents: ~6GB
 - 6 agents: ~12GB
-- 19 agents: ~38GB
+- 20 agents: ~40GB (the intake interviewer is on-demand — it only runs while you're drafting a task)
 
 Monitor with:
 ```bash

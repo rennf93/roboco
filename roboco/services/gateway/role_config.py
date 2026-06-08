@@ -113,6 +113,13 @@ _AUDITOR_FLOW = spec.intents_for_role(spec.Role.AUDITOR)
 # no ack (silent observer — wouldn't ack notifications). channels for read map.
 _AUDITOR_DO = ("note", "evidence", "notify_list", "notify_get", *_CHANNEL_DISCOVERY)
 
+_PROMPTER_FLOW = spec.intents_for_role(spec.Role.PROMPTER)  # none — not a lifecycle role
+# Intake interviewer: human-only. It journals (note) and cites sources
+# (evidence) but has NO outward agent comms — no say (channels), no dm/notify
+# (agents), no channel discovery. Its conversation with the human runs over the
+# live-session bridge, not these gateway tools.
+_PROMPTER_DO = ("note", "evidence")
+
 
 ROLE_CONFIGS: dict[str, RoleConfig] = {
     "developer": RoleConfig(
@@ -178,6 +185,17 @@ ROLE_CONFIGS: dict[str, RoleConfig] = {
         allows_write=False,
         allows_subagent=False,
         description="Silent observer; reads but never communicates outwardly.",
+    ),
+    "prompter": RoleConfig(
+        role="prompter",
+        flow_tools=_PROMPTER_FLOW,
+        do_tools=_PROMPTER_DO,
+        allows_write=False,
+        allows_subagent=True,
+        description=(
+            "Intake interviewer; chats only with the human, reads the codebase, "
+            "and drafts a task. No outward agent comms; never writes or merges."
+        ),
     ),
 }
 

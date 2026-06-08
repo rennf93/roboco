@@ -158,6 +158,7 @@
         "head_marketing",
         "main_pm",
         "product_owner",
+        "prompter",
         "qa"
       ],
       "composes": [],
