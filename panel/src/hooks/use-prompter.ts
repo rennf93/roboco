@@ -104,7 +104,11 @@ function toEditable(
 ): EditableDraft {
   return {
     title: draft.title,
-    description: draft.description,
+    // The prompter's propose_draft schema has NO `description` field — it uses
+    // `objective` + the structured spec. Fall back to objective so launch
+    // validation never reads `undefined` (which threw on `.trim()` and silently
+    // killed the button click).
+    description: draft.description ?? draft.objective ?? "",
     acceptance_criteria: draft.acceptance_criteria,
     team: draft.team ?? "",
     priority: draft.priority ?? 2,
@@ -388,7 +392,7 @@ export function usePrompter() {
   const isValidForLaunch = useCallback((): boolean => {
     const base =
       editableDraft.title.trim().length > 0 &&
-      editableDraft.description.trim().length >= 20 &&
+      (editableDraft.description ?? "").trim().length >= 20 &&
       editableDraft.acceptance_criteria.length > 0;
     const targeted =
       editableDraft.targetKind === "product"
@@ -403,14 +407,27 @@ export function usePrompter() {
 
   const launchTask = useCallback(async (route: StartRoute) => {
     const sid = sessionIdRef.current;
-    if (!sid || !isValidForLaunch()) return;
+    // Never fail silently — a dead button with no feedback reads as "broken"
+    // (it did: a missing `description` threw inside validation and the click
+    // vanished). Tell the human exactly what's blocking the launch.
+    if (!sid) {
+      toast.error("This chat has ended — start a new one to launch a task.");
+      return;
+    }
+    if (!isValidForLaunch()) {
+      toast.error(
+        "The draft is missing something needed to launch: a title, a 20+ character " +
+          "summary, at least one acceptance criterion, and a target. Keep chatting to refine it."
+      );
+      return;
+    }
 
     setIsLaunching(true);
     setState("launching");
 
     const draft: DraftProposal = {
       title: editableDraft.title.trim(),
-      description: editableDraft.description.trim(),
+      description: (editableDraft.description ?? "").trim(),
       acceptance_criteria: editableDraft.acceptance_criteria,
       team: editableDraft.team as Team,
       priority: editableDraft.priority,
