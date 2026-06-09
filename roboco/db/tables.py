@@ -11,7 +11,9 @@ from uuid import uuid4
 
 from sqlalchemy import (
     JSON,
+    BigInteger,
     Boolean,
+    Date,
     DateTime,
     Enum,
     Float,
@@ -1814,6 +1816,148 @@ class GatewayTriggerTable(Base):
         Index("ix_gateway_triggers_task_id", "task_id"),
         Index("ix_gateway_triggers_created_at", "created_at"),
         Index("ix_gateway_triggers_kind_decision", "trigger_kind", "decision"),
+    )
+
+
+# =============================================================================
+# TOKEN USAGE TABLES
+# =============================================================================
+
+
+class AgentSpawnSessionTable(Base):
+    """Records each agent container spawn lifecycle.
+
+    Opened when the orchestrator successfully starts a container; closed
+    (ended_at set) when stop_agent() finishes.  Final token counts are
+    accumulated from the agent SDK's /usage/status endpoint.
+    """
+
+    __tablename__ = "agent_spawn_sessions"
+
+    id: Mapped[UUID] = mapped_column(
+        UUID(as_uuid=True), primary_key=True, default=uuid4
+    )
+    agent_slug: Mapped[str] = mapped_column(String(100), nullable=False)
+    team: Mapped[str] = mapped_column(String(50), nullable=False)
+    role: Mapped[str] = mapped_column(String(50), nullable=False)
+    model: Mapped[str] = mapped_column(String(100), nullable=False)
+    task_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    started_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        default=lambda: datetime.now(UTC),
+        nullable=False,
+    )
+    ended_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    # BIGINT — token counts can exceed INT32 for long sessions
+    tokens_input: Mapped[int] = mapped_column(BigInteger, nullable=False, default=0)
+    tokens_output: Mapped[int] = mapped_column(BigInteger, nullable=False, default=0)
+    tokens_cache_read: Mapped[int] = mapped_column(
+        BigInteger, nullable=False, default=0
+    )
+    tokens_cache_write: Mapped[int] = mapped_column(
+        BigInteger, nullable=False, default=0
+    )
+    exit_reason: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    estimated_cost_usd: Mapped[float | None] = mapped_column(Float, nullable=True)
+
+    # Relationship to snapshots (backref for convenience)
+    snapshots: Mapped[list["TokenUsageSnapshotTable"]] = relationship(
+        "TokenUsageSnapshotTable",
+        back_populates="session",
+        cascade="all, delete-orphan",
+    )
+
+    __table_args__ = (
+        Index("ix_agent_spawn_sessions_agent_slug", "agent_slug"),
+        Index("ix_agent_spawn_sessions_started_at", "started_at"),
+        Index("ix_agent_spawn_sessions_ended_at", "ended_at"),
+        Index("ix_agent_spawn_sessions_team", "team"),
+    )
+
+
+class TokenUsageSnapshotTable(Base):
+    """Periodic (every ~60 s) snapshot of cumulative token usage for an
+    active agent_spawn_session.
+
+    The sweeper inserts one row per active agent per sweep cycle when
+    token counts are non-zero.  Snapshots allow tracking how token usage
+    grows over session lifetime.
+    """
+
+    __tablename__ = "token_usage_snapshots"
+
+    id: Mapped[UUID] = mapped_column(
+        UUID(as_uuid=True), primary_key=True, default=uuid4
+    )
+    agent_spawn_session_id: Mapped[UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("agent_spawn_sessions.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    snapshotted_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        default=lambda: datetime.now(UTC),
+        nullable=False,
+    )
+    tokens_input: Mapped[int] = mapped_column(BigInteger, nullable=False, default=0)
+    tokens_output: Mapped[int] = mapped_column(BigInteger, nullable=False, default=0)
+    tokens_cache_read: Mapped[int] = mapped_column(
+        BigInteger, nullable=False, default=0
+    )
+    tokens_cache_write: Mapped[int] = mapped_column(
+        BigInteger, nullable=False, default=0
+    )
+
+    session: Mapped["AgentSpawnSessionTable"] = relationship(
+        "AgentSpawnSessionTable", back_populates="snapshots"
+    )
+
+    __table_args__ = (
+        Index("ix_token_usage_snapshots_session_id", "agent_spawn_session_id"),
+        Index("ix_token_usage_snapshots_snapshotted_at", "snapshotted_at"),
+    )
+
+
+class DailyUsageRollupTable(Base):
+    """Pre-aggregated daily token usage per (date, agent_slug, team, model).
+
+    Populated by the orchestrator sweeper via an upsert query over
+    closed agent_spawn_sessions.  Unique constraint on the natural key
+    enables ON CONFLICT DO UPDATE so the sweep is idempotent.
+    """
+
+    __tablename__ = "daily_usage_rollups"
+
+    id: Mapped[UUID] = mapped_column(
+        UUID(as_uuid=True), primary_key=True, default=uuid4
+    )
+    date: Mapped[Any] = mapped_column(Date, nullable=False)  # datetime.date
+    agent_slug: Mapped[str] = mapped_column(String(100), nullable=False)
+    team: Mapped[str] = mapped_column(String(50), nullable=False)
+    model: Mapped[str] = mapped_column(String(100), nullable=False)
+    tokens_input: Mapped[int] = mapped_column(BigInteger, nullable=False, default=0)
+    tokens_output: Mapped[int] = mapped_column(BigInteger, nullable=False, default=0)
+    tokens_cache_read: Mapped[int] = mapped_column(
+        BigInteger, nullable=False, default=0
+    )
+    tokens_cache_write: Mapped[int] = mapped_column(
+        BigInteger, nullable=False, default=0
+    )
+    total_cost_usd: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
+    session_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+
+    __table_args__ = (
+        UniqueConstraint(
+            "date",
+            "agent_slug",
+            "team",
+            "model",
+            name="uq_daily_rollup_date_agent_team_model",
+        ),
+        Index("ix_daily_rollups_date", "date"),
+        Index("ix_daily_rollups_agent_slug", "agent_slug"),
     )
 
 

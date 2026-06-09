@@ -21,12 +21,14 @@ from roboco.api.schemas.dashboard import (
     CreateReportRequest,
     FlagSeverity,
     TeamHealth,
+    UsageSummary,
 )
 from roboco.models.base import Team
 from roboco.models.dashboard import CreateFlagParams
 from roboco.services.dashboard import get_dashboard_service
 from roboco.services.kanban import get_kanban_service
 from roboco.services.metrics import get_metrics_service
+from roboco.services.usage import get_usage_service
 
 router = APIRouter()
 
@@ -277,6 +279,7 @@ async def get_ceo_overview(
     - Roadmap progress
     """
     service = get_dashboard_service(db)
+    usage_svc = get_usage_service(db)
 
     health_list = await service.get_team_health_list()
     health_status = [
@@ -291,11 +294,22 @@ async def get_ceo_overview(
         for h in health_list
     ]
 
+    # Populate usage_summary from daily_usage_rollups for today
+    try:
+        today_usage = await usage_svc.get_today_summary()
+        usage_summary = UsageSummary(
+            tokens_today=today_usage["tokens_today"],
+            cost_today_usd=today_usage["cost_today_usd"],
+        )
+    except Exception:
+        usage_summary = UsageSummary(tokens_today=0, cost_today_usd=0.0)
+
     return CEOOverview(
         health_status=health_status,
         key_metrics=await service.get_key_metrics(),
         auditor_alerts=service.get_auditor_alerts(),
         roadmap_progress=await service.get_roadmap_progress(),
+        usage_summary=usage_summary,
     )
 
 
