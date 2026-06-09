@@ -1,12 +1,13 @@
 "use client";
 
-import { Sparkles } from "lucide-react";
+import { Loader2, Sparkles } from "lucide-react";
 import { usePrompter } from "@/hooks/use-prompter";
 import {
   ChatMessages,
   ChatComposer,
   ConfirmDialog,
   SuccessCard,
+  IntakeForm,
 } from "@/components/prompter";
 
 export default function PrompterPage() {
@@ -14,10 +15,21 @@ export default function PrompterPage() {
     state,
     messages,
     isSending,
+    activity,
     editableDraft,
     createdTaskId,
     createdTaskTitle,
     createdTaskTeam,
+    targetKind,
+    setTargetKind,
+    projectId,
+    setProjectId,
+    productId,
+    setProductId,
+    initialMessage,
+    setInitialMessage,
+    isFormValid,
+    start,
     send,
     openReview,
     closeReview,
@@ -29,8 +41,9 @@ export default function PrompterPage() {
     isLaunching,
   } = usePrompter();
 
+  const showForm = state === "form" || state === "preparing";
   const isComposerDisabled =
-    state === "launching" || state === "success";
+    state === "launching" || state === "success" || isSending;
 
   return (
     <div className="flex h-full flex-col">
@@ -40,43 +53,68 @@ export default function PrompterPage() {
         <div>
           <h1 className="text-lg font-semibold">Task Assistant</h1>
           <p className="text-xs text-muted-foreground">
-            Describe your idea and I&apos;ll help you create a structured task
+            Chat with an agent that reads your code and drafts the task
           </p>
         </div>
       </div>
 
-      {/* Chat area */}
-      <div className="flex flex-1 flex-col overflow-hidden">
-        {/* Success overlay in chat area */}
-        {state === "success" &&
+      {showForm ? (
+        <IntakeForm
+          targetKind={targetKind}
+          onTargetKind={setTargetKind}
+          projectId={projectId}
+          onProjectId={setProjectId}
+          productId={productId}
+          onProductId={setProductId}
+          initialMessage={initialMessage}
+          onInitialMessage={setInitialMessage}
+          isValid={isFormValid()}
+          isPreparing={state === "preparing"}
+          onStart={start}
+        />
+      ) : (
+        <div className="flex flex-1 flex-col overflow-hidden">
+          {/* Success overlay in chat area */}
+          {state === "success" &&
           createdTaskId &&
           createdTaskTitle &&
           createdTaskTeam ? (
-          <div className="flex flex-1 flex-col items-center justify-center px-8 py-8">
-            <div className="w-full max-w-md">
-              <SuccessCard
-                taskId={createdTaskId}
-                taskTitle={createdTaskTitle}
-                team={createdTaskTeam}
-                onStartAnother={startAnother}
-              />
+            <div className="flex flex-1 flex-col items-center justify-center px-8 py-8">
+              <div className="w-full max-w-md">
+                <SuccessCard
+                  taskId={createdTaskId}
+                  taskTitle={createdTaskTitle}
+                  team={createdTaskTeam}
+                  onStartAnother={startAnother}
+                />
+              </div>
             </div>
-          </div>
-        ) : (
-          <ChatMessages
-            messages={messages}
-            onOpenReview={openReview}
-            onKeepChatting={keepChatting}
-          />
-        )}
+          ) : (
+            <ChatMessages
+              messages={messages}
+              onOpenReview={openReview}
+              onKeepChatting={keepChatting}
+            />
+          )}
 
-        {/* Composer */}
-        <ChatComposer
-          onSend={send}
-          disabled={isComposerDisabled}
-          isSending={isSending}
-        />
-      </div>
+          {/* Live activity indicator — "watch it work" */}
+          {activity && state !== "success" && (
+            <div className="flex items-center gap-2 px-6 py-1.5 text-xs text-muted-foreground">
+              <Loader2 className="h-3 w-3 animate-spin" />
+              {activity}
+            </div>
+          )}
+
+          {/* Composer */}
+          {state !== "success" && (
+            <ChatComposer
+              onSend={send}
+              disabled={isComposerDisabled}
+              isSending={isSending}
+            />
+          )}
+        </div>
+      )}
 
       {/* Confirmation dialog (portal) */}
       <ConfirmDialog

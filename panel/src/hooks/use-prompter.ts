@@ -1,9 +1,13 @@
 "use client";
 
-import { useState, useCallback, useRef } from "react";
+import { useState, useCallback, useRef, useEffect } from "react";
 import { toast } from "sonner";
 import {
-  prompterApi,
+  prompterLiveApi,
+  LIVE_EVENT_KINDS,
+  type LiveEvent,
+} from "@/lib/api/prompter-live";
+import {
   type DraftProposal,
   type CellWork,
   type DraftScale,
@@ -18,8 +22,10 @@ import type { TaskType, TaskNature, Complexity } from "@/types";
 // ---------------------------------------------------------------------------
 
 export type PrompterState =
-  | "empty"
+  | "form" // collecting scope + opening message (no chat yet)
+  | "preparing" // agent spawning / cloning the repo(s)
   | "chatting"
+  | "streaming" // a reply is mid-flight over SSE
   | "draft_preview"
   | "review_modal"
   | "launching"
@@ -35,7 +41,7 @@ export interface ChatMessage {
   draft?: DraftProposal;
 }
 
-/** Which target the human picked for this task. */
+/** Which target the human picked for this chat. */
 export type TargetKind = "project" | "product";
 
 export interface EditableDraft {
@@ -76,13 +82,17 @@ const EMPTY_DRAFT: EditableDraft = {
   productId: "",
 };
 
-/** True when a request failed because the server has no such prompter session. */
-function isSessionGone(err: unknown): boolean {
-  const status = (err as { response?: { status?: number } })?.response?.status;
-  return status === 404;
+function newId(): string {
+  return `msg-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
 }
 
-function toEditable(draft: DraftProposal, scale: DraftScale | null): EditableDraft {
+/** Map an agent-proposed draft (the `draft` SSE event payload) to the editable
+ *  form, carrying the chat's chosen scope through unchanged. */
+function toEditable(
+  draft: DraftProposal,
+  scale: DraftScale | null,
+  scope: { targetKind: TargetKind; projectId: string; productId: string }
+): EditableDraft {
   return {
     title: draft.title,
     description: draft.description,
@@ -96,11 +106,27 @@ function toEditable(draft: DraftProposal, scale: DraftScale | null): EditableDra
     what_this_builds: draft.what_this_builds ?? [],
     the_work: draft.the_work ?? [],
     notes: draft.notes ?? [],
-    // A multi-cell feature defaults to picking a Product; single-cell a Project.
-    targetKind: scale === "multi" ? "product" : "project",
-    projectId: "",
-    productId: "",
+    // The scope picked up front wins; fall back to scale only if unset.
+    targetKind:
+      scope.targetKind || (scale === "multi" ? "product" : "project"),
+    projectId: scope.projectId,
+    productId: scope.productId,
   };
+}
+
+/** Pull a DraftProposal out of a `draft` SSE event's data payload. */
+function draftFromEvent(data: Record<string, unknown> | undefined): {
+  draft: DraftProposal;
+  scale: DraftScale | null;
+} | null {
+  if (!data || typeof data !== "object") return null;
+  const d = data as Record<string, unknown>;
+  if (typeof d.title !== "string") return null;
+  const scale =
+    d.scale === "single" || d.scale === "multi"
+      ? (d.scale as DraftScale)
+      : null;
+  return { draft: d as unknown as DraftProposal, scale };
 }
 
 // ---------------------------------------------------------------------------
@@ -108,43 +134,197 @@ function toEditable(draft: DraftProposal, scale: DraftScale | null): EditableDra
 // ---------------------------------------------------------------------------
 
 export function usePrompter() {
-  const [state, setState] = useState<PrompterState>("empty");
+  const [state, setState] = useState<PrompterState>("form");
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [sessionId, setSessionId] = useState<string | null>(null);
   const [isSending, setIsSending] = useState(false);
   const [isLaunching, setIsLaunching] = useState(false);
+  /** The latest tool the agent is using — "watch it work" status line. */
+  const [activity, setActivity] = useState<string | null>(null);
   const [createdTaskId, setCreatedTaskId] = useState<string | null>(null);
   const [createdTaskTitle, setCreatedTaskTitle] = useState<string | null>(null);
   const [createdTaskTeam, setCreatedTaskTeam] = useState<Team | null>(null);
 
-  /** Draft as shown in the draft-preview card */
-  const [draftProposal, setDraftProposal] = useState<DraftProposal | null>(null);
+  // The up-front scope form.
+  const [targetKind, setTargetKind] = useState<TargetKind>("project");
+  const [projectId, setProjectId] = useState("");
+  const [productId, setProductId] = useState("");
+  const [initialMessage, setInitialMessage] = useState("");
 
-  /** Editable copy used in the confirmation dialog */
   const [editableDraft, setEditableDraft] = useState<EditableDraft>(EMPTY_DRAFT);
 
-  // Keep a ref to sessionId for callbacks to avoid stale closures
+  // Live-session plumbing held in refs so SSE callbacks never see stale state.
   const sessionIdRef = useRef<string | null>(null);
+  const sourceRef = useRef<EventSource | null>(null);
+  const streamingIdRef = useRef<string | null>(null);
+  const scopeRef = useRef({ targetKind, projectId, productId });
+  scopeRef.current = { targetKind, projectId, productId };
 
   // -----------------------------------------------------------------------
-  // Helpers
+  // Message helpers
   // -----------------------------------------------------------------------
 
   const addMessage = useCallback((msg: Omit<ChatMessage, "id">) => {
-    const id = `msg-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
+    const id = newId();
     setMessages((prev) => [...prev, { ...msg, id }]);
     return id;
   }, []);
 
-  /** Return the current session id, creating one on first use. */
-  const ensureSession = useCallback(async (): Promise<string> => {
-    const existing = sessionIdRef.current;
-    if (existing) return existing;
-    const { session_id } = await prompterApi.createSession();
-    sessionIdRef.current = session_id;
-    setSessionId(session_id);
-    return session_id;
+  /** Append a streamed token delta to the in-flight assistant message,
+   *  starting a fresh one if this is the first delta of the turn. */
+  const appendDelta = useCallback((delta: string) => {
+    setMessages((prev) => {
+      const id = streamingIdRef.current;
+      if (id) {
+        return prev.map((m) =>
+          m.id === id ? { ...m, content: m.content + delta } : m
+        );
+      }
+      const newMsgId = newId();
+      streamingIdRef.current = newMsgId;
+      return [...prev, { id: newMsgId, role: "assistant", content: delta }];
+    });
   }, []);
+
+  /** Attach the agent's proposed draft to the current/last assistant message. */
+  const attachDraft = useCallback((draft: DraftProposal) => {
+    setMessages((prev) => {
+      const targetId =
+        streamingIdRef.current ??
+        [...prev].reverse().find((m) => m.role === "assistant")?.id;
+      if (targetId) {
+        return prev.map((m) => (m.id === targetId ? { ...m, draft } : m));
+      }
+      return [...prev, { id: newId(), role: "assistant", content: "", draft }];
+    });
+  }, []);
+
+  // -----------------------------------------------------------------------
+  // SSE handling
+  // -----------------------------------------------------------------------
+
+  const handleEvent = useCallback(
+    (evt: LiveEvent) => {
+      switch (evt.kind) {
+        case "text":
+          if (evt.text) {
+            appendDelta(evt.text);
+            setState("streaming");
+          }
+          break;
+        case "tool_use":
+          setActivity(evt.tool ? `Using ${evt.tool}…` : "Working…");
+          break;
+        case "thinking":
+          setActivity("Thinking…");
+          break;
+        case "turn_end":
+          streamingIdRef.current = null;
+          setActivity(null);
+          setIsSending(false);
+          setState((s) => (s === "draft_preview" ? s : "chatting"));
+          break;
+        case "draft": {
+          const parsed = draftFromEvent(evt.data);
+          if (parsed) {
+            attachDraft(parsed.draft);
+            setEditableDraft(
+              toEditable(parsed.draft, parsed.scale, scopeRef.current)
+            );
+            setState("draft_preview");
+          }
+          break;
+        }
+        case "error":
+          streamingIdRef.current = null;
+          setActivity(null);
+          setIsSending(false);
+          addMessage({
+            role: "error",
+            content: evt.text || "The agent hit an error.",
+          });
+          setState("chatting");
+          break;
+        // "system" / "tool_result" are informational — ignored in the UI.
+        default:
+          break;
+      }
+    },
+    [appendDelta, attachDraft, addMessage]
+  );
+
+  const closeStream = useCallback(() => {
+    sourceRef.current?.close();
+    sourceRef.current = null;
+  }, []);
+
+  const openStream = useCallback(
+    (sid: string) => {
+      closeStream();
+      const es = new EventSource(prompterLiveApi.streamUrl(sid));
+      for (const kind of LIVE_EVENT_KINDS) {
+        es.addEventListener(kind, (e: MessageEvent) => {
+          try {
+            handleEvent(JSON.parse(e.data) as LiveEvent);
+          } catch {
+            // A malformed frame is dropped; the stream stays open.
+          }
+        });
+      }
+      sourceRef.current = es;
+    },
+    [closeStream, handleEvent]
+  );
+
+  // Best-effort reap if the user navigates away mid-chat.
+  useEffect(() => {
+    return () => {
+      closeStream();
+      const sid = sessionIdRef.current;
+      if (sid) void prompterLiveApi.stop(sid).catch(() => undefined);
+    };
+  }, [closeStream]);
+
+  // -----------------------------------------------------------------------
+  // Start the live session (from the scope form)
+  // -----------------------------------------------------------------------
+
+  const isFormValid = useCallback((): boolean => {
+    const scoped = targetKind === "product" ? productId !== "" : projectId !== "";
+    return scoped && initialMessage.trim().length > 0;
+  }, [targetKind, projectId, productId, initialMessage]);
+
+  const start = useCallback(async () => {
+    if (!isFormValid() || state === "preparing") return;
+    const opening = initialMessage.trim();
+    setState("preparing");
+    addMessage({ role: "user", content: opening });
+    try {
+      const { session_id } = await prompterLiveApi.start({
+        ...(targetKind === "product"
+          ? { product_id: productId }
+          : { project_id: projectId }),
+        initial_message: opening,
+      });
+      sessionIdRef.current = session_id;
+      setSessionId(session_id);
+      openStream(session_id);
+      setIsSending(true); // the opening reply is on its way over SSE
+      setState("streaming");
+    } catch (err) {
+      addMessage({ role: "error", content: getErrorMessage(err) });
+      setState("form");
+    }
+  }, [
+    isFormValid,
+    state,
+    initialMessage,
+    targetKind,
+    productId,
+    projectId,
+    addMessage,
+    openStream,
+  ]);
 
   // -----------------------------------------------------------------------
   // Send a chat message
@@ -153,52 +333,22 @@ export function usePrompter() {
   const send = useCallback(
     async (text: string) => {
       const trimmed = text.trim();
-      if (!trimmed || isSending) return;
+      const sid = sessionIdRef.current;
+      if (!trimmed || isSending || !sid) return;
 
       setIsSending(true);
-      setState("chatting");
+      setState("streaming");
       addMessage({ role: "user", content: trimmed });
-
       try {
-        let sid = await ensureSession();
-
-        let response;
-        try {
-          response = await prompterApi.sendMessage(sid, trimmed);
-        } catch (err) {
-          // The server no longer has this session (e.g. it was created before
-          // a restart/reset). Start a fresh one and retry the message once,
-          // so the user isn't dead-ended on a stale session id.
-          if (isSessionGone(err)) {
-            sessionIdRef.current = null;
-            sid = await ensureSession();
-            response = await prompterApi.sendMessage(sid, trimmed);
-          } else {
-            throw err;
-          }
-        }
-
-        if (response.draft) {
-          addMessage({
-            role: "assistant",
-            content: response.reply,
-            draft: response.draft,
-          });
-          setDraftProposal(response.draft);
-          setEditableDraft(toEditable(response.draft, response.scale));
-          setState("draft_preview");
-        } else {
-          addMessage({ role: "assistant", content: response.reply });
-          setState("chatting");
-        }
+        await prompterLiveApi.sendMessage(sid, trimmed);
+        // The reply streams back over SSE; isSending clears on turn_end.
       } catch (err) {
+        setIsSending(false);
         addMessage({ role: "error", content: getErrorMessage(err) });
         setState("chatting");
-      } finally {
-        setIsSending(false);
       }
     },
-    [isSending, addMessage, ensureSession]
+    [isSending, addMessage]
   );
 
   // -----------------------------------------------------------------------
@@ -213,17 +363,11 @@ export function usePrompter() {
     setEditableDraft((prev) => ({ ...prev, ...updates }));
   }, []);
 
-  // -----------------------------------------------------------------------
-  // Validation
-  // -----------------------------------------------------------------------
-
   const isValidForLaunch = useCallback((): boolean => {
     const base =
       editableDraft.title.trim().length > 0 &&
       editableDraft.description.trim().length >= 20 &&
       editableDraft.acceptance_criteria.length > 0;
-    // A board-led feature needs a product; a single-cell task needs a project
-    // and a cell team.
     const targeted =
       editableDraft.targetKind === "product"
         ? editableDraft.productId !== ""
@@ -232,7 +376,7 @@ export function usePrompter() {
   }, [editableDraft]);
 
   // -----------------------------------------------------------------------
-  // Launch — create the task through the Prompter confirm endpoint
+  // Launch — confirm the draft → task, then reap the agent
   // -----------------------------------------------------------------------
 
   const launchTask = useCallback(async () => {
@@ -264,15 +408,17 @@ export function usePrompter() {
         ? { product_id: editableDraft.productId, draft }
         : { project_id: editableDraft.projectId, draft };
 
-    // A product target is routed through the Main PM; a project target stays
-    // with the chosen cell.
     const effectiveTeam =
       editableDraft.targetKind === "product"
         ? Team.MAIN_PM
         : (editableDraft.team as Team);
 
     try {
-      const { task_id } = await prompterApi.confirm(sid, payload);
+      const { task_id } = await prompterLiveApi.confirm(sid, payload);
+      // The draft became a task — reap the agent and close the stream.
+      closeStream();
+      void prompterLiveApi.stop(sid).catch(() => undefined);
+      sessionIdRef.current = null;
       setCreatedTaskId(task_id);
       setCreatedTaskTitle(draft.title);
       setCreatedTaskTeam(effectiveTeam);
@@ -284,23 +430,31 @@ export function usePrompter() {
     } finally {
       setIsLaunching(false);
     }
-  }, [editableDraft, isValidForLaunch]);
+  }, [editableDraft, isValidForLaunch, closeStream]);
 
   // -----------------------------------------------------------------------
   // Reset to start another conversation
   // -----------------------------------------------------------------------
 
   const startAnother = useCallback(() => {
+    closeStream();
+    const sid = sessionIdRef.current;
+    if (sid) void prompterLiveApi.stop(sid).catch(() => undefined);
+    sessionIdRef.current = null;
+    streamingIdRef.current = null;
     setMessages([]);
     setSessionId(null);
-    sessionIdRef.current = null;
-    setDraftProposal(null);
+    setActivity(null);
     setEditableDraft(EMPTY_DRAFT);
+    setProjectId("");
+    setProductId("");
+    setInitialMessage("");
+    setTargetKind("project");
     setCreatedTaskId(null);
     setCreatedTaskTitle(null);
     setCreatedTaskTeam(null);
-    setState("empty");
-  }, []);
+    setState("form");
+  }, [closeStream]);
 
   return {
     // State
@@ -308,13 +462,25 @@ export function usePrompter() {
     messages,
     sessionId,
     isSending,
-    draftProposal,
+    activity,
     editableDraft,
     createdTaskId,
     createdTaskTitle,
     createdTaskTeam,
 
-    // Actions
+    // Scope form
+    targetKind,
+    setTargetKind,
+    projectId,
+    setProjectId,
+    productId,
+    setProductId,
+    initialMessage,
+    setInitialMessage,
+    isFormValid,
+    start,
+
+    // Chat + confirm
     send,
     openReview,
     closeReview,
