@@ -68,6 +68,9 @@ export function DraftProposalCard({
 }: DraftProposalCardProps) {
   const priorityLabel = PRIORITY_LABELS[draft.priority ?? 2] ?? "Medium";
   const cells = draft.the_work ?? [];
+  // Distinct cells only: the_work has one entry per work item, so a cell with
+  // several items would otherwise show its badge repeated (Backend Backend …).
+  const distinctTeams = Array.from(new Set(cells.map((c) => c.team)));
 
   return (
     <Card className="border-primary/30 bg-primary/5">
@@ -103,15 +106,15 @@ export function DraftProposalCard({
           </p>
         )}
 
-        {/* The Work — participating cells */}
-        {cells.length > 0 && (
+        {/* The Work — participating cells (distinct) */}
+        {distinctTeams.length > 0 && (
           <div className="flex flex-wrap items-center gap-1.5">
             <span className="text-xs font-medium text-muted-foreground">
-              {cells.length > 1 ? "Board-led across" : "Cell:"}
+              {distinctTeams.length > 1 ? "Board-led across" : "Cell:"}
             </span>
-            {cells.map((c, i) => (
-              <Badge key={`${c.team}-${i}`} variant="outline" className="text-xs">
-                {cellLabel(c.team)}
+            {distinctTeams.map((team) => (
+              <Badge key={team} variant="outline" className="text-xs">
+                {cellLabel(team)}
               </Badge>
             ))}
           </div>
