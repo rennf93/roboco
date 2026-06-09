@@ -108,10 +108,11 @@ async def main() -> None:  # pragma: no cover - needs the live container + SDK
     queue: asyncio.Queue[str | None] = asyncio.Queue()
     client = httpx.AsyncClient(timeout=30.0)
 
+    # Tools + MCP + lockdown are all decided inside build_intake_options now
+    # (hard allowlist + the propose_draft tool + host-env isolation).
     options = build_intake_options(
         system_prompt=system_prompt,
         cwd=cwd,
-        allowed_tools=["Read", "Grep", "Glob", "Task"],
         model=model,
     )
 

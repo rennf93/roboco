@@ -54,22 +54,47 @@ class StreamChunk:
     data: dict[str, Any] = field(default_factory=dict)
 
 
+def _coerce_draft(data: Any) -> dict[str, Any] | None:
+    """Return ``data`` as a draft dict (with a string ``title``), else ``None``.
+
+    Accepts a dict, or a JSON string the agent may have passed.
+    """
+    if isinstance(data, str):
+        try:
+            data = json.loads(data)
+        except (ValueError, TypeError):
+            return None
+    if isinstance(data, dict) and isinstance(data.get("title"), str):
+        return data
+    return None
+
+
 def _extract_draft(text: str) -> dict[str, Any] | None:
     """Parse a fenced ``roboco-draft`` JSON block out of the agent's reply.
 
-    Returns the parsed object (a dict with a string ``title``) or ``None`` when
-    no well-formed draft block is present.
+    A fallback to the ``propose_draft`` tool: returns the parsed object (a dict
+    with a string ``title``) or ``None`` when no well-formed block is present.
     """
     match = _DRAFT_FENCE.search(text)
     if match is None:
         return None
-    try:
-        data = json.loads(match.group(1))
-    except (ValueError, TypeError):
+    return _coerce_draft(match.group(1))
+
+
+def _draft_from_tool_input(tool_input: Any) -> dict[str, Any] | None:
+    """Pull the draft out of a ``propose_draft`` tool call's input.
+
+    Tolerant of both shapes the agent might use: the draft nested under a
+    ``draft`` key, or the draft fields passed flat as the input itself.
+    """
+    if not isinstance(tool_input, dict):
         return None
-    if isinstance(data, dict) and isinstance(data.get("title"), str):
-        return data
-    return None
+    return _coerce_draft(tool_input.get("draft", tool_input))
+
+
+def _is_propose_draft(name: str) -> bool:
+    """True for the intake ``propose_draft`` tool, however the SDK namespaces it."""
+    return name == "propose_draft" or name.endswith("__propose_draft")
 
 
 def _blocks_to_chunks(content: list[Any]) -> list[StreamChunk]:
@@ -78,26 +103,31 @@ def _blocks_to_chunks(content: list[Any]) -> list[StreamChunk]:
     Text is deliberately NOT re-emitted here: with ``include_partial_messages``
     the live token deltas (``StreamEvent``) already streamed it, so re-emitting
     the complete ``TextBlock`` would render every reply twice on the panel.
-    Instead the complete text is mined for a fenced ``roboco-draft`` block and
-    surfaced as a single ``draft`` chunk; thinking + tool_use (which do NOT
-    arrive as deltas) are emitted as before.
+
+    The canonical draft signal is the agent calling the **``propose_draft``**
+    tool — that ToolUseBlock becomes a single ``draft`` chunk. As a fallback (if
+    the agent types the spec instead of calling the tool) the complete text is
+    also mined for a fenced ``roboco-draft`` block. thinking + other tool_use
+    (which do NOT arrive as deltas) are emitted as before.
     """
     chunks: list[StreamChunk] = []
     text_parts: list[str] = []
+    draft: dict[str, Any] | None = None
     for block in content or []:
         if hasattr(block, "thinking"):  # ThinkingBlock
             chunks.append(StreamChunk(kind="thinking", text=str(block.thinking)))
         elif hasattr(block, "name") and hasattr(block, "input"):  # ToolUseBlock
-            chunks.append(
-                StreamChunk(
-                    kind="tool_use",
-                    tool=str(block.name),
-                    data={"input": getattr(block, "input", {})},
+            name = str(block.name)
+            tool_input = getattr(block, "input", {})
+            if _is_propose_draft(name):
+                draft = draft or _draft_from_tool_input(tool_input)
+            else:
+                chunks.append(
+                    StreamChunk(kind="tool_use", tool=name, data={"input": tool_input})
                 )
-            )
         elif hasattr(block, "text"):  # TextBlock — already streamed; mine for a draft
             text_parts.append(str(block.text))
-    draft = _extract_draft("".join(text_parts))
+    draft = draft or _extract_draft("".join(text_parts))
     if draft is not None:
         chunks.append(StreamChunk(kind="draft", data=draft))
     return chunks
@@ -215,25 +245,80 @@ class IntakeDriver:
 # ---------------------------------------------------------------------------
 
 
+# The intake agent's hard tool allowlist: read-only built-ins + the draft tool.
+_INTAKE_BASE_TOOLS: tuple[str, ...] = ("Read", "Grep", "Glob", "Task")
+
+
 def build_intake_options(
     *,
     system_prompt: str,
     cwd: str,
-    allowed_tools: list[str],
-    mcp_servers: dict[str, Any] | None = None,
     model: str | None = None,
 ) -> Any:  # pragma: no cover - thin SDK construction
-    """Build ``ClaudeAgentOptions`` for the intake session (lazy SDK import)."""
-    from claude_agent_sdk import ClaudeAgentOptions
+    """Build locked-down ``ClaudeAgentOptions`` for the intake session.
+
+    Isolation/security (smoke 2026-06-09 #11): the intake agent must NOT inherit
+    the host's personal Claude Code env (Gmail/Notion MCP, Write/Edit/Bash). So:
+
+    - ``strict_mcp_config=True`` + ``setting_sources=[]`` → ignore the host's
+      ``~/.claude.json`` / ``settings.json``; use ONLY the MCP server below.
+    - ``permission_mode="dontAsk"`` (NOT ``bypassPermissions``) + a ``can_use_tool``
+      gate → a hard allowlist (Read/Grep/Glob/Task + ``propose_draft``), no prompts.
+
+    Draft emission (#10): the agent calls the ``propose_draft`` MCP tool, which the
+    driver turns into a ``draft`` event — deterministic, not a fragile text fence.
+
+    NOTE: ``setting_sources=[]`` must be validated against the mounted-``~/.claude``
+    auth on the next smoke; if auth breaks, narrow it instead of removing it.
+    """
+    from claude_agent_sdk import (
+        ClaudeAgentOptions,
+        PermissionResultAllow,
+        PermissionResultDeny,
+        create_sdk_mcp_server,
+        tool,
+    )
+
+    @tool(
+        "propose_draft",
+        "Submit the finished task draft for the human to review and confirm. Call "
+        "this once the spec is complete. Pass a JSON object: title, objective, "
+        "what_this_builds[], the_work[] ({team, summary, items}), notes[], "
+        "acceptance_criteria[], team, scale, task_type, nature, "
+        "estimated_complexity, priority.",
+        {"draft": dict},
+    )
+    async def _propose_draft(_args: dict[str, Any]) -> dict[str, Any]:
+        # The driver intercepts this tool call (ToolUseBlock) and emits the draft
+        # event; the handler only acknowledges so the agent knows it landed.
+        return {
+            "content": [
+                {"type": "text", "text": "Draft submitted — the human can review it."}
+            ]
+        }
+
+    server = create_sdk_mcp_server(
+        name="intake", version="1.0.0", tools=[_propose_draft]
+    )
+
+    async def _gate(tool_name: str, _input: dict[str, Any], _ctx: Any) -> Any:
+        if tool_name in _INTAKE_BASE_TOOLS or _is_propose_draft(tool_name):
+            return PermissionResultAllow()
+        return PermissionResultDeny(
+            message=f"{tool_name} is not available to the intake agent (read-only)."
+        )
 
     return ClaudeAgentOptions(
         system_prompt=system_prompt,
         cwd=cwd,
-        allowed_tools=allowed_tools,
-        mcp_servers=mcp_servers or {},
+        mcp_servers={"intake": server},
+        allowed_tools=[*_INTAKE_BASE_TOOLS, "mcp__intake__propose_draft"],
         model=model,
         include_partial_messages=True,  # live token streaming
-        permission_mode="bypassPermissions",
+        permission_mode="dontAsk",
+        strict_mcp_config=True,
+        setting_sources=[],
+        can_use_tool=_gate,
     )
 
 

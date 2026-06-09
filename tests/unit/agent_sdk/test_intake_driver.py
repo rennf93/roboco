@@ -120,6 +120,51 @@ def test_normalize_assistant_message_malformed_draft_is_ignored() -> None:
     assert normalize(AssistantMessage([TextBlock(no_title)])) == []
 
 
+def test_normalize_propose_draft_tool_becomes_draft_chunk() -> None:
+    # The canonical signal: the agent CALLS propose_draft → one `draft` chunk
+    # (not a tool_use chunk).
+    msg = AssistantMessage(
+        [
+            ToolUseBlock(
+                "propose_draft",
+                {"draft": {"title": "Add metrics", "acceptance_criteria": ["x"]}},
+            )
+        ]
+    )
+    chunks = normalize(msg)
+    assert [c.kind for c in chunks] == ["draft"]
+    assert chunks[0].data["title"] == "Add metrics"
+
+
+def test_normalize_propose_draft_accepts_flat_input() -> None:
+    # Tolerant of the draft fields passed flat (no "draft" wrapper).
+    msg = AssistantMessage([ToolUseBlock("propose_draft", {"title": "Flat", "x": 1})])
+    chunks = normalize(msg)
+    assert [c.kind for c in chunks] == ["draft"]
+    assert chunks[0].data["title"] == "Flat"
+
+
+def test_normalize_propose_draft_namespaced_name() -> None:
+    # However the SDK namespaces it (e.g. mcp__intake__propose_draft).
+    msg = AssistantMessage(
+        [ToolUseBlock("mcp__intake__propose_draft", {"draft": {"title": "NS"}})]
+    )
+    assert [c.kind for c in normalize(msg)] == ["draft"]
+
+
+def test_normalize_other_tool_stays_tool_use() -> None:
+    chunks = normalize(AssistantMessage([ToolUseBlock("Read", {"file": "x.py"})]))
+    assert [c.kind for c in chunks] == ["tool_use"]
+    assert chunks[0].tool == "Read"
+
+
+def test_normalize_propose_draft_without_title_is_ignored() -> None:
+    msg = AssistantMessage(
+        [ToolUseBlock("propose_draft", {"draft": {"acceptance_criteria": []}})]
+    )
+    assert normalize(msg) == []
+
+
 def test_normalize_result_message_carries_session_id() -> None:
     cost = 0.01
     chunks = normalize(ResultMessage(session_id="sess-123", total_cost_usd=cost))
