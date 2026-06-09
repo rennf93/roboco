@@ -17,7 +17,7 @@ Phase 5.
 from __future__ import annotations
 
 import json
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Literal
 from uuid import UUID, uuid4
 
 from fastapi import APIRouter, HTTPException, Request, status
@@ -173,11 +173,17 @@ async def stop_live(session_id: str) -> dict[str, bool]:
 
 
 class LiveConfirmRequest(BaseModel):
-    """Confirm the agent's draft → a task, scoped to exactly one target."""
+    """Confirm the agent's draft → a task, scoped to exactly one target.
+
+    ``route`` is which start button the human pressed: ``"board"`` (Board review
+    & Start → PO + HoM review first) or ``"main_pm"`` (Approve & Start → straight
+    to the Main PM).
+    """
 
     project_id: UUID | None = None
     product_id: UUID | None = None
     draft: dict[str, Any]
+    route: Literal["board", "main_pm"] = "board"
 
     @model_validator(mode="after")
     def _exactly_one_target(self) -> LiveConfirmRequest:
@@ -193,11 +199,12 @@ async def confirm_live(
     db: DbSession,
     agent: CurrentAgentContext,
 ) -> dict[str, str]:
-    """Turn the agent's confirmed draft into a backlog task, then reap the agent.
+    """Turn the agent's confirmed draft into a started (pending) task, then reap.
 
-    The task is created at ``backlog`` (intake never reaches ``pending`` without
-    the board/PM gate), attributed to the confirming agent (the CEO). On success
-    the live session is reaped — the chat is over once the draft is a task.
+    Per ``route``: "Board review & Start" assigns it to the Board (PO + HoM
+    review first); "Approve & Start" assigns it straight to the Main PM.
+    Attributed to the confirming agent (the CEO). On success the live session is
+    reaped — the chat is over once the draft is a task.
     """
     service = get_prompter_service(db)
     try:
@@ -206,6 +213,7 @@ async def confirm_live(
             agent.agent_id,
             project_id=body.project_id,
             product_id=body.product_id,
+            route=body.route,
         )
     except ServiceError as e:
         raise _translate_service_error(e) from e

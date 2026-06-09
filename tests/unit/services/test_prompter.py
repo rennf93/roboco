@@ -19,6 +19,7 @@ from roboco.db.tables import (
     TaskTable,
 )
 from roboco.models.base import AgentRole, AgentStatus, TaskStatus, Team
+from roboco.seeds.initial_data import AGENT_UUIDS
 from roboco.services.base import NotFoundError, ServiceError, ValidationError
 from roboco.services.prompter import (
     PrompterService,
@@ -459,9 +460,9 @@ async def _seed_project_and_ceo(db_session: Any) -> tuple[UUID, UUID]:
 
 
 @pytest.mark.asyncio
-async def test_confirm_live_draft_creates_backlog_task(db_session: Any) -> None:
-    """Live-intake confirm lands the task at BACKLOG (the can_draft_tasks
-    invariant: intake never reaches pending without the board/PM gate)."""
+async def test_confirm_live_draft_board_route_assigns_po(db_session: Any) -> None:
+    """ "Board review & Start" (default route) → PENDING, assigned to the Product
+    Owner so the orchestrator fires the PO + HoM review."""
     project_id, ceo_id = await _seed_project_and_ceo(db_session)
     service = get_prompter_service(db=db_session)
 
@@ -478,14 +479,33 @@ async def test_confirm_live_draft_creates_backlog_task(db_session: Any) -> None:
 
     row = await db_session.get(TaskTable, task_id)
     assert row is not None
-    assert row.status == TaskStatus.BACKLOG  # never pending
+    assert row.status == TaskStatus.PENDING  # "& Start" — started now
+    assert row.assigned_to == UUID(AGENT_UUIDS["product-owner"])  # board review
     assert row.source == "prompter"
     assert row.confirmed_by_human is True
     assert row.team == Team.BACKEND  # lead cell from the_work
     assert row.created_by == ceo_id
-    # Enum fields the confirm dialog doesn't surface got sane defaults.
-    assert row.nature is not None
-    assert row.task_type is not None
+    assert row.nature is not None and row.task_type is not None
+
+
+@pytest.mark.asyncio
+async def test_confirm_live_draft_main_pm_route_assigns_main_pm(
+    db_session: Any,
+) -> None:
+    """ "Approve & Start" (route="main_pm") → PENDING, assigned to the Main PM."""
+    project_id, ceo_id = await _seed_project_and_ceo(db_session)
+    service = get_prompter_service(db=db_session)
+    draft = {
+        "title": "Quick fix",
+        "acceptance_criteria": ["done"],
+        "team": "backend",
+    }
+    task_id = await service.confirm_live_draft(
+        draft, ceo_id, project_id=project_id, route="main_pm"
+    )
+    row = await db_session.get(TaskTable, task_id)
+    assert row.status == TaskStatus.PENDING
+    assert row.assigned_to == UUID(AGENT_UUIDS["main-pm"])
 
 
 @pytest.mark.asyncio

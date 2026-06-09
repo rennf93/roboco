@@ -17,7 +17,7 @@ import json
 import re
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Literal
 from uuid import UUID, uuid4
 
 import httpx
@@ -390,9 +390,14 @@ class PrompterService:
         return UUID(str(task.id))
 
     async def create_task_from_draft(
-        self, draft_data: dict[str, Any], agent_id: UUID
+        self,
+        draft_data: dict[str, Any],
+        agent_id: UUID,
+        *,
+        status: TaskStatus = TaskStatus.BACKLOG,
+        assigned_to: UUID | None = None,
     ) -> TaskTable:
-        """Create a ``backlog`` Task from a structured draft.
+        """Create a Task from a structured draft.
 
         Shared by both prompter confirm paths (``confirm_draft`` and the
         live-intake ``confirm_live_draft``): recomposes the description,
@@ -401,10 +406,11 @@ class PrompterService:
         ``TaskService.create``. Mutates ``draft_data['description']`` in place.
         ``confirmed_by_human=True`` — the CEO confirmed it.
 
-        Prompter drafts land at **BACKLOG**, not PENDING: backlog is the holding
-        area where a draft waits until it's reviewed and explicitly promoted to
-        pending (``TaskService.activate``). Creating at pending would skip that
-        gate and send the draft straight to work.
+        ``status`` defaults to ``BACKLOG`` (legacy ``confirm_draft`` behaviour).
+        The live-intake buttons pass ``PENDING`` + an ``assigned_to`` (a board
+        agent for "Board review & Start", main-pm for "Approve & Start") so the
+        task starts immediately on the chosen review path. An explicit
+        ``assigned_to`` wins over any assignee carried on the draft.
         """
         # Recompose the description from the (possibly edited) structured fields —
         # the task always carries a freshly-composed, consistent description.
@@ -436,9 +442,10 @@ class PrompterService:
         else:
             team = self._lead_cell_team(draft_data, default=_lead)
 
-        # Resolve assigned_to as UUID if possible
-        resolved_assigned_to: UUID | None = None
-        if draft_data.get("assigned_to"):
+        # Explicit assignment (from the confirm button) wins; else fall back to
+        # any assignee carried on the draft.
+        resolved_assigned_to: UUID | None = assigned_to
+        if resolved_assigned_to is None and draft_data.get("assigned_to"):
             with contextlib.suppress(ValueError):
                 resolved_assigned_to = UUID(str(draft_data["assigned_to"]))
 
@@ -455,7 +462,7 @@ class PrompterService:
             assigned_to=resolved_assigned_to,
             project_id=resolved_project_id,
             product_id=resolved_product_id,
-            status=TaskStatus.BACKLOG,
+            status=status,
             source="prompter",
             confirmed_by_human=True,
         )
@@ -473,14 +480,23 @@ class PrompterService:
         *,
         project_id: UUID | None = None,
         product_id: UUID | None = None,
+        route: Literal["board", "main_pm"] = "board",
     ) -> UUID:
-        """Confirm a live-intake draft → create the task; return its id.
+        """Confirm a live-intake draft → create + start the task; return its id.
 
-        The live intake chat has no Ollama ``PrompterSession``: the human
-        confirms the structured draft the spawned agent proposed (and may have
-        edited in the dialog). Enum fields the dialog doesn't surface default to
-        sane values so a confirm never fails on a missing ``nature``.
+        The human picked one of two start buttons (``route``):
+
+        - ``"board"`` ("Board review & Start") → task at PENDING assigned to the
+          Product Owner, so the orchestrator dispatches the full Board review
+          (PO + Head of Marketing) before it reaches the Main PM.
+        - ``"main_pm"`` ("Approve & Start") → task at PENDING assigned to the Main
+          PM, who delegates to the cells directly (Board review skipped).
+
+        Enum fields the dialog doesn't surface default to sane values so a
+        confirm never fails on a missing ``nature``.
         """
+        from roboco.seeds.initial_data import AGENT_UUIDS
+
         draft_data: dict[str, Any] = dict(draft)
         if project_id is not None:
             draft_data["project_id"] = str(project_id)
@@ -492,9 +508,16 @@ class PrompterService:
         draft_data.setdefault("estimated_complexity", Complexity.MEDIUM.value)
         draft_data.setdefault("priority", 2)
 
-        task = await self.create_task_from_draft(draft_data, agent_id)
+        assignee_slug = "product-owner" if route == "board" else "main-pm"
+        assigned_to = UUID(AGENT_UUIDS[assignee_slug])
+        task = await self.create_task_from_draft(
+            draft_data, agent_id, status=TaskStatus.PENDING, assigned_to=assigned_to
+        )
         self.log.info(
-            "Live intake draft confirmed — task created", task_id=str(task.id)
+            "Live intake draft confirmed — task started",
+            task_id=str(task.id),
+            route=route,
+            assigned_to=assignee_slug,
         )
         return UUID(str(task.id))
 
