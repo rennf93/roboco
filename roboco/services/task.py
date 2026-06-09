@@ -16,6 +16,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from roboco.db.tables import (
     AgentTable,
+    JournalEntryTable,
+    JournalTable,
     ProjectTable,
     SessionTaskTable,
     TaskTable,
@@ -34,6 +36,7 @@ from roboco.models.base import (
     AgentRole,
     AgentStatus,
     BlockerResolverType,
+    JournalEntryType,
     TaskNature,
     TaskStatus,
     TaskType,
@@ -42,6 +45,7 @@ from roboco.models.base import (
 from roboco.models.permissions import AgentContext, TaskAction
 from roboco.models.task import TaskCreateRequest
 from roboco.models.work_session import WorkSessionStatus
+from roboco.seeds.initial_data import AGENT_UUIDS
 from roboco.services.base import (
     BaseService,
     NotFoundError,
@@ -3819,6 +3823,48 @@ class TaskService(BaseService):
         await self.session.flush()
         return True
 
+    async def _write_handoff_journal(
+        self, *, author_id: UUID, task_id: UUID, title: str, content: str
+    ) -> None:
+        """Record a handoff journal entry from ``author_id`` for ``task_id``.
+
+        Handoff-typed (``DECISION_LOG``) entries are the channel that actually
+        reaches a downstream worker: ``EvidenceRepo.journal_highlights_for_task``
+        serves them into the assignee's evidence/briefing. ``quick_context`` is
+        write-only by comparison. Adds rows to the session WITHOUT committing — the
+        caller owns the transaction boundary.
+        """
+        # Best-effort: never let a journaling hiccup block the reject. In
+        # production the author (CEO) is a seeded agent; guard so a missing author
+        # (e.g. a minimal test DB) skips cleanly instead of FK-failing the flush.
+        author_exists = await self.session.scalar(
+            select(AgentTable.id).where(AgentTable.id == author_id)
+        )
+        if author_exists is None:
+            self.log.warning(
+                "Handoff journal skipped - author agent not found",
+                author_id=str(author_id),
+            )
+            return
+
+        result = await self.session.execute(
+            select(JournalTable).where(JournalTable.agent_id == author_id)
+        )
+        journal = result.scalar_one_or_none()
+        if journal is None:
+            journal = JournalTable(agent_id=author_id)
+            self.session.add(journal)
+            await self.session.flush()
+        self.session.add(
+            JournalEntryTable(
+                journal_id=journal.id,
+                type=JournalEntryType.DECISION_LOG,
+                title=title,
+                content=content,
+                task_id=task_id,
+            )
+        )
+
     async def ceo_reject(
         self,
         task_id: UUID,
@@ -3862,20 +3908,47 @@ class TaskService(BaseService):
         # Validate transition with CEO role requirement
         self._validate_and_set_status(task, TaskStatus.NEEDS_REVISION, "ceo")
 
-        # Try to reassign to original developer
-        original_dev = extract_original_developer(task.quick_context)
-        if original_dev:
-            task.assigned_to = cast("Any", UUID(original_dev))
-            task.claimed_by = cast("Any", UUID(original_dev))
+        # Surface the CEO's required changes through the task journal — the one
+        # channel a downstream worker actually reads (evidence.journal_highlights
+        # serves handoff entries into the briefing). quick_context above is
+        # write-only, so the reason would otherwise never reach the reworker.
+        await self._write_handoff_journal(
+            author_id=UUID(AGENT_UUIDS["ceo"]),
+            task_id=task_id,
+            title="CEO change request",
+            content=reason,
+        )
+
+        # Route the rejected task to whoever should drive the rework.
+        reassigned_to: str | None
+        if task.project_id is None and task.product_id is not None:
+            # Coordination/integration root: the Main PM delegates the rework — a
+            # board/dev role cannot drive a coordination task.
+            main_pm_id = UUID(AGENT_UUIDS["main-pm"])
+            task.team = Team.MAIN_PM
+            task.assigned_to = cast("Any", main_pm_id)
+            task.claimed_by = cast("Any", main_pm_id)
+            reassigned_to = str(main_pm_id)
             self.log.info(
-                "Task reassigned to original developer after CEO rejection",
+                "Coordination task rejected by CEO - routed to Main PM",
                 task_id=str(task_id),
-                original_developer=original_dev,
             )
         else:
-            # Clear assignment so it can be claimed
-            task.assigned_to = None
-            task.claimed_by = None
+            original_dev = extract_original_developer(task.quick_context)
+            if original_dev:
+                task.assigned_to = cast("Any", UUID(original_dev))
+                task.claimed_by = cast("Any", UUID(original_dev))
+                self.log.info(
+                    "Task reassigned to original developer after CEO rejection",
+                    task_id=str(task_id),
+                    original_developer=original_dev,
+                )
+                reassigned_to = original_dev
+            else:
+                # No tracked developer: leave for the pool to claim.
+                task.assigned_to = None
+                task.claimed_by = None
+                reassigned_to = None
 
         await self.session.flush()
 
@@ -3883,7 +3956,7 @@ class TaskService(BaseService):
         await self._emit_task_event(
             EventType.TASK_CEO_REJECTED,
             task_id,
-            {"reason": reason, "reassigned_to": original_dev},
+            {"reason": reason, "reassigned_to": reassigned_to},
         )
 
         self.log.info(
