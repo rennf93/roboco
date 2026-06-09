@@ -3320,7 +3320,11 @@ Start by:
                         agent_id=agent_id,
                     )
                     return
-                from_agent = auditor.id if auditor else ceo.id  # type: ignore[union-attr]
+                # recipients is non-empty (guarded above) and already holds the
+                # non-None ids in auditor-then-ceo order — its first entry is the
+                # same value as `auditor.id if auditor else ceo.id`, without the
+                # union-narrowing mypy can't prove.
+                from_agent = recipients[0]
                 notification = NotificationTable(
                     type=NotificationType.ALERT,
                     priority=NotificationPriority.HIGH,

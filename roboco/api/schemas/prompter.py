@@ -45,15 +45,6 @@ class ChatMessage(BaseModel):
 # =============================================================================
 
 
-class PrompterSessionCreateRequest(BaseModel):
-    """Request body for POST /api/prompter/sessions."""
-
-    context: dict[str, Any] = Field(
-        default_factory=dict,
-        description="Optional bootstrap context (project_id, team, etc.)",
-    )
-
-
 class PrompterSessionResponse(BaseModel):
     """Response for session creation and retrieval."""
 

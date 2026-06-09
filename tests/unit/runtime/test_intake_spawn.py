@@ -18,6 +18,7 @@ from uuid import UUID
 import pytest
 from roboco.runtime.orchestrator import (
     INTAKE_AGENT_ID,
+    AgentInstance,
     AgentOrchestrator,
     _IntakeRunSpec,
 )
@@ -197,7 +198,11 @@ def _fake_route() -> SimpleNamespace:
     )
 
 
-def _wire_spawn_mocks(orch: AgentOrchestrator, run_calls: list[list[str]]) -> None:
+def _wire_spawn_mocks(
+    monkeypatch: pytest.MonkeyPatch,
+    orch: AgentOrchestrator,
+    run_calls: list[list[str]],
+) -> None:
     """Patch every external boundary spawn_intake_session touches."""
 
     async def _clone(_p: Any, _pr: Any) -> tuple[str, list[str]]:
@@ -215,26 +220,36 @@ def _wire_spawn_mocks(orch: AgentOrchestrator, run_calls: list[list[str]]) -> No
         run_calls.append(cmd)
         return "containerid0123456789"
 
-    orch._clone_intake_scope = _clone  # type: ignore[method-assign]
-    orch._resolve_agent_route = _route  # type: ignore[method-assign]
-    orch._ensure_agent_image = _noop  # type: ignore[method-assign]
-    orch._remove_container = _noop  # type: ignore[method-assign]
-    orch._run_container_cmd = _run  # type: ignore[method-assign]
-    orch._fire_audit = lambda **_k: None  # type: ignore[method-assign]
-    orch._generate_composed_prompt = lambda _aid: Path("/tmp/intake-1-prompt.md")  # type: ignore[method-assign]
-    orch._resolve_intake_host_paths = lambda: {  # type: ignore[method-assign]
-        "claude": "/home/runner/.claude",
-        "prompt": "/data/prompts-generated/intake-1-prompt.md",
-        "workspaces": "/data/workspaces",
-    }
+    monkeypatch.setattr(orch, "_clone_intake_scope", _clone)
+    monkeypatch.setattr(orch, "_resolve_agent_route", _route)
+    monkeypatch.setattr(orch, "_ensure_agent_image", _noop)
+    monkeypatch.setattr(orch, "_remove_container", _noop)
+    monkeypatch.setattr(orch, "_run_container_cmd", _run)
+    monkeypatch.setattr(orch, "_fire_audit", lambda **_k: None)
+    monkeypatch.setattr(
+        orch,
+        "_generate_composed_prompt",
+        lambda _aid: Path("/tmp/intake-1-prompt.md"),
+    )
+    monkeypatch.setattr(
+        orch,
+        "_resolve_intake_host_paths",
+        lambda: {
+            "claude": "/home/runner/.claude",
+            "prompt": "/data/prompts-generated/intake-1-prompt.md",
+            "workspaces": "/data/workspaces",
+        },
+    )
 
 
 class TestSpawnIntakeSession:
     @pytest.mark.asyncio
-    async def test_spawn_registers_session_and_instance(self) -> None:
+    async def test_spawn_registers_session_and_instance(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         orch = _make_minimal_orchestrator()
         run_calls: list[list[str]] = []
-        _wire_spawn_mocks(orch, run_calls)
+        _wire_spawn_mocks(monkeypatch, orch, run_calls)
 
         instance = await orch.spawn_intake_session("sess-1", project_slug="roboco")
 
@@ -257,30 +272,37 @@ class TestSpawnIntakeSession:
             await orch.spawn_intake_session("s")
 
     @pytest.mark.asyncio
-    async def test_spawn_reaps_prior_session_first(self) -> None:
+    async def test_spawn_reaps_prior_session_first(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         orch = _make_minimal_orchestrator()
         run_calls: list[list[str]] = []
-        _wire_spawn_mocks(orch, run_calls)
+        _wire_spawn_mocks(monkeypatch, orch, run_calls)
 
         stopped: list[str] = []
 
         async def _stop(aid: str, **_kw: Any) -> None:
             stopped.append(aid)
 
-        orch.stop_agent = _stop  # type: ignore[method-assign]
-        orch._instances[INTAKE_AGENT_ID] = object()  # a prior live container
+        monkeypatch.setattr(orch, "stop_agent", _stop)
+        # A prior live container already registered for this agent.
+        orch._instances[INTAKE_AGENT_ID] = AgentInstance(agent_id=INTAKE_AGENT_ID)
 
         await orch.spawn_intake_session("sess-2", project_slug="roboco")
         assert stopped == [INTAKE_AGENT_ID]  # the old one was reaped first
 
     @pytest.mark.asyncio
-    async def test_initial_message_is_scheduled(self) -> None:
+    async def test_initial_message_is_scheduled(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         orch = _make_minimal_orchestrator()
         run_calls: list[list[str]] = []
-        _wire_spawn_mocks(orch, run_calls)
+        _wire_spawn_mocks(monkeypatch, orch, run_calls)
         scheduled: list[tuple[str, str]] = []
-        orch._schedule_intake_first_message = (  # type: ignore[method-assign]
-            lambda sid, text: scheduled.append((sid, text))
+        monkeypatch.setattr(
+            orch,
+            "_schedule_intake_first_message",
+            lambda sid, text: scheduled.append((sid, text)),
         )
 
         await orch.spawn_intake_session(
@@ -291,14 +313,16 @@ class TestSpawnIntakeSession:
 
 class TestReapIntakeSession:
     @pytest.mark.asyncio
-    async def test_reap_closes_session_and_stops_container(self) -> None:
+    async def test_reap_closes_session_and_stops_container(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         orch = _make_minimal_orchestrator()
         stopped: list[str] = []
 
         async def _stop(aid: str, **_kw: Any) -> None:
             stopped.append(aid)
 
-        orch.stop_agent = _stop  # type: ignore[method-assign]
+        monkeypatch.setattr(orch, "stop_agent", _stop)
         registry = prompter_live.get_live_registry()
         registry.open("sess-x", INTAKE_AGENT_ID)
 
@@ -310,7 +334,9 @@ class TestReapIntakeSession:
 
 class TestDeliverWhenReady:
     @pytest.mark.asyncio
-    async def test_retries_until_receiver_is_up(self) -> None:
+    async def test_retries_until_receiver_is_up(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         orch = _make_minimal_orchestrator()
         registry = prompter_live.get_live_registry()
         succeed_on = 2  # fails once, then succeeds
@@ -320,7 +346,7 @@ class TestDeliverWhenReady:
             attempts["n"] += 1
             return attempts["n"] >= succeed_on
 
-        registry.deliver = _deliver  # type: ignore[method-assign]
+        monkeypatch.setattr(registry, "deliver", _deliver)
 
         await orch._deliver_when_ready("sess-y", "hi", attempts=5, delay=0)
         assert attempts["n"] == succeed_on  # stopped as soon as delivery succeeded

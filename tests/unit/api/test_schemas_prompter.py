@@ -15,7 +15,6 @@ from roboco.api.schemas.prompter import (
     PrompterChatRequest,
     PrompterDraftTask,
     PrompterMessageRequest,
-    PrompterSessionCreateRequest,
     PrompterTurnResponse,
     TaskConfirmRequest,
 )
@@ -40,21 +39,6 @@ def test_chat_message_invalid_role() -> None:
 def test_chat_message_empty_content() -> None:
     with pytest.raises(PydanticValidationError):
         ChatMessage(role="user", content="")
-
-
-# =============================================================================
-# PrompterSessionCreateRequest
-# =============================================================================
-
-
-def test_session_create_request_defaults() -> None:
-    req = PrompterSessionCreateRequest()
-    assert req.context == {}
-
-
-def test_session_create_request_with_context() -> None:
-    req = PrompterSessionCreateRequest(context={"team": "backend"})
-    assert req.context == {"team": "backend"}
 
 
 # =============================================================================

@@ -16,6 +16,8 @@ fakes.
 
 from __future__ import annotations
 
+import json
+import re
 from collections.abc import AsyncIterator, Awaitable, Callable
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Protocol
@@ -26,6 +28,11 @@ if TYPE_CHECKING:
     from contextlib import AbstractAsyncContextManager
 
 logger = structlog.get_logger()
+
+# The intake agent emits the finished structured task draft as a fenced block
+# (see the prompter system prompt). The driver mines it from the complete reply
+# and surfaces it as one ``draft`` chunk for the panel's draft card.
+_DRAFT_FENCE = re.compile(r"```roboco-draft\s*\n(.*?)```", re.DOTALL)
 
 
 # ---------------------------------------------------------------------------
@@ -41,21 +48,44 @@ class StreamChunk:
     from the SDK's message classes so the relay/panel never import the SDK.
     """
 
-    kind: (
-        str  # "text" | "thinking" | "tool_use" | "tool_result" | "turn_end" | "system"
-    )
+    kind: str  # text|thinking|tool_use|tool_result|turn_end|system|draft|error
     text: str = ""
     tool: str = ""
     data: dict[str, Any] = field(default_factory=dict)
 
 
+def _extract_draft(text: str) -> dict[str, Any] | None:
+    """Parse a fenced ``roboco-draft`` JSON block out of the agent's reply.
+
+    Returns the parsed object (a dict with a string ``title``) or ``None`` when
+    no well-formed draft block is present.
+    """
+    match = _DRAFT_FENCE.search(text)
+    if match is None:
+        return None
+    try:
+        data = json.loads(match.group(1))
+    except (ValueError, TypeError):
+        return None
+    if isinstance(data, dict) and isinstance(data.get("title"), str):
+        return data
+    return None
+
+
 def _blocks_to_chunks(content: list[Any]) -> list[StreamChunk]:
-    """Map an assistant message's content blocks to chunks (duck-typed)."""
+    """Map an assistant message's content blocks to chunks (duck-typed).
+
+    Text is deliberately NOT re-emitted here: with ``include_partial_messages``
+    the live token deltas (``StreamEvent``) already streamed it, so re-emitting
+    the complete ``TextBlock`` would render every reply twice on the panel.
+    Instead the complete text is mined for a fenced ``roboco-draft`` block and
+    surfaced as a single ``draft`` chunk; thinking + tool_use (which do NOT
+    arrive as deltas) are emitted as before.
+    """
     chunks: list[StreamChunk] = []
+    text_parts: list[str] = []
     for block in content or []:
-        if hasattr(block, "text"):  # TextBlock
-            chunks.append(StreamChunk(kind="text", text=str(block.text)))
-        elif hasattr(block, "thinking"):  # ThinkingBlock
+        if hasattr(block, "thinking"):  # ThinkingBlock
             chunks.append(StreamChunk(kind="thinking", text=str(block.thinking)))
         elif hasattr(block, "name") and hasattr(block, "input"):  # ToolUseBlock
             chunks.append(
@@ -65,6 +95,11 @@ def _blocks_to_chunks(content: list[Any]) -> list[StreamChunk]:
                     data={"input": getattr(block, "input", {})},
                 )
             )
+        elif hasattr(block, "text"):  # TextBlock — already streamed; mine for a draft
+            text_parts.append(str(block.text))
+    draft = _extract_draft("".join(text_parts))
+    if draft is not None:
+        chunks.append(StreamChunk(kind="draft", data=draft))
     return chunks
 
 
@@ -189,7 +224,7 @@ def build_intake_options(
     model: str | None = None,
 ) -> Any:  # pragma: no cover - thin SDK construction
     """Build ``ClaudeAgentOptions`` for the intake session (lazy SDK import)."""
-    from claude_agent_sdk import ClaudeAgentOptions  # noqa: PLC0415 - lazy: heavy SDK
+    from claude_agent_sdk import ClaudeAgentOptions
 
     return ClaudeAgentOptions(
         system_prompt=system_prompt,
@@ -215,7 +250,7 @@ class SdkIntakeSession:  # pragma: no cover - requires the live claude binary
         self._client: Any = None
 
     async def __aenter__(self) -> SdkIntakeSession:
-        from claude_agent_sdk import ClaudeSDKClient  # noqa: PLC0415 - lazy: heavy SDK
+        from claude_agent_sdk import ClaudeSDKClient
 
         self._client = ClaudeSDKClient(options=self._options)
         await self._client.connect()

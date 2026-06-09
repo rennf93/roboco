@@ -24,13 +24,37 @@ from fastapi import APIRouter, HTTPException, Request, status
 from pydantic import BaseModel, Field, model_validator
 from sse_starlette import EventSourceResponse
 
-from roboco.api.deps import DbSession, get_orchestrator
+from roboco.api.deps import CurrentAgentContext, DbSession, get_orchestrator
+from roboco.services.base import NotFoundError, ServiceError, ValidationError
+from roboco.services.prompter import get_prompter_service
 from roboco.services.prompter_live import get_live_registry
 
 if TYPE_CHECKING:
     from collections.abc import AsyncGenerator
 
 router = APIRouter()
+
+
+def _translate_service_error(e: ServiceError) -> HTTPException:
+    """Service error → HTTP status (mirrors the legacy prompter route)."""
+    if isinstance(e, NotFoundError):
+        return HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail={"error": "not_found", "message": e.message},
+        )
+    if isinstance(e, ValidationError):
+        return HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail={
+                "error": "validation_error",
+                "message": e.message,
+                "field": e.field,
+            },
+        )
+    return HTTPException(
+        status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+        detail={"error": "internal_error", "message": e.message},
+    )
 
 
 class StartLiveRequest(BaseModel):
@@ -144,6 +168,50 @@ async def stop_live(session_id: str) -> dict[str, bool]:
     """Reap the live intake session (panel close, or draft confirmed)."""
     await get_orchestrator().reap_intake_session(session_id)
     return {"stopped": True}
+
+
+class LiveConfirmRequest(BaseModel):
+    """Confirm the agent's draft → a task, scoped to exactly one target."""
+
+    project_id: UUID | None = None
+    product_id: UUID | None = None
+    draft: dict[str, Any]
+
+    @model_validator(mode="after")
+    def _exactly_one_target(self) -> LiveConfirmRequest:
+        if bool(self.project_id) == bool(self.product_id):
+            raise ValueError("provide exactly one of project_id / product_id")
+        return self
+
+
+@router.post("/live/{session_id}/confirm", status_code=status.HTTP_201_CREATED)
+async def confirm_live(
+    session_id: str,
+    body: LiveConfirmRequest,
+    db: DbSession,
+    agent: CurrentAgentContext,
+) -> dict[str, str]:
+    """Turn the agent's confirmed draft into a backlog task, then reap the agent.
+
+    The task is created at ``backlog`` (intake never reaches ``pending`` without
+    the board/PM gate), attributed to the confirming agent (the CEO). On success
+    the live session is reaped — the chat is over once the draft is a task.
+    """
+    service = get_prompter_service(db)
+    try:
+        task_id = await service.confirm_live_draft(
+            body.draft,
+            agent.agent_id,
+            project_id=body.project_id,
+            product_id=body.product_id,
+        )
+    except ServiceError as e:
+        raise _translate_service_error(e) from e
+    await db.commit()
+
+    # The draft is now a task — reap the agent + close the relay stream.
+    await get_orchestrator().reap_intake_session(session_id)
+    return {"task_id": str(task_id)}
 
 
 @router.post("/live/{session_id}/events")

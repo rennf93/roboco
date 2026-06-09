@@ -32,7 +32,7 @@ from roboco.db.tables import (
     TaskTable,
 )
 from roboco.foundation.identity import CELL_TEAMS
-from roboco.models.base import Complexity, TaskNature, TaskType, Team
+from roboco.models.base import Complexity, TaskNature, TaskStatus, TaskType, Team
 from roboco.models.task import TaskCreateRequest
 from roboco.services.base import NotFoundError, ServiceError, ValidationError
 
@@ -219,11 +219,7 @@ class PrompterService:
     # Session-based interface
     # -----------------------------------------------------------------------
 
-    async def create_session(
-        self,
-        agent_id: UUID,
-        context: dict[str, Any] | None = None,  # noqa: ARG002
-    ) -> PrompterSessionTable:
+    async def create_session(self, agent_id: UUID) -> PrompterSessionTable:
         """Create a new Prompter conversation session."""
         session = PrompterSessionTable(
             id=uuid4(),
@@ -374,6 +370,42 @@ class PrompterService:
             draft_data = dict(draft_record.draft_data)
         self._apply_overrides(draft_data, ov)
 
+        task = await self.create_task_from_draft(draft_data, agent_id)
+
+        # Persist the launched draft so the stored record reflects reality.
+        draft_record.draft_data = draft_data
+
+        # Mark draft as confirmed
+        now = datetime.now(UTC)
+        draft_record.confirmed_at = now
+        draft_record.task_id = task.id
+        session_rec.status = "confirmed"
+        await self._session.flush()
+
+        self.log.info(
+            "Draft confirmed — task created",
+            session_id=str(session_id),
+            task_id=str(task.id),
+        )
+        return UUID(str(task.id))
+
+    async def create_task_from_draft(
+        self, draft_data: dict[str, Any], agent_id: UUID
+    ) -> TaskTable:
+        """Create a ``backlog`` Task from a structured draft.
+
+        Shared by both prompter confirm paths (``confirm_draft`` and the
+        live-intake ``confirm_live_draft``): recomposes the description,
+        validates exactly-one target, coerces enums, routes the owning team
+        (product → Main PM, project → lead cell), and persists via
+        ``TaskService.create``. Mutates ``draft_data['description']`` in place.
+        ``confirmed_by_human=True`` — the CEO confirmed it.
+
+        Prompter drafts land at **BACKLOG**, not PENDING: backlog is the holding
+        area where a draft waits until it's reviewed and explicitly promoted to
+        pending (``TaskService.activate``). Creating at pending would skip that
+        gate and send the draft straight to work.
+        """
         # Recompose the description from the (possibly edited) structured fields —
         # the task always carries a freshly-composed, consistent description.
         draft_data["description"] = compose_description(draft_data)
@@ -423,32 +455,48 @@ class PrompterService:
             assigned_to=resolved_assigned_to,
             project_id=resolved_project_id,
             product_id=resolved_product_id,
+            status=TaskStatus.BACKLOG,
             source="prompter",
             confirmed_by_human=True,
         )
-
-        # Persist the launched draft so the stored record reflects reality.
-        draft_record.draft_data = draft_data
 
         # Import TaskService lazily to avoid circular imports
         from roboco.services.task import get_task_service
 
         task_service = get_task_service(self._session)
-        task: TaskTable = await task_service.create(req)
+        return await task_service.create(req)
 
-        # Mark draft as confirmed
-        now = datetime.now(UTC)
-        draft_record.confirmed_at = now
-        draft_record.task_id = task.id
-        session_rec.status = "confirmed"
-        await self._session.flush()
+    async def confirm_live_draft(
+        self,
+        draft: dict[str, Any],
+        agent_id: UUID,
+        *,
+        project_id: UUID | None = None,
+        product_id: UUID | None = None,
+    ) -> UUID:
+        """Confirm a live-intake draft → create the task; return its id.
 
+        The live intake chat has no Ollama ``PrompterSession``: the human
+        confirms the structured draft the spawned agent proposed (and may have
+        edited in the dialog). Enum fields the dialog doesn't surface default to
+        sane values so a confirm never fails on a missing ``nature``.
+        """
+        draft_data: dict[str, Any] = dict(draft)
+        if project_id is not None:
+            draft_data["project_id"] = str(project_id)
+        if product_id is not None:
+            draft_data["product_id"] = str(product_id)
+        # Fields the confirm dialog doesn't expose — default rather than reject.
+        draft_data.setdefault("task_type", TaskType.CODE.value)
+        draft_data.setdefault("nature", TaskNature.TECHNICAL.value)
+        draft_data.setdefault("estimated_complexity", Complexity.MEDIUM.value)
+        draft_data.setdefault("priority", 2)
+
+        task = await self.create_task_from_draft(draft_data, agent_id)
         self.log.info(
-            "Draft confirmed — task created",
-            session_id=str(session_id),
-            task_id=str(task.id),
+            "Live intake draft confirmed — task created", task_id=str(task.id)
         )
-        return task.id  # type: ignore[return-value]
+        return UUID(str(task.id))
 
     @staticmethod
     def _apply_overrides(draft_data: dict[str, Any], ov: ConfirmOverrides) -> None:

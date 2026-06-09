@@ -20,9 +20,13 @@ import pytest_asyncio
 from fastapi import FastAPI
 from httpx import ASGITransport, AsyncClient
 from roboco.api import deps
+from roboco.api.deps import get_agent_context
 from roboco.api.routes.prompter_live import router
 from roboco.db.base import get_db
+from roboco.models.base import AgentRole
 from roboco.services import prompter_live
+from roboco.services.base import ValidationError
+from roboco.services.permissions import AgentContext
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator
@@ -135,10 +139,12 @@ class _FakeOrchestrator:
 
 
 @pytest_asyncio.fixture
-async def start_client() -> AsyncIterator[dict[str, Any]]:
+async def start_client(
+    monkeypatch: pytest.MonkeyPatch,
+) -> AsyncIterator[dict[str, Any]]:
     orch = _FakeOrchestrator()
-    prev = deps._ServiceHolder.orchestrator
-    deps._ServiceHolder.orchestrator = orch  # type: ignore[assignment]
+    # monkeypatch.setattr is untyped (no ignore for the fake) and auto-reverts.
+    monkeypatch.setattr(deps._ServiceHolder, "orchestrator", orch)
 
     async def _fake_db() -> AsyncIterator[object]:
         yield object()  # product-scope start never touches it
@@ -149,8 +155,6 @@ async def start_client() -> AsyncIterator[dict[str, Any]]:
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test") as client:
         yield {"client": client, "orch": orch}
-
-    deps._ServiceHolder.orchestrator = prev
 
 
 @pytest.mark.asyncio
@@ -233,3 +237,95 @@ def _async_return(value: Any) -> Any:
         return value
 
     return _coro()
+
+
+# ---------------------------------------------------------------------------
+# confirm — draft → task + reap-on-confirm (service mocked; route wiring only).
+# ---------------------------------------------------------------------------
+
+
+class _FakeDb:
+    async def commit(self) -> None:
+        return None
+
+
+@pytest_asyncio.fixture
+async def confirm_client(
+    monkeypatch: pytest.MonkeyPatch,
+) -> AsyncIterator[dict[str, Any]]:
+    orch = _FakeOrchestrator()
+    monkeypatch.setattr(deps._ServiceHolder, "orchestrator", orch)
+
+    async def _fake_db() -> AsyncIterator[_FakeDb]:
+        yield _FakeDb()
+
+    ceo = AgentContext(agent_id=uuid4(), role=AgentRole.CEO, team=None, slug="ceo")
+
+    app = FastAPI()
+    app.include_router(router, prefix="/api/prompter")
+    app.dependency_overrides[get_db] = _fake_db
+    app.dependency_overrides[get_agent_context] = lambda: ceo
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        yield {"client": client, "orch": orch}
+
+
+@pytest.mark.asyncio
+async def test_confirm_creates_task_and_reaps(confirm_client: dict) -> None:
+    client, orch = confirm_client["client"], confirm_client["orch"]
+    task_id = uuid4()
+
+    class _FakeService:
+        async def confirm_live_draft(self, _draft: Any, _agent: Any, **_kw: Any) -> Any:
+            return task_id
+
+    with patch(
+        "roboco.api.routes.prompter_live.get_prompter_service",
+        lambda _db: _FakeService(),
+    ):
+        resp = await client.post(
+            "/api/prompter/live/s1/confirm",
+            json={
+                "project_id": str(uuid4()),
+                "draft": {"title": "x", "acceptance_criteria": ["a"]},
+            },
+        )
+    assert resp.status_code == HTTPStatus.CREATED
+    assert resp.json() == {"task_id": str(task_id)}
+    assert orch.reaped == ["s1"]  # reap-on-confirm
+
+
+@pytest.mark.asyncio
+async def test_confirm_requires_exactly_one_target(confirm_client: dict) -> None:
+    client = confirm_client["client"]
+    both = await client.post(
+        "/api/prompter/live/s1/confirm",
+        json={
+            "project_id": str(uuid4()),
+            "product_id": str(uuid4()),
+            "draft": {"title": "x"},
+        },
+    )
+    assert both.status_code == HTTPStatus.UNPROCESSABLE_ENTITY
+
+
+@pytest.mark.asyncio
+async def test_confirm_validation_error_is_translated_and_not_reaped(
+    confirm_client: dict,
+) -> None:
+    client, orch = confirm_client["client"], confirm_client["orch"]
+
+    class _FakeService:
+        async def confirm_live_draft(self, _draft: Any, _agent: Any, **_kw: Any) -> Any:
+            raise ValidationError(message="bad draft", field="title")
+
+    with patch(
+        "roboco.api.routes.prompter_live.get_prompter_service",
+        lambda _db: _FakeService(),
+    ):
+        resp = await client.post(
+            "/api/prompter/live/s1/confirm",
+            json={"project_id": str(uuid4()), "draft": {"title": "x"}},
+        )
+    assert resp.status_code == HTTPStatus.BAD_REQUEST
+    assert orch.reaped == []  # a failed confirm must NOT reap the session

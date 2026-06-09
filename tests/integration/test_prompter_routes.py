@@ -45,8 +45,9 @@ _DOUBLE_TURN_MSGS = 4  # 2 user + 2 assistant
 async def prompter_client(
     db_session: AsyncSession,
 ) -> AsyncIterator[dict[str, Any]]:
+    agent_id = uuid4()
     agent = AgentTable(
-        id=uuid4(),
+        id=agent_id,
         name="DevAgent",
         slug=f"dev-agent-{uuid4().hex[:8]}",
         role=AgentRole.DEVELOPER,
@@ -69,7 +70,7 @@ async def prompter_client(
 
     async def _override_agent() -> AgentContext:
         return AgentContext(
-            agent_id=agent.id,  # type: ignore[arg-type]
+            agent_id=agent_id,
             role=AgentRole.DEVELOPER,
             team=None,
         )
@@ -227,20 +228,6 @@ async def test_create_session_success(prompter_client: dict) -> None:
     assert body["status"] == "active"
     assert "agent_id" in body
     assert "created_at" in body
-
-
-@pytest.mark.asyncio
-async def test_create_session_with_context(prompter_client: dict) -> None:
-    """POST /sessions accepts optional bootstrap context."""
-    client = prompter_client["client"]
-    response = await client.post(
-        "/api/prompter/sessions",
-        json={"context": {"team": "backend", "project_id": str(uuid4())}},
-        headers=_HDR,
-    )
-    assert response.status_code == HTTPStatus.CREATED
-    body = response.json()
-    assert body["status"] == "active"
 
 
 @pytest.mark.asyncio

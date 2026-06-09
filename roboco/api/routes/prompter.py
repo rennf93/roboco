@@ -26,7 +26,6 @@ from roboco.api.schemas.prompter import (
     PrompterDraftTask,
     PrompterMessageRequest,
     PrompterMessageResponse,
-    PrompterSessionCreateRequest,
     PrompterSessionResponse,
     PrompterTurnResponse,
     TaskConfirmRequest,
@@ -71,17 +70,13 @@ def _translate_error(e: ServiceError) -> HTTPException:
     status_code=status.HTTP_201_CREATED,
 )
 async def create_session(
-    data: PrompterSessionCreateRequest,
     db: DbSession,
     agent: CurrentAgentContext,
 ) -> PrompterSessionResponse:
     """Create a new Prompter conversation session linked to the authenticated agent."""
     service = get_prompter_service(db)
     try:
-        session = await service.create_session(
-            agent_id=agent.agent_id,
-            context=data.context,
-        )
+        session = await service.create_session(agent_id=agent.agent_id)
     except ServiceError as e:
         raise _translate_error(e) from e
     # Commit explicitly: the rest of the write surface (tasks, a2a, ...) does
@@ -91,8 +86,8 @@ async def create_session(
     await db.commit()
 
     return PrompterSessionResponse(
-        id=session.id,  # type: ignore[arg-type]
-        agent_id=session.agent_id,  # type: ignore[arg-type]
+        id=UUID(str(session.id)),
+        agent_id=UUID(str(session.agent_id)),
         status=session.status,
         created_at=session.created_at,
         updated_at=session.updated_at,
@@ -129,8 +124,8 @@ async def send_message(
     return PrompterTurnResponse(
         messages=[
             PrompterMessageResponse(
-                id=msg.id,  # type: ignore[arg-type]
-                session_id=msg.session_id,  # type: ignore[arg-type]
+                id=UUID(str(msg.id)),
+                session_id=UUID(str(msg.session_id)),
                 role=msg.role,
                 content=msg.content,
                 created_at=msg.created_at,
@@ -182,11 +177,11 @@ async def get_draft(
         ) from exc
 
     return TaskDraftResponse(
-        id=draft_record.id,  # type: ignore[arg-type]
-        session_id=draft_record.session_id,  # type: ignore[arg-type]
+        id=UUID(str(draft_record.id)),
+        session_id=UUID(str(draft_record.session_id)),
         draft=draft_task,
         confirmed_at=draft_record.confirmed_at,
-        task_id=draft_record.task_id,  # type: ignore[arg-type]
+        task_id=UUID(str(draft_record.task_id)) if draft_record.task_id else None,
         created_at=draft_record.created_at,
     )
 

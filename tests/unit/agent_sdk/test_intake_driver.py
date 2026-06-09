@@ -81,6 +81,8 @@ def test_normalize_stream_event_non_text_delta_is_dropped() -> None:
 
 
 def test_normalize_assistant_message_blocks() -> None:
+    # Text is NOT re-emitted from the AssistantMessage (the StreamEvent deltas
+    # already carried it live) — only thinking + tool_use, which have no deltas.
     msg = AssistantMessage(
         [
             TextBlock("hello"),
@@ -89,11 +91,33 @@ def test_normalize_assistant_message_blocks() -> None:
         ]
     )
     chunks = normalize(msg)
-    assert [c.kind for c in chunks] == ["text", "thinking", "tool_use"]
-    assert chunks[0].text == "hello"
-    assert chunks[1].text == "hmm"
-    assert chunks[2].tool == "Read"
-    assert chunks[2].data["input"] == {"file": "metrics.tsx"}
+    assert [c.kind for c in chunks] == ["thinking", "tool_use"]
+    assert chunks[0].text == "hmm"
+    assert chunks[1].tool == "Read"
+    assert chunks[1].data["input"] == {"file": "metrics.tsx"}
+
+
+def test_normalize_assistant_message_extracts_draft_block() -> None:
+    # A finished reply that ends with a fenced roboco-draft block yields a
+    # single `draft` chunk carrying the parsed object — and no `text` chunk.
+    text = (
+        "Here is the task.\n"
+        "```roboco-draft\n"
+        '{"title": "Add metrics", "acceptance_criteria": ["x"], "scale": "single"}\n'
+        "```\n"
+    )
+    chunks = normalize(AssistantMessage([TextBlock(text)]))
+    assert [c.kind for c in chunks] == ["draft"]
+    assert chunks[0].data["title"] == "Add metrics"
+    assert chunks[0].data["scale"] == "single"
+
+
+def test_normalize_assistant_message_malformed_draft_is_ignored() -> None:
+    bad = "```roboco-draft\n{not valid json}\n```"
+    assert normalize(AssistantMessage([TextBlock(bad)])) == []
+    # A draft block with no title is not a usable draft either.
+    no_title = '```roboco-draft\n{"acceptance_criteria": []}\n```'
+    assert normalize(AssistantMessage([TextBlock(no_title)])) == []
 
 
 def test_normalize_result_message_carries_session_id() -> None:

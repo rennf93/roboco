@@ -9,11 +9,16 @@ from __future__ import annotations
 import json
 from typing import Any
 from unittest.mock import AsyncMock, patch
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 import pytest
-from roboco.db.tables import AgentTable
-from roboco.models.base import AgentRole, AgentStatus, Team
+from roboco.db.tables import (
+    AgentTable,
+    ProductTable,
+    ProjectTable,
+    TaskTable,
+)
+from roboco.models.base import AgentRole, AgentStatus, TaskStatus, Team
 from roboco.services.base import NotFoundError, ServiceError, ValidationError
 from roboco.services.prompter import (
     PrompterService,
@@ -340,8 +345,9 @@ async def test_create_session_db(db_session: Any) -> None:
     """create_session persists a PrompterSessionTable row."""
     service = get_prompter_service(db=db_session)
 
+    agent_id = uuid4()
     agent = AgentTable(
-        id=uuid4(),
+        id=agent_id,
         name="TestAgent",
         slug=f"test-{uuid4().hex[:8]}",
         role=AgentRole.DEVELOPER,
@@ -356,10 +362,10 @@ async def test_create_session_db(db_session: Any) -> None:
     db_session.add(agent)
     await db_session.flush()
 
-    session = await service.create_session(agent_id=agent.id)  # type: ignore[arg-type]
+    session = await service.create_session(agent_id=agent_id)
     assert session.id is not None
     assert session.status == "active"
-    assert session.agent_id == agent.id
+    assert session.agent_id == agent_id
 
 
 @pytest.mark.asyncio
@@ -375,8 +381,9 @@ async def test_get_draft_empty_session_raises(db_session: Any) -> None:
     """get_or_generate_draft raises ValidationError if no messages exist."""
     service = get_prompter_service(db=db_session)
 
+    agent_id = uuid4()
     agent = AgentTable(
-        id=uuid4(),
+        id=agent_id,
         name="TestAgent",
         slug=f"test-{uuid4().hex[:8]}",
         role=AgentRole.DEVELOPER,
@@ -391,10 +398,119 @@ async def test_get_draft_empty_session_raises(db_session: Any) -> None:
     db_session.add(agent)
     await db_session.flush()
 
-    session = await service.create_session(agent_id=agent.id)  # type: ignore[arg-type]
+    session = await service.create_session(agent_id=agent_id)
 
     with pytest.raises(ValidationError, match="empty conversation"):
         await service.get_or_generate_draft(
-            session_id=session.id,  # type: ignore[arg-type]
-            agent_id=agent.id,  # type: ignore[arg-type]
+            session_id=UUID(str(session.id)),
+            agent_id=agent_id,
         )
+
+
+async def _seed_project_and_ceo(db_session: Any) -> tuple[UUID, UUID]:
+    """Seed a system agent + project + CEO; return (project_id, ceo_id).
+
+    Returns plain ``UUID``s (not the ORM rows) so callers pass real uuids to the
+    service — no casting the ORM ``.id`` column type at the call site.
+    """
+    system_id, project_id, ceo_id = uuid4(), uuid4(), uuid4()
+    system = AgentTable(
+        id=system_id,
+        name="System",
+        slug=f"system-{uuid4().hex[:8]}",
+        role=AgentRole.SYSTEM,
+        team=None,
+        status=AgentStatus.ACTIVE,
+        model_config={},
+        system_prompt="system",
+        capabilities=[],
+        permissions={},
+        metrics={},
+    )
+    db_session.add(system)
+    await db_session.flush()
+    project = ProjectTable(
+        id=project_id,
+        name="Intake Test Project",
+        slug=f"intake-{uuid4().hex[:8]}",
+        git_url="https://github.com/example/intake.git",
+        default_branch="main",
+        protected_branches=["main"],
+        assigned_cell=Team.BACKEND,
+        created_by=system_id,
+        is_active=True,
+    )
+    ceo = AgentTable(
+        id=ceo_id,
+        name="CEO",
+        slug=f"ceo-{uuid4().hex[:8]}",
+        role=AgentRole.CEO,
+        team=None,
+        status=AgentStatus.ACTIVE,
+        model_config={},
+        system_prompt="ceo",
+        capabilities=[],
+        permissions={},
+        metrics={},
+    )
+    db_session.add_all([project, ceo])
+    await db_session.flush()
+    return project_id, ceo_id
+
+
+@pytest.mark.asyncio
+async def test_confirm_live_draft_creates_backlog_task(db_session: Any) -> None:
+    """Live-intake confirm lands the task at BACKLOG (the can_draft_tasks
+    invariant: intake never reaches pending without the board/PM gate)."""
+    project_id, ceo_id = await _seed_project_and_ceo(db_session)
+    service = get_prompter_service(db=db_session)
+
+    draft = {
+        "title": "Add token metrics",
+        "objective": "See token usage at a glance.",
+        "acceptance_criteria": ["Dashboard shows total tokens"],
+        "team": "backend",
+        "the_work": [
+            {"team": "backend", "summary": "instrument", "items": ["count tokens"]}
+        ],
+    }
+    task_id = await service.confirm_live_draft(draft, ceo_id, project_id=project_id)
+
+    row = await db_session.get(TaskTable, task_id)
+    assert row is not None
+    assert row.status == TaskStatus.BACKLOG  # never pending
+    assert row.source == "prompter"
+    assert row.confirmed_by_human is True
+    assert row.team == Team.BACKEND  # lead cell from the_work
+    assert row.created_by == ceo_id
+    # Enum fields the confirm dialog doesn't surface got sane defaults.
+    assert row.nature is not None
+    assert row.task_type is not None
+
+
+@pytest.mark.asyncio
+async def test_confirm_live_draft_product_routes_to_main_pm(db_session: Any) -> None:
+    """A product-scoped live draft is a board-led coordination root (Main PM)."""
+    _project_id, ceo_id = await _seed_project_and_ceo(db_session)
+    product_id = uuid4()
+    product = ProductTable(
+        id=product_id,
+        name="Intake Product",
+        slug=f"prod-{uuid4().hex[:8]}",
+        description="x",
+        created_by=ceo_id,
+    )
+    db_session.add(product)
+    await db_session.flush()
+
+    service = get_prompter_service(db=db_session)
+    draft = {
+        "title": "Board-led feature",
+        "acceptance_criteria": ["works end to end"],
+        "team": "backend",
+    }
+    task_id = await service.confirm_live_draft(draft, ceo_id, product_id=product_id)
+    row = await db_session.get(TaskTable, task_id)
+    assert row.team == Team.MAIN_PM
+    assert row.product_id == product_id
+    assert row.project_id is None

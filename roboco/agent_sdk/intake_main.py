@@ -97,7 +97,7 @@ def build_receiver(queue: asyncio.Queue[str | None]) -> FastAPI:
 
 async def main() -> None:  # pragma: no cover - needs the live container + SDK
     """Wire receiver + driver and run them concurrently for the chat's lifetime."""
-    import uvicorn  # noqa: PLC0415 - lazy: only the container needs the server
+    import uvicorn
 
     session_id = os.environ["ROBOCO_PROMPTER_SESSION_ID"]
     base_url = os.environ.get("ROBOCO_API_URL", "http://roboco-orchestrator:8000")
@@ -115,7 +115,7 @@ async def main() -> None:  # pragma: no cover - needs the live container + SDK
         model=model,
     )
 
-    from roboco.agent_sdk.intake_driver import SdkIntakeSession  # noqa: PLC0415
+    from roboco.agent_sdk.intake_driver import SdkIntakeSession
 
     @asynccontextmanager
     async def session_factory() -> AsyncIterator[SdkIntakeSession]:

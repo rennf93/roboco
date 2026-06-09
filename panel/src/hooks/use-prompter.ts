@@ -86,6 +86,12 @@ function newId(): string {
   return `msg-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
 }
 
+/** Remove the fenced ```roboco-draft block from displayed text — the structured
+ *  draft card renders it; the raw JSON shouldn't sit in the chat bubble. */
+function stripDraftFence(text: string): string {
+  return text.replace(/```roboco-draft[\s\S]*?```/g, "").trimEnd();
+}
+
 /** Map an agent-proposed draft (the `draft` SSE event payload) to the editable
  *  form, carrying the chat's chosen scope through unchanged. */
 function toEditable(
@@ -186,14 +192,19 @@ export function usePrompter() {
     });
   }, []);
 
-  /** Attach the agent's proposed draft to the current/last assistant message. */
+  /** Attach the agent's proposed draft to the current/last assistant message,
+   *  stripping the raw draft block out of that message's displayed text. */
   const attachDraft = useCallback((draft: DraftProposal) => {
     setMessages((prev) => {
       const targetId =
         streamingIdRef.current ??
         [...prev].reverse().find((m) => m.role === "assistant")?.id;
       if (targetId) {
-        return prev.map((m) => (m.id === targetId ? { ...m, draft } : m));
+        return prev.map((m) =>
+          m.id === targetId
+            ? { ...m, draft, content: stripDraftFence(m.content) }
+            : m
+        );
       }
       return [...prev, { id: newId(), role: "assistant", content: "", draft }];
     });
