@@ -219,6 +219,7 @@ export function usePrompter() {
       switch (evt.kind) {
         case "text":
           if (evt.text) {
+            setActivity(null); // first text clears the "preparing…" indicator
             appendDelta(evt.text);
             setState("streaming");
           }
@@ -321,6 +322,9 @@ export function usePrompter() {
       setSessionId(session_id);
       openStream(session_id);
       setIsSending(true); // the opening reply is on its way over SSE
+      // start now returns immediately; the container spawns in the background
+      // (clone + image build can take a minute). Show that until the first event.
+      setActivity("Preparing the agent — cloning your repo and reading the code…");
       setState("streaming");
     } catch (err) {
       addMessage({ role: "error", content: getErrorMessage(err) });

@@ -9,6 +9,7 @@ spawn/reap orchestration with docker + clone mocked (no daemon, no NAS).
 
 from __future__ import annotations
 
+import asyncio
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
@@ -309,6 +310,72 @@ class TestSpawnIntakeSession:
             "sess-3", project_slug="roboco", initial_message="build X"
         )
         assert scheduled == [("sess-3", "build X")]
+
+
+class TestStartIntakeSession:
+    """Non-blocking start: relay opens synchronously, spawn runs in the background."""
+
+    @pytest.mark.asyncio
+    async def test_opens_relay_now_and_schedules_spawn(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        orch = _make_minimal_orchestrator()
+        spawned: list[str] = []
+
+        async def _spawn(session_id: str, **_kw: Any) -> Any:
+            spawned.append(session_id)
+            return AgentInstance(agent_id=INTAKE_AGENT_ID)
+
+        monkeypatch.setattr(orch, "_spawn_intake_container", _spawn)
+
+        await orch.start_intake_session("sess-A", project_slug="roboco")
+
+        # Relay is open the instant start returns — the SSE stream can connect
+        # before the (slow) container spawn finishes.
+        assert prompter_live.get_live_registry().get("sess-A") is not None
+        await asyncio.sleep(0)  # let the scheduled bg spawn run
+        assert spawned == ["sess-A"]
+
+    @pytest.mark.asyncio
+    async def test_rejects_bad_scope(self) -> None:
+        orch = _make_minimal_orchestrator()
+        with pytest.raises(ValueError, match="exactly one"):
+            await orch.start_intake_session("s", project_slug="r", product_id="p")
+
+
+class TestSpawnGuarded:
+    """A background spawn failure surfaces on the relay instead of dying silently."""
+
+    @pytest.mark.asyncio
+    async def test_failure_pushes_error_and_closes(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        orch = _make_minimal_orchestrator()
+        registry = prompter_live.get_live_registry()
+        registry.open("sess-B", INTAKE_AGENT_ID)
+
+        pushed: list[tuple[str, dict[str, Any]]] = []
+        closed: list[str] = []
+
+        async def _boom(_session_id: str, **_kw: Any) -> Any:
+            raise RuntimeError("clone exploded")
+
+        def _push(sid: str, ev: dict[str, Any]) -> bool:
+            pushed.append((sid, ev))
+            return True
+
+        monkeypatch.setattr(orch, "_spawn_intake_container", _boom)
+        monkeypatch.setattr(registry, "push", _push)
+        monkeypatch.setattr(registry, "close", closed.append)
+
+        await orch._spawn_intake_container_guarded(
+            "sess-B", project_slug="roboco", product_id=None, initial_message=None
+        )
+
+        assert len(pushed) == 1
+        assert pushed[0][1]["kind"] == "error"
+        assert "clone exploded" in pushed[0][1]["text"]
+        assert closed == ["sess-B"]
 
 
 class TestReapIntakeSession:

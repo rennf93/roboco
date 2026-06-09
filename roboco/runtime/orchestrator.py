@@ -26,7 +26,7 @@ from typing import TYPE_CHECKING, Any, ClassVar
 import httpx
 
 if TYPE_CHECKING:
-    from collections.abc import Callable
+    from collections.abc import Callable, Coroutine
 
     from roboco.services.llm import AgentRoute
     from roboco.services.task import TaskService
@@ -2491,6 +2491,39 @@ class AgentOrchestrator:
     # agent reads code with Read/Grep/Glob and talks only to the human).
     # =========================================================================
 
+    async def start_intake_session(
+        self,
+        session_id: str,
+        *,
+        project_slug: str | None = None,
+        product_id: str | None = None,
+        initial_message: str | None = None,
+    ) -> None:
+        """Non-blocking start: open the relay now, spawn the container in the bg.
+
+        The panel's ``POST /live/start`` returns immediately rather than blocking
+        on the workspace clone + first-time image build + ``docker run`` (which
+        can exceed the HTTP timeout — the cause of the "Request timed out" the
+        panel showed). The panel opens the SSE stream right away; the agent's
+        first reply arrives once the container is up. A spawn failure is pushed
+        onto the relay as an ``error`` event and closes the session, so the panel
+        shows it instead of hanging. Exactly one of ``project_slug`` /
+        ``product_id`` must be given.
+        """
+        if bool(project_slug) == bool(product_id):
+            raise ValueError(
+                "intake scope requires exactly one of project_slug / product_id"
+            )
+        self._open_intake_relay(session_id)
+        self._schedule_bg(
+            self._spawn_intake_container_guarded(
+                session_id,
+                project_slug=project_slug,
+                product_id=product_id,
+                initial_message=initial_message,
+            )
+        )
+
     async def spawn_intake_session(
         self,
         session_id: str,
@@ -2499,18 +2532,75 @@ class AgentOrchestrator:
         product_id: str | None = None,
         initial_message: str | None = None,
     ) -> AgentInstance:
-        """Spawn the persistent intake container for one live chat.
+        """Spawn the intake container for one live chat, **synchronously**.
 
-        Clones the chat's scope repo(s) so the agent reads real code, launches
-        the SDK-driver container, and registers the live session. The container
-        stays up until reaped (draft confirmed / idle). Exactly one of
+        Opens the relay then clones + launches the container, awaiting the whole
+        thing. Prefer ``start_intake_session`` on the request path; this blocking
+        variant is for direct/internal callers and tests. Exactly one of
         ``project_slug`` / ``product_id`` must be given.
         """
         if bool(project_slug) == bool(product_id):
             raise ValueError(
                 "intake scope requires exactly one of project_slug / product_id"
             )
+        self._open_intake_relay(session_id)
+        return await self._spawn_intake_container(
+            session_id,
+            project_slug=project_slug,
+            product_id=product_id,
+            initial_message=initial_message,
+        )
 
+    @staticmethod
+    def _open_intake_relay(session_id: str) -> None:
+        """Register the live relay session so the SSE stream connects immediately."""
+        from roboco.services.prompter_live import get_live_registry
+
+        get_live_registry().open(session_id, INTAKE_AGENT_ID)
+
+    async def _spawn_intake_container_guarded(
+        self,
+        session_id: str,
+        *,
+        project_slug: str | None,
+        product_id: str | None,
+        initial_message: str | None,
+    ) -> None:
+        """Background container spawn; surface failures on the relay, not silently."""
+        from roboco.services.prompter_live import get_live_registry
+
+        try:
+            await self._spawn_intake_container(
+                session_id,
+                project_slug=project_slug,
+                product_id=product_id,
+                initial_message=initial_message,
+            )
+        except Exception as exc:
+            logger.error(
+                "Intake container spawn failed", session_id=session_id, error=str(exc)
+            )
+            registry = get_live_registry()
+            registry.push(
+                session_id,
+                {"kind": "error", "text": f"Couldn't start the intake agent: {exc}"},
+            )
+            registry.close(session_id)
+
+    async def _spawn_intake_container(
+        self,
+        session_id: str,
+        *,
+        project_slug: str | None,
+        product_id: str | None,
+        initial_message: str | None,
+    ) -> AgentInstance:
+        """Clone the scope, launch the SDK-driver container, track the instance.
+
+        The relay must already be open (``_open_intake_relay``). Heavy + slow
+        (clone + first-time image build + docker run) — keep it off the request
+        path via ``start_intake_session``.
+        """
         # Single live session: reap any prior intake container before spawning.
         if INTAKE_AGENT_ID in self._instances:
             await self.stop_agent(INTAKE_AGENT_ID, graceful=False)
@@ -2728,16 +2818,27 @@ class AgentOrchestrator:
             raise RuntimeError(f"Failed to start intake container: {stderr.decode()}")
         return stdout.decode().strip()
 
-    def _schedule_intake_first_message(self, session_id: str, text: str) -> None:
-        """Fire-and-forget the opening message once the container is reachable."""
+    def _schedule_bg(self, coro: "Coroutine[Any, Any, None]") -> None:
+        """Fire-and-forget a coroutine, strong-reffed so it isn't GC'd mid-flight.
+
+        Silently no-ops when there's no running loop (sync unit tests); the coro
+        is closed to avoid a "never awaited" warning.
+        """
         import contextlib as _ctx
 
-        with _ctx.suppress(RuntimeError):  # no running loop (sync unit tests)
-            bg = asyncio.get_running_loop().create_task(
-                self._deliver_when_ready(session_id, text)
-            )
-            self._bg_tasks.add(bg)
-            bg.add_done_callback(self._bg_tasks.discard)
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            with _ctx.suppress(Exception):
+                coro.close()
+            return
+        bg = loop.create_task(coro)
+        self._bg_tasks.add(bg)
+        bg.add_done_callback(self._bg_tasks.discard)
+
+    def _schedule_intake_first_message(self, session_id: str, text: str) -> None:
+        """Fire-and-forget the opening message once the container is reachable."""
+        self._schedule_bg(self._deliver_when_ready(session_id, text))
 
     async def _deliver_when_ready(
         self,

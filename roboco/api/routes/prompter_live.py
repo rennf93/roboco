@@ -118,7 +118,9 @@ async def start_live(body: StartLiveRequest, db: DbSession) -> StartLiveResponse
 
     session_id = uuid4().hex
     try:
-        await get_orchestrator().spawn_intake_session(
+        # Non-blocking: opens the relay + spawns the container in the background,
+        # so this request returns immediately (no 60s timeout on clone/build/run).
+        await get_orchestrator().start_intake_session(
             session_id,
             project_slug=project_slug,
             product_id=str(body.product_id) if body.product_id else None,

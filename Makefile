@@ -385,6 +385,8 @@ prune:
 .PHONY: clean
 clean:
 	@find . | grep -E "(__pycache__|\.pyc|\.pyo|\.pytest_cache|\.ruff_cache|\.mypy_cache)" | xargs rm -rf
+	@cd panel && rm -rf node_modules/ && rm -rf .next/ && rm -rf logs/
+	@cd ..
 
 # Security
 .PHONY: panel-token
