@@ -5,6 +5,7 @@ import { AlertTriangle } from "lucide-react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { cn } from "@/lib/utils";
+import { CopyButton } from "@/components/ui/copy-button";
 import type { ChatMessage, StartRoute } from "@/hooks/use-prompter";
 import { DraftProposalCard } from "./draft-proposal-card";
 
@@ -79,6 +80,13 @@ export function ChatMessages({
                 </div>
               </div>
             </div>
+
+            {/* Copy the agent's message (plan/analysis) out to save elsewhere */}
+            {msg.content.trim().length > 0 && (
+              <div className="flex justify-start pl-1">
+                <CopyButton value={msg.content} label="Copy" />
+              </div>
+            )}
 
             {/* Inline draft proposal card when LLM offers a draft */}
             {msg.draft && (

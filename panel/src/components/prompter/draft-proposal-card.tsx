@@ -4,6 +4,7 @@ import { MessageCircle, Users, Rocket } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardFooter, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
+import { CopyButton } from "@/components/ui/copy-button";
 import type { DraftProposal } from "@/lib/api/prompter";
 import type { StartRoute } from "@/hooks/use-prompter";
 
@@ -24,6 +25,39 @@ const PRIORITY_LABELS: Record<number, string> = {
 const cellLabel = (team: string) =>
   team === "ux_ui" ? "UX/UI" : team.charAt(0).toUpperCase() + team.slice(1);
 
+/** Render the draft as plain markdown text for the copy button, so the CEO can
+ *  stash the full spec elsewhere (a safety net until refresh-durability lands). */
+function draftToText(draft: DraftProposal): string {
+  const lines: string[] = [`# ${draft.title}`, ""];
+  if (draft.objective) lines.push("## Objective", draft.objective, "");
+  if (draft.what_this_builds?.length) {
+    lines.push(
+      "## What This Builds",
+      ...draft.what_this_builds.map((b) => `- ${b}`),
+      ""
+    );
+  }
+  if (draft.the_work?.length) {
+    lines.push("## The Work");
+    for (const cell of draft.the_work) {
+      lines.push(`### ${cellLabel(cell.team)}`, cell.summary);
+      if (cell.items?.length) lines.push(...cell.items.map((i) => `- ${i}`));
+      lines.push("");
+    }
+  }
+  if (draft.notes?.length) {
+    lines.push("## Notes", ...draft.notes.map((n) => `- ${n}`), "");
+  }
+  if (draft.acceptance_criteria.length) {
+    lines.push(
+      "## Success Criteria",
+      ...draft.acceptance_criteria.map((c) => `- ${c}`),
+      ""
+    );
+  }
+  return lines.join("\n").trim();
+}
+
 export function DraftProposalCard({
   draft,
   onKeepChatting,
@@ -39,7 +73,7 @@ export function DraftProposalCard({
           <CardTitle className="text-sm font-semibold leading-tight">
             {draft.title}
           </CardTitle>
-          <div className="flex flex-wrap gap-1 shrink-0">
+          <div className="flex flex-wrap items-center gap-1 shrink-0">
             {draft.team && (
               <Badge variant="secondary" className="text-xs">
                 {draft.team}
@@ -53,6 +87,7 @@ export function DraftProposalCard({
                 {draft.task_type}
               </Badge>
             )}
+            <CopyButton value={draftToText(draft)} className="ml-0.5" />
           </div>
         </div>
       </CardHeader>
