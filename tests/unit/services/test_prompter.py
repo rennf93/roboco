@@ -18,7 +18,15 @@ from roboco.db.tables import (
     ProjectTable,
     TaskTable,
 )
-from roboco.models.base import AgentRole, AgentStatus, TaskStatus, Team
+from roboco.models.base import (
+    AgentRole,
+    AgentStatus,
+    Complexity,
+    TaskNature,
+    TaskStatus,
+    TaskType,
+    Team,
+)
 from roboco.seeds.initial_data import AGENT_UUIDS
 from roboco.services.base import NotFoundError, ServiceError, ValidationError
 from roboco.services.prompter import (
@@ -142,6 +150,44 @@ def test_lead_cell_team_prefers_the_work_cell() -> None:
     assert PrompterService._lead_cell_team(draft, default=Team.BACKEND) is Team.FRONTEND
     # Empty the_work falls back to the provided default.
     assert PrompterService._lead_cell_team({}, default=Team.BACKEND) is Team.BACKEND
+
+
+def test_lead_cell_team_skips_invalid_cell_names() -> None:
+    # An off-enum cell name is skipped, not raised on; falls through to a valid one.
+    draft = {"the_work": [{"team": "nonsense"}, {"team": "frontend"}]}
+    assert PrompterService._lead_cell_team(draft, default=Team.BACKEND) is Team.FRONTEND
+
+
+def test_coerce_draft_enums_defaults_invalid_values() -> None:
+    # Regression: the LLM emits off-enum values (e.g. task_type="feature"). The
+    # confirm must coerce to defaults, never raise — a bad enum guess must not
+    # 400 the launch and force the agent to self-correct in-chat.
+    draft = {
+        "team": "backend",
+        "task_type": "feature",  # not a valid TaskType
+        "nature": "bogus",  # not a valid TaskNature
+        "estimated_complexity": "enormous",  # not a valid Complexity
+    }
+    team, task_type, nature, complexity = PrompterService._coerce_draft_enums(draft)
+    assert team is Team.BACKEND
+    assert task_type is TaskType.CODE
+    assert nature is TaskNature.TECHNICAL
+    assert complexity is Complexity.MEDIUM
+
+
+def test_coerce_draft_enums_keeps_valid_and_derives_missing_team() -> None:
+    # Valid values pass through; a missing team is derived from the_work.
+    draft = {
+        "task_type": "documentation",
+        "nature": "technical",
+        "estimated_complexity": "medium",
+        "the_work": [{"team": "frontend"}],
+    }
+    team, task_type, nature, complexity = PrompterService._coerce_draft_enums(draft)
+    assert team is Team.FRONTEND
+    assert task_type is TaskType.DOCUMENTATION
+    assert nature is TaskNature.TECHNICAL
+    assert complexity is Complexity.MEDIUM
 
 
 def test_build_chat_prompt_basic() -> None:
