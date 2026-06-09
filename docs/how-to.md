@@ -1,5 +1,7 @@
 # How RoboCo works
 
+![Twelve-second looping preview of the RoboCo control panel — the org tree, a task in progress, and an approval queue.](videos/panel-teaser.gif)
+
 RoboCo is a virtual software company — 18 AI agents and one human: you. Not a
 swarm of bots, not a framework to wire together — an **organization**, with
 roles, a chain of command, formal reviews, and sign-offs. You don't micromanage
@@ -28,8 +30,6 @@ proof of concept.
 **Prefer video?** A [full screen-recording of the panel](videos/panel-full-walkthrough.mp4)
 walks through every page and detail end-to-end — useful as a first tour before
 diving into the screenshots below.
-
-![Twelve-second looping preview of the RoboCo control panel — the org tree, a task in progress, and an approval queue.](videos/panel-teaser.gif)
 
 ![The RoboCo Command Center: per-cell health, the CEO approval queue, live metrics, auditor alerts, and recent activity.](images/overview_dashboard.png)
 
@@ -69,10 +69,13 @@ awaiting review, completed — on its own branch.*
 ### 1 · It starts with you
 
 You describe what you want — a feature, a fix, an entire product. The way in is
-the **Task Assistant**: instead of filling a form from memory, you give it a
-rough idea and it reads your *actual* codebase, asks a few sharp questions, and
-hands back a properly-formed task — an objective, a per-cell breakdown, and the
-acceptance criteria that define what "finished" really means.
+the **Task Assistant** — which is the **Prompter** itself, the very feature whose
+build the rest of this page follows. (You're about to use the tool RoboCo built
+for itself; further down, you'll watch the company build it.) Instead of filling
+a form from memory, you give it a rough idea and it reads your *actual* codebase,
+asks a few sharp questions, and hands back a properly-formed task — an objective,
+a per-cell breakdown, and the acceptance criteria that define what "finished"
+really means.
 
 ![The Task Assistant's scope form: pick the project or product to work in, then describe what you want to build.](images/start_prompter.png)
 
@@ -93,7 +96,7 @@ does.*
 files, laying out what to build and where, and refining with you over a couple of
 turns until the spec is right.*
 
-<!-- TODO: capture the 3-button draft card in the next smoke run and save it as docs/images/prompter_draft_card.png -->
+<!-- prompter_draft_card.png is the captured smoke shot; optionally re-capture after the draft-card cell-badge dedupe ships, for cleaner "Board-led across Backend Frontend" badges. -->
 ![The draft proposal card: the finished task — objective, per-cell work, and acceptance criteria — with three choices: Keep chatting, Board review & Start, or Approve & Start.](images/prompter_draft_card.png)
 
 *The proposal, ready to launch. Keep chatting to refine it, send it to the
@@ -107,11 +110,13 @@ card.*
 *From a rough sentence to a real, scoped task in a single chat — acceptance
 criteria and all, already moving through the company.*
 
-From here the task takes the path you chose for it. Send it to the **Board** and
-its job is to pin it down: the Product Owner and Head of Marketing turn the draft
-into a settled spec, sharpening the requirements and the acceptance criteria
-before anyone writes a line of code. The Auditor watches the whole time but never
-interferes.
+From here, every task follows the path you chose for it. To show that journey end
+to end, the rest of this page follows the **Prompter's own** trip through the
+company — from this same starting point to a merged pull request. Send a task to
+the **Board** and their job is to pin it down: the Product Owner and Head of
+Marketing turn the draft into a settled spec, sharpening the requirements and the
+acceptance criteria before anyone writes a line of code. The Auditor watches the
+whole time but never interferes.
 
 ![A Board review session: the Product Owner writing out requirements and acceptance criteria for a task.](images/chat_session.png)
 
