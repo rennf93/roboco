@@ -35,6 +35,8 @@ from roboco.agent_sdk.models import (
     SendResponse,
     TerminalStatus,
     TerminalToolRecordRequest,
+    TokenReportRequest,
+    TokenUsageStatus,
     VerbAttemptRequest,
     VerbCircuitStatus,
 )
@@ -420,6 +422,11 @@ class _SessionState:
         self.verb_attempts: dict[tuple[str, str | None], deque[float]] = defaultdict(
             deque
         )
+        # Cumulative token usage for this session (reported via /usage/report)
+        self.tokens_input: int = 0
+        self.tokens_output: int = 0
+        self.tokens_cache_read: int = 0
+        self.tokens_cache_write: int = 0
 
     def reset(self) -> None:
         self._init_fields()
@@ -677,6 +684,54 @@ def _terminal_snapshot() -> TerminalStatus:
         had_terminal_recently=_state.had_terminal_recently(),
         stop_attempts=_state.stop_attempts,
         stop_allowance=_STOP_ALLOWANCE,
+    )
+
+
+# =============================================================================
+# TOKEN USAGE REPORTING
+# =============================================================================
+
+
+@app.post("/usage/report", response_model=TokenUsageStatus)
+async def usage_report(req: TokenReportRequest) -> TokenUsageStatus:
+    """Accumulate token usage counts for the current session.
+
+    Called by Claude Code hooks (e.g. PostToolUse) after each API call
+    to report the tokens consumed by that invocation. Counts are additive
+    — multiple calls sum up correctly across the session lifetime.
+    """
+    _state.tokens_input += req.tokens_input
+    _state.tokens_output += req.tokens_output
+    _state.tokens_cache_read += req.tokens_cache_read
+    _state.tokens_cache_write += req.tokens_cache_write
+
+    logger.debug(
+        "Token usage reported",
+        delta_input=req.tokens_input,
+        delta_output=req.tokens_output,
+        total_input=_state.tokens_input,
+        total_output=_state.tokens_output,
+    )
+
+    return _token_usage_snapshot()
+
+
+@app.get("/usage/status", response_model=TokenUsageStatus)
+async def usage_status() -> TokenUsageStatus:
+    """Return cumulative token usage totals for the current session.
+
+    The orchestrator sweeper calls this endpoint every ~60 s to record
+    snapshots and to finalize session rows when the container stops.
+    """
+    return _token_usage_snapshot()
+
+
+def _token_usage_snapshot() -> TokenUsageStatus:
+    return TokenUsageStatus(
+        tokens_input=_state.tokens_input,
+        tokens_output=_state.tokens_output,
+        tokens_cache_read=_state.tokens_cache_read,
+        tokens_cache_write=_state.tokens_cache_write,
     )
 
 
