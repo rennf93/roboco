@@ -1382,6 +1382,10 @@ class AgentOrchestrator:
                     "model": config.model,
                 },
             )
+
+            # Record a token-usage session row in the DB (fire-and-forget).
+            await self._record_spawn_session(config, task_id)
+
             return instance
         except Exception as e:
             instance.state = AgentState.OFFLINE
@@ -2868,7 +2872,12 @@ class AgentOrchestrator:
     # AGENT STOPPING
     # =========================================================================
 
-    async def stop_agent(self, agent_id: str, graceful: bool = True) -> None:
+    async def stop_agent(
+        self,
+        agent_id: str,
+        graceful: bool = True,
+        exit_reason: str = "stopped",
+    ) -> None:
         """Stop an agent container."""
         async with self._lock:
             if agent_id not in self._instances:
@@ -2879,6 +2888,10 @@ class AgentOrchestrator:
             if instance.container_id:
                 instance.state = AgentState.STOPPING
                 container_name = f"roboco-agent-{agent_id}"
+
+                # Finalize the spawn-session row before the container is removed
+                # so we can still query the SDK's /usage/status endpoint.
+                await self._finalize_spawn_session(agent_id, exit_reason=exit_reason)
 
                 if graceful:
                     # Graceful stop with timeout
@@ -3006,6 +3019,360 @@ class AgentOrchestrator:
                     )
                 )
                 await db.commit()
+        except Exception as e:
+            logger.error(
+                "Failed to delete waiting record",
+                agent_id=agent_id,
+                error=str(e),
+            )
+
+    # =========================================================================
+    # TOKEN USAGE INSTRUMENTATION
+    # =========================================================================
+
+    async def _record_spawn_session(
+        self,
+        config: "OrchestratorAgentConfig",
+        task_id: str | None,
+    ) -> None:
+        """Insert a row into agent_spawn_sessions after a successful spawn.
+
+        Errors are caught and logged; a missing session row must never block
+        the spawn path.
+        """
+        try:
+            from uuid import uuid4 as _uuid4
+
+            from roboco.db.base import get_session_factory
+            from roboco.db.tables import AgentSpawnSessionTable
+
+            agent_slug = config.agent_id
+            team = get_agent_team(agent_slug) or "backend"
+            role = get_agent_role(agent_slug) or "developer"
+
+            session_factory = get_session_factory()
+            async with session_factory() as db:
+                row = AgentSpawnSessionTable(
+                    id=_uuid4(),
+                    agent_slug=agent_slug,
+                    team=team,
+                    role=role,
+                    model=config.model or "unknown",
+                    task_id=task_id,
+                    started_at=datetime.now(UTC),
+                )
+                db.add(row)
+                await db.commit()
+                logger.debug(
+                    "Spawn session recorded",
+                    agent_slug=agent_slug,
+                    session_id=str(row.id),
+                    task_id=task_id,
+                )
+        except Exception as exc:
+            logger.warning(
+                "Failed to record spawn session",
+                agent_slug=config.agent_id,
+                error=str(exc),
+            )
+
+    async def _finalize_spawn_session(
+        self,
+        agent_id: str,
+        exit_reason: str = "stopped",
+    ) -> None:
+        """Close the open agent_spawn_sessions row for this agent.
+
+        Fetches final token counts from the agent SDK's /usage/status endpoint,
+        calculates cost via pricing module, then updates the DB row with
+        ended_at, token totals, exit_reason, and estimated_cost_usd.
+        Errors are caught and logged — finalization must never block stop_agent.
+        """
+        try:
+            from roboco.billing.pricing import calculate_cost
+            from roboco.db.base import get_session_factory
+            from roboco.db.tables import AgentSpawnSessionTable
+
+            # Fetch final token counts from the agent's SDK
+            sdk_url = f"http://roboco-agent-{agent_id}:{SDK_PORT}/usage/status"
+            tokens_input = 0
+            tokens_output = 0
+            tokens_cache_read = 0
+            tokens_cache_write = 0
+            model = "unknown"
+
+            try:
+                async with httpx.AsyncClient(timeout=3.0) as client:
+                    resp = await client.get(sdk_url)
+                    if resp.status_code == 200:
+                        data = resp.json()
+                        tokens_input = data.get("tokens_input", 0)
+                        tokens_output = data.get("tokens_output", 0)
+                        tokens_cache_read = data.get("tokens_cache_read", 0)
+                        tokens_cache_write = data.get("tokens_cache_write", 0)
+            except Exception as sdk_exc:
+                logger.debug(
+                    "Could not fetch final token counts from SDK",
+                    agent_id=agent_id,
+                    error=str(sdk_exc),
+                )
+
+            # Look up the model from the running instance config
+            instance = self._instances.get(agent_id)
+            if instance and instance.config:
+                model = instance.config.model or "unknown"
+
+            cost = calculate_cost(
+                model=model,
+                tokens_input=tokens_input,
+                tokens_output=tokens_output,
+                tokens_cache_read=tokens_cache_read,
+                tokens_cache_write=tokens_cache_write,
+            )
+
+            session_factory = get_session_factory()
+            async with session_factory() as db:
+                from sqlalchemy import select, update
+
+                # Update the most recent open session for this agent
+                result = await db.execute(
+                    select(AgentSpawnSessionTable)
+                    .where(
+                        AgentSpawnSessionTable.agent_slug == agent_id,
+                        AgentSpawnSessionTable.ended_at.is_(None),
+                    )
+                    .order_by(AgentSpawnSessionTable.started_at.desc())
+                    .limit(1)
+                )
+                session_row = result.scalar_one_or_none()
+                if session_row is not None:
+                    await db.execute(
+                        update(AgentSpawnSessionTable)
+                        .where(AgentSpawnSessionTable.id == session_row.id)
+                        .values(
+                            ended_at=datetime.now(UTC),
+                            tokens_input=tokens_input,
+                            tokens_output=tokens_output,
+                            tokens_cache_read=tokens_cache_read,
+                            tokens_cache_write=tokens_cache_write,
+                            exit_reason=exit_reason,
+                            estimated_cost_usd=cost,
+                        )
+                    )
+                    await db.commit()
+                    logger.debug(
+                        "Spawn session finalized",
+                        agent_id=agent_id,
+                        session_id=str(session_row.id),
+                        tokens_input=tokens_input,
+                        tokens_output=tokens_output,
+                        estimated_cost_usd=cost,
+                    )
+        except Exception as exc:
+            logger.warning(
+                "Failed to finalize spawn session",
+                agent_id=agent_id,
+                error=str(exc),
+            )
+
+    async def _sweep_token_snapshots(self) -> None:
+        """Write a token_usage_snapshots row for each active agent with non-zero tokens.
+
+        Called from _run_sweep() every ~60 s. Also updates the cumulative
+        token counts on the open agent_spawn_sessions row so the DB reflects
+        current progress without waiting for session close.
+        Errors per-agent are caught so one bad agent doesn't abort the whole sweep.
+        """
+        if not self._instances:
+            return
+
+        try:
+            from roboco.db.base import get_session_factory
+            from roboco.db.tables import AgentSpawnSessionTable, TokenUsageSnapshotTable
+        except ImportError:
+            return
+
+        session_factory = get_session_factory()
+
+        async with httpx.AsyncClient(timeout=3.0) as client:
+            for agent_id, instance in list(self._instances.items()):
+                if instance.state not in (
+                    AgentState.ACTIVE,
+                    AgentState.WAITING_SHORT,
+                ):
+                    continue
+
+                sdk_url = f"http://roboco-agent-{agent_id}:{SDK_PORT}/usage/status"
+                try:
+                    resp = await client.get(sdk_url)
+                    if resp.status_code != 200:
+                        continue
+                    data = resp.json()
+                    tokens_input = data.get("tokens_input", 0)
+                    tokens_output = data.get("tokens_output", 0)
+                    tokens_cache_read = data.get("tokens_cache_read", 0)
+                    tokens_cache_write = data.get("tokens_cache_write", 0)
+
+                    # Skip agents with no token usage yet
+                    total = tokens_input + tokens_output + tokens_cache_read + tokens_cache_write
+                    if total == 0:
+                        continue
+
+                    async with session_factory() as db:
+                        from sqlalchemy import select, update
+
+                        # Find the open session row
+                        result = await db.execute(
+                            select(AgentSpawnSessionTable)
+                            .where(
+                                AgentSpawnSessionTable.agent_slug == agent_id,
+                                AgentSpawnSessionTable.ended_at.is_(None),
+                            )
+                            .order_by(AgentSpawnSessionTable.started_at.desc())
+                            .limit(1)
+                        )
+                        session_row = result.scalar_one_or_none()
+                        if session_row is None:
+                            continue
+
+                        # Insert snapshot
+                        from uuid import uuid4 as _uuid4
+                        snapshot = TokenUsageSnapshotTable(
+                            id=_uuid4(),
+                            agent_spawn_session_id=session_row.id,
+                            snapshotted_at=datetime.now(UTC),
+                            tokens_input=tokens_input,
+                            tokens_output=tokens_output,
+                            tokens_cache_read=tokens_cache_read,
+                            tokens_cache_write=tokens_cache_write,
+                        )
+                        db.add(snapshot)
+
+                        # Update cumulative totals on the session row
+                        await db.execute(
+                            update(AgentSpawnSessionTable)
+                            .where(AgentSpawnSessionTable.id == session_row.id)
+                            .values(
+                                tokens_input=tokens_input,
+                                tokens_output=tokens_output,
+                                tokens_cache_read=tokens_cache_read,
+                                tokens_cache_write=tokens_cache_write,
+                            )
+                        )
+                        await db.commit()
+
+                except Exception as agent_exc:
+                    logger.debug(
+                        "Token snapshot failed for agent",
+                        agent_id=agent_id,
+                        error=str(agent_exc),
+                    )
+
+    async def _sweep_daily_rollup(self) -> None:
+        """Upsert daily_usage_rollups from closed agent_spawn_sessions.
+
+        Groups ended sessions by (date, agent_slug, team, model) and sums
+        their token counts + cost. Uses a Python-side upsert to stay
+        compatible with asyncpg / SQLAlchemy without raw INSERT ... ON CONFLICT
+        dialect-specific SQL.
+        Errors are caught so a bad rollup doesn't abort the sweeper.
+        """
+        try:
+            from roboco.billing.pricing import calculate_cost
+            from roboco.db.base import get_session_factory
+            from roboco.db.tables import AgentSpawnSessionTable, DailyUsageRollupTable
+        except ImportError:
+            return
+
+        try:
+            from uuid import uuid4 as _uuid4
+            from sqlalchemy import func, select
+
+            session_factory = get_session_factory()
+            async with session_factory() as db:
+                # Aggregate closed sessions by (date, agent_slug, team, model)
+                result = await db.execute(
+                    select(
+                        func.date(AgentSpawnSessionTable.started_at).label("date"),
+                        AgentSpawnSessionTable.agent_slug,
+                        AgentSpawnSessionTable.team,
+                        AgentSpawnSessionTable.model,
+                        func.sum(AgentSpawnSessionTable.tokens_input).label("tokens_input"),
+                        func.sum(AgentSpawnSessionTable.tokens_output).label("tokens_output"),
+                        func.sum(AgentSpawnSessionTable.tokens_cache_read).label("tokens_cache_read"),
+                        func.sum(AgentSpawnSessionTable.tokens_cache_write).label("tokens_cache_write"),
+                        func.sum(AgentSpawnSessionTable.estimated_cost_usd).label("total_cost_usd"),
+                        func.count(AgentSpawnSessionTable.id).label("session_count"),
+                    )
+                    .where(AgentSpawnSessionTable.ended_at.isnot(None))
+                    .group_by(
+                        func.date(AgentSpawnSessionTable.started_at),
+                        AgentSpawnSessionTable.agent_slug,
+                        AgentSpawnSessionTable.team,
+                        AgentSpawnSessionTable.model,
+                    )
+                )
+                rows = result.fetchall()
+
+                for row in rows:
+                    date_val = row.date
+                    agent_slug = row.agent_slug
+                    team = row.team
+                    model = row.model
+
+                    # Look for existing rollup row
+                    existing_result = await db.execute(
+                        select(DailyUsageRollupTable).where(
+                            DailyUsageRollupTable.date == date_val,
+                            DailyUsageRollupTable.agent_slug == agent_slug,
+                            DailyUsageRollupTable.team == team,
+                            DailyUsageRollupTable.model == model,
+                        )
+                    )
+                    existing = existing_result.scalar_one_or_none()
+
+                    tokens_input = int(row.tokens_input or 0)
+                    tokens_output = int(row.tokens_output or 0)
+                    tokens_cache_read = int(row.tokens_cache_read or 0)
+                    tokens_cache_write = int(row.tokens_cache_write or 0)
+                    total_cost = float(row.total_cost_usd or 0.0)
+                    session_count = int(row.session_count or 0)
+
+                    if existing is not None:
+                        from sqlalchemy import update
+                        await db.execute(
+                            update(DailyUsageRollupTable)
+                            .where(DailyUsageRollupTable.id == existing.id)
+                            .values(
+                                tokens_input=tokens_input,
+                                tokens_output=tokens_output,
+                                tokens_cache_read=tokens_cache_read,
+                                tokens_cache_write=tokens_cache_write,
+                                total_cost_usd=total_cost,
+                                session_count=session_count,
+                            )
+                        )
+                    else:
+                        new_row = DailyUsageRollupTable(
+                            id=_uuid4(),
+                            date=date_val,
+                            agent_slug=agent_slug,
+                            team=team,
+                            model=model,
+                            tokens_input=tokens_input,
+                            tokens_output=tokens_output,
+                            tokens_cache_read=tokens_cache_read,
+                            tokens_cache_write=tokens_cache_write,
+                            total_cost_usd=total_cost,
+                            session_count=session_count,
+                        )
+                        db.add(new_row)
+
+                await db.commit()
+                logger.debug("Daily usage rollup complete", rows_processed=len(rows))
+
+        except Exception as exc:
+            logger.warning("Daily usage rollup failed", error=str(exc))
         except Exception as e:
             logger.error(
                 "Failed to delete waiting record",
@@ -3211,6 +3578,11 @@ Start by:
         # container so the next dispatcher tick doesn't waste tokens on the
         # same session.
         await self._sweep_budget_exceeded()
+
+        # Token-usage instrumentation: snapshot active agents and roll up
+        # closed sessions into the daily aggregation table.
+        await self._sweep_token_snapshots()
+        await self._sweep_daily_rollup()
 
     @staticmethod
     async def _fetch_budget_status(
