@@ -3373,12 +3373,6 @@ class AgentOrchestrator:
 
         except Exception as exc:
             logger.warning("Daily usage rollup failed", error=str(exc))
-        except Exception as e:
-            logger.error(
-                "Failed to delete waiting record",
-                agent_id=agent_id,
-                error=str(e),
-            )
 
     async def restore_waiting_records(self) -> int:
         """Load persisted waiting records into memory on orchestrator start.
