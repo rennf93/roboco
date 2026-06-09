@@ -113,6 +113,10 @@ class UsageService(BaseService):
 
         Each point has: bucket (ISO string), tokens_input, tokens_output,
         total_tokens, cost_usd.
+
+        total_tokens includes all 4 token types (input + output + cache_read +
+        cache_write) so it is consistent with get_summary()'s total_tokens
+        field — AC9 requires their sums to match for the same period.
         """
         start_dt, hours = _parse_period(period)
 
@@ -128,6 +132,8 @@ class UsageService(BaseService):
                 trunc_fn.label("bucket"),
                 func.coalesce(func.sum(AgentSpawnSessionTable.tokens_input), 0).label("tokens_input"),
                 func.coalesce(func.sum(AgentSpawnSessionTable.tokens_output), 0).label("tokens_output"),
+                func.coalesce(func.sum(AgentSpawnSessionTable.tokens_cache_read), 0).label("tokens_cache_read"),
+                func.coalesce(func.sum(AgentSpawnSessionTable.tokens_cache_write), 0).label("tokens_cache_write"),
                 func.coalesce(func.sum(AgentSpawnSessionTable.estimated_cost_usd), 0.0).label("cost_usd"),
             )
             .where(
@@ -143,12 +149,14 @@ class UsageService(BaseService):
         for r in rows:
             ti = int(r.tokens_input or 0)
             to_ = int(r.tokens_output or 0)
+            tcr = int(r.tokens_cache_read or 0)
+            tcw = int(r.tokens_cache_write or 0)
             points.append(
                 {
                     "bucket": r.bucket.isoformat() if r.bucket else None,
                     "tokens_input": ti,
                     "tokens_output": to_,
-                    "total_tokens": ti + to_,
+                    "total_tokens": ti + to_ + tcr + tcw,
                     "cost_usd": round(float(r.cost_usd or 0.0), 6),
                 }
             )

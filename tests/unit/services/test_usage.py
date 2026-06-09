@@ -199,6 +199,94 @@ class TestGetSummaryTrendPct:
 
 
 # ---------------------------------------------------------------------------
+# get_time_series — total_tokens includes all 4 token types (AC9 consistency)
+# ---------------------------------------------------------------------------
+
+# Named constants for time-series tests
+_TS_INPUT = 100
+_TS_OUTPUT = 200
+_TS_CACHE_READ = 50
+_TS_CACHE_WRITE = 30
+# total = 100 + 200 + 50 + 30 = 380
+_TS_TOTAL_WITH_CACHE = 380
+# Without cache tokens (the old wrong formula): 100 + 200 = 300
+_TS_TOTAL_WITHOUT_CACHE = 300
+
+
+class TestGetTimeSeries:
+    @pytest.mark.asyncio
+    async def test_total_tokens_includes_cache_read_and_write(self) -> None:
+        """total_tokens in each time-series point must include cache tokens.
+
+        This is the AC9 consistency requirement: time-series total_tokens must
+        sum to the same value as get_summary()'s total_tokens for the same
+        period.  The old implementation used ti + to_ (without cache), which
+        violated this constraint whenever cache tokens were non-zero.
+        """
+        import datetime
+
+        bucket_dt = datetime.datetime(2026, 6, 9, 12, 0, 0, tzinfo=datetime.timezone.utc)
+        row = _make_row(
+            bucket=bucket_dt,
+            tokens_input=_TS_INPUT,
+            tokens_output=_TS_OUTPUT,
+            tokens_cache_read=_TS_CACHE_READ,
+            tokens_cache_write=_TS_CACHE_WRITE,
+            cost_usd=0.01,
+        )
+        svc = _service_with_execute(_result_fetchall([row]))
+        result = await svc.get_time_series("24h")
+        assert len(result) == 1
+        assert result[0]["total_tokens"] == _TS_TOTAL_WITH_CACHE
+
+    @pytest.mark.asyncio
+    async def test_total_tokens_without_cache_still_correct(self) -> None:
+        """When cache tokens are zero, total_tokens == tokens_input + tokens_output."""
+        import datetime
+
+        bucket_dt = datetime.datetime(2026, 6, 9, 12, 0, 0, tzinfo=datetime.timezone.utc)
+        row = _make_row(
+            bucket=bucket_dt,
+            tokens_input=_TS_INPUT,
+            tokens_output=_TS_OUTPUT,
+            tokens_cache_read=_ZERO,
+            tokens_cache_write=_ZERO,
+            cost_usd=0.01,
+        )
+        svc = _service_with_execute(_result_fetchall([row]))
+        result = await svc.get_time_series("24h")
+        assert result[0]["total_tokens"] == _TS_INPUT + _TS_OUTPUT
+
+    @pytest.mark.asyncio
+    async def test_empty_result_returns_empty_list(self) -> None:
+        svc = _service_with_execute(_result_fetchall([]))
+        result = await svc.get_time_series("24h")
+        assert result == []
+
+    @pytest.mark.asyncio
+    async def test_point_contains_required_fields(self) -> None:
+        """Each time-series point must have bucket, tokens_input, tokens_output,
+        total_tokens, and cost_usd fields."""
+        import datetime
+
+        bucket_dt = datetime.datetime(2026, 6, 9, 12, 0, 0, tzinfo=datetime.timezone.utc)
+        row = _make_row(
+            bucket=bucket_dt,
+            tokens_input=100,
+            tokens_output=100,
+            tokens_cache_read=_ZERO,
+            tokens_cache_write=_ZERO,
+            cost_usd=0.01,
+        )
+        svc = _service_with_execute(_result_fetchall([row]))
+        result = await svc.get_time_series("24h")
+        assert len(result) == 1
+        point = result[0]
+        for field in ("bucket", "tokens_input", "tokens_output", "total_tokens", "cost_usd"):
+            assert field in point, f"Missing field: {field}"
+
+
+# ---------------------------------------------------------------------------
 # get_by_agent — pct_of_total sums to 100%
 # ---------------------------------------------------------------------------
 
