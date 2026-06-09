@@ -225,6 +225,10 @@ export function usePrompter() {
           }
           break;
         case "tool_use":
+          // A tool call ends the current text bubble, so the agent's words
+          // before and after the tool render as separate messages (fixes
+          // "two waves merged into one big bubble").
+          streamingIdRef.current = null;
           setActivity(evt.tool ? `Using ${evt.tool}…` : "Working…");
           break;
         case "thinking":

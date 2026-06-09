@@ -111,8 +111,12 @@ class PrompterLiveRegistry:
             resp.raise_for_status()
             return True
         except Exception as exc:
-            self.log.error(
-                "Message delivery failed", session_id=session_id, error=str(exc)
+            # Debug, not error: the opening-message delivery retries until the
+            # container's receiver is up, so transient failures here are expected
+            # and were spamming ERROR. Callers surface a real failure (the
+            # /messages route 404s; _deliver_when_ready warns once after N tries).
+            self.log.debug(
+                "Message delivery attempt failed", session_id=session_id, error=str(exc)
             )
             return False
         finally:

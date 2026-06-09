@@ -116,14 +116,16 @@ class _FakeOrchestrator:
         self.spawned: list[dict[str, Any]] = []
         self.reaped: list[str] = []
 
-    async def spawn_intake_session(
+    async def start_intake_session(
         self,
         session_id: str,
         *,
         project_slug: str | None = None,
         product_id: str | None = None,
         initial_message: str | None = None,
-    ) -> object:
+    ) -> None:
+        # The route is non-blocking now: it calls start_intake_session (returns
+        # None) which opens the relay + spawns in the background.
         self.spawned.append(
             {
                 "session_id": session_id,
@@ -132,7 +134,6 @@ class _FakeOrchestrator:
                 "initial_message": initial_message,
             }
         )
-        return SimpleNamespace(agent_id="intake-1")
 
     async def reap_intake_session(self, session_id: str) -> None:
         self.reaped.append(session_id)

@@ -1,6 +1,7 @@
 "use client";
 
-import { Loader2, Sparkles } from "lucide-react";
+import { Loader2, Sparkles, X } from "lucide-react";
+import { Button } from "@/components/ui/button";
 import { usePrompter } from "@/hooks/use-prompter";
 import {
   ChatMessages,
@@ -56,6 +57,19 @@ export default function PrompterPage() {
             Chat with an agent that reads your code and drafts the task
           </p>
         </div>
+        {/* End chat — reap the agent and return to the form (any chat state) */}
+        {!showForm && state !== "success" && (
+          <Button
+            variant="ghost"
+            size="sm"
+            className="ml-auto text-muted-foreground"
+            onClick={startAnother}
+            disabled={state === "launching"}
+          >
+            <X className="mr-1 h-4 w-4" />
+            End chat
+          </Button>
+        )}
       </div>
 
       {showForm ? (
@@ -97,11 +111,11 @@ export default function PrompterPage() {
             />
           )}
 
-          {/* Live activity indicator — "watch it work" */}
+          {/* Live activity indicator — "watch it work" (prominent) */}
           {activity && state !== "success" && (
-            <div className="flex items-center gap-2 px-6 py-1.5 text-xs text-muted-foreground">
-              <Loader2 className="h-3 w-3 animate-spin" />
-              {activity}
+            <div className="mx-4 mb-2 flex items-center gap-2.5 rounded-lg border border-primary/30 bg-primary/10 px-4 py-2.5 text-sm font-medium text-primary">
+              <Loader2 className="h-4 w-4 shrink-0 animate-spin" />
+              <span>{activity}</span>
             </div>
           )}
 
