@@ -107,4 +107,6 @@ ROLE_MODEL_MAP: dict[str, str] = {
     "product_owner": "opus",
     "head_marketing": "opus",
     "ceo": "opus",
+    # Intake interviewer — reads real code and drafts the spec; needs to be sharp.
+    "prompter": "opus",
 }

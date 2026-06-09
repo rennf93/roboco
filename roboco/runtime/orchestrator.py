@@ -69,6 +69,12 @@ AgentConfig = OrchestratorAgentConfig
 AGENT_NETWORK = "roboco_default"
 AGENT_BASE_IMAGE = "roboco-agent-base"
 
+# The intake (prompter) agent: a single seeded, board-adjacent interviewer.
+# Unlike delivery agents it is never dispatched and runs ONE persistent
+# container at a time (single CEO → one live chat). See the INTAKE section
+# below and roboco/agent_sdk/intake_main.py.
+INTAKE_AGENT_ID = "intake-1"
+
 # Role -> Image mapping
 # Specialized images extend the base with role-specific tools
 AGENT_IMAGES: dict[str, str] = {
@@ -95,6 +101,8 @@ AGENT_IMAGES: dict[str, str] = {
     "product-owner": "roboco-agent-pm",
     "head-marketing": "roboco-agent-pm",
     "auditor": "roboco-agent-pm",
+    # Intake — persistent Agent-SDK driver, not a one-shot `claude -p`.
+    INTAKE_AGENT_ID: "roboco-agent-prompter",
 }
 
 
@@ -127,6 +135,21 @@ class _SlaBreach:
     status: str
     age_seconds: int
     sla_seconds: int
+
+
+@dataclass(frozen=True)
+class _IntakeRunSpec:
+    """Inputs for ``_build_intake_run_cmd``, bundled to keep the signature small."""
+
+    container_name: str
+    image: str
+    hosts: dict[str, str | None]
+    session_id: str
+    cwd: str
+    cli_model: str
+    api_url: str
+    provider_base_url: str | None
+    provider_auth_token: str | None
 
 
 def _read_project_slug(task: dict[str, Any]) -> str | None:
@@ -636,6 +659,7 @@ class AgentOrchestrator:
                     "roboco-agent-qa-fe": "agent-qa-fe.Dockerfile",
                     "roboco-agent-doc": "agent-doc.Dockerfile",
                     "roboco-agent-ux": "agent-ux.Dockerfile",
+                    "roboco-agent-prompter": "agent-prompter.Dockerfile",
                 }
                 dockerfile = dockerfile_map.get(image)
                 if dockerfile:
@@ -2452,6 +2476,291 @@ class AgentOrchestrator:
         )
 
     # =========================================================================
+    # INTAKE (PROMPTER) LIVE SESSION
+    #
+    # The intake agent is not task-driven and is never dispatched. It is a
+    # persistent Claude-Agent-SDK driver the CEO chats with live (the container
+    # entrypoint is roboco.agent_sdk.intake_main). One fixed container —
+    # `intake-1`, the seeded board-adjacent interviewer — serves one live
+    # session at a time (single CEO; one-session-per-CEO).
+    #
+    # This spawn is a DELIBERATELY separate path from spawn_agent: no task, no
+    # readiness gate, no `claude -p` CLI args (the image ENTRYPOINT is the
+    # driver), no settings.json/hook mount (the driver owns the receiver on
+    # port 9000, not the inbox sidecar), and no MCP/gateway surface (the live
+    # agent reads code with Read/Grep/Glob and talks only to the human).
+    # =========================================================================
+
+    async def spawn_intake_session(
+        self,
+        session_id: str,
+        *,
+        project_slug: str | None = None,
+        product_id: str | None = None,
+        initial_message: str | None = None,
+    ) -> AgentInstance:
+        """Spawn the persistent intake container for one live chat.
+
+        Clones the chat's scope repo(s) so the agent reads real code, launches
+        the SDK-driver container, and registers the live session. The container
+        stays up until reaped (draft confirmed / idle). Exactly one of
+        ``project_slug`` / ``product_id`` must be given.
+        """
+        if bool(project_slug) == bool(product_id):
+            raise ValueError(
+                "intake scope requires exactly one of project_slug / product_id"
+            )
+
+        # Single live session: reap any prior intake container before spawning.
+        if INTAKE_AGENT_ID in self._instances:
+            await self.stop_agent(INTAKE_AGENT_ID, graceful=False)
+
+        cwd, cloned = await self._clone_intake_scope(project_slug, product_id)
+
+        prompt_path = self._generate_composed_prompt(INTAKE_AGENT_ID)
+        route = await self._resolve_agent_route(INTAKE_AGENT_ID)
+        cli_model = _resolve_agent_cli_model(
+            route.provider_type.value, route.model_name
+        )
+        api_url = (
+            "http://roboco-orchestrator:8000"
+            if PROJECT_HOST_PATH
+            else f"http://127.0.0.1:{settings.port}"
+        )
+
+        await self._ensure_agent_image(INTAKE_AGENT_ID)
+        container_name = f"roboco-agent-{INTAKE_AGENT_ID}"
+        await self._remove_container(container_name)
+
+        cmd = self._build_intake_run_cmd(
+            _IntakeRunSpec(
+                container_name=container_name,
+                image=get_agent_image(INTAKE_AGENT_ID),
+                hosts=self._resolve_intake_host_paths(),
+                session_id=session_id,
+                cwd=cwd,
+                cli_model=cli_model,
+                api_url=api_url,
+                provider_base_url=route.base_url,
+                provider_auth_token=route.auth_token,
+            )
+        )
+        container_id = await self._run_container_cmd(cmd)
+
+        config = AgentConfig(
+            agent_id=INTAKE_AGENT_ID,
+            blueprint_path=prompt_path,
+            model=route.model_name,
+            git_context=None,
+        )
+        instance = AgentInstance(
+            agent_id=INTAKE_AGENT_ID,
+            state=AgentState.ACTIVE,
+            config=config,
+            current_task_id=None,
+        )
+        instance.container_id = container_id
+        instance.started_at = datetime.now(UTC)
+        instance.last_activity = datetime.now(UTC)
+        self._instances[INTAKE_AGENT_ID] = instance
+
+        from roboco.services.prompter_live import get_live_registry
+
+        get_live_registry().open(session_id, INTAKE_AGENT_ID)
+        logger.info(
+            "Intake session spawned",
+            session_id=session_id,
+            container_id=container_id[:12],
+            cwd=cwd,
+            repos=len(cloned),
+        )
+        self._fire_audit(
+            event_type="agent.spawned",
+            agent_slug=INTAKE_AGENT_ID,
+            details={"session_id": session_id, "cwd": cwd, "repos": cloned},
+        )
+
+        if initial_message:
+            self._schedule_intake_first_message(session_id, initial_message)
+        return instance
+
+    async def reap_intake_session(self, session_id: str) -> None:
+        """End a live chat: close the relay stream and stop the container."""
+        from roboco.services.prompter_live import get_live_registry
+
+        get_live_registry().close(session_id)
+        await self.stop_agent(INTAKE_AGENT_ID, graceful=True)
+        logger.info("Intake session reaped", session_id=session_id)
+
+    async def _clone_intake_scope(
+        self, project_slug: str | None, product_id: str | None
+    ) -> tuple[str, list[str]]:
+        """Clone the chat scope's repo(s); return (container cwd, all paths).
+
+        ``project`` → one repo; ``product`` → each distinct cell project (the
+        Main-PM-style distinct-repo set, kept in its deterministic team order so
+        the primary is stable). The agent's cwd is the primary project's intake
+        workspace; for a product the sibling repos sit alongside it under
+        ``/data/workspaces`` and are readable via Grep/Glob/Read.
+        """
+        from roboco.db.base import get_session_factory
+        from roboco.services.workspace import WorkspaceService
+
+        team = get_agent_team(INTAKE_AGENT_ID) or "board"
+        factory = get_session_factory()
+        async with factory() as db:
+            slugs = await self._intake_scope_slugs(db, project_slug, product_id)
+            ws = WorkspaceService(db)
+            for slug in slugs:
+                await ws.ensure_workspace(slug, INTAKE_AGENT_ID)
+        # Container-side paths (the workspaces tree is mounted at
+        # /data/workspaces inside the container, regardless of the host root).
+        paths = [_agent_workspace_path(slug, team, INTAKE_AGENT_ID) for slug in slugs]
+        return paths[0], paths
+
+    @staticmethod
+    async def _intake_scope_slugs(
+        db: Any, project_slug: str | None, product_id: str | None
+    ) -> list[str]:
+        """Resolve the chat scope to the project slug(s) to clone."""
+        if project_slug:
+            return [project_slug]
+        if not product_id:
+            raise ValueError("intake scope requires project_slug or product_id")
+        from uuid import UUID
+
+        from roboco.services.product import ProductService
+        from roboco.services.project import get_project_service
+
+        project_ids = await ProductService(db).distinct_project_ids(UUID(product_id))
+        project_svc = get_project_service(db)
+        slugs: list[str] = []
+        for pid in project_ids:
+            project = await project_svc.get(pid)
+            if project and project.slug:
+                slugs.append(project.slug)
+        if not slugs:
+            raise ValueError(f"product {product_id} resolves to no projects")
+        return slugs
+
+    def _resolve_intake_host_paths(self) -> dict[str, str | None]:
+        """Host paths for the intake container's three mounts (claude/prompt/ws).
+
+        Mirrors ``_resolve_host_paths`` but only for what the driver needs —
+        there is no settings.json, MCP config, or briefing for the intake agent.
+        """
+        if PROJECT_HOST_PATH:
+            return {
+                "claude": CLAUDE_AUTH_HOST_PATH,
+                "prompt": (
+                    f"{DATA_HOST_PATH}/prompts-generated/{INTAKE_AGENT_ID}-prompt.md"
+                ),
+                "workspaces": f"{DATA_HOST_PATH}/workspaces",
+            }
+        return {
+            "claude": CLAUDE_AUTH_HOST_PATH,
+            "prompt": str(
+                Path(tempfile.gettempdir())
+                / "roboco-prompts"
+                / f"{INTAKE_AGENT_ID}-prompt.md"
+            ),
+            "workspaces": str(Path(settings.workspaces_root)),
+        }
+
+    @staticmethod
+    def _build_intake_run_cmd(spec: _IntakeRunSpec) -> list[str]:
+        """Compose the `docker run` argv for the persistent intake container.
+
+        No claude CLI args (the image ENTRYPOINT is the SDK driver), no
+        settings.json/hook mount (the driver owns port 9000), no MCP config.
+        The driver reads ``/app/system-prompt.md`` and the env below.
+        """
+        cmd: list[str] = [
+            "docker",
+            "run",
+            "-d",
+            "--name",
+            spec.container_name,
+            "--network",
+            AGENT_NETWORK,
+            "-v",
+            f"{spec.hosts['claude']}:/home/agent/.claude",
+        ]
+        AgentOrchestrator._append_claude_json_mount(cmd, spec.hosts)
+        cmd.extend(
+            [
+                "-v",
+                f"{spec.hosts['prompt']}:/app/system-prompt.md:ro",
+                "-v",
+                f"{spec.hosts['workspaces']}:/data/workspaces",
+                "-e",
+                f"ROBOCO_AGENT_ID={INTAKE_AGENT_ID}",
+                "-e",
+                f"ROBOCO_AGENT_ROLE={get_agent_role(INTAKE_AGENT_ID) or 'prompter'}",
+                "-e",
+                f"ROBOCO_API_URL={spec.api_url}",
+                "-e",
+                f"ROBOCO_PROMPTER_SESSION_ID={spec.session_id}",
+                "-e",
+                f"ROBOCO_WORKSPACE={spec.cwd}",
+                "-e",
+                f"CLAUDE_CODE_SUBAGENT_MODEL={spec.cli_model}",
+            ]
+        )
+        # Non-Anthropic providers need explicit endpoint/token; the Anthropic
+        # default uses the mounted ~/.claude login (same as every agent).
+        if spec.provider_base_url:
+            cmd.extend(["-e", f"ANTHROPIC_BASE_URL={spec.provider_base_url}"])
+        if spec.provider_auth_token:
+            cmd.extend(["-e", f"ANTHROPIC_AUTH_TOKEN={spec.provider_auth_token}"])
+        cmd.append(spec.image)
+        return cmd
+
+    async def _run_container_cmd(self, cmd: list[str]) -> str:
+        """Run a detached `docker run` and return the container id."""
+        proc = await asyncio.create_subprocess_exec(
+            *cmd,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        stdout, stderr = await proc.communicate()
+        if proc.returncode != 0:
+            raise RuntimeError(f"Failed to start intake container: {stderr.decode()}")
+        return stdout.decode().strip()
+
+    def _schedule_intake_first_message(self, session_id: str, text: str) -> None:
+        """Fire-and-forget the opening message once the container is reachable."""
+        import contextlib as _ctx
+
+        with _ctx.suppress(RuntimeError):  # no running loop (sync unit tests)
+            bg = asyncio.get_running_loop().create_task(
+                self._deliver_when_ready(session_id, text)
+            )
+            self._bg_tasks.add(bg)
+            bg.add_done_callback(self._bg_tasks.discard)
+
+    async def _deliver_when_ready(
+        self,
+        session_id: str,
+        text: str,
+        *,
+        attempts: int = 30,
+        delay: float = 1.0,
+    ) -> None:
+        """Retry-deliver the first message until the container receiver is up."""
+        from roboco.services.prompter_live import get_live_registry
+
+        registry = get_live_registry()
+        for _ in range(attempts):
+            if await registry.deliver(session_id, text):
+                return
+            await asyncio.sleep(delay)
+        logger.warning(
+            "Intake first message never delivered (receiver never came up)",
+            session_id=session_id,
+        )
+
+    # =========================================================================
     # AGENT STOPPING
     # =========================================================================
 
@@ -2799,6 +3108,39 @@ Start by:
         # same session.
         await self._sweep_budget_exceeded()
 
+    @staticmethod
+    async def _fetch_budget_status(
+        client: httpx.AsyncClient, url: str, agent_id: str
+    ) -> dict[str, Any] | None:
+        """Read an agent's SDK budget status; None if unreachable/not-JSON.
+
+        The SDK being unreachable is benign (container not yet started, already
+        gone, or a transient blip) and the health loop covers genuine failures,
+        so the failure is swallowed — but logged at debug so it is observable
+        rather than silent (the bare try/except/continue it replaced was not).
+        """
+        try:
+            resp = await client.get(url)
+        except httpx.HTTPError as exc:
+            logger.debug(
+                "Budget status unreachable; skipping agent this sweep",
+                agent_id=agent_id,
+                error=str(exc),
+            )
+            return None
+        if resp.status_code != http_status.HTTP_200_OK:
+            return None
+        try:
+            data = resp.json()
+        except ValueError as exc:
+            logger.debug(
+                "Budget status not JSON; skipping agent this sweep",
+                agent_id=agent_id,
+                error=str(exc),
+            )
+            return None
+        return data if isinstance(data, dict) else None
+
     async def _sweep_budget_exceeded(self) -> None:
         """Stop agents whose per-session SDK budget reports halt=true.
 
@@ -2818,16 +3160,8 @@ Start by:
                 ):
                     continue
                 url = f"http://roboco-agent-{agent_id}:9000/budget/status"
-                try:
-                    resp = await client.get(url)
-                    if resp.status_code != http_status.HTTP_200_OK:
-                        continue
-                    data = resp.json()
-                except Exception:
-                    # SDK unreachable / not yet started / container gone —
-                    # either benign or covered by health loop.
-                    continue
-                if not data.get("halt"):
+                data = await self._fetch_budget_status(client, url, agent_id)
+                if data is None or not data.get("halt"):
                     continue
                 logger.warning(
                     "Agent budget exceeded; terminating container",

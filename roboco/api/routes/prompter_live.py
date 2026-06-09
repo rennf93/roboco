@@ -1,31 +1,56 @@
 """Live intake chat — the panel <-> spawned-agent bridge.
 
-Three endpoints over the in-process ``PrompterLiveRegistry``:
+Endpoints over the in-process ``PrompterLiveRegistry``:
 
+- ``POST /live/start``                 — spawn the intake container for a scope.
 - ``GET  /live/{session_id}/stream``   — SSE: the agent's live events to the panel.
 - ``POST /live/{session_id}/messages`` — the human's message in (panel -> agent).
+- ``POST /live/{session_id}/stop``     — reap the session (panel close / confirm).
 - ``POST /live/{session_id}/events``   — the agent's events in (container -> relay).
 
-The session must already be live (its ``prompter`` container spawned, which
-calls ``registry.open``). Auth is intentionally light here — these are keyed by
-the opaque session id on a trusted network; token enforcement is Phase 5.
+Streaming/messaging require the session to be live (its ``prompter`` container
+spawned, which calls ``registry.open``). Auth is intentionally light here —
+sessions are keyed by an opaque id on a trusted network; token enforcement is
+Phase 5.
 """
 
 from __future__ import annotations
 
 import json
 from typing import TYPE_CHECKING, Any
+from uuid import UUID, uuid4
 
 from fastapi import APIRouter, HTTPException, Request, status
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 from sse_starlette import EventSourceResponse
 
+from roboco.api.deps import DbSession, get_orchestrator
 from roboco.services.prompter_live import get_live_registry
 
 if TYPE_CHECKING:
     from collections.abc import AsyncGenerator
 
 router = APIRouter()
+
+
+class StartLiveRequest(BaseModel):
+    """Open a live intake chat scoped to a project XOR a product."""
+
+    project_id: UUID | None = None
+    product_id: UUID | None = None
+    initial_message: str | None = Field(default=None, min_length=1)
+
+    @model_validator(mode="after")
+    def _exactly_one_scope(self) -> StartLiveRequest:
+        if bool(self.project_id) == bool(self.product_id):
+            raise ValueError("provide exactly one of project_id / product_id")
+        return self
+
+
+class StartLiveResponse(BaseModel):
+    """The new session's id — the panel opens its stream and posts messages to it."""
+
+    session_id: str
 
 
 class LiveMessageRequest(BaseModel):
@@ -41,6 +66,48 @@ class AgentEvent(BaseModel):
     text: str = ""
     tool: str = ""
     data: dict[str, Any] = Field(default_factory=dict)
+
+
+@router.post(
+    "/live/start",
+    response_model=StartLiveResponse,
+    status_code=status.HTTP_201_CREATED,
+)
+async def start_live(body: StartLiveRequest, db: DbSession) -> StartLiveResponse:
+    """Spawn the intake agent for a new chat and return its session id.
+
+    The panel then opens ``/live/{session_id}/stream`` and posts messages to
+    ``/live/{session_id}/messages``. An ``initial_message`` is delivered to the
+    agent automatically once its container is reachable.
+    """
+    project_slug: str | None = None
+    if body.project_id is not None:
+        from roboco.services.project import get_project_service
+
+        project = await get_project_service(db).get(body.project_id)
+        if project is None:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Project {body.project_id} not found",
+            )
+        project_slug = project.slug
+
+    session_id = uuid4().hex
+    try:
+        await get_orchestrator().spawn_intake_session(
+            session_id,
+            project_slug=project_slug,
+            product_id=str(body.product_id) if body.product_id else None,
+            initial_message=body.initial_message,
+        )
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to start intake session: {exc}",
+        ) from exc
+    return StartLiveResponse(session_id=session_id)
 
 
 @router.get("/live/{session_id}/stream")
@@ -70,6 +137,13 @@ async def send_message(session_id: str, body: LiveMessageRequest) -> dict[str, b
             },
         )
     return {"delivered": True}
+
+
+@router.post("/live/{session_id}/stop")
+async def stop_live(session_id: str) -> dict[str, bool]:
+    """Reap the live intake session (panel close, or draft confirmed)."""
+    await get_orchestrator().reap_intake_session(session_id)
+    return {"stopped": True}
 
 
 @router.post("/live/{session_id}/events")
