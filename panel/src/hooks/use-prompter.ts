@@ -203,12 +203,15 @@ export function usePrompter() {
    *  stripping the raw draft block out of that message's displayed text. */
   const attachDraft = useCallback((draft: DraftProposal) => {
     setMessages((prev) => {
-      const targetId =
-        streamingIdRef.current ??
-        [...prev].reverse().find((m) => m.role === "assistant")?.id;
-      if (targetId) {
+      // Attach ONLY to the CURRENT turn's streaming message. Do NOT fall back to
+      // "the last assistant message anywhere" — that can be a PRIOR turn's message
+      // sitting above the user's latest message, which made the draft card render
+      // above the user's "Yes, propose it". When there's no current streaming
+      // message, append a fresh one so the card always lands at the bottom.
+      const id = streamingIdRef.current;
+      if (id) {
         return prev.map((m) =>
-          m.id === targetId
+          m.id === id
             ? { ...m, draft, content: stripDraftFence(m.content) }
             : m
         );
