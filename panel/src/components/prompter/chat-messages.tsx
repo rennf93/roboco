@@ -115,7 +115,7 @@ export function ChatMessages({
             <div className="flex justify-start">
               <div
                 className={cn(
-                  "max-w-[70%] rounded-2xl rounded-tl-sm bg-muted px-4 py-3 text-sm",
+                  "max-w-[70%] rounded-2xl rounded-tl-sm bg-muted px-4 py-3 text-sm text-foreground",
                   msg.draft && "max-w-[85%]"
                 )}
               >
