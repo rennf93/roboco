@@ -458,7 +458,7 @@ class PrompterService:
             task_type=task_type,
             nature=nature,
             estimated_complexity=complexity,
-            priority=int(draft_data.get("priority", 2)),
+            priority=self._coerce_priority(draft_data.get("priority")),
             assigned_to=resolved_assigned_to,
             project_id=resolved_project_id,
             product_id=resolved_product_id,
@@ -590,6 +590,37 @@ class PrompterService:
         except (KeyError, ValueError, TypeError):
             complexity = Complexity.MEDIUM
         return team, task_type, nature, complexity
+
+    @staticmethod
+    def _coerce_priority(value: Any) -> int:
+        """Coerce the draft's priority to a valid int (0=urgent … 3=low).
+
+        priority is the one non-enum field the intake agent guesses, and it
+        guesses a word ("high") as often as a number. Map the words, clamp
+        numbers to 0-3, and default to 2 (medium) on anything unrecognized so the
+        launch never crashes on a priority guess (it did: ``int("high")``).
+        """
+        words = {
+            "urgent": 0,
+            "critical": 0,
+            "high": 1,
+            "medium": 2,
+            "normal": 2,
+            "low": 3,
+        }
+        if isinstance(value, bool):
+            return 2
+        if isinstance(value, int):
+            return min(max(value, 0), 3)
+        if isinstance(value, str):
+            key = value.strip().lower()
+            if key in words:
+                return words[key]
+            try:
+                return min(max(int(key), 0), 3)
+            except ValueError:
+                return 2
+        return 2
 
     # -----------------------------------------------------------------------
     # Private helpers (session-based)

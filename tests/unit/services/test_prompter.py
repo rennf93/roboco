@@ -175,6 +175,25 @@ def test_coerce_draft_enums_defaults_invalid_values() -> None:
     assert complexity is Complexity.MEDIUM
 
 
+def test_coerce_priority_maps_words_clamps_and_defaults() -> None:
+    # Regression: priority is the one non-enum field the agent guesses, and it
+    # guesses a word ("high") as often as a number — int("high") used to 500.
+    # word/number -> expected priority int (0=urgent .. 3=low).
+    cases: dict[object, int] = {
+        "urgent": 0,
+        "high": 1,
+        "medium": 2,
+        "low": 3,
+        1: 1,
+        "3": 3,
+        99: 3,  # clamped into range
+        "nonsense": 2,  # unrecognized -> default medium
+        None: 2,  # missing -> default medium
+    }
+    for value, expected in cases.items():
+        assert PrompterService._coerce_priority(value) == expected
+
+
 def test_coerce_draft_enums_keeps_valid_and_derives_missing_team() -> None:
     # Valid values pass through; a missing team is derived from the_work.
     draft = {
