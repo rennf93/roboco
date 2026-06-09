@@ -227,16 +227,24 @@ class IntakeDriver:
                     self.log.info("Intake session closing", turns=turns)
                     return
                 turns += 1
+                self.log.info("Intake turn received", turn=turns, chars=len(text))
                 await self._run_turn(session, text)
 
     async def _run_turn(self, session: IntakeSession, text: str) -> None:
         """Stream one turn's chunks to the sink; a failure ends as an error chunk."""
+        chunks = 0
+        drafted = False
         try:
             async for chunk in session.send(text):
+                chunks += 1
+                if chunk.kind == "draft":
+                    drafted = True
                 await self._emit(chunk)
         except Exception as exc:
-            self.log.error("Intake turn failed", error=str(exc))
+            self.log.error("Intake turn failed", error=str(exc), chunks=chunks)
             await self._emit(StreamChunk(kind="error", text=str(exc)))
+        else:
+            self.log.info("Intake turn streamed", chunks=chunks, drafted=drafted)
 
 
 # ---------------------------------------------------------------------------

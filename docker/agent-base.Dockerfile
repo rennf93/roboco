@@ -80,8 +80,12 @@ USER agent
 # a per-agent sandbox that only mounts its own workspace.
 RUN git config --global --add safe.directory '*'
 
+# PYTHONUNBUFFERED: flush stdout/stderr immediately so the SDK driver's logs
+# (e.g. the intake agent's turn-received / streamed lines) reach `docker logs` in
+# real time instead of block-buffering until the container is reaped.
 ENV PATH="/app/.venv/bin:$PATH" \
-    VIRTUAL_ENV=/app/.venv
+    VIRTUAL_ENV=/app/.venv \
+    PYTHONUNBUFFERED=1
 
 # Claude Code uses mounted ~/.claude for auth.
 # System prompt mounted at /app/system-prompt.md at spawn time.

@@ -84,8 +84,13 @@ COPY --from=builder /usr/local/bin/uv /usr/local/bin/uv
 # the sandboxed /data/workspaces tree.
 RUN git config --global --add safe.directory '*'
 
+# PYTHONUNBUFFERED: flush stdout/stderr immediately so structured logs reach
+# `docker logs` in real time. Without it Python block-buffers stdout (it's a pipe,
+# not a TTY) and lines arrive in large delayed chunks — which made live log
+# diagnosis impossible during the intake smoke tests.
 ENV PATH="/app/.venv/bin:$PATH" \
-    VIRTUAL_ENV=/app/.venv
+    VIRTUAL_ENV=/app/.venv \
+    PYTHONUNBUFFERED=1
 
 EXPOSE 8000
 
