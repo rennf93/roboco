@@ -22,6 +22,26 @@ def test_open_get_close() -> None:
     assert reg.get("s1") is None
 
 
+def test_open_is_idempotent_for_a_live_session() -> None:
+    """Re-opening a live session returns the SAME object (same queue).
+
+    Regression: a second open() that swapped in a fresh queue orphaned the SSE
+    stream — the panel had already captured the first queue, so the agent's
+    replies (pushed to the new queue) never reached the browser.
+    """
+    reg = PrompterLiveRegistry()
+    first = reg.open("s1", "intake-1")
+    first.queue.put_nowait({"event": "text"})  # something already queued
+    second = reg.open("s1", "intake-1")
+    assert second is first  # not replaced
+    assert second.queue is first.queue  # same queue → stream not orphaned
+    # After close, a re-open starts fresh (no stale queue carried over).
+    reg.close("s1")
+    third = reg.open("s1", "intake-1")
+    assert third is not first
+    assert third.queue.empty()
+
+
 def test_push_to_unknown_or_closed_returns_false() -> None:
     reg = PrompterLiveRegistry()
     assert reg.push("nope", {"event": "text"}) is False

@@ -2654,9 +2654,12 @@ class AgentOrchestrator:
         instance.last_activity = datetime.now(UTC)
         self._instances[INTAKE_AGENT_ID] = instance
 
-        from roboco.services.prompter_live import get_live_registry
-
-        get_live_registry().open(session_id, INTAKE_AGENT_ID)
+        # The relay was already opened on the request path (start_intake_session /
+        # spawn_intake_session) BEFORE the panel connected its SSE stream. Do NOT
+        # re-open here: a second open would swap in a fresh queue and orphan that
+        # already-connected stream (the agent's replies would push to the new queue
+        # while the browser keeps reading the old one). open() is idempotent now as
+        # a guard, but the redundant call is gone regardless.
         logger.info(
             "Intake session spawned",
             session_id=session_id,

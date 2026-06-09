@@ -56,7 +56,18 @@ class PrompterLiveRegistry:
     # -- lifecycle ---------------------------------------------------------
 
     def open(self, session_id: str, agent_id: str) -> LiveIntakeSession:
-        """Register a live session (called when its container is spawned)."""
+        """Register a live session (called when its container is spawned).
+
+        Idempotent: if a live (un-closed) session already exists for this id,
+        return it unchanged instead of replacing it with a fresh queue. A second
+        ``open`` would otherwise orphan the SSE stream — ``stream()`` captures the
+        session's queue once when the browser connects, so swapping in a new queue
+        strands the browser on the old one while the agent's events push to the
+        new one (the panel then shows nothing despite the agent replying).
+        """
+        existing = self._sessions.get(session_id)
+        if existing is not None and not existing.closed:
+            return existing
         session = LiveIntakeSession(session_id=session_id, agent_id=agent_id)
         self._sessions[session_id] = session
         self.log.info(
