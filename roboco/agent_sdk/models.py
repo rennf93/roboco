@@ -202,3 +202,44 @@ class VerbCircuitStatus(BaseModel):
             "next gateway call."
         ),
     )
+
+
+# =============================================================================
+# TOKEN USAGE
+# =============================================================================
+
+
+class TokenReportRequest(BaseModel):
+    """Payload for POST /usage/report — reports token usage from a model call.
+
+    Counts are *additive*: the SDK accumulates them per session so multiple
+    report calls sum up correctly across tool invocations.
+    """
+
+    tokens_input: int = Field(default=0, description="Input / prompt tokens consumed")
+    tokens_output: int = Field(
+        default=0, description="Output / completion tokens generated"
+    )
+    tokens_cache_read: int = Field(
+        default=0, description="Prompt-cache read tokens (charged at reduced rate)"
+    )
+    tokens_cache_write: int = Field(
+        default=0, description="Prompt-cache write tokens"
+    )
+
+
+class TokenUsageStatus(BaseModel):
+    """Current cumulative token usage for this session (GET /usage/status)."""
+
+    tokens_input: int = Field(
+        default=0, description="Total input tokens accumulated this session"
+    )
+    tokens_output: int = Field(
+        default=0, description="Total output tokens accumulated this session"
+    )
+    tokens_cache_read: int = Field(
+        default=0, description="Total cache-read tokens this session"
+    )
+    tokens_cache_write: int = Field(
+        default=0, description="Total cache-write tokens this session"
+    )
