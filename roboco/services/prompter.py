@@ -549,27 +549,47 @@ class PrompterService:
 
     @staticmethod
     def _lead_cell_team(draft_data: dict[str, Any], default: Team) -> Team:
-        """Owner of a single-cell task: the first cell in the_work, else default."""
-        cells = _cell_teams(draft_data.get("the_work") or [])
-        return Team(cells[0]) if cells else default
+        """Owner of a single-cell task: first *valid* cell in the_work, else default.
+
+        Skips cell names that aren't valid ``Team`` values rather than raising —
+        the intake agent is an LLM and can emit an off-enum cell name.
+        """
+        for raw in _cell_teams(draft_data.get("the_work") or []):
+            try:
+                return Team(raw)
+            except ValueError:
+                continue
+        return default
 
     @staticmethod
     def _coerce_draft_enums(
         draft_data: dict[str, Any],
     ) -> tuple[Team, TaskType, TaskNature, Complexity]:
-        """Coerce the draft's required enum fields, raising on missing/invalid."""
+        """Coerce the draft's enum fields to valid values; default on invalid/missing.
+
+        The intake agent is an LLM and will occasionally emit an off-enum value
+        (e.g. ``task_type="feature"``, which is not a ``TaskType``). The
+        confirm/launch action must NEVER hard-fail on a cosmetic enum guess — that
+        forces the agent to self-correct in-chat, which is unacceptable UX. Coerce
+        to a sane default instead; ``team`` falls back to the lead cell, then backend.
+        """
         try:
-            return (
-                Team(draft_data["team"]),
-                TaskType(draft_data["task_type"]),
-                TaskNature(draft_data["nature"]),
-                Complexity(draft_data["estimated_complexity"]),
-            )
-        except (KeyError, ValueError) as exc:
-            raise ValidationError(
-                message=f"Draft has invalid or missing required fields: {exc}",
-                field="draft",
-            ) from exc
+            team = Team(draft_data["team"])
+        except (KeyError, ValueError, TypeError):
+            team = PrompterService._lead_cell_team(draft_data, Team.BACKEND)
+        try:
+            task_type = TaskType(draft_data["task_type"])
+        except (KeyError, ValueError, TypeError):
+            task_type = TaskType.CODE
+        try:
+            nature = TaskNature(draft_data["nature"])
+        except (KeyError, ValueError, TypeError):
+            nature = TaskNature.TECHNICAL
+        try:
+            complexity = Complexity(draft_data["estimated_complexity"])
+        except (KeyError, ValueError, TypeError):
+            complexity = Complexity.MEDIUM
+        return team, task_type, nature, complexity
 
     # -----------------------------------------------------------------------
     # Private helpers (session-based)
