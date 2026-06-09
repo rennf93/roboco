@@ -99,6 +99,17 @@ async def main() -> None:  # pragma: no cover - needs the live container + SDK
     """Wire receiver + driver and run them concurrently for the chat's lifetime."""
     import uvicorn
 
+    # Silence the Claude CLI's "configuration file not found at ~/.claude.json"
+    # warning (printed 3x at startup) that otherwise drowns the container logs.
+    # The CLI self-heals the file anyway; pre-creating an empty config just stops
+    # the noise before the SDK spawns the CLI. Best-effort — never fail the boot.
+    claude_json = Path.home() / ".claude.json"
+    if not claude_json.exists():
+        try:
+            claude_json.write_text("{}", encoding="utf-8")
+        except OSError as exc:
+            logger.warning("Could not pre-create ~/.claude.json", error=str(exc))
+
     session_id = os.environ["ROBOCO_PROMPTER_SESSION_ID"]
     base_url = os.environ.get("ROBOCO_API_URL", "http://roboco-orchestrator:8000")
     cwd = os.environ.get("ROBOCO_WORKSPACE", "/data/workspace")

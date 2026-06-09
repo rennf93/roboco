@@ -231,20 +231,35 @@ class IntakeDriver:
                 await self._run_turn(session, text)
 
     async def _run_turn(self, session: IntakeSession, text: str) -> None:
-        """Stream one turn's chunks to the sink; a failure ends as an error chunk."""
+        """Stream one turn's chunks to the sink, logging each tool call.
+
+        The conversation streams to the relay (panel), not stdout — so without
+        this, ``docker logs`` on the intake container is a black box between turn
+        start and end even while the agent reads the codebase and spawns subagents.
+        Logging each ``tool_use`` (and the draft) shows the turn's real shape;
+        text deltas are intentionally NOT logged (they'd spam). A failure ends as
+        an error chunk.
+        """
         chunks = 0
+        tools = 0
         drafted = False
         try:
             async for chunk in session.send(text):
                 chunks += 1
-                if chunk.kind == "draft":
+                if chunk.kind == "tool_use":
+                    tools += 1
+                    self.log.info("Intake tool use", tool=chunk.tool)
+                elif chunk.kind == "draft":
                     drafted = True
+                    self.log.info("Intake draft emitted")
                 await self._emit(chunk)
         except Exception as exc:
             self.log.error("Intake turn failed", error=str(exc), chunks=chunks)
             await self._emit(StreamChunk(kind="error", text=str(exc)))
         else:
-            self.log.info("Intake turn streamed", chunks=chunks, drafted=drafted)
+            self.log.info(
+                "Intake turn streamed", chunks=chunks, tools=tools, drafted=drafted
+            )
 
 
 # ---------------------------------------------------------------------------
