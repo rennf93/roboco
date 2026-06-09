@@ -193,6 +193,20 @@ services:
       - agent-base-image
 
   # ==========================================================================
+  # Agent Intake (Prompter) Image Builder (persistent Agent-SDK driver the CEO
+  # chats with; not a one-shot `claude -p`)
+  # ==========================================================================
+  agent-prompter-image:
+    build:
+      context: .
+      dockerfile: docker/agent-prompter.Dockerfile
+    image: roboco-agent-prompter
+    entrypoint: ["/bin/sh", "-c", 'echo "Agent Intake image built"']
+    restart: "no"
+    depends_on:
+      - agent-base-image
+
+  # ==========================================================================
   # Orchestrator - API Server + Agent Spawner
   # ==========================================================================
   orchestrator:
