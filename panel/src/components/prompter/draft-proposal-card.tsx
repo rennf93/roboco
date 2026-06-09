@@ -1,15 +1,16 @@
 "use client";
 
-import { MessageCircle, ClipboardCheck } from "lucide-react";
+import { MessageCircle, Users, Rocket } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardFooter, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import type { DraftProposal } from "@/lib/api/prompter";
+import type { StartRoute } from "@/hooks/use-prompter";
 
 interface DraftProposalCardProps {
   draft: DraftProposal;
   onKeepChatting: () => void;
-  onOpenReview: () => void;
+  onStart: (route: StartRoute) => void;
 }
 
 // 0 is the highest priority, 3 the lowest — matches the backend contract.
@@ -26,7 +27,7 @@ const cellLabel = (team: string) =>
 export function DraftProposalCard({
   draft,
   onKeepChatting,
-  onOpenReview,
+  onStart,
 }: DraftProposalCardProps) {
   const priorityLabel = PRIORITY_LABELS[draft.priority ?? 2] ?? "Medium";
   const cells = draft.the_work ?? [];
@@ -103,23 +104,28 @@ export function DraftProposalCard({
         )}
       </CardContent>
 
-      <CardFooter className="gap-2 pt-0">
+      <CardFooter className="flex-wrap gap-2 pt-0">
         <Button
           variant="outline"
           size="sm"
-          className="flex-1"
           onClick={onKeepChatting}
         >
           <MessageCircle className="mr-1.5 h-3.5 w-3.5" />
-          Keep Chatting
+          Keep chatting
         </Button>
+        {/* Board review & Start → PENDING, assigned to PO + HoM for review */}
         <Button
+          variant="secondary"
           size="sm"
-          className="flex-1"
-          onClick={onOpenReview}
+          onClick={() => onStart("board")}
         >
-          <ClipboardCheck className="mr-1.5 h-3.5 w-3.5" />
-          Review &amp; Confirm
+          <Users className="mr-1.5 h-3.5 w-3.5" />
+          Board review &amp; Start
+        </Button>
+        {/* Approve & Start → PENDING, straight to Main PM (skip the board) */}
+        <Button size="sm" onClick={() => onStart("main_pm")}>
+          <Rocket className="mr-1.5 h-3.5 w-3.5" />
+          Approve &amp; Start
         </Button>
       </CardFooter>
     </Card>

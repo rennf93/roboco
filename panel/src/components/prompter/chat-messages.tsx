@@ -5,18 +5,18 @@ import { AlertTriangle } from "lucide-react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { cn } from "@/lib/utils";
-import type { ChatMessage } from "@/hooks/use-prompter";
+import type { ChatMessage, StartRoute } from "@/hooks/use-prompter";
 import { DraftProposalCard } from "./draft-proposal-card";
 
 interface ChatMessagesProps {
   messages: ChatMessage[];
-  onOpenReview: () => void;
+  onStart: (route: StartRoute) => void;
   onKeepChatting: () => void;
 }
 
 export function ChatMessages({
   messages,
-  onOpenReview,
+  onStart,
   onKeepChatting,
 }: ChatMessagesProps) {
   const bottomRef = useRef<HTMLDivElement>(null);
@@ -87,7 +87,7 @@ export function ChatMessages({
                   <DraftProposalCard
                     draft={msg.draft}
                     onKeepChatting={onKeepChatting}
-                    onOpenReview={onOpenReview}
+                    onStart={onStart}
                   />
                 </div>
               </div>

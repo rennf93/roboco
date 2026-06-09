@@ -37,9 +37,11 @@ export interface DraftProposal {
 /** Single-cell project vs board-led multi-cell product. */
 export type DraftScale = "single" | "multi";
 
-/** What the human picked/edited at confirm time. */
+/** What the human picked/edited at confirm time. `route` is which start button:
+ *  "board" (Board review & Start) or "main_pm" (Approve & Start). */
 export interface ConfirmPayload {
   project_id?: string;
   product_id?: string;
   draft?: DraftProposal;
+  route?: "board" | "main_pm";
 }

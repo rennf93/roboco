@@ -44,6 +44,9 @@ export interface ChatMessage {
 /** Which target the human picked for this chat. */
 export type TargetKind = "project" | "product";
 
+/** Which start button the human pressed on the draft card. */
+export type StartRoute = "board" | "main_pm";
+
 export interface EditableDraft {
   title: string;
   description: string;
@@ -398,7 +401,7 @@ export function usePrompter() {
   // Launch — confirm the draft → task, then reap the agent
   // -----------------------------------------------------------------------
 
-  const launchTask = useCallback(async () => {
+  const launchTask = useCallback(async (route: StartRoute) => {
     const sid = sessionIdRef.current;
     if (!sid || !isValidForLaunch()) return;
 
@@ -424,8 +427,8 @@ export function usePrompter() {
 
     const payload: ConfirmPayload =
       editableDraft.targetKind === "product"
-        ? { product_id: editableDraft.productId, draft }
-        : { project_id: editableDraft.projectId, draft };
+        ? { product_id: editableDraft.productId, draft, route }
+        : { project_id: editableDraft.projectId, draft, route };
 
     const effectiveTeam =
       editableDraft.targetKind === "product"
@@ -445,7 +448,7 @@ export function usePrompter() {
       setState("success");
     } catch (err) {
       toast.error(`Failed to launch task: ${getErrorMessage(err)}`);
-      setState("review_modal");
+      setState("draft_preview"); // back to the draft card to retry
     } finally {
       setIsLaunching(false);
     }

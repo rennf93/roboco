@@ -6,7 +6,6 @@ import { usePrompter } from "@/hooks/use-prompter";
 import {
   ChatMessages,
   ChatComposer,
-  ConfirmDialog,
   SuccessCard,
   IntakeForm,
 } from "@/components/prompter";
@@ -17,7 +16,6 @@ export default function PrompterPage() {
     messages,
     isSending,
     activity,
-    editableDraft,
     createdTaskId,
     createdTaskTitle,
     createdTaskTeam,
@@ -32,14 +30,9 @@ export default function PrompterPage() {
     isFormValid,
     start,
     send,
-    openReview,
-    closeReview,
     keepChatting,
-    updateDraft,
-    isValidForLaunch,
     launchTask,
     startAnother,
-    isLaunching,
   } = usePrompter();
 
   const showForm = state === "form" || state === "preparing";
@@ -106,7 +99,7 @@ export default function PrompterPage() {
           ) : (
             <ChatMessages
               messages={messages}
-              onOpenReview={openReview}
+              onStart={launchTask}
               onKeepChatting={keepChatting}
             />
           )}
@@ -129,17 +122,6 @@ export default function PrompterPage() {
           )}
         </div>
       )}
-
-      {/* Confirmation dialog (portal) */}
-      <ConfirmDialog
-        open={state === "review_modal" || state === "launching"}
-        draft={editableDraft}
-        onClose={closeReview}
-        onUpdate={updateDraft}
-        onConfirm={launchTask}
-        isLaunching={isLaunching}
-        isValid={isValidForLaunch()}
-      />
     </div>
   );
 }
