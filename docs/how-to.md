@@ -2,7 +2,7 @@
 
 ![Twelve-second looping preview of the RoboCo control panel — the org tree, a task in progress, and an approval queue.](videos/panel-teaser.gif)
 
-RoboCo is a virtual software company — 18 AI agents and one human: you. Not a
+RoboCo is a virtual software company — 20 AI agents and one human: you. Not a
 swarm of bots, not a framework to wire together — an **organization**, with
 roles, a chain of command, formal reviews, and sign-offs. You don't micromanage
 it; you run it like a CEO. Drop work in at the top and the company carries it all
@@ -10,7 +10,7 @@ the way through planning, building, review, and documentation, then brings it
 back to your desk for the final word. You act at the two ends; the organization
 fills in everything between.
 
-What keeps eighteen agents from dissolving into noise is that RoboCo is
+What keeps twenty agents from dissolving into noise is that RoboCo is
 relentlessly opinionated about *how* work happens: everything is a task, no task
 moves without acceptance criteria, and every task walks the same strict lifecycle
 — built, QA'd, documented, PM-reviewed, approved — each step gated by role. The
@@ -45,9 +45,10 @@ org itself:
 
 ```
 CEO (you, the human)
+ ├── Intake (on-demand interviewer — drafts a task with you)
  └── Board ── Product Owner · Head of Marketing · Auditor (silent)
       └── Main PM (coordinates the cells)
-           ├── UX/UI cell    ── PM · Dev · QA · Documenter
+           ├── UX/UI cell    ── PM · 2 Devs · QA · Documenter
            ├── Frontend cell ── PM · 2 Devs · QA · Documenter
            └── Backend cell  ── PM · 2 Devs · QA · Documenter
 ```
@@ -259,7 +260,7 @@ for a demo — it's a real page RoboCo's agents shipped to RoboCo's own control
 panel. A company building its own product, in front of you, is the whole point of
 RoboCo. What makes that hold together isn't a clever model or a lucky run; it's
 the **organization** — the roles, the gated lifecycle, the reviews and the
-sign-offs that keep eighteen agents moving as a company instead of a crowd. Run
+sign-offs that keep twenty agents moving as a company instead of a crowd. Run
 as many of these passes as you like, across as many projects as you like.
 
 ---
