@@ -44,15 +44,13 @@ jobs:
       - name: Derive version tag
         id: ver
         run: |
-          # release → the tag (v0.1.0 → 0.1.0); manual dispatch → the ref name,
-          # falling back to the short SHA on a branch like master.
+          # release → the tag (v0.1.0 → 0.1.0). Any manual dispatch runs against a
+          # branch whose name can contain "/" (e.g. feature/x) — not a valid image
+          # tag — so use the short SHA, which always is one.
           if [ "${{ github.event_name }}" = "release" ]; then
             RAW="${{ github.event.release.tag_name }}"
+            VERSION="${RAW#v}"
           else
-            RAW="${{ github.ref_name }}"
-          fi
-          VERSION="${RAW#v}"
-          if [ -z "$VERSION" ] || [ "$VERSION" = "master" ]; then
             VERSION="$(git rev-parse --short HEAD)"
           fi
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
