@@ -1,6 +1,6 @@
 "use client";
 
-import { MessageCircle, Users, Rocket } from "lucide-react";
+import { MessageCircle, Users, Rocket, Loader2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardFooter, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
@@ -12,6 +12,8 @@ interface DraftProposalCardProps {
   draft: DraftProposal;
   onKeepChatting: () => void;
   onStart: (route: StartRoute) => void;
+  /** A launch is in flight — disable the actions so a double-click can't dupe. */
+  isLaunching?: boolean;
 }
 
 // 0 is the highest priority, 3 the lowest — matches the backend contract.
@@ -62,6 +64,7 @@ export function DraftProposalCard({
   draft,
   onKeepChatting,
   onStart,
+  isLaunching = false,
 }: DraftProposalCardProps) {
   const priorityLabel = PRIORITY_LABELS[draft.priority ?? 2] ?? "Medium";
   const cells = draft.the_work ?? [];
@@ -144,6 +147,7 @@ export function DraftProposalCard({
           variant="outline"
           size="sm"
           onClick={onKeepChatting}
+          disabled={isLaunching}
         >
           <MessageCircle className="mr-1.5 h-3.5 w-3.5" />
           Keep chatting
@@ -153,13 +157,22 @@ export function DraftProposalCard({
           variant="secondary"
           size="sm"
           onClick={() => onStart("board")}
+          disabled={isLaunching}
         >
-          <Users className="mr-1.5 h-3.5 w-3.5" />
+          {isLaunching ? (
+            <Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" />
+          ) : (
+            <Users className="mr-1.5 h-3.5 w-3.5" />
+          )}
           Board review &amp; Start
         </Button>
         {/* Approve & Start → PENDING, straight to Main PM (skip the board) */}
-        <Button size="sm" onClick={() => onStart("main_pm")}>
-          <Rocket className="mr-1.5 h-3.5 w-3.5" />
+        <Button size="sm" onClick={() => onStart("main_pm")} disabled={isLaunching}>
+          {isLaunching ? (
+            <Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" />
+          ) : (
+            <Rocket className="mr-1.5 h-3.5 w-3.5" />
+          )}
           Approve &amp; Start
         </Button>
       </CardFooter>

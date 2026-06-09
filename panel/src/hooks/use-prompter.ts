@@ -170,6 +170,8 @@ export function usePrompter() {
   const sessionIdRef = useRef<string | null>(null);
   const sourceRef = useRef<EventSource | null>(null);
   const streamingIdRef = useRef<string | null>(null);
+  // Synchronous re-entry guard for launch — a double-click was creating two tasks.
+  const launchingRef = useRef(false);
   const scopeRef = useRef({ targetKind, projectId, productId });
   scopeRef.current = { targetKind, projectId, productId };
 
@@ -409,6 +411,9 @@ export function usePrompter() {
   // -----------------------------------------------------------------------
 
   const launchTask = useCallback(async (route: StartRoute) => {
+    // Re-entry guard FIRST (synchronous, no stale closure): a double-click was
+    // firing two confirms and creating duplicate tasks.
+    if (launchingRef.current) return;
     const sid = sessionIdRef.current;
     // Never fail silently — a dead button with no feedback reads as "broken"
     // (it did: a missing `description` threw inside validation and the click
@@ -425,6 +430,7 @@ export function usePrompter() {
       return;
     }
 
+    launchingRef.current = true;
     setIsLaunching(true);
     setState("launching");
 
@@ -471,6 +477,7 @@ export function usePrompter() {
       setState("draft_preview"); // back to the draft card to retry
     } finally {
       setIsLaunching(false);
+      launchingRef.current = false;
     }
   }, [editableDraft, isValidForLaunch, closeStream]);
 

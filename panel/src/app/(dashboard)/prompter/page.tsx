@@ -33,6 +33,7 @@ export default function PrompterPage() {
     keepChatting,
     launchTask,
     startAnother,
+    isLaunching,
   } = usePrompter();
 
   const showForm = state === "form" || state === "preparing";
@@ -101,6 +102,7 @@ export default function PrompterPage() {
               messages={messages}
               onStart={launchTask}
               onKeepChatting={keepChatting}
+              isLaunching={isLaunching}
             />
           )}
 

@@ -14,6 +14,7 @@ interface ChatMessagesProps {
   messages: ChatMessage[];
   onStart: (route: StartRoute) => void;
   onKeepChatting: () => void;
+  isLaunching?: boolean;
 }
 
 /** Raw text of a fenced code block — the <pre>'s <code> child's string content. */
@@ -63,6 +64,7 @@ export function ChatMessages({
   messages,
   onStart,
   onKeepChatting,
+  isLaunching,
 }: ChatMessagesProps) {
   const bottomRef = useRef<HTMLDivElement>(null);
 
@@ -129,6 +131,7 @@ export function ChatMessages({
                     draft={msg.draft}
                     onKeepChatting={onKeepChatting}
                     onStart={onStart}
+                    isLaunching={isLaunching}
                   />
                 </div>
               </div>
