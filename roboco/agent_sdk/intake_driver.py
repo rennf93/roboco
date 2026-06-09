@@ -304,6 +304,17 @@ def build_intake_options(
     async def _gate(tool_name: str, _input: dict[str, Any], _ctx: Any) -> Any:
         if tool_name in _INTAKE_BASE_TOOLS or _is_propose_draft(tool_name):
             return PermissionResultAllow()
+        # The intake's job is to ask questions, so it reaches for AskUserQuestion
+        # by reflex. It isn't wired to the live chat panel (and isn't allowed), so
+        # nudge it to just ask inline rather than leave it to stumble on a bare deny.
+        if tool_name == "AskUserQuestion" or tool_name.endswith("AskUserQuestion"):
+            return PermissionResultDeny(
+                message=(
+                    "AskUserQuestion isn't available here — just write your "
+                    "questions as a normal chat message; the human reads every "
+                    "reply live."
+                )
+            )
         return PermissionResultDeny(
             message=f"{tool_name} is not available to the intake agent (read-only)."
         )
