@@ -1,4 +1,5 @@
 export { api, API_URL } from "./client";
+export { usageApi } from "./usage";
 export { tasksApi } from "./tasks";
 export { orchestratorApi } from "./orchestrator";
 export { channelsApi } from "./channels";

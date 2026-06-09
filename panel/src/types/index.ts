@@ -1253,3 +1253,59 @@ export interface CEOApprovalRequest {
 export interface CEORejectRequest {
   notes: string; // Required for rejection
 }
+
+// =============================================================================
+// TOKEN USAGE TYPES
+// =============================================================================
+
+/** Snapshot of current token usage totals for the overview panel */
+export interface TokenUsageSnapshot {
+  tokens_today: number;
+  cost_today: number;
+  cost_this_week: number;
+  cost_last_week: number;
+  active_sessions: number;
+  cache_savings: number;
+  top_consumer: string;
+}
+
+/** Per-agent usage row for the agent bar chart and agent card mini-bar */
+export interface AgentUsageRow {
+  agent_id: string;
+  agent_name: string;
+  tokens_today: number;
+  cost_today: number;
+  tokens_total: number;
+  team: string;
+}
+
+/** Individual inference session for the sessions table */
+export interface UsageSession {
+  id: string;
+  agent_id: string;
+  agent_name: string;
+  started_at: string;
+  ended_at: string | null;
+  tokens_input: number;
+  tokens_output: number;
+  tokens_cache: number;
+  total_tokens: number;
+  cost: number;
+  model: string;
+}
+
+/** One data point in a token-usage time series (hourly or daily) */
+export interface UsageTimePoint {
+  timestamp: string;
+  tokens_input: number;
+  tokens_output: number;
+  tokens_cache: number;
+}
+
+/** A model's share of overall token usage for the donut chart */
+export interface ModelUsageSlice {
+  model: string;
+  tokens: number;
+  cost: number;
+  percentage: number;
+}
