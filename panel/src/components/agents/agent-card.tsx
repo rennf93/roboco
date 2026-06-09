@@ -17,13 +17,15 @@ import { MoreHorizontal, Activity, Square } from "lucide-react";
 import { toast } from "sonner";
 import { AgentStateBadge } from "./agent-state-badge";
 import { SpawnAgentDialog } from "./spawn-agent-dialog";
+import type { AgentUsageRow } from "@/types";
 
 interface AgentCardProps {
   agent: AgentDefinition;
   agentStatus: AgentStatusResponse | null;
+  usageRow?: AgentUsageRow | null;
 }
 
-export function AgentCard({ agent, agentStatus }: AgentCardProps) {
+export function AgentCard({ agent, agentStatus, usageRow }: AgentCardProps) {
   const stopAgent = useStopAgent();
   const state = agentStatus?.state || "stopped";
   const isActive = ["running", "ready", "starting", "waiting_long"].includes(state);
@@ -99,6 +101,30 @@ export function AgentCard({ agent, agentStatus }: AgentCardProps) {
           <p className="text-xs text-red-500 mt-2">
             Errors: {agentStatus.error_count}
           </p>
+        )}
+        {usageRow && (
+          <div className="mt-3 pt-2 border-t">
+            <div className="flex items-center justify-between text-xs text-muted-foreground mb-1">
+              <span>
+                {usageRow.tokens_today >= 1_000
+                  ? (usageRow.tokens_today / 1_000).toFixed(1) + "K"
+                  : String(usageRow.tokens_today)}{" "}
+                tokens
+              </span>
+              <span className="font-medium text-foreground">
+                ${usageRow.cost_today.toFixed(2)}
+              </span>
+            </div>
+            <div className="w-full bg-muted rounded-full h-1.5 overflow-hidden">
+              <div
+                className="h-full rounded-full bg-[var(--chart-1)]"
+                style={{
+                  width:
+                    Math.min(100, (usageRow.tokens_today / 30_000) * 100) + "%",
+                }}
+              />
+            </div>
+          </div>
         )}
       </CardContent>
     </Card>

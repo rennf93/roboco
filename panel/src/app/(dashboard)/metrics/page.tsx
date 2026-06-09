@@ -2,14 +2,30 @@
 
 import { useOrchestratorStatus } from "@/hooks/use-agents";
 import { useTasks } from "@/hooks/use-tasks";
+import {
+  useUsageSnapshot,
+  useUsageTimeSeries,
+  useAgentUsage,
+  useUsageSessions,
+  useModelUsage,
+} from "@/hooks/use-usage";
 import { TaskStatus, Team } from "@/types";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Progress } from "@/components/ui/progress";
 import { OfflineState } from "@/components/ui/offline-state";
+import { Skeleton } from "@/components/ui/skeleton";
+import {
+  UsageTimeSeriesChart,
+  ModelUsageDonut,
+  AgentUsageChart,
+  TeamUsageChart,
+  SessionsTable,
+} from "@/components/metrics";
 import {
   Activity,
   TrendingUp,
+  TrendingDown,
   Clock,
   AlertTriangle,
   Users,
@@ -18,6 +34,8 @@ import {
   RefreshCw,
   Zap,
   Timer,
+  Coins,
+  Sparkles,
 } from "lucide-react";
 
 interface MetricCardProps {
@@ -295,8 +313,236 @@ export default function MetricsPage() {
               ))}
             </div>
           </div>
+
+          {/* ─── Token Usage & Costs ─────────────────────────────────── */}
+          <TokenUsageCostsSection />
         </>
       )}
     </div>
+  );
+}
+
+// =============================================================================
+// TOKEN USAGE & COSTS SECTION
+// =============================================================================
+
+function TokenUsageCostsSection() {
+  const { data: snapshot, isLoading: loadingSnap } = useUsageSnapshot();
+  const { data: timeSeries, isLoading: loadingTS } = useUsageTimeSeries(24);
+  const { data: agentUsage, isLoading: loadingAgents } = useAgentUsage();
+  const { data: sessions, isLoading: loadingSessions } = useUsageSessions(100);
+  const { data: modelUsage, isLoading: loadingModels } = useModelUsage();
+
+  const weekTrend = snapshot
+    ? snapshot.cost_this_week - snapshot.cost_last_week
+    : 0;
+  const weekIsUp = weekTrend >= 0;
+
+  return (
+    <div className="space-y-6">
+      <h2 className="text-lg font-semibold">Token Usage &amp; Costs</h2>
+
+      {/* Row 1 — Summary cards */}
+      <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-6">
+        <SummaryCard
+          title="Tokens Today"
+          value={snapshot ? fmtTokens(snapshot.tokens_today) : undefined}
+          icon={<Zap className="h-4 w-4 text-yellow-500" />}
+          isLoading={loadingSnap}
+        />
+        <SummaryCard
+          title="Cost Today"
+          value={snapshot ? "$" + snapshot.cost_today.toFixed(2) : undefined}
+          icon={<Coins className="h-4 w-4 text-green-500" />}
+          isLoading={loadingSnap}
+        />
+        <SummaryCard
+          title="Cost This Week"
+          value={snapshot ? "$" + snapshot.cost_this_week.toFixed(2) : undefined}
+          icon={
+            weekIsUp ? (
+              <TrendingUp className="h-4 w-4 text-red-500" />
+            ) : (
+              <TrendingDown className="h-4 w-4 text-green-500" />
+            )
+          }
+          trend={
+            snapshot
+              ? {
+                  dir: weekIsUp ? "up" : "down",
+                  label:
+                    (weekIsUp ? "▲ " : "▼ ") +
+                    Math.abs(weekTrend).toFixed(2) +
+                    " vs last wk",
+                }
+              : undefined
+          }
+          isLoading={loadingSnap}
+        />
+        <SummaryCard
+          title="Active Sessions"
+          value={snapshot ? String(snapshot.active_sessions) : undefined}
+          icon={<Activity className="h-4 w-4 text-blue-500" />}
+          isLoading={loadingSnap}
+        />
+        <SummaryCard
+          title="Cache Savings"
+          value={snapshot ? "$" + snapshot.cache_savings.toFixed(2) : undefined}
+          icon={<Sparkles className="h-4 w-4 text-purple-500" />}
+          isLoading={loadingSnap}
+        />
+        <SummaryCard
+          title="Top Consumer"
+          value={snapshot?.top_consumer ?? undefined}
+          icon={<Users className="h-4 w-4 text-orange-500" />}
+          isLoading={loadingSnap}
+        />
+      </div>
+
+      {/* Row 2 — Time series + model donut */}
+      <div className="grid gap-4 lg:grid-cols-3">
+        <div className="lg:col-span-2">
+          <UsageTimeSeriesChart data={timeSeries} isLoading={loadingTS} />
+        </div>
+        <ModelUsageDonut data={modelUsage} isLoading={loadingModels} />
+      </div>
+
+      {/* Row 3 — Agent bar + team bar */}
+      <div className="grid gap-4 lg:grid-cols-2">
+        <AgentUsageChart data={agentUsage} isLoading={loadingAgents} />
+        <TeamUsageChart data={agentUsage} isLoading={loadingAgents} />
+      </div>
+
+      {/* Row 4 — Projection + cache efficiency */}
+      <div className="grid gap-4 sm:grid-cols-2">
+        <ProjectionCard snapshot={snapshot} isLoading={loadingSnap} />
+        <CacheEfficiencyCard sessions={sessions} isLoading={loadingAgents || loadingSessions} />
+      </div>
+
+      {/* Row 5 — Sessions table */}
+      <SessionsTable data={sessions} isLoading={loadingSessions} />
+    </div>
+  );
+}
+
+// ─── Helper sub-components ────────────────────────────────────────────────────
+
+function fmtTokens(n: number): string {
+  if (n >= 1_000_000) return (n / 1_000_000).toFixed(2) + "M";
+  if (n >= 1_000) return (n / 1_000).toFixed(1) + "K";
+  return String(n);
+}
+
+interface SummaryCardProps {
+  title: string;
+  value: string | undefined;
+  icon: React.ReactNode;
+  trend?: { dir: "up" | "down"; label: string };
+  isLoading: boolean;
+}
+
+function SummaryCard({ title, value, icon, trend, isLoading }: SummaryCardProps) {
+  return (
+    <Card>
+      <CardHeader className="flex flex-row items-center justify-between pb-2">
+        <CardTitle className="text-sm font-medium text-muted-foreground">{title}</CardTitle>
+        {icon}
+      </CardHeader>
+      <CardContent>
+        {isLoading ? (
+          <Skeleton className="h-7 w-24" />
+        ) : (
+          <>
+            <div className="text-2xl font-bold">{value ?? "—"}</div>
+            {trend && (
+              <p
+                className={
+                  "text-xs mt-1 " +
+                  (trend.dir === "up" ? "text-red-500" : "text-green-500")
+                }
+              >
+                {trend.label}
+              </p>
+            )}
+          </>
+        )}
+      </CardContent>
+    </Card>
+  );
+}
+
+import type { TokenUsageSnapshot as TUS, UsageSession as US } from "@/types";
+
+interface ProjectionCardProps {
+  snapshot: TUS | undefined;
+  isLoading: boolean;
+}
+
+function ProjectionCard({ snapshot, isLoading }: ProjectionCardProps) {
+  const weeklyRun = snapshot
+    ? snapshot.cost_this_week / 7 * 30
+    : null;
+
+  return (
+    <Card>
+      <CardHeader className="pb-2">
+        <CardTitle className="text-base flex items-center gap-2">
+          <TrendingUp className="h-4 w-4 text-blue-500" />
+          Monthly Projection
+        </CardTitle>
+      </CardHeader>
+      <CardContent>
+        {isLoading ? (
+          <Skeleton className="h-10 w-full" />
+        ) : (
+          <div>
+            <div className="text-3xl font-bold">
+              {weeklyRun != null ? "$" + weeklyRun.toFixed(2) : "—"}
+            </div>
+            <p className="text-xs text-muted-foreground mt-1">
+              Based on this week&apos;s daily average
+            </p>
+          </div>
+        )}
+      </CardContent>
+    </Card>
+  );
+}
+
+interface CacheEfficiencyCardProps {
+  sessions: US[] | undefined;
+  isLoading: boolean;
+}
+
+function CacheEfficiencyCard({ sessions, isLoading }: CacheEfficiencyCardProps) {
+  const totalCache = (sessions ?? []).reduce((s, r) => s + r.tokens_cache, 0);
+  const totalAll = (sessions ?? []).reduce(
+    (s, r) => s + r.tokens_input + r.tokens_output + r.tokens_cache,
+    0
+  );
+  const pct = totalAll > 0 ? (totalCache / totalAll) * 100 : 0;
+
+  return (
+    <Card>
+      <CardHeader className="pb-2">
+        <CardTitle className="text-base flex items-center gap-2">
+          <Sparkles className="h-4 w-4 text-purple-500" />
+          Cache Efficiency
+        </CardTitle>
+      </CardHeader>
+      <CardContent>
+        {isLoading ? (
+          <Skeleton className="h-10 w-full" />
+        ) : (
+          <div>
+            <div className="text-3xl font-bold">{pct.toFixed(1)}%</div>
+            <p className="text-xs text-muted-foreground mt-1">
+              {fmtTokens(totalCache)} cached of {fmtTokens(totalAll)} total tokens
+            </p>
+            <Progress value={pct} className="mt-2" />
+          </div>
+        )}
+      </CardContent>
+    </Card>
   );
 }

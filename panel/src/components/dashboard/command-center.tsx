@@ -11,6 +11,7 @@ import { QuickActionsBar } from "./quick-actions-bar";
 import { CeoApprovalQueue } from "./ceo-approval-queue";
 import type { Activity } from "./activity-item";
 import { Button } from "@/components/ui/button";
+import { UsageOverviewPanel } from "./usage-overview-panel";
 import { RefreshCw, Settings } from "lucide-react";
 import Link from "next/link";
 
@@ -61,13 +62,14 @@ export function CommandCenter() {
         <CeoApprovalQueue />
       </section>
 
-      {/* Metrics and Alerts Row */}
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+      {/* Metrics, Alerts, and Usage Row */}
+      <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
         <KeyMetricsPanel
           metrics={overview?.key_metrics}
           isLoading={loadingOverview}
         />
         <AuditorAlertsPanel alerts={flags} isLoading={loadingFlags} />
+        <UsageOverviewPanel />
       </div>
 
       {/* Blockers and Activity Row */}
