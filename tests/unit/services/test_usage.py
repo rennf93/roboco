@@ -299,18 +299,24 @@ class TestGetByAgent:
                 agent_slug="be-dev-1",
                 tokens_input=600,
                 tokens_output=400,
+                tokens_cache_read=0,
+                tokens_cache_write=0,
                 cost_usd=0.05,
             ),
             _make_row(
                 agent_slug="be-dev-2",
                 tokens_input=300,
                 tokens_output=200,
+                tokens_cache_read=0,
+                tokens_cache_write=0,
                 cost_usd=0.02,
             ),
             _make_row(
                 agent_slug="be-qa",
                 tokens_input=100,
                 tokens_output=100,
+                tokens_cache_read=0,
+                tokens_cache_write=0,
                 cost_usd=0.01,
             ),
         ]
@@ -332,6 +338,8 @@ class TestGetByAgent:
                 agent_slug="be-dev-1",
                 tokens_input=1000,
                 tokens_output=500,
+                tokens_cache_read=0,
+                tokens_cache_write=0,
                 cost_usd=0.1,
             )
         ]
@@ -347,12 +355,64 @@ class TestGetByAgent:
                 agent_slug="be-dev-1",
                 tokens_input=100,
                 tokens_output=100,
+                tokens_cache_read=0,
+                tokens_cache_write=0,
                 cost_usd=0.01,
             )
         ]
         svc = _service_with_execute(_result_fetchall(rows))
         result = await svc.get_by_agent()
         assert result[_ZERO]["agent_slug"] == "be-dev-1"
+
+    @pytest.mark.asyncio
+    async def test_cache_tokens_included_in_total_tokens(self) -> None:
+        """total_tokens must include cache_read and cache_write (AC10 fix).
+
+        Without the fix, total would be 500+300=800 (input+output only).
+        With the fix, total = 500+300+100+100 = 1000.
+        """
+        _cache_read = 100
+        _cache_write = 100
+        _expected_total = 500 + 300 + _cache_read + _cache_write  # 1000
+        rows = [
+            _make_row(
+                agent_slug="be-dev-1",
+                tokens_input=500,
+                tokens_output=300,
+                tokens_cache_read=_cache_read,
+                tokens_cache_write=_cache_write,
+                cost_usd=0.05,
+            )
+        ]
+        svc = _service_with_execute(_result_fetchall(rows))
+        result = await svc.get_by_agent("24h")
+        assert result[_ZERO]["total_tokens"] == _expected_total
+
+    @pytest.mark.asyncio
+    async def test_pct_of_total_sums_to_100_with_cache_tokens(self) -> None:
+        """pct_of_total still sums to 100% when agents have cache tokens."""
+        rows = [
+            _make_row(
+                agent_slug="be-dev-1",
+                tokens_input=400,
+                tokens_output=200,
+                tokens_cache_read=150,
+                tokens_cache_write=50,
+                cost_usd=0.05,
+            ),
+            _make_row(
+                agent_slug="be-dev-2",
+                tokens_input=200,
+                tokens_output=100,
+                tokens_cache_read=75,
+                tokens_cache_write=25,
+                cost_usd=0.02,
+            ),
+        ]
+        svc = _service_with_execute(_result_fetchall(rows))
+        result = await svc.get_by_agent("24h")
+        total_pct = sum(item["pct_of_total"] for item in result)
+        assert abs(total_pct - _FULL_PCT) < _PCT_TOL
 
 
 # ---------------------------------------------------------------------------
@@ -365,15 +425,29 @@ class TestGetByTeam:
     async def test_pct_of_total_sums_to_100(self) -> None:
         rows = [
             _make_row(
-                team="backend", tokens_input=700, tokens_output=300, cost_usd=0.05
+                team="backend",
+                tokens_input=700,
+                tokens_output=300,
+                tokens_cache_read=0,
+                tokens_cache_write=0,
+                cost_usd=0.05,
             ),
             _make_row(
                 team="frontend",
                 tokens_input=200,
                 tokens_output=200,
+                tokens_cache_read=0,
+                tokens_cache_write=0,
                 cost_usd=0.02,
             ),
-            _make_row(team="uxui", tokens_input=100, tokens_output=100, cost_usd=0.01),
+            _make_row(
+                team="uxui",
+                tokens_input=100,
+                tokens_output=100,
+                tokens_cache_read=0,
+                tokens_cache_write=0,
+                cost_usd=0.01,
+            ),
         ]
         svc = _service_with_execute(_result_fetchall(rows))
         result = await svc.get_by_team("24h")
@@ -384,12 +458,63 @@ class TestGetByTeam:
     async def test_result_contains_team_field(self) -> None:
         rows = [
             _make_row(
-                team="backend", tokens_input=100, tokens_output=100, cost_usd=0.01
+                team="backend",
+                tokens_input=100,
+                tokens_output=100,
+                tokens_cache_read=0,
+                tokens_cache_write=0,
+                cost_usd=0.01,
             )
         ]
         svc = _service_with_execute(_result_fetchall(rows))
         result = await svc.get_by_team()
         assert result[_ZERO]["team"] == "backend"
+
+    @pytest.mark.asyncio
+    async def test_cache_tokens_included_in_total_tokens(self) -> None:
+        """total_tokens must include cache_read and cache_write (AC10 fix)."""
+        _cache_read = 200
+        _cache_write = 100
+        _expected_total = 700 + 300 + _cache_read + _cache_write  # 1300
+        rows = [
+            _make_row(
+                team="backend",
+                tokens_input=700,
+                tokens_output=300,
+                tokens_cache_read=_cache_read,
+                tokens_cache_write=_cache_write,
+                cost_usd=0.05,
+            )
+        ]
+        svc = _service_with_execute(_result_fetchall(rows))
+        result = await svc.get_by_team("24h")
+        assert result[_ZERO]["total_tokens"] == _expected_total
+
+    @pytest.mark.asyncio
+    async def test_pct_of_total_sums_to_100_with_cache_tokens(self) -> None:
+        """pct_of_total still sums to 100% when teams have cache tokens."""
+        rows = [
+            _make_row(
+                team="backend",
+                tokens_input=600,
+                tokens_output=200,
+                tokens_cache_read=120,
+                tokens_cache_write=80,
+                cost_usd=0.05,
+            ),
+            _make_row(
+                team="frontend",
+                tokens_input=300,
+                tokens_output=100,
+                tokens_cache_read=60,
+                tokens_cache_write=40,
+                cost_usd=0.02,
+            ),
+        ]
+        svc = _service_with_execute(_result_fetchall(rows))
+        result = await svc.get_by_team("24h")
+        total_pct = sum(item["pct_of_total"] for item in result)
+        assert abs(total_pct - _FULL_PCT) < _PCT_TOL
 
 
 # ---------------------------------------------------------------------------
@@ -405,18 +530,24 @@ class TestGetByModel:
                 model="claude-sonnet-4-6",
                 tokens_input=600,
                 tokens_output=600,
+                tokens_cache_read=0,
+                tokens_cache_write=0,
                 cost_usd=0.1,
             ),
             _make_row(
                 model="claude-haiku-4-5",
                 tokens_input=300,
                 tokens_output=300,
+                tokens_cache_read=0,
+                tokens_cache_write=0,
                 cost_usd=0.02,
             ),
             _make_row(
                 model="claude-opus-4-5",
                 tokens_input=100,
                 tokens_output=100,
+                tokens_cache_read=0,
+                tokens_cache_write=0,
                 cost_usd=0.04,
             ),
         ]
@@ -432,12 +563,60 @@ class TestGetByModel:
                 model="claude-sonnet-4-6",
                 tokens_input=100,
                 tokens_output=100,
+                tokens_cache_read=0,
+                tokens_cache_write=0,
                 cost_usd=0.01,
             )
         ]
         svc = _service_with_execute(_result_fetchall(rows))
         result = await svc.get_by_model()
         assert result[_ZERO]["model"] == "claude-sonnet-4-6"
+
+    @pytest.mark.asyncio
+    async def test_cache_tokens_included_in_total_tokens(self) -> None:
+        """total_tokens must include cache_read and cache_write (AC10 fix)."""
+        _cache_read = 300
+        _cache_write = 100
+        _expected_total = 600 + 600 + _cache_read + _cache_write  # 1600
+        rows = [
+            _make_row(
+                model="claude-sonnet-4-6",
+                tokens_input=600,
+                tokens_output=600,
+                tokens_cache_read=_cache_read,
+                tokens_cache_write=_cache_write,
+                cost_usd=0.1,
+            )
+        ]
+        svc = _service_with_execute(_result_fetchall(rows))
+        result = await svc.get_by_model("24h")
+        assert result[_ZERO]["total_tokens"] == _expected_total
+
+    @pytest.mark.asyncio
+    async def test_pct_of_total_sums_to_100_with_cache_tokens(self) -> None:
+        """pct_of_total still sums to 100% when models have cache tokens."""
+        rows = [
+            _make_row(
+                model="claude-sonnet-4-6",
+                tokens_input=500,
+                tokens_output=500,
+                tokens_cache_read=200,
+                tokens_cache_write=100,
+                cost_usd=0.1,
+            ),
+            _make_row(
+                model="claude-haiku-4-5",
+                tokens_input=250,
+                tokens_output=250,
+                tokens_cache_read=100,
+                tokens_cache_write=50,
+                cost_usd=0.02,
+            ),
+        ]
+        svc = _service_with_execute(_result_fetchall(rows))
+        result = await svc.get_by_model("24h")
+        total_pct = sum(item["pct_of_total"] for item in result)
+        assert abs(total_pct - _FULL_PCT) < _PCT_TOL
 
 
 # ---------------------------------------------------------------------------

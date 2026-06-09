@@ -8,11 +8,10 @@ and aggregation by agent, team, and model.
 
 from __future__ import annotations
 
-import math
 from datetime import UTC, date, datetime, timedelta
 from typing import Any
 
-from sqlalchemy import func, select, text
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from roboco.db.tables import AgentSpawnSessionTable, DailyUsageRollupTable
@@ -175,6 +174,8 @@ class UsageService(BaseService):
                 AgentSpawnSessionTable.agent_slug,
                 func.coalesce(func.sum(AgentSpawnSessionTable.tokens_input), 0).label("tokens_input"),
                 func.coalesce(func.sum(AgentSpawnSessionTable.tokens_output), 0).label("tokens_output"),
+                func.coalesce(func.sum(AgentSpawnSessionTable.tokens_cache_read), 0).label("tokens_cache_read"),
+                func.coalesce(func.sum(AgentSpawnSessionTable.tokens_cache_write), 0).label("tokens_cache_write"),
                 func.coalesce(func.sum(AgentSpawnSessionTable.estimated_cost_usd), 0.0).label("cost_usd"),
             )
             .where(
@@ -186,12 +187,17 @@ class UsageService(BaseService):
         )
         rows = result.fetchall()
 
-        grand_total = sum(int(r.tokens_input or 0) + int(r.tokens_output or 0) for r in rows)
+        grand_total = sum(
+            int(r.tokens_input or 0) + int(r.tokens_output or 0) + int(r.tokens_cache_read or 0) + int(r.tokens_cache_write or 0)
+            for r in rows
+        )
         items = []
         for r in rows:
             ti = int(r.tokens_input or 0)
             to_ = int(r.tokens_output or 0)
-            total = ti + to_
+            tcr = int(r.tokens_cache_read or 0)
+            tcw = int(r.tokens_cache_write or 0)
+            total = ti + to_ + tcr + tcw
             items.append(
                 {
                     "agent_slug": r.agent_slug,
@@ -217,6 +223,8 @@ class UsageService(BaseService):
                 AgentSpawnSessionTable.team,
                 func.coalesce(func.sum(AgentSpawnSessionTable.tokens_input), 0).label("tokens_input"),
                 func.coalesce(func.sum(AgentSpawnSessionTable.tokens_output), 0).label("tokens_output"),
+                func.coalesce(func.sum(AgentSpawnSessionTable.tokens_cache_read), 0).label("tokens_cache_read"),
+                func.coalesce(func.sum(AgentSpawnSessionTable.tokens_cache_write), 0).label("tokens_cache_write"),
                 func.coalesce(func.sum(AgentSpawnSessionTable.estimated_cost_usd), 0.0).label("cost_usd"),
             )
             .where(
@@ -228,12 +236,17 @@ class UsageService(BaseService):
         )
         rows = result.fetchall()
 
-        grand_total = sum(int(r.tokens_input or 0) + int(r.tokens_output or 0) for r in rows)
+        grand_total = sum(
+            int(r.tokens_input or 0) + int(r.tokens_output or 0) + int(r.tokens_cache_read or 0) + int(r.tokens_cache_write or 0)
+            for r in rows
+        )
         items = []
         for r in rows:
             ti = int(r.tokens_input or 0)
             to_ = int(r.tokens_output or 0)
-            total = ti + to_
+            tcr = int(r.tokens_cache_read or 0)
+            tcw = int(r.tokens_cache_write or 0)
+            total = ti + to_ + tcr + tcw
             items.append(
                 {
                     "team": r.team,
@@ -259,6 +272,8 @@ class UsageService(BaseService):
                 AgentSpawnSessionTable.model,
                 func.coalesce(func.sum(AgentSpawnSessionTable.tokens_input), 0).label("tokens_input"),
                 func.coalesce(func.sum(AgentSpawnSessionTable.tokens_output), 0).label("tokens_output"),
+                func.coalesce(func.sum(AgentSpawnSessionTable.tokens_cache_read), 0).label("tokens_cache_read"),
+                func.coalesce(func.sum(AgentSpawnSessionTable.tokens_cache_write), 0).label("tokens_cache_write"),
                 func.coalesce(func.sum(AgentSpawnSessionTable.estimated_cost_usd), 0.0).label("cost_usd"),
             )
             .where(
@@ -270,12 +285,17 @@ class UsageService(BaseService):
         )
         rows = result.fetchall()
 
-        grand_total = sum(int(r.tokens_input or 0) + int(r.tokens_output or 0) for r in rows)
+        grand_total = sum(
+            int(r.tokens_input or 0) + int(r.tokens_output or 0) + int(r.tokens_cache_read or 0) + int(r.tokens_cache_write or 0)
+            for r in rows
+        )
         items = []
         for r in rows:
             ti = int(r.tokens_input or 0)
             to_ = int(r.tokens_output or 0)
-            total = ti + to_
+            tcr = int(r.tokens_cache_read or 0)
+            tcw = int(r.tokens_cache_write or 0)
+            total = ti + to_ + tcr + tcw
             items.append(
                 {
                     "model": r.model,
@@ -332,8 +352,6 @@ class UsageService(BaseService):
         cost_saved = what cache reads would have cost at full input price
                      minus what they actually cost at cache-read price.
         """
-        from roboco.billing.pricing import calculate_cost
-
         start_dt, _ = _parse_period(period)
 
         result = await self.session.execute(
