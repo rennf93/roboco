@@ -2,6 +2,8 @@
 
 import { useEffect, useRef } from "react";
 import { AlertTriangle } from "lucide-react";
+import ReactMarkdown from "react-markdown";
+import remarkGfm from "remark-gfm";
 import { cn } from "@/lib/utils";
 import type { ChatMessage } from "@/hooks/use-prompter";
 import { DraftProposalCard } from "./draft-proposal-card";
@@ -70,7 +72,11 @@ export function ChatMessages({
                   msg.draft && "max-w-[85%]"
                 )}
               >
-                <p className="whitespace-pre-wrap">{msg.content}</p>
+                <div className="prose prose-sm dark:prose-invert max-w-none prose-pre:my-2 prose-headings:mt-3 prose-headings:mb-1 prose-p:my-1.5">
+                  <ReactMarkdown remarkPlugins={[remarkGfm]}>
+                    {msg.content}
+                  </ReactMarkdown>
+                </div>
               </div>
             </div>
 
