@@ -16,8 +16,9 @@ versioned library. Security fixes are applied to the latest release and the
 | Latest release tag | :white_check_mark: |
 | Older releases     | :x:                |
 
-Always run the most recent image (`ghcr.io/rennf93/roboco:latest`) or build
-from the latest `master`.
+Always run the most recent images — from GHCR (`ghcr.io/rennf93/roboco-*`) or
+Docker Hub (`renzof93/roboco-*`), tag `latest` — or build from the latest
+`master`.
 
 ## Reporting a Vulnerability
 

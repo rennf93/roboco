@@ -6,22 +6,27 @@ on:
   workflow_dispatch:
 
 jobs:
-  publish-image:
-    name: Build & push orchestrator image to GHCR
+  publish-images:
+    name: Build & push all RoboCo images to GHCR + Docker Hub
     runs-on: ubuntu-latest
     permissions:
       contents: read
       packages: write
 
     env:
-      IMAGE: ghcr.io/rennf93/roboco
+      GHCR: ghcr.io/rennf93         # GitHub Container Registry namespace
+      DOCKERHUB: docker.io/renzof93 # Docker Hub namespace (different username)
 
     steps:
       - name: Checkout code
         uses: actions/checkout@v6
 
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v4
+      - name: Free up runner disk space
+        run: |
+          # Eleven images on one runner is disk-heavy; drop preinstalled tooling
+          # we don't use so the builds don't run out of space.
+          sudo rm -rf /usr/share/dotnet /opt/ghc /usr/local/lib/android /opt/hostedtoolcache/CodeQL || true
+          df -h /
 
       - name: Log in to GitHub Container Registry
         uses: docker/login-action@v4
@@ -30,12 +35,17 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Derive image tags
-        id: tags
+      - name: Log in to Docker Hub
+        uses: docker/login-action@v4
+        with:
+          username: renzof93
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Derive version tag
+        id: ver
         run: |
-          # On a published release, github.ref_name is the tag (e.g. v0.1.0);
-          # strip a leading "v" for the semver image tag. On workflow_dispatch
-          # against a branch, fall back to the short SHA.
+          # release → the tag (v0.1.0 → 0.1.0); manual dispatch → the ref name,
+          # falling back to the short SHA on a branch like master.
           if [ "${{ github.event_name }}" = "release" ]; then
             RAW="${{ github.event.release.tag_name }}"
           else
@@ -45,18 +55,67 @@ jobs:
           if [ -z "$VERSION" ] || [ "$VERSION" = "master" ]; then
             VERSION="$(git rev-parse --short HEAD)"
           fi
-          {
-            echo "tags<<EOF"
-            echo "${IMAGE}:${VERSION}"
-            echo "${IMAGE}:latest"
-            echo "EOF"
-          } >> "$GITHUB_OUTPUT"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "Release version: $VERSION"
 
-      - name: Build and push
-        uses: docker/build-push-action@v7
-        with:
-          context: .
-          file: docker/orchestrator.Dockerfile
-          push: true
-          tags: ${{ steps.tags.outputs.tags }}
-          provenance: false
+      - name: Build & push every RoboCo image
+        env:
+          VERSION: ${{ steps.ver.outputs.version }}
+        run: |
+          set -euo pipefail
+
+          # Tag one built image for both registries at :VERSION and :latest.
+          regtags() {
+            local name="$1"
+            echo "-t ${GHCR}/${name}:${VERSION} -t ${GHCR}/${name}:latest" \
+                 "-t ${DOCKERHUB}/${name}:${VERSION} -t ${DOCKERHUB}/${name}:latest"
+          }
+          # Push one image's four tags (both registries, both labels).
+          pushall() {
+            local name="$1"
+            for ref in "${GHCR}/${name}" "${DOCKERHUB}/${name}"; do
+              docker push "${ref}:${VERSION}"
+              docker push "${ref}:latest"
+            done
+          }
+
+          # agent-base MUST build first: the eight agent images build
+          # `FROM roboco-agent-base` — a local tag that has to exist in the daemon
+          # before they build. Tag it locally (for the FROM) and for both registries.
+          echo "::group::build roboco-agent-base"
+          docker build -f docker/agent-base.Dockerfile \
+            -t roboco-agent-base $(regtags roboco-agent-base) .
+          echo "::endgroup::"
+
+          # Every other image → its Dockerfile. Names mirror docker-compose's
+          # `image:` values exactly, so compose can later pull instead of build.
+          declare -A IMAGES=(
+            [roboco-orchestrator]=docker/orchestrator.Dockerfile
+            [roboco-panel]=docker/panel.Dockerfile
+            [roboco-agent-pm]=docker/agent-pm.Dockerfile
+            [roboco-agent-dev-be]=docker/agent-dev-be.Dockerfile
+            [roboco-agent-dev-fe]=docker/agent-dev-fe.Dockerfile
+            [roboco-agent-qa-be]=docker/agent-qa-be.Dockerfile
+            [roboco-agent-qa-fe]=docker/agent-qa-fe.Dockerfile
+            [roboco-agent-ux]=docker/agent-ux.Dockerfile
+            [roboco-agent-doc]=docker/agent-doc.Dockerfile
+            [roboco-agent-prompter]=docker/agent-prompter.Dockerfile
+          )
+          for name in "${!IMAGES[@]}"; do
+            echo "::group::build ${name}"
+            docker build -f "${IMAGES[$name]}" $(regtags "${name}") .
+            echo "::endgroup::"
+          done
+
+          # Push only after every build succeeds, so a failure never leaves a
+          # half-published release. Base first, then the rest.
+          echo "::group::push roboco-agent-base"
+          pushall roboco-agent-base
+          echo "::endgroup::"
+          for name in "${!IMAGES[@]}"; do
+            echo "::group::push ${name}"
+            pushall "${name}"
+            echo "::endgroup::"
+          done
+
+          echo "Published roboco-agent-base + ${#IMAGES[@]} more images to GHCR + Docker Hub at :${VERSION} and :latest"
