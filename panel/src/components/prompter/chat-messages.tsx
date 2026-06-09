@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useRef } from "react";
+import type { ComponentPropsWithoutRef, ReactElement, ReactNode } from "react";
 import { AlertTriangle } from "lucide-react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
@@ -13,6 +14,49 @@ interface ChatMessagesProps {
   messages: ChatMessage[];
   onStart: (route: StartRoute) => void;
   onKeepChatting: () => void;
+}
+
+/** Raw text of a fenced code block — the <pre>'s <code> child's string content. */
+function codeText(children: ReactNode): string {
+  const codeEl = children as ReactElement<{ children?: ReactNode }> | undefined;
+  const inner = codeEl?.props?.children;
+  if (typeof inner === "string") return inner;
+  if (Array.isArray(inner)) {
+    return inner.filter((c): c is string => typeof c === "string").join("");
+  }
+  return "";
+}
+
+// Copy lives on KEY PARTS only: fenced code blocks here, and the draft card has
+// its own. (Not a blanket button on every whole message.)
+const markdownComponents = {
+  pre(props: ComponentPropsWithoutRef<"pre">) {
+    const text = codeText(props.children).replace(/\n$/, "");
+    return (
+      <div className="group relative">
+        <pre {...props} />
+        {text && (
+          <CopyButton
+            value={text}
+            className="absolute right-1.5 top-1.5 bg-background/80 opacity-0 transition-opacity group-hover:opacity-100"
+          />
+        )}
+      </div>
+    );
+  },
+};
+
+/** GFM markdown that inherits the bubble's text color, so it renders correctly on
+ *  both the muted assistant bubble and the primary user bubble (lists, code,
+ *  newlines all preserved). */
+function MarkdownBody({ content }: { content: string }) {
+  return (
+    <div className="prose prose-sm max-w-none [&_*]:!text-inherit prose-p:my-1.5 prose-headings:mt-3 prose-headings:mb-1 prose-pre:my-2 prose-pre:bg-black/20">
+      <ReactMarkdown remarkPlugins={[remarkGfm]} components={markdownComponents}>
+        {content}
+      </ReactMarkdown>
+    </div>
+  );
 }
 
 export function ChatMessages({
@@ -46,7 +90,7 @@ export function ChatMessages({
           return (
             <div key={msg.id} className="flex justify-end">
               <div className="max-w-[70%] rounded-2xl rounded-tr-sm bg-primary px-4 py-3 text-sm text-primary-foreground">
-                {msg.content}
+                <MarkdownBody content={msg.content} />
               </div>
             </div>
           );
@@ -73,20 +117,9 @@ export function ChatMessages({
                   msg.draft && "max-w-[85%]"
                 )}
               >
-                <div className="prose prose-sm dark:prose-invert max-w-none prose-pre:my-2 prose-headings:mt-3 prose-headings:mb-1 prose-p:my-1.5">
-                  <ReactMarkdown remarkPlugins={[remarkGfm]}>
-                    {msg.content}
-                  </ReactMarkdown>
-                </div>
+                <MarkdownBody content={msg.content} />
               </div>
             </div>
-
-            {/* Copy the agent's message (plan/analysis) out to save elsewhere */}
-            {msg.content.trim().length > 0 && (
-              <div className="flex justify-start pl-1">
-                <CopyButton value={msg.content} label="Copy" />
-              </div>
-            )}
 
             {/* Inline draft proposal card when LLM offers a draft */}
             {msg.draft && (
