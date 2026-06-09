@@ -323,8 +323,24 @@ def build_intake_options(
                     "reply live."
                 )
             )
+        # Plan mode is a Claude Code workflow the intake keeps slipping into; its
+        # "plan" is the propose_draft draft, so steer it straight there.
+        if tool_name == "ExitPlanMode" or tool_name.endswith("ExitPlanMode"):
+            return PermissionResultDeny(
+                message=(
+                    "You don't use plan mode. When your spec is ready, call "
+                    "propose_draft to produce the reviewable draft card — don't "
+                    "announce a plan and wait."
+                )
+            )
+        # Generic deny, but guiding: the agent reflexively probes Claude Code
+        # built-ins (Write, ToolSearch, …). Tell it what it actually has.
         return PermissionResultDeny(
-            message=f"{tool_name} is not available to the intake agent (read-only)."
+            message=(
+                f"{tool_name} is not available to the intake agent. Your only tools "
+                "are Read, Grep, Glob, Task, and propose_draft. Ask the human inline; "
+                "when the spec is ready, call propose_draft."
+            )
         )
 
     return ClaudeAgentOptions(
