@@ -68,18 +68,50 @@ awaiting review, completed — on its own branch.*
 
 ### 1 · It starts with you
 
-You describe what you want — a feature, a fix, an entire product — and hand it to
-the **Board**. Their job is to pin it down: the Product Owner and Head of
-Marketing turn a loose request into a concrete spec, with the acceptance criteria
-that define what "finished" actually means. The Auditor watches the whole time
-but never interferes.
+You describe what you want — a feature, a fix, an entire product. The way in is
+the **Task Assistant**: instead of filling a form from memory, you give it a
+rough idea and it reads your *actual* codebase, asks a few sharp questions, and
+hands back a properly-formed task — an objective, a per-cell breakdown, and the
+acceptance criteria that define what "finished" really means.
 
-![The CEO's task-definition form: the title, description, and acceptance criteria that start a task.](images/task_definition_1.png)
+![The Task Assistant's scope form: pick the project or product to work in, then describe what you want to build.](images/start_prompter.png)
 
-![The same task-definition form, scrolled or scrolled-onto the acceptance criteria and submit step.](images/task_definition_2.png)
+*Where it starts — point the assistant at a project (one repo) or a product
+(several), drop in a rough idea, and it spins up an agent that reads that code
+before it says a word.*
 
-*Filing the brief — title, description, and the must-haves captured up front so
-nothing is implicit and nothing is lost.*
+![The Task Assistant chat opening: the idea is in, and the agent is cloning the repo and reading the code before it answers.](images/prompter_run_1.png)
+
+*No canned questions. The agent clones the scope and reads the real surface
+first, so everything it asks and proposes is grounded in what your code actually
+does.*
+
+<!-- Optional: re-capture prompter_run_2 after the markdown-rendering fix ships (its headers will render cleanly instead of as raw ###). -->
+![The agent's grounded analysis: a read of the existing surface, what's missing, where the feature should live, and a proposed shape — citing real files and pages.](images/prompter_run_2.png)
+
+*It comes back having done the homework — naming the real pages, services, and
+files, laying out what to build and where, and refining with you over a couple of
+turns until the spec is right.*
+
+<!-- TODO: capture the 3-button draft card in the next smoke run and save it as docs/images/prompter_draft_card.png -->
+![The draft proposal card: the finished task — objective, per-cell work, and acceptance criteria — with three choices: Keep chatting, Board review & Start, or Approve & Start.](images/prompter_draft_card.png)
+
+*The proposal, ready to launch. Keep chatting to refine it, send it to the
+**Board** for review, or approve it straight to the Main PM — your call, on one
+card.*
+
+![The Task Assistant's confirmation: the task has been created and handed to the company.](images/prompter_task_accepted.png)
+
+![The created task, live: its objective, the per-cell breakdown, status, and assignment — exactly as the company will work it.](images/prompter_task_created.png)
+
+*From a rough sentence to a real, scoped task in a single chat — acceptance
+criteria and all, already moving through the company.*
+
+From here the task takes the path you chose for it. Send it to the **Board** and
+its job is to pin it down: the Product Owner and Head of Marketing turn the draft
+into a settled spec, sharpening the requirements and the acceptance criteria
+before anyone writes a line of code. The Auditor watches the whole time but never
+interferes.
 
 ![A Board review session: the Product Owner writing out requirements and acceptance criteria for a task.](images/chat_session.png)
 
