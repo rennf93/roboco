@@ -521,6 +521,30 @@ async def _seed_project_and_ceo(db_session: Any) -> tuple[UUID, UUID]:
     )
     db_session.add_all([project, ceo])
     await db_session.flush()
+    # The "& Start" routes assign the draft to a fixed board/PM agent
+    # (product-owner for "Board review", main-pm for "Approve & Start"); those
+    # rows must exist for the assigned_to FK. merge() is idempotent, so this is
+    # safe whether or not another test already committed them on the shared DB.
+    for slug, role, team in (
+        ("product-owner", AgentRole.PRODUCT_OWNER, None),
+        ("main-pm", AgentRole.MAIN_PM, Team.MAIN_PM),
+    ):
+        await db_session.merge(
+            AgentTable(
+                id=UUID(AGENT_UUIDS[slug]),
+                name=slug,
+                slug=slug,
+                role=role,
+                team=team,
+                status=AgentStatus.ACTIVE,
+                model_config={},
+                system_prompt=slug,
+                capabilities=[],
+                permissions={},
+                metrics={},
+            )
+        )
+    await db_session.flush()
     return project_id, ceo_id
 
 
