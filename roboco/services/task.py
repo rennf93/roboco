@@ -3970,8 +3970,14 @@ class TaskService(BaseService):
             else rejection_entry
         )
 
-        # Validate transition with CEO role requirement
-        self._validate_and_set_status(task, TaskStatus.NEEDS_REVISION, "ceo")
+        # A coordination/integration root (no repo of its own, carries a
+        # product) has no developer to revise it — NEEDS_REVISION is
+        # developer-claim-only, so it would deadlock the Main PM that owns the
+        # root. Such a root is routed to PENDING below instead; every other task
+        # takes the normal NEEDS_REVISION path back toward its developer.
+        is_coordination_root = task.project_id is None and task.product_id is not None
+        if not is_coordination_root:
+            self._validate_and_set_status(task, TaskStatus.NEEDS_REVISION, "ceo")
 
         # Surface the CEO's required changes through the task journal — the one
         # channel a downstream worker actually reads (evidence.journal_highlights
@@ -3986,16 +3992,26 @@ class TaskService(BaseService):
 
         # Route the rejected task to whoever should drive the rework.
         reassigned_to: str | None
-        if task.project_id is None and task.product_id is not None:
-            # Coordination/integration root: the Main PM delegates the rework — a
-            # board/dev role cannot drive a coordination task.
+        if is_coordination_root:
+            # Coordination/integration root: the Main PM re-plans and
+            # re-delegates the rework — a board/dev role cannot drive it. Land it
+            # in PENDING (the Main PM's claim source), claim cleared, so it
+            # re-enters plan→delegate. awaiting_ceo_approval→pending has no
+            # in-band transition, so use the audited privileged override.
             main_pm_id = UUID(AGENT_UUIDS["main-pm"])
             task.team = Team.MAIN_PM
             task.assigned_to = cast("Any", main_pm_id)
-            task.claimed_by = cast("Any", main_pm_id)
+            task.claimed_by = None
             reassigned_to = str(main_pm_id)
+            await self.session.flush()
+            await self.admin_set_status(
+                task_id,
+                TaskStatus.PENDING,
+                actor_role="ceo",
+                actor_id=AGENT_UUIDS["ceo"],
+            )
             self.log.info(
-                "Coordination task rejected by CEO - routed to Main PM",
+                "Coordination task rejected by CEO - routed to Main PM (pending)",
                 task_id=str(task_id),
             )
         else:
