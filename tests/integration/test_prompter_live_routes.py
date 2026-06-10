@@ -76,6 +76,22 @@ async def test_relay_event_unknown_session_is_noop(live_client: dict) -> None:
 
 
 @pytest.mark.asyncio
+async def test_status_reports_alive_for_open_session(live_client: dict) -> None:
+    client, registry = live_client["client"], live_client["registry"]
+    registry.open("s1", "intake-1")
+    resp = await client.get("/api/prompter/live/s1/status")
+    assert resp.status_code == HTTPStatus.OK
+    assert resp.json() == {"alive": True}
+
+
+@pytest.mark.asyncio
+async def test_status_reports_dead_for_unknown_session(live_client: dict) -> None:
+    resp = await live_client["client"].get("/api/prompter/live/nope/status")
+    assert resp.status_code == HTTPStatus.OK
+    assert resp.json() == {"alive": False}
+
+
+@pytest.mark.asyncio
 async def test_send_message_delivers_to_container(live_client: dict) -> None:
     client, registry = live_client["client"], live_client["registry"]
     registry.open("s1", "intake-1")

@@ -108,7 +108,7 @@ def _coerce_doc_ref(d: object) -> DocRef:
     """Build a DocRef from a stored ``Task.documents`` element.
 
     Canonical rows are dicts (``DocRef.model_dump()``). Defensive
-    against legacy/corrupted rows (#169): a bare path string is wrapped
+    against legacy/corrupted rows: a bare path string is wrapped
     instead of exploding ``DocRef(**str)`` and 500-ing the endpoint.
     """
     if isinstance(d, DocRef):

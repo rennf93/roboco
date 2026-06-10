@@ -22,6 +22,16 @@ def test_open_get_close() -> None:
     assert reg.get("s1") is None
 
 
+def test_is_alive_tracks_open_and_close() -> None:
+    """is_alive backs the panel's after-reload reconnect decision."""
+    reg = PrompterLiveRegistry()
+    assert reg.is_alive("s1") is False  # never opened
+    reg.open("s1", "intake-1")
+    assert reg.is_alive("s1") is True
+    reg.close("s1")
+    assert reg.is_alive("s1") is False  # reaped
+
+
 def test_open_is_idempotent_for_a_live_session() -> None:
     """Re-opening a live session returns the SAME object (same queue).
 

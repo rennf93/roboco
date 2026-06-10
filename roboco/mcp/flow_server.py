@@ -233,7 +233,7 @@ def i_will_work_on(
         steps: Ordered execution checklist — list of
             ``{"title": "...", "description": "..."}`` with every description
             substantive. Becomes the plan's sub-tasks AND the progress
-            checklist (#173 — completing a step advances %).
+            checklist (completing a step advances %).
         technical_considerations: Bullet list (strings) of architectural /
             library / approach notes.
         risks: List of ``{"risk": "...", "mitigation": "..."}`` entries.
@@ -533,7 +533,7 @@ _TOOLS: dict[str, Any] = {
 
 # IntentSpec verb names → MCP public tool names. The IntentSpec layer uses
 # Python-friendly identifiers (no reserved keywords); the MCP layer exposes
-# the user-facing verb name. Smoke-7 surfaced this gap: the manifest carried
+# the user-facing verb name. Dogfooding surfaced this gap: the manifest carried
 # `pass_review`/`fail_review` (IntentSpec names) but flow_server only had
 # `pass`/`fail` keys, so QA's tools were silently dropped at registration.
 _INTENT_TO_PUBLIC: dict[str, str] = {
@@ -577,8 +577,8 @@ def _register_tools() -> list[str]:
 
     The manifest is the role-authoritative tool list. Falling back to
     all-verbs registration (the previous behaviour) caused PMs to see
-    developer/QA verbs and call them at wrong URLs (404s) — see audit
-    2026-05-04 D-12. We now refuse to start without the manifest.
+    developer/QA verbs and call them at wrong URLs (404s). We now refuse
+    to start without the manifest.
 
     Returns the list of verb names actually registered.
     """

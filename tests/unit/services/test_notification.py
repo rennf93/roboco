@@ -56,6 +56,11 @@ class _FakeDb:
         result.scalars.return_value.all.return_value = []
         return result
 
+    async def scalar(self, *_args, **_kwargs):
+        # _create_notification's purpose-dedup lookup runs db.scalar(); model
+        # "no existing duplicate" so creation proceeds.
+        return None
+
 
 @asynccontextmanager
 async def _fake_ctx(db: _FakeDb):

@@ -497,6 +497,63 @@ async def test_index_docs_swallows_errors(
     await svc._index_docs_background(uuid4(), [{"path": "x.md"}])
 
 
+@pytest.mark.asyncio
+async def test_capture_workspace_docs_lands_missing_doc(
+    task_setup: dict,
+    db_session: AsyncSession,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Any,
+) -> None:
+    """A doc that lives only in the agent's clone is read out of the branch and
+    written under DOCS_BASE_PATH so the indexer can see it."""
+    svc = task_setup["svc"]
+    monkeypatch.setattr("roboco.services.docs.DOCS_BASE_PATH", tmp_path)
+    task = await svc.create(_req(task_setup))
+    task.branch_name = "feature/backend/abc"
+    task.assigned_to = task_setup["agent_id"]
+    await db_session.flush()
+
+    fake_git = MagicMock()
+    fake_git.read_file_at_branch = AsyncMock(return_value="# Guide\ncontent\n")
+    monkeypatch.setattr("roboco.services.git.get_git_service", lambda _s: fake_git)
+
+    await svc._capture_workspace_docs(
+        task.id, [{"path": "guide.md"}], task_setup["agent_id"]
+    )
+
+    assert (tmp_path / "guide.md").read_text(encoding="utf-8") == "# Guide\ncontent\n"
+    fake_git.read_file_at_branch.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_capture_workspace_docs_skips_doc_already_on_server(
+    task_setup: dict,
+    db_session: AsyncSession,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Any,
+) -> None:
+    """A doc already under DOCS_BASE_PATH (written via roboco_docs_write) is not
+    re-fetched from the branch."""
+    svc = task_setup["svc"]
+    monkeypatch.setattr("roboco.services.docs.DOCS_BASE_PATH", tmp_path)
+    (tmp_path / "api.md").write_text("already here", encoding="utf-8")
+    task = await svc.create(_req(task_setup))
+    task.branch_name = "feature/backend/abc"
+    task.assigned_to = task_setup["agent_id"]
+    await db_session.flush()
+
+    fake_git = MagicMock()
+    fake_git.read_file_at_branch = AsyncMock(return_value="should not be used")
+    monkeypatch.setattr("roboco.services.git.get_git_service", lambda _s: fake_git)
+
+    await svc._capture_workspace_docs(
+        task.id, [{"path": "api.md"}], task_setup["agent_id"]
+    )
+
+    assert (tmp_path / "api.md").read_text(encoding="utf-8") == "already here"
+    fake_git.read_file_at_branch.assert_not_awaited()
+
+
 # ---------------------------------------------------------------------------
 # _index_qa_review_background / _index_qa_errors_background
 # ---------------------------------------------------------------------------

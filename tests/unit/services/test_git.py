@@ -15,6 +15,7 @@ from uuid import uuid4
 import pytest
 from roboco.api.schemas.git import GitCreateBranchRequest
 from roboco.config import settings
+from roboco.exceptions import GitCommandError
 from roboco.services.base import NotFoundError, UnauthorizedError
 from roboco.services.git import GitService
 
@@ -191,6 +192,41 @@ async def test_diff_returns_diff_stdout() -> None:
     _bind(svc, "_run_git", AsyncMock(side_effect=_run_git))
     out = await svc.diff(branch_name="feature/backend/abc")
     assert "+hello" in out
+
+
+@pytest.mark.asyncio
+async def test_read_file_at_branch_returns_committed_content() -> None:
+    svc = _service()
+    _bind(svc, "_workspace_for_branch", AsyncMock(return_value=Path("/tmp/ws")))
+    _bind(svc, "_token_for_branch", AsyncMock(return_value=None))
+    _bind(svc, "_resolve_head_ref", AsyncMock(return_value="HEAD"))
+    _bind(
+        svc,
+        "_run_git",
+        AsyncMock(return_value=MagicMock(stdout="# API\nbody\n", returncode=0)),
+    )
+    out = await svc.read_file_at_branch(
+        branch_name="feature/backend/abc", path="docs/api.md"
+    )
+    assert out == "# API\nbody\n"
+
+
+@pytest.mark.asyncio
+async def test_read_file_at_branch_missing_returns_none() -> None:
+    svc = _service()
+    _bind(svc, "_workspace_for_branch", AsyncMock(return_value=Path("/tmp/ws")))
+    _bind(svc, "_token_for_branch", AsyncMock(return_value=None))
+    _bind(svc, "_resolve_head_ref", AsyncMock(return_value="HEAD"))
+    # git show on a path that isn't in the tree exits non-zero.
+    _bind(
+        svc,
+        "_run_git",
+        AsyncMock(return_value=MagicMock(stdout="", returncode=128)),
+    )
+    out = await svc.read_file_at_branch(
+        branch_name="feature/backend/abc", path="nope.md"
+    )
+    assert out is None
 
 
 # ---------------------------------------------------------------------------
@@ -522,3 +558,43 @@ async def test_create_branch_keeps_existing_branch_that_has_work() -> None:
     assert not any(c[:2] == ["reset", "--hard"] for c in calls), (
         "a branch with real work must never be reset"
     )
+
+
+@pytest.mark.asyncio
+async def test_push_restates_gh001_as_permanent() -> None:
+    """A >100MB push rejection (GH001) is re-raised with a clear, permanent
+    message that points at i_am_blocked — not the raw output an agent mis-reads
+    as a transient timeout and blind-retries."""
+    svc = _service()
+    _bind(svc, "get_current_branch", AsyncMock(return_value="feature/x"))
+    _bind(svc, "_token_for_workspace", AsyncMock(return_value=None))
+
+    async def _run_git(_workspace: object, args: list[str], **_kw: object) -> object:
+        if args[:1] == ["push"]:
+            raise GitCommandError(
+                "git push",
+                "remote: error: GH001: large.bin is 115.00 MB; this exceeds "
+                "GitHub's file size limit of 100.00 MB",
+            )
+        return MagicMock(returncode=0, stdout="1", stderr="")
+
+    _bind(svc, "_run_git", AsyncMock(side_effect=_run_git))
+    with pytest.raises(GitCommandError, match="i_am_blocked"):
+        await svc.push(Path("/tmp/ws"))
+
+
+@pytest.mark.asyncio
+async def test_push_propagates_non_gh001_error_unchanged() -> None:
+    """A non-size push failure is re-raised as-is (not reclassified)."""
+    svc = _service()
+    _bind(svc, "get_current_branch", AsyncMock(return_value="feature/x"))
+    _bind(svc, "_token_for_workspace", AsyncMock(return_value=None))
+
+    async def _run_git(_workspace: object, args: list[str], **_kw: object) -> object:
+        if args[:1] == ["push"]:
+            raise GitCommandError("git push", "fatal: Authentication failed")
+        return MagicMock(returncode=0, stdout="1", stderr="")
+
+    _bind(svc, "_run_git", AsyncMock(side_effect=_run_git))
+    with pytest.raises(GitCommandError, match="Authentication failed"):
+        await svc.push(Path("/tmp/ws"))

@@ -32,6 +32,8 @@ This is the single most common mental-model mistake at your seat. Get it right:
 - **Do NOT** treat the one repository you happen to be able to see as "the" codebase, and do **NOT** describe another cell's area as "a separate repo" unless you have actually confirmed the Projects resolve to different repositories. In a monorepo the frontend is **not** "a separate repo" — it is a subtree of the same repo that the frontend cell owns. Each cell's `project_slug` is what tells you which Project/repo it works in; read it from the subtask, never guess.
 - Your coordination spans whatever shape the Product takes. You delegate per cell, each Cell PM works in their own Project (same repo subtree or different repo), and `complete` merges each cell's PR back along the chain. The fan-out shape (mono vs multi) is a property of the Product's per-cell Project config — inspect it, don't assume it.
 
+**Scope each cell's slice to that cell's layer — never a cross-layer monolith.** A backend slice is backend work, a frontend slice is frontend work; if a slice reads as "build the whole feature end-to-end", you've under-decomposed it across cells. Keep each slice to one cell's concern and let that Cell PM break it into focused dev subtasks. A slice that bundles many concerns into one cell just pushes the oversized-task / repeated-QA-failure problem down a level.
+
 ## Inputs you start with
 
 - Your `task_id` (your root coordination task) and `agent_id` are pre-baked into the gateway session.

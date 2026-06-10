@@ -1053,9 +1053,34 @@ class GitService(BaseService):
         if force:
             args.insert(1, "--force")
 
-        await self._run_git(
-            workspace, args, token=token, timeout=_network_git_timeout()
-        )
+        try:
+            await self._run_git(
+                workspace, args, token=token, timeout=_network_git_timeout()
+            )
+        except GitCommandError as e:
+            # A >100MB file trips GitHub's GH001 pre-receive hook — a PERMANENT
+            # rejection that retrying can never fix. Restate it unmistakably so
+            # the agent stops blind-retrying (it otherwise mis-reads the raw
+            # output as a transient timeout) and removes the file / blocks.
+            blob = f"{e}".lower()
+            if any(
+                m in blob
+                for m in (
+                    "gh001",
+                    "exceeds github's file size",
+                    "100.00 mb",
+                    "pre-receive hook declined",
+                )
+            ):
+                raise GitCommandError(
+                    "push",
+                    "rejected — a committed file exceeds GitHub's 100 MB limit"
+                    " (GH001). Retrying will NOT help: remove the oversized file"
+                    " (usually a build/dependency artifact like a node or pnpm"
+                    " store) from the commit and re-commit, or call i_am_blocked"
+                    " if you cannot.",
+                ) from e
+            raise
 
         return branch, commits_to_push
 
@@ -1536,10 +1561,9 @@ class GitService(BaseService):
                 {"task_id": str(task_id)},
             )
 
-        project_service = get_project_service(self.session)
-        project = await project_service.get(UUID(str(task.project_id)))
+        project = await self._project_for_task(task)
         if project is None:
-            raise NotFoundError("Project", str(task.project_id))
+            raise NotFoundError("Project for task", str(task.id))
 
         workspace_agent_id = self._resolve_workspace_agent_id(task, None)
         workspace = await self.get_workspace(project.slug, agent_id=workspace_agent_id)
@@ -1968,7 +1992,7 @@ class GitService(BaseService):
     def _resolve_workspace_agent_id(
         task: Any, actor_agent_id: UUID | None
     ) -> UUID | None:
-        """Workspace-agent resolution priority (audit D-40).
+        """Workspace-agent resolution priority.
 
         actor_agent_id → task.assigned_to → task.created_by → None.
         Centralised so push_branch/create_pr/commit/diff/pr_target/pr_merge
@@ -2008,7 +2032,7 @@ class GitService(BaseService):
     async def _token_for_branch(self, branch_name: str) -> str | None:
         """Best-effort project PAT for authenticated fetch in the diff path.
 
-        Task #168: an unauthenticated ``git fetch`` fails on a private
+        An unauthenticated ``git fetch`` fails on a private
         repo ("could not read Username for github.com"), so the diff base
         stays the stale clone-time ``origin/<default>`` and the three-dot
         diff spans the whole repo delta instead of the branch's change.
@@ -2021,8 +2045,7 @@ class GitService(BaseService):
             task = await self._task_for_branch(branch_name)
             if task is None:
                 return None
-            project_service = get_project_service(self.session)
-            project = await project_service.get(UUID(str(task.project_id)))
+            project = await self._project_for_task(task)
             if project is None:
                 return None
             return await self._get_project_token_or_raise(project.slug)
@@ -2037,7 +2060,7 @@ class GitService(BaseService):
     ) -> None:
         """Check out `branch_name` into the actor's own clone.
 
-        Task #162: dev/PM workspaces land on the right branch because
+        Dev/PM workspaces land on the right branch because
         ``_auto_create_branch`` runs ``git checkout -b`` in the dev's
         clone at claim time. The documenter's clone is a *separate*
         workspace; when it claims an awaiting_documentation task the
@@ -2064,7 +2087,7 @@ class GitService(BaseService):
         Gateway-only entry point — the legacy `push(workspace, force)`
         signature stays intact for non-gateway callers. Resolves the
         workspace from the task that owns the branch (with caller-actor
-        fallback per audit D-40), then delegates. Returns
+        fallback), then delegates. Returns
         (branch, commits_pushed).
         """
         workspace = await self._workspace_for_branch(
@@ -2089,7 +2112,7 @@ class GitService(BaseService):
 
         ``actor_agent_id`` lets PMs opening the master PR (where
         ``task.assigned_to`` may be None at completion time) resolve a
-        workspace via the actor's clone (audit D-40).
+        workspace via the actor's clone.
         """
         task = await self._task_for_branch(branch_name)
         if task is None:
@@ -2176,7 +2199,7 @@ class GitService(BaseService):
 
     @staticmethod
     def _resolve_merger_id(task: Any, actor_agent_id: UUID | None) -> UUID:
-        """merged_by attribution priority for pr_merge (audit D-43).
+        """merged_by attribution priority for pr_merge.
 
         actor → assigned_to → created_by → UUID(int=0) sentinel.
         ``UUID(0)`` is the explicit "nothing was recoverable" marker
@@ -2248,10 +2271,9 @@ class GitService(BaseService):
         task = result.scalar_one_or_none()
         if task is None:
             raise NotFoundError("PR", str(pr_number))
-        project_service = get_project_service(self.session)
-        project = await project_service.get(UUID(str(task.project_id)))
+        project = await self._project_for_task(task)
         if project is None:
-            raise NotFoundError("Project", str(task.project_id))
+            raise NotFoundError("Project for task", str(task.id))
 
         workspace_agent_id = self._resolve_workspace_agent_id(task, actor_agent_id)
         workspace = await self.get_workspace(project.slug, agent_id=workspace_agent_id)
@@ -2308,7 +2330,7 @@ class GitService(BaseService):
         """Return the current target (base) branch of an open PR.
 
         Workspace resolution mirrors pr_merge: actor → assigned_to →
-        created_by (audit D-40). Lets the Main PM call pr_target after
+        created_by. Lets the Main PM call pr_target after
         ``submit_qa`` has cleared ``assigned_to`` without ValidationError.
         """
         from sqlalchemy import select
@@ -2321,10 +2343,9 @@ class GitService(BaseService):
         task = result.scalar_one_or_none()
         if task is None:
             raise NotFoundError("PR", str(pr_number))
-        project_service = get_project_service(self.session)
-        project = await project_service.get(UUID(str(task.project_id)))
+        project = await self._project_for_task(task)
         if project is None:
-            raise NotFoundError("Project", str(task.project_id))
+            raise NotFoundError("Project for task", str(task.id))
 
         workspace_agent_id = self._resolve_workspace_agent_id(task, actor_agent_id)
         workspace = await self.get_workspace(project.slug, agent_id=workspace_agent_id)
@@ -2377,7 +2398,7 @@ class GitService(BaseService):
         ``origin/master`` so the diff command is still well-formed even
         on a misconfigured remote (an empty/garbage diff is recoverable;
         a malformed git invocation is not). This only resolves the ref
-        NAME — the caller is responsible for fetching it fresh (#168).
+        NAME — the caller is responsible for fetching it fresh.
         """
         head = await self._run_git(
             workspace,
@@ -2404,14 +2425,14 @@ class GitService(BaseService):
     ) -> str:
         """Best diff base for `branch_name` when no explicit base is given.
 
-        Task #161: a leaf dev branch's ``parent_branch_for`` is the
+        A leaf dev branch's ``parent_branch_for`` is the
         cell-PM branch (``feature/{team}/{root}--{cellpm}``) which is
         NEVER pushed — only devs push their own leaf branch. Diffing
         against a non-existent ``origin/<parent>`` returns an empty
         diff, so QA / docs see nothing. Fall back to the repo default
         branch when the computed parent ref is absent on origin.
 
-        Task #168: the default-branch ref in an inspecting clone is the
+        The default-branch ref in an inspecting clone is the
         stale clone-time tip (origin/HEAD is set, so _default_branch_ref
         early-returns its NAME without fetching). A three-dot diff against
         a stale base spans the whole repo delta, not the branch's change.
@@ -2438,7 +2459,7 @@ class GitService(BaseService):
     ) -> str:
         """Ref for the branch tip that actually resolves in `workspace`.
 
-        Task #161 (facet): the local ``<branch_name>`` ref only exists in
+        The local ``<branch_name>`` ref only exists in
         the clone where the dev ran ``git checkout -b`` at claim. QA /
         documenter / PM inspect from their OWN clones, which never had
         that local branch — a bare ``<branch_name>`` resolves
@@ -2471,11 +2492,11 @@ class GitService(BaseService):
 
         When `base` is omitted, diffs against the branch's parent (per
         `parent_branch_for`), falling back to the repo default branch
-        when that parent was never pushed (Task #161). Content_actions
+        when that parent was never pushed. Content_actions
         evidence path can pass `HEAD~1` for an incremental diff.
 
         ``actor_agent_id`` resolves the workspace via the caller's clone
-        when ``task.assigned_to`` is None (audit D-40) — important for
+        when ``task.assigned_to`` is None — important for
         QA reviewing post-submit_qa.
         """
         workspace = await self._workspace_for_branch(
@@ -2507,7 +2528,7 @@ class GitService(BaseService):
         authoritative git state — independent of whether the agent
         ever called the legacy ``add_files_modified`` HTTP endpoint
         (which the gateway commit() does not call). Empty paths are
-        skipped; output preserves git's order. Same Task #161 default-
+        skipped; output preserves git's order. Same default-
         branch fallback as ``diff``.
         """
         workspace = await self._workspace_for_branch(
@@ -2526,6 +2547,33 @@ class GitService(BaseService):
             check=False,
         )
         return [line for line in result.stdout.splitlines() if line.strip()]
+
+    async def read_file_at_branch(
+        self,
+        *,
+        branch_name: str,
+        path: str,
+        actor_agent_id: UUID | None = None,
+    ) -> str | None:
+        """Return the content of ``path`` as committed on ``branch_name``.
+
+        Reads the file straight out of the branch tip with ``git show`` in the
+        resolved workspace, so the orchestrator can capture a doc an agent
+        authored (and committed) in its OWN clone — without any shared
+        filesystem mount. A missing file, an uncommitted file, or a bad ref
+        yields ``None`` rather than raising; callers treat this as best-effort.
+        """
+        workspace = await self._workspace_for_branch(
+            branch_name, actor_agent_id=actor_agent_id
+        )
+        token = await self._token_for_branch(branch_name)
+        head_ref = await self._resolve_head_ref(workspace, branch_name, token=token)
+        result = await self._run_git(
+            workspace, ["show", f"{head_ref}:{path}"], check=False
+        )
+        if result.returncode != 0:
+            return None
+        return result.stdout
 
     async def commit(
         self,
@@ -2546,8 +2594,7 @@ class GitService(BaseService):
         applies to the structured `commit_for_task` API path.
 
         ``actor_agent_id`` falls back through the same chain as pr_merge
-        when ``task.assigned_to`` was cleared by an earlier transition
-        (audit D-40).
+        when ``task.assigned_to`` was cleared by an earlier transition.
 
         Returns a dict shaped for the gateway: ``{"sha": str, "message": str,
         "files_changed": int, "insertions": int, "deletions": int}``. Tests

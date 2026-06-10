@@ -1,4 +1,4 @@
-"""Board + Auditor verbs (P2-2 first per-role split).
+"""Board + Auditor verbs (first per-role split).
 
 Mixin extracted from ``_impl.py`` to prove the per-role pattern. Relies
 on ``self.task`` and ``self._briefing_for`` from the base class via

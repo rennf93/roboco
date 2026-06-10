@@ -141,7 +141,7 @@ _TRUNCATION_MARKER = "[...earlier notes truncated for size...]\n"
 
 
 def _mark_subtask_complete(sub_tasks: list[dict[str, Any]], plan_step: str) -> bool:
-    """Mark the matching sub_task ``completed`` in place (#173).
+    """Mark the matching sub_task ``completed`` in place.
 
     ``plan_step`` matches a sub_task by its id, its ``order``, or its
     1-based position. Returns True iff a sub_task matched (mutated in
@@ -173,7 +173,7 @@ def _derive_plan_pct(
     sub_tasks: list[dict[str, Any]], fallback: int | None
 ) -> int | None:
     """% = completed/total of the checklist (equal weight); ``fallback``
-    only when there is no checklist (#173)."""
+    only when there is no checklist."""
     if not sub_tasks:
         return fallback
     done = sum(1 for st in sub_tasks if st.get("completed"))
@@ -801,7 +801,7 @@ class TaskService(BaseService):
         a child task's parent is branchless (a coordination/fan-out parent that
         owns no repo): the real merge target is the child's own project default
         branch — the branch the child was actually cut from — not a derived ref
-        the parent never created (#17). Returns None for a task with no
+        the parent never created. Returns None for a task with no
         project_id (e.g. a coordination task itself).
         """
         project_id = getattr(task, "project_id", None)
@@ -1220,7 +1220,7 @@ class TaskService(BaseService):
         On branch-creation failure, the claim fields are rolled back to
         their pre-claim values so a retry starts from a clean state. Without
         this, a partial failure leaves the task CLAIMED with branch_name=NULL,
-        and `git checkout -b` on retry fails non-idempotent (audit S-01/D-39).
+        and `git checkout -b` on retry fails non-idempotent.
         """
         # Set context for QA/Documenter claims (only if not already set)
         self._set_original_developer_context(task, agent)
@@ -1246,7 +1246,7 @@ class TaskService(BaseService):
         task.last_heartbeat_at = now
         # Single-claimant invariant (alembic 006): claimant_lock.try_acquire
         # and trigger_filter.decide_spawn both branch on this column. Was
-        # declared but never written (audit D-05); now wired so the
+        # declared but never written; now wired so the
         # invariant is functional.
         task.active_claimant_id = cast("Any", agent_id)
 
@@ -1326,7 +1326,7 @@ class TaskService(BaseService):
         outer claim() transaction could roll back (branch-creation
         failure, FOR UPDATE conflict, etc.) but this fire-and-forget
         survived and wrote stale context onto a task whose claim was
-        reverted (audit D-44).
+        reverted.
 
         Now performs a confirm-after-commit check at the top: re-reads
         the task in a fresh session and skips if (a) task is gone, or
@@ -1818,12 +1818,20 @@ class TaskService(BaseService):
         return str(DOCS_BASE_PATH / path)
 
     async def _index_docs_background(
-        self, task_id: UUID, documents: list[dict[str, Any]]
+        self,
+        task_id: UUID,
+        documents: list[dict[str, Any]],
+        actor_agent_id: UUID | None = None,
     ) -> None:
         """Index documentation from completed doc task (fire-and-forget)."""
         from roboco.services.optimal import get_optimal_service
 
         try:
+            # Land any workspace-authored docs server-side first, so the
+            # indexer (which reads /app/docs) can see docs the agent wrote with
+            # Edit/Write in its own clone rather than through roboco_docs_write.
+            await self._capture_workspace_docs(task_id, documents, actor_agent_id)
+
             optimal = await get_optimal_service()
 
             # Extract doc paths from documents array and resolve to absolute paths
@@ -1846,6 +1854,57 @@ class TaskService(BaseService):
                 task_id=str(task_id),
                 error=str(e),
             )
+
+    async def _capture_workspace_docs(
+        self,
+        task_id: UUID,
+        documents: list[dict[str, Any]],
+        actor_agent_id: UUID | None,
+    ) -> None:
+        """Copy workspace-authored docs into ``/app/docs`` so they index.
+
+        Docs written through ``roboco_docs_write`` already live under
+        ``DOCS_BASE_PATH`` on the orchestrator. Docs an agent wrote with
+        Edit/Write live only in that agent's own clone, so resolving their path
+        under ``/app/docs`` finds nothing and they never reach RAG (the
+        cross-container miss). Read each missing doc's committed content out of
+        the branch and write it server-side. Best-effort: one unreadable file
+        must not abort the rest of the batch.
+        """
+        from pathlib import Path
+
+        from roboco.services.git import get_git_service
+
+        task = await self.get(task_id)
+        if task is None or not task.branch_name:
+            return
+        git = get_git_service(self.session)
+        for d in documents:
+            rel_path = d.get("path")
+            # git show needs a repo-relative path; an absolute path can't be
+            # mapped back to the repo, and the indexer already skips it.
+            if not rel_path or Path(rel_path).is_absolute():
+                continue
+            abspath = Path(self._resolve_doc_abspath(rel_path))
+            if abspath.exists():
+                continue
+            try:
+                content = await git.read_file_at_branch(
+                    branch_name=task.branch_name,
+                    path=rel_path,
+                    actor_agent_id=actor_agent_id,
+                )
+            except Exception as e:
+                self.log.debug(
+                    "Workspace doc capture read failed",
+                    path=rel_path,
+                    error=str(e),
+                )
+                continue
+            if not content:
+                continue
+            abspath.parent.mkdir(parents=True, exist_ok=True)
+            abspath.write_text(content, encoding="utf-8")
 
     # =========================================================================
     # QA AND ERROR INDEXING HOOKS
@@ -2172,7 +2231,7 @@ class TaskService(BaseService):
     async def unclaim_for_reaper(self, task_id: UUID) -> None:
         """Reaper-only unclaim: skip role checks, force the row back to pending.
 
-        Routes through ``_validate_and_set_status`` (audit P2-4/D-20) so the
+        Routes through ``_validate_and_set_status`` so the
         canonical state machine in ``enforcement/task_lifecycle.py`` records
         the transition. Pre-fix this used raw UPDATE which bypassed
         VALID_TRANSITIONS — making the lifecycle module's invariants diverge
@@ -2180,7 +2239,7 @@ class TaskService(BaseService):
 
         Also abandons the active WorkSession so a re-claim by the same
         agent doesn't trip the uniqueness constraint at
-        ``WorkSessionService.create`` (audit D-41). Best-effort: if the
+        ``WorkSessionService.create``. Best-effort: if the
         WorkSession lookup fails for any reason, the task is still
         rolled back to pending.
 
@@ -2255,7 +2314,7 @@ class TaskService(BaseService):
     ) -> None:
         """Mark a WorkSession ABANDONED. Logs and continues on any failure.
 
-        Audit D-41 fix — unclaim must not leave ACTIVE WorkSessions
+        Unclaim must not leave ACTIVE WorkSessions
         behind, but a service-layer error here mustn't block the task-
         side unclaim from completing.
         """
@@ -2969,10 +3028,16 @@ class TaskService(BaseService):
 
         await self.session.flush()
 
-        # Index documentation artifacts (fire-and-forget)
+        # Index documentation artifacts (fire-and-forget). Capture the current
+        # owner (the documenter) now — i_documented reassigns to the PM right
+        # after this returns, so reading assigned_to inside the background task
+        # would resolve the wrong workspace.
         if task.documents:
+            documenter_id = to_python_uuid(task.assigned_to)
             bg_task = asyncio.create_task(
-                self._index_docs_background(require_uuid(task.id), task.documents)
+                self._index_docs_background(
+                    require_uuid(task.id), task.documents, documenter_id
+                )
             )
             self._background_tasks.add(bg_task)
             bg_task.add_done_callback(self._background_tasks.discard)
@@ -3384,7 +3449,7 @@ class TaskService(BaseService):
     ) -> TaskTable | None:
         """Run the PM-completion approval chain; return escalated task or None.
 
-        #178: the cell_pm branch was removed (it reassigned every
+        The cell_pm branch was removed (it reassigned every
         ``awaiting_pm_review`` task from the cell PM to the main PM and
         kept it in ``awaiting_pm_review`` — a legacy two-step "cell PM
         approves, main PM approves" review chain). The gateway model
@@ -3456,7 +3521,7 @@ class TaskService(BaseService):
         """
         Mark task as completed (PM only).
 
-        Approval model (post-#178 — matches the gateway invariant
+        Approval model (matches the gateway invariant
         ``main_pm_complete`` rejects any non-root task):
 
         - Cell PM completes a non-root task → COMPLETED. The cell→main
@@ -4152,10 +4217,17 @@ class TaskService(BaseService):
         blocked_tasks = result.scalars().all()
 
         for task in blocked_tasks:
-            # Remove the completed task from dependencies
+            # Remove the completed task from dependencies, but remember it so the
+            # unblock briefing can tell the revived dependent which upstream task
+            # just landed (otherwise the only record of it is destroyed here).
             task.dependency_ids = [
                 dep_id for dep_id in task.dependency_ids if dep_id != completed_task_id
             ]
+            if completed_task_id not in task.completed_dependency_ids:
+                task.completed_dependency_ids = [
+                    *task.completed_dependency_ids,
+                    completed_task_id,
+                ]
             # If no more dependencies, unblock (system action - no role validation)
             if not task.dependency_ids and task.status == TaskStatus.BLOCKED:
                 await self._revive_unblocked_dependent(task)
@@ -4228,7 +4300,7 @@ class TaskService(BaseService):
     ) -> dict[str, Any] | None:
         """Append a progress update whose % is DERIVED from the plan checklist.
 
-        #173: the plan's sub_tasks ARE the progress skeleton. When
+        The plan's sub_tasks ARE the progress skeleton. When
         ``plan_step`` (a sub_task id, or 1-based order/index) is given,
         that step is marked ``completed`` and the percentage is computed
         as completed/total (equal weight) — the agent cannot game it.
@@ -5014,7 +5086,7 @@ class TaskService(BaseService):
         Raises UnauthorizedError or ValidationError on failure; returns
         cleanly when every gate passes. Extracted from
         ``escalate_to_ceo_for_agent`` to keep that orchestrating method
-        below B-rank cyclomatic complexity (audit P2-2 / xenon).
+        below B-rank cyclomatic complexity (xenon).
         """
         if not permissions.can_perform_task_action(agent, TaskAction.CLOSE, task.team):
             raise UnauthorizedError(
@@ -5176,7 +5248,13 @@ class TaskService(BaseService):
         update_data: dict[str, Any] = {
             "status": new_status.value,
             "dev_notes": f"[SUBSTITUTE] Reason: {reason}\n{details}",
-            "assigned_to": None,
+            # Keep the task with its current owner. A substitute-out is almost
+            # always a transient stall (a verb that kept 500-ing, a retry-limit
+            # trip, a low-context bail), so the task re-dispatches to the SAME
+            # agent — which resumes from the briefing handoff — instead of being
+            # orphaned to pending+unassigned and going dormant. The only handoff
+            # that changes owner is the task_complete → PM-review case below.
+            "assigned_to": agent_id,
         }
 
         target_pm_slug: str | None = None
@@ -5370,7 +5448,7 @@ class TaskService(BaseService):
 
         Wider than ``get_active_task_for_agent`` — includes BLOCKED, PAUSED,
         and NEEDS_REVISION so journal entries written while stuck still
-        get the task_id auto-attached. Smoke-5 surfaced the bug: PMs
+        get the task_id auto-attached. Dogfooding surfaced the bug: PMs
         wrote decisions during blocked state, auto-injection returned
         None, entries persisted with task_id=NULL, the C8 tracing gate
         never saw them, agents spiraled forever.
@@ -5390,7 +5468,7 @@ class TaskService(BaseService):
     async def list_pending_for_agent(self, agent_id: UUID) -> list[TaskTable]:
         """Tasks assigned to this agent that are still in PENDING status.
 
-        Pre-gateway parity (Wave B6, 2026-05-12): give_me_work missed the
+        Pre-gateway parity: give_me_work missed the
         pre-assigned case before this. PMs whose root was seeded with
         assigned_to=<them> + status=pending got 'no work' until they
         triage()'d explicitly.
@@ -5501,7 +5579,7 @@ class TaskService(BaseService):
     ) -> None:
         """Create a WorkSession row if one does not already exist for this claim.
 
-        Wave C4 (2026-05-12) — pre-gateway parity. The gateway's claim/plan/
+        Pre-gateway parity. The gateway's claim/plan/
         start path calls this after the task reaches in_progress so every
         (agent, task) claim cycle has a WorkSession row that downstream
         subsystems (panel, PR tracking, merge chain) can use. Delegates to
@@ -5527,7 +5605,7 @@ class TaskService(BaseService):
     async def set_acceptance_criteria_status(
         self, task_id: UUID, status: list[dict[str, Any]]
     ) -> TaskTable | None:
-        """Persist per-criterion addressing status. Wave C5 (2026-05-12).
+        """Persist per-criterion addressing status.
 
         Replaces the full acceptance_criteria_status list with `status`.
         Each entry must have the shape:
@@ -5712,7 +5790,7 @@ class TaskService(BaseService):
         The audit row is attributed to QA via task.claimed_by (set by
         qa_claim). We assert qa_agent_id matches claimed_by so any future
         divergence surfaces loudly instead of silently mis-recording the
-        actor (audit D-18). Clears the single-claimant lock so the
+        actor. Clears the single-claimant lock so the
         documenter can claim cleanly.
         """
         task = await self.get(task_id)
@@ -5742,7 +5820,7 @@ class TaskService(BaseService):
 
         `notes` is the QA narrative (stored on `qa_notes`); `issues` is
         appended to `dev_notes` as a checklist for the dev's revision.
-        Asserts the actor matches claimed_by (audit D-18).
+        Asserts the actor matches claimed_by.
         """
         task = await self.get(task_id)
         if task is None:

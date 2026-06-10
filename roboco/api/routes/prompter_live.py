@@ -150,6 +150,17 @@ async def stream(session_id: str, request: Request) -> EventSourceResponse:
     return EventSourceResponse(events(), ping=15)
 
 
+@router.get("/live/{session_id}/status")
+async def session_status(session_id: str) -> dict[str, bool]:
+    """Report whether a live intake session is still running.
+
+    The panel calls this after a reload: if the session survived (the agent
+    container outlives a browser refresh), it reopens the SSE stream and
+    resumes the chat instead of dropping back to the scope form.
+    """
+    return {"alive": get_live_registry().is_alive(session_id)}
+
+
 @router.post("/live/{session_id}/messages")
 async def send_message(session_id: str, body: LiveMessageRequest) -> dict[str, bool]:
     """Deliver the human's message to the running intake agent."""

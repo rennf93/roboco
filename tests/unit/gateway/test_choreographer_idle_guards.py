@@ -167,3 +167,39 @@ async def test_i_am_idle_pending_guard_runs_after_unread_check() -> None:
     assert body["error"] is None
     assert body["status"] == "idle_with_unread"
     task_svc.mark_agent_idle.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_i_am_idle_refuses_pm_owning_awaiting_pm_review() -> None:
+    """A PM that still owns a task awaiting its own review cannot idle — it must
+    complete / reassign / delegate (a DM does not route work)."""
+    agent_id = uuid4()
+    review = MagicMock(id=uuid4(), status="awaiting_pm_review")
+    task_svc = AsyncMock()
+    task_svc.list_assigned_for_agent.return_value = [review]
+    task_svc.agent_for.return_value = MagicMock(role="cell_pm")
+    deps = _make_deps(task=task_svc)
+    c = Choreographer(deps)
+
+    env = await c.i_am_idle(agent_id)
+    body = env.as_dict()
+    assert body["error"] == "invalid_state"
+    assert "reassign" in body["remediate"] or "delegate" in body["remediate"]
+    task_svc.mark_agent_idle.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_i_am_idle_allows_dev_owning_awaiting_pm_review() -> None:
+    """The review guard is PM-only — a non-PM owning such a task still idles."""
+    agent_id = uuid4()
+    review = MagicMock(id=uuid4(), status="awaiting_pm_review")
+    task_svc = AsyncMock()
+    task_svc.list_assigned_for_agent.return_value = [review]
+    task_svc.list_in_progress_for_agent.return_value = []
+    task_svc.agent_for.return_value = MagicMock(role="developer")
+    deps = _make_deps(task=task_svc)
+    c = Choreographer(deps)
+
+    env = await c.i_am_idle(agent_id)
+    assert env.status == "idle"
+    task_svc.mark_agent_idle.assert_awaited_once()

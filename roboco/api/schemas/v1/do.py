@@ -51,7 +51,7 @@ class NoteRequest(BaseModel):
     title: str | None = None
     # decision scope (all required at gateway when scope='decision').
     # Typed as non-nullable str (default "") so the MCP tool schema declares
-    # the field as `string` not `anyOf[string, null]` — smoke-6 showed
+    # the field as `string` not `anyOf[string, null]` — dogfooding showed
     # minimax-m3 passing literal `null` for these and the server-side
     # gate looping forever on `incomplete_input`. Empty string still counts
     # as missing at the gate.
@@ -70,7 +70,7 @@ class NoteRequest(BaseModel):
     # ``options``, a single dict) is wrapped into a one-element list before
     # field validation. Without this a well-intentioned ``consequences="x"``
     # 422'd at the route and the agent's retry loop tripped the circuit
-    # breaker (issue #15). ``mode="before"`` runs ahead of type coercion so
+    # breaker. ``mode="before"`` runs ahead of type coercion so
     # the wrapped value satisfies the declared ``list[...]`` type.
     @field_validator("options", "consequences", "next_steps", mode="before")
     @classmethod
@@ -131,7 +131,7 @@ class LinkSessionRequest(BaseModel):
 
 
 class ProgressRequest(BaseModel):
-    """Progress update; % is DERIVED from the plan checklist (#173).
+    """Progress update; % is DERIVED from the plan checklist.
 
     Pass ``plan_step`` (a sub_task id or its 1-based order) as you finish
     each plan step — it is marked complete and the percentage is computed
@@ -170,10 +170,14 @@ class ChannelsRequest(BaseModel):
     """No params — caller's identity comes from X-Agent-ID header."""
 
 
+class ReadMessagesRequest(BaseModel):
+    """No params — clears the caller's unread A2A inbox (X-Agent-ID header)."""
+
+
 class PRUpdateRequest(BaseModel):
     """Update an open PR's title/body and/or request reviewers.
 
-    Smoke-5 surfaced the gap: agents who needed to fix the PR title or
+    Dogfooding surfaced the gap: agents who needed to fix the PR title or
     request a reviewer after `open_pr` had no verb for it and got blocked
     by the bash-guard on `gh pr edit`. This is the gateway-native fix.
 

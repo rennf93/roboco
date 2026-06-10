@@ -13,12 +13,12 @@ from roboco.models.base import RobocoBase, TimestampMixin
 class ProductCellMapping(RobocoBase):
     """One cell -> Project assignment within a Product."""
 
-    # Plan-mandated deviation from a bare ``project.py`` mirror: ``RobocoBase``
+    # Deliberate deviation from a bare ``project.py`` mirror: ``RobocoBase``
     # sets ``use_enum_values=True``, which coerces ``team`` to the plain string
-    # ``"backend"``. The plan's Task 3.1 code requires ``team`` to stay a real
-    # ``Team`` enum so its Step 1 test (``m.team is Team.BACKEND``) and the
-    # validator's ``v.value`` error message hold. Pydantic merges model_config
-    # across inheritance, so this single key inherits the rest of the base.
+    # ``"backend"``. We need ``team`` to stay a real ``Team`` enum so the
+    # ``m.team is Team.BACKEND`` check and the validator's ``v.value`` error
+    # message hold. Pydantic merges model_config across inheritance, so this
+    # single key inherits the rest of the base.
     model_config = ConfigDict(use_enum_values=False)
 
     team: Team

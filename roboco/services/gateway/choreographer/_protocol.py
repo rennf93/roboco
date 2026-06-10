@@ -57,6 +57,8 @@ class ChoreographerHelpers:
         self,
         agent_id: UUID,
         task_id: UUID | None,
+        *,
+        task: Any | None = None,
     ) -> dict[str, Any]:
         raise NotImplementedError
 
@@ -86,5 +88,7 @@ class ChoreographerHelpers:
         agent_id: UUID,
         task_id: UUID,
         missing: list[str],
+        *,
+        task: Any | None = None,
     ) -> Envelope:
         raise NotImplementedError

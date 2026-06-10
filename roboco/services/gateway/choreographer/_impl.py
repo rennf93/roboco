@@ -31,6 +31,7 @@ from roboco.services.gateway.evidence_builder import (
     BriefingInputs,
     build_context_briefing,
     build_evidence_for_task,
+    build_task_handoff,
 )
 from roboco.services.gateway.merge_chain import resolve_parent_branch
 from roboco.services.gateway.remediation import (
@@ -49,7 +50,7 @@ logger = structlog.get_logger()
 
 # Minimum character length enforced on rich_plan["approach"] by the PM
 # sub-tasks gate. Must match the Pydantic min_length on
-# IWillPlanRequest.approach. Raised 20→150 (smoke-15): plans were vague
+# IWillPlanRequest.approach. Raised 20→150: plans were vague
 # because 20 chars is a one-liner; the approach + sub_tasks are also the
 # progress checklist, so they must be substantive.
 _PM_APPROACH_MIN_LEN = 150
@@ -61,7 +62,7 @@ _PM_SUBTASK_DESC_MIN_LEN = 60
 
 
 def _thin_subtask_hint(sub_tasks: list[Any]) -> str | None:
-    """Return a hint if any PM sub_task is title-only / thin (#171).
+    """Return a hint if any PM sub_task is title-only / thin.
 
     Each sub_task is a delegate target AND a progress-checklist item, so
     a title with no real description is not a plan. Returns None when
@@ -210,7 +211,7 @@ class ChoreographerDeps:
     journal: Any
     audit: Any
     evidence_repo: Any
-    # Task #156: messaging is optional so existing callsites + tests that
+    # messaging is optional so existing callsites + tests that
     # don't exercise session propagation don't have to plumb it in. The
     # delegate() path uses it to thread parent sessions onto new subtasks.
     messaging: Any = None
@@ -261,8 +262,8 @@ class _IAmDoneContext:
 class _ReassignedCtx:
     """Bundle of fields the ``_reassigned_rejection`` helper inspects.
 
-    Shared between ``unclaim`` and ``resume`` (Task 6 fix in commit
-    a5d358d). Frozen so the helper site can't mutate caller state and
+    Shared between ``unclaim`` and ``resume``. Frozen so the helper site
+    can't mutate caller state and
     to keep PLR0913 (too many positional args) at bay.
     """
 
@@ -280,14 +281,14 @@ class DelegateInputs:
 
     Mirrors :data:`roboco.foundation.policy.task_completeness.TASK_AT_CREATE`:
     `task_type` and `nature` have no defaults — the v1 schema enforces both at
-    the HTTP boundary (Task 15), and defaulting here too would let direct
+    the HTTP boundary, and defaulting here too would let direct
     callers (tests, internal code) silently pick `'code'`/`'technical'` and
-    recreate the 2026-05-08 deadlock.
+    recreate the no-acceptance-criteria deadlock.
 
     Optional fields (`acceptance_criteria=None`, `nature=None`) survive the
     construction step and are then rejected by the gateway-side
-    `task_completeness.check` before reaching `_create_subtask_from_inputs`
-    (Task 19): the rejection takes the form of `Envelope.incomplete_input`
+    `task_completeness.check` before reaching `_create_subtask_from_inputs`:
+    the rejection takes the form of `Envelope.incomplete_input`
     so the agent receives a structured field-by-field guide.
     """
 
@@ -373,7 +374,7 @@ class Choreographer:
     ) -> None:
         """Append a server-emitted progress entry on a lifecycle milestone.
 
-        Task #155: agents call ``progress()`` inconsistently. Server-side
+        Agents call ``progress()`` inconsistently. Server-side
         auto-emit on natural milestones (open_pr, i_am_done) guarantees
         the panel + audit view always have entries at the major
         transitions, regardless of how chatty the agent is. Best-effort:
@@ -394,8 +395,8 @@ class Choreographer:
     ) -> Envelope | None:
         """Build the "task reassigned by upstream verb" rejection envelope.
 
-        Shared between ``unclaim`` and ``resume`` (Task 6 fix in commit
-        a5d358d). The spec doesn't model "task got reassigned out from
+        Shared between ``unclaim`` and ``resume``. The spec doesn't model
+        "task got reassigned out from
         under you by an upstream verb" — when the spec gate accepts but
         ``task.assigned_to != agent_id``, this helper produces the
         envelope with the load-bearing "current owner" hint and
@@ -469,13 +470,13 @@ class Choreographer:
         task_id: UUID,
         briefing: dict[str, Any],
     ) -> Envelope | None:
-        """Wave A1 gate: PMs must supply a substantive approach + sub_tasks.
+        """Plan-depth gate: PMs must supply a substantive approach + sub_tasks.
 
         Enforces both fields at the choreographer layer so direct service-layer
         callers (MCP server, test fixtures, orchestrator-internal Python) cannot
         persist a plan that bypassed the HTTP Pydantic boundary.
 
-        Smoke-15: a 20-char approach and title-only sub_tasks were "no
+        A 20-char approach and title-only sub_tasks were "no
         effort" plans. approach must be >= _PM_APPROACH_MIN_LEN and every
         sub_task needs a real title + a description that says what the
         step does (it is both a delegate target and a progress-checklist
@@ -549,12 +550,11 @@ class Choreographer:
         per-attempt id into the audit row's ``details`` JSONB. The
         attempt_id is unique per rejection event so post-mortem queries
         can group "all attempts on task X within a window" without
-        confusing two distinct calls that share a correlation_id (audit
-        P2-7/D-N).
+        confusing two distinct calls that share a correlation_id.
         """
         if env.error is None:
             return env
-        # Wave C3 (2026-05-12): refresh heartbeat on every rejection so an
+        # Refresh heartbeat on every rejection so an
         # agent stuck in a verb-rejection loop (e.g., tracing_gap while
         # retrying) does not look idle to the reaper. Best-effort: a
         # heartbeat failure must never alter the envelope returned to the
@@ -596,7 +596,7 @@ class Choreographer:
     def _claim_verb_hint(role: str, task: Any) -> str:
         """Role + status aware 'how to start this task' hint.
 
-        Task #162 facet (d): give_me_work hard-coded
+        give_me_work used to hard-code
         ``i_will_work_on(...)`` for every role/status. A documenter
         handed an awaiting_documentation task (or QA an awaiting_qa
         task) was told to call a dev verb it doesn't have — it looped.
@@ -652,7 +652,7 @@ class Choreographer:
                 status=str(t.status),
                 task_id=str(t.id),
                 next=self._claim_verb_hint(role, t),
-                context_briefing=await self._briefing_for(agent_id, t.id),
+                context_briefing=await self._briefing_for(agent_id, t.id, task=t),
             ).with_introspection(task=t, role=role)
         assigned = await self._drop_dependency_held(
             await self._deps.task.list_assigned_for_agent(agent_id)
@@ -663,7 +663,7 @@ class Choreographer:
                 status=str(t.status),
                 task_id=str(t.id),
                 next=self._claim_verb_hint(role, t),
-                context_briefing=await self._briefing_for(agent_id, t.id),
+                context_briefing=await self._briefing_for(agent_id, t.id, task=t),
             ).with_introspection(task=t, role=role)
         paused = await self._deps.task.list_paused_for_agent(agent_id)
         if paused:
@@ -672,7 +672,7 @@ class Choreographer:
                 status=str(t.status),
                 task_id=str(t.id),
                 next=f"call resume(task_id='{t.id}') to continue paused work",
-                context_briefing=await self._briefing_for(agent_id, t.id),
+                context_briefing=await self._briefing_for(agent_id, t.id, task=t),
             ).with_introspection(task=t, role=role)
         return Envelope.ok(
             status="idle",
@@ -682,10 +682,23 @@ class Choreographer:
         )
 
     async def _briefing_for(
-        self, agent_id: UUID, task_id: UUID | None
+        self, agent_id: UUID, task_id: UUID | None, *, task: Any | None = None
     ) -> dict[str, Any]:
-        """Assemble context_briefing for agent_id, optionally scoped to task_id."""
+        """Assemble context_briefing for agent_id, optionally scoped to task_id.
+
+        ``task`` is the already-loaded row (every claim / give_me_work / done
+        path holds it). The prior-work handoff is built only when it is passed —
+        no extra fetch — so task-scoped error paths that carry only an id simply
+        omit the digest rather than pay a redundant read for it.
+        """
         repo = self._deps.evidence_repo
+        task_handoff: dict[str, Any] | None = None
+        if task_id is not None and task is not None:
+            # Push the prior-work digest so a freshly spawned / respawned agent
+            # resumes from the previous worker's PR + commits + journal rather
+            # than re-exploring the codebase cold on every lifecycle hand-off.
+            handoff_highlights = await repo.journal_highlights_for_task(task_id)
+            task_handoff = build_task_handoff(task, handoff_highlights)
         inputs = BriefingInputs(
             unread_a2a=await repo.list_unread_a2a(agent_id),
             unread_mentions=await repo.list_unread_mentions(agent_id),
@@ -695,6 +708,7 @@ class Choreographer:
             ),
             recent_team_activity=await repo.recent_team_activity(agent_id),
             blockers_in_my_lane=await repo.blockers_in_lane(agent_id),
+            task_handoff=task_handoff,
         )
         return build_context_briefing(inputs)
 
@@ -710,7 +724,7 @@ class Choreographer:
         does NOT model. Role/state/task_type checks now route through
         ``spec.can_invoke_action`` (CLAIM_RULES + ActionSpec.allowed_task_types)
         in the verb's spec gate; the former role-typed and
-        pm_cannot_execute_code guards have been deleted (Task 27, 2026-05-10).
+        pm_cannot_execute_code guards have been deleted.
 
         Pre-gateway location: _helpers.py:124-204.
         """
@@ -757,7 +771,7 @@ class Choreographer:
         """Return a tracing_gap rejection if any subtask of ``task_id`` is non-terminal.
 
         Centralizes the closure-time "all subtasks terminal" gate that fires
-        in submit_up, cell_pm_complete, main_pm_complete (audit P2-3/D-15).
+        in submit_up, cell_pm_complete, main_pm_complete.
         ``context_phrase`` lets each caller name the action being blocked
         (e.g., "bubbling up", "completing parent").
         """
@@ -859,7 +873,7 @@ class Choreographer:
                 task_id=task_id,
                 verb=verb_name,
             )
-        # Wave C4 (2026-05-12) — pre-gateway parity. Ensure WorkSession row
+        # Pre-gateway parity: ensure the WorkSession row
         # exists on the stuck-claimed recovery path too (same guarantee as
         # _claim_plan_start_run). Re-entry guard inside ensure_work_session.
         await self.task.ensure_work_session(task_id, agent_id)
@@ -965,7 +979,7 @@ class Choreographer:
                 task_id=ctx.task_id,
                 verb=verb_name,
             )
-        # Wave C4 (2026-05-12) — pre-gateway parity. Create the WorkSession
+        # Pre-gateway parity: create the WorkSession
         # row so downstream subsystems (panel, PR, merge chain) can track
         # this agent's per-task git activity. work_session_id stored on the
         # task; one WorkSession per (agent, task) claim cycle; re-entry
@@ -987,7 +1001,7 @@ class Choreographer:
         risks: list[dict[str, Any]] | None,
         open_questions: list[dict[str, Any]] | None,
     ) -> dict[str, Any]:
-        """Assemble the panel-shaped rich plan (#172) from a dev's inputs."""
+        """Assemble the panel-shaped rich plan from a dev's inputs."""
         return {
             "approach": plan or "",
             "sub_tasks": steps or [],
@@ -1014,10 +1028,10 @@ class Choreographer:
         the DB. Idempotent re-entry: a respawned dev re-calling on a
         task they already own in_progress just refreshes the heartbeat.
 
-        #172: ``steps`` is the developer's execution checklist (same
+        ``steps`` is the developer's execution checklist (same
         SubTask shape as a PM's sub_tasks). Persisted into
         ``task.plan.sub_tasks`` via the panel-shaped path so it renders
-        identically AND feeds plan-driven progress (#173). A developer
+        identically AND feeds plan-driven progress. A developer
         on a fresh claim must supply substantive steps —
         ``_dev_steps_gate`` enforces depth; the re-entry / recovery
         paths short-circuit before the gate so a respawned dev is never
@@ -1033,7 +1047,7 @@ class Choreographer:
             )
         agent = await self.task.agent_for(agent_id)
         role_str = str(agent.role) if agent is not None else "developer"
-        briefing = await self._briefing_for(agent_id, task_id)
+        briefing = await self._briefing_for(agent_id, task_id, task=t)
         try:
             role = spec_module.Role(role_str)
         except ValueError:
@@ -1047,10 +1061,10 @@ class Choreographer:
                 task_id=task_id,
                 verb="i_will_work_on",
             )
-        # #172/full-parity: a dev authors the same rich plan a PM does. The
+        # Full parity: a dev authors the same rich plan a PM does. The
         # dev's `plan` doubles as the Approach; `steps` become sub_tasks. Built
         # via the panel-shaped path so the Plan tab renders identically and
-        # feeds #173 progress. With no rich fields (re-entry/recovery) this
+        # feeds progress. With no rich fields (re-entry/recovery) this
         # falls through to unchanged string behaviour.
         rich_plan = self._build_rich_plan(
             plan, steps, technical_considerations, risks, open_questions
@@ -1118,7 +1132,7 @@ class Choreographer:
         # Recovery re-entry: task stuck in `claimed` (orchestrator restart
         # or partial-claim race) and the agent already owns it. The spec
         # `claim` source-statuses exclude CLAIMED, so run only set_plan +
-        # start (Bug A from the 2026-05-09 smoke test).
+        # start.
         if str(t.status) == "claimed" and t.assigned_to == agent_id:
             envelope = await self._resume_from_claimed(ctx)
             return await self._post_claim_journal_gate(
@@ -1253,8 +1267,7 @@ class Choreographer:
         Renamed from ``submit_for_qa`` (2026-05-08): the old name
         suggested this verb advanced the lifecycle, but it only opens
         the PR. Agents misread the name, called it expecting a QA
-        handoff, then never called i_am_done — orphaning PRs (e.g.
-        PR #12 in the smoke-test trace).
+        handoff, then never called i_am_done — orphaning open PRs.
 
         Idempotent on re-call: if the caller already owns the task and
         a PR is already open, return OK pointing at ``i_am_done`` rather
@@ -1269,7 +1282,7 @@ class Choreographer:
                 task_id=task_id,
                 verb="open_pr",
             )
-        briefing = await self._briefing_for(agent_id, task_id)
+        briefing = await self._briefing_for(agent_id, task_id, task=t)
         agent = await self.task.agent_for(agent_id)
         role_str = str(agent.role) if agent is not None else "developer"
         # Idempotent re-entry: caller owns the task and a PR is already
@@ -1344,8 +1357,8 @@ class Choreographer:
         """Refresh the task, auto-emit milestone progress, build the OK envelope.
 
         git_service.create_pr writes pr_number / pr_url onto the task row;
-        the runner doesn't bubble that update back so we re-fetch. Task
-        #155 milestone progress fires server-side so the panel + audit
+        the runner doesn't bubble that update back so we re-fetch.
+        Milestone progress fires server-side so the panel + audit
         log always show "opened PR #N" regardless of agent chattiness.
         """
         refreshed = await self.task.get(task_id)
@@ -1389,8 +1402,8 @@ class Choreographer:
         in the verb body.
 
         The previous strict path required a separate ``submit_for_verification``
-        verb that wasn't on any manifest, making i_am_done unreachable
-        (audit D-08). Removed that requirement; the act of calling i_am_done
+        verb that wasn't on any manifest, making i_am_done unreachable.
+        Removed that requirement; the act of calling i_am_done
         IS the self-verification.
         """
         t = await self.task.get(task_id)
@@ -1403,7 +1416,7 @@ class Choreographer:
             )
         agent = await self.task.agent_for(agent_id)
         role_str = str(agent.role) if agent is not None else "developer"
-        briefing = await self._briefing_for(agent_id, task_id)
+        briefing = await self._briefing_for(agent_id, task_id, task=t)
         ctx = _IAmDoneContext(
             agent_id=agent_id,
             task_id=task_id,
@@ -1471,7 +1484,7 @@ class Choreographer:
             return await self._reject_i_am_done(ctx, rejection)
         if rejection := await self._ensure_branch_pushed(ctx):
             return await self._reject_i_am_done(ctx, rejection)
-        # Wave C5 (2026-05-12) — pre-gateway parity. Persist per-criterion
+        # Pre-gateway parity: persist per-criterion
         # status now that all gates have passed. The write runs AFTER the
         # verdict so it cannot change i_am_done's rejection behavior.
         await self._write_criteria_status(ctx.agent_id, ctx.task_id, ctx.task)
@@ -1553,7 +1566,7 @@ class Choreographer:
     ) -> None:
         """Persist per-criterion addressing status to task.acceptance_criteria_status.
 
-        Wave C5 (2026-05-12) — pre-gateway parity. The i_am_done gate uses
+        Pre-gateway parity: the i_am_done gate uses
         journal:reflect as a blanket addressing artifact when it is present
         (one reflect note covers all criteria — spec §9 item 1). We surface
         that decision as a structured per-criterion list so the panel and
@@ -1612,7 +1625,7 @@ class Choreographer:
             )
         await self._notify_qa(ctx.agent_id, ctx.task_id, t)
         await self._touch(ctx.task_id)
-        # Task #155: server-side milestone progress so the panel always
+        # Server-side milestone progress so the panel always
         # records the QA handoff regardless of agent's progress() habits.
         await self._record_milestone_progress(
             ctx.task_id,
@@ -1688,7 +1701,7 @@ class Choreographer:
         )
         if result.passed:
             return None
-        return await self._build_tracing_gap(agent_id, task_id, result.missing)
+        return await self._build_tracing_gap(agent_id, task_id, result.missing, task=t)
 
     async def _post_claim_journal_gate(
         self,
@@ -1756,7 +1769,7 @@ class Choreographer:
         )
         if result.passed:
             return None
-        return await self._build_tracing_gap(agent_id, task_id, result.missing)
+        return await self._build_tracing_gap(agent_id, task_id, result.missing, task=t)
 
     async def _check_pm_decision_required(
         self, verb: str, agent_id: UUID, task_id: UUID, t: Any
@@ -1769,7 +1782,7 @@ class Choreographer:
         ``submit_up``) use the verb-specific helpers below which thread
         the additional state (reflect, notes, subtasks) into GateContext.
 
-        Wave C8 (2026-05-12) — pre-gateway parity: the gate requires the
+        Pre-gateway parity: the gate requires the
         *most recent* journal:decision for (agent, task) to be no older
         than ``settings.pm_decision_window_seconds``. Older decisions are
         treated as missing so PMs write a fresh decision around each
@@ -1797,7 +1810,7 @@ class Choreographer:
         )
         if result.passed:
             return None
-        return await self._build_tracing_gap(agent_id, task_id, result.missing)
+        return await self._build_tracing_gap(agent_id, task_id, result.missing, task=t)
 
     async def _check_complete_gates(
         self, agent_id: UUID, task_id: UUID, notes: str
@@ -1821,7 +1834,14 @@ class Choreographer:
         task_view = SimpleNamespace(notes=notes)
         ctx = _tr.GateContext(
             journal_decision_present=has_decision,
-            journal_reflect_present=has_reflect,
+            # A PM closing/submitting a task documents it in its *decision* note;
+            # a separate *reflect* adds little for a coordination/review close and
+            # is exactly the artifact weak-model PMs forget — looping on the
+            # reflect gate until reaped (re-confirmed live 2026-06-10). Accept a
+            # decision as satisfying reflect for the PM complete/submit_up close;
+            # the gate still requires a decision + substantive notes, so the close
+            # stays documented — only the redundant second-artifact demand drops.
+            journal_reflect_present=has_reflect or has_decision,
             notes_min_chars=getattr(_settings, "notes_min_chars", 20),
         )
         result = _tr.check_requirements(
@@ -1856,7 +1876,14 @@ class Choreographer:
         task_view = SimpleNamespace(notes=notes)
         ctx = _tr.GateContext(
             journal_decision_present=has_decision,
-            journal_reflect_present=has_reflect,
+            # A PM closing/submitting a task documents it in its *decision* note;
+            # a separate *reflect* adds little for a coordination/review close and
+            # is exactly the artifact weak-model PMs forget — looping on the
+            # reflect gate until reaped (re-confirmed live 2026-06-10). Accept a
+            # decision as satisfying reflect for the PM complete/submit_up close;
+            # the gate still requires a decision + substantive notes, so the close
+            # stays documented — only the redundant second-artifact demand drops.
+            journal_reflect_present=has_reflect or has_decision,
             notes_min_chars=getattr(_settings, "notes_min_chars", 20),
         )
         requirements: list[_tr.Requirement] = [
@@ -1886,7 +1913,7 @@ class Choreographer:
         # NOTE: self_verified is no longer a precondition — i_am_done auto-runs
         # the in_progress → verifying transition which sets it. The previous
         # NOT_SELF_VERIFIED gate required a separate submit_for_verification
-        # verb that wasn't on any manifest (audit D-08).
+        # verb that wasn't on any manifest.
         if not t.commits:
             missing.append("NO_COMMITS")
             hints.append(
@@ -1904,7 +1931,7 @@ class Choreographer:
         return Envelope.tracing_gap(
             missing=missing,
             remediate=" ; ".join(hints),
-            context_briefing=await self._briefing_for(agent_id, task_id),
+            context_briefing=await self._briefing_for(agent_id, task_id, task=t),
         )
 
     async def _build_i_am_done_ok(
@@ -1912,7 +1939,7 @@ class Choreographer:
     ) -> Envelope:
         """Assemble the success envelope for i_am_done / _with_catchup.
 
-        Task #154: files_changed sourced from git (authoritative) so the
+        files_changed sourced from git (authoritative) so the
         i_am_done envelope shows the same file list QA / docs / PMs will
         see — independent of legacy ``add_files_modified`` plumbing.
         """
@@ -1934,7 +1961,7 @@ class Choreographer:
             task_id=str(task_id),
             next="idle until QA responds",
             evidence=evidence.as_dict(),
-            context_briefing=await self._briefing_for(agent_id, task_id),
+            context_briefing=await self._briefing_for(agent_id, task_id, task=t),
         ).with_introspection(task=t, role=role)
 
     @staticmethod
@@ -2015,11 +2042,16 @@ class Choreographer:
         return simple_hints.get(missing_key)
 
     async def _build_tracing_gap(
-        self, agent_id: UUID, task_id: UUID, missing: list[str]
+        self,
+        agent_id: UUID,
+        task_id: UUID,
+        missing: list[str],
+        *,
+        task: Any | None = None,
     ) -> Envelope:
         """Translate missing requirement keys into agent-facing hints.
 
-        Task #159: multi-missing remediate uses a numbered list so the
+        Multi-missing remediate uses a numbered list so the
         agent sees each requirement as a distinct step instead of a
         single semicolon-joined sentence the model parses as one
         instruction. Each missing key with no hint in
@@ -2065,7 +2097,7 @@ class Choreographer:
         return Envelope.tracing_gap(
             missing=missing,
             remediate=remediate,
-            context_briefing=await self._briefing_for(agent_id, task_id),
+            context_briefing=await self._briefing_for(agent_id, task_id, task=task),
         )
 
     async def _notify_qa(self, agent_id: UUID, task_id: UUID, t: Any) -> None:
@@ -2094,7 +2126,7 @@ class Choreographer:
         ``id`` keys) or ``capabilities`` (SQLAlchemy AgentTable, list of
         strings). The DB-side AgentTable has no ``skills`` attribute,
         so a naive ``target_agent.skills`` raises AttributeError on
-        production agents (audit D-06). Falls back to the first entry
+        production agents. Falls back to the first entry
         in ``preference`` when no match is found.
         """
         skills_attr = getattr(target_agent, "skills", None)
@@ -2183,7 +2215,7 @@ class Choreographer:
             )
         agent = await self.task.agent_for(agent_id)
         role_str = str(agent.role) if agent is not None else "developer"
-        briefing = await self._briefing_for(agent_id, task_id)
+        briefing = await self._briefing_for(agent_id, task_id, task=t)
         try:
             role = spec_module.Role(role_str)
         except ValueError:
@@ -2254,7 +2286,7 @@ class Choreographer:
         invalid_state when the status drifted between get and write.
         """
         t = await self.task.get(task_id)
-        briefing = await self._briefing_for(agent_id, task_id)
+        briefing = await self._briefing_for(agent_id, task_id, task=t)
         if t is None:
             return await self._emit_rejection(
                 Envelope.not_found(message=f"task {task_id} not found"),
@@ -2405,7 +2437,7 @@ class Choreographer:
         from roboco.seeds.initial_data import AGENT_UUIDS
 
         t = await self.task.get(task_id)
-        briefing = await self._briefing_for(agent_id, task_id)
+        briefing = await self._briefing_for(agent_id, task_id, task=t)
         if t is None:
             return await self._emit_rejection(
                 Envelope.not_found(message=f"task {task_id} not found"),
@@ -2492,7 +2524,7 @@ class Choreographer:
         atomic chain wrapped in a savepoint.
         """
         t = await self.task.get(task_id)
-        briefing = await self._briefing_for(agent_id, task_id)
+        briefing = await self._briefing_for(agent_id, task_id, task=t)
         if t is None:
             return await self._emit_rejection(
                 Envelope.not_found(message=f"task {task_id} not found"),
@@ -2602,12 +2634,16 @@ class Choreographer:
                 status="idle_with_unread",
                 task_id=None,
                 next=(
-                    "address unread A2A and @mentions in context_briefing"
-                    " before going idle"
+                    "clear your inbox, then retry i_am_idle(): read_messages()"
+                    " for unread A2A, notify_ack() per @mention notification"
                 ),
                 context_briefing=briefing,
             )
         if guard := await self._pending_assignment_guard(agent_id, briefing):
+            return await self._emit_rejection(
+                guard, agent_id=agent_id, task_id=None, verb="i_am_idle"
+            )
+        if guard := await self._pm_unfinished_review_guard(agent_id, briefing):
             return await self._emit_rejection(
                 guard, agent_id=agent_id, task_id=None, verb="i_am_idle"
             )
@@ -2672,6 +2708,38 @@ class Choreographer:
             context_briefing=briefing,
         )
 
+    async def _pm_unfinished_review_guard(
+        self, agent_id: UUID, briefing: dict[str, Any]
+    ) -> Envelope | None:
+        """Refuse i_am_idle when a PM still owns a task awaiting its own review.
+
+        A cell/main PM once tried to "send work back" by DMing the developer and
+        going idle — but a DM changes no task state, so the task stayed
+        awaiting_pm_review and the PM was just re-dispatched in a loop. A PM that
+        owns an awaiting_pm_review task must act on it (complete to finish, or
+        reassign/delegate to route it back) before it can idle.
+        """
+        agent = await self.task.agent_for(agent_id)
+        if not agent or agent.role not in ("cell_pm", "main_pm"):
+            return None
+        assigned = await self.task.list_assigned_for_agent(agent_id)
+        review = next(
+            (t for t in assigned if str(t.status) == "awaiting_pm_review"), None
+        )
+        if review is None:
+            return None
+        return Envelope.invalid_state(
+            message=(
+                f"you still own task {review.id} awaiting your review; a DM does"
+                " not route work, so idling just re-dispatches you."
+            ),
+            remediate=(
+                "complete(task_id) to finish it, or reassign()/delegate() to"
+                " send it back — then retry i_am_idle()."
+            ),
+            context_briefing=briefing,
+        )
+
     async def _auto_pause_in_progress_tasks(self, agent_id: UUID) -> list[str]:
         """Pause every in_progress task assigned to this agent.
 
@@ -2683,7 +2751,7 @@ class Choreographer:
         ``i_am_idle`` can tell the agent which ``resume(task_id)`` calls
         await it on the next respawn. Empty list when nothing was active.
 
-        Wave C7 (2026-05-12) — pre-gateway parity: a synthetic checkpoint is
+        Pre-gateway parity: a synthetic checkpoint is
         written for each paused task so the panel's Checkpoints column reflects
         reality. Checkpoint failure is swallowed; it must never block the pause.
         """
@@ -2698,7 +2766,7 @@ class Choreographer:
     async def _write_auto_pause_checkpoint(self, agent_id: UUID, task: Any) -> None:
         """Write a synthetic checkpoint for a task that was auto-paused on i_am_idle.
 
-        Wave C7 (2026-05-12) — captures state-at-pause so the panel's
+        Captures state-at-pause so the panel's
         Checkpoints column is never empty after an auto-pause. Agents that
         want an explicit checkpoint before idling can call note(scope='note',
         text='checkpoint: ...') first; this synthetic write covers the bare
@@ -2736,11 +2804,11 @@ class Choreographer:
                 agent_id=str(agent_id),
             )
 
-    # --- Phase 2 (QA) verbs moved to ``qa.py`` (audit P2-2). ---
+    # --- QA verbs moved to ``qa.py``. ---
 
     # --- Phase 3 (documenter + PM) verbs ---
 
-    # claim_doc_task + i_documented moved to ``doc.py`` (audit P2-2).
+    # claim_doc_task + i_documented moved to ``doc.py``.
 
     _RICH_PLAN_FIELDS: ClassVar[tuple[str, ...]] = (
         "approach",
@@ -2802,7 +2870,7 @@ class Choreographer:
             )
         agent = await self.task.agent_for(pm_agent_id)
         role_str = str(agent.role) if agent is not None else "cell_pm"
-        briefing = await self._briefing_for(pm_agent_id, task_id)
+        briefing = await self._briefing_for(pm_agent_id, task_id, task=t)
         try:
             role = spec_module.Role(role_str)
         except ValueError:
@@ -2817,7 +2885,7 @@ class Choreographer:
                 verb="i_will_plan",
             )
         effective_plan = self._resolve_effective_plan(plan, rich_plan)
-        # Task #153: spec_ctx carries the resolved (possibly-dict) plan so the
+        # spec_ctx carries the resolved (possibly-dict) plan so the
         # verb runner's set_plan handler persists the panel-shaped rich shape.
         # Passing the raw `plan` string here was the bug that left the Plan tab
         # empty: the runner uses spec_ctx, not _ClaimPlanStartContext.
@@ -2894,7 +2962,7 @@ class Choreographer:
             )
         agent = await self.task.agent_for(pm_agent_id)
         role_str = str(agent.role) if agent is not None else "cell_pm"
-        briefing = await self._briefing_for(pm_agent_id, parent_task_id)
+        briefing = await self._briefing_for(pm_agent_id, parent_task_id, task=parent)
         try:
             role = spec_module.Role(role_str)
         except ValueError:
@@ -2923,12 +2991,12 @@ class Choreographer:
                 task_id=parent_task_id,
                 verb="delegate",
             )
-        # Task 19: foundation/policy/task_completeness gate runs BEFORE the
+        # The foundation/policy/task_completeness gate runs BEFORE the
         # static/lifecycle guards. Auto-fill helpers patch unambiguous fields
         # (team-from-slug, priority-from-parent), then `check(TASK_AT_CREATE,
         # ...)` rejects under-filled payloads with `Envelope.incomplete_input`
         # — the spec §5.2.1 interrogation pattern. Defense-in-depth: the
-        # service-layer raise from Task 18 still catches non-gateway callers.
+        # service-layer raise still catches non-gateway callers.
         completeness_env = self._delegate_completeness_check(
             inputs, parent, briefing, role_str
         )
@@ -3066,7 +3134,7 @@ class Choreographer:
 
     @staticmethod
     def _is_cross_team_planning(new_type: str, new_team: str, sib_team: str) -> bool:
-        """Task #157: planning subtasks on different teams are NOT
+        """Planning subtasks on different teams are NOT
         over-decomposition — main_pm fans planning out to per-cell PMs.
         Both teams must be non-empty so an empty-team escape hatch can't
         bypass the cap defensively.
@@ -3113,7 +3181,7 @@ class Choreographer:
         1. **Same-type concurrency cap**: a parent may have AT MOST one
            non-terminal subtask of types ``code`` / ``planning`` /
            ``documentation`` at any given time, regardless of assignee.
-           Task #157 exception: ``planning`` subtasks on different
+           Exception: ``planning`` subtasks on different
            teams are allowed in parallel — that's main_pm's legitimate
            cross-cell fanout.
         2. **Same-assignee same-type** (fallback): a PM never delegates two
@@ -3178,7 +3246,7 @@ class Choreographer:
                 context_briefing=await self._briefing_for(pm_agent_id, parent_task_id),
             )
         if str(inputs.task_type) == "documentation":
-            # Task #163: the lifecycle auto-handles documentation. After a
+            # The lifecycle auto-handles documentation. After a
             # `code` subtask passes QA it transitions to
             # awaiting_documentation and a *documenter* is spawned
             # automatically. A PM-created `documentation` subtask assigned
@@ -3212,7 +3280,7 @@ class Choreographer:
         """Reject role-vs-type misclassifications.
 
         Rules:
-        - (2026-05-09 smoke Bug B): delegating to a Cell PM requires
+        - delegating to a Cell PM requires
           ``task_type='planning'``. Cell PMs decompose; they don't execute.
         - (2026-05-11 smoke): delegating to a Developer requires
           ``task_type in {'code', 'documentation', 'research'}``. Devs
@@ -3394,7 +3462,7 @@ class Choreographer:
         briefing: dict[str, Any],
         role_str: str,
     ) -> Envelope | None:
-        """Task 19: foundation/policy/task_completeness gate for delegate.
+        """The foundation/policy/task_completeness gate for delegate.
 
         Auto-fills unambiguous fields (team-from-slug, priority-from-parent)
         without overwriting explicit values, then runs `check(TASK_AT_CREATE,
@@ -3408,7 +3476,7 @@ class Choreographer:
 
         The `acceptance_criteria=inputs.acceptance_criteria or []` collapse
         at `_create_subtask_from_inputs` was removed alongside this gate,
-        so under-filled payloads now hit the service-layer raise (Task 18)
+        so under-filled payloads now hit the service-layer raise
         instead of being silently substituted. This method is the
         gateway-side defense; the service raise is defense-in-depth for
         non-gateway callers.
@@ -3460,7 +3528,7 @@ class Choreographer:
     ) -> Envelope:
         """Run subtask creation and translate completeness raises into envelopes.
 
-        The defensive raises inside `_create_subtask_from_inputs` (Task 18)
+        The defensive raises inside `_create_subtask_from_inputs`
         catch under-filled payloads that slipped past the gateway gate. Without
         this translator they surface as Starlette 500s — which means the agent
         never sees `field_hints`, retries indefinitely, and looks like a
@@ -3666,7 +3734,7 @@ class Choreographer:
         and `inputs.nature` are guaranteed non-None / non-empty here. The
         defensive `TaskCompletenessError` raises preserve correctness if
         a future caller bypasses the gateway path — defense-in-depth in
-        line with Task 18's service-layer raise.
+        line with the service-layer raise.
         """
         from roboco.foundation.policy.task_completeness import TaskCompletenessError
         from roboco.models.base import TaskNature
@@ -3675,10 +3743,10 @@ class Choreographer:
 
         team_enum, type_enum, complexity_enum = self._resolve_delegate_enums(inputs)
         assignee_id = UUID(AGENT_UUIDS[inputs.assigned_to])
-        # Task 19: the `or []` collapse was removed. The gateway runs
+        # The `or []` collapse was removed. The gateway runs
         # `_delegate_completeness_check` BEFORE this helper, so empty/None
         # acceptance_criteria here means a non-gateway caller bypassed the
-        # check. Raise so the service-layer raise (Task 18) can attach the
+        # check. Raise so the service-layer raise can attach the
         # field hints — never silently substitute.
         if not inputs.acceptance_criteria:
             raise TaskCompletenessError(
@@ -3728,7 +3796,7 @@ class Choreographer:
             estimated_complexity=complexity_enum,
         )
         new_task = await self.task.create_subtask(req)
-        # Task #156: thread the parent's existing session links onto the
+        # Thread the parent's existing session links onto the
         # new subtask so the assigned agent (dev/qa/doc) lands in the
         # group chat the PM has already been talking in. Pre-gateway
         # parity — sessions were wired to the whole tree at creation
@@ -3788,7 +3856,7 @@ class Choreographer:
         returns, the task is handed off to the Main PM (reassign + a2a).
         """
         t = await self.task.get(task_id)
-        briefing = await self._briefing_for(pm_agent_id, task_id)
+        briefing = await self._briefing_for(pm_agent_id, task_id, task=t)
         if t is None:
             return await self._emit_rejection(
                 Envelope.not_found(message=f"task {task_id} not found"),
@@ -3852,7 +3920,7 @@ class Choreographer:
                 verb="submit_up",
             )
         t = outcome
-        # #182: do NOT hand the cell task to Main PM. The cell PM owns cell
+        # Do NOT hand the cell task to Main PM. The cell PM owns cell
         # completion — it stays assigned to the cell PM, which is respawned to
         # `complete` the task (merging the cell→root PR). Main PM only
         # completes the ROOT (root→master + escalate-to-CEO).
@@ -3969,7 +4037,7 @@ class Choreographer:
         statuses — PMs care about all assigned tasks (planning, paused, in
         progress, awaiting_pm_review).
 
-        Pre-assigned pending tasks are checked first (Wave B6, 2026-05-12).
+        Pre-assigned pending tasks are checked first.
         Smoke run 3 showed Main PM getting idle even though c7935d2c was
         pending and assigned_to=main-pm because list_assigned_for_agent
         ordered by priority/updated_at and could rank a pre-assigned pending
@@ -3985,7 +4053,7 @@ class Choreographer:
                 status=str(t.status),
                 task_id=str(t.id),
                 next=self._pm_next_hint(str(t.status), t.id),
-                context_briefing=await self._briefing_for(pm_agent_id, t.id),
+                context_briefing=await self._briefing_for(pm_agent_id, t.id, task=t),
             )
         assigned = await self.task.list_assigned_for_agent(pm_agent_id)
         if assigned:
@@ -3995,7 +4063,7 @@ class Choreographer:
                 status=str(t.status),
                 task_id=str(t.id),
                 next=self._pm_next_hint(str(t.status), t.id),
-                context_briefing=await self._briefing_for(pm_agent_id, t.id),
+                context_briefing=await self._briefing_for(pm_agent_id, t.id, task=t),
             )
         return Envelope.ok(
             status="idle",
@@ -4030,7 +4098,7 @@ class Choreographer:
                 status=str(t.status),
                 task_id=str(t.id),
                 next=f"investigate the block, then unblock(task_id='{t.id}')",
-                context_briefing=await self._briefing_for(pm_agent_id, t.id),
+                context_briefing=await self._briefing_for(pm_agent_id, t.id, task=t),
             )
         awaiting = await self.task.list_awaiting_pm_review_for_team(pm.team)
         if awaiting:
@@ -4039,7 +4107,7 @@ class Choreographer:
                 status=str(t.status),
                 task_id=str(t.id),
                 next=f"review and complete(task_id='{t.id}')",
-                context_briefing=await self._briefing_for(pm_agent_id, t.id),
+                context_briefing=await self._briefing_for(pm_agent_id, t.id, task=t),
             )
         return Envelope.ok(
             status="idle",
@@ -4060,7 +4128,7 @@ class Choreographer:
                     f"escalation/cross-cell help required: investigate, then "
                     f"unblock(task_id='{t.id}') or escalate_up()"
                 ),
-                context_briefing=await self._briefing_for(pm_agent_id, t.id),
+                context_briefing=await self._briefing_for(pm_agent_id, t.id, task=t),
             )
         awaiting = await self.task.list_awaiting_main_pm_all()
         if awaiting:
@@ -4069,7 +4137,7 @@ class Choreographer:
                 status=str(t.status),
                 task_id=str(t.id),
                 next=f"complete(task_id='{t.id}') opens master PR + escalates to CEO",
-                context_briefing=await self._briefing_for(pm_agent_id, t.id),
+                context_briefing=await self._briefing_for(pm_agent_id, t.id, task=t),
             )
         return Envelope.ok(
             status="idle",
@@ -4158,7 +4226,7 @@ class Choreographer:
     async def _own_review_hint(self, pm_agent_id: UUID, exclude_task_id: UUID) -> str:
         """Remediate suffix naming the PM's OWN task ready to complete.
 
-        Smoke-15 wedge (#170): a PM looped firing complete/unblock at the
+        A PM looped firing complete/unblock at the
         wrong (parent) task_id while its own leaf sat at
         ``awaiting_pm_review``, never named in any rejection — minimax
         never found the one correct call. Surface it explicitly.
@@ -4252,7 +4320,7 @@ class Choreographer:
                 task_id=task_id,
                 verb="cell_pm_complete",
             )
-        # #181/#182: resolve the merge target from the PARENT task's real
+        # Resolve the merge target from the PARENT task's real
         # branch_name. For a leaf this is the cell branch (same team — no
         # change); for a cell task it is the root branch (feature/main_pm/…),
         # which parent_branch_for would have mis-derived as feature/<cellteam>/…
@@ -4329,7 +4397,7 @@ class Choreographer:
                     main_pm_agent_id, root_task_id
                 ),
             )
-        # #183: accept in_progress too. A root resumed from paused (its
+        # Accept in_progress too. A root resumed from paused (its
         # subtasks all done) sits in in_progress — there is no submit_up for
         # roots to move it to awaiting_pm_review. main_pm_complete itself
         # opens the root→master PR and walks it through awaiting_pm_review
@@ -4403,7 +4471,7 @@ class Choreographer:
         if needs_pr:
             await self.git.create_pr(t.branch_name, parent="master", is_root_pr=True)
 
-        # #183: escalate_to_ceo requires source=awaiting_pm_review, but a root
+        # escalate_to_ceo requires source=awaiting_pm_review, but a root
         # resumed from paused is in_progress and nothing else moves it there
         # (submit_up is cell-PM-only). The root→master PR now exists, so walk
         # the root through awaiting_pm_review here. Uses the TaskService
@@ -4437,7 +4505,7 @@ class Choreographer:
 
         # Use kwargs — service signature is (task_id, agent_role="cell_pm",
         # notes=None). Positional was passing agent_id as task_id and the
-        # actual task_id as agent_role (audit D-07).
+        # actual task_id as agent_role.
         t = await self.task.escalate_to_ceo(
             task_id=root_task_id, agent_role="main_pm", notes=notes
         )
@@ -4470,7 +4538,7 @@ class Choreographer:
         spec doesn't model yet.
         """
         t = await self.task.get(task_id)
-        briefing = await self._briefing_for(agent_id, task_id)
+        briefing = await self._briefing_for(agent_id, task_id, task=t)
         if t is None:
             return await self._emit_rejection(
                 Envelope.not_found(message=f"task {task_id} not found"),
@@ -4531,7 +4599,7 @@ class Choreographer:
         ``composes=()`` (no atomic action for the runner to run).
         """
         t = await self.task.get(task_id)
-        briefing = await self._briefing_for(pm_agent_id, task_id)
+        briefing = await self._briefing_for(pm_agent_id, task_id, task=t)
         if t is None:
             return await self._emit_rejection(
                 Envelope.not_found(message=f"task {task_id} not found"),
@@ -4642,6 +4710,45 @@ class Choreographer:
 
     # --- Phase 4 (board) verbs ---
 
+    async def _escalate_did_not_apply(
+        self,
+        *,
+        runner_error: str | None,
+        task: Any,
+        role_str: str,
+        briefing: dict[str, Any],
+        agent_id: UUID,
+        task_id: UUID,
+    ) -> Envelope:
+        """Rejection for an escalate_to_ceo the runner did not apply.
+
+        ``runner_error`` set → the run_intent savepoint raised; otherwise the
+        service declined (task not in awaiting_pm_review). Either way a clean
+        invalid_state, never the unhandled ``None.status`` 500.
+        """
+        if runner_error is not None:
+            message = f"verb runner failed: {runner_error}"
+            remediate = "check workspace + retry; if persistent, escalate"
+        else:
+            message = (
+                "escalate_to_ceo did not apply — the task is not in a state"
+                " that escalates to the CEO (needs awaiting_pm_review)"
+            )
+            remediate = (
+                "resolve or re-route the task; only awaiting_pm_review tasks"
+                " escalate to the CEO"
+            )
+        return await self._emit_rejection(
+            Envelope.invalid_state(
+                message=message,
+                remediate=remediate,
+                context_briefing=briefing,
+            ).with_introspection(task=task, role=role_str),
+            agent_id=agent_id,
+            task_id=task_id,
+            verb="escalate_to_ceo",
+        )
+
     async def escalate_to_ceo(
         self, agent_id: UUID, task_id: UUID, reason: str
     ) -> Envelope:
@@ -4660,7 +4767,7 @@ class Choreographer:
         main_pm_complete).
         """
         t = await self.task.get(task_id)
-        briefing = await self._briefing_for(agent_id, task_id)
+        briefing = await self._briefing_for(agent_id, task_id, task=t)
         if t is None:
             return await self._emit_rejection(
                 Envelope.not_found(message=f"task {task_id} not found"),
@@ -4714,19 +4821,25 @@ class Choreographer:
             )
 
         runner = self._verb_runner()
+        runner_error: str | None = None
         try:
-            t = await runner.run_intent("escalate_to_ceo", t, me, spec_ctx)
+            updated = await runner.run_intent("escalate_to_ceo", t, me, spec_ctx)
         except Exception as exc:
-            return await self._emit_rejection(
-                Envelope.invalid_state(
-                    message=f"verb runner failed: {exc}",
-                    remediate="check workspace + retry; if persistent, escalate",
-                    context_briefing=briefing,
-                ).with_introspection(task=t, role=role_str),
+            updated, runner_error = None, str(exc)
+        # run_intent returns None when the service declines the escalation (e.g. a
+        # board agent escalating a task not in awaiting_pm_review). Without this
+        # guard the OK path below dereferenced ``None.status`` — an unhandled 500
+        # (the board's escalate-from-blocked crash loop).
+        if updated is None:
+            return await self._escalate_did_not_apply(
+                runner_error=runner_error,
+                task=t,
+                role_str=role_str,
+                briefing=briefing,
                 agent_id=agent_id,
                 task_id=task_id,
-                verb="escalate_to_ceo",
             )
+        t = updated
         # Same as main_pm_complete: CEO acts via UI, not as a spawnable agent.
         await self.task.reassign(task_id, None)
         return Envelope.ok(
@@ -4737,6 +4850,6 @@ class Choreographer:
         ).with_introspection(task=t, role=role_str)
 
     # board_triage + auditor_triage moved to ``board.py`` as the first
-    # per-role mixin extraction (audit P2-2). The Choreographer class is
+    # per-role mixin extraction. The Choreographer class is
     # composed in ``__init__.py`` from BoardMixin + the rest of this
     # _impl. Methods now resolve via Python's MRO.

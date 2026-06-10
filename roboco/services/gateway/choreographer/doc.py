@@ -1,11 +1,11 @@
-"""Documenter verbs (audit P2-2 second per-role split).
+"""Documenter verbs (second per-role split).
 
 Mixin for ``claim_doc_task`` and ``i_documented``. Inherits typed
 helpers via ``ChoreographerHelpers`` under ``TYPE_CHECKING``; runtime
 class is the composed ``Choreographer``.
 
-Tasks 22 (lifecycle canonical spec): both verbs route their role/state
-gate through ``spec.can_invoke_intent``. The verb-specific helpers
+Both verbs route their role/state gate through
+``spec.can_invoke_intent``. The verb-specific helpers
 (``_verify_doc_owner``, ``_check_doc_gates``) STAY — they encode the
 notes-length / files-list / journal:reflect gates the spec doesn't
 model. The self-review block on ``docs_complete`` lives at the atomic-
@@ -14,7 +14,7 @@ and naturally fires when the verb body builds a Context with
 ``actor_slug == original_developer_slug``; no verb-body retrofits
 needed.
 
-P2 Task 10: ``_check_doc_gates`` delegates the actual requirement
+``_check_doc_gates`` delegates the actual requirement
 checking to ``foundation.policy.tracing.check_requirements`` — the
 verb→required-set mapping lives in ``VERB_REQUIREMENTS`` (single
 source of truth). The hint translation lives in the shared
@@ -60,7 +60,7 @@ def _doc_refs_for(files: list[str], agent_id: UUID) -> list[dict[str, Any]]:
     ``i_documented`` receives a flat list of file paths, but
     ``Task.documents`` is ``list[DocRef]`` persisted as dicts — readers do
     ``DocRef(**d)`` / ``d["path"]`` and the doc indexer does ``d.get``.
-    Stamping bare strings 500s ``list_docs`` and breaks indexing (#169).
+    Stamping bare strings 500s ``list_docs`` and breaks indexing.
     """
     now = datetime.now(UTC).isoformat()
     slug = str(agent_id)
@@ -192,7 +192,7 @@ class DocMixin(_Base):
         # "start") but doc_claim is the runtime-correct specialized form
         # that keeps status at AWAITING_DOCUMENTATION. See module docstring.
         t = await self.task.doc_claim(doc_agent_id, task_id)
-        # Task #162: the documenter's clone is separate from the dev's;
+        # The documenter's clone is separate from the dev's;
         # the task branch already exists (dev created it) so no checkout
         # ran in the doc's workspace. Put the doc on the task branch now
         # so roboco_docs_write / commit don't fail BRANCH_MISMATCH.
@@ -214,7 +214,7 @@ class DocMixin(_Base):
     async def _claim_doc_evidence(self, task: Any, task_id: UUID) -> dict[str, Any]:
         """Build the evidence dict surfaced inline on claim_doc_task ok envelopes.
 
-        Task #154: files_changed sourced from git (authoritative) instead
+        files_changed sourced from git (authoritative) instead
         of ``work_session.files_modified``, which the gateway commit()
         does not populate. The docs writer sees an accurate file list.
         """

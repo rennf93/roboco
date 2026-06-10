@@ -96,6 +96,57 @@ async def test_pending_notifications_returns_unacked_for_agent(setup: dict) -> N
 
 
 @pytest.mark.asyncio
+async def test_unread_mentions_returns_unacked_mention_notifications(
+    setup: dict,
+) -> None:
+    """list_unread_mentions surfaces only UNACKED MENTION-type notifications, so
+    an agent can clear them via notify_ack and satisfy i_am_idle's soft-block."""
+    agent = setup["agent"]
+    db = setup["db"]
+    db.add(
+        NotificationTable(
+            type=NotificationType.MENTION,
+            priority=NotificationPriority.NORMAL,
+            from_agent=agent.id,
+            to_agents=[agent.id],
+            subject="You were mentioned in #backend-cell",
+            body="hey can you look at this",
+            timestamp=datetime.now(UTC),
+        )
+    )
+    # A non-mention notification must NOT surface here (type filter).
+    db.add(
+        NotificationTable(
+            type=NotificationType.ALERT,
+            priority=NotificationPriority.HIGH,
+            from_agent=agent.id,
+            to_agents=[agent.id],
+            subject="not a mention",
+            body="x",
+            timestamp=datetime.now(UTC),
+        )
+    )
+    # An already-acked mention must NOT surface (acked_by is the read signal).
+    db.add(
+        NotificationTable(
+            type=NotificationType.MENTION,
+            priority=NotificationPriority.NORMAL,
+            from_agent=agent.id,
+            to_agents=[agent.id],
+            acked_by=[agent.id],
+            subject="already handled",
+            body="y",
+            timestamp=datetime.now(UTC),
+        )
+    )
+    await db.flush()
+    out = await setup["repo"].list_unread_mentions(agent.id)
+    assert [o["subject"] for o in out] == ["You were mentioned in #backend-cell"]
+    # An unrelated agent sees nothing.
+    assert await setup["repo"].list_unread_mentions(uuid4()) == []
+
+
+@pytest.mark.asyncio
 async def test_unread_a2a_returns_conversations_with_unread(setup: dict) -> None:
     agent = setup["agent"]
     now = datetime.now(UTC)

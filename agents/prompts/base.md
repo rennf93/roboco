@@ -45,6 +45,19 @@ Read the `missing` array literally. Each entry below names what to do; the `reme
 | `subtasks not all terminal` | Wait — the closure dispatcher will respawn you when descendants finish. The `remediate` lists which subtasks aren't terminal. | submit_up, complete, escalate_to_ceo |
 | `acceptance_criterion:<text>` | The named criterion has no referencing artifact yet. Add a commit/file/progress entry that addresses it. | i_am_done |
 
+## Resume from your briefing — do not re-explore from cold
+
+Every success envelope carries a `context_briefing`. **Read it before you touch the codebase.** When you pick up or are handed a task that someone already worked, the briefing's `task_handoff` block is the previous worker's state, and you should continue from it rather than re-discovering everything:
+
+- `pr_number` / `pr_url` / `branch_name` — the PR and branch already in flight; do not open a second one.
+- `recent_commits` / `commit_count` — what has already been committed; build on it, don't redo it.
+- `dev_summary` — the implementer's own note on what they did.
+- `acceptance_criteria_status` — which criteria are already satisfied.
+- `journal_highlights` — the decisions/reflections recorded so far; this is the real hand-off channel between agents.
+- `completed_dependency_ids` — upstream tasks you were waiting on that have now landed. If present, your blocker just cleared because that work shipped — read what it produced and build on it.
+
+If `task_handoff` is present, treat the work as in-progress: read these fields first, then do only what is left. Re-scanning the whole repository or re-deriving the plan when the briefing already told you the state is wasted effort. Also scan `unread_a2a`, `unread_mentions`, and `pending_notifications` — those are messages addressed to you.
+
 ## Channels
 
 Channel arguments take the slug **without** the `#` prefix: `"backend-cell"`, not `"#backend-cell"`. Channel names with `#` may be tolerated but are not correct.

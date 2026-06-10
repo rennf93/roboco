@@ -12,9 +12,9 @@ class GiveMeWorkRequest(BaseModel):
 class IWillWorkOnRequest(BaseModel):
     task_id: UUID
     plan: str | None = None
-    # #172: the executing developer's plan is a step checklist (same
+    # The executing developer's plan is a step checklist (same
     # SubTask shape as IWillPlanRequest.sub_tasks). It is both the
-    # execution plan AND the progress checklist (#173): completing a
+    # execution plan AND the progress checklist: completing a
     # step advances progress. Depth is enforced server-side in
     # choreographer._dev_steps_gate (a title with no real description is
     # not a step). Server assigns id + order.
@@ -154,12 +154,12 @@ class EscalateToCeoRequest(BaseModel):
 class IWillPlanRequest(BaseModel):
     task_id: UUID
     plan: str = Field(..., min_length=1)
-    # Pre-gateway parity (Wave A1, 2026-05-12). Approach is REQUIRED — agents
+    # Pre-gateway parity: Approach is REQUIRED — agents
     # could not transition claimed → in_progress without filling this in the
     # pre-gateway flow. The Plan tab depends on it; smoke run 3 confirmed
     # the empty default lets agents through with thin plans.
     # min_length must match choreographer._impl._PM_APPROACH_MIN_LEN. Raised
-    # 20→150 (smoke-15): a 20-char approach was a one-liner; the approach +
+    # 20→150: a 20-char approach was a one-liner; the approach +
     # sub_tasks are also the progress checklist, so they must be substantive.
     approach: str = Field(..., min_length=150)
     sub_tasks: list[dict[str, str]] = Field(

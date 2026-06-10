@@ -31,9 +31,10 @@ class RoleConfig:
     description: str
 
 
-# Wave 1 receivers — every role with inbox access gets notify_list/get/ack
-# so `i_am_idle()` doesn't soft-block forever on unread notifications.
-_NOTIFY_RECEIVER = ("notify_list", "notify_get", "notify_ack")
+# Wave 1 receivers — every role with inbox access gets notify_list/get/ack for
+# notifications and read_messages for A2A, so `i_am_idle()`'s unread soft-block
+# is satisfiable rather than a permanent dead-end.
+_NOTIFY_RECEIVER = ("notify_list", "notify_get", "notify_ack", "read_messages")
 # Wave 2 — channel discovery. Every role gets `channels()` so the LLM stops
 # inventing slugs ("backend-dev", "backend") that don't exist.
 _CHANNEL_DISCOVERY = ("channels",)

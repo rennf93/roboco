@@ -2,16 +2,16 @@
 
 Owns budget thresholds, loop-detection action, and per-verb circuit breakers.
 
-Replaces (subsequent tasks migrate consumers):
+Replaces:
   - agent_sdk/server.py: 527-534 (hand-coded constants for warn/halt/loop thresholds)
   - runtime/orchestrator.py: 3807 (_PM_RESPAWN_MAX_UNPRODUCTIVE)
-  - docker/scripts/post-tool-budget-hook.sh exit-0-on-loop (Task 13 changes to exit 1)
+  - docker/scripts/post-tool-budget-hook.sh exit-0-on-loop (now exit 1)
 
-The verb-level circuit breaker (VERB_RETRY_LIMITS) is NEW. Pre-Phase-3 the
-gateway had no per-verb retry cap — the 2026-05-10 smoke run showed
-i_am_done retried 5+ times in 2 minutes within the global budget. After
-Task 14 lands the runtime tracker, exceeding VERB_RETRY_LIMITS[verb]
-attempts in 60s returns Envelope.circuit_open.
+The verb-level circuit breaker (VERB_RETRY_LIMITS) is NEW. The gateway had
+no per-verb retry cap — dogfooding showed i_am_done retried 5+ times in 2
+minutes within the global budget. With the runtime tracker in place,
+exceeding VERB_RETRY_LIMITS[verb] attempts in 60s returns
+Envelope.circuit_open.
 """
 
 from __future__ import annotations
@@ -53,7 +53,7 @@ VERB_RETRY_LIMITS: dict[str, int] = {
     # QA / Doc handoffs. Keys are the public MCP verb names (what the SDK
     # receives via /verb/attempted, derived from the flow URL path).
     # IntentSpec uses `pass_review`/`fail_review` internally; the MCP layer
-    # exposes them as `pass`/`fail`. Smoke-7 surfaced the mismatch — the
+    # exposes them as `pass`/`fail`. Dogfooding surfaced the mismatch — the
     # old keys here never matched any actual rejection.
     "pass": 3,
     "fail": 3,

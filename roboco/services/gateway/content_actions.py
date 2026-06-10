@@ -124,7 +124,7 @@ def _render_journal_content(scope: str, text: str, structured: dict[str, Any]) -
     return "\n\n".join(body_parts) if body_parts else text
 
 
-# Narrative fields that decision/reflect scopes want filled. Issue #15: a
+# Narrative fields that decision/reflect scopes want filled. A
 # missing or empty value used to hard-reject the note with `incomplete_input`
 # — and since that kind counts toward the do-server circuit breaker, three
 # well-intentioned-but-thin notes in a row tripped it. We now default the
@@ -168,7 +168,7 @@ def _coerce_scalar_to_list(value: Any) -> Any:
 def _normalize_structured(scope: str, structured: dict[str, Any]) -> dict[str, Any]:
     """Return a tolerant copy of ``structured`` for decision/reflect scopes.
 
-    Issue #15: stop rejecting thin notes. List-typed fields tolerate a lone
+    Stop rejecting thin notes. List-typed fields tolerate a lone
     scalar (wrapped into a one-element list), and missing/blank narrative
     fields are defaulted to a visible placeholder so the entry still records
     instead of returning `incomplete_input` (which trips the circuit breaker).
@@ -237,7 +237,7 @@ class ContentActionsDeps:
     # `NotificationDeliveryService`, not `NotificationService`. Keeping
     # them separate so the sender vs receiver concerns stay split.
     notification_delivery: Any = None
-    # Task #154: evidence() returns journal_highlights for QA/reviewer
+    # evidence() returns journal_highlights for QA/reviewer
     # context. Matches the choreographer's EvidenceRepo wiring so both
     # paths surface the same shape.
     evidence_repo: Any = None
@@ -382,7 +382,7 @@ class ContentActions:
             context_briefing={},
         )
 
-    # Board roles co-review board/coordination tasks (cluster C5): a
+    # Board roles co-review board/coordination tasks: a
     # board/coordination task is dispatched to BOTH the Product Owner and the
     # Head of Marketing, but it carries a single ``assigned_to``. The
     # non-assignee reviewer must still be able to record its review note on
@@ -429,7 +429,7 @@ class ContentActions:
         Allows ``assigned_to=None`` (post-handoff transient state) so QA /
         documenter can still inspect tasks between reassignments. A board role
         co-reviewing a board/coordination task is also allowed even when the
-        task is assigned to the other board member (cluster C5).
+        task is assigned to the other board member.
         """
         t = await self.task.get(task_id)
         if t is None:
@@ -456,7 +456,7 @@ class ContentActions:
         - decision: context, options[], chosen, rationale, consequences
         - reflect: what_done, what_learned, what_struggled, next_steps
 
-        Issue #15: the note is always recorded. List-typed fields tolerate a
+        The note is always recorded. List-typed fields tolerate a
         lone scalar (wrapped into a one-element list) and missing decision/
         reflect narrative fields default to a visible placeholder, so a
         well-intentioned note is never hard-rejected (which previously tripped
@@ -481,7 +481,7 @@ class ContentActions:
             t = await self.task.get_journal_context_task_for_agent(agent_id)
             if t is not None:
                 task_id = t.id
-        # Issue #15: tolerate thin notes instead of rejecting them. List-typed
+        # Tolerate thin notes instead of rejecting them. List-typed
         # fields accept a lone scalar; missing decision/reflect narrative fields
         # are defaulted to a visible placeholder. The note is always recorded so
         # the audit trail survives and a well-intentioned note never trips the
@@ -608,7 +608,7 @@ class ContentActions:
         # error escapes here it's caught by FastAPI's middleware and
         # rendered as RobocoError.to_dict() — a dict-shaped 'error'
         # field that breaks do_server's circuit-breaker frozenset
-        # check (smoke-7: TypeError: unhashable type: 'dict').
+        # check (a TypeError: unhashable type: 'dict').
         from roboco.enforcement.a2a_access import A2AAccessDeniedError
 
         try:
@@ -875,7 +875,7 @@ class ContentActions:
     ) -> Envelope:
         """Append a progress update; % is derived from the plan checklist.
 
-        #173: pass ``plan_step`` (a sub_task id or 1-based order) as you
+        Pass ``plan_step`` (a sub_task id or 1-based order) as you
         finish each plan step — it is marked complete and the % is
         computed from completed/total (the agent cannot set it). A
         narrative entry without ``plan_step`` is allowed for important
@@ -1184,7 +1184,7 @@ class ContentActions:
     ) -> Envelope:
         """Update an existing PR's title, body, and/or requested reviewers.
 
-        Smoke-5 surfaced this gap: agents who needed to edit a PR's
+        Dogfooding surfaced this gap: agents who needed to edit a PR's
         title/body or assign a reviewer after ``open_pr`` had no verb
         for it and got bash-shimmed by the ``gh pr edit`` guard. This
         verb is the gateway-native replacement.
@@ -1292,6 +1292,23 @@ class ContentActions:
             task_id=None,
             next="continue",
             evidence={"id": str(notification_id), "acked": True},
+            context_briefing={},
+        )
+
+    async def read_messages(self, *, agent_id: UUID) -> Envelope:
+        """Mark all of the caller's unread A2A direct messages as read.
+
+        Clears the A2A side of ``i_am_idle``'s unread soft-block: zeroes the
+        per-conversation unread counter and stamps ``read_at`` on the inbound
+        messages. Notifications are separate (notify_list / notify_get /
+        notify_ack).
+        """
+        cleared = await self.a2a.mark_all_read(agent_id)
+        return Envelope.ok(
+            status="read",
+            task_id=None,
+            next="retry i_am_idle() — your A2A inbox is clear",
+            evidence={"conversations_cleared": cleared},
             context_briefing={},
         )
 

@@ -9,7 +9,7 @@ Scope: only system-level concurrency invariants the lifecycle spec does
 NOT model live here. Role/state/task_type checks (the former
 ``role_typed_claim_guard`` and ``pm_cannot_execute_code_guard``) now route
 through ``spec.can_invoke_action``'s CLAIM_RULES + ``ActionSpec
-.allowed_task_types`` and have been deleted (Task 27, 2026-05-10).
+.allowed_task_types`` and have been deleted.
 
 Pre-gateway location at commit 0c3d15a:
     roboco/mcp/tasks/handlers/_helpers.py:124-204

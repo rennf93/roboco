@@ -330,8 +330,8 @@ class NotificationService:
             task_id: Related task ID
             a2a_context: Dict with from_agent, to_agent, skill, message,
                 priority. `priority` is a `NotificationPriority` (full
-                tristate: NORMAL / HIGH / URGENT). Before P3 Task 9 this
-                key was `urgent: bool` which collapsed HIGH to NORMAL —
+                tristate: NORMAL / HIGH / URGENT). This key used to be
+                `urgent: bool`, which collapsed HIGH to NORMAL —
                 A2AService now sends Priority directly.
         """
         from_agent = a2a_context.get("from_agent", "unknown")
@@ -340,8 +340,8 @@ class NotificationService:
         message = a2a_context.get("message", "")
         priority = a2a_context.get("priority", NotificationPriority.NORMAL)
         # Defensive coerce — accept enum, str, or a stray bool from a
-        # legacy caller. The point of Task 9 is that HIGH survives, so
-        # only collapse to URGENT/NORMAL if the input is genuinely a bool.
+        # legacy caller. The point is that HIGH survives, so only collapse
+        # to URGENT/NORMAL if the input is genuinely a bool.
         if isinstance(priority, bool):
             priority = (
                 NotificationPriority.URGENT if priority else NotificationPriority.NORMAL
@@ -439,6 +439,38 @@ class NotificationService:
                     to_agents_input=[str(a) for a in params.to_agents],
                     type=self._notification_type_label(params),
                     subject=params.subject[:80],
+                )
+                return
+            # Purpose-based dedup (CEO directive, 2026-06-10): do NOT create a
+            # second notification for the SAME purpose — same sender, same type,
+            # same task, overlapping recipients — while a prior one is still
+            # unacknowledged. Agents loop and re-send the same signal (often
+            # reworded); each copy inflates the recipient's unacked set, which
+            # soft-blocks their i_am_idle and drives respawn churn. A different
+            # type, a different task, a different sender, or a recipient who has
+            # already acked all go through. Body text is NOT compared, so
+            # rewording cannot defeat the guard.
+            related = params.related_task_id
+            dup_q = (
+                select(NotificationTable.id)
+                .where(NotificationTable.from_agent == from_agent_uuid)
+                .where(NotificationTable.type == params.notification_type)
+                .where(NotificationTable.to_agents.overlap(to_agents_uuids))
+                .where(~NotificationTable.acked_by.contains(to_agents_uuids))
+                .where(
+                    NotificationTable.related_task_id == related
+                    if related is not None
+                    else NotificationTable.related_task_id.is_(None)
+                )
+                .limit(1)
+            )
+            if await db.scalar(dup_q) is not None:
+                logger.info(
+                    "Suppressed duplicate notification (same purpose, unacked)",
+                    from_agent=str(from_agent_uuid),
+                    type=params.notification_type.value,
+                    related_task_id=str(related) if related is not None else None,
+                    to_agents=[str(a) for a in to_agents_uuids],
                 )
                 return
             notification = NotificationTable(

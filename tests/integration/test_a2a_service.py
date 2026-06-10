@@ -12,7 +12,13 @@ from uuid import uuid4 as _u
 
 import pytest
 import pytest_asyncio
-from roboco.db.tables import A2AConversationTable, AgentTable, ProjectTable, TaskTable
+from roboco.db.tables import (
+    A2AConversationTable,
+    A2AMessageTable,
+    AgentTable,
+    ProjectTable,
+    TaskTable,
+)
 from roboco.enforcement.a2a_access import A2AAccessDeniedError
 from roboco.models import AgentRole, AgentStatus, Team
 from roboco.models.a2a import (
@@ -449,6 +455,24 @@ async def test_get_messages_returns_chronological(a2a_setup: dict) -> None:
     msgs = await svc.get_messages(cid, "be-dev-1")
     _SENT_COUNT = 2
     assert len(msgs) == _SENT_COUNT
+
+
+@pytest.mark.asyncio
+async def test_send_chat_message_dedups_identical_unread(a2a_setup: dict) -> None:
+    """An identical message re-sent while still unread is suppressed (one copy),
+    but a different message is not collapsed."""
+    svc = a2a_setup["svc"]
+    conv = await svc.get_or_create_conversation("be-dev-1", "be-qa")
+    cid = UUID(conv.id)
+    first = await svc.send_chat_message(cid, "be-dev-1", "ping: are you free?")
+    again = await svc.send_chat_message(cid, "be-dev-1", "ping: are you free?")
+    distinct = await svc.send_chat_message(cid, "be-dev-1", "different message")
+    # The duplicate returns the SAME stored message and adds no new row.
+    assert again.id == first.id
+    assert distinct.id != first.id
+    msgs = await svc.get_messages(cid, "be-dev-1")
+    _EXPECTED = 2  # the deduped "ping" + the distinct one
+    assert len(msgs) == _EXPECTED
 
 
 @pytest.mark.asyncio
@@ -1472,3 +1496,43 @@ async def test_send_gateway_adapter_with_mocked_conv(
             body="hi-2",
         )
     assert result2.content == "hi"
+
+
+@pytest.mark.asyncio
+async def test_mark_all_read_clears_unread_for_agent(a2a_setup: dict) -> None:
+    """mark_all_read zeroes the agent's unread counter across its conversations
+    and stamps read_at on the inbound messages, returning the count cleared —
+    the bulk ack that lets an agent satisfy i_am_idle's unread-A2A soft-block."""
+    svc: A2AService = a2a_setup["svc"]
+    db = a2a_setup["db"]
+    qa = a2a_setup["qa"]
+    conv = await svc.get_or_create_conversation(
+        agent_a="be-dev-1", agent_b="be-qa", task_id=a2a_setup["task_id"]
+    )
+    conv_id = UUID(conv.id)
+    # be-dev-1 < be-qa canonically → dev is agent_a; dev's messages bump qa's
+    # unread (unread_by_b).
+    await svc.send_chat_message(conv_id, "be-dev-1", "one")
+    await svc.send_chat_message(conv_id, "be-dev-1", "two")
+
+    cleared = await svc.mark_all_read(qa.id)
+    assert cleared == 1
+
+    row = await db.get(A2AConversationTable, conv_id)
+    assert row is not None
+    assert row.unread_by_b == 0
+    msgs = (
+        (
+            await db.execute(
+                select(A2AMessageTable).where(
+                    A2AMessageTable.conversation_id == conv_id
+                )
+            )
+        )
+        .scalars()
+        .all()
+    )
+    assert all(m.read_at is not None for m in msgs)
+
+    # Idempotent — nothing left unread for qa.
+    assert await svc.mark_all_read(qa.id) == 0

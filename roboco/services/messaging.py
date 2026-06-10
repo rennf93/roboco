@@ -968,11 +968,11 @@ class MessagingService(BaseService):
     ) -> list[SessionTaskTable]:
         """Link every session attached to ``parent_task_id`` onto ``subtask_id``.
 
-        Task #156: pre-gateway flow created a session with the whole task
-        tree at once, so subtasks were visible in the parent's group chat
-        the moment they existed. The gateway creates subtasks one at a
-        time via ``delegate()``, so this step re-attaches every existing
-        parent session link to the new child.
+        The pre-gateway flow created a session with the whole task tree at
+        once, so subtasks were visible in the parent's group chat the moment
+        they existed. The gateway creates subtasks one at a time via
+        ``delegate()``, so this step re-attaches every existing parent
+        session link to the new child.
 
         ``link_session_to_task`` is idempotent on duplicate (session, task)
         pairs, so re-runs are no-ops. Primary status is NOT propagated —

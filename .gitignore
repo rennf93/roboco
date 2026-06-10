@@ -93,6 +93,10 @@ panel/node_modules/
 panel/.next/
 panel/out/
 panel/coverage/
+# pnpm content-addressable store — a dev once committed the ~115MB store and hit
+# GitHub's 100MB pre-receive limit (GH001), spiralling open_pr into a retry loop.
+# An ignored dir can't be staged by any `git add`, so this is the root fix.
+.pnpm-store/
 panel/tsconfig.tsbuildinfo
 panel/.env.local
 panel/.env.*.local

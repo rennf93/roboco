@@ -171,8 +171,7 @@ class Envelope:
         Distinct from `tracing_gap` and `incomplete_input`. The agent receives
         a structured "stop hammering this verb" signal with a remediate hint
         pointing to i_am_blocked() / i_am_idle() as graceful exits. Wired by
-        the agent_sdk runtime tracker (Phase 3 Task 14) — the gateway itself
-        does not raise this.
+        the agent_sdk runtime tracker — the gateway itself does not raise this.
         """
         return cls(
             error="circuit_open",

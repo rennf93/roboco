@@ -777,9 +777,9 @@ class JournalService(BaseService):
         (agent, task), or ``None`` if no decision exists.
 
         Backs the windowed-satisfaction variant of the PM-decision
-        tracing gate (Wave C8): the choreographer treats decisions older
-        than ``settings.pm_decision_window_seconds`` as missing so PMs
-        write a fresh decision around each decision point.
+        tracing gate: the choreographer treats decisions older than
+        ``settings.pm_decision_window_seconds`` as missing so PMs write a
+        fresh decision around each decision point.
         """
         query = (
             select(func.max(JournalEntryTable.created_at))

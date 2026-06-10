@@ -1102,3 +1102,8 @@ async def test_substitute_task_for_agent_runs_update(
         "needs different agent",
     )
     assert out is not None
+    # A transient substitute-out must NOT orphan the task: it stays with the
+    # same agent (re-dispatchable, resumes from the briefing) — never
+    # pending+unassigned.
+    assert out.status == TaskStatus.PENDING
+    assert out.assigned_to == task_setup["agent_id"]

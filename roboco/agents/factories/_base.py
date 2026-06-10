@@ -98,15 +98,15 @@ def _autogen_verbs_layer(prompts_path: Path, role: "AgentRole") -> str | None:
     ``roboco/api/schemas/v1/`` plus the role-config. Including it as a
     composition layer means the prompt always shows the literal accepted
     body shape for every verb the agent has — eliminating the prompt
-    drift class identified in audit P2-9 (D-04, D-10, D-11, D-29-D-31).
+    drift class where the prompt and the accepted body shape diverged.
     """
     role_value = role.value if hasattr(role, "value") else str(role)
     return _load_layer(prompts_path / "_generated" / f"{role_value}.md")
 
 
 # Built-in Claude Code tools each role's session needs at spawn time.
-# Smoke-7 surfaced: be-dev-1 hit "Edit exists but is not enabled in this
-# context" because Claude Code v2.1.69+ defers built-in tools behind a
+# Dogfooding surfaced: a developer hit "Edit exists but is not enabled in
+# this context" because Claude Code v2.1.69+ defers built-in tools behind a
 # ToolSearch activation. Weak models skip the soft directive in the
 # briefing, so we hoist the exact call into a top-of-system-prompt
 # layer (highest-priority instruction the model sees).
