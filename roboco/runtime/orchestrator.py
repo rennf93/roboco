@@ -4494,11 +4494,31 @@ Start by:
         if routing == "cell_pm":
             return self._TEAM_PM_MAP.get(team, "main-pm") if team else "main-pm"
 
-        # Dev routing - requires agent selection
-        if routing == "dev" and team:
-            return self._select_agent_for_cell(team, "dev")
+        # Dev routing - select a cell agent.
+        if routing == "dev":
+            agent = self._select_agent_for_cell(team, "dev") if team else None
+            if agent:
+                return agent
+            # No cell agent — team is missing or a non-cell team (fullstack /
+            # system). Fall back to main-pm to triage rather than leaving the
+            # task ownerless-and-dormant: the dispatcher never re-spawns an
+            # unrouted pending task, so a None here strands it. Mirrors the
+            # cell_pm / escalation `... or "main-pm"` default.
+            logger.warning(
+                "dev routing found no cell agent; falling back to main-pm",
+                task_id=task.get("id"),
+                team=team,
+            )
+            return "main-pm"
 
-        return None
+        # Unrecognized routing classification — never strand the task; main-pm
+        # triages it instead of it going dormant.
+        logger.warning(
+            "unrecognized routing classification; falling back to main-pm",
+            routing=routing,
+            task_id=task.get("id"),
+        )
+        return "main-pm"
 
     def _build_main_pm_triage_prompt(self, task: dict[str, Any]) -> str:
         """Build prompt for MAIN PM to triage and distribute to Cell PMs."""
