@@ -140,7 +140,11 @@ async def test_reconciler_rolls_back_orphan_claims(
     assert str(refreshed_orphan.status) == "pending", (
         "P2-8: orphan must be rolled back to pending"
     )
-    assert refreshed_orphan.assigned_to is None
+    # Ownership is preserved on rollback so the same dev resumes — an orphan
+    # claim is rolled back, not stripped of its owner into a dormant pending.
+    assert refreshed_orphan.assigned_to == orphan_setup["dev"].id
+    assert refreshed_orphan.claimed_by == orphan_setup["dev"].id
+    # The live claim is released so the dispatcher can re-spawn cleanly.
     assert refreshed_orphan.active_claimant_id is None
 
     # Healthy claim untouched.
