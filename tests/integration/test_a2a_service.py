@@ -458,6 +458,24 @@ async def test_get_messages_returns_chronological(a2a_setup: dict) -> None:
 
 
 @pytest.mark.asyncio
+async def test_send_chat_message_dedups_identical_unread(a2a_setup: dict) -> None:
+    """An identical message re-sent while still unread is suppressed (one copy),
+    but a different message is not collapsed."""
+    svc = a2a_setup["svc"]
+    conv = await svc.get_or_create_conversation("be-dev-1", "be-qa")
+    cid = UUID(conv.id)
+    first = await svc.send_chat_message(cid, "be-dev-1", "ping: are you free?")
+    again = await svc.send_chat_message(cid, "be-dev-1", "ping: are you free?")
+    distinct = await svc.send_chat_message(cid, "be-dev-1", "different message")
+    # The duplicate returns the SAME stored message and adds no new row.
+    assert again.id == first.id
+    assert distinct.id != first.id
+    msgs = await svc.get_messages(cid, "be-dev-1")
+    _EXPECTED = 2  # the deduped "ping" + the distinct one
+    assert len(msgs) == _EXPECTED
+
+
+@pytest.mark.asyncio
 async def test_close_conversation_with_resolution(a2a_setup: dict) -> None:
     svc = a2a_setup["svc"]
     conv = await svc.get_or_create_conversation("be-dev-1", "be-qa")

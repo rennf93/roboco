@@ -1031,6 +1031,32 @@ class A2AService:
         if from_agent not in (conv.agent_a, conv.agent_b):
             raise ValueError("Not a participant in this conversation")
 
+        # Purpose-dedup: if an identical message from this sender is still
+        # unread in this conversation, the sender is re-saying the same thing
+        # (a respawn re-emitting, or a retry) — don't stack another copy on the
+        # recipient's inbox or re-bump the unread count. Keyed on
+        # (conversation, sender, kind, content) while unread, so genuinely
+        # different messages are never collapsed.
+        dup = await self.session.scalar(
+            select(A2AMessageTable)
+            .where(
+                A2AMessageTable.conversation_id == conversation_id,
+                A2AMessageTable.from_agent == from_agent,
+                A2AMessageTable.message_kind == message_kind,
+                A2AMessageTable.content == content,
+                A2AMessageTable.read_at.is_(None),
+            )
+            .limit(1)
+        )
+        if dup is not None:
+            logger.info(
+                "Suppressed duplicate unread A2A message",
+                conversation_id=str(conversation_id),
+                from_agent=from_agent,
+                existing_message_id=str(dup.id),
+            )
+            return self._msg_to_model(dup)
+
         # Create message
         msg = A2AMessageTable(
             conversation_id=conversation_id,
