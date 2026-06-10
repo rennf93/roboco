@@ -2668,12 +2668,22 @@ class TaskService(BaseService):
         if task.status != TaskStatus.BLOCKED:
             return None
 
-        # Restore the raiser so the orchestrator dispatcher (which
-        # includes `in_progress` tasks in its pickup list) respawns the
-        # original agent — not the PM who merely resolved the block.
-        if task.blocker_raised_by:
-            task.assigned_to = cast("Any", task.blocker_raised_by)
-            task.blocker_raised_by = None
+        # Restore ownership so the dispatcher respawns the original worker, not
+        # the PM who merely resolved the block. blocker_raised_by holds the
+        # pre-escalation dev; fall back to the surviving claim owner so a task
+        # claimed via give_me_work (which has no assigned_to to stash) is never
+        # left with a split owner — assigned_to null but claimed_by set, which
+        # the dev dispatcher and the PM pool-router would both try to grab.
+        # Keep both fields on the owner, mirroring _force_unclaim_to_pending and
+        # reassign; this also clears a stale claimed_by left pointing at the
+        # resolver PM after an escalation.
+        owner = cast(
+            "Any", task.blocker_raised_by or task.assigned_to or task.claimed_by
+        )
+        task.blocker_raised_by = None
+        if owner is not None:
+            task.assigned_to = owner
+            task.claimed_by = owner
         # Clear resolver metadata — only meaningful while BLOCKED.
         task.blocker_resolver_type = None
         # A task with a branch was claimed before it blocked, so resume it
