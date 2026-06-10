@@ -97,6 +97,32 @@ def _is_propose_draft(name: str) -> bool:
     return name == "propose_draft" or name.endswith("__propose_draft")
 
 
+def _block_to_chunk(
+    block: Any,
+) -> tuple[StreamChunk | None, str | None, dict[str, Any] | None]:
+    """Classify one assistant content block → (chunk, text_part, draft).
+
+    A ``propose_draft`` tool call yields a draft; thinking / other tool_use
+    yield a chunk; a TextBlock yields a text_part (already streamed live, mined
+    for a fenced draft by the caller). Unknown blocks yield nothing.
+    """
+    if hasattr(block, "thinking"):  # ThinkingBlock
+        return StreamChunk(kind="thinking", text=str(block.thinking)), None, None
+    if hasattr(block, "name") and hasattr(block, "input"):  # ToolUseBlock
+        name = str(block.name)
+        tool_input = getattr(block, "input", {})
+        if _is_propose_draft(name):
+            return None, None, _draft_from_tool_input(tool_input)
+        return (
+            StreamChunk(kind="tool_use", tool=name, data={"input": tool_input}),
+            None,
+            None,
+        )
+    if hasattr(block, "text"):  # TextBlock — already streamed; mine for a draft
+        return None, str(block.text), None
+    return None, None, None
+
+
 def _blocks_to_chunks(content: list[Any]) -> list[StreamChunk]:
     """Map an assistant message's content blocks to chunks (duck-typed).
 
@@ -114,19 +140,12 @@ def _blocks_to_chunks(content: list[Any]) -> list[StreamChunk]:
     text_parts: list[str] = []
     draft: dict[str, Any] | None = None
     for block in content or []:
-        if hasattr(block, "thinking"):  # ThinkingBlock
-            chunks.append(StreamChunk(kind="thinking", text=str(block.thinking)))
-        elif hasattr(block, "name") and hasattr(block, "input"):  # ToolUseBlock
-            name = str(block.name)
-            tool_input = getattr(block, "input", {})
-            if _is_propose_draft(name):
-                draft = draft or _draft_from_tool_input(tool_input)
-            else:
-                chunks.append(
-                    StreamChunk(kind="tool_use", tool=name, data={"input": tool_input})
-                )
-        elif hasattr(block, "text"):  # TextBlock — already streamed; mine for a draft
-            text_parts.append(str(block.text))
+        chunk, text_part, block_draft = _block_to_chunk(block)
+        if chunk is not None:
+            chunks.append(chunk)
+        if text_part is not None:
+            text_parts.append(text_part)
+        draft = draft or block_draft
     draft = draft or _extract_draft("".join(text_parts))
     if draft is not None:
         chunks.append(StreamChunk(kind="draft", data=draft))
