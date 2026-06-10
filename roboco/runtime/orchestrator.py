@@ -27,6 +27,7 @@ import httpx
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Coroutine
+    from uuid import UUID
 
     from roboco.services.llm import AgentRoute
     from roboco.services.task import TaskService
@@ -68,6 +69,11 @@ AgentConfig = OrchestratorAgentConfig
 # Docker configuration
 AGENT_NETWORK = "roboco_default"
 AGENT_BASE_IMAGE = "roboco-agent-base"
+
+# Port on which each agent's Claude Code SDK server listens inside its container.
+# Referenced by write-hooks (_finalize_spawn_session, _sweep_token_snapshots,
+# _sweep_budget_exceeded) to build the SDK health/usage URL.
+SDK_PORT: int = 9000
 
 # The intake (prompter) agent: a single seeded, board-adjacent interviewer.
 # Unlike delivery agents it is never dispatched and runs ONE persistent
@@ -1383,8 +1389,11 @@ class AgentOrchestrator:
                 },
             )
 
-            # Record a token-usage session row in the DB (fire-and-forget).
-            await self._record_spawn_session(config, task_id)
+            # Record a token-usage session row in the DB and bind its UUID to
+            # the instance so _finalize_spawn_session can look it up directly.
+            usage_session_id = await self._record_spawn_session(config, task_id)
+            if usage_session_id is not None:
+                instance.usage_session_id = usage_session_id
 
             return instance
         except Exception as e:
@@ -2878,7 +2887,22 @@ class AgentOrchestrator:
         graceful: bool = True,
         exit_reason: str = "stopped",
     ) -> None:
-        """Stop an agent container."""
+        """Stop an agent container.
+
+        Finalization (the HTTP call to the agent SDK's /usage/status endpoint)
+        is performed BEFORE acquiring self._lock so that the network I/O does
+        not block other operations that need the lock.
+        """
+        # Finalize the spawn-session row before the container is removed so we
+        # can still query the SDK's /usage/status endpoint.  This must happen
+        # outside self._lock — the HTTP round-trip would otherwise hold the
+        # lock for the full network timeout.
+        instance = self._instances.get(agent_id)
+        if instance is None:
+            return
+        if instance.container_id:
+            await self._finalize_spawn_session(agent_id, exit_reason=exit_reason)
+
         async with self._lock:
             if agent_id not in self._instances:
                 return
@@ -2888,10 +2912,6 @@ class AgentOrchestrator:
             if instance.container_id:
                 instance.state = AgentState.STOPPING
                 container_name = f"roboco-agent-{agent_id}"
-
-                # Finalize the spawn-session row before the container is removed
-                # so we can still query the SDK's /usage/status endpoint.
-                await self._finalize_spawn_session(agent_id, exit_reason=exit_reason)
 
                 if graceful:
                     # Graceful stop with timeout
@@ -3034,11 +3054,13 @@ class AgentOrchestrator:
         self,
         config: "OrchestratorAgentConfig",
         task_id: str | None,
-    ) -> None:
+    ) -> "UUID | None":
         """Insert a row into agent_spawn_sessions after a successful spawn.
 
-        Errors are caught and logged; a missing session row must never block
-        the spawn path.
+        Returns the UUID of the created row so the caller can store it on
+        the AgentInstance for later direct-by-id lookup in
+        _finalize_spawn_session.  Returns None when the insert fails; a
+        missing session row must never block the spawn path.
         """
         try:
             from uuid import uuid4 as _uuid4
@@ -3050,10 +3072,11 @@ class AgentOrchestrator:
             team = get_agent_team(agent_slug) or "backend"
             role = get_agent_role(agent_slug) or "developer"
 
+            session_id = _uuid4()
             session_factory = get_session_factory()
             async with session_factory() as db:
                 row = AgentSpawnSessionTable(
-                    id=_uuid4(),
+                    id=session_id,
                     agent_slug=agent_slug,
                     team=team,
                     role=role,
@@ -3066,15 +3089,17 @@ class AgentOrchestrator:
                 logger.debug(
                     "Spawn session recorded",
                     agent_slug=agent_slug,
-                    session_id=str(row.id),
+                    session_id=str(session_id),
                     task_id=task_id,
                 )
+            return session_id
         except Exception as exc:
             logger.warning(
                 "Failed to record spawn session",
                 agent_slug=config.agent_id,
                 error=str(exc),
             )
+            return None
 
     async def _finalize_spawn_session(
         self,
@@ -3117,10 +3142,11 @@ class AgentOrchestrator:
                     error=str(sdk_exc),
                 )
 
-            # Look up the model from the running instance config
+            # Look up the model and usage_session_id from the running instance config.
             instance = self._instances.get(agent_id)
             if instance and instance.config:
                 model = instance.config.model or "unknown"
+            usage_session_id = instance.usage_session_id if instance else None
 
             cost = calculate_cost(
                 model=model,
@@ -3134,16 +3160,25 @@ class AgentOrchestrator:
             async with session_factory() as db:
                 from sqlalchemy import select, update
 
-                # Update the most recent open session for this agent
-                result = await db.execute(
-                    select(AgentSpawnSessionTable)
-                    .where(
-                        AgentSpawnSessionTable.agent_slug == agent_id,
-                        AgentSpawnSessionTable.ended_at.is_(None),
+                # Prefer a direct lookup by the session UUID captured at spawn
+                # time; fall back to the (agent_slug, ended_at IS NULL) query
+                # for instances that pre-date the usage_session_id field.
+                if usage_session_id is not None:
+                    result = await db.execute(
+                        select(AgentSpawnSessionTable).where(
+                            AgentSpawnSessionTable.id == usage_session_id
+                        )
                     )
-                    .order_by(AgentSpawnSessionTable.started_at.desc())
-                    .limit(1)
-                )
+                else:
+                    result = await db.execute(
+                        select(AgentSpawnSessionTable)
+                        .where(
+                            AgentSpawnSessionTable.agent_slug == agent_id,
+                            AgentSpawnSessionTable.ended_at.is_(None),
+                        )
+                        .order_by(AgentSpawnSessionTable.started_at.desc())
+                        .limit(1)
+                    )
                 session_row = result.scalar_one_or_none()
                 if session_row is not None:
                     await db.execute(
@@ -3290,7 +3325,10 @@ class AgentOrchestrator:
 
             session_factory = get_session_factory()
             async with session_factory() as db:
-                # Aggregate closed sessions by (date, agent_slug, team, model)
+                # Aggregate closed sessions by (date, agent_slug, team, model).
+                # Limit to the last 7 days to avoid re-aggregating all-time
+                # history on every sweep — older days are already stable.
+                rollup_window_start = datetime.now(UTC) - timedelta(days=7)
                 result = await db.execute(
                     select(
                         func.date(AgentSpawnSessionTable.started_at).label("date"),
@@ -3304,7 +3342,10 @@ class AgentOrchestrator:
                         func.sum(AgentSpawnSessionTable.estimated_cost_usd).label("total_cost_usd"),
                         func.count(AgentSpawnSessionTable.id).label("session_count"),
                     )
-                    .where(AgentSpawnSessionTable.ended_at.isnot(None))
+                    .where(
+                        AgentSpawnSessionTable.ended_at.isnot(None),
+                        AgentSpawnSessionTable.started_at >= rollup_window_start,
+                    )
                     .group_by(
                         func.date(AgentSpawnSessionTable.started_at),
                         AgentSpawnSessionTable.agent_slug,
@@ -3629,7 +3670,7 @@ Start by:
                     AgentState.WAITING_SHORT,
                 ):
                     continue
-                url = f"http://roboco-agent-{agent_id}:9000/budget/status"
+                url = f"http://roboco-agent-{agent_id}:{SDK_PORT}/budget/status"
                 data = await self._fetch_budget_status(client, url, agent_id)
                 if data is None or not data.get("halt"):
                     continue

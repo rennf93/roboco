@@ -71,6 +71,10 @@ class AgentInstance:
     error_count: int = 0
     waiting_for: str | None = None  # For WAITING_LONG state
     waiting_context: dict[str, Any] = field(default_factory=dict)
+    # UUID of the agent_spawn_sessions row created at spawn time.
+    # Used by _finalize_spawn_session for a direct-by-id lookup instead of a
+    # fragile (agent_slug, ended_at IS NULL) query.
+    usage_session_id: UUID | None = None
 
     def __post_init__(self) -> None:
         if not self.id:
