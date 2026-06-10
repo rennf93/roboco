@@ -143,6 +143,63 @@ function draftFromEvent(data: Record<string, unknown> | undefined): {
 }
 
 // ---------------------------------------------------------------------------
+// Refresh durability
+//
+// The chat lives entirely in React state, so a browser reload wiped it and
+// dropped the human back to the scope form — even though the intake agent
+// container outlives the page. Persist a small slice to localStorage (TTL'd)
+// and, on mount, only restore it once the backend confirms the session is
+// still alive. A full reload doesn't run React effect cleanup, so the
+// navigate-away reap below never fires on refresh and the session survives.
+// ---------------------------------------------------------------------------
+
+const PERSIST_KEY = "roboco:prompter:live";
+const PERSIST_TTL_MS = 30 * 60 * 1000; // 30 minutes
+
+interface PersistedChat {
+  sessionId: string;
+  messages: ChatMessage[];
+  state: PrompterState;
+  scope: { targetKind: TargetKind; projectId: string; productId: string };
+  editableDraft: EditableDraft;
+  savedAt: number;
+}
+
+function loadPersisted(): PersistedChat | null {
+  if (typeof window === "undefined") return null;
+  try {
+    const raw = window.localStorage.getItem(PERSIST_KEY);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw) as PersistedChat;
+    if (!parsed.sessionId || Date.now() - parsed.savedAt > PERSIST_TTL_MS) {
+      window.localStorage.removeItem(PERSIST_KEY);
+      return null;
+    }
+    return parsed;
+  } catch {
+    return null;
+  }
+}
+
+function savePersisted(slice: PersistedChat): void {
+  if (typeof window === "undefined") return;
+  try {
+    window.localStorage.setItem(PERSIST_KEY, JSON.stringify(slice));
+  } catch {
+    // localStorage full / unavailable — durability is best-effort.
+  }
+}
+
+function clearPersisted(): void {
+  if (typeof window === "undefined") return;
+  try {
+    window.localStorage.removeItem(PERSIST_KEY);
+  } catch {
+    // ignore
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Hook
 // ---------------------------------------------------------------------------
 
@@ -304,14 +361,82 @@ export function usePrompter() {
     [closeStream, handleEvent]
   );
 
-  // Best-effort reap if the user navigates away mid-chat.
+  // Best-effort reap if the user navigates away mid-chat. This cleanup runs on
+  // SPA navigation (component unmount), NOT on a full page reload — so a reload
+  // leaves the session running for the reconnect path below to pick up.
   useEffect(() => {
     return () => {
       closeStream();
       const sid = sessionIdRef.current;
-      if (sid) void prompterLiveApi.stop(sid).catch(() => undefined);
+      if (sid) {
+        void prompterLiveApi.stop(sid).catch(() => undefined);
+        clearPersisted();
+      }
     };
   }, [closeStream]);
+
+  // Persist the live chat whenever it changes, so a reload can resume it.
+  useEffect(() => {
+    const persistable =
+      sessionId !== null &&
+      (state === "chatting" ||
+        state === "streaming" ||
+        state === "draft_preview" ||
+        state === "review_modal");
+    if (persistable && sessionId) {
+      savePersisted({
+        sessionId,
+        messages,
+        state,
+        scope: scopeRef.current,
+        editableDraft,
+        savedAt: Date.now(),
+      });
+    }
+  }, [sessionId, messages, state, editableDraft]);
+
+  // On mount, reconnect to a still-running session left behind by a reload.
+  const didRestoreRef = useRef(false);
+  useEffect(() => {
+    if (didRestoreRef.current) return;
+    didRestoreRef.current = true;
+    const persisted = loadPersisted();
+    if (!persisted) return;
+    let cancelled = false;
+    void (async () => {
+      try {
+        const { alive } = await prompterLiveApi.status(persisted.sessionId);
+        if (cancelled) return;
+        if (!alive) {
+          clearPersisted();
+          return;
+        }
+        // Restore the history + scope + draft, then reopen the stream for new
+        // events. Any tokens from a turn that was mid-flight at reload are gone,
+        // so land in a stable state rather than "streaming".
+        sessionIdRef.current = persisted.sessionId;
+        setSessionId(persisted.sessionId);
+        setMessages(persisted.messages);
+        setEditableDraft(persisted.editableDraft);
+        setTargetKind(persisted.scope.targetKind);
+        setProjectId(persisted.scope.projectId);
+        setProductId(persisted.scope.productId);
+        setState(
+          persisted.state === "draft_preview" ||
+            persisted.state === "review_modal"
+            ? "draft_preview"
+            : "chatting"
+        );
+        openStream(persisted.sessionId);
+      } catch {
+        // Status check failed (server unreachable) — stay on the form and keep
+        // the persisted slice for a later retry within its TTL.
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [openStream]);
 
   // -----------------------------------------------------------------------
   // Start the live session (from the scope form)
@@ -466,6 +591,7 @@ export function usePrompter() {
       // The draft became a task — reap the agent and close the stream.
       closeStream();
       void prompterLiveApi.stop(sid).catch(() => undefined);
+      clearPersisted();
       sessionIdRef.current = null;
       setCreatedTaskId(task_id);
       setCreatedTaskTitle(draft.title);
@@ -489,6 +615,7 @@ export function usePrompter() {
     closeStream();
     const sid = sessionIdRef.current;
     if (sid) void prompterLiveApi.stop(sid).catch(() => undefined);
+    clearPersisted();
     sessionIdRef.current = null;
     streamingIdRef.current = null;
     setMessages([]);

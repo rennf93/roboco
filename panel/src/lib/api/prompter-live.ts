@@ -72,6 +72,15 @@ export const prompterLiveApi = {
   streamUrl: (sessionId: string): string =>
     `${API_URL}/prompter/live/${sessionId}/stream`,
 
+  /** Is this session still running? The panel calls this after a reload to
+   *  decide whether to reconnect the chat or fall back to the scope form. */
+  status: async (sessionId: string): Promise<{ alive: boolean }> => {
+    const { data } = await api.get<{ alive: boolean }>(
+      `/prompter/live/${sessionId}/status`
+    );
+    return data;
+  },
+
   /** Deliver the human's message to the running agent; the reply streams back. */
   sendMessage: async (sessionId: string, text: string): Promise<void> => {
     await api.post(`/prompter/live/${sessionId}/messages`, { text });

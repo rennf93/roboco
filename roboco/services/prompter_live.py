@@ -78,6 +78,16 @@ class PrompterLiveRegistry:
     def get(self, session_id: str) -> LiveIntakeSession | None:
         return self._sessions.get(session_id)
 
+    def is_alive(self, session_id: str) -> bool:
+        """True when a live, un-closed session exists for this id.
+
+        The panel calls this after a page reload to decide whether it can
+        reconnect to a still-running intake agent rather than dropping the
+        chat back to the scope form.
+        """
+        session = self._sessions.get(session_id)
+        return session is not None and not session.closed
+
     def close(self, session_id: str) -> None:
         """End a live session and unblock its stream (called on reap)."""
         session = self._sessions.pop(session_id, None)
