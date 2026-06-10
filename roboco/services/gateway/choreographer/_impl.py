@@ -2602,8 +2602,8 @@ class Choreographer:
                 status="idle_with_unread",
                 task_id=None,
                 next=(
-                    "address unread A2A and @mentions in context_briefing"
-                    " before going idle"
+                    "clear your inbox, then retry i_am_idle(): read_messages()"
+                    " for unread A2A, notify_ack() per @mention notification"
                 ),
                 context_briefing=briefing,
             )

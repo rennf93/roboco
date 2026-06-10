@@ -170,6 +170,10 @@ class ChannelsRequest(BaseModel):
     """No params — caller's identity comes from X-Agent-ID header."""
 
 
+class ReadMessagesRequest(BaseModel):
+    """No params — clears the caller's unread A2A inbox (X-Agent-ID header)."""
+
+
 class PRUpdateRequest(BaseModel):
     """Update an open PR's title/body and/or request reviewers.
 

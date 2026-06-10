@@ -1143,6 +1143,47 @@ class A2AService:
 
         await self.session.flush()
 
+    async def mark_all_read(self, agent_id: UUID) -> int:
+        """Mark every conversation with unread-for-this-agent as read.
+
+        Agent-keyed bulk form of ``mark_read``: zeroes the agent's per-side
+        unread counter and stamps ``read_at`` on the inbound messages across all
+        its conversations. Returns the number cleared. Lets an agent satisfy
+        ``i_am_idle``'s unread-A2A soft-block in one call.
+        """
+        from datetime import UTC, datetime
+
+        from sqlalchemy import or_, update
+
+        slug = await self._resolve_slug_from_id(agent_id)
+        result = await self.session.execute(
+            select(A2AConversationTable).where(
+                or_(
+                    (A2AConversationTable.agent_a == slug)
+                    & (A2AConversationTable.unread_by_a > 0),
+                    (A2AConversationTable.agent_b == slug)
+                    & (A2AConversationTable.unread_by_b > 0),
+                )
+            )
+        )
+        convs = list(result.scalars().all())
+        if not convs:
+            return 0
+        for conv in convs:
+            if conv.agent_a == slug:
+                conv.unread_by_a = 0
+            else:
+                conv.unread_by_b = 0
+        await self.session.execute(
+            update(A2AMessageTable)
+            .where(A2AMessageTable.conversation_id.in_([c.id for c in convs]))
+            .where(A2AMessageTable.from_agent != slug)
+            .where(A2AMessageTable.read_at.is_(None))
+            .values(read_at=datetime.now(UTC))
+        )
+        await self.session.flush()
+        return len(convs)
+
     async def get_inbox_summary(self, agent_slug: str) -> A2AInboxSummary:
         """Get summary of pending A2A for agent."""
         from sqlalchemy import func, or_

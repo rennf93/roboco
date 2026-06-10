@@ -489,6 +489,16 @@ def pr_update(
     )
 
 
+def read_messages() -> dict[str, Any]:
+    """Mark all your unread A2A direct messages as read.
+
+    Call this when ``i_am_idle()`` soft-blocks you on unread A2A — it clears
+    your direct-message inbox so you can idle. Notifications are separate: use
+    ``notify_list`` / ``notify_get`` / ``notify_ack`` for those.
+    """
+    return _post("/api/v1/do/read_messages", {})
+
+
 # ---------- Tool registry ----------
 #
 # Maps the tool name an agent calls (matches manifest entries and the
@@ -509,6 +519,7 @@ _TOOLS: dict[str, Any] = {
     "notify_ack": notify_ack,
     "channels": channels,
     "pr_update": pr_update,
+    "read_messages": read_messages,
 }
 
 

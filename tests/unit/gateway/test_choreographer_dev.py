@@ -667,7 +667,7 @@ async def test_i_am_idle_with_unread_a2a_soft_blocks() -> None:
     env = await c.i_am_idle(agent_id)
     body = env.as_dict()
     assert body["status"] == "idle_with_unread"
-    assert "address" in body["next"].lower()
+    assert "read_messages" in body["next"]
 
 
 @pytest.mark.asyncio

@@ -21,6 +21,7 @@ from roboco.api.schemas.v1.do import (
     OpenSessionRequest,
     ProgressRequest,
     PRUpdateRequest,
+    ReadMessagesRequest,
     SayRequest,
 )
 from roboco.services.gateway.content_actions import ContentActions
@@ -233,6 +234,17 @@ async def do_notify_ack(
         agent_id=x_agent_id,
         notification_id=body.notification_id,
     )
+    return envelope_to_response(env, request)
+
+
+@router.post("/read_messages")
+async def do_read_messages(
+    request: Request,
+    _body: ReadMessagesRequest,
+    x_agent_id: _AgentIdHeader,
+    actions: _ContentActionsDep,
+) -> dict:
+    env = await actions.read_messages(agent_id=x_agent_id)
     return envelope_to_response(env, request)
 
 

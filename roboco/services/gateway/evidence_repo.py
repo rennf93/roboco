@@ -68,35 +68,42 @@ class EvidenceRepo:
         return items
 
     async def list_unread_mentions(self, agent_id: UUID) -> list[dict[str, Any]]:
-        """Recent channel messages that @mention this agent.
+        """Unacknowledged @mention notifications for this agent.
 
-        Messages carry no per-recipient read state, so this surfaces the most
-        recent mentions (capped); the briefing is rebuilt each turn.
+        Each channel @mention raises a MENTION-type notification (see
+        ``messaging._notify_mentions``); surface the ones this agent has not yet
+        acked. The agent clears them with ``notify_ack`` — so ``i_am_idle``'s
+        mention soft-block is satisfiable rather than a permanent dead-end.
+        (Channel messages carry no per-recipient read state of their own, so the
+        notification's ``acked_by`` is the read signal.)
         """
         from sqlalchemy import select
 
-        from roboco.db.tables import MessageTable
+        from roboco.db.tables import NotificationTable
+        from roboco.models import NotificationType
 
         result = await self._db.execute(
             select(
-                MessageTable.id,
-                MessageTable.agent_id,
-                MessageTable.channel_id,
-                MessageTable.content,
-                MessageTable.task_id,
-                MessageTable.timestamp,
+                NotificationTable.id,
+                NotificationTable.from_agent,
+                NotificationTable.subject,
+                NotificationTable.body,
+                NotificationTable.related_task_id,
+                NotificationTable.timestamp,
             )
-            .where(MessageTable.mentions.contains([agent_id]))
-            .order_by(MessageTable.timestamp.desc())
+            .where(NotificationTable.type == NotificationType.MENTION)
+            .where(NotificationTable.to_agents.contains([agent_id]))
+            .where(~NotificationTable.acked_by.contains([agent_id]))
+            .order_by(NotificationTable.timestamp.desc())
             .limit(10)
         )
         return [
             {
-                "message_id": str(row.id),
-                "from_agent": str(row.agent_id),
-                "channel_id": str(row.channel_id) if row.channel_id else None,
-                "excerpt": (row.content or "")[:280],
-                "task_id": str(row.task_id) if row.task_id else None,
+                "notification_id": str(row.id),
+                "from_agent": str(row.from_agent) if row.from_agent else None,
+                "subject": row.subject,
+                "excerpt": (row.body or "")[:280],
+                "task_id": (str(row.related_task_id) if row.related_task_id else None),
                 "timestamp": row.timestamp.isoformat() if row.timestamp else None,
             }
             for row in result.all()

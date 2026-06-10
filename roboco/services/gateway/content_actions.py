@@ -1295,6 +1295,23 @@ class ContentActions:
             context_briefing={},
         )
 
+    async def read_messages(self, *, agent_id: UUID) -> Envelope:
+        """Mark all of the caller's unread A2A direct messages as read.
+
+        Clears the A2A side of ``i_am_idle``'s unread soft-block: zeroes the
+        per-conversation unread counter and stamps ``read_at`` on the inbound
+        messages. Notifications are separate (notify_list / notify_get /
+        notify_ack).
+        """
+        cleared = await self.a2a.mark_all_read(agent_id)
+        return Envelope.ok(
+            status="read",
+            task_id=None,
+            next="retry i_am_idle() — your A2A inbox is clear",
+            evidence={"conversations_cleared": cleared},
+            context_briefing={},
+        )
+
 
 def _strip_task_prefix(msg: str) -> str:
     """Strip any [task-id] prefix the agent supplied; gateway re-adds canonical."""
