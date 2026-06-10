@@ -94,9 +94,7 @@ async def test_distinct_rejections_emit_distinct_attempt_ids() -> None:
     expected_distinct_ids = 2
     calls = audit_svc.log_event.await_args_list
     ids = {call.kwargs["details"]["attempt_id"] for call in calls}
-    assert len(ids) == expected_distinct_ids, (
-        "each rejection emits its own attempt_id"
-    )
+    assert len(ids) == expected_distinct_ids, "each rejection emits its own attempt_id"
 
 
 @pytest.mark.asyncio
