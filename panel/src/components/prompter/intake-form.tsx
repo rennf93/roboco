@@ -1,8 +1,10 @@
 "use client";
 
+import { useEffect, useState } from "react";
 import { Loader2, Sparkles } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Label } from "@/components/ui/label";
+import { Progress } from "@/components/ui/progress";
 import { Textarea } from "@/components/ui/textarea";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import {
@@ -50,6 +52,35 @@ export function IntakeForm({
 }: IntakeFormProps) {
   const { data: projects = [] } = useProjects();
   const { data: products = [] } = useProducts();
+
+  // The first clone of a repo can take a few minutes; without feedback the
+  // "Preparing…" button looks frozen. Tick an elapsed timer while preparing
+  // and drive a saturating progress bar + staged copy so the wait reads as
+  // work-in-progress, not a hang. The bar approaches but never reaches 100%
+  // until the agent actually answers (which flips isPreparing off).
+  const [elapsed, setElapsed] = useState(0);
+  useEffect(() => {
+    if (!isPreparing) return;
+    const id = setInterval(() => setElapsed((s) => s + 1), 1000);
+    // Reset on cleanup (when preparing ends or the component unmounts) rather
+    // than synchronously in the effect body, which would trigger a cascading
+    // render.
+    return () => {
+      clearInterval(id);
+      setElapsed(0);
+    };
+  }, [isPreparing]);
+
+  const prepPct = Math.min(95, Math.round(100 * (1 - Math.exp(-elapsed / 75))));
+  const prepStage =
+    elapsed < 15
+      ? "Spinning up the agent…"
+      : elapsed < 45
+        ? "Cloning your repository…"
+        : elapsed < 120
+          ? "First clone can take a couple of minutes — hang tight…"
+          : "Reading the codebase…";
+  const prepElapsed = `${Math.floor(elapsed / 60)}:${String(elapsed % 60).padStart(2, "0")}`;
 
   return (
     <div className="flex flex-1 items-center justify-center px-6 py-8">
@@ -160,6 +191,16 @@ export function IntakeForm({
             "Start chatting"
           )}
         </Button>
+
+        {isPreparing && (
+          <div className="space-y-1.5" aria-live="polite">
+            <Progress value={prepPct} />
+            <div className="flex items-center justify-between text-xs text-muted-foreground">
+              <span>{prepStage}</span>
+              <span className="tabular-nums">{prepElapsed}</span>
+            </div>
+          </div>
+        )}
       </div>
     </div>
   );
