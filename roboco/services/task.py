@@ -1818,12 +1818,20 @@ class TaskService(BaseService):
         return str(DOCS_BASE_PATH / path)
 
     async def _index_docs_background(
-        self, task_id: UUID, documents: list[dict[str, Any]]
+        self,
+        task_id: UUID,
+        documents: list[dict[str, Any]],
+        actor_agent_id: UUID | None = None,
     ) -> None:
         """Index documentation from completed doc task (fire-and-forget)."""
         from roboco.services.optimal import get_optimal_service
 
         try:
+            # Land any workspace-authored docs server-side first, so the
+            # indexer (which reads /app/docs) can see docs the agent wrote with
+            # Edit/Write in its own clone rather than through roboco_docs_write.
+            await self._capture_workspace_docs(task_id, documents, actor_agent_id)
+
             optimal = await get_optimal_service()
 
             # Extract doc paths from documents array and resolve to absolute paths
@@ -1846,6 +1854,57 @@ class TaskService(BaseService):
                 task_id=str(task_id),
                 error=str(e),
             )
+
+    async def _capture_workspace_docs(
+        self,
+        task_id: UUID,
+        documents: list[dict[str, Any]],
+        actor_agent_id: UUID | None,
+    ) -> None:
+        """Copy workspace-authored docs into ``/app/docs`` so they index.
+
+        Docs written through ``roboco_docs_write`` already live under
+        ``DOCS_BASE_PATH`` on the orchestrator. Docs an agent wrote with
+        Edit/Write live only in that agent's own clone, so resolving their path
+        under ``/app/docs`` finds nothing and they never reach RAG (the
+        cross-container miss). Read each missing doc's committed content out of
+        the branch and write it server-side. Best-effort: one unreadable file
+        must not abort the rest of the batch.
+        """
+        from pathlib import Path
+
+        from roboco.services.git import get_git_service
+
+        task = await self.get(task_id)
+        if task is None or not task.branch_name:
+            return
+        git = get_git_service(self.session)
+        for d in documents:
+            rel_path = d.get("path")
+            # git show needs a repo-relative path; an absolute path can't be
+            # mapped back to the repo, and the indexer already skips it.
+            if not rel_path or Path(rel_path).is_absolute():
+                continue
+            abspath = Path(self._resolve_doc_abspath(rel_path))
+            if abspath.exists():
+                continue
+            try:
+                content = await git.read_file_at_branch(
+                    branch_name=task.branch_name,
+                    path=rel_path,
+                    actor_agent_id=actor_agent_id,
+                )
+            except Exception as e:
+                self.log.debug(
+                    "Workspace doc capture read failed",
+                    path=rel_path,
+                    error=str(e),
+                )
+                continue
+            if not content:
+                continue
+            abspath.parent.mkdir(parents=True, exist_ok=True)
+            abspath.write_text(content, encoding="utf-8")
 
     # =========================================================================
     # QA AND ERROR INDEXING HOOKS
@@ -2969,10 +3028,16 @@ class TaskService(BaseService):
 
         await self.session.flush()
 
-        # Index documentation artifacts (fire-and-forget)
+        # Index documentation artifacts (fire-and-forget). Capture the current
+        # owner (the documenter) now — i_documented reassigns to the PM right
+        # after this returns, so reading assigned_to inside the background task
+        # would resolve the wrong workspace.
         if task.documents:
+            documenter_id = to_python_uuid(task.assigned_to)
             bg_task = asyncio.create_task(
-                self._index_docs_background(require_uuid(task.id), task.documents)
+                self._index_docs_background(
+                    require_uuid(task.id), task.documents, documenter_id
+                )
             )
             self._background_tasks.add(bg_task)
             bg_task.add_done_callback(self._background_tasks.discard)

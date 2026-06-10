@@ -2548,6 +2548,33 @@ class GitService(BaseService):
         )
         return [line for line in result.stdout.splitlines() if line.strip()]
 
+    async def read_file_at_branch(
+        self,
+        *,
+        branch_name: str,
+        path: str,
+        actor_agent_id: UUID | None = None,
+    ) -> str | None:
+        """Return the content of ``path`` as committed on ``branch_name``.
+
+        Reads the file straight out of the branch tip with ``git show`` in the
+        resolved workspace, so the orchestrator can capture a doc an agent
+        authored (and committed) in its OWN clone — without any shared
+        filesystem mount. A missing file, an uncommitted file, or a bad ref
+        yields ``None`` rather than raising; callers treat this as best-effort.
+        """
+        workspace = await self._workspace_for_branch(
+            branch_name, actor_agent_id=actor_agent_id
+        )
+        token = await self._token_for_branch(branch_name)
+        head_ref = await self._resolve_head_ref(workspace, branch_name, token=token)
+        result = await self._run_git(
+            workspace, ["show", f"{head_ref}:{path}"], check=False
+        )
+        if result.returncode != 0:
+            return None
+        return result.stdout
+
     async def commit(
         self,
         *,

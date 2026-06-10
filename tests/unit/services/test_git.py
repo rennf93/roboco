@@ -194,6 +194,41 @@ async def test_diff_returns_diff_stdout() -> None:
     assert "+hello" in out
 
 
+@pytest.mark.asyncio
+async def test_read_file_at_branch_returns_committed_content() -> None:
+    svc = _service()
+    _bind(svc, "_workspace_for_branch", AsyncMock(return_value=Path("/tmp/ws")))
+    _bind(svc, "_token_for_branch", AsyncMock(return_value=None))
+    _bind(svc, "_resolve_head_ref", AsyncMock(return_value="HEAD"))
+    _bind(
+        svc,
+        "_run_git",
+        AsyncMock(return_value=MagicMock(stdout="# API\nbody\n", returncode=0)),
+    )
+    out = await svc.read_file_at_branch(
+        branch_name="feature/backend/abc", path="docs/api.md"
+    )
+    assert out == "# API\nbody\n"
+
+
+@pytest.mark.asyncio
+async def test_read_file_at_branch_missing_returns_none() -> None:
+    svc = _service()
+    _bind(svc, "_workspace_for_branch", AsyncMock(return_value=Path("/tmp/ws")))
+    _bind(svc, "_token_for_branch", AsyncMock(return_value=None))
+    _bind(svc, "_resolve_head_ref", AsyncMock(return_value="HEAD"))
+    # git show on a path that isn't in the tree exits non-zero.
+    _bind(
+        svc,
+        "_run_git",
+        AsyncMock(return_value=MagicMock(stdout="", returncode=128)),
+    )
+    out = await svc.read_file_at_branch(
+        branch_name="feature/backend/abc", path="nope.md"
+    )
+    assert out is None
+
+
 # ---------------------------------------------------------------------------
 # pr_target: GitHub round-trip
 # ---------------------------------------------------------------------------
