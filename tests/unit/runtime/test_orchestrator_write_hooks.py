@@ -212,8 +212,12 @@ async def test_finalize_spawn_session_success_executes_select_and_update() -> No
     def _handler(_url: str) -> Any:
         return _mock_response(
             200,
-            {"tokens_input": 10, "tokens_output": 20,
-             "tokens_cache_read": 0, "tokens_cache_write": 0},
+            {
+                "tokens_input": 10,
+                "tokens_output": 20,
+                "tokens_cache_read": 0,
+                "tokens_cache_write": 0,
+            },
         )
 
     session_row = MagicMock()
@@ -363,8 +367,12 @@ async def test_sweep_token_snapshots_skips_zero_token_agents() -> None:
     def _handler(_url: str) -> Any:
         return _mock_response(
             200,
-            {"tokens_input": 0, "tokens_output": 0,
-             "tokens_cache_read": 0, "tokens_cache_write": 0},
+            {
+                "tokens_input": 0,
+                "tokens_output": 0,
+                "tokens_cache_read": 0,
+                "tokens_cache_write": 0,
+            },
         )
 
     added: list[Any] = []
@@ -401,8 +409,12 @@ async def test_sweep_token_snapshots_per_agent_error_does_not_abort_loop() -> No
             raise httpx.ConnectError("agent-1 unreachable")
         return _mock_response(
             200,
-            {"tokens_input": _LOOP_TI, "tokens_output": _LOOP_TO,
-             "tokens_cache_read": 0, "tokens_cache_write": 0},
+            {
+                "tokens_input": _LOOP_TI,
+                "tokens_output": _LOOP_TO,
+                "tokens_cache_read": 0,
+                "tokens_cache_write": 0,
+            },
         )
 
     session_row = MagicMock()
@@ -423,3 +435,109 @@ async def test_sweep_token_snapshots_per_agent_error_does_not_abort_loop() -> No
     assert len(added) == 1
     assert added[0].tokens_input == _LOOP_TI
     assert added[0].tokens_output == _LOOP_TO
+
+
+# ---------------------------------------------------------------------------
+# _sweep_daily_rollup — inserts new row when none exists
+# ---------------------------------------------------------------------------
+
+# Token counts for the rollup test
+_ROLLUP_TI = 200
+_ROLLUP_TO = 300
+_ROLLUP_TCR = 20
+_ROLLUP_TCW = 10
+
+
+async def test_sweep_daily_rollup_inserts_new_row() -> None:
+    """When no existing DailyUsageRollupTable row exists, db.add() is called
+    with the correct aggregated token values."""
+    orch = _make_orchestrator()
+
+    # Build a fake aggregate result row
+    agg_row = MagicMock()
+    agg_row.date = "2026-06-10"
+    agg_row.agent_slug = _AGENT_ID
+    agg_row.team = "backend"
+    agg_row.model = "sonnet"
+    agg_row.tokens_input = _ROLLUP_TI
+    agg_row.tokens_output = _ROLLUP_TO
+    agg_row.tokens_cache_read = _ROLLUP_TCR
+    agg_row.tokens_cache_write = _ROLLUP_TCW
+    agg_row.total_cost_usd = 0.0
+    agg_row.session_count = 1
+
+    added: list[Any] = []
+    call_count = 0
+
+    @asynccontextmanager
+    async def _db_context() -> Any:
+        nonlocal call_count
+
+        db = MagicMock()
+        db.commit = AsyncMock()
+
+        def _add(obj: Any) -> None:
+            added.append(obj)
+
+        db.add = _add
+
+        async def _exec(_stmt: Any) -> MagicMock:
+            nonlocal call_count
+            call_count += 1
+            result = MagicMock()
+            if call_count == 1:
+                # First call: aggregate SELECT — return one agg_row via fetchall()
+                result.fetchall = MagicMock(return_value=[agg_row])
+                result.scalar_one_or_none = MagicMock(return_value=None)
+            else:
+                # Second call: lookup SELECT for existing row — return None
+                result.fetchall = MagicMock(return_value=[])
+                result.scalar_one_or_none = MagicMock(return_value=None)
+            return result
+
+        db.execute = AsyncMock(side_effect=_exec)
+        yield db
+
+    with patch("roboco.db.base.get_session_factory", return_value=_db_context):
+        await orch._sweep_daily_rollup()
+
+    # Exactly one new DailyUsageRollupTable row must have been added
+    assert len(added) == 1
+    row = added[0]
+    assert row.tokens_input == _ROLLUP_TI
+    assert row.tokens_output == _ROLLUP_TO
+    assert row.tokens_cache_read == _ROLLUP_TCR
+    assert row.tokens_cache_write == _ROLLUP_TCW
+
+
+# ---------------------------------------------------------------------------
+# stop_agent — _finalize_spawn_session is awaited before acquiring the lock
+# ---------------------------------------------------------------------------
+
+
+async def test_stop_agent_finalizes_before_lock() -> None:
+    """stop_agent awaits _finalize_spawn_session when the instance has a
+    running container_id (the finalization must happen before the lock)."""
+    orch = _make_orchestrator()
+    instance = _make_instance(_AGENT_ID)
+    instance.container_id = "abc123def456"  # non-None → finalize must be called
+    orch._instances[_AGENT_ID] = instance
+
+    finalized: list[str] = []
+
+    async def _fake_finalize(agent_id: str, exit_reason: str = "stopped") -> None:  # noqa: ARG001
+        finalized.append(agent_id)
+
+    # Stub out the Docker subprocess so stop_agent doesn't actually run Docker
+    mock_proc = MagicMock()
+    mock_proc.wait = AsyncMock()
+
+    with (
+        patch.object(orch, "_finalize_spawn_session", side_effect=_fake_finalize),
+        patch("asyncio.create_subprocess_exec", AsyncMock(return_value=mock_proc)),
+        patch.object(orch, "_remove_container", AsyncMock()),
+    ):
+        await orch.stop_agent(_AGENT_ID, graceful=True)
+
+    # _finalize_spawn_session must have been called exactly once with our agent id
+    assert finalized == [_AGENT_ID]

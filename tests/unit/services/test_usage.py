@@ -12,6 +12,7 @@ verify the arithmetic / logic of each analytics method:
 
 from __future__ import annotations
 
+import datetime
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -223,9 +224,8 @@ class TestGetTimeSeries:
         for the same period.  The old implementation used ti + to_ (without
         cache), which violated this constraint whenever cache tokens were non-zero.
         """
-        import datetime
 
-        bucket_dt = datetime.datetime(2026, 6, 9, 12, 0, 0, tzinfo=datetime.timezone.utc)
+        bucket_dt = datetime.datetime(2026, 6, 9, 12, 0, 0, tzinfo=datetime.UTC)
         row = _make_row(
             bucket=bucket_dt,
             tokens_input=_TS_INPUT,
@@ -242,9 +242,8 @@ class TestGetTimeSeries:
     @pytest.mark.asyncio
     async def test_total_tokens_without_cache_still_correct(self) -> None:
         """When cache tokens are zero, total_tokens == tokens_input + tokens_output."""
-        import datetime
 
-        bucket_dt = datetime.datetime(2026, 6, 9, 12, 0, 0, tzinfo=datetime.timezone.utc)
+        bucket_dt = datetime.datetime(2026, 6, 9, 12, 0, 0, tzinfo=datetime.UTC)
         row = _make_row(
             bucket=bucket_dt,
             tokens_input=_TS_INPUT,
@@ -267,9 +266,8 @@ class TestGetTimeSeries:
     async def test_point_contains_required_fields(self) -> None:
         """Each time-series point must have bucket, tokens_input, tokens_output,
         total_tokens, and cost_usd fields."""
-        import datetime
 
-        bucket_dt = datetime.datetime(2026, 6, 9, 12, 0, 0, tzinfo=datetime.timezone.utc)
+        bucket_dt = datetime.datetime(2026, 6, 9, 12, 0, 0, tzinfo=datetime.UTC)
         row = _make_row(
             bucket=bucket_dt,
             tokens_input=100,
@@ -282,7 +280,13 @@ class TestGetTimeSeries:
         result = await svc.get_time_series("24h")
         assert len(result) == 1
         point = result[0]
-        for field in ("bucket", "tokens_input", "tokens_output", "total_tokens", "cost_usd"):
+        for field in (
+            "bucket",
+            "tokens_input",
+            "tokens_output",
+            "total_tokens",
+            "cost_usd",
+        ):
             assert field in point, f"Missing field: {field}"
 
 

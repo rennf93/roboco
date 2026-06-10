@@ -3129,7 +3129,7 @@ class AgentOrchestrator:
             try:
                 async with httpx.AsyncClient(timeout=3.0) as client:
                     resp = await client.get(sdk_url)
-                    if resp.status_code == 200:
+                    if resp.status_code == http_status.HTTP_200_OK:
                         data = resp.json()
                         tokens_input = data.get("tokens_input", 0)
                         tokens_output = data.get("tokens_output", 0)
@@ -3240,7 +3240,7 @@ class AgentOrchestrator:
                 sdk_url = f"http://roboco-agent-{agent_id}:{SDK_PORT}/usage/status"
                 try:
                     resp = await client.get(sdk_url)
-                    if resp.status_code != 200:
+                    if resp.status_code != http_status.HTTP_200_OK:
                         continue
                     data = resp.json()
                     tokens_input = data.get("tokens_input", 0)
@@ -3249,29 +3249,45 @@ class AgentOrchestrator:
                     tokens_cache_write = data.get("tokens_cache_write", 0)
 
                     # Skip agents with no token usage yet
-                    total = tokens_input + tokens_output + tokens_cache_read + tokens_cache_write
+                    total = (
+                        tokens_input
+                        + tokens_output
+                        + tokens_cache_read
+                        + tokens_cache_write
+                    )
                     if total == 0:
                         continue
 
                     async with session_factory() as db:
                         from sqlalchemy import select, update
 
-                        # Find the open session row
-                        result = await db.execute(
-                            select(AgentSpawnSessionTable)
-                            .where(
-                                AgentSpawnSessionTable.agent_slug == agent_id,
-                                AgentSpawnSessionTable.ended_at.is_(None),
+                        # Prefer a direct lookup by the session UUID captured at
+                        # spawn time; fall back to the agent_slug heuristic for
+                        # instances that pre-date the usage_session_id field.
+                        if instance.usage_session_id is not None:
+                            result = await db.execute(
+                                select(AgentSpawnSessionTable).where(
+                                    AgentSpawnSessionTable.id
+                                    == instance.usage_session_id
+                                )
                             )
-                            .order_by(AgentSpawnSessionTable.started_at.desc())
-                            .limit(1)
-                        )
+                        else:
+                            result = await db.execute(
+                                select(AgentSpawnSessionTable)
+                                .where(
+                                    AgentSpawnSessionTable.agent_slug == agent_id,
+                                    AgentSpawnSessionTable.ended_at.is_(None),
+                                )
+                                .order_by(AgentSpawnSessionTable.started_at.desc())
+                                .limit(1)
+                            )
                         session_row = result.scalar_one_or_none()
                         if session_row is None:
                             continue
 
                         # Insert snapshot
                         from uuid import uuid4 as _uuid4
+
                         snapshot = TokenUsageSnapshotTable(
                             id=_uuid4(),
                             agent_spawn_session_id=session_row.id,
@@ -3313,7 +3329,6 @@ class AgentOrchestrator:
         Errors are caught so a bad rollup doesn't abort the sweeper.
         """
         try:
-            from roboco.billing.pricing import calculate_cost
             from roboco.db.base import get_session_factory
             from roboco.db.tables import AgentSpawnSessionTable, DailyUsageRollupTable
         except ImportError:
@@ -3321,6 +3336,7 @@ class AgentOrchestrator:
 
         try:
             from uuid import uuid4 as _uuid4
+
             from sqlalchemy import func, select
 
             session_factory = get_session_factory()
@@ -3335,11 +3351,21 @@ class AgentOrchestrator:
                         AgentSpawnSessionTable.agent_slug,
                         AgentSpawnSessionTable.team,
                         AgentSpawnSessionTable.model,
-                        func.sum(AgentSpawnSessionTable.tokens_input).label("tokens_input"),
-                        func.sum(AgentSpawnSessionTable.tokens_output).label("tokens_output"),
-                        func.sum(AgentSpawnSessionTable.tokens_cache_read).label("tokens_cache_read"),
-                        func.sum(AgentSpawnSessionTable.tokens_cache_write).label("tokens_cache_write"),
-                        func.sum(AgentSpawnSessionTable.estimated_cost_usd).label("total_cost_usd"),
+                        func.sum(AgentSpawnSessionTable.tokens_input).label(
+                            "tokens_input"
+                        ),
+                        func.sum(AgentSpawnSessionTable.tokens_output).label(
+                            "tokens_output"
+                        ),
+                        func.sum(AgentSpawnSessionTable.tokens_cache_read).label(
+                            "tokens_cache_read"
+                        ),
+                        func.sum(AgentSpawnSessionTable.tokens_cache_write).label(
+                            "tokens_cache_write"
+                        ),
+                        func.sum(AgentSpawnSessionTable.estimated_cost_usd).label(
+                            "total_cost_usd"
+                        ),
                         func.count(AgentSpawnSessionTable.id).label("session_count"),
                     )
                     .where(
@@ -3381,6 +3407,7 @@ class AgentOrchestrator:
 
                     if existing is not None:
                         from sqlalchemy import update
+
                         await db.execute(
                             update(DailyUsageRollupTable)
                             .where(DailyUsageRollupTable.id == existing.id)
