@@ -2,14 +2,33 @@
 
 import { useOrchestratorStatus } from "@/hooks/use-agents";
 import { useTasks } from "@/hooks/use-tasks";
+import {
+  useUsageSummary,
+  useUsageTimeSeries,
+  useAgentUsage,
+  useTeamUsage,
+  useModelUsage,
+  useUsageProjection,
+  useCacheEfficiency,
+  useUsageSessions,
+} from "@/hooks/use-usage";
 import { TaskStatus, Team } from "@/types";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Progress } from "@/components/ui/progress";
 import { OfflineState } from "@/components/ui/offline-state";
+import { Skeleton } from "@/components/ui/skeleton";
+import {
+  UsageTimeSeriesChart,
+  ModelUsageDonut,
+  AgentUsageChart,
+  TeamUsageChart,
+  SessionsTable,
+} from "@/components/metrics";
 import {
   Activity,
   TrendingUp,
+  TrendingDown,
   Clock,
   AlertTriangle,
   Users,
@@ -18,6 +37,8 @@ import {
   RefreshCw,
   Zap,
   Timer,
+  Coins,
+  Sparkles,
 } from "lucide-react";
 
 interface MetricCardProps {
@@ -295,8 +316,218 @@ export default function MetricsPage() {
               ))}
             </div>
           </div>
+
+          {/* ─── Token Usage & Costs ─────────────────────────────────── */}
+          <TokenUsageCostsSection />
         </>
       )}
     </div>
+  );
+}
+
+// =============================================================================
+// TOKEN USAGE & COSTS SECTION
+// =============================================================================
+
+function TokenUsageCostsSection() {
+  const { data: summary, isLoading: loadingSnap } = useUsageSummary("24h");
+  const { data: timeSeries, isLoading: loadingTS } = useUsageTimeSeries("24h");
+  const { data: agentUsage, isLoading: loadingAgents } = useAgentUsage("24h");
+  const { data: teamUsage, isLoading: loadingTeams } = useTeamUsage("24h");
+  const { data: sessions, isLoading: loadingSessions } = useUsageSessions(100);
+  const { data: modelUsage, isLoading: loadingModels } = useModelUsage("24h");
+  const { data: projection, isLoading: loadingProj } = useUsageProjection();
+  const { data: cacheStats, isLoading: loadingCache } = useCacheEfficiency("24h");
+
+  const trendUp = (summary?.trend_pct ?? 0) >= 0;
+
+  return (
+    <div className="space-y-6">
+      <h2 className="text-lg font-semibold">Token Usage &amp; Costs</h2>
+
+      {/* Row 1 — Summary cards */}
+      <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-6">
+        <SummaryCard
+          title="Tokens Input"
+          value={summary ? fmtTokens(summary.tokens_input) : undefined}
+          icon={<Zap className="h-4 w-4 text-yellow-500" />}
+          isLoading={loadingSnap}
+        />
+        <SummaryCard
+          title="Tokens Output"
+          value={summary ? fmtTokens(summary.tokens_output) : undefined}
+          icon={<Zap className="h-4 w-4 text-blue-500" />}
+          isLoading={loadingSnap}
+        />
+        <SummaryCard
+          title="Total Cost (24h)"
+          value={summary ? "$" + summary.total_cost_usd.toFixed(4) : undefined}
+          icon={<Coins className="h-4 w-4 text-green-500" />}
+          isLoading={loadingSnap}
+        />
+        <SummaryCard
+          title="Trend vs Prior"
+          value={summary ? (trendUp ? "+" : "") + summary.trend_pct.toFixed(1) + "%" : undefined}
+          icon={
+            trendUp ? (
+              <TrendingUp className="h-4 w-4 text-red-500" />
+            ) : (
+              <TrendingDown className="h-4 w-4 text-green-500" />
+            )
+          }
+          isLoading={loadingSnap}
+        />
+        <SummaryCard
+          title="Total Tokens"
+          value={summary ? fmtTokens(summary.total_tokens) : undefined}
+          icon={<Activity className="h-4 w-4 text-blue-500" />}
+          isLoading={loadingSnap}
+        />
+        <SummaryCard
+          title="Cache Saved"
+          value={cacheStats ? "$" + cacheStats.cost_saved_by_cache_usd.toFixed(4) : undefined}
+          icon={<Sparkles className="h-4 w-4 text-purple-500" />}
+          isLoading={loadingCache}
+        />
+      </div>
+
+      {/* Row 2 — Time series + model donut */}
+      <div className="grid gap-4 lg:grid-cols-3">
+        <div className="lg:col-span-2">
+          <UsageTimeSeriesChart data={timeSeries} isLoading={loadingTS} />
+        </div>
+        <ModelUsageDonut data={modelUsage} isLoading={loadingModels} />
+      </div>
+
+      {/* Row 3 — Agent bar + team bar */}
+      <div className="grid gap-4 lg:grid-cols-2">
+        <AgentUsageChart data={agentUsage} isLoading={loadingAgents} />
+        <TeamUsageChart data={teamUsage} isLoading={loadingTeams} />
+      </div>
+
+      {/* Row 4 — Projection + cache efficiency */}
+      <div className="grid gap-4 sm:grid-cols-2">
+        <ProjectionCard projection={projection} isLoading={loadingProj} />
+        <CacheEfficiencyCard cacheStats={cacheStats} isLoading={loadingCache} />
+      </div>
+
+      {/* Row 5 — Sessions table (mock-mode only; empty in production) */}
+      <SessionsTable data={sessions} isLoading={loadingSessions} />
+    </div>
+  );
+}
+
+// ─── Helper sub-components ────────────────────────────────────────────────────
+
+function fmtTokens(n: number): string {
+  if (n >= 1_000_000) return (n / 1_000_000).toFixed(2) + "M";
+  if (n >= 1_000) return (n / 1_000).toFixed(1) + "K";
+  return String(n);
+}
+
+interface SummaryCardProps {
+  title: string;
+  value: string | undefined;
+  icon: React.ReactNode;
+  trend?: { dir: "up" | "down"; label: string };
+  isLoading: boolean;
+}
+
+function SummaryCard({ title, value, icon, trend, isLoading }: SummaryCardProps) {
+  return (
+    <Card>
+      <CardHeader className="flex flex-row items-center justify-between pb-2">
+        <CardTitle className="text-sm font-medium text-muted-foreground">{title}</CardTitle>
+        {icon}
+      </CardHeader>
+      <CardContent>
+        {isLoading ? (
+          <Skeleton className="h-7 w-24" />
+        ) : (
+          <>
+            <div className="text-2xl font-bold">{value ?? "—"}</div>
+            {trend && (
+              <p
+                className={
+                  "text-xs mt-1 " +
+                  (trend.dir === "up" ? "text-red-500" : "text-green-500")
+                }
+              >
+                {trend.label}
+              </p>
+            )}
+          </>
+        )}
+      </CardContent>
+    </Card>
+  );
+}
+
+import type { UsageProjection as UP, CacheEfficiencyResponse as CER } from "@/types";
+
+interface ProjectionCardProps {
+  projection: UP | undefined;
+  isLoading: boolean;
+}
+
+function ProjectionCard({ projection, isLoading }: ProjectionCardProps) {
+  return (
+    <Card>
+      <CardHeader className="pb-2">
+        <CardTitle className="text-base flex items-center gap-2">
+          <TrendingUp className="h-4 w-4 text-blue-500" />
+          Monthly Projection
+        </CardTitle>
+      </CardHeader>
+      <CardContent>
+        {isLoading ? (
+          <Skeleton className="h-10 w-full" />
+        ) : (
+          <div>
+            <div className="text-3xl font-bold">
+              {projection != null ? "$" + projection.projected_monthly_cost_usd.toFixed(2) : "—"}
+            </div>
+            <p className="text-xs text-muted-foreground mt-1">
+              Based on {projection?.basis_days ?? 7}-day rolling average ($
+              {projection?.avg_daily_cost_usd.toFixed(4) ?? "—"}/day)
+            </p>
+          </div>
+        )}
+      </CardContent>
+    </Card>
+  );
+}
+
+interface CacheEfficiencyCardProps {
+  cacheStats: CER | undefined;
+  isLoading: boolean;
+}
+
+function CacheEfficiencyCard({ cacheStats, isLoading }: CacheEfficiencyCardProps) {
+  const pct = cacheStats ? cacheStats.cache_hit_rate * 100 : 0;
+
+  return (
+    <Card>
+      <CardHeader className="pb-2">
+        <CardTitle className="text-base flex items-center gap-2">
+          <Sparkles className="h-4 w-4 text-purple-500" />
+          Cache Efficiency
+        </CardTitle>
+      </CardHeader>
+      <CardContent>
+        {isLoading ? (
+          <Skeleton className="h-10 w-full" />
+        ) : (
+          <div>
+            <div className="text-3xl font-bold">{pct.toFixed(1)}%</div>
+            <p className="text-xs text-muted-foreground mt-1">
+              {cacheStats ? fmtTokens(cacheStats.tokens_cache_read) : "—"} cache reads ·
+              saved ${cacheStats?.cost_saved_by_cache_usd.toFixed(4) ?? "—"}
+            </p>
+            <Progress value={pct} className="mt-2" />
+          </div>
+        )}
+      </CardContent>
+    </Card>
   );
 }

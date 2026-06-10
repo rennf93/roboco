@@ -102,3 +102,4 @@ panel/.env.local
 panel/.env.*.local
 # Internal-only: strategy/scratch/reference dumps — never publish
 docs/internal/
+.pnpm-store/

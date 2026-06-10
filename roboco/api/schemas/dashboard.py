@@ -78,6 +78,17 @@ class TeamHealth(BaseModel):
     completed_this_week: int
 
 
+class UsageSummary(BaseModel):
+    """Today's token usage summary for the CEO dashboard."""
+
+    tokens_today: int = Field(
+        default=0, description="Total tokens (input + output + cache) used today"
+    )
+    cost_today_usd: float = Field(
+        default=0.0, description="Estimated USD cost for today"
+    )
+
+
 class CEOOverview(BaseModel):
     """Complete CEO overview data."""
 
@@ -85,6 +96,10 @@ class CEOOverview(BaseModel):
     key_metrics: dict[str, Any]
     auditor_alerts: dict[str, Any]
     roadmap_progress: dict[str, Any]
+    usage_summary: UsageSummary | None = Field(
+        default=None,
+        description="Today's token usage and cost from daily_usage_rollups",
+    )
 
 
 class CreateFlagRequest(BaseModel):

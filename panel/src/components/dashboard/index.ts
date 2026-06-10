@@ -9,3 +9,4 @@ export { ActivityItem } from "./activity-item";
 export { QuickActionsBar } from "./quick-actions-bar";
 export { HealthIndicator } from "./health-indicator";
 export { CeoApprovalQueue } from "./ceo-approval-queue";
+export { UsageOverviewPanel } from "./usage-overview-panel";

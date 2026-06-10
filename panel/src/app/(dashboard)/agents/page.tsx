@@ -6,7 +6,8 @@ import {
   useWaitingAgents,
   useAgentDefinitions,
 } from "@/hooks/use-agents";
-import { AgentStatusResponse } from "@/types";
+import { useAgentUsage } from "@/hooks/use-usage";
+import { AgentStatusResponse, AgentUsageRow } from "@/types";
 import { Button } from "@/components/ui/button";
 import { RefreshCw } from "lucide-react";
 import { OfflineState } from "@/components/ui/offline-state";
@@ -27,6 +28,7 @@ export default function AgentsPage() {
   const { data: agents = [], isLoading: agentsLoading } = useAgentDefinitions();
   const { data: status, isLoading, error, refetch } = useOrchestratorStatus();
   const { data: waitingAgents } = useWaitingAgents();
+  const { data: usageRows } = useAgentUsage();
 
   // Check if it's a connection error (backend not running)
   const isOffline = error && (
@@ -45,6 +47,15 @@ export default function AgentsPage() {
     }
     return result;
   }, [status]);
+
+  // Convert usage rows to a record keyed by agent_slug
+  const agentUsageMap = useMemo(() => {
+    const result: Record<string, AgentUsageRow> = {};
+    for (const row of usageRows ?? []) {
+      result[row.agent_slug] = row;
+    }
+    return result;
+  }, [usageRows]);
 
   return (
     <div className="space-y-6">
@@ -83,6 +94,7 @@ export default function AgentsPage() {
         title="Board"
         agents={getBoardAgents(agents)}
         agentStatuses={agentStatuses}
+        agentUsage={agentUsageMap}
         isLoading={(isLoading || agentsLoading) && !isOffline}
         columns={4}
       />
@@ -91,6 +103,7 @@ export default function AgentsPage() {
         title="Main PM"
         agents={getMainPm(agents)}
         agentStatuses={agentStatuses}
+        agentUsage={agentUsageMap}
         isLoading={(isLoading || agentsLoading) && !isOffline}
         columns={4}
       />
@@ -99,6 +112,7 @@ export default function AgentsPage() {
         title="Backend Cell"
         agents={getBackendAgents(agents)}
         agentStatuses={agentStatuses}
+        agentUsage={agentUsageMap}
         isLoading={(isLoading || agentsLoading) && !isOffline}
         columns={5}
       />
@@ -107,6 +121,7 @@ export default function AgentsPage() {
         title="Frontend Cell"
         agents={getFrontendAgents(agents)}
         agentStatuses={agentStatuses}
+        agentUsage={agentUsageMap}
         isLoading={(isLoading || agentsLoading) && !isOffline}
         columns={5}
       />
@@ -115,6 +130,7 @@ export default function AgentsPage() {
         title="UX/UI Cell"
         agents={getUxAgents(agents)}
         agentStatuses={agentStatuses}
+        agentUsage={agentUsageMap}
         isLoading={(isLoading || agentsLoading) && !isOffline}
         columns={4}
       />

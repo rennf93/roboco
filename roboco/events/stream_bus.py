@@ -376,9 +376,9 @@ class StreamEventBus:
 
         recovered = 0
         for msg in pending_details:
-            if msg["time_since_delivered"] >= idle_time_ms:
+            if int(msg["time_since_delivered"]) >= idle_time_ms:
                 recovered += await self._claim_and_handle(
-                    stream, msg["message_id"], idle_time_ms
+                    stream, str(msg["message_id"]), idle_time_ms
                 )
         return recovered
 

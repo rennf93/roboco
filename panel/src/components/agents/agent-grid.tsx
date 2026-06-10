@@ -1,4 +1,4 @@
-import { AgentStatusResponse } from "@/types";
+import { AgentStatusResponse, AgentUsageRow } from "@/types";
 import { AgentDefinition } from "@/lib/agent-definitions";
 import { Card, CardHeader } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
@@ -8,6 +8,7 @@ interface AgentGridProps {
   title: string;
   agents: AgentDefinition[];
   agentStatuses: Record<string, AgentStatusResponse>;
+  agentUsage?: Record<string, AgentUsageRow>;
   isLoading: boolean;
   columns?: number;
 }
@@ -16,8 +17,9 @@ export function AgentGrid({
   title,
   agents,
   agentStatuses,
+  agentUsage,
   isLoading,
-  columns = 4
+  columns = 4,
 }: AgentGridProps) {
   const gridCols = {
     3: "md:grid-cols-3",
@@ -44,6 +46,7 @@ export function AgentGrid({
               key={agent.id}
               agent={agent}
               agentStatus={agentStatuses[agent.id] || null}
+              usageRow={agentUsage?.[agent.id] ?? null}
             />
           ))
         )}

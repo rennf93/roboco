@@ -1,0 +1,78 @@
+"use client";
+
+import {
+  PieChart,
+  Pie,
+  Cell,
+  Tooltip,
+  ResponsiveContainer,
+  Legend,
+} from "recharts";
+import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Skeleton } from "@/components/ui/skeleton";
+import type { ModelUsageSlice } from "@/types";
+
+const CHART_COLORS = [
+  "var(--chart-1)",
+  "var(--chart-2)",
+  "var(--chart-3)",
+  "var(--chart-4)",
+  "var(--chart-5)",
+];
+
+interface ModelUsageDonutProps {
+  data: ModelUsageSlice[] | undefined;
+  isLoading: boolean;
+}
+
+export function ModelUsageDonut({ data, isLoading }: ModelUsageDonutProps) {
+  const chartData = (data ?? []).map((s) => ({
+    name: s.model,
+    value: s.total_tokens,
+    cost: s.cost_usd,
+    pct: s.pct_of_total,
+  }));
+
+  return (
+    <Card>
+      <CardHeader className="pb-2">
+        <CardTitle className="text-base">By Model</CardTitle>
+      </CardHeader>
+      <CardContent>
+        {isLoading ? (
+          <Skeleton className="h-52 w-full" />
+        ) : (
+          <ResponsiveContainer width="100%" height={208}>
+            <PieChart>
+              <Pie
+                data={chartData}
+                cx="50%"
+                cy="50%"
+                innerRadius={52}
+                outerRadius={80}
+                dataKey="value"
+                paddingAngle={3}
+              >
+                {chartData.map((_, idx) => (
+                  <Cell
+                    key={idx}
+                    fill={CHART_COLORS[idx % CHART_COLORS.length]}
+                  />
+                ))}
+              </Pie>
+              <Tooltip
+                formatter={(value, name) => [
+                  (typeof value === "number" ? value : 0).toLocaleString() +
+                    " tokens",
+                  name,
+                ]}
+                contentStyle={{ fontSize: 12 }}
+              />
+              <Legend wrapperStyle={{ fontSize: 11 }} />
+            </PieChart>
+          </ResponsiveContainer>
+        )}
+      </CardContent>
+    </Card>
+  );
+}
