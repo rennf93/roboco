@@ -48,11 +48,11 @@ export default function AgentsPage() {
     return result;
   }, [status]);
 
-  // Convert usage rows to a record keyed by agent_id
+  // Convert usage rows to a record keyed by agent_slug
   const agentUsageMap = useMemo(() => {
     const result: Record<string, AgentUsageRow> = {};
     for (const row of usageRows ?? []) {
-      result[row.agent_id] = row;
+      result[row.agent_slug] = row;
     }
     return result;
   }, [usageRows]);

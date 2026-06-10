@@ -11,10 +11,10 @@ import {
 } from "recharts";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
-import type { AgentUsageRow } from "@/types";
+import type { TeamUsageRow } from "@/types";
 
 interface TeamUsageChartProps {
-  data: AgentUsageRow[] | undefined;
+  data: TeamUsageRow[] | undefined;
   isLoading: boolean;
 }
 
@@ -24,24 +24,17 @@ function fmtK(n: number): string {
 }
 
 export function TeamUsageChart({ data, isLoading }: TeamUsageChartProps) {
-  // Aggregate tokens by team
-  const teamTotals = new Map<string, number>();
-  for (const row of data ?? []) {
-    const prev = teamTotals.get(row.team) ?? 0;
-    teamTotals.set(row.team, prev + row.tokens_today);
-  }
-
-  const chartData = [...teamTotals.entries()]
-    .sort(([, a], [, b]) => b - a)
-    .map(([team, tokens]) => ({
-      name: team.replace(/_/g, " "),
-      Tokens: tokens,
+  const chartData = [...(data ?? [])]
+    .sort((a, b) => b.total_tokens - a.total_tokens)
+    .map((row) => ({
+      name: row.team.replace(/_/g, " "),
+      Tokens: row.total_tokens,
     }));
 
   return (
     <Card>
       <CardHeader className="pb-2">
-        <CardTitle className="text-base">Team Tokens Today</CardTitle>
+        <CardTitle className="text-base">Team Tokens</CardTitle>
       </CardHeader>
       <CardContent>
         {isLoading ? (

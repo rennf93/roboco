@@ -28,9 +28,9 @@ interface ModelUsageDonutProps {
 export function ModelUsageDonut({ data, isLoading }: ModelUsageDonutProps) {
   const chartData = (data ?? []).map((s) => ({
     name: s.model,
-    value: s.tokens,
-    cost: s.cost,
-    pct: s.percentage,
+    value: s.total_tokens,
+    cost: s.cost_usd,
+    pct: s.pct_of_total,
   }));
 
   return (
