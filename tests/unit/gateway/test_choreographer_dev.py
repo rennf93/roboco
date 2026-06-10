@@ -391,7 +391,7 @@ async def test_i_will_work_on_blocks_when_journal_note_at_claim_missing() -> Non
     task_svc.start.assert_awaited_once_with(task_id, agent_id)
 
 
-# test_i_am_done_with_catchup_full_chain removed (audit P2-5/D-16):
+# test_i_am_done_with_catchup_full_chain removed:
 # i_am_done_with_catchup verb deleted. submit_for_qa now does push + PR
 # explicitly; i_am_done auto-runs submit_verification + submit_qa.
 

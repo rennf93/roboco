@@ -97,7 +97,7 @@ def _ready_task(task_id: Any, agent_id: Any) -> MagicMock:
 
 
 # ---------------------------------------------------------------------------
-# E.1 self_verified is no longer a gate (audit P1-3/D-08)
+# self_verified is no longer a gate
 # ---------------------------------------------------------------------------
 
 
@@ -315,7 +315,7 @@ async def test_i_am_done_proceeds_when_all_gates_pass() -> None:
 
 
 # ---------------------------------------------------------------------------
-# E.6 — Removed: i_am_done_with_catchup verb deleted (audit P2-5/D-16).
+# Removed: i_am_done_with_catchup verb deleted.
 # Its functionality is now split between submit_for_qa (push + PR) and
 # i_am_done (auto-run submit_verification then submit_qa).
 # ---------------------------------------------------------------------------

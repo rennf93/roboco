@@ -1,4 +1,4 @@
-"""P2-7: every gateway.rejected audit row carries an attempt_id.
+"""Every gateway.rejected audit row carries an attempt_id.
 
 The attempt_id (uuid4 per rejection) lets post-mortem queries group
 all attempts on a task within a window, even when multiple calls share
@@ -73,8 +73,8 @@ async def test_rejection_includes_attempt_id() -> None:
     audit_svc.log_event.assert_awaited()
     args = audit_svc.log_event.await_args
     details = args.kwargs["details"]
-    assert "attempt_id" in details, "P2-7: audit row must include attempt_id"
-    assert _is_uuid(details["attempt_id"]), "P2-7: attempt_id must be a UUID string"
+    assert "attempt_id" in details, "audit row must include attempt_id"
+    assert _is_uuid(details["attempt_id"]), "attempt_id must be a UUID string"
 
 
 @pytest.mark.asyncio
@@ -95,7 +95,7 @@ async def test_distinct_rejections_emit_distinct_attempt_ids() -> None:
     calls = audit_svc.log_event.await_args_list
     ids = {call.kwargs["details"]["attempt_id"] for call in calls}
     assert len(ids) == expected_distinct_ids, (
-        "P2-7: each rejection emits its own attempt_id"
+        "each rejection emits its own attempt_id"
     )
 
 

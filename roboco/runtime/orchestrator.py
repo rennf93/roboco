@@ -588,8 +588,8 @@ class AgentOrchestrator:
         # Self-heal: roll back orphan claims left over from a prior crash.
         # Tasks that show CLAIMED/IN_PROGRESS but have NO
         # branch_name set indicate _finalize_claim flushed the status before
-        # branch creation failed in a pre-P0-7 run. Without this, the next
-        # claim attempt fails non-idempotent on `git checkout -b`.
+        # branch creation failed (before claim-rollback was atomic). Without
+        # this, the next claim attempt fails non-idempotent on `git checkout -b`.
         await self._reconcile_orphan_claims_on_startup()
 
         # Note: Per-agent settings are now generated at spawn time
@@ -4720,7 +4720,7 @@ Start now: evidence(task_id="{task_id}")
 
         A task in CLAIMED/IN_PROGRESS with ``branch_name IS NULL`` is an
         orphan: ``_finalize_claim`` flushed the status before branch creation
-        failed (or before the P0-7 rollback fix landed). The next claim then
+        failed (or before claim rollback became atomic). The next claim then
         fails non-idempotent on ``git checkout -b`` because the on-disk
         branch may exist while the DB state is stale.
 

@@ -1,4 +1,4 @@
-"""P0-7 / S-01: branch creation atomicity.
+"""Branch creation atomicity.
 
 When ``_ensure_branch_for_task`` raises (git checkout fails, push fails,
 no token, etc.), ``_finalize_claim`` must roll back the claim fields it
@@ -136,13 +136,11 @@ async def test_finalize_claim_rolls_back_on_branch_failure(
     # Re-read the task from a clean state via a fresh fetch.
     refreshed = await svc.get(task.id)
     assert refreshed is not None
-    assert refreshed.status == pre_status, "P0-7: status must roll back"
-    assert refreshed.assigned_to == pre_assigned, "P0-7: assigned_to must roll back"
-    assert refreshed.claimed_by == pre_claimed_by, "P0-7: claimed_by must roll back"
-    assert refreshed.claimed_at == pre_claimed_at, "P0-7: claimed_at must roll back"
-    assert refreshed.last_heartbeat_at == pre_heartbeat, (
-        "P0-7: heartbeat must roll back"
-    )
+    assert refreshed.status == pre_status, "status must roll back"
+    assert refreshed.assigned_to == pre_assigned, "assigned_to must roll back"
+    assert refreshed.claimed_by == pre_claimed_by, "claimed_by must roll back"
+    assert refreshed.claimed_at == pre_claimed_at, "claimed_at must roll back"
+    assert refreshed.last_heartbeat_at == pre_heartbeat, "heartbeat must roll back"
     assert refreshed.active_claimant_id == pre_claimant, (
-        "P1-4 + P0-7: active_claimant_id must roll back too"
+        "active_claimant_id must roll back too"
     )

@@ -10,7 +10,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 # Same pattern as test_flow_server: do_server now refuses to start without
-# a manifest (audit P0-5 / D-12). The test fixture writes a stub manifest
+# a manifest. The test fixture writes a stub manifest
 # with the full do-tool superset; production manifests are role-scoped.
 _DO_TEST_MANIFEST = {
     "agent_id": "00000000-0000-0000-0000-000000000001",

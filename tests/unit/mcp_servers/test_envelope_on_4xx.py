@@ -1,4 +1,4 @@
-"""P0-6 / D-13: MCP _post() surfaces envelope body on 4xx.
+"""MCP _post() surfaces envelope body on 4xx.
 
 The pre-fix path called ``response.raise_for_status()`` then ``.json()``,
 which discarded the body on any 4xx — agents saw a Python

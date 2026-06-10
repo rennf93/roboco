@@ -1,9 +1,9 @@
-"""P2-8: startup orphan-claim reconciler.
+"""Startup orphan-claim reconciler.
 
 The orchestrator's `_reconcile_orphan_claims_on_startup` rolls back
 tasks left in CLAIMED/IN_PROGRESS with `branch_name IS NULL` — the
-half-state from a pre-P0-7 crash where `_finalize_claim` flushed
-status=CLAIMED before branch creation failed.
+half-state from a crash where `_finalize_claim` flushed status=CLAIMED
+before branch creation failed.
 """
 
 from __future__ import annotations
@@ -138,7 +138,7 @@ async def test_reconciler_rolls_back_orphan_claims(
 
     assert refreshed_orphan is not None
     assert str(refreshed_orphan.status) == "pending", (
-        "P2-8: orphan must be rolled back to pending"
+        "orphan must be rolled back to pending"
     )
     # Ownership is preserved on rollback so the same dev resumes — an orphan
     # claim is rolled back, not stripped of its owner into a dormant pending.
