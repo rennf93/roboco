@@ -139,6 +139,42 @@ async def test_cell_pm_complete_allows_when_all_terminal() -> None:
     task_svc.cell_pm_complete.assert_awaited_once()
 
 
+@pytest.mark.asyncio
+async def test_cell_pm_complete_allows_decision_without_separate_reflect() -> None:
+    """A PM with a fresh decision but NO separate reflect can still complete —
+    the decision documents the close, so the reflect gate no longer loops
+    weak-model PMs into respawn churn."""
+    pm_id = uuid4()
+    parent_id = uuid4()
+    t = MagicMock(
+        id=parent_id,
+        status="awaiting_pm_review",
+        assigned_to=pm_id,
+        pr_number=10,
+        team="backend",
+        branch_name="feature/backend/abc",
+        parent_task_id=None,
+    )
+    after = MagicMock(**{**t.__dict__, "status": "completed"})
+    task_svc = AsyncMock()
+    task_svc.get.return_value = t
+    task_svc.all_subtasks_terminal.return_value = True
+    task_svc.get_subtasks.return_value = []
+    task_svc.cell_pm_complete.return_value = after
+    journal_svc = AsyncMock()
+    journal_svc.has_decision_for_task.return_value = True
+    journal_svc.latest_decision_at.return_value = datetime.now(UTC)
+    journal_svc.has_reflect_for_task.return_value = False  # no separate reflect
+    git_svc = AsyncMock()
+    git_svc.pr_merge.return_value = {"merge_commit_sha": "abc"}
+    deps = _make_deps(task=task_svc, journal=journal_svc, git=git_svc)
+    c = Choreographer(deps)
+
+    env = await c.cell_pm_complete(pm_id, parent_id, "cell scope reviewed and approved")
+    assert env.error is None
+    task_svc.cell_pm_complete.assert_awaited_once()
+
+
 # ---------------------------------------------------------------------------
 # main_pm_complete subtask gate (root-task case)
 # ---------------------------------------------------------------------------

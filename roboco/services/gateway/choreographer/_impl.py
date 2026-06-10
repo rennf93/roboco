@@ -1821,7 +1821,14 @@ class Choreographer:
         task_view = SimpleNamespace(notes=notes)
         ctx = _tr.GateContext(
             journal_decision_present=has_decision,
-            journal_reflect_present=has_reflect,
+            # A PM closing/submitting a task documents it in its *decision* note;
+            # a separate *reflect* adds little for a coordination/review close and
+            # is exactly the artifact weak-model PMs forget — looping on the
+            # reflect gate until reaped (re-confirmed live 2026-06-10). Accept a
+            # decision as satisfying reflect for the PM complete/submit_up close;
+            # the gate still requires a decision + substantive notes, so the close
+            # stays documented — only the redundant second-artifact demand drops.
+            journal_reflect_present=has_reflect or has_decision,
             notes_min_chars=getattr(_settings, "notes_min_chars", 20),
         )
         result = _tr.check_requirements(
@@ -1856,7 +1863,14 @@ class Choreographer:
         task_view = SimpleNamespace(notes=notes)
         ctx = _tr.GateContext(
             journal_decision_present=has_decision,
-            journal_reflect_present=has_reflect,
+            # A PM closing/submitting a task documents it in its *decision* note;
+            # a separate *reflect* adds little for a coordination/review close and
+            # is exactly the artifact weak-model PMs forget — looping on the
+            # reflect gate until reaped (re-confirmed live 2026-06-10). Accept a
+            # decision as satisfying reflect for the PM complete/submit_up close;
+            # the gate still requires a decision + substantive notes, so the close
+            # stays documented — only the redundant second-artifact demand drops.
+            journal_reflect_present=has_reflect or has_decision,
             notes_min_chars=getattr(_settings, "notes_min_chars", 20),
         )
         requirements: list[_tr.Requirement] = [
