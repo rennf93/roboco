@@ -106,7 +106,9 @@ function NotificationCard({ notification, onMarkRead, onAcknowledge }: Notificat
 }
 
 export default function NotificationsPage() {
-  const [activeTab, setActiveTab] = useState<"all" | "unread" | "pending">("all");
+  // Default to Unread: the actionable view. Landing on "All" buries new
+  // notifications under everything already seen.
+  const [activeTab, setActiveTab] = useState<"all" | "unread" | "pending">("unread");
   
   const { data, isLoading, error, refetch } = useNotifications(
     activeTab === "unread" ? { unread_only: true } :
