@@ -5183,7 +5183,13 @@ class TaskService(BaseService):
         update_data: dict[str, Any] = {
             "status": new_status.value,
             "dev_notes": f"[SUBSTITUTE] Reason: {reason}\n{details}",
-            "assigned_to": None,
+            # Keep the task with its current owner. A substitute-out is almost
+            # always a transient stall (a verb that kept 500-ing, a retry-limit
+            # trip, a low-context bail), so the task re-dispatches to the SAME
+            # agent — which resumes from the briefing handoff — instead of being
+            # orphaned to pending+unassigned and going dormant. The only handoff
+            # that changes owner is the task_complete → PM-review case below.
+            "assigned_to": agent_id,
         }
 
         target_pm_slug: str | None = None
