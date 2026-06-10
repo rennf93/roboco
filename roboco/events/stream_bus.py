@@ -236,15 +236,15 @@ class StreamEventBus:
         results = await self._redis.xreadgroup(
             self.group_name,
             self.consumer_name,
-            stream_dict,  # type: ignore[arg-type]
+            stream_dict,
             count=10,
             block=5000,
         )
         if not results:
             return
-        for stream_name, messages in results:  # type: ignore[str-unpack]
-            for message_id, data in messages:  # type: ignore[str-unpack,union-attr]
-                await self._handle_message(stream_name, message_id, data)  # type: ignore[arg-type]
+        for stream_name, messages in results:
+            for message_id, data in messages:
+                await self._handle_message(stream_name, message_id, data)
 
     async def _handle_response_error(
         self, exc: ResponseError, streams: list[str]
@@ -354,8 +354,8 @@ class StreamEventBus:
         )
         if not claimed:
             return 0
-        for claim_id, data in claimed:  # type: ignore[str-unpack]
-            await self._handle_message(stream, claim_id, data)  # type: ignore[arg-type]
+        for claim_id, data in claimed:
+            await self._handle_message(stream, claim_id, data)
         return 1
 
     async def _recover_stream(self, stream: str, idle_time_ms: int) -> int:
