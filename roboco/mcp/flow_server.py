@@ -233,7 +233,7 @@ def i_will_work_on(
         steps: Ordered execution checklist — list of
             ``{"title": "...", "description": "..."}`` with every description
             substantive. Becomes the plan's sub-tasks AND the progress
-            checklist (#173 — completing a step advances %).
+            checklist (completing a step advances %).
         technical_considerations: Bullet list (strings) of architectural /
             library / approach notes.
         risks: List of ``{"risk": "...", "mitigation": "..."}`` entries.
@@ -577,8 +577,8 @@ def _register_tools() -> list[str]:
 
     The manifest is the role-authoritative tool list. Falling back to
     all-verbs registration (the previous behaviour) caused PMs to see
-    developer/QA verbs and call them at wrong URLs (404s) — see audit
-    2026-05-04 D-12. We now refuse to start without the manifest.
+    developer/QA verbs and call them at wrong URLs (404s). We now refuse
+    to start without the manifest.
 
     Returns the list of verb names actually registered.
     """

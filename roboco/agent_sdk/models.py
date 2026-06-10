@@ -146,7 +146,7 @@ class PostMortemRequest(BaseModel):
 
 
 class VerbAttemptRequest(BaseModel):
-    """Per-verb circuit-breaker attempt record (Phase 3 Task 14).
+    """Per-verb circuit-breaker attempt record.
 
     Posted by the agent's response-handling layer when a gateway verb
     call returns a rejection envelope (`tracing_gap`, `invalid_state`,

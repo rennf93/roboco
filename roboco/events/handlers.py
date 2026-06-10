@@ -330,7 +330,7 @@ async def handle_question_answered(event: Event) -> None:
 
 
 async def handle_auditor_spawn(event: Event) -> None:
-    """Wave C6 (2026-05-12) — spawn auditor on exceptional lifecycle events.
+    """Spawn the auditor on exceptional lifecycle events.
 
     Spawned on task.blocked / task.cancelled / task.awaiting_ceo_approval
     so the auditor can read the journal aggregate and emit a reflect note
@@ -401,7 +401,7 @@ def register_default_handlers(bus: Any = None) -> None:
     # Question handlers
     bus.subscribe(EventType.QUESTION_ANSWERED, handle_question_answered)
 
-    # Auditor spawn handlers — Wave C6 (2026-05-12)
+    # Auditor spawn handlers.
     # Auditor observes exceptional task lifecycle events only; routine
     # progress events (claimed, started, in_progress) do not trigger it.
     auditor_events = [

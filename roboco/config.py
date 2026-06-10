@@ -365,8 +365,8 @@ class Settings(BaseSettings):
         ge=60,
         description="Claim heartbeat staleness threshold (seconds)",
     )
-    # Wave C3 (2026-05-12). Reaper window for stale-claim detection.
-    # Smoke run 3 reaped agents at ~180s while they were actively
+    # Reaper window for stale-claim detection. Dogfooding reaped agents at
+    # ~180s while they were actively
     # retrying — LLM inference + retry loops routinely exceed 3 min
     # between verb successes. 600s is large enough to accommodate that
     # without letting a genuinely-stuck container linger.
@@ -385,7 +385,7 @@ class Settings(BaseSettings):
     # (e.g. a reassignment that didn't spawn) is invisibly stuck — the heartbeat
     # reaper can't see it because its heartbeat was seeded fresh at claim time.
     # After this short grace window the dispatcher (re)spawns the assignee, or
-    # releases the task to pending for re-dispatch (#19). Shorter than the
+    # releases the task to pending for re-dispatch. Shorter than the
     # heartbeat reaper window: this is the "no agent at all" case, not the
     # "agent went silent mid-run" case.
     claimed_no_agent_grace_seconds: int = Field(
@@ -397,7 +397,7 @@ class Settings(BaseSettings):
             "override via ROBOCO_CLAIMED_NO_AGENT_GRACE_SECONDS"
         ),
     )
-    # Wave C8 (2026-05-12). Pre-gateway parity: PMs wrote a fresh
+    # Pre-gateway parity: PMs wrote a fresh
     # journal:decision around each decision point, not once at task
     # creation. The PM-decision tracing gate (delegate, unblock,
     # escalate_up, escalate_to_ceo) treats decisions older than this

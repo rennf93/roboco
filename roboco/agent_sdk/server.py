@@ -361,7 +361,7 @@ _LOOP_ACTION_RAW = os.environ.get("ROBOCO_AGENT_LOOP_ACTION", _BUDGET.loop_actio
 _LOOP_ACTION: Literal["warn", "halt"] = "halt" if _LOOP_ACTION_RAW == "halt" else "warn"
 _STOP_ALLOWANCE = int(os.environ.get("ROBOCO_AGENT_STOP_ATTEMPT_ALLOWANCE", "1"))
 _RECENT_TOOL_WINDOW = 5  # not in foundation — keep local
-# Sliding-window for the per-verb retry circuit breaker (Phase 3 Task 14).
+# Sliding-window for the per-verb retry circuit breaker.
 # 60s matches the docstring on foundation.VERB_RETRY_LIMITS — cap is "N
 # rejections in 60s", not "N rejections since session start".
 _VERB_ATTEMPT_WINDOW_S: int = 60
@@ -447,7 +447,7 @@ _state = _SessionState()
 
 
 # =============================================================================
-# PER-VERB CIRCUIT BREAKER (Phase 3 Task 14)
+# PER-VERB CIRCUIT BREAKER
 # =============================================================================
 # Pre-Phase-3 the gateway had no per-verb retry cap. The 2026-05-10 smoke
 # showed i_am_done retried 5+ times in 2 minutes within the global 150-tool

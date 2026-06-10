@@ -66,13 +66,13 @@ async def resolve_parent_branch(task: Any, task_service: Any) -> str:
     The parent task's stored ``branch_name`` is authoritative — branch
     creation already cuts and pushes each child from it
     (``TaskService._resolve_parent_branch``). Unlike :func:`parent_branch_for`
-    it is correct across a team boundary (#181).
+    it is correct across a team boundary.
 
     When the parent is a branchless coordination/fan-out task (it carries a
     product but no repo of its own, so it never gets a branch), string
     derivation off the child's own branch would yield a ref the parent never
     created — the merge then has no valid target and the cell↔Main-PM loop
-    wedges (#17). In that case fall back to the child task's own project
+    wedges. In that case fall back to the child task's own project
     default branch (e.g. master), which is what the child branch was actually
     cut from. Only when there is genuinely no project to consult do we fall
     back to pure string derivation.

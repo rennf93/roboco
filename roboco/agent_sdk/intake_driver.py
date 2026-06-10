@@ -299,15 +299,15 @@ def build_intake_options(
 ) -> Any:  # pragma: no cover - thin SDK construction
     """Build locked-down ``ClaudeAgentOptions`` for the intake session.
 
-    Isolation/security (smoke 2026-06-09 #11): the intake agent must NOT inherit
-    the host's personal Claude Code env (Gmail/Notion MCP, Write/Edit/Bash). So:
+    Isolation/security: the intake agent must NOT inherit the host's personal
+    Claude Code env (Gmail/Notion MCP, Write/Edit/Bash). So:
 
     - ``strict_mcp_config=True`` + ``setting_sources=[]`` → ignore the host's
       ``~/.claude.json`` / ``settings.json``; use ONLY the MCP server below.
     - ``permission_mode="dontAsk"`` (NOT ``bypassPermissions``) + a ``can_use_tool``
       gate → a hard allowlist (Read/Grep/Glob/Task + ``propose_draft``), no prompts.
 
-    Draft emission (#10): the agent calls the ``propose_draft`` MCP tool, which the
+    Draft emission: the agent calls the ``propose_draft`` MCP tool, which the
     driver turns into a ``draft`` event — deterministic, not a fragile text fence.
 
     NOTE: ``setting_sources=[]`` must be validated against the mounted-``~/.claude``

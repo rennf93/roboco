@@ -330,8 +330,8 @@ class NotificationService:
             task_id: Related task ID
             a2a_context: Dict with from_agent, to_agent, skill, message,
                 priority. `priority` is a `NotificationPriority` (full
-                tristate: NORMAL / HIGH / URGENT). Before P3 Task 9 this
-                key was `urgent: bool` which collapsed HIGH to NORMAL —
+                tristate: NORMAL / HIGH / URGENT). This key used to be
+                `urgent: bool`, which collapsed HIGH to NORMAL —
                 A2AService now sends Priority directly.
         """
         from_agent = a2a_context.get("from_agent", "unknown")
@@ -340,8 +340,8 @@ class NotificationService:
         message = a2a_context.get("message", "")
         priority = a2a_context.get("priority", NotificationPriority.NORMAL)
         # Defensive coerce — accept enum, str, or a stray bool from a
-        # legacy caller. The point of Task 9 is that HIGH survives, so
-        # only collapse to URGENT/NORMAL if the input is genuinely a bool.
+        # legacy caller. The point is that HIGH survives, so only collapse
+        # to URGENT/NORMAL if the input is genuinely a bool.
         if isinstance(priority, bool):
             priority = (
                 NotificationPriority.URGENT if priority else NotificationPriority.NORMAL

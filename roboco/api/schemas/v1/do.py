@@ -70,7 +70,7 @@ class NoteRequest(BaseModel):
     # ``options``, a single dict) is wrapped into a one-element list before
     # field validation. Without this a well-intentioned ``consequences="x"``
     # 422'd at the route and the agent's retry loop tripped the circuit
-    # breaker (issue #15). ``mode="before"`` runs ahead of type coercion so
+    # breaker. ``mode="before"`` runs ahead of type coercion so
     # the wrapped value satisfies the declared ``list[...]`` type.
     @field_validator("options", "consequences", "next_steps", mode="before")
     @classmethod
@@ -131,7 +131,7 @@ class LinkSessionRequest(BaseModel):
 
 
 class ProgressRequest(BaseModel):
-    """Progress update; % is DERIVED from the plan checklist (#173).
+    """Progress update; % is DERIVED from the plan checklist.
 
     Pass ``plan_step`` (a sub_task id or its 1-based order) as you finish
     each plan step — it is marked complete and the percentage is computed

@@ -26,7 +26,7 @@ def parse_priority(
 ) -> NotificationPriority:
     """Resolve a Priority value from mixed-source A2A inputs.
 
-    Precedence (P3 Task 9 — A2A urgency tristate):
+    Precedence (A2A urgency tristate):
       1. ``raw_priority`` — string matching the Priority enum
          ("normal" | "high" | "urgent"). Unknown values fall back to NORMAL.
       2. ``legacy_urgent_flag`` — legacy bool from
@@ -221,7 +221,7 @@ CHANNELS: dict[str, ChannelSpec] = {
     # -- Management channels --------------------------------------------------
     # Legacy CHANNEL_ACCESS lists auditor as both read AND write here. We
     # preserve that behaviour for parity; the runtime guard that downgrades
-    # auditor to silent lives in services (Phase 3 Task 8).
+    # auditor to silent lives in services.
     "main-pm-board": ChannelSpec(
         slug="main-pm-board",
         description="Main PM and Board communication",

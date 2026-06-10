@@ -192,7 +192,7 @@ def _branch_is_expected(task: dict[str, Any]) -> bool:
     gets one (it does no git of its own). Gating the "missing branch_name"
     readiness/stuck condition on this predicate stops the orchestrator from
     auto-blocking a never-claimed PENDING code task that simply hasn't reached
-    the claim transition yet (issue #18: a pending task sat 13min, auto-blocked
+    the claim transition yet (a pending task sat 13min, auto-blocked
     every 30s, never dispatched).
     """
     if _is_coordination_task(task):
@@ -553,7 +553,7 @@ class AgentOrchestrator:
         # formal CEO notification per task. Tracks task_ids already notified so
         # the signal fires exactly once.
         self._board_review_ceo_notified: set[str] = set()
-        # Stale-claim reaper config. Wave C3 (2026-05-12): sourced from
+        # Stale-claim reaper config, sourced from
         # stale_claim_reap_seconds (default 600) rather than
         # claim_stale_seconds (default 180). The two settings are now
         # distinct: claim_stale_seconds drives trigger_filter (spawn
@@ -579,8 +579,8 @@ class AgentOrchestrator:
         # agents that were WAITING_LONG at shutdown can still be resolved.
         await self.restore_waiting_records()
 
-        # Self-heal: roll back orphan claims left over from a prior crash
-        # (audit P2-8). Tasks that show CLAIMED/IN_PROGRESS but have NO
+        # Self-heal: roll back orphan claims left over from a prior crash.
+        # Tasks that show CLAIMED/IN_PROGRESS but have NO
         # branch_name set indicate _finalize_claim flushed the status before
         # branch creation failed in a pre-P0-7 run. Without this, the next
         # claim attempt fails non-idempotent on `git checkout -b`.
@@ -1534,7 +1534,7 @@ class AgentOrchestrator:
 
     @staticmethod
     def _append_claude_json_mount(cmd: list[str], hosts: dict[str, str | None]) -> None:
-        """Mount host's ~/.claude.json sibling FILE if present (audit D-48)."""
+        """Mount host's ~/.claude.json sibling FILE if present."""
         claude_dir = hosts["claude"]
         if not claude_dir:
             return
@@ -1635,7 +1635,7 @@ class AgentOrchestrator:
     @staticmethod
     def _append_workspace_cwd(cmd: list[str], config: AgentConfig) -> None:
         """Set the container -w to the agent or cell workspace by role."""
-        # Pre-gateway parity (Wave A2+A3, 2026-05-12). Set the container's cwd
+        # Pre-gateway parity: set the container's cwd
         # to the agent's task workspace so Edit/Write resolve to paths that
         # match _get_role_permissions allowlist, and `git add` operates inside
         # the workspace clone. Without this, container WORKDIR (/app from the
@@ -1883,7 +1883,7 @@ class AgentOrchestrator:
             "ROBOCO_ORCHESTRATOR_URL": api_url,
             "ROBOCO_AGENT_ID": agent_uuid,
             "ROBOCO_AGENT_ROLE": agent_role,
-            # #179: every MCP server is launched as `uv run python -m
+            # Every MCP server is launched as `uv run python -m
             # roboco.mcp.<server>` by Claude Code, with cwd = the agent's
             # WORKSPACE (not /app). Without this, `uv run` resolves a
             # cwd-relative `.venv` (≠ the baked /app/.venv), ignores the
@@ -2148,7 +2148,7 @@ class AgentOrchestrator:
                 return "task has no project"
             # Branch is auto-created at claim, so only states at/after claim are
             # expected to own one. _branch_is_expected centralizes this gate so
-            # the readiness and stuck-detection paths agree (#18).
+            # the readiness and stuck-detection paths agree.
             if _branch_is_expected(task) and not task.get("branch_name"):
                 return f"state={status} but branch_name is unset"
         return self._readiness_check_role_for_status(agent_id, role, status)
@@ -3547,7 +3547,7 @@ Start by:
         # A coordination/fan-out parent (product, no repo of its own) never gets
         # a branch: the child resolves its own real project and cuts from that
         # project's default branch, not from the parent. Blocking the child on a
-        # branch the parent will never have wedges the cell↔Main-PM loop (#17).
+        # branch the parent will never have wedges the cell↔Main-PM loop.
         if _is_coordination_task(parent):
             return None
 
@@ -3709,7 +3709,7 @@ Start by:
     ) -> None:
         """Resume a paused parent right before its PM is respawned for closure.
 
-        #170: a PM auto-pauses its owned parent on i_am_idle (by design,
+        A PM auto-pauses its owned parent on i_am_idle (by design,
         so the closure dispatcher knows to respawn it). Pre-gateway the
         parent was resumed at respawn so the PM landed actionable; the
         gateway refactor dropped that, so the respawned PM had to issue
@@ -3740,12 +3740,12 @@ Start by:
     ) -> None:
         """Recover a blocked parent right before its PM is respawned for closure.
 
-        #177: symmetric to ``_auto_resume_paused_parent`` (#170). The
+        Symmetric to ``_auto_resume_paused_parent``. The
         closure dispatcher only reaches this point once every descendant
         is terminal, so a parent still ``blocked`` here is an errant /
         stale block (e.g. a child's i_am_blocked propagated, or a PM
         blocked it and never unblocked) — the real dependency is already
-        done. #170 auto-resumed only ``paused`` parents, so a ``blocked``
+        done. That resume path handled only ``paused`` parents, so a ``blocked``
         one wedged the whole chain forever: the respawned PM cannot
         submit_up / complete a blocked parent and must first ``unblock``
         it (needs journal:decision), which weak models never reliably do
@@ -4940,7 +4940,7 @@ Start now: evidence(task_id="{task_id}")
     def _is_recently_paused(self, task: dict[str, Any]) -> bool:
         """A paused task whose heartbeat is fresher than the stale cutoff.
 
-        Closes the ``i_am_idle`` vs closure-respawn race (audit C12):
+        Closes the ``i_am_idle`` vs closure-respawn race:
         ``i_am_idle`` auto-pauses in-flight tasks and then sets the agent
         IDLE. If the dispatcher ticks between those two writes it sees a
         paused parent and would spawn the closure PM against a session
@@ -4999,12 +4999,12 @@ Start now: evidence(task_id="{task_id}")
             pm_id=pm_id,
         )
 
-        # #170: the parent auto-paused when its PM idled (by design). Resume
+        # The parent auto-paused when its PM idled (by design). Resume
         # it before respawn so the PM lands actionable (in_progress) and can
         # directly submit_up / complete / escalate — pre-gateway behaviour the
-        # gateway refactor dropped, which wedged smoke-15 (minimax never
-        # issued resume() itself).
-        # #177: a parent that is `blocked` at closure (all descendants
+        # gateway refactor dropped, which wedged a dogfood run (the model
+        # never issued resume() itself).
+        # A parent that is `blocked` at closure (all descendants
         # terminal) is an errant/stale block — recover it symmetrically so
         # the chain can't wedge forever waiting for a PM to manually unblock.
         parent_status = task.get("status")
@@ -5160,7 +5160,7 @@ Never `commit`, never write code, never run `git`. PMs coordinate.
 """
 
     def _get_prompt_for_agent(self, agent_slug: str, task: dict[str, Any]) -> str:
-        """Get the prompt appropriate to the agent's ACTUAL role (#19).
+        """Get the prompt appropriate to the agent's ACTUAL role.
 
         A respawn must hand each role the prompt it can act on — a PM or board
         agent handed the developer prompt is told to write code and call verbs
@@ -5319,7 +5319,7 @@ Never `commit`, never write code, never run `git`. PMs coordinate.
         owner_uuid = self._resolve_dev_owner_uuid(task)
         agent_slug = self._resolve_agent_slug(owner_uuid) if owner_uuid else None
 
-        # Role/task_type mismatch guard (audit D-49). The dispatcher
+        # Role/task_type mismatch guard. The dispatcher
         # previously trusted whatever ``assigned_to`` named, so a
         # documentation task accidentally assigned to a developer agent
         # would silently spawn the dev. Reject the dispatch if the
@@ -5659,7 +5659,7 @@ Never `commit`, never write code, never run `git`. PMs coordinate.
         The unblock content gate (note/unblock) is assignee-only: the
         dispatched agent must be the task's CURRENT ``assigned_to``, or its
         required pre-unblock decision note returns not_authorized and the
-        orchestrator respawns it forever (#17 livelock — a task escalated to
+        orchestrator respawns it forever (a livelock — a task escalated to
         Main PM kept respawning the ex-assignee cell PM, which could not author
         the note). So whenever the blocked task carries an assignee that is a
         PM or board role, dispatch THAT assignee. Only a task with no PM/board
@@ -5708,7 +5708,7 @@ Never `commit`, never write code, never run `git`. PMs coordinate.
     def _claimed_task_needs_agent(self, task: dict[str, Any]) -> str | None:
         """Return the assignee slug to (re)spawn for an agentless claimed task.
 
-        #19: a task left CLAIMED/IN_PROGRESS with an assignee but no running
+        A task left CLAIMED/IN_PROGRESS with an assignee but no running
         container (e.g. a reassignment that didn't spawn) is invisibly stuck —
         only PENDING tasks get fresh dispatch, and the heartbeat reaper can't
         see it because the claim seeded a fresh heartbeat. Returns the assignee
@@ -5735,7 +5735,7 @@ Never `commit`, never write code, never run `git`. PMs coordinate.
         return agent_slug
 
     async def _dispatch_claimed_without_agent(self, client: httpx.AsyncClient) -> None:
-        """(Re)spawn or release claimed/in_progress tasks that have no agent (#19).
+        """(Re)spawn or release claimed/in_progress tasks that have no agent.
 
         Net for the invisible-stuck case the other dispatchers miss: a task
         held CLAIMED/IN_PROGRESS by an assignee with no running container. If
@@ -6077,7 +6077,7 @@ Never `commit`, never write code, never run `git`. PMs coordinate.
         # A branch only exists once a task is claimed; a coordination task does
         # no git at all. A pending, never-claimed code task therefore has no
         # branch by design — flagging that here auto-blocked tasks before their
-        # first dispatch (#18). Only flag a missing branch when the task is in a
+        # first dispatch. Only flag a missing branch when the task is in a
         # state where it should already own one.
         if not task.get("branch_name") and _branch_is_expected(task):
             issues.append("Task missing branch_name")

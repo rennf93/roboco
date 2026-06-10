@@ -1,10 +1,9 @@
 """Gateway choreographer package.
 
-Audit P2-2: the single-file 2,540-line ``choreographer.py`` is being
-split into per-role mixins composed onto a single ``Choreographer``
-class. ``board.py`` is the first extraction (Board + Auditor verbs);
-the rest still live in ``_impl.py`` and will move incrementally per
-the plan in ``docs/internal/audit_2026_05_04/p2_2_decompose_plan.md``.
+The single-file 2,540-line ``choreographer.py`` is being split into
+per-role mixins composed onto a single ``Choreographer`` class.
+``board.py`` is the first extraction (Board + Auditor verbs); the rest
+still live in ``_impl.py`` and will move incrementally.
 
 The public surface (``Choreographer``, ``ChoreographerDeps``,
 ``DelegateInputs``) is re-exported here so every caller's import path

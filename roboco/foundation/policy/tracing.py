@@ -1,6 +1,6 @@
 """Tracing-gate policy — verb→required-set table + check_requirements.
 
-Replaces (in Task 13):
+Replaces:
   - services/gateway/tracing_gate.py (the entire module)
   - 6 inline `journal:decision` checks scattered in choreographer/_impl.py
   - inline gates in choreographer/qa.py (QA pass/fail)

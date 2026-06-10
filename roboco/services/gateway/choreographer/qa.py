@@ -1,4 +1,4 @@
-"""QA verbs (audit P2-2 third per-role split).
+"""QA verbs (third per-role split).
 
 Mixin for ``claim_review``, ``pass_review``, ``fail_review`` and the
 verb-specific helper ``_qa_pass_gate_check``. The helper stays with
@@ -8,8 +8,8 @@ Inherits from ``ChoreographerHelpers`` under ``TYPE_CHECKING`` only so
 mypy resolves ``self.task`` etc. as typed; at runtime the composed
 ``Choreographer`` supplies the real attributes via MRO.
 
-Tasks 21 (lifecycle canonical spec): all three verbs now route their
-role/state gate through ``spec.can_invoke_intent``. The verb-specific
+All three verbs route their role/state gate through
+``spec.can_invoke_intent``. The verb-specific
 helpers (``_verify_qa_owner``, ``_qa_pass_gate_check``) STAY — they
 encode notes-length / journal:learning / qa_evidence_inspected gates
 the spec doesn't model. The self-review block lives at the atomic-
@@ -18,7 +18,7 @@ action layer (``_ATOMIC_ACTIONS["qa_pass" | "qa_fail"]
 builds a Context with ``actor_slug == original_developer_slug``; no
 verb-body retrofits needed.
 
-P2 Task 9: ``_qa_pass_gate_check`` delegates the actual requirement
+``_qa_pass_gate_check`` delegates the actual requirement
 checking to ``foundation.policy.tracing.check_requirements`` — the
 verb→required-set mapping lives in ``VERB_REQUIREMENTS`` (single
 source of truth). The hint translation lives in the shared
@@ -185,7 +185,7 @@ class QAMixin(_Base):
         authoritative source) + journal_highlights so the QA agent has
         the full PR context up-front and can't miss a piece.
 
-        Task #154: files_changed comes from ``git.list_changed_files``
+        files_changed comes from ``git.list_changed_files``
         instead of ``work_session.files_modified``. The legacy
         ``add_files_modified`` HTTP path that populated files_modified
         is not called by the gateway ``commit()``, so the work_session

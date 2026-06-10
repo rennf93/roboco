@@ -225,7 +225,7 @@ _STATUS_TRANSITIONS: tuple[StatusTransition, ...] = (
     # PM setup
     StatusTransition(Status.BACKLOG, Status.PENDING, "activate", None),
     # Claim path. role_constraint=None on rows below means "any role —
-    # the per-role-vs-status filtering is in CLAIM_RULES (Task 5)".
+    # the per-role-vs-status filtering is in CLAIM_RULES".
     # A None here is NOT an oversight; it is the explicit handoff
     # point between the StatusTransition table (state machine) and
     # CLAIM_RULES (per-role claim authority).
@@ -359,8 +359,8 @@ _ATOMIC_ACTIONS: dict[str, ActionSpec] = {
         needs_team_match=False,
     ),
     # claim's source_statuses is the UNION across all roles — see CLAIM_RULES
-    # for per-role authority. Both tables are authoritative; Task 8 validates
-    # consistency between them.
+    # for per-role authority. Both tables are authoritative; a validator
+    # checks consistency between them.
     "claim": ActionSpec(
         name="claim",
         allowed_roles=frozenset(_DEV_ROLES | _QA_ROLES | _DOC_ROLES | _PM_ROLES),
@@ -1023,7 +1023,7 @@ _INTENT_VERBS: dict[str, IntentSpec] = {
         # sees pr_created=True. Mirrors the dev's open_pr→i_am_done split.
         pre_side_effects=("create_pr",),
         side_effects=(),
-        # #182: the Cell PM owns cell completion — it merges the cell→root PR
+        # The Cell PM owns cell completion — it merges the cell→root PR
         # via complete(). Main PM only completes the ROOT task.
         next_hint=lambda _t: "complete(task_id) to merge the cell→root PR",
     ),

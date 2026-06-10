@@ -607,7 +607,7 @@ class A2AService:
                 hint = get_a2a_route_hint(from_agent, target_agent)
                 raise ValueError(f"{error_msg} Hint: {hint}")
         # Priority parsing: full tristate (NORMAL/HIGH/URGENT) survives
-        # end-to-end after P3 Task 9. Resolution rules live in
+        # end-to-end. Resolution rules live in
         # foundation.policy.communications.parse_priority.
         from roboco.foundation.policy.communications import parse_priority
 

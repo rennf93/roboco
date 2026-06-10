@@ -309,9 +309,9 @@ class WorkspaceService:
     def __init__(self, session: AsyncSession) -> None:
         self.session = session
         self.root = Path(settings.workspaces_root)
-        # Wave C2 (2026-05-12) — TTL cache for refresh fetches. Smoke run 3
-        # fired 9 refresh-fetch warnings per run because each evidence()
-        # call triggered ensure_workspace → fetch. The workspace doesn't
+        # TTL cache for refresh fetches. Dogfooding fired 9 refresh-fetch
+        # warnings per run because each evidence() call triggered
+        # ensure_workspace → fetch. The workspace doesn't
         # change in subseconds. 30s TTL eliminates the noise without
         # compromising freshness (commits land slower than 30s in practice;
         # force=True override exists for the rare need-fresh case).
@@ -636,8 +636,8 @@ class WorkspaceService:
                 # network blips and offline mode must not break workspace
                 # setup; checkout is unchanged.
                 #
-                # Wave C2 (2026-05-12): 30s TTL cache keyed by workspace
-                # path. Smoke run 3 fired this fetch 9x/run because every
+                # 30s TTL cache keyed by workspace path. Dogfooding fired
+                # this fetch 9x/run because every
                 # evidence() call triggers ensure_workspace within the same
                 # few seconds. Skip redundant fetches; force=True overrides.
                 _FETCH_CACHE_TTL_SECONDS = 30.0
