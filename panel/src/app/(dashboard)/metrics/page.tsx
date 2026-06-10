@@ -3,11 +3,14 @@
 import { useOrchestratorStatus } from "@/hooks/use-agents";
 import { useTasks } from "@/hooks/use-tasks";
 import {
-  useUsageSnapshot,
+  useUsageSummary,
   useUsageTimeSeries,
   useAgentUsage,
-  useUsageSessions,
+  useTeamUsage,
   useModelUsage,
+  useUsageProjection,
+  useCacheEfficiency,
+  useUsageSessions,
 } from "@/hooks/use-usage";
 import { TaskStatus, Team } from "@/types";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -327,16 +330,16 @@ export default function MetricsPage() {
 // =============================================================================
 
 function TokenUsageCostsSection() {
-  const { data: snapshot, isLoading: loadingSnap } = useUsageSnapshot();
-  const { data: timeSeries, isLoading: loadingTS } = useUsageTimeSeries(24);
-  const { data: agentUsage, isLoading: loadingAgents } = useAgentUsage();
+  const { data: summary, isLoading: loadingSnap } = useUsageSummary("24h");
+  const { data: timeSeries, isLoading: loadingTS } = useUsageTimeSeries("24h");
+  const { data: agentUsage, isLoading: loadingAgents } = useAgentUsage("24h");
+  const { data: teamUsage, isLoading: loadingTeams } = useTeamUsage("24h");
   const { data: sessions, isLoading: loadingSessions } = useUsageSessions(100);
-  const { data: modelUsage, isLoading: loadingModels } = useModelUsage();
+  const { data: modelUsage, isLoading: loadingModels } = useModelUsage("24h");
+  const { data: projection, isLoading: loadingProj } = useUsageProjection();
+  const { data: cacheStats, isLoading: loadingCache } = useCacheEfficiency("24h");
 
-  const weekTrend = snapshot
-    ? snapshot.cost_this_week - snapshot.cost_last_week
-    : 0;
-  const weekIsUp = weekTrend >= 0;
+  const trendUp = (summary?.trend_pct ?? 0) >= 0;
 
   return (
     <div className="space-y-6">
@@ -345,57 +348,46 @@ function TokenUsageCostsSection() {
       {/* Row 1 — Summary cards */}
       <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-6">
         <SummaryCard
-          title="Tokens Today"
-          value={snapshot ? fmtTokens(snapshot.tokens_today) : undefined}
+          title="Tokens Input"
+          value={summary ? fmtTokens(summary.tokens_input) : undefined}
           icon={<Zap className="h-4 w-4 text-yellow-500" />}
           isLoading={loadingSnap}
         />
         <SummaryCard
-          title="Cost Today"
-          value={snapshot ? "$" + snapshot.cost_today.toFixed(2) : undefined}
+          title="Tokens Output"
+          value={summary ? fmtTokens(summary.tokens_output) : undefined}
+          icon={<Zap className="h-4 w-4 text-blue-500" />}
+          isLoading={loadingSnap}
+        />
+        <SummaryCard
+          title="Total Cost (24h)"
+          value={summary ? "$" + summary.total_cost_usd.toFixed(4) : undefined}
           icon={<Coins className="h-4 w-4 text-green-500" />}
           isLoading={loadingSnap}
         />
         <SummaryCard
-          title="Cost This Week"
-          value={snapshot ? "$" + snapshot.cost_this_week.toFixed(2) : undefined}
+          title="Trend vs Prior"
+          value={summary ? (trendUp ? "+" : "") + summary.trend_pct.toFixed(1) + "%" : undefined}
           icon={
-            weekIsUp ? (
+            trendUp ? (
               <TrendingUp className="h-4 w-4 text-red-500" />
             ) : (
               <TrendingDown className="h-4 w-4 text-green-500" />
             )
           }
-          trend={
-            snapshot
-              ? {
-                  dir: weekIsUp ? "up" : "down",
-                  label:
-                    (weekIsUp ? "▲ " : "▼ ") +
-                    Math.abs(weekTrend).toFixed(2) +
-                    " vs last wk",
-                }
-              : undefined
-          }
           isLoading={loadingSnap}
         />
         <SummaryCard
-          title="Active Sessions"
-          value={snapshot ? String(snapshot.active_sessions) : undefined}
+          title="Total Tokens"
+          value={summary ? fmtTokens(summary.total_tokens) : undefined}
           icon={<Activity className="h-4 w-4 text-blue-500" />}
           isLoading={loadingSnap}
         />
         <SummaryCard
-          title="Cache Savings"
-          value={snapshot ? "$" + snapshot.cache_savings.toFixed(2) : undefined}
+          title="Cache Saved"
+          value={cacheStats ? "$" + cacheStats.cost_saved_by_cache_usd.toFixed(4) : undefined}
           icon={<Sparkles className="h-4 w-4 text-purple-500" />}
-          isLoading={loadingSnap}
-        />
-        <SummaryCard
-          title="Top Consumer"
-          value={snapshot?.top_consumer ?? undefined}
-          icon={<Users className="h-4 w-4 text-orange-500" />}
-          isLoading={loadingSnap}
+          isLoading={loadingCache}
         />
       </div>
 
@@ -410,16 +402,16 @@ function TokenUsageCostsSection() {
       {/* Row 3 — Agent bar + team bar */}
       <div className="grid gap-4 lg:grid-cols-2">
         <AgentUsageChart data={agentUsage} isLoading={loadingAgents} />
-        <TeamUsageChart data={agentUsage} isLoading={loadingAgents} />
+        <TeamUsageChart data={teamUsage} isLoading={loadingTeams} />
       </div>
 
       {/* Row 4 — Projection + cache efficiency */}
       <div className="grid gap-4 sm:grid-cols-2">
-        <ProjectionCard snapshot={snapshot} isLoading={loadingSnap} />
-        <CacheEfficiencyCard sessions={sessions} isLoading={loadingAgents || loadingSessions} />
+        <ProjectionCard projection={projection} isLoading={loadingProj} />
+        <CacheEfficiencyCard cacheStats={cacheStats} isLoading={loadingCache} />
       </div>
 
-      {/* Row 5 — Sessions table */}
+      {/* Row 5 — Sessions table (mock-mode only; empty in production) */}
       <SessionsTable data={sessions} isLoading={loadingSessions} />
     </div>
   );
@@ -471,18 +463,14 @@ function SummaryCard({ title, value, icon, trend, isLoading }: SummaryCardProps)
   );
 }
 
-import type { TokenUsageSnapshot as TUS, UsageSession as US } from "@/types";
+import type { UsageProjection as UP, CacheEfficiencyResponse as CER } from "@/types";
 
 interface ProjectionCardProps {
-  snapshot: TUS | undefined;
+  projection: UP | undefined;
   isLoading: boolean;
 }
 
-function ProjectionCard({ snapshot, isLoading }: ProjectionCardProps) {
-  const weeklyRun = snapshot
-    ? snapshot.cost_this_week / 7 * 30
-    : null;
-
+function ProjectionCard({ projection, isLoading }: ProjectionCardProps) {
   return (
     <Card>
       <CardHeader className="pb-2">
@@ -497,10 +485,11 @@ function ProjectionCard({ snapshot, isLoading }: ProjectionCardProps) {
         ) : (
           <div>
             <div className="text-3xl font-bold">
-              {weeklyRun != null ? "$" + weeklyRun.toFixed(2) : "—"}
+              {projection != null ? "$" + projection.projected_monthly_cost_usd.toFixed(2) : "—"}
             </div>
             <p className="text-xs text-muted-foreground mt-1">
-              Based on this week&apos;s daily average
+              Based on {projection?.basis_days ?? 7}-day rolling average ($
+              {projection?.avg_daily_cost_usd.toFixed(4) ?? "—"}/day)
             </p>
           </div>
         )}
@@ -510,17 +499,12 @@ function ProjectionCard({ snapshot, isLoading }: ProjectionCardProps) {
 }
 
 interface CacheEfficiencyCardProps {
-  sessions: US[] | undefined;
+  cacheStats: CER | undefined;
   isLoading: boolean;
 }
 
-function CacheEfficiencyCard({ sessions, isLoading }: CacheEfficiencyCardProps) {
-  const totalCache = (sessions ?? []).reduce((s, r) => s + r.tokens_cache, 0);
-  const totalAll = (sessions ?? []).reduce(
-    (s, r) => s + r.tokens_input + r.tokens_output + r.tokens_cache,
-    0
-  );
-  const pct = totalAll > 0 ? (totalCache / totalAll) * 100 : 0;
+function CacheEfficiencyCard({ cacheStats, isLoading }: CacheEfficiencyCardProps) {
+  const pct = cacheStats ? cacheStats.cache_hit_rate * 100 : 0;
 
   return (
     <Card>
@@ -537,7 +521,8 @@ function CacheEfficiencyCard({ sessions, isLoading }: CacheEfficiencyCardProps) 
           <div>
             <div className="text-3xl font-bold">{pct.toFixed(1)}%</div>
             <p className="text-xs text-muted-foreground mt-1">
-              {fmtTokens(totalCache)} cached of {fmtTokens(totalAll)} total tokens
+              {cacheStats ? fmtTokens(cacheStats.tokens_cache_read) : "—"} cache reads ·
+              saved ${cacheStats?.cost_saved_by_cache_usd.toFixed(4) ?? "—"}
             </p>
             <Progress value={pct} className="mt-2" />
           </div>

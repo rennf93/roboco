@@ -106,13 +106,13 @@ export function AgentCard({ agent, agentStatus, usageRow }: AgentCardProps) {
           <div className="mt-3 pt-2 border-t">
             <div className="flex items-center justify-between text-xs text-muted-foreground mb-1">
               <span>
-                {usageRow.tokens_today >= 1_000
-                  ? (usageRow.tokens_today / 1_000).toFixed(1) + "K"
-                  : String(usageRow.tokens_today)}{" "}
+                {usageRow.total_tokens >= 1_000
+                  ? (usageRow.total_tokens / 1_000).toFixed(1) + "K"
+                  : String(usageRow.total_tokens)}{" "}
                 tokens
               </span>
               <span className="font-medium text-foreground">
-                ${usageRow.cost_today.toFixed(2)}
+                ${usageRow.cost_usd.toFixed(4)}
               </span>
             </div>
             <div className="w-full bg-muted rounded-full h-1.5 overflow-hidden">
@@ -120,7 +120,7 @@ export function AgentCard({ agent, agentStatus, usageRow }: AgentCardProps) {
                 className="h-full rounded-full bg-[var(--chart-1)]"
                 style={{
                   width:
-                    Math.min(100, (usageRow.tokens_today / 30_000) * 100) + "%",
+                    Math.min(100, (usageRow.total_tokens / 30_000) * 100) + "%",
                 }}
               />
             </div>

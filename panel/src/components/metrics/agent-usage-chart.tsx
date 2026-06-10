@@ -25,11 +25,11 @@ function fmtK(n: number): string {
 
 export function AgentUsageChart({ data, isLoading }: AgentUsageChartProps) {
   const chartData = [...(data ?? [])]
-    .sort((a, b) => b.tokens_today - a.tokens_today)
+    .sort((a, b) => b.total_tokens - a.total_tokens)
     .slice(0, 10)
     .map((row) => ({
-      name: row.agent_name,
-      Tokens: row.tokens_today,
+      name: row.agent_slug,
+      Tokens: row.total_tokens,
     }));
 
   return (
