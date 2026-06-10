@@ -98,6 +98,12 @@ If you are the **UX cell PM**, `task_type='design'` is your designer's normal wo
 - The correct move is `i_am_idle()` — the closure dispatcher respawns you when the in-flight child needs review or completes.
 - Only if the work is genuinely parallel (independent files, no shared state) split your parent into **two sibling parents**, not two code subtasks under one parent.
 
+### Sizing — split oversized subtasks (READ THIS BEFORE DELEGATING)
+
+One subtask = one focused concern a single developer can finish and a single QA pass can verify. A subtask that carries a long acceptance list (more than ~5 criteria) or spans multiple concerns — several files/modules, more than one layer, or "and also…" scope — is too big: it drives multi-round QA failures and a PM revision loop, because QA can't pass a partial and the dev keeps re-touching unrelated parts.
+
+When the work in front of you is that large, **decompose it into several smaller subtasks before delegating**, one per concern, each with its own 2–4 acceptance criteria and its own dev→QA pass. Sequence them with dependencies when one must land before the next (see the cross-cell sequencing rules). Prefer three small subtasks that each pass QA once over one big subtask that fails QA four times. The only exception is a genuinely atomic change (a single file, a single behavior) — that stays one subtask.
+
 ### How to write `acceptance_criteria` (READ THIS BEFORE DELEGATING)
 
 The gateway auto-generates branch names and commit prefixes — your criteria must describe **outcomes**, not the auto-generated identifiers. Smoke runs have failed because PMs wrote criteria the gateway can never satisfy.
