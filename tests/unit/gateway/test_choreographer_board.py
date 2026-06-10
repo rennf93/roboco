@@ -139,6 +139,30 @@ async def test_board_escalate_to_ceo_blocks_wrong_state() -> None:
 
 
 @pytest.mark.asyncio
+async def test_board_escalate_to_ceo_rejects_when_runner_declines() -> None:
+    """Runner returns None (service declined — e.g. the task left
+    awaiting_pm_review mid-flight) → a clean invalid_state, NOT an unhandled
+    ``None.status`` 500 (the board's escalate-from-blocked crash loop)."""
+    agent_id = uuid4()
+    task_id = uuid4()
+    t = MagicMock(id=task_id, status="awaiting_pm_review", team="backend")
+    task_svc = AsyncMock()
+    task_svc.get.return_value = t
+    task_svc.agent_for.return_value = MagicMock(role="product_owner")
+    task_svc.escalate_to_ceo.return_value = None
+    journal_svc = AsyncMock()
+    journal_svc.has_decision_for_task.return_value = True
+    journal_svc.latest_decision_at.return_value = datetime.now(UTC)
+    deps = _make_deps(task=task_svc, journal=journal_svc)
+    c = Choreographer(deps)
+
+    env = await c.escalate_to_ceo(agent_id, task_id, reason="ready for CEO sign-off")
+    body = env.as_dict()
+    assert body["error"] == "invalid_state"
+    assert "awaiting_pm_review" in body["message"]
+
+
+@pytest.mark.asyncio
 async def test_board_escalate_to_ceo_blocks_disallowed_role() -> None:
     agent_id = uuid4()
     task_id = uuid4()

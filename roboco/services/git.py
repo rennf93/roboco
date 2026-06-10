@@ -1536,10 +1536,9 @@ class GitService(BaseService):
                 {"task_id": str(task_id)},
             )
 
-        project_service = get_project_service(self.session)
-        project = await project_service.get(UUID(str(task.project_id)))
+        project = await self._project_for_task(task)
         if project is None:
-            raise NotFoundError("Project", str(task.project_id))
+            raise NotFoundError("Project for task", str(task.id))
 
         workspace_agent_id = self._resolve_workspace_agent_id(task, None)
         workspace = await self.get_workspace(project.slug, agent_id=workspace_agent_id)
@@ -2021,8 +2020,7 @@ class GitService(BaseService):
             task = await self._task_for_branch(branch_name)
             if task is None:
                 return None
-            project_service = get_project_service(self.session)
-            project = await project_service.get(UUID(str(task.project_id)))
+            project = await self._project_for_task(task)
             if project is None:
                 return None
             return await self._get_project_token_or_raise(project.slug)
@@ -2248,10 +2246,9 @@ class GitService(BaseService):
         task = result.scalar_one_or_none()
         if task is None:
             raise NotFoundError("PR", str(pr_number))
-        project_service = get_project_service(self.session)
-        project = await project_service.get(UUID(str(task.project_id)))
+        project = await self._project_for_task(task)
         if project is None:
-            raise NotFoundError("Project", str(task.project_id))
+            raise NotFoundError("Project for task", str(task.id))
 
         workspace_agent_id = self._resolve_workspace_agent_id(task, actor_agent_id)
         workspace = await self.get_workspace(project.slug, agent_id=workspace_agent_id)
@@ -2321,10 +2318,9 @@ class GitService(BaseService):
         task = result.scalar_one_or_none()
         if task is None:
             raise NotFoundError("PR", str(pr_number))
-        project_service = get_project_service(self.session)
-        project = await project_service.get(UUID(str(task.project_id)))
+        project = await self._project_for_task(task)
         if project is None:
-            raise NotFoundError("Project", str(task.project_id))
+            raise NotFoundError("Project for task", str(task.id))
 
         workspace_agent_id = self._resolve_workspace_agent_id(task, actor_agent_id)
         workspace = await self.get_workspace(project.slug, agent_id=workspace_agent_id)

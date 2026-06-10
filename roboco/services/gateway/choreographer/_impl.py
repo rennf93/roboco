@@ -4642,6 +4642,45 @@ class Choreographer:
 
     # --- Phase 4 (board) verbs ---
 
+    async def _escalate_did_not_apply(
+        self,
+        *,
+        runner_error: str | None,
+        task: Any,
+        role_str: str,
+        briefing: dict[str, Any],
+        agent_id: UUID,
+        task_id: UUID,
+    ) -> Envelope:
+        """Rejection for an escalate_to_ceo the runner did not apply.
+
+        ``runner_error`` set → the run_intent savepoint raised; otherwise the
+        service declined (task not in awaiting_pm_review). Either way a clean
+        invalid_state, never the unhandled ``None.status`` 500.
+        """
+        if runner_error is not None:
+            message = f"verb runner failed: {runner_error}"
+            remediate = "check workspace + retry; if persistent, escalate"
+        else:
+            message = (
+                "escalate_to_ceo did not apply — the task is not in a state"
+                " that escalates to the CEO (needs awaiting_pm_review)"
+            )
+            remediate = (
+                "resolve or re-route the task; only awaiting_pm_review tasks"
+                " escalate to the CEO"
+            )
+        return await self._emit_rejection(
+            Envelope.invalid_state(
+                message=message,
+                remediate=remediate,
+                context_briefing=briefing,
+            ).with_introspection(task=task, role=role_str),
+            agent_id=agent_id,
+            task_id=task_id,
+            verb="escalate_to_ceo",
+        )
+
     async def escalate_to_ceo(
         self, agent_id: UUID, task_id: UUID, reason: str
     ) -> Envelope:
@@ -4714,19 +4753,25 @@ class Choreographer:
             )
 
         runner = self._verb_runner()
+        runner_error: str | None = None
         try:
-            t = await runner.run_intent("escalate_to_ceo", t, me, spec_ctx)
+            updated = await runner.run_intent("escalate_to_ceo", t, me, spec_ctx)
         except Exception as exc:
-            return await self._emit_rejection(
-                Envelope.invalid_state(
-                    message=f"verb runner failed: {exc}",
-                    remediate="check workspace + retry; if persistent, escalate",
-                    context_briefing=briefing,
-                ).with_introspection(task=t, role=role_str),
+            updated, runner_error = None, str(exc)
+        # run_intent returns None when the service declines the escalation (e.g. a
+        # board agent escalating a task not in awaiting_pm_review). Without this
+        # guard the OK path below dereferenced ``None.status`` — an unhandled 500
+        # (the board's escalate-from-blocked crash loop).
+        if updated is None:
+            return await self._escalate_did_not_apply(
+                runner_error=runner_error,
+                task=t,
+                role_str=role_str,
+                briefing=briefing,
                 agent_id=agent_id,
                 task_id=task_id,
-                verb="escalate_to_ceo",
             )
+        t = updated
         # Same as main_pm_complete: CEO acts via UI, not as a spawnable agent.
         await self.task.reassign(task_id, None)
         return Envelope.ok(
