@@ -2,8 +2,8 @@
 
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
-import { useUsageSnapshot } from "@/hooks/use-usage";
-import { Coins, TrendingUp, TrendingDown, Zap, Users, Sparkles } from "lucide-react";
+import { useUsageSummary } from "@/hooks/use-usage";
+import { Coins, TrendingUp, TrendingDown, Zap, Activity } from "lucide-react";
 
 function fmt(n: number, decimals = 0): string {
   if (n >= 1_000_000) return (n / 1_000_000).toFixed(1) + "M";
@@ -38,15 +38,9 @@ function MetricRow({ icon, label, value, sub }: MetricRowProps) {
 }
 
 export function UsageOverviewPanel() {
-  const { data: snapshot, isLoading } = useUsageSnapshot();
+  const { data: summary, isLoading } = useUsageSummary("24h");
 
-  const weekTrend = snapshot
-    ? snapshot.cost_this_week - snapshot.cost_last_week
-    : 0;
-  const weekTrendPct = snapshot?.cost_last_week
-    ? Math.abs(weekTrend / snapshot.cost_last_week) * 100
-    : 0;
-  const weekIsUp = weekTrend >= 0;
+  const trendUp = (summary?.trend_pct ?? 0) >= 0;
 
   return (
     <Card>
@@ -59,7 +53,7 @@ export function UsageOverviewPanel() {
       <CardContent>
         {isLoading ? (
           <div className="space-y-3">
-            {Array.from({ length: 6 }).map((_, i) => (
+            {Array.from({ length: 5 }).map((_, i) => (
               <Skeleton key={i} className="h-6" />
             ))}
           </div>
@@ -67,50 +61,41 @@ export function UsageOverviewPanel() {
           <div className="divide-y">
             <MetricRow
               icon={<Zap className="h-4 w-4" />}
-              label="Tokens today"
-              value={snapshot ? fmt(snapshot.tokens_today) : "—"}
+              label="Tokens (input)"
+              value={summary ? fmt(summary.tokens_input) : "—"}
+            />
+            <MetricRow
+              icon={<Zap className="h-4 w-4 text-muted-foreground" />}
+              label="Tokens (output)"
+              value={summary ? fmt(summary.tokens_output) : "—"}
             />
             <MetricRow
               icon={<Coins className="h-4 w-4" />}
-              label="Cost today"
-              value={snapshot ? fmtCost(snapshot.cost_today) : "—"}
+              label="Total cost"
+              value={summary ? fmtCost(summary.total_cost_usd) : "—"}
             />
             <MetricRow
               icon={
-                weekIsUp ? (
+                trendUp ? (
                   <TrendingUp className="h-4 w-4 text-red-500" />
                 ) : (
                   <TrendingDown className="h-4 w-4 text-green-500" />
                 )
               }
-              label="Cost this week"
-              value={snapshot ? fmtCost(snapshot.cost_this_week) : "—"}
+              label="Trend vs prior period"
+              value={summary ? (trendUp ? "+" : "") + summary.trend_pct.toFixed(1) + "%" : "—"}
               sub={
-                snapshot ? (
-                  <span
-                    className={
-                      "text-xs " + (weekIsUp ? "text-red-500" : "text-green-500")
-                    }
-                  >
-                    {weekIsUp ? "▲" : "▼"} {weekTrendPct.toFixed(0)}%
+                summary ? (
+                  <span className={"text-xs " + (trendUp ? "text-red-500" : "text-green-500")}>
+                    {trendUp ? "▲" : "▼"}
                   </span>
                 ) : undefined
               }
             />
             <MetricRow
-              icon={<Users className="h-4 w-4" />}
-              label="Active sessions"
-              value={snapshot ? String(snapshot.active_sessions) : "—"}
-            />
-            <MetricRow
-              icon={<Sparkles className="h-4 w-4 text-yellow-500" />}
-              label="Cache savings"
-              value={snapshot ? fmtCost(snapshot.cache_savings) : "—"}
-            />
-            <MetricRow
-              icon={<TrendingUp className="h-4 w-4 text-blue-500" />}
-              label="Top consumer"
-              value={snapshot?.top_consumer ?? "—"}
+              icon={<Activity className="h-4 w-4 text-blue-500" />}
+              label="Period"
+              value={summary?.period ?? "—"}
             />
           </div>
         )}

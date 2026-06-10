@@ -19,7 +19,7 @@ const PAGE_SIZE = 10;
 
 type SortKey = keyof Pick<
   UsageSession,
-  | "agent_name"
+  | "agent_slug"
   | "started_at"
   | "total_tokens"
   | "tokens_input"
@@ -37,7 +37,7 @@ interface Column {
 }
 
 const COLUMNS: Column[] = [
-  { key: "agent_name", label: "Agent" },
+  { key: "agent_slug", label: "Agent" },
   { key: "model", label: "Model" },
   { key: "started_at", label: "Started" },
   { key: "total_tokens", label: "Total" },
@@ -142,7 +142,7 @@ export function SessionsTable({ data, isLoading }: SessionsTableProps) {
                   ) : (
                     visible.map((s) => (
                       <TableRow key={s.id}>
-                        <TableCell className="text-xs font-medium">{s.agent_name}</TableCell>
+                        <TableCell className="text-xs font-medium">{s.agent_slug}</TableCell>
                         <TableCell className="text-xs">{s.model}</TableCell>
                         <TableCell className="text-xs">{formatTime(s.started_at)}</TableCell>
                         <TableCell className="text-xs">{fmtK(s.total_tokens)}</TableCell>

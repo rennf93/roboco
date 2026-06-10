@@ -1255,35 +1255,84 @@ export interface CEORejectRequest {
 }
 
 // =============================================================================
-// TOKEN USAGE TYPES
+// TOKEN USAGE TYPES  (aligned to real backend: GET /api/usage/*)
 // =============================================================================
 
-/** Snapshot of current token usage totals for the overview panel */
-export interface TokenUsageSnapshot {
-  tokens_today: number;
-  cost_today: number;
-  cost_this_week: number;
-  cost_last_week: number;
-  active_sessions: number;
-  cache_savings: number;
-  top_consumer: string;
+/** Aggregated token and cost totals — GET /usage/summary?period=24h|7d|30d */
+export interface UsageSummary {
+  tokens_input: number;
+  tokens_output: number;
+  total_tokens: number;
+  total_cost_usd: number;
+  trend_pct: number;
+  period: string;
 }
 
-/** Per-agent usage row for the agent bar chart and agent card mini-bar */
+/** Per-agent usage row — GET /usage/by-agent?period=24h|7d|30d */
 export interface AgentUsageRow {
-  agent_id: string;
-  agent_name: string;
-  tokens_today: number;
-  cost_today: number;
-  tokens_total: number;
-  team: string;
+  agent_slug: string;
+  tokens_input: number;
+  tokens_output: number;
+  total_tokens: number;
+  cost_usd: number;
+  pct_of_total: number;
 }
 
-/** Individual inference session for the sessions table */
+/** Per-team usage row — GET /usage/by-team?period=24h|7d|30d */
+export interface TeamUsageRow {
+  team: string;
+  tokens_input: number;
+  tokens_output: number;
+  total_tokens: number;
+  cost_usd: number;
+  pct_of_total: number;
+}
+
+/** Per-model usage slice — GET /usage/by-model?period=24h|7d|30d */
+export interface ModelUsageSlice {
+  model: string;
+  tokens_input: number;
+  tokens_output: number;
+  total_tokens: number;
+  cost_usd: number;
+  pct_of_total: number;
+}
+
+/** One data point in a token-usage time series — GET /usage/time-series?period=24h|7d|30d
+ *
+ * - 24h → hourly buckets; 7d / 30d → daily buckets
+ * - bucket is an ISO datetime string (from PostgreSQL date_trunc)
+ */
+export interface UsageTimePoint {
+  bucket: string;
+  tokens_input: number;
+  tokens_output: number;
+  total_tokens: number;
+  cost_usd: number;
+}
+
+/** Monthly cost projection — GET /usage/projection */
+export interface UsageProjection {
+  total_cost_7d: number;
+  avg_daily_cost_usd: number;
+  projected_monthly_cost_usd: number;
+  basis_days: number;
+}
+
+/** Cache efficiency stats — GET /usage/cache-efficiency?period=24h|7d|30d */
+export interface CacheEfficiencyResponse {
+  cache_hit_rate: number;
+  tokens_cache_read: number;
+  tokens_cache_write: number;
+  tokens_input: number;
+  cost_saved_by_cache_usd: number;
+  period: string;
+}
+
+/** Individual inference session for the sessions table (mock-mode only — no real backend endpoint) */
 export interface UsageSession {
   id: string;
-  agent_id: string;
-  agent_name: string;
+  agent_slug: string;
   started_at: string;
   ended_at: string | null;
   tokens_input: number;
@@ -1292,20 +1341,4 @@ export interface UsageSession {
   total_tokens: number;
   cost: number;
   model: string;
-}
-
-/** One data point in a token-usage time series (hourly or daily) */
-export interface UsageTimePoint {
-  timestamp: string;
-  tokens_input: number;
-  tokens_output: number;
-  tokens_cache: number;
-}
-
-/** A model's share of overall token usage for the donut chart */
-export interface ModelUsageSlice {
-  model: string;
-  tokens: number;
-  cost: number;
-  percentage: number;
 }
