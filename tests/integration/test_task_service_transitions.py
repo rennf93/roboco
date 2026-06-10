@@ -9,23 +9,31 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 from unittest.mock import AsyncMock
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 import pytest
 import pytest_asyncio
-from roboco.db.tables import AgentTable, ProjectTable
+from roboco.db.tables import (
+    AgentTable,
+    JournalEntryTable,
+    ProductTable,
+    ProjectTable,
+)
 from roboco.events import EventType
 from roboco.models import AgentRole, AgentStatus, Team
 from roboco.models.base import (
     BlockerResolverType,
     Complexity,
+    JournalEntryType,
     TaskNature,
     TaskStatus,
     TaskType,
 )
 from roboco.models.task import TaskCreateRequest
+from roboco.seeds.initial_data import AGENT_UUIDS
 from roboco.services.base import NotFoundError
 from roboco.services.task import SoftBlockInfo, TaskService
+from sqlalchemy import select
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator
@@ -575,6 +583,99 @@ async def test_ceo_reject_clears_assignment_when_no_original_dev(
     rejected = await svc.ceo_reject(task.id, reason="redo")
     assert rejected is not None
     assert rejected.assigned_to is None
+
+
+@pytest.mark.asyncio
+async def test_ceo_reject_routes_coordination_task_to_main_pm(
+    task_setup: dict, db_session: AsyncSession
+) -> None:
+    """A rejected coordination/integration root goes to the Main PM to delegate,
+    not back to a developer."""
+    svc = task_setup["svc"]
+    main_pm_id = UUID(AGENT_UUIDS["main-pm"])
+    if await db_session.get(AgentTable, main_pm_id) is None:
+        db_session.add(
+            AgentTable(
+                id=main_pm_id,
+                name="Main PM",
+                slug="main-pm",
+                role=AgentRole.MAIN_PM,
+                team=Team.MAIN_PM,
+                status=AgentStatus.ACTIVE,
+                model_config={},
+                system_prompt="pm",
+                capabilities=[],
+                permissions={},
+                metrics={},
+            )
+        )
+    product = ProductTable(
+        name="P", slug=f"p-{uuid4().hex[:8]}", created_by=task_setup["agent_id"]
+    )
+    db_session.add(product)
+    await db_session.flush()
+
+    task = await svc.create(_req(task_setup))
+    task.status = TaskStatus.AWAITING_CEO_APPROVAL
+    task.project_id = None  # coordination root: no project, has product
+    task.product_id = product.id
+    await db_session.flush()
+
+    rejected = await svc.ceo_reject(task.id, reason="redo the API contract")
+    assert rejected is not None
+    assert rejected.status == TaskStatus.NEEDS_REVISION
+    assert rejected.team == Team.MAIN_PM
+    assert rejected.assigned_to == main_pm_id
+
+
+@pytest.mark.asyncio
+async def test_ceo_reject_writes_handoff_journal(
+    task_setup: dict, db_session: AsyncSession
+) -> None:
+    """The CEO's reason is recorded as a DECISION_LOG journal entry on the task —
+    the channel that actually reaches the reworker (quick_context does not)."""
+    svc = task_setup["svc"]
+    ceo_id = UUID(AGENT_UUIDS["ceo"])
+    if await db_session.get(AgentTable, ceo_id) is None:
+        db_session.add(
+            AgentTable(
+                id=ceo_id,
+                name="CEO",
+                slug="ceo",
+                role=AgentRole.CEO,
+                team=Team.MAIN_PM,
+                status=AgentStatus.ACTIVE,
+                model_config={},
+                system_prompt="ceo",
+                capabilities=[],
+                permissions={},
+                metrics={},
+            )
+        )
+        await db_session.flush()
+
+    task = await svc.create(_req(task_setup))
+    task.status = TaskStatus.AWAITING_CEO_APPROVAL
+    task.quick_context = f"original_developer:{task_setup['agent_id']}"
+    await db_session.flush()
+
+    reason = "AC9/AC10 totals must include cache tokens"
+    rejected = await svc.ceo_reject(task.id, reason=reason)
+    assert rejected is not None
+
+    entries = (
+        (
+            await db_session.execute(
+                select(JournalEntryTable).where(
+                    JournalEntryTable.task_id == task.id,
+                    JournalEntryTable.type == JournalEntryType.DECISION_LOG,
+                )
+            )
+        )
+        .scalars()
+        .all()
+    )
+    assert any(reason in (e.content or "") for e in entries)
 
 
 # ---------------------------------------------------------------------------
