@@ -1053,9 +1053,34 @@ class GitService(BaseService):
         if force:
             args.insert(1, "--force")
 
-        await self._run_git(
-            workspace, args, token=token, timeout=_network_git_timeout()
-        )
+        try:
+            await self._run_git(
+                workspace, args, token=token, timeout=_network_git_timeout()
+            )
+        except GitCommandError as e:
+            # A >100MB file trips GitHub's GH001 pre-receive hook — a PERMANENT
+            # rejection that retrying can never fix. Restate it unmistakably so
+            # the agent stops blind-retrying (it otherwise mis-reads the raw
+            # output as a transient timeout) and removes the file / blocks.
+            blob = f"{e}".lower()
+            if any(
+                m in blob
+                for m in (
+                    "gh001",
+                    "exceeds github's file size",
+                    "100.00 mb",
+                    "pre-receive hook declined",
+                )
+            ):
+                raise GitCommandError(
+                    "push",
+                    "rejected — a committed file exceeds GitHub's 100 MB limit"
+                    " (GH001). Retrying will NOT help: remove the oversized file"
+                    " (usually a build/dependency artifact like a node or pnpm"
+                    " store) from the commit and re-commit, or call i_am_blocked"
+                    " if you cannot.",
+                ) from e
+            raise
 
         return branch, commits_to_push
 

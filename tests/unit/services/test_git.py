@@ -15,6 +15,7 @@ from uuid import uuid4
 import pytest
 from roboco.api.schemas.git import GitCreateBranchRequest
 from roboco.config import settings
+from roboco.exceptions import GitCommandError
 from roboco.services.base import NotFoundError, UnauthorizedError
 from roboco.services.git import GitService
 
@@ -522,3 +523,43 @@ async def test_create_branch_keeps_existing_branch_that_has_work() -> None:
     assert not any(c[:2] == ["reset", "--hard"] for c in calls), (
         "a branch with real work must never be reset"
     )
+
+
+@pytest.mark.asyncio
+async def test_push_restates_gh001_as_permanent() -> None:
+    """A >100MB push rejection (GH001) is re-raised with a clear, permanent
+    message that points at i_am_blocked — not the raw output an agent mis-reads
+    as a transient timeout and blind-retries."""
+    svc = _service()
+    _bind(svc, "get_current_branch", AsyncMock(return_value="feature/x"))
+    _bind(svc, "_token_for_workspace", AsyncMock(return_value=None))
+
+    async def _run_git(_workspace: object, args: list[str], **_kw: object) -> object:
+        if args[:1] == ["push"]:
+            raise GitCommandError(
+                "git push",
+                "remote: error: GH001: large.bin is 115.00 MB; this exceeds "
+                "GitHub's file size limit of 100.00 MB",
+            )
+        return MagicMock(returncode=0, stdout="1", stderr="")
+
+    _bind(svc, "_run_git", AsyncMock(side_effect=_run_git))
+    with pytest.raises(GitCommandError, match="i_am_blocked"):
+        await svc.push(Path("/tmp/ws"))
+
+
+@pytest.mark.asyncio
+async def test_push_propagates_non_gh001_error_unchanged() -> None:
+    """A non-size push failure is re-raised as-is (not reclassified)."""
+    svc = _service()
+    _bind(svc, "get_current_branch", AsyncMock(return_value="feature/x"))
+    _bind(svc, "_token_for_workspace", AsyncMock(return_value=None))
+
+    async def _run_git(_workspace: object, args: list[str], **_kw: object) -> object:
+        if args[:1] == ["push"]:
+            raise GitCommandError("git push", "fatal: Authentication failed")
+        return MagicMock(returncode=0, stdout="1", stderr="")
+
+    _bind(svc, "_run_git", AsyncMock(side_effect=_run_git))
+    with pytest.raises(GitCommandError, match="Authentication failed"):
+        await svc.push(Path("/tmp/ws"))
