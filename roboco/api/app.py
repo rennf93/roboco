@@ -36,6 +36,7 @@ from roboco.api.routes.provider import router as provider_router
 from roboco.api.routes.sessions import router as sessions_router
 from roboco.api.routes.stream import router as stream_router
 from roboco.api.routes.tasks import router as tasks_router
+from roboco.api.routes.usage import router as usage_router
 from roboco.api.routes.v1 import do as do_module
 from roboco.api.routes.v1 import flow_auditor as flow_auditor_module
 from roboco.api.routes.v1 import flow_board as flow_board_module
@@ -44,7 +45,6 @@ from roboco.api.routes.v1 import flow_dev as flow_dev_module
 from roboco.api.routes.v1 import flow_doc as flow_doc_module
 from roboco.api.routes.v1 import flow_main_pm as flow_main_pm_module
 from roboco.api.routes.v1 import flow_qa as flow_qa_module
-from roboco.api.routes.usage import router as usage_router
 from roboco.api.routes.work_session import router as work_session_router
 from roboco.api.websocket import router as ws_router
 from roboco.config import settings

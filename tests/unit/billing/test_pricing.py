@@ -22,20 +22,20 @@ from roboco.billing.pricing import calculate_cost
 _M = 1_000_000  # 1 million tokens
 
 # Pricing — per-1M USD, matches the _PRICING table in pricing.py
-_OPUS_INPUT = 15.00
-_OPUS_OUTPUT = 75.00
-_OPUS_CACHE_READ = 1.50
-_OPUS_CACHE_WRITE = 3.75
+_OPUS_INPUT = 5.00
+_OPUS_OUTPUT = 25.00
+_OPUS_CACHE_READ = 0.50
+_OPUS_CACHE_WRITE = 6.25
 
 _SONNET_INPUT = 3.00
 _SONNET_OUTPUT = 15.00
 _SONNET_CACHE_READ = 0.30
 _SONNET_CACHE_WRITE = 0.75
 
-_HAIKU_INPUT = 0.80
-_HAIKU_OUTPUT = 4.00
-_HAIKU_CACHE_READ = 0.08
-_HAIKU_CACHE_WRITE = 0.20
+_HAIKU_INPUT = 1.00
+_HAIKU_OUTPUT = 5.00
+_HAIKU_CACHE_READ = 0.10
+_HAIKU_CACHE_WRITE = 1.25
 
 _HAIKU3_INPUT = 0.25  # claude-haiku-3 is cheaper than haiku-3-5 / haiku-4
 
@@ -269,7 +269,7 @@ class TestSubstringMatchPriority:
         """claude-haiku-3 is cheaper than claude-haiku-4 — longest-match wins."""
         haiku3_cost = calculate_cost("claude-haiku-3", tokens_input=_M, tokens_output=0)
         haiku4_cost = calculate_cost("claude-haiku-4", tokens_input=_M, tokens_output=0)
-        # haiku-3 ($0.25/1M) < haiku-4 ($0.80/1M)
+        # haiku-3 ($0.25/1M) < haiku-4 ($1.00/1M)
         assert haiku3_cost < haiku4_cost
 
     def test_non_claude_model_returns_zero(self) -> None:
