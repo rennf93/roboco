@@ -2510,6 +2510,26 @@ class TaskService(BaseService):
         except TaskLifecycleError:
             return None
 
+    def _snapshot_pre_block(self, task: TaskTable) -> None:
+        """Record the pre-block status + owner so unblock(restore=True) works.
+
+        Captures the resting state a task is leaving so a PM ``unblock`` with
+        ``restore=True`` can return it exactly there. Call this *before*
+        mutating status/ownership at every block entry (dependency block,
+        soft block, escalation). Only the first block in a chain snapshots —
+        a re-block (e.g. escalating an already-blocked task) must not overwrite
+        the original resting state with ``blocked``. Mirrors the ``not already
+        set`` guard used for ``blocker_raised_by``.
+        """
+        if task.pre_block_state:
+            return
+        task.pre_block_state = (
+            task.status.value
+            if isinstance(task.status, TaskStatus)
+            else str(task.status)
+        )
+        task.pre_block_assignee = cast("Any", task.assigned_to or task.claimed_by)
+
     async def block(
         self,
         task_id: UUID,
@@ -2538,6 +2558,7 @@ class TaskService(BaseService):
         # the unblock path has a consistent source of truth.
         if task.assigned_to and not task.blocker_raised_by:
             task.blocker_raised_by = task.assigned_to
+        self._snapshot_pre_block(task)
         self._validate_and_set_status(task, TaskStatus.BLOCKED, agent_role)
         await self.session.flush()
 
@@ -2619,6 +2640,7 @@ class TaskService(BaseService):
         # Remember the raiser so `unblock` can restore the task to them.
         if task.assigned_to and not task.blocker_raised_by:
             task.blocker_raised_by = task.assigned_to
+        self._snapshot_pre_block(task)
         self._validate_and_set_status(task, TaskStatus.BLOCKED, agent_role)
         await self.session.flush()
 
@@ -3644,6 +3666,7 @@ class TaskService(BaseService):
             else str(task.status)
         )
         pre_block_owner = cast("Any", task.claimed_by)
+        self._snapshot_pre_block(task)
         task.assigned_to = cast("Any", target_agent_id)
         task.claimed_by = cast("Any", target_agent_id)
         task.status = TaskStatus.BLOCKED
@@ -5916,6 +5939,24 @@ class TaskService(BaseService):
             restored_status = TaskStatus(task.pre_block_state)
         except ValueError:
             return await self.unblock(task_id, agent_role="cell_pm")
+
+        return await self._apply_pre_block_restore(task, restored_status)
+
+    async def _apply_pre_block_restore(
+        self, task: TaskTable, restored_status: TaskStatus
+    ) -> TaskTable:
+        """Restore a blocked task to its snapshotted status + owner.
+
+        Sets status directly (bypassing the strict transition validator) and so
+        emits the audit explicitly, applies the branchless guard legacy
+        unblock() relies on, restores ownership from the snapshot, and clears
+        the pre-block snapshot fields.
+        """
+        # A task with no branch cannot resume in_progress — the dispatcher
+        # refuses a branchless in_progress task and loops — so divert it to
+        # pending, exactly as legacy unblock() does.
+        if restored_status == TaskStatus.IN_PROGRESS and not task.branch_name:
+            restored_status = TaskStatus.PENDING
 
         pre_status = (
             task.status.value
