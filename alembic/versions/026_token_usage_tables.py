@@ -17,7 +17,10 @@ from alembic import op
 from sqlalchemy.dialects.postgresql import UUID
 
 revision = "026_token_usage_tables"
-down_revision = "025_agentrole_prompter"
+# Rebased onto 026_completed_dependency_ids so the chain stays linear: the
+# master merge brought in a second migration off 025_agentrole_prompter, which
+# forked the head. Chain is now 025 -> 026_completed_dependency_ids -> this.
+down_revision = "026_completed_dependency_ids"
 branch_labels = None
 depends_on = None
 

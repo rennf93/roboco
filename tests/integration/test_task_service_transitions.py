@@ -623,9 +623,13 @@ async def test_ceo_reject_routes_coordination_task_to_main_pm(
 
     rejected = await svc.ceo_reject(task.id, reason="redo the API contract")
     assert rejected is not None
-    assert rejected.status == TaskStatus.NEEDS_REVISION
+    # A coordination root goes to PENDING (the Main PM's claim source), NOT
+    # needs_revision — that status is developer-claim-only and would deadlock
+    # the Main PM, which owns the root and must re-plan/re-delegate.
+    assert rejected.status == TaskStatus.PENDING
     assert rejected.team == Team.MAIN_PM
     assert rejected.assigned_to == main_pm_id
+    assert rejected.claimed_by is None
 
 
 @pytest.mark.asyncio
