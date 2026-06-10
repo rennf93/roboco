@@ -191,6 +191,10 @@ class Task(TimestampMixin):
     blocker_ids: list[UUID] = Field(
         default_factory=list, description="Task IDs this is blocking"
     )
+    completed_dependency_ids: list[UUID] = Field(
+        default_factory=list,
+        description="Dependency task IDs that have since completed and cleared",
+    )
 
     # Timestamps
     claimed_at: datetime | None = None

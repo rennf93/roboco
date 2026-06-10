@@ -137,6 +137,17 @@ class TestTaskHandoff:
         assert digest["dev_summary"] == "implemented the parser"
         assert digest["journal_highlights"] == [{"summary": "chose recursive descent"}]
 
+    def test_surfaces_completed_dependencies(self) -> None:
+        dep_id = uuid4()
+        t = _task(pr_number=None, pr_url=None, dev_notes="")
+        t.commits = []
+        t.acceptance_criteria_status = []
+        t.completed_dependency_ids = [dep_id]
+        digest = build_task_handoff(t, [])
+        # A just-unblocked task with no other prior work still surfaces the dep.
+        assert digest is not None
+        assert digest["completed_dependency_ids"] == [str(dep_id)]
+
     def test_caps_lists_and_type_guards(self) -> None:
         thirty = [{"sha": str(i)} for i in range(30)]
         t = _task(pr_number=7, commits=thirty)

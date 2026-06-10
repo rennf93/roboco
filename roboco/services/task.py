@@ -4152,10 +4152,17 @@ class TaskService(BaseService):
         blocked_tasks = result.scalars().all()
 
         for task in blocked_tasks:
-            # Remove the completed task from dependencies
+            # Remove the completed task from dependencies, but remember it so the
+            # unblock briefing can tell the revived dependent which upstream task
+            # just landed (otherwise the only record of it is destroyed here).
             task.dependency_ids = [
                 dep_id for dep_id in task.dependency_ids if dep_id != completed_task_id
             ]
+            if completed_task_id not in task.completed_dependency_ids:
+                task.completed_dependency_ids = [
+                    *task.completed_dependency_ids,
+                    completed_task_id,
+                ]
             # If no more dependencies, unblock (system action - no role validation)
             if not task.dependency_ids and task.status == TaskStatus.BLOCKED:
                 await self._revive_unblocked_dependent(task)

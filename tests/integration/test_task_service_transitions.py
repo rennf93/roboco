@@ -798,6 +798,8 @@ async def test_unblock_dependents_clears_dep_id(
     refreshed = await svc.get(dependent.id)
     assert refreshed is not None
     assert blocker.id not in refreshed.dependency_ids
+    # The cleared dependency is remembered so the unblock briefing can surface it.
+    assert blocker.id in refreshed.completed_dependency_ids
     assert refreshed.status == TaskStatus.IN_PROGRESS
 
 
@@ -817,6 +819,9 @@ async def test_unblock_dependents_keeps_blocked_when_other_deps_remain(
     assert refreshed is not None
     # Still blocked because other_blocker is still in deps
     assert refreshed.status == TaskStatus.BLOCKED
+    # but the one dependency that did complete is recorded.
+    assert blocker.id in refreshed.completed_dependency_ids
+    assert other_blocker.id not in refreshed.completed_dependency_ids
 
 
 # ---------------------------------------------------------------------------

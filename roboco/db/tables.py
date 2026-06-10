@@ -259,6 +259,12 @@ class TaskTable(Base):
     blocker_ids: Mapped[list[PyUUID]] = mapped_column(
         ARRAY(UUID(as_uuid=True)), default=list
     )
+    # Dependencies that have since completed and been cleared from
+    # ``dependency_ids`` — kept so the unblock briefing can tell the revived
+    # dependent which upstream task just landed.
+    completed_dependency_ids: Mapped[list[PyUUID]] = mapped_column(
+        ARRAY(UUID(as_uuid=True)), default=list, server_default="{}"
+    )
 
     # Ordering (for sibling tasks under the same parent)
     sequence: Mapped[int] = mapped_column(

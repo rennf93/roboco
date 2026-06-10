@@ -54,6 +54,7 @@ Every success envelope carries a `context_briefing`. **Read it before you touch 
 - `dev_summary` — the implementer's own note on what they did.
 - `acceptance_criteria_status` — which criteria are already satisfied.
 - `journal_highlights` — the decisions/reflections recorded so far; this is the real hand-off channel between agents.
+- `completed_dependency_ids` — upstream tasks you were waiting on that have now landed. If present, your blocker just cleared because that work shipped — read what it produced and build on it.
 
 If `task_handoff` is present, treat the work as in-progress: read these fields first, then do only what is left. Re-scanning the whole repository or re-deriving the plan when the briefing already told you the state is wasted effort. Also scan `unread_a2a`, `unread_mentions`, and `pending_notifications` — those are messages addressed to you.
 

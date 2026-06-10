@@ -94,8 +94,16 @@ def build_task_handoff(
     highlights = _typed(journal_highlights, list, [])
     pr_number = _typed(task.pr_number, int, None)
     dev_summary = _typed(task.dev_notes, str, None)
+    # Upstream dependencies that completed and were cleared — present only on a
+    # just-unblocked task, so the revived dependent knows what it can build on.
+    completed_deps = _typed(getattr(task, "completed_dependency_ids", None), list, [])
     has_prior = bool(
-        commits or acceptance or highlights or pr_number is not None or dev_summary
+        commits
+        or acceptance
+        or highlights
+        or pr_number is not None
+        or dev_summary
+        or completed_deps
     )
     if not has_prior:
         return None
@@ -108,6 +116,9 @@ def build_task_handoff(
         "dev_summary": dev_summary,
         "acceptance_criteria_status": acceptance[:BRIEFING_LIST_CAP],
         "journal_highlights": highlights[:BRIEFING_LIST_CAP],
+        "completed_dependency_ids": [
+            str(d) for d in completed_deps[:BRIEFING_LIST_CAP]
+        ],
     }
 
 
