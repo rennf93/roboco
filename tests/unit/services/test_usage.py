@@ -199,7 +199,7 @@ class TestGetSummaryTrendPct:
 
 
 # ---------------------------------------------------------------------------
-# get_time_series — total_tokens includes all 4 token types (AC9 consistency)
+# get_time_series — total_tokens includes all 4 token types (summary consistency)
 # ---------------------------------------------------------------------------
 
 # Named constants for time-series tests
@@ -218,10 +218,10 @@ class TestGetTimeSeries:
     async def test_total_tokens_includes_cache_read_and_write(self) -> None:
         """total_tokens in each time-series point must include cache tokens.
 
-        This is the AC9 consistency requirement: time-series total_tokens must
-        sum to the same value as get_summary()'s total_tokens for the same
-        period.  The old implementation used ti + to_ (without cache), which
-        violated this constraint whenever cache tokens were non-zero.
+        This is the time-series / summary consistency requirement: time-series
+        total_tokens must sum to the same value as get_summary()'s total_tokens
+        for the same period.  The old implementation used ti + to_ (without
+        cache), which violated this constraint whenever cache tokens were non-zero.
         """
         import datetime
 
@@ -366,7 +366,7 @@ class TestGetByAgent:
 
     @pytest.mark.asyncio
     async def test_cache_tokens_included_in_total_tokens(self) -> None:
-        """total_tokens must include cache_read and cache_write (AC10 fix).
+        """total_tokens must include cache_read and cache_write.
 
         Without the fix, total would be 500+300=800 (input+output only).
         With the fix, total = 500+300+100+100 = 1000.
@@ -472,7 +472,7 @@ class TestGetByTeam:
 
     @pytest.mark.asyncio
     async def test_cache_tokens_included_in_total_tokens(self) -> None:
-        """total_tokens must include cache_read and cache_write (AC10 fix)."""
+        """total_tokens must include cache_read and cache_write."""
         _cache_read = 200
         _cache_write = 100
         _expected_total = 700 + 300 + _cache_read + _cache_write  # 1300
@@ -574,7 +574,7 @@ class TestGetByModel:
 
     @pytest.mark.asyncio
     async def test_cache_tokens_included_in_total_tokens(self) -> None:
-        """total_tokens must include cache_read and cache_write (AC10 fix)."""
+        """total_tokens must include cache_read and cache_write."""
         _cache_read = 300
         _cache_write = 100
         _expected_total = 600 + 600 + _cache_read + _cache_write  # 1600
