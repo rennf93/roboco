@@ -299,6 +299,12 @@ class PermissionService(SingletonService):
         task_team: Team | None = None,
     ) -> bool:
         """Check if agent can perform a task action."""
+        # The CEO is the ultimate authority and may perform any task action on
+        # any task — unblock, reassign, cancel, override status, etc. Every
+        # route that gates a write through this helper therefore lets the CEO
+        # through (the panel operates as the CEO).
+        if agent.role == AgentRole.CEO:
+            return True
         allowed_actions = TASK_PERMISSIONS.get(agent.role, set())
 
         if action in allowed_actions:

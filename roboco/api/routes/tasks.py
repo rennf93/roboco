@@ -712,10 +712,11 @@ async def block_task(
             status_code=status.HTTP_404_NOT_FOUND, detail="Task not found"
         )
 
-    # Only assigned agent or PM can block a task
+    # Only assigned agent, PM, or the CEO can block a task
     if task.assigned_to != agent.agent_id and agent.role not in (
         AgentRole.CELL_PM,
         AgentRole.MAIN_PM,
+        AgentRole.CEO,
     ):
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
@@ -771,10 +772,11 @@ async def unblock_task(
             status_code=status.HTTP_404_NOT_FOUND, detail="Task not found"
         )
 
-    # Only assigned agent or PM can unblock a task
+    # Only assigned agent, PM, or the CEO can unblock a task
     if task.assigned_to != agent.agent_id and agent.role not in (
         AgentRole.CELL_PM,
         AgentRole.MAIN_PM,
+        AgentRole.CEO,
     ):
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,

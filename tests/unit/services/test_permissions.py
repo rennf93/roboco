@@ -153,6 +153,21 @@ def test_cell_pm_can_close_in_own_cell(svc: PermissionService) -> None:
     assert svc.can_perform_task_action(cell_pm, TaskAction.CLOSE, Team.BACKEND) is True
 
 
+def test_ceo_can_perform_any_task_action(svc: PermissionService) -> None:
+    """The CEO is the ultimate authority — it may perform ANY task action on any
+    task (assign/reassign, change priority, close, claim, view). The panel
+    operates as the CEO, so this override is what unblocks the whole UI."""
+    ceo = _ctx(AgentRole.CEO)
+    for action in (
+        TaskAction.ASSIGN,
+        TaskAction.CHANGE_PRIORITY,
+        TaskAction.CLOSE,
+        TaskAction.CLAIM,
+        TaskAction.VIEW_ALL,
+    ):
+        assert svc.can_perform_task_action(ceo, action, Team.BACKEND) is True
+
+
 def test_get_task_actions_returns_set(svc: PermissionService) -> None:
     dev = _ctx(AgentRole.DEVELOPER, team=Team.BACKEND)
     actions = svc.get_task_actions(dev)

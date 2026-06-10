@@ -5660,11 +5660,17 @@ Never `commit`, never write code, never run `git`. PMs coordinate.
 
     @staticmethod
     def _resolve_dev_owner_uuid(task: dict[str, Any]) -> str | None:
-        """Pick the right owner UUID for dev dispatch based on status."""
+        """Pick the right owner UUID for dev dispatch based on status.
+
+        Always falls back to ``claimed_by`` when ``assigned_to`` is missing, so
+        a task left half-reaped (assigned_to nulled but still claimed) still
+        dispatches to its rightful owner instead of going dormant — the
+        orchestrator knows who to call even when one ownership field was cleared.
+        """
         status = task.get("status")
         if status in ("claimed", "blocked"):
             return task.get("claimed_by") or task.get("assigned_to")
-        return task.get("assigned_to")
+        return task.get("assigned_to") or task.get("claimed_by")
 
     async def _respawn_dev_if_inactive(
         self, task: dict[str, Any], agent_slug: str

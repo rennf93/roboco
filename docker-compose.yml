@@ -256,6 +256,11 @@ services:
       # Production environment selects structlog's JSONRenderer (machine-
       # parseable logs) over the dev ConsoleRenderer.
       ROBOCO_ENVIRONMENT: production
+      # Reaper timeouts raised to 30 min so a long agent task isn't reaped
+      # mid-work. ROBOCO_CLAIM_STALE_SECONDS is the heartbeat-staleness window
+      # _reap_stale_claims uses (the one that was killing in-progress work).
+      ROBOCO_CLAIM_STALE_SECONDS: "1800"
+      ROBOCO_STALE_CLAIM_REAP_SECONDS: "1800"
     volumes:
       # Docker socket - allows spawning agent containers
       - /var/run/docker.sock:/var/run/docker.sock
