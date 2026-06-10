@@ -3330,7 +3330,7 @@ class AgentOrchestrator:
         """
         try:
             from roboco.db.base import get_session_factory
-            from roboco.db.tables import AgentSpawnSessionTable, DailyUsageRollupTable
+            from roboco.db.tables import AgentSpawnSessionTable
         except ImportError:
             return
 
@@ -3382,65 +3382,57 @@ class AgentOrchestrator:
                 rows = result.fetchall()
 
                 for row in rows:
-                    date_val = row.date
-                    agent_slug = row.agent_slug
-                    team = row.team
-                    model = row.model
-
-                    # Look for existing rollup row
-                    existing_result = await db.execute(
-                        select(DailyUsageRollupTable).where(
-                            DailyUsageRollupTable.date == date_val,
-                            DailyUsageRollupTable.agent_slug == agent_slug,
-                            DailyUsageRollupTable.team == team,
-                            DailyUsageRollupTable.model == model,
-                        )
-                    )
-                    existing = existing_result.scalar_one_or_none()
-
-                    tokens_input = int(row.tokens_input or 0)
-                    tokens_output = int(row.tokens_output or 0)
-                    tokens_cache_read = int(row.tokens_cache_read or 0)
-                    tokens_cache_write = int(row.tokens_cache_write or 0)
-                    total_cost = float(row.total_cost_usd or 0.0)
-                    session_count = int(row.session_count or 0)
-
-                    if existing is not None:
-                        from sqlalchemy import update
-
-                        await db.execute(
-                            update(DailyUsageRollupTable)
-                            .where(DailyUsageRollupTable.id == existing.id)
-                            .values(
-                                tokens_input=tokens_input,
-                                tokens_output=tokens_output,
-                                tokens_cache_read=tokens_cache_read,
-                                tokens_cache_write=tokens_cache_write,
-                                total_cost_usd=total_cost,
-                                session_count=session_count,
-                            )
-                        )
-                    else:
-                        new_row = DailyUsageRollupTable(
-                            id=_uuid4(),
-                            date=date_val,
-                            agent_slug=agent_slug,
-                            team=team,
-                            model=model,
-                            tokens_input=tokens_input,
-                            tokens_output=tokens_output,
-                            tokens_cache_read=tokens_cache_read,
-                            tokens_cache_write=tokens_cache_write,
-                            total_cost_usd=total_cost,
-                            session_count=session_count,
-                        )
-                        db.add(new_row)
+                    await self._upsert_rollup_row(db, row, _uuid4)
 
                 await db.commit()
                 logger.debug("Daily usage rollup complete", rows_processed=len(rows))
 
         except Exception as exc:
             logger.warning("Daily usage rollup failed", error=str(exc))
+
+    async def _upsert_rollup_row(self, db: Any, row: Any, uuid4: Any) -> None:
+        """Insert or update a single daily_usage_rollups row from an aggregate.
+
+        Looks up the existing rollup for (date, agent_slug, team, model) and
+        either updates its summed columns or inserts a fresh row.
+        """
+        from sqlalchemy import select, update
+
+        from roboco.db.tables import DailyUsageRollupTable
+
+        key = {
+            "date": row.date,
+            "agent_slug": row.agent_slug,
+            "team": row.team,
+            "model": row.model,
+        }
+        values = {
+            "tokens_input": int(row.tokens_input or 0),
+            "tokens_output": int(row.tokens_output or 0),
+            "tokens_cache_read": int(row.tokens_cache_read or 0),
+            "tokens_cache_write": int(row.tokens_cache_write or 0),
+            "total_cost_usd": float(row.total_cost_usd or 0.0),
+            "session_count": int(row.session_count or 0),
+        }
+
+        existing_result = await db.execute(
+            select(DailyUsageRollupTable).where(
+                DailyUsageRollupTable.date == key["date"],
+                DailyUsageRollupTable.agent_slug == key["agent_slug"],
+                DailyUsageRollupTable.team == key["team"],
+                DailyUsageRollupTable.model == key["model"],
+            )
+        )
+        existing = existing_result.scalar_one_or_none()
+
+        if existing is not None:
+            await db.execute(
+                update(DailyUsageRollupTable)
+                .where(DailyUsageRollupTable.id == existing.id)
+                .values(**values)
+            )
+        else:
+            db.add(DailyUsageRollupTable(id=uuid4(), **key, **values))
 
     async def restore_waiting_records(self) -> int:
         """Load persisted waiting records into memory on orchestrator start.

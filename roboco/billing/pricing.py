@@ -48,6 +48,21 @@ _PRICING: list[tuple[str, float, float, float, float]] = [
 _MILLION = 1_000_000.0
 
 
+def _lookup_prices(lower: str) -> tuple[float, float, float, float] | None:
+    """Return the (input, output, cache_read, cache_write) rates for a model.
+
+    Matches ``lower`` (a lowercased model name) against the pricing table by
+    substring, longest fragment wins. Returns None when no fragment matches.
+    """
+    best_fragment_len = 0
+    best_prices: tuple[float, float, float, float] | None = None
+    for fragment, inp_price, out_price, cr_price, cw_price in _PRICING:
+        if fragment in lower and len(fragment) > best_fragment_len:
+            best_fragment_len = len(fragment)
+            best_prices = (inp_price, out_price, cr_price, cw_price)
+    return best_prices
+
+
 def calculate_cost(
     model: str,
     tokens_input: int,
@@ -83,14 +98,7 @@ def calculate_cost(
         return 0.0
 
     # Find the best (longest fragment) match
-    best_fragment_len = 0
-    best_prices: tuple[float, float, float, float] | None = None
-
-    for fragment, inp_price, out_price, cr_price, cw_price in _PRICING:
-        if fragment in lower and len(fragment) > best_fragment_len:
-            best_fragment_len = len(fragment)
-            best_prices = (inp_price, out_price, cr_price, cw_price)
-
+    best_prices = _lookup_prices(lower)
     if best_prices is None:
         logger.warning("No pricing data found for model", model=model)
         return 0.0
