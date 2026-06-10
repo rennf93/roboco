@@ -51,7 +51,7 @@ class NoteRequest(BaseModel):
     title: str | None = None
     # decision scope (all required at gateway when scope='decision').
     # Typed as non-nullable str (default "") so the MCP tool schema declares
-    # the field as `string` not `anyOf[string, null]` — smoke-6 showed
+    # the field as `string` not `anyOf[string, null]` — dogfooding showed
     # minimax-m3 passing literal `null` for these and the server-side
     # gate looping forever on `incomplete_input`. Empty string still counts
     # as missing at the gate.
@@ -177,7 +177,7 @@ class ReadMessagesRequest(BaseModel):
 class PRUpdateRequest(BaseModel):
     """Update an open PR's title/body and/or request reviewers.
 
-    Smoke-5 surfaced the gap: agents who needed to fix the PR title or
+    Dogfooding surfaced the gap: agents who needed to fix the PR title or
     request a reviewer after `open_pr` had no verb for it and got blocked
     by the bash-guard on `gh pr edit`. This is the gateway-native fix.
 

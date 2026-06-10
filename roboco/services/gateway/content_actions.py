@@ -608,7 +608,7 @@ class ContentActions:
         # error escapes here it's caught by FastAPI's middleware and
         # rendered as RobocoError.to_dict() — a dict-shaped 'error'
         # field that breaks do_server's circuit-breaker frozenset
-        # check (smoke-7: TypeError: unhashable type: 'dict').
+        # check (a TypeError: unhashable type: 'dict').
         from roboco.enforcement.a2a_access import A2AAccessDeniedError
 
         try:
@@ -1184,7 +1184,7 @@ class ContentActions:
     ) -> Envelope:
         """Update an existing PR's title, body, and/or requested reviewers.
 
-        Smoke-5 surfaced this gap: agents who needed to edit a PR's
+        Dogfooding surfaced this gap: agents who needed to edit a PR's
         title/body or assign a reviewer after ``open_pr`` had no verb
         for it and got bash-shimmed by the ``gh pr edit`` guard. This
         verb is the gateway-native replacement.

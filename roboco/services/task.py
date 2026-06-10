@@ -5448,7 +5448,7 @@ class TaskService(BaseService):
 
         Wider than ``get_active_task_for_agent`` — includes BLOCKED, PAUSED,
         and NEEDS_REVISION so journal entries written while stuck still
-        get the task_id auto-attached. Smoke-5 surfaced the bug: PMs
+        get the task_id auto-attached. Dogfooding surfaced the bug: PMs
         wrote decisions during blocked state, auto-injection returned
         None, entries persisted with task_id=NULL, the C8 tracing gate
         never saw them, agents spiraled forever.

@@ -533,7 +533,7 @@ _TOOLS: dict[str, Any] = {
 
 # IntentSpec verb names → MCP public tool names. The IntentSpec layer uses
 # Python-friendly identifiers (no reserved keywords); the MCP layer exposes
-# the user-facing verb name. Smoke-7 surfaced this gap: the manifest carried
+# the user-facing verb name. Dogfooding surfaced this gap: the manifest carried
 # `pass_review`/`fail_review` (IntentSpec names) but flow_server only had
 # `pass`/`fail` keys, so QA's tools were silently dropped at registration.
 _INTENT_TO_PUBLIC: dict[str, str] = {

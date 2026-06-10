@@ -40,7 +40,7 @@ _SDK_TIMEOUT = 2.0
 # Mirrors flow_server._CIRCUIT_REJECTION_KINDS — agent_sdk.server is the
 # authoritative side; the same set must be applied here so the do-server
 # (content tools) gets the same protection as flow-server (intent verbs).
-# Smoke-6 surfaced the gap: `note(scope='decision')` looped 8 times
+# Dogfooding surfaced the gap: `note(scope='decision')` looped 8 times
 # returning `incomplete_input` with no breaker.
 _CIRCUIT_REJECTION_KINDS: frozenset[str] = frozenset(
     {"tracing_gap", "invalid_state", "not_authorized", "incomplete_input"}
@@ -74,7 +74,7 @@ def _post(path: str, body: dict[str, Any]) -> dict[str, Any]:
     Rejection envelopes (error in _CIRCUIT_REJECTION_KINDS) are forwarded
     to the local SDK's /verb/attempted so the per-verb circuit breaker
     can track them. If the SDK reports open, the original rejection is
-    REPLACED with circuit_open. Smoke-6 surfaced the gap: do-server had
+    REPLACED with circuit_open. Dogfooding surfaced the gap: do-server had
     no breaker and `note(scope='decision')` looped 8 times returning
     incomplete_input.
     """
@@ -132,7 +132,7 @@ def _record_and_check_circuit(
     """
     # Gateway envelopes use a string `error` (kind); RobocoError-derived
     # exceptions surface a dict-shaped error via FastAPI's middleware
-    # (smoke-7: TypeError on `dict in frozenset`). Defend against the
+    # (a TypeError on `dict in frozenset`). Defend against the
     # dict shape — only string kinds count toward the breaker, dicts pass
     # straight through.
     rejection_kind = payload.get("error")

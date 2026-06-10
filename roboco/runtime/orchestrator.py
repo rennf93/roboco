@@ -2108,7 +2108,7 @@ class AgentOrchestrator:
 
         Handoff states are role-specific. Dev-owned states (in_progress,
         verifying, needs_revision, paused, blocked) are restricted to
-        developer/documenter to defang the smoke-8 bug where QA got
+        developer/documenter to defang the bug where QA got
         respawned on a `needs_revision` task via the crash-restart path
         and immediately hit ``role 'qa' may not claim from status
         'needs_revision'`` at the gateway.
@@ -3289,7 +3289,7 @@ Start by:
         """Return (is_running, exit_code) from `docker inspect`.
 
         exit_code is None when the output is missing or unparseable; the
-        caller treats None as a crash for safety (smoke-8 fix).
+        caller treats None as a crash for safety.
         """
         proc = await asyncio.create_subprocess_exec(
             "docker",
@@ -3314,7 +3314,7 @@ Start by:
     ) -> None:
         """Update state + auto-restart only when the exit was non-zero.
 
-        Smoke-8 evidence: graceful exits (exit 0 — agent called i_am_idle)
+        Graceful exits (exit 0 — agent called i_am_idle)
         were treated as crashes by the old logic. The health check bumped
         error_count and respawned the agent with the prior task_id even if
         the task had since moved into a state the role can't claim from
@@ -3713,8 +3713,8 @@ Start by:
         so the closure dispatcher knows to respawn it). Pre-gateway the
         parent was resumed at respawn so the PM landed actionable; the
         gateway refactor dropped that, so the respawned PM had to issue
-        ``resume()`` itself — which weak models (minimax) reliably fail,
-        wedging the whole chain (smoke-15). Restore the auto-resume:
+        ``resume()`` itself — which weak models reliably fail,
+        wedging the whole chain. Restore the auto-resume:
         paused -> in_progress before spawn so the PM can directly
         submit_up / complete / escalate. Best-effort; a resume failure
         must not block the spawn (the PM can still resume manually).
@@ -3749,7 +3749,7 @@ Start by:
         one wedged the whole chain forever: the respawned PM cannot
         submit_up / complete a blocked parent and must first ``unblock``
         it (needs journal:decision), which weak models never reliably do
-        (smoke-19/this run wedged exactly here). ``blocked -> in_progress``
+        (a dogfood run wedged exactly here). ``blocked -> in_progress``
         is lifecycle-valid — it is precisely what ``unblock(restore=True)``
         performs. Best-effort; a failure must not block the spawn (the PM
         can still ``unblock`` manually).

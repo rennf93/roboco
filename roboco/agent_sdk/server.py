@@ -375,7 +375,7 @@ _CIRCUIT_REJECTION_KINDS: frozenset[str] = frozenset(
 # stores after stripping the `mcp__roboco-flow__` / `mcp__roboco-do__`
 # prefix (see line ~798). The deleted pre-gateway tool names never
 # matched the suffix-stripped values, so the stop hook used to nag
-# every agent even after a successful i_am_idle (smoke-7 evidence).
+# every agent even after a successful i_am_idle.
 _TERMINAL_TOOLS: frozenset[str] = frozenset(
     {
         # Every role's clean exit.
