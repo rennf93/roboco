@@ -5,7 +5,7 @@ Provides endpoints for querying token usage metrics across agents,
 teams, and models. Supports period-based queries (24h, 7d, 30d).
 """
 
-from typing import Any, Literal
+from typing import Annotated, Any, Literal
 
 from fastapi import APIRouter, Query
 
@@ -16,6 +16,11 @@ router = APIRouter()
 
 _PeriodType = Literal["24h", "7d", "30d"]
 
+_PeriodQuery = Annotated[
+    _PeriodType,
+    Query(description="Time period: 24h, 7d, 30d"),
+]
+
 
 # =============================================================================
 # SUMMARY
@@ -25,7 +30,7 @@ _PeriodType = Literal["24h", "7d", "30d"]
 @router.get("/summary")
 async def get_usage_summary(
     db: DbSession,
-    period: _PeriodType = Query(default="24h", description="Time period: 24h, 7d, 30d"),
+    period: _PeriodQuery = "24h",
 ) -> dict[str, Any]:
     """Return aggregated token usage and cost for the given period.
 
@@ -48,7 +53,7 @@ async def get_usage_summary(
 @router.get("/time-series")
 async def get_usage_time_series(
     db: DbSession,
-    period: _PeriodType = Query(default="24h", description="Time period: 24h, 7d, 30d"),
+    period: _PeriodQuery = "24h",
 ) -> list[dict[str, Any]]:
     """Return bucketed time-series data points.
 
@@ -70,7 +75,7 @@ async def get_usage_time_series(
 @router.get("/by-agent")
 async def get_usage_by_agent(
     db: DbSession,
-    period: _PeriodType = Query(default="24h", description="Time period: 24h, 7d, 30d"),
+    period: _PeriodQuery = "24h",
 ) -> list[dict[str, Any]]:
     """Return per-agent token usage with pct_of_total.
 
@@ -83,7 +88,7 @@ async def get_usage_by_agent(
 @router.get("/by-team")
 async def get_usage_by_team(
     db: DbSession,
-    period: _PeriodType = Query(default="24h", description="Time period: 24h, 7d, 30d"),
+    period: _PeriodQuery = "24h",
 ) -> list[dict[str, Any]]:
     """Return per-team token usage with pct_of_total.
 
@@ -96,7 +101,7 @@ async def get_usage_by_team(
 @router.get("/by-model")
 async def get_usage_by_model(
     db: DbSession,
-    period: _PeriodType = Query(default="24h", description="Time period: 24h, 7d, 30d"),
+    period: _PeriodQuery = "24h",
 ) -> list[dict[str, Any]]:
     """Return per-model token usage with pct_of_total.
 
@@ -131,7 +136,7 @@ async def get_usage_projection(
 @router.get("/cache-efficiency")
 async def get_cache_efficiency(
     db: DbSession,
-    period: _PeriodType = Query(default="24h", description="Time period: 24h, 7d, 30d"),
+    period: _PeriodQuery = "24h",
 ) -> dict[str, Any]:
     """Return cache hit rate and estimated savings from prompt caching.
 

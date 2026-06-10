@@ -5,10 +5,15 @@ Implements per-model USD cost calculation based on Anthropic's published
 pricing. All prices are in USD per 1 million tokens.
 
 Unknown model names return 0.0 without raising so callers don't need to
-guard against missing pricing data.
+guard against missing pricing data.  Self-hosted Ollama models always
+return 0.0 (no API cost) — matched by the ``ollama/`` prefix convention.
 """
 
 from __future__ import annotations
+
+import structlog
+
+logger = structlog.get_logger(__name__)
 
 # ---------------------------------------------------------------------------
 # Per-model pricing table
@@ -24,20 +29,20 @@ from __future__ import annotations
 _PRICING: list[tuple[str, float, float, float, float]] = [
     # (fragment, input/1M, output/1M, cache_read/1M, cache_write/1M)
     # Opus 4 family
-    ("claude-opus-4", 15.00, 75.00, 1.50, 3.75),
+    ("claude-opus-4", 5.00, 25.00, 0.50, 6.25),
     # Sonnet 4 / 3.7 / 3.5 family
     ("claude-sonnet-4", 3.00, 15.00, 0.30, 0.75),
     ("claude-3-7-sonnet", 3.00, 15.00, 0.30, 0.75),
     ("claude-3-5-sonnet", 3.00, 15.00, 0.30, 0.75),
     # Haiku family
-    ("claude-haiku-4", 0.80, 4.00, 0.08, 0.20),
-    ("claude-haiku-3-5", 0.80, 4.00, 0.08, 0.20),
-    ("claude-3-5-haiku", 0.80, 4.00, 0.08, 0.20),
+    ("claude-haiku-4", 1.00, 5.00, 0.10, 1.25),
+    ("claude-haiku-3-5", 1.00, 5.00, 0.10, 1.25),
+    ("claude-3-5-haiku", 1.00, 5.00, 0.10, 1.25),
     ("claude-haiku-3", 0.25, 1.25, 0.025, 0.0625),
     # Short aliases used in ROLE_MODEL_MAP / MODEL_MAP
-    ("opus", 15.00, 75.00, 1.50, 3.75),
+    ("opus", 5.00, 25.00, 0.50, 6.25),
     ("sonnet", 3.00, 15.00, 0.30, 0.75),
-    ("haiku", 0.80, 4.00, 0.08, 0.20),
+    ("haiku", 1.00, 5.00, 0.10, 1.25),
 ]
 
 _MILLION = 1_000_000.0
@@ -54,6 +59,7 @@ def calculate_cost(
 
     Matches the model name against the known pricing table using substring
     search (longest match wins).  Unknown models return 0.0 without raising.
+    Self-hosted Ollama models (``ollama/`` prefix) always return 0.0.
 
     Args:
         model: Model name or short alias (e.g. ``"claude-sonnet-4-6"``,
@@ -72,6 +78,10 @@ def calculate_cost(
 
     lower = model.lower()
 
+    # Self-hosted Ollama models have no API cost.
+    if lower.startswith("ollama/"):
+        return 0.0
+
     # Find the best (longest fragment) match
     best_fragment_len = 0
     best_prices: tuple[float, float, float, float] | None = None
@@ -82,6 +92,7 @@ def calculate_cost(
             best_prices = (inp_price, out_price, cr_price, cw_price)
 
     if best_prices is None:
+        logger.warning("No pricing data found for model", model=model)
         return 0.0
 
     inp_price, out_price, cr_price, cw_price = best_prices

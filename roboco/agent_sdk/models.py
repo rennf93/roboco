@@ -223,9 +223,7 @@ class TokenReportRequest(BaseModel):
     tokens_cache_read: int = Field(
         default=0, description="Prompt-cache read tokens (charged at reduced rate)"
     )
-    tokens_cache_write: int = Field(
-        default=0, description="Prompt-cache write tokens"
-    )
+    tokens_cache_write: int = Field(default=0, description="Prompt-cache write tokens")
 
 
 class TokenUsageStatus(BaseModel):

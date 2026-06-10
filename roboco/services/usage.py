@@ -9,10 +9,12 @@ and aggregation by agent, team, and model.
 from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from sqlalchemy import func, select
-from sqlalchemy.ext.asyncio import AsyncSession
+
+if TYPE_CHECKING:
+    from sqlalchemy.ext.asyncio import AsyncSession
 
 from roboco.db.tables import AgentSpawnSessionTable, DailyUsageRollupTable
 from roboco.services.base import BaseService
@@ -54,11 +56,21 @@ class UsageService(BaseService):
         # Current period totals from closed sessions
         result = await self.session.execute(
             select(
-                func.coalesce(func.sum(AgentSpawnSessionTable.tokens_input), 0).label("tokens_input"),
-                func.coalesce(func.sum(AgentSpawnSessionTable.tokens_output), 0).label("tokens_output"),
-                func.coalesce(func.sum(AgentSpawnSessionTable.tokens_cache_read), 0).label("tokens_cache_read"),
-                func.coalesce(func.sum(AgentSpawnSessionTable.tokens_cache_write), 0).label("tokens_cache_write"),
-                func.coalesce(func.sum(AgentSpawnSessionTable.estimated_cost_usd), 0.0).label("total_cost_usd"),
+                func.coalesce(func.sum(AgentSpawnSessionTable.tokens_input), 0).label(
+                    "tokens_input"
+                ),
+                func.coalesce(func.sum(AgentSpawnSessionTable.tokens_output), 0).label(
+                    "tokens_output"
+                ),
+                func.coalesce(
+                    func.sum(AgentSpawnSessionTable.tokens_cache_read), 0
+                ).label("tokens_cache_read"),
+                func.coalesce(
+                    func.sum(AgentSpawnSessionTable.tokens_cache_write), 0
+                ).label("tokens_cache_write"),
+                func.coalesce(
+                    func.sum(AgentSpawnSessionTable.estimated_cost_usd), 0.0
+                ).label("total_cost_usd"),
             ).where(
                 AgentSpawnSessionTable.started_at >= start_dt,
                 AgentSpawnSessionTable.ended_at.isnot(None),
@@ -68,7 +80,12 @@ class UsageService(BaseService):
         tokens_input = int(row.tokens_input or 0)
         tokens_output = int(row.tokens_output or 0)
         total_cost = float(row.total_cost_usd or 0.0)
-        total_tokens = tokens_input + tokens_output + int(row.tokens_cache_read or 0) + int(row.tokens_cache_write or 0)
+        total_tokens = (
+            tokens_input
+            + tokens_output
+            + int(row.tokens_cache_read or 0)
+            + int(row.tokens_cache_write or 0)
+        )
 
         # Previous period for trend calculation.
         # Sum all 4 token columns so the comparison is consistent with the
@@ -127,7 +144,7 @@ class UsageService(BaseService):
         cache_write) so it is consistent with get_summary()'s total_tokens
         field — the two sums must match for the same period.
         """
-        start_dt, hours = _parse_period(period)
+        start_dt, _hours = _parse_period(period)
 
         if period == "24h":
             # Hourly buckets
@@ -139,11 +156,21 @@ class UsageService(BaseService):
         result = await self.session.execute(
             select(
                 trunc_fn.label("bucket"),
-                func.coalesce(func.sum(AgentSpawnSessionTable.tokens_input), 0).label("tokens_input"),
-                func.coalesce(func.sum(AgentSpawnSessionTable.tokens_output), 0).label("tokens_output"),
-                func.coalesce(func.sum(AgentSpawnSessionTable.tokens_cache_read), 0).label("tokens_cache_read"),
-                func.coalesce(func.sum(AgentSpawnSessionTable.tokens_cache_write), 0).label("tokens_cache_write"),
-                func.coalesce(func.sum(AgentSpawnSessionTable.estimated_cost_usd), 0.0).label("cost_usd"),
+                func.coalesce(func.sum(AgentSpawnSessionTable.tokens_input), 0).label(
+                    "tokens_input"
+                ),
+                func.coalesce(func.sum(AgentSpawnSessionTable.tokens_output), 0).label(
+                    "tokens_output"
+                ),
+                func.coalesce(
+                    func.sum(AgentSpawnSessionTable.tokens_cache_read), 0
+                ).label("tokens_cache_read"),
+                func.coalesce(
+                    func.sum(AgentSpawnSessionTable.tokens_cache_write), 0
+                ).label("tokens_cache_write"),
+                func.coalesce(
+                    func.sum(AgentSpawnSessionTable.estimated_cost_usd), 0.0
+                ).label("cost_usd"),
             )
             .where(
                 AgentSpawnSessionTable.started_at >= start_dt,
@@ -182,23 +209,41 @@ class UsageService(BaseService):
         result = await self.session.execute(
             select(
                 AgentSpawnSessionTable.agent_slug,
-                func.coalesce(func.sum(AgentSpawnSessionTable.tokens_input), 0).label("tokens_input"),
-                func.coalesce(func.sum(AgentSpawnSessionTable.tokens_output), 0).label("tokens_output"),
-                func.coalesce(func.sum(AgentSpawnSessionTable.tokens_cache_read), 0).label("tokens_cache_read"),
-                func.coalesce(func.sum(AgentSpawnSessionTable.tokens_cache_write), 0).label("tokens_cache_write"),
-                func.coalesce(func.sum(AgentSpawnSessionTable.estimated_cost_usd), 0.0).label("cost_usd"),
+                func.coalesce(func.sum(AgentSpawnSessionTable.tokens_input), 0).label(
+                    "tokens_input"
+                ),
+                func.coalesce(func.sum(AgentSpawnSessionTable.tokens_output), 0).label(
+                    "tokens_output"
+                ),
+                func.coalesce(
+                    func.sum(AgentSpawnSessionTable.tokens_cache_read), 0
+                ).label("tokens_cache_read"),
+                func.coalesce(
+                    func.sum(AgentSpawnSessionTable.tokens_cache_write), 0
+                ).label("tokens_cache_write"),
+                func.coalesce(
+                    func.sum(AgentSpawnSessionTable.estimated_cost_usd), 0.0
+                ).label("cost_usd"),
             )
             .where(
                 AgentSpawnSessionTable.started_at >= start_dt,
                 AgentSpawnSessionTable.ended_at.isnot(None),
             )
             .group_by(AgentSpawnSessionTable.agent_slug)
-            .order_by(func.sum(AgentSpawnSessionTable.tokens_input + AgentSpawnSessionTable.tokens_output).desc())
+            .order_by(
+                func.sum(
+                    AgentSpawnSessionTable.tokens_input
+                    + AgentSpawnSessionTable.tokens_output
+                ).desc()
+            )
         )
         rows = result.fetchall()
 
         grand_total = sum(
-            int(r.tokens_input or 0) + int(r.tokens_output or 0) + int(r.tokens_cache_read or 0) + int(r.tokens_cache_write or 0)
+            int(r.tokens_input or 0)
+            + int(r.tokens_output or 0)
+            + int(r.tokens_cache_read or 0)
+            + int(r.tokens_cache_write or 0)
             for r in rows
         )
         items = []
@@ -215,7 +260,9 @@ class UsageService(BaseService):
                     "tokens_output": to_,
                     "total_tokens": total,
                     "cost_usd": round(float(r.cost_usd or 0.0), 6),
-                    "pct_of_total": round(total / grand_total * 100, 2) if grand_total > 0 else 0.0,
+                    "pct_of_total": round(total / grand_total * 100, 2)
+                    if grand_total > 0
+                    else 0.0,
                 }
             )
         return items
@@ -231,23 +278,41 @@ class UsageService(BaseService):
         result = await self.session.execute(
             select(
                 AgentSpawnSessionTable.team,
-                func.coalesce(func.sum(AgentSpawnSessionTable.tokens_input), 0).label("tokens_input"),
-                func.coalesce(func.sum(AgentSpawnSessionTable.tokens_output), 0).label("tokens_output"),
-                func.coalesce(func.sum(AgentSpawnSessionTable.tokens_cache_read), 0).label("tokens_cache_read"),
-                func.coalesce(func.sum(AgentSpawnSessionTable.tokens_cache_write), 0).label("tokens_cache_write"),
-                func.coalesce(func.sum(AgentSpawnSessionTable.estimated_cost_usd), 0.0).label("cost_usd"),
+                func.coalesce(func.sum(AgentSpawnSessionTable.tokens_input), 0).label(
+                    "tokens_input"
+                ),
+                func.coalesce(func.sum(AgentSpawnSessionTable.tokens_output), 0).label(
+                    "tokens_output"
+                ),
+                func.coalesce(
+                    func.sum(AgentSpawnSessionTable.tokens_cache_read), 0
+                ).label("tokens_cache_read"),
+                func.coalesce(
+                    func.sum(AgentSpawnSessionTable.tokens_cache_write), 0
+                ).label("tokens_cache_write"),
+                func.coalesce(
+                    func.sum(AgentSpawnSessionTable.estimated_cost_usd), 0.0
+                ).label("cost_usd"),
             )
             .where(
                 AgentSpawnSessionTable.started_at >= start_dt,
                 AgentSpawnSessionTable.ended_at.isnot(None),
             )
             .group_by(AgentSpawnSessionTable.team)
-            .order_by(func.sum(AgentSpawnSessionTable.tokens_input + AgentSpawnSessionTable.tokens_output).desc())
+            .order_by(
+                func.sum(
+                    AgentSpawnSessionTable.tokens_input
+                    + AgentSpawnSessionTable.tokens_output
+                ).desc()
+            )
         )
         rows = result.fetchall()
 
         grand_total = sum(
-            int(r.tokens_input or 0) + int(r.tokens_output or 0) + int(r.tokens_cache_read or 0) + int(r.tokens_cache_write or 0)
+            int(r.tokens_input or 0)
+            + int(r.tokens_output or 0)
+            + int(r.tokens_cache_read or 0)
+            + int(r.tokens_cache_write or 0)
             for r in rows
         )
         items = []
@@ -264,7 +329,9 @@ class UsageService(BaseService):
                     "tokens_output": to_,
                     "total_tokens": total,
                     "cost_usd": round(float(r.cost_usd or 0.0), 6),
-                    "pct_of_total": round(total / grand_total * 100, 2) if grand_total > 0 else 0.0,
+                    "pct_of_total": round(total / grand_total * 100, 2)
+                    if grand_total > 0
+                    else 0.0,
                 }
             )
         return items
@@ -280,23 +347,41 @@ class UsageService(BaseService):
         result = await self.session.execute(
             select(
                 AgentSpawnSessionTable.model,
-                func.coalesce(func.sum(AgentSpawnSessionTable.tokens_input), 0).label("tokens_input"),
-                func.coalesce(func.sum(AgentSpawnSessionTable.tokens_output), 0).label("tokens_output"),
-                func.coalesce(func.sum(AgentSpawnSessionTable.tokens_cache_read), 0).label("tokens_cache_read"),
-                func.coalesce(func.sum(AgentSpawnSessionTable.tokens_cache_write), 0).label("tokens_cache_write"),
-                func.coalesce(func.sum(AgentSpawnSessionTable.estimated_cost_usd), 0.0).label("cost_usd"),
+                func.coalesce(func.sum(AgentSpawnSessionTable.tokens_input), 0).label(
+                    "tokens_input"
+                ),
+                func.coalesce(func.sum(AgentSpawnSessionTable.tokens_output), 0).label(
+                    "tokens_output"
+                ),
+                func.coalesce(
+                    func.sum(AgentSpawnSessionTable.tokens_cache_read), 0
+                ).label("tokens_cache_read"),
+                func.coalesce(
+                    func.sum(AgentSpawnSessionTable.tokens_cache_write), 0
+                ).label("tokens_cache_write"),
+                func.coalesce(
+                    func.sum(AgentSpawnSessionTable.estimated_cost_usd), 0.0
+                ).label("cost_usd"),
             )
             .where(
                 AgentSpawnSessionTable.started_at >= start_dt,
                 AgentSpawnSessionTable.ended_at.isnot(None),
             )
             .group_by(AgentSpawnSessionTable.model)
-            .order_by(func.sum(AgentSpawnSessionTable.tokens_input + AgentSpawnSessionTable.tokens_output).desc())
+            .order_by(
+                func.sum(
+                    AgentSpawnSessionTable.tokens_input
+                    + AgentSpawnSessionTable.tokens_output
+                ).desc()
+            )
         )
         rows = result.fetchall()
 
         grand_total = sum(
-            int(r.tokens_input or 0) + int(r.tokens_output or 0) + int(r.tokens_cache_read or 0) + int(r.tokens_cache_write or 0)
+            int(r.tokens_input or 0)
+            + int(r.tokens_output or 0)
+            + int(r.tokens_cache_read or 0)
+            + int(r.tokens_cache_write or 0)
             for r in rows
         )
         items = []
@@ -313,7 +398,9 @@ class UsageService(BaseService):
                     "tokens_output": to_,
                     "total_tokens": total,
                     "cost_usd": round(float(r.cost_usd or 0.0), 6),
-                    "pct_of_total": round(total / grand_total * 100, 2) if grand_total > 0 else 0.0,
+                    "pct_of_total": round(total / grand_total * 100, 2)
+                    if grand_total > 0
+                    else 0.0,
                 }
             )
         return items
@@ -332,8 +419,12 @@ class UsageService(BaseService):
 
         result = await self.session.execute(
             select(
-                func.coalesce(func.sum(AgentSpawnSessionTable.estimated_cost_usd), 0.0).label("total_cost_7d"),
-                func.coalesce(func.count(AgentSpawnSessionTable.id), 0).label("session_count"),
+                func.coalesce(
+                    func.sum(AgentSpawnSessionTable.estimated_cost_usd), 0.0
+                ).label("total_cost_7d"),
+                func.coalesce(func.count(AgentSpawnSessionTable.id), 0).label(
+                    "session_count"
+                ),
             ).where(
                 AgentSpawnSessionTable.started_at >= seven_days_ago,
                 AgentSpawnSessionTable.ended_at.isnot(None),
@@ -366,10 +457,18 @@ class UsageService(BaseService):
 
         result = await self.session.execute(
             select(
-                func.coalesce(func.sum(AgentSpawnSessionTable.tokens_input), 0).label("tokens_input"),
-                func.coalesce(func.sum(AgentSpawnSessionTable.tokens_output), 0).label("tokens_output"),
-                func.coalesce(func.sum(AgentSpawnSessionTable.tokens_cache_read), 0).label("tokens_cache_read"),
-                func.coalesce(func.sum(AgentSpawnSessionTable.tokens_cache_write), 0).label("tokens_cache_write"),
+                func.coalesce(func.sum(AgentSpawnSessionTable.tokens_input), 0).label(
+                    "tokens_input"
+                ),
+                func.coalesce(func.sum(AgentSpawnSessionTable.tokens_output), 0).label(
+                    "tokens_output"
+                ),
+                func.coalesce(
+                    func.sum(AgentSpawnSessionTable.tokens_cache_read), 0
+                ).label("tokens_cache_read"),
+                func.coalesce(
+                    func.sum(AgentSpawnSessionTable.tokens_cache_write), 0
+                ).label("tokens_cache_write"),
             ).where(
                 AgentSpawnSessionTable.started_at >= start_dt,
                 AgentSpawnSessionTable.ended_at.isnot(None),
@@ -418,11 +517,21 @@ class UsageService(BaseService):
 
         result = await self.session.execute(
             select(
-                func.coalesce(func.sum(DailyUsageRollupTable.tokens_input), 0).label("tokens_input"),
-                func.coalesce(func.sum(DailyUsageRollupTable.tokens_output), 0).label("tokens_output"),
-                func.coalesce(func.sum(DailyUsageRollupTable.tokens_cache_read), 0).label("tokens_cache_read"),
-                func.coalesce(func.sum(DailyUsageRollupTable.tokens_cache_write), 0).label("tokens_cache_write"),
-                func.coalesce(func.sum(DailyUsageRollupTable.total_cost_usd), 0.0).label("total_cost_usd"),
+                func.coalesce(func.sum(DailyUsageRollupTable.tokens_input), 0).label(
+                    "tokens_input"
+                ),
+                func.coalesce(func.sum(DailyUsageRollupTable.tokens_output), 0).label(
+                    "tokens_output"
+                ),
+                func.coalesce(
+                    func.sum(DailyUsageRollupTable.tokens_cache_read), 0
+                ).label("tokens_cache_read"),
+                func.coalesce(
+                    func.sum(DailyUsageRollupTable.tokens_cache_write), 0
+                ).label("tokens_cache_write"),
+                func.coalesce(
+                    func.sum(DailyUsageRollupTable.total_cost_usd), 0.0
+                ).label("total_cost_usd"),
             ).where(DailyUsageRollupTable.date == today)
         )
         row = result.one()
