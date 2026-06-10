@@ -441,6 +441,38 @@ class NotificationService:
                     subject=params.subject[:80],
                 )
                 return
+            # Purpose-based dedup (CEO directive, 2026-06-10): do NOT create a
+            # second notification for the SAME purpose — same sender, same type,
+            # same task, overlapping recipients — while a prior one is still
+            # unacknowledged. Agents loop and re-send the same signal (often
+            # reworded); each copy inflates the recipient's unacked set, which
+            # soft-blocks their i_am_idle and drives respawn churn. A different
+            # type, a different task, a different sender, or a recipient who has
+            # already acked all go through. Body text is NOT compared, so
+            # rewording cannot defeat the guard.
+            related = params.related_task_id
+            dup_q = (
+                select(NotificationTable.id)
+                .where(NotificationTable.from_agent == from_agent_uuid)
+                .where(NotificationTable.type == params.notification_type)
+                .where(NotificationTable.to_agents.overlap(to_agents_uuids))
+                .where(~NotificationTable.acked_by.contains(to_agents_uuids))
+                .where(
+                    NotificationTable.related_task_id == related
+                    if related is not None
+                    else NotificationTable.related_task_id.is_(None)
+                )
+                .limit(1)
+            )
+            if await db.scalar(dup_q) is not None:
+                logger.info(
+                    "Suppressed duplicate notification (same purpose, unacked)",
+                    from_agent=str(from_agent_uuid),
+                    type=params.notification_type.value,
+                    related_task_id=str(related) if related is not None else None,
+                    to_agents=[str(a) for a in to_agents_uuids],
+                )
+                return
             notification = NotificationTable(
                 type=params.notification_type,
                 priority=params.priority,
