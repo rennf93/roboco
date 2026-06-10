@@ -8,7 +8,7 @@ and aggregation by agent, team, and model.
 
 from __future__ import annotations
 
-from datetime import UTC, date, datetime, timedelta
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 from sqlalchemy import func, select
@@ -70,11 +70,21 @@ class UsageService(BaseService):
         total_cost = float(row.total_cost_usd or 0.0)
         total_tokens = tokens_input + tokens_output + int(row.tokens_cache_read or 0) + int(row.tokens_cache_write or 0)
 
-        # Previous period for trend calculation
+        # Previous period for trend calculation.
+        # Sum all 4 token columns so the comparison is consistent with the
+        # current-period total_tokens (which also sums all 4 columns).
         prev_start = start_dt - timedelta(hours=hours)
         prev_result = await self.session.execute(
             select(
-                func.coalesce(func.sum(AgentSpawnSessionTable.tokens_input + AgentSpawnSessionTable.tokens_output), 0).label("total")
+                func.coalesce(
+                    func.sum(
+                        AgentSpawnSessionTable.tokens_input
+                        + AgentSpawnSessionTable.tokens_output
+                        + AgentSpawnSessionTable.tokens_cache_read
+                        + AgentSpawnSessionTable.tokens_cache_write
+                    ),
+                    0,
+                ).label("total")
             ).where(
                 AgentSpawnSessionTable.started_at >= prev_start,
                 AgentSpawnSessionTable.started_at < start_dt,
@@ -115,7 +125,7 @@ class UsageService(BaseService):
 
         total_tokens includes all 4 token types (input + output + cache_read +
         cache_write) so it is consistent with get_summary()'s total_tokens
-        field — AC9 requires their sums to match for the same period.
+        field — the two sums must match for the same period.
         """
         start_dt, hours = _parse_period(period)
 
@@ -404,7 +414,7 @@ class UsageService(BaseService):
         Used by the CEO dashboard to populate tokens_today and cost_today_usd.
         Falls back to 0 values when no data exists for today.
         """
-        today = date.today()
+        today = datetime.now(UTC).date()
 
         result = await self.session.execute(
             select(
