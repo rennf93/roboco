@@ -2283,17 +2283,32 @@ class TaskService(BaseService):
         Shared core of ``unclaim_for_reaper`` and
         ``release_dependency_blocked_claim``. Routes through
         ``_validate_and_set_status`` so the state machine records the
-        transition, clears assignee/heartbeat/claimant, and abandons the active
-        WorkSession (best-effort, tagged with ``reason``) so a re-claim doesn't
-        trip the uniqueness constraint. Bypasses ownership/role checks — the
-        system itself is performing the transition. Returns True iff the task
-        was actually released (False when missing or not in a releasable state).
+        transition, releases the live claim (heartbeat + active claimant) and
+        abandons the active WorkSession (best-effort, tagged with ``reason``) so
+        a re-claim doesn't trip the uniqueness constraint. Bypasses
+        ownership/role checks — the system itself is performing the transition.
+        Returns True iff the task was actually released (False when missing or
+        not in a releasable state).
+
+        Ownership is **preserved**, not cleared: both callers release a task its
+        owner should resume — the reaper's holder is dead but will respawn, and
+        a dependency-blocked task continues with the same agent once the
+        upstream lands. Leaving ``assigned_to``/``claimed_by`` pointed at the
+        owner (mirroring the unblock restore) keeps the task from landing in an
+        ownerless ``pending`` limbo that no dispatcher re-spawns. The earlier
+        behaviour nulled ``assigned_to``, which is exactly that orphaning bug.
         """
         task = await self.get(task_id)
         if task is None:
             return False
         if task.status not in (TaskStatus.CLAIMED, TaskStatus.IN_PROGRESS):
             return False
+        # Capture the owner before releasing the claim. A claimed/in_progress
+        # task is always owned via claimed_by/active_claimant_id (and usually
+        # assigned_to); fall back across them so the row never goes ownerless.
+        owner = cast(
+            "Any", task.assigned_to or task.claimed_by or task.active_claimant_id
+        )
         try:
             self._validate_and_set_status(task, TaskStatus.PENDING, None)
         except TaskLifecycleError:
@@ -2303,7 +2318,8 @@ class TaskService(BaseService):
                 task.work_session_id, reason=reason
             )
             task.work_session_id = cast("Any", None)
-        task.assigned_to = cast("Any", None)
+        task.assigned_to = owner
+        task.claimed_by = owner
         task.last_heartbeat_at = None
         task.active_claimant_id = cast("Any", None)
         await self.session.flush()

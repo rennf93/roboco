@@ -1273,8 +1273,16 @@ async def test_unclaim_for_reaper_resets(
     task.status = TaskStatus.CLAIMED
     task.assigned_to = task_setup["agent_id"]
     task.claimed_by = task_setup["agent_id"]
+    task.active_claimant_id = task_setup["agent_id"]
     await db_session.flush()
     await svc.unclaim_for_reaper(task.id)
+    refreshed = await svc.get(task.id)
+    assert refreshed is not None
+    assert refreshed.status == TaskStatus.PENDING
+    # Claim released but ownership preserved (no ownerless pending limbo).
+    assert refreshed.active_claimant_id is None
+    assert refreshed.assigned_to == task_setup["agent_id"]
+    assert refreshed.claimed_by == task_setup["agent_id"]
 
 
 # ---------------------------------------------------------------------------

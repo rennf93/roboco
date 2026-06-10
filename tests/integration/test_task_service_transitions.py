@@ -197,19 +197,25 @@ async def test_start_paused_task_resumes_in_progress(
 
 
 @pytest.mark.asyncio
-async def test_unclaim_for_reaper_resets_claimed_task(
+async def test_unclaim_for_reaper_resets_claim_but_keeps_owner(
     task_setup: dict, db_session: AsyncSession
 ) -> None:
     svc = task_setup["svc"]
     task = await svc.create(_req(task_setup))
     task.status = TaskStatus.CLAIMED
     task.assigned_to = task_setup["agent_id"]
+    task.active_claimant_id = task_setup["agent_id"]
     await db_session.flush()
     await svc.unclaim_for_reaper(task.id)
     refreshed = await svc.get(task.id)
     assert refreshed is not None
     assert refreshed.status == TaskStatus.PENDING
-    assert refreshed.assigned_to is None
+    # Ownership is preserved so the same agent resumes the task once it
+    # re-dispatches — the task must never land in an ownerless pending limbo.
+    assert refreshed.assigned_to == task_setup["agent_id"]
+    assert refreshed.claimed_by == task_setup["agent_id"]
+    # The live claim is released so the reaper/dispatcher can re-spawn cleanly.
+    assert refreshed.active_claimant_id is None
 
 
 @pytest.mark.asyncio
@@ -220,6 +226,35 @@ async def test_unclaim_for_reaper_skips_when_status_already_pending(
     task = await svc.create(_req(task_setup))  # PENDING
     # Should not raise — branch returns immediately.
     await svc.unclaim_for_reaper(task.id)
+
+
+@pytest.mark.asyncio
+async def test_release_dependency_blocked_claim_keeps_owner(
+    task_setup: dict, db_session: AsyncSession
+) -> None:
+    """Dependency-release returns to pending without orphaning the owner.
+
+    Shares ``_force_unclaim_to_pending`` with the reaper, so it must give the
+    same guarantee: the same agent resumes once the upstream dependency lands.
+    The work-in-progress branch is forgotten so the re-claim cuts fresh off the
+    (now-updated) integration tip.
+    """
+    svc = task_setup["svc"]
+    task = await svc.create(_req(task_setup))
+    task.status = TaskStatus.CLAIMED
+    task.assigned_to = task_setup["agent_id"]
+    task.claimed_by = task_setup["agent_id"]
+    task.active_claimant_id = task_setup["agent_id"]
+    task.branch_name = "feature/backend/ABC12345"
+    await db_session.flush()
+    await svc.release_dependency_blocked_claim(task.id)
+    refreshed = await svc.get(task.id)
+    assert refreshed is not None
+    assert refreshed.status == TaskStatus.PENDING
+    assert refreshed.assigned_to == task_setup["agent_id"]
+    assert refreshed.claimed_by == task_setup["agent_id"]
+    assert refreshed.active_claimant_id is None
+    assert refreshed.branch_name is None
 
 
 # ---------------------------------------------------------------------------
