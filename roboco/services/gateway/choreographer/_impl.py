@@ -2625,6 +2625,10 @@ class Choreographer:
             return await self._emit_rejection(
                 guard, agent_id=agent_id, task_id=None, verb="i_am_idle"
             )
+        if guard := await self._pm_unfinished_review_guard(agent_id, briefing):
+            return await self._emit_rejection(
+                guard, agent_id=agent_id, task_id=None, verb="i_am_idle"
+            )
         paused_ids = await self._auto_pause_in_progress_tasks(agent_id)
         await self.task.mark_agent_idle(agent_id)
         if paused_ids:
@@ -2682,6 +2686,38 @@ class Choreographer:
             remediate=(
                 f"call {verb}(task_id='{first.id}') to start work, or"
                 " unclaim it first; then retry i_am_idle"
+            ),
+            context_briefing=briefing,
+        )
+
+    async def _pm_unfinished_review_guard(
+        self, agent_id: UUID, briefing: dict[str, Any]
+    ) -> Envelope | None:
+        """Refuse i_am_idle when a PM still owns a task awaiting its own review.
+
+        A cell/main PM once tried to "send work back" by DMing the developer and
+        going idle — but a DM changes no task state, so the task stayed
+        awaiting_pm_review and the PM was just re-dispatched in a loop. A PM that
+        owns an awaiting_pm_review task must act on it (complete to finish, or
+        reassign/delegate to route it back) before it can idle.
+        """
+        agent = await self.task.agent_for(agent_id)
+        if not agent or agent.role not in ("cell_pm", "main_pm"):
+            return None
+        assigned = await self.task.list_assigned_for_agent(agent_id)
+        review = next(
+            (t for t in assigned if str(t.status) == "awaiting_pm_review"), None
+        )
+        if review is None:
+            return None
+        return Envelope.invalid_state(
+            message=(
+                f"you still own task {review.id} awaiting your review; a DM does"
+                " not route work, so idling just re-dispatches you."
+            ),
+            remediate=(
+                "complete(task_id) to finish it, or reassign()/delegate() to"
+                " send it back — then retry i_am_idle()."
             ),
             context_briefing=briefing,
         )
