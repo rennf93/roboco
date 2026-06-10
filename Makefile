@@ -253,7 +253,12 @@ quality:
 	@echo "==> bandit (security)"
 	@uv run bandit -r roboco/ -ll
 	@echo "==> pip-audit (deps vulnerabilities)"
-	@uv run pip-audit
+	# CVE-2025-3000: memory corruption in torch.jit.script (MEDIUM, local-only,
+	# no fix published). torch is a transitive dep (piragi / sentence-transformers)
+	# pinned to the CPU wheel and NEVER loaded at runtime — the stack uses Ollama
+	# over HTTP for all embeddings/LLM, so the vulnerable JIT path is unreachable.
+	# Documented waiver; revisit when a fixed torch ships.
+	@uv run pip-audit --ignore-vuln CVE-2025-3000
 	@echo "==> deptry (dependency hygiene)"
 	@uv run deptry roboco/
 	@echo "==> alembic upgrade --sql (migrations parse)"
