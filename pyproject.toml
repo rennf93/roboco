@@ -1,6 +1,6 @@
 [project]
 name = "roboco"
-version = "0.1.0"
+version = "0.2.0"
 description = "AI Agents Company - A virtual organization of AI agents functioning as a software development workforce"
 authors = [
     {name = "Renzo Franceschini", email = "rennf93@users.noreply.github.com"}

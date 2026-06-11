@@ -5,7 +5,7 @@ A virtual organization of 18 AI agents + 1 human CEO,
 designed to operate as a complete software development workforce.
 """
 
-__version__ = "0.1.0"
+__version__ = "0.2.0"
 
 # Core exports
 from roboco.config import settings

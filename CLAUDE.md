@@ -120,6 +120,12 @@ repo (no longer a separate `roboco-panel` project or workspace).
 - `ROBOCO_WORKSPACE_AUTO_CLONE`: Auto-clone repos on first access (default: `true`)
 - `ROBOCO_WORKSPACE_CLONE_TIMEOUT`: Clone timeout in seconds (default: `300`)
 
+On a Python workspace, `WorkspaceService` runs `uv sync --extra dev` (not plain
+`uv sync`) so the clone's `.venv` carries the full gate toolchain
+(ruff/mypy/xenon/pytest) — the lint/type/complexity tools live in the `dev`
+**extra**, which plain `uv sync` skips. Without it an agent's `make quality`
+fails on `ruff: command not found` and the agent can't gate its own work.
+
 ## Git Workflow
 
 ### Branch Naming Convention
@@ -457,6 +463,36 @@ The system runs as Docker Compose services. All Dockerfiles live under
 
 This avoids CORS since the browser sees one origin. The Next.js code uses
 relative URLs (`/api`, `/ws`) and lets nginx do the dispatch.
+
+### WebSocket streams
+
+The orchestrator exposes WebSocket endpoints under `/ws` (router in
+`roboco/api/websocket.py`, `ConnectionManager` + `broadcast_*` helpers):
+
+| Endpoint | Purpose |
+|----------|---------|
+| `/ws/channels/{id}`, `/ws/agents/{id}`, `/ws/sessions/{id}`, `/ws/notifications/{id}` | Per-resource live streams |
+| `/ws/system` | Operator/system-wide stream (no per-agent keying) — currently the rate-limit lifecycle (`RATE_LIMIT_HIT` / `RATE_LIMIT_LIFTED`) |
+
+Server-side events reach these sockets through `roboco/api/websocket_bridge.py`,
+which subscribes to the `StreamEventBus` and forwards each event to the matching
+connections. To add a new live event: define an `EventType` (dotted value),
+publish it to the bus, add a `_handle_*` forwarder in `websocket_bridge`, and
+consume it on the panel via the `useWebSocket("/<endpoint>", …)` hook — do not
+stand up a parallel endpoint or client stack.
+
+### Rate limiting & usage
+
+- **Provider rate limits** are tracked in Redis (`RateLimitStateTracker`,
+  `roboco/services/gateway/`). On a provider 429 an agent calls
+  `i_am_blocked(reason="rate_limited")`; the spawn gate then **queues** (never
+  drops) further work for that provider, and a background probe-and-resume loop
+  in the orchestrator clears the limit and revives parked agents when it lifts.
+- **Token usage** is captured per agent session from the Claude Code transcript
+  via the SDK server's `/usage/sync` (hook → orchestrator finalize →
+  `agent_spawn_sessions` → `daily_usage_rollups` → dashboard). Cost uses
+  provider-aware pricing in `roboco/billing/pricing.py` (Anthropic priced;
+  local/Ollama intentionally `$0`).
 
 ### Startup Sequence
 

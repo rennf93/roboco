@@ -3207,6 +3207,34 @@ class AgentOrchestrator:
             )
             return None
 
+    @staticmethod
+    def _usage_from_transcript(agent_id: str) -> tuple[int, int, int, int]:
+        """Sum token usage from the agent's newest Claude Code transcript.
+
+        The host ``~/.claude`` is mounted into the orchestrator, so each agent's
+        transcripts are readable here under ``projects/*-{slug}/`` (Claude Code
+        encodes the agent's workspace cwd into the dir name, which ends in the
+        agent slug). The durable fallback for the live SDK ``/usage/status``
+        fetch, which misses whenever the agent container is short-lived or
+        already torn down. Returns zeros when no transcript is found.
+        """
+        from roboco.agent_sdk.server import _sum_transcript_usage
+
+        projects = Path.home() / ".claude" / "projects"
+        try:
+            jsonl = [
+                f
+                for d in projects.glob(f"*-{agent_id}")
+                if d.is_dir()
+                for f in d.glob("*.jsonl")
+            ]
+        except OSError:
+            return (0, 0, 0, 0)
+        if not jsonl:
+            return (0, 0, 0, 0)
+        newest = max(jsonl, key=lambda f: f.stat().st_mtime)
+        return _sum_transcript_usage(newest)
+
     async def _finalize_spawn_session(
         self,
         agent_id: str,
@@ -3247,6 +3275,19 @@ class AgentOrchestrator:
                     agent_id=agent_id,
                     error=str(sdk_exc),
                 )
+
+            # The live SDK fetch above races the container teardown and misses
+            # for short-lived agents (counts live in the SDK server's memory,
+            # which dies with the container). Fall back to the durable source of
+            # truth: the agent's Claude Code transcript, mounted into this
+            # container — so usage is captured regardless of container timing.
+            if not tokens_input and not tokens_output:
+                tin, tout, cr, cw = self._usage_from_transcript(agent_id)
+                if tin or tout:
+                    tokens_input = tin
+                    tokens_output = tout
+                    tokens_cache_read = cr
+                    tokens_cache_write = cw
 
             # Look up the model and usage_session_id from the running instance config.
             instance = self._instances.get(agent_id)

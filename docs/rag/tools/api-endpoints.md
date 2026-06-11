@@ -85,6 +85,14 @@ Base URL: `http://{host}:{port}/api/v1`
 | GET | `/journals/me/stats` | My stats |
 | GET | `/journals/{agent}/entries` | Read team journal |
 
+## System & realtime
+
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| GET | `/api/system/rate-limits` | Active per-provider rate-limit state (`{ entries: [...] }`) |
+| WS | `/ws/system` | Operator stream — rate-limit lifecycle (`RATE_LIMIT_HIT` / `RATE_LIMIT_LIFTED`) |
+| WS | `/ws/agents/{id}`, `/ws/channels/{id}`, `/ws/sessions/{id}`, `/ws/notifications/{id}` | Per-resource live streams |
+
 ## Documentation
 
 | Method | Endpoint | Description |
