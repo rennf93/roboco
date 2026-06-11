@@ -265,6 +265,7 @@ async def test_finalize_spawn_session_http_error_uses_zero_tokens() -> None:
 
     with (
         patch("roboco.runtime.orchestrator.httpx.AsyncClient", _client_cls),
+        patch.object(orch, "_usage_from_transcript", return_value=(0, 0, 0, 0)),
         patch("roboco.db.base.get_session_factory", return_value=db_factory),
         patch("roboco.billing.pricing.calculate_cost", return_value=0.0) as mock_cost,
     ):
@@ -298,6 +299,7 @@ async def test_finalize_spawn_session_non_200_uses_zero_tokens() -> None:
 
     with (
         patch("roboco.runtime.orchestrator.httpx.AsyncClient", _client_cls),
+        patch.object(orch, "_usage_from_transcript", return_value=(0, 0, 0, 0)),
         patch("roboco.db.base.get_session_factory", return_value=db_factory),
         patch("roboco.billing.pricing.calculate_cost", return_value=0.0) as mock_cost,
     ):
@@ -383,6 +385,7 @@ async def test_sweep_token_snapshots_skips_zero_token_agents() -> None:
 
     with (
         patch("roboco.runtime.orchestrator.httpx.AsyncClient", _client_cls),
+        patch.object(orch, "_usage_from_transcript", return_value=(0, 0, 0, 0)),
         patch("roboco.db.base.get_session_factory", return_value=db_factory),
     ):
         await orch._sweep_token_snapshots()
@@ -525,7 +528,7 @@ async def test_stop_agent_finalizes_before_lock() -> None:
 
     finalized: list[str] = []
 
-    async def _fake_finalize(agent_id: str, exit_reason: str = "stopped") -> None:  # noqa: ARG001
+    async def _fake_finalize(agent_id: str, **_kwargs: object) -> None:
         finalized.append(agent_id)
 
     # Stub out the Docker subprocess so stop_agent doesn't actually run Docker
@@ -541,3 +544,107 @@ async def test_stop_agent_finalizes_before_lock() -> None:
 
     # _finalize_spawn_session must have been called exactly once with our agent id
     assert finalized == [_AGENT_ID]
+
+
+# ---------------------------------------------------------------------------
+# _handle_stopped_container — self-exits finalize (stop_agent was not called)
+# ---------------------------------------------------------------------------
+
+
+async def test_handle_stopped_container_graceful_finalizes() -> None:
+    """A graceful self-exit (exit 0) finalizes the spawn session.
+
+    The agent calls i_am_idle and its container exits 0 without stop_agent
+    being invoked, so _handle_stopped_container must finalize to capture the
+    token usage; otherwise the session row is left open with zero tokens.
+    """
+    orch = _make_orchestrator()
+    instance = _make_instance(_AGENT_ID)
+    instance.container_id = "abc123def456"
+    orch._instances[_AGENT_ID] = instance
+
+    calls: list[tuple[str, str]] = []
+
+    async def _fake_finalize(agent_id: str, exit_reason: str = "stopped") -> None:
+        calls.append((agent_id, exit_reason))
+
+    with patch.object(orch, "_finalize_spawn_session", side_effect=_fake_finalize):
+        await orch._handle_stopped_container(_AGENT_ID, instance, 0)
+
+    assert calls == [(_AGENT_ID, "completed")]
+    assert instance.state is OrchestratorAgentState.OFFLINE
+
+
+async def test_handle_stopped_container_crash_finalizes_then_restarts() -> None:
+    """A non-zero exit finalizes (exit_reason='crashed') before auto-restart."""
+    orch = _make_orchestrator()
+    instance = _make_instance(_AGENT_ID)
+    instance.container_id = "abc123def456"
+    instance.error_count = 0
+    orch._instances[_AGENT_ID] = instance
+
+    calls: list[tuple[str, str]] = []
+
+    async def _fake_finalize(agent_id: str, exit_reason: str = "stopped") -> None:
+        calls.append((agent_id, exit_reason))
+
+    with (
+        patch.object(orch, "_finalize_spawn_session", side_effect=_fake_finalize),
+        patch.object(orch, "spawn_agent", AsyncMock()) as mock_spawn,
+    ):
+        await orch._handle_stopped_container(_AGENT_ID, instance, 1)
+
+    assert calls == [(_AGENT_ID, "crashed")]
+    mock_spawn.assert_awaited_once()
+
+
+# ---------------------------------------------------------------------------
+# _resolve_active_tokens — SDK first, transcript fallback for live agents
+# ---------------------------------------------------------------------------
+
+
+async def test_resolve_active_tokens_falls_back_to_transcript() -> None:
+    """When the SDK reports all-zero, live resolution uses the transcript."""
+    orch = _make_orchestrator()
+
+    def _handler(_url: str) -> Any:
+        return _mock_response(
+            200,
+            {
+                "tokens_input": 0,
+                "tokens_output": 0,
+                "tokens_cache_read": 0,
+                "tokens_cache_write": 0,
+            },
+        )
+
+    client = _FakeHTTPClient(_handler)
+    with patch.object(orch, "_usage_from_transcript", return_value=(6, 514, 100, 50)):
+        tokens = await orch._resolve_active_tokens(client, _AGENT_ID)
+
+    assert tokens == (6, 514, 100, 50)
+
+
+async def test_resolve_active_tokens_prefers_sdk() -> None:
+    """A non-zero SDK response is used directly — no transcript fallback."""
+    orch = _make_orchestrator()
+
+    def _handler(_url: str) -> Any:
+        return _mock_response(
+            200,
+            {
+                "tokens_input": 10,
+                "tokens_output": 20,
+                "tokens_cache_read": 0,
+                "tokens_cache_write": 0,
+            },
+        )
+
+    client = _FakeHTTPClient(_handler)
+    with patch.object(
+        orch, "_usage_from_transcript", return_value=(999, 999, 999, 999)
+    ) as mock_tx:
+        tokens = await orch._resolve_active_tokens(client, _AGENT_ID)
+
+    assert tokens == (10, 20, 0, 0)
+    mock_tx.assert_not_called()

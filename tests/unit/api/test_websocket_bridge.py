@@ -17,6 +17,7 @@ from roboco.api.websocket_bridge import (
     _handle_notification_sent,
     _handle_rate_limit_event,
     _handle_session_event,
+    _handle_usage_event,
     register_websocket_bridge_handlers,
     start_websocket_bridge,
 )
@@ -292,12 +293,77 @@ async def test_handle_rate_limit_ignores_unrelated_event() -> None:
 
 
 # ---------------------------------------------------------------------------
+# _handle_usage_event
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_handle_usage_update_broadcasts_to_system() -> None:
+    """USAGE_UPDATE event → broadcast_system tagged USAGE_UPDATE + data fields."""
+    expected_input = 100
+    expected_output = 50
+    event = _evt(
+        EventType.USAGE_UPDATE,
+        {
+            "agent_id": "be-dev-1",
+            "task_id": "task-abc",
+            "input_tokens": expected_input,
+            "output_tokens": expected_output,
+            "model": "claude-sonnet-4-6",
+            "timestamp": "2026-06-11T00:00:00+00:00",
+        },
+    )
+    with patch("roboco.api.websocket_bridge.manager") as mgr:
+        mgr.broadcast_system = AsyncMock()
+        await _handle_usage_event(event)
+    mgr.broadcast_system.assert_awaited_once()
+    msg = mgr.broadcast_system.await_args.args[0]
+    assert msg["type"] == "USAGE_UPDATE"
+    assert msg["agent_id"] == "be-dev-1"
+    assert msg["input_tokens"] == expected_input
+    assert msg["output_tokens"] == expected_output
+
+
+@pytest.mark.asyncio
+async def test_handle_usage_snapshot_broadcasts_to_system() -> None:
+    """USAGE_SNAPSHOT event → broadcast_system tagged USAGE_SNAPSHOT + aggregate."""
+    expected_input = 500
+    event = _evt(
+        EventType.USAGE_SNAPSHOT,
+        {
+            "period": "live",
+            "totals": {"input_tokens": expected_input, "output_tokens": 200},
+            "cost_estimate": 0.0025,
+            "by_agent": [
+                {
+                    "agent_id": "be-dev-1",
+                    "input_tokens": 500,
+                    "output_tokens": 200,
+                    "model": "sonnet",
+                    "cost_estimate": 0.0025,
+                }
+            ],
+            "timestamp": "2026-06-11T00:01:00+00:00",
+        },
+    )
+    with patch("roboco.api.websocket_bridge.manager") as mgr:
+        mgr.broadcast_system = AsyncMock()
+        await _handle_usage_event(event)
+    mgr.broadcast_system.assert_awaited_once()
+    msg = mgr.broadcast_system.await_args.args[0]
+    assert msg["type"] == "USAGE_SNAPSHOT"
+    assert msg["period"] == "live"
+    assert msg["totals"]["input_tokens"] == expected_input
+    assert len(msg["by_agent"]) == 1
+
+
+# ---------------------------------------------------------------------------
 # Registration + start
 # ---------------------------------------------------------------------------
 
 
 def test_register_websocket_bridge_handlers_subscribes_all_event_types() -> None:
-    """Registration wires up notification + session + agent event handlers."""
+    """Registration wires up all handler categories, including usage events."""
 
     class _FakeBus:
         def __init__(self) -> None:
@@ -310,7 +376,7 @@ def test_register_websocket_bridge_handlers_subscribes_all_event_types() -> None
     with patch("roboco.api.websocket_bridge.get_event_bus", return_value=fake):
         register_websocket_bridge_handlers()
     types = [t for t, _ in fake.subscribed]
-    # All 10 expected event types appear at least once.
+    # All 14 expected event types appear at least once.
     assert EventType.NOTIFICATION_SENT in types
     assert EventType.NOTIFICATION_ACKED in types
     assert EventType.SESSION_CREATED in types
@@ -323,6 +389,9 @@ def test_register_websocket_bridge_handlers_subscribes_all_event_types() -> None
     assert EventType.AGENT_ERROR in types
     assert EventType.RATE_LIMIT_HIT in types
     assert EventType.RATE_LIMIT_LIFTED in types
+    # Usage events forwarded to /ws/system.
+    assert EventType.USAGE_UPDATE in types
+    assert EventType.USAGE_SNAPSHOT in types
 
 
 @pytest.mark.asyncio

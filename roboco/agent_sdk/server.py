@@ -41,6 +41,9 @@ from roboco.agent_sdk.models import (
     VerbAttemptRequest,
     VerbCircuitStatus,
 )
+from roboco.agent_sdk.transcript_usage import (
+    sum_transcript_usage as _sum_transcript_usage,
+)
 from roboco.foundation.policy.agent_loop import DEFAULT_BUDGET as _BUDGET
 from roboco.foundation.policy.agent_loop import retry_limit_for
 from roboco.services.gateway.envelope import Envelope
@@ -739,37 +742,6 @@ def _token_usage_snapshot() -> TokenUsageStatus:
         tokens_cache_read=_state.tokens_cache_read,
         tokens_cache_write=_state.tokens_cache_write,
     )
-
-
-def _sum_transcript_usage(path: Path) -> tuple[int, int, int, int]:
-    """Sum per-message token usage across a Claude Code JSONL transcript.
-
-    Each assistant entry carries a ``message.usage`` block with the token
-    counts for that API response; summing them yields the session total.
-    Returns ``(input, output, cache_read, cache_write)``. Malformed lines are
-    skipped — a single bad line must never lose the whole count.
-    """
-    tin = tout = tcr = tcw = 0
-    with path.open("r", encoding="utf-8", errors="ignore") as fh:
-        for raw in fh:
-            stripped = raw.strip()
-            if not stripped:
-                continue
-            try:
-                entry = json.loads(stripped)
-            except (ValueError, TypeError):
-                continue
-            message = entry.get("message")
-            if not isinstance(message, dict):
-                continue
-            usage = message.get("usage")
-            if not isinstance(usage, dict):
-                continue
-            tin += int(usage.get("input_tokens", 0) or 0)
-            tout += int(usage.get("output_tokens", 0) or 0)
-            tcr += int(usage.get("cache_read_input_tokens", 0) or 0)
-            tcw += int(usage.get("cache_creation_input_tokens", 0) or 0)
-    return tin, tout, tcr, tcw
 
 
 @app.post("/usage/sync", response_model=TokenUsageStatus)

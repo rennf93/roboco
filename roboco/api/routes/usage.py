@@ -145,3 +145,24 @@ async def get_cache_efficiency(
     """
     svc = get_usage_service(db)
     return await svc.get_cache_efficiency(period)
+
+
+# =============================================================================
+# SESSIONS
+# =============================================================================
+
+
+@router.get("/sessions")
+async def get_usage_sessions(
+    db: DbSession,
+    limit: Annotated[
+        int, Query(ge=1, le=200, description="Max sessions to return")
+    ] = 50,
+) -> list[dict[str, Any]]:
+    """Return the most recent agent spawn sessions, newest first.
+
+    Each row carries per-session token totals (input / output / cache) and the
+    estimated cost — the raw rows behind the aggregate usage panels.
+    """
+    svc = get_usage_service(db)
+    return await svc.get_recent_sessions(limit)

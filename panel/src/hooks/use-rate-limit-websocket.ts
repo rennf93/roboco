@@ -3,13 +3,24 @@
 import { useEffect, useRef } from "react";
 import { useWebSocket } from "./use-websocket";
 import { useRateLimitStore } from "@/store/rate-limit-store";
+import { useUsageStore } from "@/store/usage-store";
 import type { RateLimitHitEvent, RateLimitLiftedEvent } from "@/types/rate-limits";
 
-interface RateLimitWsMessage {
+/**
+ * Unified shape for all messages arriving on the /ws/system endpoint.
+ * Fields are optional because different message types use different subsets.
+ */
+interface SystemWsMessage {
   type: string;
+  // Rate-limit fields (RATE_LIMIT_HIT / RATE_LIMIT_LIFTED)
   provider?: string;
   affectedAgents?: string[];
   retryAfterSeconds?: number;
+  // Usage fields (USAGE_SNAPSHOT — aggregate token/cost across active agents)
+  totals?: { input_tokens?: number; output_tokens?: number };
+  cost_estimate?: number;
+  period?: string;
+  // Shared
   timestamp?: string;
 }
 
@@ -19,9 +30,18 @@ interface UseRateLimitWebSocketOptions {
 }
 
 /**
- * Subscribes to RATE_LIMIT_HIT and RATE_LIMIT_LIFTED WebSocket events and
- * dispatches them to the useRateLimitStore. Accepts an optional onReconnect
- * callback that fires when the connection recovers from a reconnecting state.
+ * Subscribes to the /ws/system WebSocket (single shared instance mounted in
+ * RateLimitBanner). Handles:
+ *
+ *  - RATE_LIMIT_HIT / RATE_LIMIT_LIFTED → dispatched to useRateLimitStore
+ *  - USAGE_SNAPSHOT                     → dispatched to useUsageStore
+ *
+ * Also syncs the live WebSocket connection state into useUsageStore so that
+ * other components (e.g. UsageOverviewPanel) can read it without creating a
+ * second /ws/system connection.
+ *
+ * Accepts an optional onReconnect callback that fires when the connection
+ * recovers from a reconnecting state.
  */
 export function useRateLimitWebSocket(options: UseRateLimitWebSocketOptions = {}) {
   const { onReconnect } = options;
@@ -30,11 +50,17 @@ export function useRateLimitWebSocket(options: UseRateLimitWebSocketOptions = {}
   // getWebSocketUrl() already supplies the "/ws" base, so the endpoint is just
   // the path (matching the agents/channels/notifications hooks). Passing
   // "/ws/system" here produced the doubled "/ws/ws/system" URL.
-  const { state, lastMessage } = useWebSocket<RateLimitWsMessage>(
+  const { state, lastMessage } = useWebSocket<SystemWsMessage>(
     "/system",
     undefined,
     true
   );
+
+  // Sync WS connection state into useUsageStore for cross-component visibility.
+  // This is the ONLY place wsState is written; no second useWebSocket call is needed.
+  useEffect(() => {
+    useUsageStore.getState().setWsState(state);
+  }, [state]);
 
   // Fire onReconnect when state transitions from reconnecting → connected
   useEffect(() => {
@@ -49,6 +75,7 @@ export function useRateLimitWebSocket(options: UseRateLimitWebSocketOptions = {}
     if (!lastMessage) return;
 
     const { hitRateLimit, liftRateLimit } = useRateLimitStore.getState();
+    const { setUsageData } = useUsageStore.getState();
 
     if (lastMessage.type === "RATE_LIMIT_HIT") {
       const event: RateLimitHitEvent = {
@@ -66,6 +93,14 @@ export function useRateLimitWebSocket(options: UseRateLimitWebSocketOptions = {}
         timestamp: lastMessage.timestamp ?? new Date().toISOString(),
       };
       liftRateLimit(event);
+    } else if (lastMessage.type === "USAGE_SNAPSHOT") {
+      setUsageData({
+        tokens_input: lastMessage.totals?.input_tokens ?? 0,
+        tokens_output: lastMessage.totals?.output_tokens ?? 0,
+        total_cost_usd: lastMessage.cost_estimate ?? 0,
+        period: lastMessage.period ?? "live",
+        timestamp: lastMessage.timestamp,
+      });
     }
   }, [lastMessage]);
 
