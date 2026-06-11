@@ -23,8 +23,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   and daily rollups, with provider-aware pricing (Anthropic models priced;
   local/Ollama models intentionally $0). Visible on the usage dashboard.
 - **`/ws/system` operator WebSocket stream** with a `websocket_bridge` that
-  forwards system events (the rate-limit lifecycle) from the event bus to panel
-  clients in real time.
+  forwards system events from the event bus to panel clients in real time — the
+  rate-limit lifecycle and live token/cost usage (`USAGE_UPDATE` /
+  `USAGE_SNAPSHOT`), so the dashboard's "Token Usage & Cost" panel updates over
+  the socket and falls back to HTTP polling when it drops.
 
 ### Fixed
 
