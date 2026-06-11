@@ -62,6 +62,10 @@ def _make_redis_mock(initial_store: dict[str, Any] | None = None) -> AsyncMock:
     mock.delete = AsyncMock(side_effect=_delete)
     mock.scan = AsyncMock(side_effect=_scan)
     mock.aclose = AsyncMock(side_effect=_aclose)
+    # Support `async with redis.from_url(...) as r:` — the client returns
+    # itself on enter so the configured side-effects are what the caller uses.
+    mock.__aenter__ = AsyncMock(return_value=mock)
+    mock.__aexit__ = AsyncMock(return_value=False)
     mock._store = store
     return mock
 

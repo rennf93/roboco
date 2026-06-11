@@ -44,13 +44,13 @@ class RateLimitStateTracker:
         """
         self._provider = provider
         self._redis_url = redis_url or settings.redis_url
-        self._redis: redis.Redis | None = None  # type: ignore[type-arg]
+        self._redis: redis.Redis | None = None
 
     # ------------------------------------------------------------------
     # Private helpers
     # ------------------------------------------------------------------
 
-    async def _conn(self) -> redis.Redis:  # type: ignore[type-arg]
+    async def _conn(self) -> redis.Redis:
         """Return a (lazy-connected) redis.asyncio.Redis client."""
         if self._redis is None:
             self._redis = redis.from_url(self._redis_url)
@@ -149,37 +149,40 @@ class RateLimitStateTracker:
             redis_url: Override the default Redis URL from settings.
         """
         url = redis_url or settings.redis_url
-        r: redis.Redis = redis.from_url(url)  # type: ignore[type-arg]
         pattern = f"{cls._KEY_PREFIX}*:state"
         results: list[tuple[str, dict[str, Any]]] = []
-        try:
-            cursor: int = 0
-            while True:
-                cursor, keys = await r.scan(cursor, match=pattern, count=100)
-                for raw_key in keys:
-                    key: str = (
-                        raw_key.decode() if isinstance(raw_key, bytes) else str(raw_key)
-                    )
-                    # Extract provider from key: roboco:rate_limit:{provider}:state
-                    # Strip prefix and suffix
-                    inner = key[len(cls._KEY_PREFIX) :]
-                    if inner.endswith(":state"):
-                        provider = inner[: -len(":state")]
-                    else:
-                        continue
-                    raw_val = await r.get(key)
-                    if raw_val is None:
-                        continue
-                    decoded: str = (
-                        raw_val.decode() if isinstance(raw_val, bytes) else str(raw_val)
-                    )
-                    state: dict[str, Any] = json.loads(decoded)
-                    if state.get("rate_limited"):
-                        results.append((provider, state))
-                if cursor == 0:
-                    break
-        except Exception:
-            pass
-        finally:
-            await r.aclose()
+        # `async with` closes the client on exit (modern redis.asyncio API),
+        # avoiding a deprecated explicit close in a finally block.
+        async with redis.from_url(url) as r:
+            try:
+                cursor: int = 0
+                while True:
+                    cursor, keys = await r.scan(cursor, match=pattern, count=100)
+                    for raw_key in keys:
+                        key: str = (
+                            raw_key.decode()
+                            if isinstance(raw_key, bytes)
+                            else str(raw_key)
+                        )
+                        # Key shape: roboco:rate_limit:{provider}:state
+                        inner = key[len(cls._KEY_PREFIX) :]
+                        if inner.endswith(":state"):
+                            provider = inner[: -len(":state")]
+                        else:
+                            continue
+                        raw_val = await r.get(key)
+                        if raw_val is None:
+                            continue
+                        decoded: str = (
+                            raw_val.decode()
+                            if isinstance(raw_val, bytes)
+                            else str(raw_val)
+                        )
+                        state: dict[str, Any] = json.loads(decoded)
+                        if state.get("rate_limited"):
+                            results.append((provider, state))
+                    if cursor == 0:
+                        break
+            except Exception:
+                pass
         return results
