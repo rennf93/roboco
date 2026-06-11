@@ -14,7 +14,10 @@ export function OrchestratorStatusCards({ status, isLoading }: OrchestratorStatu
   const runningCount = status?.by_state?.running || 0;
   const readyCount = status?.by_state?.ready || 0;
   const activeCount = runningCount + readyCount;
-  const isRunning = status && status.total_agents > 0;
+  // The orchestrator service is up whenever its status query resolves — agent
+  // count is shown separately in the cards below. (Previously this read
+  // `total_agents > 0`, so an idle-but-healthy orchestrator showed "Stopped".)
+  const isRunning = status !== undefined;
 
   return (
     <div className="grid gap-4 md:grid-cols-4">

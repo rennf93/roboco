@@ -21,10 +21,13 @@ export interface AgentDefinition {
 export const getBoardAgents = (agents: AgentDefinition[] | undefined | null) =>
   (agents ?? []).filter(
     (a) =>
-      a.team === Team.BOARD ||
-      a.role === AgentRole.HEAD_MARKETING ||
-      a.role === AgentRole.AUDITOR ||
-      a.role === AgentRole.PRODUCT_OWNER
+      // The CEO is the human operator, not a spawnable agent — exclude it even
+      // though its record carries team=board.
+      a.role !== AgentRole.CEO &&
+      (a.team === Team.BOARD ||
+        a.role === AgentRole.HEAD_MARKETING ||
+        a.role === AgentRole.AUDITOR ||
+        a.role === AgentRole.PRODUCT_OWNER)
   );
 
 export const getMainPm = (agents: AgentDefinition[] | undefined | null) =>
