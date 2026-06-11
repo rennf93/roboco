@@ -175,6 +175,9 @@ select = [
 # they're accepted in `roboco/mcp/**`.
 "roboco/services/gateway/**/*.py" = ["PLC0415", "PLR0913"]
 "roboco/api/routes/*.py" = ["PLC0415"]
+# deps.py is the DI wiring hub; it defers a few service imports to call time
+# to avoid import cycles with the modules it wires (same rationale as above).
+"roboco/api/deps.py" = ["PLC0415"]
 "roboco/runtime/*.py" = ["PLC0415"]
 # The intake driver/entrypoint lazily import the heavy `claude-agent-sdk` (and
 # uvicorn) so the modules import without those installed and don't pay the cost

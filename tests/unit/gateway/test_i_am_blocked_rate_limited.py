@@ -1,17 +1,16 @@
 """Unit tests for the rate-limited path in Choreographer.i_am_blocked.
 
-Acceptance criteria verified here:
-- AC1: i_am_blocked(reason='rate_limited') calls RateLimitStateTracker.activate()
-       and stores affected agent IDs; all active agents on the rate-limited
-       provider are subsequently marked waiting-long.
-- AC3: POST /v1/i_am_blocked with reason='rate_limited' does NOT transition
-       the task to 'blocked'; the task remains in its current status
-       (in_progress) and the calling agent is parked via
-       mark_waiting_long(waiting_for='rate_limit_lifted').
-- AC4: mark_waiting_long is called for every orchestrator-tracked active agent
-       sharing the affected provider — call count equals active agent count.
-- AC5: A RATE_LIMIT_HIT event is published to the StreamEventBus with fields
-       provider, affectedAgents, retryAfterSeconds, and timestamp.
+Behaviours verified here:
+- i_am_blocked(reason='rate_limited') calls RateLimitStateTracker.activate()
+  and stores affected agent IDs; all active agents on the rate-limited
+  provider are subsequently marked waiting-long.
+- POST /v1/i_am_blocked with reason='rate_limited' does NOT transition the
+  task to 'blocked'; the task remains in its current status (in_progress) and
+  the calling agent is parked via mark_waiting_long(waiting_for='rate_limit_lifted').
+- mark_waiting_long is called for every orchestrator-tracked active agent
+  sharing the affected provider — call count equals active agent count.
+- A RATE_LIMIT_HIT event is published to the StreamEventBus with fields
+  provider, affectedAgents, retryAfterSeconds, and timestamp.
 """
 
 from __future__ import annotations
@@ -116,7 +115,7 @@ def _make_deps(
 
 
 # ---------------------------------------------------------------------------
-# AC3: Task stays in in_progress, agent parked via mark_waiting_long
+# Task stays in in_progress, agent parked via mark_waiting_long
 # ---------------------------------------------------------------------------
 
 
@@ -191,7 +190,7 @@ class TestRateLimitedDoesNotBlockTask:
 
 
 # ---------------------------------------------------------------------------
-# AC4: mark_waiting_long called for every active agent on affected provider
+# mark_waiting_long called for every active agent on affected provider
 # ---------------------------------------------------------------------------
 
 
@@ -261,7 +260,7 @@ class TestMarkWaitingLongCallCount:
 
 
 # ---------------------------------------------------------------------------
-# AC5: RATE_LIMIT_HIT event published with correct payload structure
+# RATE_LIMIT_HIT event published with correct payload structure
 # ---------------------------------------------------------------------------
 
 
@@ -382,7 +381,7 @@ class TestRateLimitHitEventPublished:
 
 
 # ---------------------------------------------------------------------------
-# AC1: RateLimitStateTracker.activate() called on rate_limited path
+# RateLimitStateTracker.activate() called on rate_limited path
 # ---------------------------------------------------------------------------
 
 _TRACKER_PATCH = "roboco.services.gateway.rate_limit_tracker.RateLimitStateTracker"

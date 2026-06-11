@@ -1,4 +1,4 @@
-"""Unit tests for the rate-limit sweeper probe loop (AC4, AC8).
+"""Unit tests for the rate-limit sweeper probe loop.
 
 Tests cover:
 - probe-success path: tracker.clear() + resolve_wait + RATE_LIMIT_LIFTED event
@@ -45,7 +45,9 @@ def _make_redis_mock(initial_store: dict[str, Any] | None = None) -> AsyncMock:
         return 1 if store.pop(key, None) is not None else 0
 
     async def _scan(
-        _cursor: int, match: str = "*", count: int = 100  # noqa: ARG001
+        _cursor: int,
+        match: str = "*",
+        count: int = 100,  # noqa: ARG001
     ) -> tuple[int, list[bytes]]:
         # Simple in-memory scan: return all matching keys in one shot
         matches = [k.encode() for k in store if fnmatch.fnmatch(k, match)]
@@ -115,7 +117,7 @@ def _waiting_record(
 
 
 # ---------------------------------------------------------------------------
-# Tests: probe-success path (AC4)
+# Tests: probe-success path
 # ---------------------------------------------------------------------------
 
 
@@ -268,7 +270,7 @@ class TestProbeSuccessPath:
 
 
 # ---------------------------------------------------------------------------
-# Tests: probe-failure path (AC4)
+# Tests: probe-failure path
 # ---------------------------------------------------------------------------
 
 
@@ -315,7 +317,7 @@ class TestProbeFailurePath:
 
 
 # ---------------------------------------------------------------------------
-# Tests: CEO notification threshold (AC8)
+# Tests: CEO notification threshold
 # ---------------------------------------------------------------------------
 
 
@@ -477,7 +479,7 @@ class TestListRateLimitedProviders:
 
 
 # ---------------------------------------------------------------------------
-# Tests: GET /api/system/rate-limits endpoint schema (AC9)
+# Tests: GET /api/system/rate-limits endpoint schema
 # ---------------------------------------------------------------------------
 
 

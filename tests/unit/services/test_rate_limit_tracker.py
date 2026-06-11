@@ -9,14 +9,10 @@ visible to a fresh instance.
 
 from __future__ import annotations
 
-import json
 from typing import Any
-from unittest.mock import AsyncMock, MagicMock
-
-import pytest
+from unittest.mock import AsyncMock
 
 from roboco.services.gateway.rate_limit_tracker import RateLimitStateTracker
-
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -93,9 +89,10 @@ class TestActivateAndRead:
     async def test_activate_stores_retry_after(self) -> None:
         mock = _make_redis_mock()
         tracker = _make_tracker(redis_mock=mock)
-        await tracker.activate(retry_after=30.0)
+        retry_after = 30.0
+        await tracker.activate(retry_after=retry_after)
         state = await tracker.get_state()
-        assert state["retry_after"] == 30.0
+        assert state["retry_after"] == retry_after
 
     async def test_activate_stores_affected_agents(self) -> None:
         mock = _make_redis_mock()
@@ -132,10 +129,10 @@ class TestProbeFailures:
         mock = _make_redis_mock()
         tracker = _make_tracker(redis_mock=mock)
         await tracker.activate()
-        await tracker.increment_probe_failures()
-        await tracker.increment_probe_failures()
-        count = await tracker.increment_probe_failures()
-        assert count == 3
+        increments = 3
+        for _ in range(increments):
+            count = await tracker.increment_probe_failures()
+        assert count == increments
 
     async def test_reset_sets_zero(self) -> None:
         mock = _make_redis_mock()
@@ -152,10 +149,10 @@ class TestProbeFailures:
 # Tests: cross-reconnection persistence
 # ---------------------------------------------------------------------------
 #
-# AC2: "State persists across client reconnection: a test writes state via
+# State persists across client reconnection: a test writes state via
 # activate(), creates a new RateLimitStateTracker instance pointing at the
 # same Redis URL, calls is_rate_limited() and get_state() and gets back the
-# same values — proving state survives a process restart."
+# same values — proving state survives a process restart.
 #
 # We simulate this by sharing the same backing dict between two mock Redis
 # clients — one injected into the first tracker and one injected into the
@@ -188,9 +185,10 @@ class TestStatePersistsAcrossReconnection:
     async def test_get_state_survives_reconnection(self) -> None:
         shared_store: dict[str, Any] = {}
 
+        retry_after = 45.0
         mock_a = _make_redis_mock(initial_store=shared_store)
         tracker_a = _make_tracker(provider="anthropic", redis_mock=mock_a)
-        await tracker_a.activate(retry_after=45.0, affected_agents=["be-dev-2"])
+        await tracker_a.activate(retry_after=retry_after, affected_agents=["be-dev-2"])
 
         mock_b = _make_redis_mock(initial_store=mock_a._store)
         tracker_b = RateLimitStateTracker(
@@ -200,7 +198,7 @@ class TestStatePersistsAcrossReconnection:
 
         state = await tracker_b.get_state()
         assert state["rate_limited"] is True
-        assert state["retry_after"] == 45.0
+        assert state["retry_after"] == retry_after
         assert state["affected_agents"] == ["be-dev-2"]
 
     async def test_clear_via_first_instance_visible_to_second(self) -> None:
