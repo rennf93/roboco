@@ -2234,7 +2234,7 @@ class Choreographer:
         briefing: dict[str, Any],
         what_needed: str | None,
     ) -> Envelope:
-        """Rate-limited fast path: park agents and publish event without blocking the task.
+        """Rate-limited fast path: park agents, publish event, persist state.
 
         Called from ``i_am_blocked`` when ``reason == 'rate_limited'``.
         The task stays in its current status (``in_progress``) — no block
@@ -2273,6 +2273,21 @@ class Choreographer:
                     )
 
         retry_after_seconds = self._parse_retry_after(what_needed)
+
+        # Persist rate-limit state to Redis so downstream decide_spawn()
+        # calls can gate new spawns for this provider.  Skipped when the
+        # provider is "unknown" (orchestrator not wired or not tracking the
+        # agent) to avoid polluting the tracker with meaningless keys.
+        if provider != "unknown":
+            with contextlib.suppress(Exception):
+                from roboco.services.gateway.rate_limit_tracker import (
+                    RateLimitStateTracker,
+                )
+
+                await RateLimitStateTracker(provider).activate(
+                    retry_after=retry_after_seconds,
+                    affected_agents=affected_agents,
+                )
 
         bus = self.stream_bus
         if bus is not None:

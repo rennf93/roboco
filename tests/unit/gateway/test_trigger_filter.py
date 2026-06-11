@@ -34,17 +34,21 @@ def _task(
     return t
 
 
-def _trigger(
+def _trigger(  # noqa: PLR0913
     kind: TriggerKind,
     skill: str | None = None,
     recent_spawns_for_task: int = 0,
     recent_spawns_for_role: int = 0,
+    provider: str | None = None,
+    provider_rate_limited: bool = False,
 ) -> TriggerContext:
     return TriggerContext(
         kind=kind,
         skill=skill,
         recent_spawns_for_task=recent_spawns_for_task,
         recent_spawns_for_role=recent_spawns_for_role,
+        provider=provider,
+        provider_rate_limited=provider_rate_limited,
     )
 
 
@@ -148,3 +152,101 @@ class TestCooldown:
         )
         assert decision.outcome == SpawnDecision.QUEUE
         assert "rate" in decision.reason.lower()
+
+
+class TestProviderRateLimitGate:
+    """Rule 2: provider rate-limit gate fires before claimant-lock/cooldown."""
+
+    def test_queues_when_provider_rate_limited(self) -> None:
+        """QUEUE outcome when provider_rate_limited=True."""
+        t = _task(status="in_progress")
+        decision = decide_spawn(
+            task=t,
+            trigger=_trigger(
+                TriggerKind.NOTIFICATION,
+                provider="anthropic",
+                provider_rate_limited=True,
+            ),
+            config=_DEFAULT_CONFIG,
+        )
+        assert decision.outcome == SpawnDecision.QUEUE
+        assert "provider anthropic rate-limited" in decision.reason
+
+    def test_reason_contains_provider_name(self) -> None:
+        """Reason string must contain the provider name."""
+        t = _task(status="pending")
+        decision = decide_spawn(
+            task=t,
+            trigger=_trigger(
+                TriggerKind.SCAN,
+                provider="ollama_cloud",
+                provider_rate_limited=True,
+            ),
+            config=_DEFAULT_CONFIG,
+        )
+        assert "ollama_cloud" in decision.reason
+
+    def test_reason_contains_unknown_when_no_provider_name(self) -> None:
+        """When provider is None, reason still contains 'unknown'."""
+        t = _task(status="in_progress")
+        decision = decide_spawn(
+            task=t,
+            trigger=_trigger(
+                TriggerKind.NOTIFICATION,
+                provider=None,
+                provider_rate_limited=True,
+            ),
+            config=_DEFAULT_CONFIG,
+        )
+        assert decision.outcome == SpawnDecision.QUEUE
+        assert "unknown" in decision.reason
+
+    def test_no_queue_injection_when_not_rate_limited(self) -> None:
+        """SPAWN when provider_rate_limited=False and all other gates clear."""
+        t = _task(status="in_progress")
+        decision = decide_spawn(
+            task=t,
+            trigger=_trigger(
+                TriggerKind.NOTIFICATION,
+                provider="anthropic",
+                provider_rate_limited=False,
+            ),
+            config=_DEFAULT_CONFIG,
+        )
+        assert decision.outcome == SpawnDecision.SPAWN
+
+    def test_stale_drop_fires_before_rate_limit_gate(self) -> None:
+        """Rule 1 (stale-drop) fires before rule 2 (rate-limit gate)."""
+        t = _task(status="completed")
+        decision = decide_spawn(
+            task=t,
+            trigger=_trigger(
+                TriggerKind.NOTIFICATION,
+                provider="anthropic",
+                provider_rate_limited=True,
+            ),
+            config=_DEFAULT_CONFIG,
+        )
+        # Rule 1 fires first — outcome must be DROP, not QUEUE
+        assert decision.outcome == SpawnDecision.DROP
+
+    def test_rate_limit_gate_fires_before_claimant_lock(self) -> None:
+        """Rule 2 (rate-limit gate) fires before rule 3 (single-claimant invariant)."""
+        recent = datetime.now(tz=UTC)
+        t = _task(
+            status="in_progress",
+            active_claimant_id=uuid4(),
+            last_heartbeat_at=recent,
+        )
+        decision = decide_spawn(
+            task=t,
+            trigger=_trigger(
+                TriggerKind.NOTIFICATION,
+                provider="anthropic",
+                provider_rate_limited=True,
+            ),
+            config=_DEFAULT_CONFIG,
+        )
+        # Both gates would QUEUE but reason must come from rate-limit (rule 2)
+        assert decision.outcome == SpawnDecision.QUEUE
+        assert "rate-limited" in decision.reason
