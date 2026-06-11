@@ -56,6 +56,9 @@ class ConnectionManager:
         # agent_id -> set of websockets (for notifications)
         self.notification_connections: dict[UUID, set[WebSocket]] = {}
 
+        # Operator/system-wide stream (rate limits, etc.) — no per-agent keying.
+        self.system_connections: set[WebSocket] = set()
+
         # websocket -> agent_id (for tracking who is connected)
         self.connection_agents: dict[WebSocket, UUID] = {}
 
@@ -105,6 +108,11 @@ class ConnectionManager:
         self.notification_connections[agent_id].add(websocket)
         self.connection_agents[websocket] = agent_id
 
+    async def connect_system(self, websocket: WebSocket) -> None:
+        """Connect to the operator/system-wide stream (rate limits, etc.)."""
+        await websocket.accept()
+        self.system_connections.add(websocket)
+
     def disconnect(self, websocket: WebSocket) -> None:
         """Remove a websocket from all subscriptions."""
         # Remove from channel connections
@@ -122,6 +130,9 @@ class ConnectionManager:
         # Remove from notification connections
         for connections in self.notification_connections.values():
             connections.discard(websocket)
+
+        # Remove from the system-wide stream
+        self.system_connections.discard(websocket)
 
         # Remove from tracking
         self.connection_agents.pop(websocket, None)
@@ -165,6 +176,17 @@ class ConnectionManager:
         data = json.dumps(message, default=str)
         await asyncio.gather(
             *[conn.send_text(data) for conn in connections],
+            return_exceptions=True,
+        )
+
+    async def broadcast_system(self, message: dict[str, Any]) -> None:
+        """Broadcast a message to all operator/system-wide subscribers."""
+        if not self.system_connections:
+            return
+
+        data = json.dumps(message, default=str)
+        await asyncio.gather(
+            *[conn.send_text(data) for conn in self.system_connections],
             return_exceptions=True,
         )
 
@@ -402,6 +424,29 @@ async def notification_stream(
                 "agent_id": str(agent_id),
             }
         )
+
+        while True:
+            data = await websocket.receive_text()
+            if data == "ping":
+                await websocket.send_text("pong")
+
+    except WebSocketDisconnect:
+        manager.disconnect(websocket)
+
+
+@router.websocket("/system")
+async def system_stream(websocket: WebSocket) -> None:
+    """Operator/system-wide WebSocket stream.
+
+    Carries system-level events for the control panel — currently the
+    rate-limit lifecycle (``RATE_LIMIT_HIT`` / ``RATE_LIMIT_LIFTED``), bridged
+    from the event bus by ``websocket_bridge``. No per-agent keying or auth:
+    it's a read-only operator stream behind the panel's own access controls.
+    """
+    await manager.connect_system(websocket)
+
+    try:
+        await websocket.send_json({"type": "connected"})
 
         while True:
             data = await websocket.receive_text()

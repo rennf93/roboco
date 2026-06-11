@@ -15,6 +15,7 @@ import pytest
 from roboco.api.websocket_bridge import (
     _handle_agent_event,
     _handle_notification_sent,
+    _handle_rate_limit_event,
     _handle_session_event,
     register_websocket_bridge_handlers,
     start_websocket_bridge,
@@ -238,6 +239,59 @@ async def test_handle_agent_event_broadcasts() -> None:
 
 
 # ---------------------------------------------------------------------------
+# _handle_rate_limit_event
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_handle_rate_limit_hit_broadcasts_to_system() -> None:
+    """RATE_LIMIT_HIT → broadcast_system tagged with the type, payload intact."""
+    retry_after = 60.0
+    event = _evt(
+        EventType.RATE_LIMIT_HIT,
+        {
+            "provider": "anthropic",
+            "affectedAgents": ["be-dev-1"],
+            "retryAfterSeconds": retry_after,
+            "timestamp": "2026-06-11T00:00:00+00:00",
+        },
+    )
+    with patch("roboco.api.websocket_bridge.manager") as mgr:
+        mgr.broadcast_system = AsyncMock()
+        await _handle_rate_limit_event(event)
+    mgr.broadcast_system.assert_awaited_once()
+    msg = mgr.broadcast_system.await_args.args[0]
+    assert msg["type"] == "RATE_LIMIT_HIT"
+    assert msg["provider"] == "anthropic"
+    assert msg["affectedAgents"] == ["be-dev-1"]
+    assert msg["retryAfterSeconds"] == retry_after
+
+
+@pytest.mark.asyncio
+async def test_handle_rate_limit_lifted_broadcasts_to_system() -> None:
+    event = _evt(
+        EventType.RATE_LIMIT_LIFTED,
+        {"provider": "anthropic", "timestamp": "2026-06-11T00:01:00+00:00"},
+    )
+    with patch("roboco.api.websocket_bridge.manager") as mgr:
+        mgr.broadcast_system = AsyncMock()
+        await _handle_rate_limit_event(event)
+    msg = mgr.broadcast_system.await_args.args[0]
+    assert msg["type"] == "RATE_LIMIT_LIFTED"
+    assert msg["provider"] == "anthropic"
+
+
+@pytest.mark.asyncio
+async def test_handle_rate_limit_ignores_unrelated_event() -> None:
+    """A non-rate-limit event type is a no-op (defensive guard)."""
+    event = _evt(EventType.AGENT_SPAWNED, {"provider": "anthropic"})
+    with patch("roboco.api.websocket_bridge.manager") as mgr:
+        mgr.broadcast_system = AsyncMock()
+        await _handle_rate_limit_event(event)
+    mgr.broadcast_system.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
 # Registration + start
 # ---------------------------------------------------------------------------
 
@@ -267,6 +321,8 @@ def test_register_websocket_bridge_handlers_subscribes_all_event_types() -> None
     assert EventType.AGENT_WAITING in types
     assert EventType.AGENT_RESUMED in types
     assert EventType.AGENT_ERROR in types
+    assert EventType.RATE_LIMIT_HIT in types
+    assert EventType.RATE_LIMIT_LIFTED in types
 
 
 @pytest.mark.asyncio

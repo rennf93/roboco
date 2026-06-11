@@ -15,6 +15,11 @@ from roboco.events import Event, EventType, get_event_bus
 
 logger = structlog.get_logger()
 
+_RATE_LIMIT_WS_TYPES = {
+    EventType.RATE_LIMIT_HIT: "RATE_LIMIT_HIT",
+    EventType.RATE_LIMIT_LIFTED: "RATE_LIMIT_LIFTED",
+}
+
 
 # Handler for notification events
 async def _handle_notification_sent(event: Event) -> None:
@@ -126,6 +131,19 @@ async def _handle_agent_event(event: Event) -> None:
     )
 
 
+async def _handle_rate_limit_event(event: Event) -> None:
+    """Forward RATE_LIMIT_HIT/LIFTED events to operator system WS clients.
+
+    The published payload already carries the panel's fields
+    (``provider``, ``affectedAgents``, ``retryAfterSeconds``, ``timestamp``);
+    we only tag it with the discriminating ``type`` the panel switches on.
+    """
+    ws_type = _RATE_LIMIT_WS_TYPES.get(event.type)
+    if ws_type is None:
+        return
+    await manager.broadcast_system({"type": ws_type, **event.data})
+
+
 def register_websocket_bridge_handlers() -> None:
     """
     Register event handlers that forward events to WebSocket clients.
@@ -149,6 +167,10 @@ def register_websocket_bridge_handlers() -> None:
     bus.subscribe(EventType.AGENT_WAITING, _handle_agent_event)
     bus.subscribe(EventType.AGENT_RESUMED, _handle_agent_event)
     bus.subscribe(EventType.AGENT_ERROR, _handle_agent_event)
+
+    # Rate-limit lifecycle -> system WebSocket (panel banner)
+    bus.subscribe(EventType.RATE_LIMIT_HIT, _handle_rate_limit_event)
+    bus.subscribe(EventType.RATE_LIMIT_LIFTED, _handle_rate_limit_event)
 
     logger.info("WebSocket bridge handlers registered")
 
