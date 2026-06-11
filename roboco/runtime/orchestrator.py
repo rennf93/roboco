@@ -3390,6 +3390,22 @@ class AgentOrchestrator:
             return None
         return tokens
 
+    async def _resolve_active_tokens(
+        self, client: httpx.AsyncClient, agent_id: str
+    ) -> tuple[int, int, int, int] | None:
+        """Resolve live token counts for an active agent.
+
+        Tries the agent SDK's ``/usage/status`` first; on a zero/miss falls
+        back to the durable transcript (the SDK can report zero mid-run, the
+        same race the finalize path handles). Returns ``None`` when neither
+        source has any usage yet.
+        """
+        tokens = await self._fetch_agent_tokens(client, agent_id)
+        if tokens is not None:
+            return tokens
+        transcript = self._usage_from_transcript(agent_id)
+        return transcript if any(transcript) else None
+
     @staticmethod
     async def _persist_token_snapshot(
         session_factory: Any,
@@ -3493,7 +3509,7 @@ class AgentOrchestrator:
                     continue
 
                 try:
-                    tokens = await self._fetch_agent_tokens(client, agent_id)
+                    tokens = await self._resolve_active_tokens(client, agent_id)
                     if tokens is None:
                         continue
 

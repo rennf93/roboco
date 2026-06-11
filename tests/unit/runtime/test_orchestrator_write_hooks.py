@@ -385,6 +385,7 @@ async def test_sweep_token_snapshots_skips_zero_token_agents() -> None:
 
     with (
         patch("roboco.runtime.orchestrator.httpx.AsyncClient", _client_cls),
+        patch.object(orch, "_usage_from_transcript", return_value=(0, 0, 0, 0)),
         patch("roboco.db.base.get_session_factory", return_value=db_factory),
     ):
         await orch._sweep_token_snapshots()
@@ -595,3 +596,55 @@ async def test_handle_stopped_container_crash_finalizes_then_restarts() -> None:
 
     assert calls == [(_AGENT_ID, "crashed")]
     mock_spawn.assert_awaited_once()
+
+
+# ---------------------------------------------------------------------------
+# _resolve_active_tokens — SDK first, transcript fallback for live agents
+# ---------------------------------------------------------------------------
+
+
+async def test_resolve_active_tokens_falls_back_to_transcript() -> None:
+    """When the SDK reports all-zero, live resolution uses the transcript."""
+    orch = _make_orchestrator()
+
+    def _handler(_url: str) -> Any:
+        return _mock_response(
+            200,
+            {
+                "tokens_input": 0,
+                "tokens_output": 0,
+                "tokens_cache_read": 0,
+                "tokens_cache_write": 0,
+            },
+        )
+
+    client = _FakeHTTPClient(_handler)
+    with patch.object(orch, "_usage_from_transcript", return_value=(6, 514, 100, 50)):
+        tokens = await orch._resolve_active_tokens(client, _AGENT_ID)
+
+    assert tokens == (6, 514, 100, 50)
+
+
+async def test_resolve_active_tokens_prefers_sdk() -> None:
+    """A non-zero SDK response is used directly — no transcript fallback."""
+    orch = _make_orchestrator()
+
+    def _handler(_url: str) -> Any:
+        return _mock_response(
+            200,
+            {
+                "tokens_input": 10,
+                "tokens_output": 20,
+                "tokens_cache_read": 0,
+                "tokens_cache_write": 0,
+            },
+        )
+
+    client = _FakeHTTPClient(_handler)
+    with patch.object(
+        orch, "_usage_from_transcript", return_value=(999, 999, 999, 999)
+    ) as mock_tx:
+        tokens = await orch._resolve_active_tokens(client, _AGENT_ID)
+
+    assert tokens == (10, 20, 0, 0)
+    mock_tx.assert_not_called()
