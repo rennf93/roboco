@@ -504,6 +504,15 @@ async def get_choreographer(
     db_session: DbSession,
 ) -> Choreographer:
     """Build a Choreographer with all service dependencies wired up."""
+    from roboco.events.stream_bus import get_stream_event_bus
+
+    # Inject the orchestrator (if initialised) and the stream event bus
+    # so the rate-limited i_am_blocked path can park agents and publish events.
+    # Both are None-safe in ChoreographerDeps — passing None is the same as
+    # omitting the field, so the choreographer degrades gracefully when the
+    # orchestrator has not been initialised yet (e.g. during startup).
+    orch: AgentOrchestrator | None = _ServiceHolder.orchestrator
+    bus = get_stream_event_bus() if _ServiceHolder.orchestrator is not None else None
     return Choreographer(
         ChoreographerDeps(
             task=TaskService(db_session),
@@ -515,6 +524,8 @@ async def get_choreographer(
             evidence_repo=EvidenceRepo(db_session),
             messaging=MessagingService(db_session),
             product=ProductService(db_session),
+            orchestrator=orch,
+            stream_bus=bus,
         )
     )
 
