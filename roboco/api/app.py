@@ -35,6 +35,7 @@ from roboco.api.routes.prompter_live import router as prompter_live_router
 from roboco.api.routes.provider import router as provider_router
 from roboco.api.routes.sessions import router as sessions_router
 from roboco.api.routes.stream import router as stream_router
+from roboco.api.routes.system import router as system_router
 from roboco.api.routes.tasks import router as tasks_router
 from roboco.api.routes.usage import router as usage_router
 from roboco.api.routes.v1 import do as do_module
@@ -346,6 +347,13 @@ def create_app() -> FastAPI:
         usage_router,
         prefix=f"{api_prefix}/usage",
         tags=["Usage Analytics"],
+    )
+
+    # System monitoring (rate-limits, etc.)
+    app.include_router(
+        system_router,
+        prefix=f"{api_prefix}/system",
+        tags=["System"],
     )
 
     # API v1 — intent-verb flow endpoints

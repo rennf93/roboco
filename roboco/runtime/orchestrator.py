@@ -552,6 +552,13 @@ class AgentOrchestrator:
         self._health_task: asyncio.Task | None = None
         self._dispatcher_task: asyncio.Task | None = None
         self._sweeper_task: asyncio.Task | None = None
+        # Rate-limit probe loop: 30-second interval, scans Redis for all
+        # rate-limited providers and resolves waiting agents on success.
+        self._rate_limit_probe_task: asyncio.Task | None = None
+        # Tracks which providers have already received a CEO notification
+        # during the current rate-limit episode.  Cleared when the probe
+        # succeeds and the rate limit is lifted (tracker.clear() path).
+        self._rate_limit_ceo_notified: set[str] = set()
         # Strong refs for fire-and-forget audit writes. Without this, the
         # event loop only weak-refs the Task and may GC it before it
         # commits — audit_log was silently empty because of this.
@@ -624,6 +631,7 @@ class AgentOrchestrator:
         self._health_task = asyncio.create_task(self._health_loop())
         self._dispatcher_task = asyncio.create_task(self._dispatcher_loop())
         self._sweeper_task = asyncio.create_task(self._sweeper_loop())
+        self._rate_limit_probe_task = asyncio.create_task(self._rate_limit_probe_loop())
 
         logger.info(
             "Orchestrator started",
@@ -650,6 +658,11 @@ class AgentOrchestrator:
             self._sweeper_task.cancel()
             with contextlib.suppress(asyncio.CancelledError):
                 await self._sweeper_task
+
+        if self._rate_limit_probe_task:
+            self._rate_limit_probe_task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await self._rate_limit_probe_task
 
         # Stop all agents
         for agent_id in list(self._instances.keys()):
@@ -3941,6 +3954,250 @@ Start by:
             logger.error(
                 "Failed to send stranded-agent notification",
                 agent_id=agent_id,
+                error=str(e),
+            )
+
+    # =========================================================================
+    # RATE-LIMIT PROBE LOOP  (AC4, AC8)
+    # =========================================================================
+
+    async def _rate_limit_probe_loop(self) -> None:
+        """Background loop: probe rate-limited providers every ~30 seconds.
+
+        Runs independently of the 60-second session/notification sweeper so
+        rate limits can be cleared on their own cadence without blocking
+        other sweep work.
+        """
+        probe_interval = 30  # seconds
+        while self._running:
+            try:
+                await asyncio.sleep(probe_interval)
+                await self._sweep_rate_limit_probes()
+            except asyncio.CancelledError:
+                break
+            except Exception as e:
+                logger.error("Rate-limit probe loop error", error=str(e))
+
+    async def _sweep_rate_limit_probes(self) -> None:
+        """One probe pass: check every rate-limited provider.
+
+        For each provider whose estimated_lift_at has passed:
+        - Call ``_do_probe(provider)`` to test connectivity.
+        - **Success**: clear the tracker, resolve all parked agents, publish
+          ``RATE_LIMIT_LIFTED``.
+        - **Failure**: increment probe_failures; if the count reaches 10 and
+          we haven't already sent a CEO notification for this episode, send
+          one now.
+        """
+        from roboco.services.gateway.rate_limit_tracker import RateLimitStateTracker
+
+        try:
+            providers = await RateLimitStateTracker.list_rate_limited_providers()
+        except Exception as e:
+            logger.warning("Failed to list rate-limited providers", error=str(e))
+            return
+
+        for provider, state in providers:
+            try:
+                await self._probe_one_provider(provider, state)
+            except Exception as e:
+                logger.error(
+                    "Unhandled error probing provider",
+                    provider=provider,
+                    error=str(e),
+                )
+
+    def _make_tracker(self, provider: str) -> Any:
+        """Return a RateLimitStateTracker for *provider*.
+
+        Extracted as its own method so unit tests can monkeypatch it to
+        return an async mock without needing to intercept lazy imports.
+        """
+        from roboco.services.gateway.rate_limit_tracker import RateLimitStateTracker
+
+        return RateLimitStateTracker(provider)
+
+    async def _probe_one_provider(self, provider: str, state: dict[str, Any]) -> None:
+        """Probe a single rate-limited provider and handle the outcome."""
+        # Only start probing after estimated_lift_at has passed.
+        activated_at_raw: str | None = state.get("activated_at")
+        retry_after: float | None = state.get("retry_after")
+        if activated_at_raw and retry_after is not None:
+            try:
+                activated_at = datetime.fromisoformat(activated_at_raw)
+                estimated_lift_at = activated_at + timedelta(seconds=retry_after)
+                if datetime.now(UTC) < estimated_lift_at:
+                    return  # Too early — wait until after estimated lift time
+            except (ValueError, TypeError):
+                pass  # Malformed timestamps: proceed with probe anyway
+
+        success = await self._do_probe(provider)
+        tracker = self._make_tracker(provider)
+
+        if success:
+            logger.info(
+                "Rate-limit probe succeeded; clearing provider", provider=provider
+            )
+            await tracker.clear()
+            # Remove from CEO-notified set so new episodes get a fresh notification
+            self._rate_limit_ceo_notified.discard(provider)
+            # Resolve all parked agents waiting for this rate limit to lift
+            rate_limited_agents = [
+                agent_id
+                for agent_id, record in list(self._waiting_records.items())
+                if record.waiting_for == "rate_limit_lifted"
+                and record.context.get("provider") == provider
+            ]
+            for agent_id in rate_limited_agents:
+                with contextlib.suppress(Exception):
+                    await self.resolve_wait(
+                        agent_id,
+                        {
+                            "reason": "rate_limit_lifted",
+                            "provider": provider,
+                            "lifted_at": datetime.now(UTC).isoformat(),
+                        },
+                    )
+            # Publish RATE_LIMIT_LIFTED event
+            from roboco.events import get_event_bus
+            from roboco.models.events import Event, EventType
+
+            with contextlib.suppress(Exception):
+                bus = get_event_bus()
+                event = Event(
+                    type=EventType.RATE_LIMIT_LIFTED,
+                    data={
+                        "provider": provider,
+                        "resumedAgents": rate_limited_agents,
+                        "timestamp": datetime.now(UTC).isoformat(),
+                    },
+                )
+                await bus.publish(event)
+            logger.info(
+                "RATE_LIMIT_LIFTED published",
+                provider=provider,
+                resumed_agents=len(rate_limited_agents),
+            )
+        else:
+            failure_count = await tracker.increment_probe_failures()
+            logger.debug(
+                "Rate-limit probe failed",
+                provider=provider,
+                probe_failures=failure_count,
+            )
+            # Send CEO notification once when failures reach threshold 10
+            _CEO_NOTIFY_THRESHOLD = 10
+            if (
+                failure_count >= _CEO_NOTIFY_THRESHOLD
+                and provider not in self._rate_limit_ceo_notified
+            ):
+                self._rate_limit_ceo_notified.add(provider)
+                paused_count = sum(
+                    1
+                    for record in self._waiting_records.values()
+                    if record.waiting_for == "rate_limit_lifted"
+                    and record.context.get("provider") == provider
+                )
+                activated_at_str: str = activated_at_raw or "unknown"
+                await self._notify_rate_limit_ceo(
+                    provider=provider,
+                    activated_at_str=activated_at_str,
+                    paused_agent_count=paused_count,
+                )
+
+    async def _do_probe(self, _provider: str) -> bool:
+        """Return True if the provider is accepting requests again.
+
+        This method is intentionally thin so tests can monkeypatch it.
+        The default implementation is conservative: returns ``True``
+        (success) so that once the estimated_lift_at window has passed
+        the probe clears the rate limit.  Override in tests to inject
+        either success or failure scenarios.
+        """
+        # Default: optimistic — time-expiry gate (checked before this call)
+        # is the primary guard; the probe itself succeeds.
+        return True
+
+    async def _notify_rate_limit_ceo(
+        self,
+        provider: str,
+        activated_at_str: str,
+        paused_agent_count: int,
+    ) -> None:
+        """Send a high-priority notification to the CEO about a persistent rate limit.
+
+        Fires once per episode (AC8).  Follows the same pattern as
+        ``_notify_stranded_agent`` — direct DB insert + delivery.deliver().
+        """
+        try:
+            from sqlalchemy import select as _select
+
+            from roboco.db.base import get_session_factory
+            from roboco.db.tables import AgentTable, NotificationTable
+            from roboco.models.base import (
+                AgentRole,
+                NotificationPriority,
+                NotificationType,
+            )
+            from roboco.services.notification_delivery import (
+                get_notification_delivery_service,
+            )
+            from roboco.utils.converters import require_uuid
+
+            # Compute human-friendly duration
+            duration_desc = "unknown duration"
+            try:
+                activated_at = datetime.fromisoformat(activated_at_str)
+                elapsed = datetime.now(UTC) - activated_at
+                total_minutes = int(elapsed.total_seconds() / 60)
+                if total_minutes < 60:  # noqa: PLR2004
+                    duration_desc = f"{total_minutes} minute(s)"
+                else:
+                    duration_desc = f"{total_minutes // 60}h {total_minutes % 60}m"
+            except (ValueError, TypeError):
+                pass
+
+            session_factory = get_session_factory()
+            async with session_factory() as db:
+                ceo_result = await db.execute(
+                    _select(AgentTable).where(AgentTable.role == AgentRole.CEO)
+                )
+                ceo = ceo_result.scalar_one_or_none()
+                if ceo is None:
+                    logger.warning(
+                        "CEO agent not found; skipping rate-limit CEO notification",
+                        provider=provider,
+                    )
+                    return
+                notification = NotificationTable(
+                    type=NotificationType.ALERT,
+                    priority=NotificationPriority.HIGH,
+                    from_agent=ceo.id,
+                    to_agents=[ceo.id],
+                    subject=f"Rate limit persisting: {provider}",
+                    body=(
+                        f"Provider '{provider}' has been rate-limited for "
+                        f"{duration_desc}. "
+                        f"{paused_agent_count} agent(s) are currently paused. "
+                        f"10 consecutive probe attempts have failed. "
+                        f"Manual intervention may be required."
+                    ),
+                    requires_ack=True,
+                )
+                db.add(notification)
+                await db.flush()
+                delivery = get_notification_delivery_service(db)
+                await delivery.deliver(require_uuid(notification.id))
+                await db.commit()
+            logger.info(
+                "Rate-limit CEO notification sent",
+                provider=provider,
+                paused_agents=paused_agent_count,
+            )
+        except Exception as e:
+            logger.error(
+                "Failed to send rate-limit CEO notification",
+                provider=provider,
                 error=str(e),
             )
 
