@@ -50,6 +50,11 @@ class TriggerContext:
     skill: str | None
     recent_spawns_for_task: int
     recent_spawns_for_role: int
+    # Provider rate-limit fields.  Optional — callers that don't know the
+    # provider (e.g. no-task spawns) leave these at their defaults so the
+    # gate is a no-op.
+    provider: str | None = None
+    provider_rate_limited: bool = False
 
 
 _TERMINAL_STATUSES: frozenset[str] = frozenset({"completed", "cancelled"})
@@ -60,13 +65,16 @@ _A2A_CODE_REVIEW_RELEVANT_STATES: frozenset[str] = frozenset(
 )
 
 
-def decide_spawn(
+def decide_spawn(  # noqa: PLR0911
     *,
     task: Any,
     trigger: TriggerContext,
     config: SpawnConfig,
 ) -> Decision:
-    """Apply four rules in order: stale > claimant-lock > task-cooldown > role-rate."""
+    """Apply five rules in order.
+
+    stale > provider-rate-limit > claimant-lock > task-cooldown > role-rate
+    """
     # 1. Stale-trigger cleanup
     if task.status in _TERMINAL_STATUSES:
         return Decision(SpawnDecision.DROP, "task in terminal state — trigger stale")
@@ -81,7 +89,14 @@ def decide_spawn(
             f"a2a code_review for task in {task.status} — stale",
         )
 
-    # 2. Single-claimant invariant
+    # 2. Provider rate-limit gate
+    if trigger.provider_rate_limited:
+        return Decision(
+            SpawnDecision.QUEUE,
+            f"provider {trigger.provider or 'unknown'} rate-limited",
+        )
+
+    # 3. Single-claimant invariant
     if task.active_claimant_id is not None and not is_stale(
         task, threshold_seconds=config.claim_stale_seconds
     ):
@@ -90,14 +105,14 @@ def decide_spawn(
             "task has active claimant with fresh heartbeat",
         )
 
-    # 3. Per-task spawn cooldown
+    # 4. Per-task spawn cooldown
     if trigger.recent_spawns_for_task >= 1:
         return Decision(
             SpawnDecision.QUEUE,
             f"per-task spawn cooldown ({config.cooldown_seconds}s) active",
         )
 
-    # 4. Per-role rate limit
+    # 5. Per-role rate limit
     if trigger.recent_spawns_for_role >= config.role_rate_per_minute:
         return Decision(
             SpawnDecision.QUEUE,
