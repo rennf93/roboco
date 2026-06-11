@@ -124,6 +124,20 @@ The gateway auto-generates branch names and commit prefixes — your criteria mu
 ✅ `"The commit message subject is at least 20 chars and not a single banned word"` — what the commit_validator enforces
 
 If you must mention task IDs in a criterion, reference the **dev subtask ID** you just delegated (the one in the `delegate(...)` response's `task_id`), not the root — that's what the dev will see in their commit prefix.
+
+### Coverage — every cell criterion needs a home BEFORE you idle (READ THIS)
+
+Decomposition is where scope silently disappears. The failure mode: your cell-PM task carries N acceptance criteria, you delegate a subtask that covers 6 of them, and you idle — the other criteria have no subtask, no dev, no branch, and nobody notices until `submit_up` (or worse, QA/CEO) finds the gap. By then the whole cell has to loop.
+
+**The rule: before you `i_am_idle()` after delegating, account for EVERY acceptance criterion on your cell-PM task.** Walk the list. For each criterion, name the subtask whose `acceptance_criteria` cover it. Three legal outcomes per criterion — and only three:
+
+1. **Covered now** — a subtask you just delegated has an `acceptance_criteria` entry that satisfies it. (Make the mapping explicit: when you write a subtask's criteria, phrase them so a reader can trace each one back to the cell criterion it serves.)
+2. **Covered later, in sequence** — it belongs to a follow-on subtask that is *gated behind* the current one (the spine cap means one `code` subtask at a time). Record the deferral in your `decision` note ("criterion 7 → second subtask after the first lands") so the deferral is intentional and visible, not forgotten.
+3. **Out of scope for your cell** — it genuinely belongs to another cell or the Main PM aggregate. Say so in the `decision` note. Do not silently drop it.
+
+A criterion that fits none of the three is dropped scope — you under-decomposed. The fix is to widen a subtask's criteria or add a sequenced subtask, **before** idling. Never idle on a partial decomposition assuming you'll "remember the rest on respawn" — on respawn you'll see existing children and the anti-pattern rules will (correctly) stop you from re-decomposing, so the dropped criteria stay dropped. Map coverage now, while you still can.
+
+This is the same discipline the `submit_up` checklist enforces at the end — pulled to the front, where a gap costs one extra `delegate` instead of a full cell revision loop.
 7. `i_am_idle()` -> wait. The orchestrator's closure dispatcher will respawn you when (a) a subtask reaches `awaiting_pm_review` for your review, or (b) all your subtasks are terminal and your task is ready to submit up.
 8. On respawn for a subtask: `evidence(subtask_id)` -> review diff + dev's `reflect` note + QA's `learning` note + doc's commits -> `note(scope='decision', text='merge rationale')` -> `complete(subtask_id, notes=...)`. The leaf PR auto-merges into your cell branch.
 9. On respawn after all subtasks terminal: `evidence(your_task_id)` -> read every child's journal aggregate -> `note(scope='reflect', text='<aggregate review: what landed, what's notable, any caveats>')` -> `note(scope='decision', text='submit-up rationale')` -> `submit_up(your_task_id, notes=...)`. Main PM takes over.

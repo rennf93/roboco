@@ -37,6 +37,7 @@ from roboco.agent_sdk.models import (
     TerminalToolRecordRequest,
     TokenReportRequest,
     TokenUsageStatus,
+    TranscriptSyncRequest,
     VerbAttemptRequest,
     VerbCircuitStatus,
 )
@@ -422,11 +423,16 @@ class _SessionState:
         self.verb_attempts: dict[tuple[str, str | None], deque[float]] = defaultdict(
             deque
         )
-        # Cumulative token usage for this session (reported via /usage/report)
+        # Cumulative token usage for this session. Populated by /usage/sync,
+        # which parses the Claude Code transcript and *sets* these absolutely
+        # (the additive /usage/report path remains for explicit deltas).
         self.tokens_input: int = 0
         self.tokens_output: int = 0
         self.tokens_cache_read: int = 0
         self.tokens_cache_write: int = 0
+        # (size, mtime) of the last transcript parsed for /usage/sync, so a
+        # re-sync of an unchanged transcript skips the re-parse.
+        self.transcript_fingerprint: tuple[int, float] | None = None
 
     def reset(self) -> None:
         self._init_fields()
@@ -733,6 +739,81 @@ def _token_usage_snapshot() -> TokenUsageStatus:
         tokens_cache_read=_state.tokens_cache_read,
         tokens_cache_write=_state.tokens_cache_write,
     )
+
+
+def _sum_transcript_usage(path: Path) -> tuple[int, int, int, int]:
+    """Sum per-message token usage across a Claude Code JSONL transcript.
+
+    Each assistant entry carries a ``message.usage`` block with the token
+    counts for that API response; summing them yields the session total.
+    Returns ``(input, output, cache_read, cache_write)``. Malformed lines are
+    skipped — a single bad line must never lose the whole count.
+    """
+    tin = tout = tcr = tcw = 0
+    with path.open("r", encoding="utf-8", errors="ignore") as fh:
+        for raw in fh:
+            stripped = raw.strip()
+            if not stripped:
+                continue
+            try:
+                entry = json.loads(stripped)
+            except (ValueError, TypeError):
+                continue
+            message = entry.get("message")
+            if not isinstance(message, dict):
+                continue
+            usage = message.get("usage")
+            if not isinstance(usage, dict):
+                continue
+            tin += int(usage.get("input_tokens", 0) or 0)
+            tout += int(usage.get("output_tokens", 0) or 0)
+            tcr += int(usage.get("cache_read_input_tokens", 0) or 0)
+            tcw += int(usage.get("cache_creation_input_tokens", 0) or 0)
+    return tin, tout, tcr, tcw
+
+
+@app.post("/usage/sync", response_model=TokenUsageStatus)
+async def usage_sync(req: TranscriptSyncRequest) -> TokenUsageStatus:
+    """Parse the Claude Code transcript and *set* cumulative token totals.
+
+    Claude Code does not pass token usage to hooks, so the usage-report hook
+    hands us the transcript path and we derive the totals ourselves. The set
+    is absolute and idempotent: re-syncing the same or a grown transcript
+    overwrites rather than accumulates, so it is safe to call after every
+    tool use and again at Stop. An unchanged transcript (same size + mtime)
+    short-circuits without re-parsing.
+    """
+    path = Path(req.transcript_path)
+    try:
+        stat = path.stat()
+    except OSError:
+        # Transcript not written yet (very first turn) — nothing to sync.
+        return _token_usage_snapshot()
+
+    fingerprint = (stat.st_size, stat.st_mtime)
+    if fingerprint == _state.transcript_fingerprint:
+        return _token_usage_snapshot()
+
+    try:
+        tin, tout, tcr, tcw = _sum_transcript_usage(path)
+    except OSError as exc:
+        logger.warning("Transcript usage sync failed", error=str(exc))
+        return _token_usage_snapshot()
+
+    _state.tokens_input = tin
+    _state.tokens_output = tout
+    _state.tokens_cache_read = tcr
+    _state.tokens_cache_write = tcw
+    _state.transcript_fingerprint = fingerprint
+
+    logger.debug(
+        "Token usage synced from transcript",
+        tokens_input=tin,
+        tokens_output=tout,
+        tokens_cache_read=tcr,
+        tokens_cache_write=tcw,
+    )
+    return _token_usage_snapshot()
 
 
 @app.post("/journal/post_mortem")

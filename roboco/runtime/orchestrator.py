@@ -1007,6 +1007,19 @@ class AgentOrchestrator:
                             }
                         ],
                     },
+                    # Sync token usage from the transcript so /usage/status
+                    # (and the cost dashboard) reflect real spend. Idempotent
+                    # absolute set — running it per tool keeps mid-run
+                    # snapshots and reaped-agent sessions accurate.
+                    {
+                        "matcher": "*",
+                        "hooks": [
+                            {
+                                "type": "command",
+                                "command": "/app/scripts/usage-report-hook.sh",
+                            }
+                        ],
+                    },
                 ],
                 # Stop guard: refuse silent exits unless a terminal tool was
                 # just called (idle/substitute/escalate/pause/...). Second
@@ -1017,7 +1030,14 @@ class AgentOrchestrator:
                             {
                                 "type": "command",
                                 "command": "/app/scripts/stop-hook.sh",
-                            }
+                            },
+                            # Final token-usage sync at turn end — guarantees
+                            # the session total is captured before the agent
+                            # idles and the orchestrator finalizes the row.
+                            {
+                                "type": "command",
+                                "command": "/app/scripts/usage-report-hook.sh",
+                            },
                         ]
                     }
                 ],

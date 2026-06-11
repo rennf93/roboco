@@ -241,3 +241,18 @@ class TokenUsageStatus(BaseModel):
     tokens_cache_write: int = Field(
         default=0, description="Total cache-write tokens this session"
     )
+
+
+class TranscriptSyncRequest(BaseModel):
+    """Payload for POST /usage/sync — hand the SDK the Claude Code transcript.
+
+    The hook can't read token counts itself (Claude Code does not pass usage
+    to hooks), so it passes the ``transcript_path`` instead. The SDK parses
+    the JSONL transcript, sums the per-message ``usage`` across the session,
+    and *sets* the cumulative totals absolutely (idempotent — re-syncing the
+    same or a grown transcript never double-counts).
+    """
+
+    transcript_path: str = Field(
+        description="Absolute path to the Claude Code session transcript (.jsonl)"
+    )

@@ -65,6 +65,7 @@ COPY docker/scripts/sdk-startup-hook.sh /app/scripts/sdk-startup-hook.sh
 COPY docker/scripts/a2a-check-hook.sh /app/scripts/a2a-check-hook.sh
 COPY docker/scripts/bash-guard-hook.sh /app/scripts/bash-guard-hook.sh
 COPY docker/scripts/post-tool-budget-hook.sh /app/scripts/post-tool-budget-hook.sh
+COPY docker/scripts/usage-report-hook.sh /app/scripts/usage-report-hook.sh
 COPY docker/scripts/stop-hook.sh /app/scripts/stop-hook.sh
 COPY docker/scripts/user-prompt-hook.sh /app/scripts/user-prompt-hook.sh
 COPY docker/scripts/pre-compact-hook.sh /app/scripts/pre-compact-hook.sh
