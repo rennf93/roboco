@@ -27,8 +27,11 @@ export function useRateLimitWebSocket(options: UseRateLimitWebSocketOptions = {}
   const { onReconnect } = options;
   const prevStateRef = useRef<string | null>(null);
 
+  // getWebSocketUrl() already supplies the "/ws" base, so the endpoint is just
+  // the path (matching the agents/channels/notifications hooks). Passing
+  // "/ws/system" here produced the doubled "/ws/ws/system" URL.
   const { state, lastMessage } = useWebSocket<RateLimitWsMessage>(
-    "/ws/system",
+    "/system",
     undefined,
     true
   );

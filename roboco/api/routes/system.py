@@ -7,41 +7,82 @@ the per-resource routers (agents, tasks, etc.).
 Currently exposed:
 
     GET /api/system/rate-limits
-        Returns the current per-provider rate-limit state from Redis.
+        Returns the current per-provider rate-limit state from Redis,
+        shaped for the control panel's rate-limit store.
 """
 
 from __future__ import annotations
 
-from typing import Any
+from datetime import datetime, timedelta
 
 from fastapi import APIRouter
+from pydantic import BaseModel, ConfigDict
+from pydantic.alias_generators import to_camel
 
 from roboco.services.gateway.rate_limit_tracker import RateLimitStateTracker
 
 router = APIRouter()
 
 
+class _CamelModel(BaseModel):
+    """Serialize with camelCase aliases so the panel consumes fields directly."""
+
+    model_config = ConfigDict(alias_generator=to_camel, populate_by_name=True)
+
+
+class RateLimitEntry(_CamelModel):
+    """A single provider's active rate-limit state, in the panel's shape."""
+
+    provider: str
+    affected_agents: list[str]
+    hit_at: str | None
+    resume_at: str | None
+    retry_after_seconds: float | None
+
+
+class RateLimitListResponse(_CamelModel):
+    """The envelope the panel's rate-limit store expects: ``{ "entries": [...] }``."""
+
+    entries: list[RateLimitEntry]
+
+
+def _resume_at(hit_at: str | None, retry_after: float | None) -> str | None:
+    """Estimated lift time = hit_at + retry_after, ISO; falls back to hit_at."""
+    if not hit_at or retry_after is None:
+        return hit_at
+    try:
+        lifted = datetime.fromisoformat(hit_at) + timedelta(seconds=retry_after)
+    except (ValueError, TypeError):
+        return hit_at
+    return lifted.isoformat()
+
+
 @router.get(
     "/rate-limits",
     summary="List per-provider rate-limit state",
-    response_model=list[dict[str, Any]],
+    response_model=RateLimitListResponse,
     tags=["System"],
 )
-async def get_rate_limits() -> list[dict[str, Any]]:
+async def get_rate_limits() -> RateLimitListResponse:
     """Return rate-limit state for every currently rate-limited provider.
 
     Backed by
     :class:`~roboco.services.gateway.rate_limit_tracker.RateLimitStateTracker`.
-    Each entry is the raw state dict (``rate_limited``, ``activated_at``,
-    ``retry_after``, ``affected_agents``, ``probe_failures``) augmented
-    with a ``provider`` key.
+    Shaped as the panel's rate-limit store consumes it — a
+    ``{ "entries": [...] }`` envelope where each entry is
+    ``{provider, affectedAgents, hitAt, resumeAt, retryAfterSeconds}``.
 
-    Returns an empty list ``[]`` when no provider is currently rate-limited.
+    ``entries`` is empty when no provider is currently rate-limited.
     """
-    entries = await RateLimitStateTracker.list_rate_limited_providers()
-    result: list[dict[str, Any]] = []
-    for provider, state in entries:
-        item = dict(state)
-        item["provider"] = provider
-        result.append(item)
-    return result
+    states = await RateLimitStateTracker.list_rate_limited_providers()
+    entries = [
+        RateLimitEntry(
+            provider=provider,
+            affected_agents=state.get("affected_agents", []),
+            hit_at=state.get("activated_at"),
+            resume_at=_resume_at(state.get("activated_at"), state.get("retry_after")),
+            retry_after_seconds=state.get("retry_after"),
+        )
+        for provider, state in states
+    ]
+    return RateLimitListResponse(entries=entries)
