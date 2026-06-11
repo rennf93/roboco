@@ -3047,6 +3047,44 @@ class AgentOrchestrator:
             )
 
     # =========================================================================
+    # PROVIDER QUERY HELPERS (used by the choreographer rate-limit path)
+    # =========================================================================
+
+    def get_provider_for_agent(self, agent_slug: str) -> str | None:
+        """Return the ``provider_type`` for a currently-tracked agent, or None.
+
+        Reads the in-memory ``_instances`` dict so this is synchronous and
+        O(1).  Returns None when the agent is not tracked or has no config.
+
+        Args:
+            agent_slug: The agent slug (e.g. ``"be-dev-1"``).
+        """
+        instance = self._instances.get(agent_slug)
+        if instance is None or instance.config is None:
+            return None
+        return instance.config.provider_type
+
+    def get_active_agent_slugs_for_provider(self, provider: str) -> list[str]:
+        """Return slugs of all active agents currently using ``provider``.
+
+        "Active" means the instance's state is ACTIVE or STARTING (i.e.
+        the container is running or spinning up — not IDLE, WAITING_LONG,
+        STOPPING, or OFFLINE).
+
+        Args:
+            provider: Provider type string, e.g. ``"anthropic"`` or
+                      ``"ollama_cloud"``.
+        """
+        active_states = {AgentState.ACTIVE, AgentState.STARTING}
+        return [
+            slug
+            for slug, inst in self._instances.items()
+            if inst.state in active_states
+            and inst.config is not None
+            and inst.config.provider_type == provider
+        ]
+
+    # =========================================================================
     # TOKEN USAGE INSTRUMENTATION
     # =========================================================================
 
