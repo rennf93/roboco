@@ -270,8 +270,13 @@ def _detect_dep_commands(workspace: Path) -> list[tuple[str, list[str]]]:
     Detects project ecosystems by lockfile/manifest and returns
     ``(label, argv)`` tuples to run from the workspace root:
 
-    - Python: `pyproject.toml` → ``uv sync`` (installs dev deps into a
-      `.venv` next to the project, giving the agent its own ruff/mypy/pytest).
+    - Python: `pyproject.toml` → ``uv sync --extra dev`` (installs the project
+      plus its ``dev`` extra into a `.venv` next to the project, giving the
+      agent its own ruff/mypy/xenon/pytest for the `make quality` gate). Plain
+      ``uv sync`` would install only the default dependency group, leaving the
+      lint/type/complexity tools — which live in the ``dev`` *extra* — absent,
+      so `make quality` dies on ``ruff: command not found`` and the agent
+      cannot gate its own work.
     - Node/TS: `pnpm-lock.yaml` → ``pnpm install``;
       ``package-lock.json`` → ``npm ci``; bare `package.json` → ``npm install``.
 
@@ -280,7 +285,7 @@ def _detect_dep_commands(workspace: Path) -> list[tuple[str, list[str]]]:
     commands: list[tuple[str, list[str]]] = []
 
     if (workspace / "pyproject.toml").is_file():
-        commands.append(("uv sync", ["uv", "sync"]))
+        commands.append(("uv sync --extra dev", ["uv", "sync", "--extra", "dev"]))
 
     if (workspace / "pnpm-lock.yaml").is_file():
         commands.append(("pnpm install", ["pnpm", "install", "--frozen-lockfile"]))
