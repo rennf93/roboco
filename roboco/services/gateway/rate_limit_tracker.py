@@ -128,3 +128,58 @@ class RateLimitStateTracker:
         state = await self.get_state()
         state["probe_failures"] = 0
         await r.set(self._key(), json.dumps(state))
+
+    # ------------------------------------------------------------------
+    # Class-level helpers
+    # ------------------------------------------------------------------
+
+    @classmethod
+    async def list_rate_limited_providers(
+        cls,
+        redis_url: str | None = None,
+    ) -> list[tuple[str, dict[str, Any]]]:
+        """Scan Redis for all providers that are currently rate-limited.
+
+        Returns a list of ``(provider_name, state_dict)`` tuples — one
+        entry per provider whose stored state has ``rate_limited == True``.
+        Returns an empty list when nothing is rate-limited or Redis is
+        unreachable.
+
+        Args:
+            redis_url: Override the default Redis URL from settings.
+        """
+        url = redis_url or settings.redis_url
+        r: redis.Redis = redis.from_url(url)  # type: ignore[type-arg]
+        pattern = f"{cls._KEY_PREFIX}*:state"
+        results: list[tuple[str, dict[str, Any]]] = []
+        try:
+            cursor: int = 0
+            while True:
+                cursor, keys = await r.scan(cursor, match=pattern, count=100)
+                for raw_key in keys:
+                    key: str = (
+                        raw_key.decode() if isinstance(raw_key, bytes) else str(raw_key)
+                    )
+                    # Extract provider from key: roboco:rate_limit:{provider}:state
+                    # Strip prefix and suffix
+                    inner = key[len(cls._KEY_PREFIX) :]
+                    if inner.endswith(":state"):
+                        provider = inner[: -len(":state")]
+                    else:
+                        continue
+                    raw_val = await r.get(key)
+                    if raw_val is None:
+                        continue
+                    decoded: str = (
+                        raw_val.decode() if isinstance(raw_val, bytes) else str(raw_val)
+                    )
+                    state: dict[str, Any] = json.loads(decoded)
+                    if state.get("rate_limited"):
+                        results.append((provider, state))
+                if cursor == 0:
+                    break
+        except Exception:
+            pass
+        finally:
+            await r.aclose()
+        return results
