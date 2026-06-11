@@ -240,15 +240,14 @@ export const usageApi = {
   },
 
   /**
-   * Recent inference sessions — mock-mode only.
-   *
-   * The backend has no /usage/sessions endpoint.  In production this
-   * returns an empty array so SessionsTable shows a graceful "no data"
-   * state instead of throwing a 404.
+   * Recent spawn sessions — the raw per-session rows behind the aggregate
+   * panels, served by GET /usage/sessions.
    */
-  // eslint-disable-next-line @typescript-eslint/no-unused-vars
-  getUsageSessions: async (_limit: number = 100): Promise<UsageSession[]> => {
+  getUsageSessions: async (limit: number = 100): Promise<UsageSession[]> => {
     if (isMockMode()) return mockSessions();
-    return [];
+    const { data } = await api.get<UsageSession[]>("/usage/sessions", {
+      params: { limit },
+    });
+    return data;
   },
 };

@@ -35,6 +35,23 @@ def _row_tokens(row: Any) -> tuple[int, int, int, int]:
     )
 
 
+def _session_row(row: Any) -> dict[str, Any]:
+    """Shape one spawn-session row for the dashboard's sessions table."""
+    tin, tout, tcr, tcw = _row_tokens(row)
+    return {
+        "id": str(row.id),
+        "agent_slug": row.agent_slug,
+        "model": row.model,
+        "started_at": row.started_at.isoformat(),
+        "ended_at": row.ended_at.isoformat() if row.ended_at else None,
+        "tokens_input": tin,
+        "tokens_output": tout,
+        "tokens_cache": tcr + tcw,
+        "total_tokens": tin + tout + tcr + tcw,
+        "cost": float(row.estimated_cost_usd or 0.0),
+    }
+
+
 def _parse_period(period: str) -> tuple[datetime, int]:
     """Parse period string into (start_dt, hours).
 
@@ -440,6 +457,19 @@ class UsageService(BaseService):
             "tokens_today": tokens_today,
             "cost_today_usd": round(float(row.total_cost_usd or 0.0), 6),
         }
+
+    async def get_recent_sessions(self, limit: int = 50) -> list[dict[str, Any]]:
+        """Return the most recent spawn sessions, newest first.
+
+        These are the raw per-session rows behind the aggregate panels — the
+        dashboard's "Recent Sessions" table.
+        """
+        result = await self.session.execute(
+            select(AgentSpawnSessionTable)
+            .order_by(AgentSpawnSessionTable.started_at.desc())
+            .limit(limit)
+        )
+        return [_session_row(row) for row in result.scalars().all()]
 
 
 def get_usage_service(db: AsyncSession) -> UsageService:

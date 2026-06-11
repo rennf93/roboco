@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import datetime
 from unittest.mock import AsyncMock, MagicMock
+from uuid import UUID
 
 import pytest
 from roboco.services.usage import UsageService
@@ -759,3 +760,77 @@ class TestGetCacheEfficiency:
         result = await svc.get_cache_efficiency("24h")
         for field in ("cache_hit_rate", "cost_saved_by_cache_usd"):
             assert field in result, f"Missing field: {field}"
+
+
+# ---------------------------------------------------------------------------
+# get_recent_sessions — maps spawn-session rows to the dashboard shape
+# ---------------------------------------------------------------------------
+
+
+class TestGetRecentSessions:
+    @pytest.mark.asyncio
+    async def test_shapes_rows(self) -> None:
+        """Rows are mapped to id/agent/model/tokens/cache/total/cost fields."""
+        exp_in, exp_out = 6, 514
+        exp_cr, exp_cw = 111_032, 14_881
+        exp_cost = 0.1614
+        exp_count = 1
+        sid = UUID("12345678-1234-5678-1234-567812345678")
+
+        row = MagicMock()
+        row.id = sid
+        row.agent_slug = "product-owner"
+        row.model = "claude-opus-4-6"
+        row.started_at = datetime.datetime(2026, 6, 11, 20, 41, tzinfo=datetime.UTC)
+        row.ended_at = datetime.datetime(2026, 6, 11, 20, 42, tzinfo=datetime.UTC)
+        row.tokens_input = exp_in
+        row.tokens_output = exp_out
+        row.tokens_cache_read = exp_cr
+        row.tokens_cache_write = exp_cw
+        row.estimated_cost_usd = exp_cost
+
+        scalars = MagicMock()
+        scalars.all = MagicMock(return_value=[row])
+        result = MagicMock()
+        result.scalars = MagicMock(return_value=scalars)
+
+        svc = _service_with_execute(result)
+        out = await svc.get_recent_sessions(limit=10)
+
+        assert len(out) == exp_count
+        s = out[0]
+        assert s["id"] == str(sid)
+        assert s["agent_slug"] == "product-owner"
+        assert s["model"] == "claude-opus-4-6"
+        assert s["tokens_input"] == exp_in
+        assert s["tokens_output"] == exp_out
+        assert s["tokens_cache"] == exp_cr + exp_cw
+        assert s["total_tokens"] == exp_in + exp_out + exp_cr + exp_cw
+        assert s["cost"] == pytest.approx(exp_cost)
+        assert s["ended_at"] is not None
+
+    @pytest.mark.asyncio
+    async def test_open_session_has_null_ended_at(self) -> None:
+        """A still-running session (ended_at None) serializes ended_at as None."""
+        row = MagicMock()
+        row.id = "00000000-0000-0000-0000-000000000001"
+        row.agent_slug = "main-pm"
+        row.model = "sonnet"
+        row.started_at = datetime.datetime(2026, 6, 11, 20, 0, tzinfo=datetime.UTC)
+        row.ended_at = None
+        row.tokens_input = _ZERO
+        row.tokens_output = _ZERO
+        row.tokens_cache_read = _ZERO
+        row.tokens_cache_write = _ZERO
+        row.estimated_cost_usd = None
+
+        scalars = MagicMock()
+        scalars.all = MagicMock(return_value=[row])
+        result = MagicMock()
+        result.scalars = MagicMock(return_value=scalars)
+
+        svc = _service_with_execute(result)
+        out = await svc.get_recent_sessions()
+
+        assert out[0]["ended_at"] is None
+        assert out[0]["cost"] == _ZERO
