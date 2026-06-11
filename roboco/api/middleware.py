@@ -41,6 +41,7 @@ from roboco.services.base import (
 from roboco.services.base import (
     ValidationError as ServiceValidationError,
 )
+from roboco.services.exceptions import RateLimitError
 
 logger = structlog.get_logger()
 
@@ -227,6 +228,42 @@ async def service_exception_handler(request: Request, exc: Exception) -> JSONRes
     )
 
 
+async def rate_limit_exception_handler(
+    request: Request, exc: Exception
+) -> JSONResponse:
+    """Handle :class:`~roboco.services.exceptions.RateLimitError`.
+
+    Returns HTTP 429 with a ``Retry-After`` response header (when available)
+    and a structured JSON body so API consumers can back off gracefully.
+    """
+    rl_exc = cast("RateLimitError", exc)
+    correlation_id = getattr(request.state, "correlation_id", None)
+
+    logger.warning(
+        "LLM rate limit exhausted",
+        provider=rl_exc.provider,
+        retry_after=rl_exc.retry_after,
+    )
+
+    content: dict = {
+        "error": "rate_limit_exceeded",
+        "provider": rl_exc.provider,
+        "message": str(rl_exc),
+    }
+    if correlation_id:
+        content["correlation_id"] = correlation_id
+
+    headers: dict[str, str] = {}
+    if rl_exc.retry_after is not None:
+        headers["Retry-After"] = str(int(rl_exc.retry_after))
+
+    return JSONResponse(
+        status_code=429,
+        content=content,
+        headers=headers,
+    )
+
+
 async def generic_exception_handler(request: Request, exc: Exception) -> JSONResponse:
     """Handle unexpected exceptions."""
     correlation_id = getattr(request.state, "correlation_id", None)
@@ -376,6 +413,7 @@ def setup_middleware(app: FastAPI) -> None:
     app.add_exception_handler(HTTPException, http_exception_handler)
     app.add_exception_handler(RobocoError, roboco_exception_handler)
     app.add_exception_handler(ServiceError, service_exception_handler)
+    app.add_exception_handler(RateLimitError, rate_limit_exception_handler)
     app.add_exception_handler(Exception, generic_exception_handler)
 
     # Middleware (added in reverse order due to LIFO)

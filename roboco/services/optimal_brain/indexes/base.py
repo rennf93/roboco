@@ -17,6 +17,12 @@ from piragi.types import Citation, Document
 
 from roboco.config import settings
 from roboco.models.optimal import IndexType, SearchOutcome, SearchResult
+from roboco.services.exceptions import (
+    HTTP_TOO_MANY_REQUESTS,
+    MAX_RATE_LIMIT_RETRIES,
+    RateLimitError,
+    parse_retry_after_header,
+)
 
 # Apply piragi runtime patches (chunker tokenizer) BEFORE importing piragi
 # itself anywhere in the plugin stack. Importing for side effects only.
@@ -918,19 +924,25 @@ class BaseIndexPlugin(ABC):
         Returns:
             Tuple of (answer, citations). Returns ("", []) on failure
             to allow OptimalService to continue to next index.
+
+        The Ollama LLM call is retried up to MAX_RATE_LIMIT_RETRIES times on
+        HTTP 429, respecting the Retry-After header.  The vector-search phase
+        is NOT retried and still runs inside the 15-second index timeout.
         """
         import asyncio
 
         import httpx
 
-        # Per-index timeout to prevent one slow index from blocking everything
+        # Per-index timeout to prevent one slow index from blocking everything.
+        # Applied to the search phase only; LLM retries run outside this timeout.
         INDEX_TIMEOUT = 15.0
 
         search_results: list[SearchResult] = []
+        prompt: str = ""
 
+        # ---- Search phase (inside timeout) -----------------------------------
         try:
             async with asyncio.timeout(INDEX_TIMEOUT):
-                # First get context using our properly async search
                 logger.info(
                     "ask() starting search",
                     index_type=self.index_type.value,
@@ -947,14 +959,11 @@ class BaseIndexPlugin(ABC):
                 )
 
                 if not search_results:
-                    # Return empty to continue to next index
                     return "", []
 
-                # Build context for LLM
+                # Build context and prompt while still inside the timeout
                 context_texts = [r.content for r in search_results]
                 context = "\n\n---\n\n".join(context_texts)
-
-                # Build prompt
                 prompt = (
                     "You are a technical knowledge base assistant. "
                     "Based on the context, provide a thorough, actionable answer.\n\n"
@@ -969,14 +978,28 @@ class BaseIndexPlugin(ABC):
                     "Detailed Answer:"
                 )
 
-                # Call LLM via Ollama API (async HTTP)
-                llm_url = f"{self.config.llm_base_url}/chat/completions"
-                logger.info(
-                    "ask() calling LLM",
-                    index_type=self.index_type.value,
-                    llm_url=llm_url,
-                    model=self.config.llm_model,
-                )
+        except (TimeoutError, httpx.TimeoutException, Exception) as e:
+            logger.warning(
+                "Index ask() search phase failed",
+                index_type=self.index_type.value,
+                error_type=type(e).__name__,
+                error=str(e) if not isinstance(e, TimeoutError) else "timed out",
+            )
+            return "", search_results
+
+        # ---- LLM call phase with 429 retry (outside index timeout) -----------
+        llm_url = f"{self.config.llm_base_url}/chat/completions"
+        logger.info(
+            "ask() calling LLM",
+            index_type=self.index_type.value,
+            llm_url=llm_url,
+            model=self.config.llm_model,
+        )
+
+        last_rl_retry_after: float | None = None
+
+        for rl_attempt in range(MAX_RATE_LIMIT_RETRIES):
+            try:
                 async with httpx.AsyncClient(timeout=60.0) as client:
                     resp = await client.post(
                         llm_url,
@@ -987,44 +1010,46 @@ class BaseIndexPlugin(ABC):
                             "options": {"num_ctx": 8192},
                         },
                     )
-                    if resp.is_success:
-                        data = resp.json()
-                        answer_text = data["choices"][0]["message"]["content"]
-                        # Extract answer from think tags if needed
-                        answer_text = self._extract_from_think_tags(answer_text)
-                        return answer_text, search_results
-                    else:
-                        logger.warning(
-                            "LLM call failed in ask",
-                            index_type=self.index_type.value,
-                            status=resp.status_code,
-                            error=resp.text[:200] if resp.text else "no error text",
-                        )
-                        # Return empty to let service aggregate and synthesize
-                        return "", search_results
+            except (httpx.TimeoutException, Exception) as e:
+                logger.warning(
+                    "LLM call failed in ask (non-429)",
+                    index_type=self.index_type.value,
+                    error=str(e),
+                )
+                return "", search_results
 
-        except TimeoutError:
-            logger.warning(
-                "Index ask() timed out",
-                index_type=self.index_type.value,
-                timeout=INDEX_TIMEOUT,
-            )
-            # Return search results even on timeout - service can aggregate them
-            return "", search_results
-        except httpx.TimeoutException:
-            logger.warning(
-                "LLM HTTP call timed out in ask",
-                index_type=self.index_type.value,
-            )
-            return "", search_results
-        except Exception as e:
-            logger.warning(
-                "RAG query failed",
-                index_type=self.index_type.value,
-                error=str(e),
-            )
-            # Return whatever search results we have for aggregation
-            return "", search_results
+            if resp.status_code == HTTP_TOO_MANY_REQUESTS:
+                retry_after = parse_retry_after_header(resp)
+                last_rl_retry_after = retry_after
+                backoff = (
+                    retry_after if retry_after is not None else float(2**rl_attempt)
+                )
+                logger.warning(
+                    "Ollama rate limited (429), retrying",
+                    provider="ollama",
+                    attempt=rl_attempt + 1,
+                    max_retries=MAX_RATE_LIMIT_RETRIES,
+                    backoff_duration=backoff,
+                )
+                if rl_attempt < MAX_RATE_LIMIT_RETRIES - 1:
+                    await asyncio.sleep(backoff)
+                continue
+
+            if resp.is_success:
+                data = resp.json()
+                answer_text = data["choices"][0]["message"]["content"]
+                answer_text = self._extract_from_think_tags(answer_text)
+                return answer_text, search_results
+            else:
+                logger.warning(
+                    "LLM call failed in ask",
+                    index_type=self.index_type.value,
+                    status=resp.status_code,
+                    error=resp.text[:200] if resp.text else "no error text",
+                )
+                return "", search_results
+
+        raise RateLimitError(provider="ollama", retry_after=last_rl_retry_after)
 
     async def count(self) -> int:
         """Get the number of documents in the index."""
