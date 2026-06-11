@@ -588,8 +588,8 @@ class AgentOrchestrator:
         # Self-heal: roll back orphan claims left over from a prior crash.
         # Tasks that show CLAIMED/IN_PROGRESS but have NO
         # branch_name set indicate _finalize_claim flushed the status before
-        # branch creation failed in a pre-P0-7 run. Without this, the next
-        # claim attempt fails non-idempotent on `git checkout -b`.
+        # branch creation failed (before claim-rollback was atomic). Without
+        # this, the next claim attempt fails non-idempotent on `git checkout -b`.
         await self._reconcile_orphan_claims_on_startup()
 
         # Note: Per-agent settings are now generated at spawn time
@@ -3330,7 +3330,7 @@ class AgentOrchestrator:
         """
         try:
             from roboco.db.base import get_session_factory
-            from roboco.db.tables import AgentSpawnSessionTable, DailyUsageRollupTable
+            from roboco.db.tables import AgentSpawnSessionTable
         except ImportError:
             return
 
@@ -3382,65 +3382,57 @@ class AgentOrchestrator:
                 rows = result.fetchall()
 
                 for row in rows:
-                    date_val = row.date
-                    agent_slug = row.agent_slug
-                    team = row.team
-                    model = row.model
-
-                    # Look for existing rollup row
-                    existing_result = await db.execute(
-                        select(DailyUsageRollupTable).where(
-                            DailyUsageRollupTable.date == date_val,
-                            DailyUsageRollupTable.agent_slug == agent_slug,
-                            DailyUsageRollupTable.team == team,
-                            DailyUsageRollupTable.model == model,
-                        )
-                    )
-                    existing = existing_result.scalar_one_or_none()
-
-                    tokens_input = int(row.tokens_input or 0)
-                    tokens_output = int(row.tokens_output or 0)
-                    tokens_cache_read = int(row.tokens_cache_read or 0)
-                    tokens_cache_write = int(row.tokens_cache_write or 0)
-                    total_cost = float(row.total_cost_usd or 0.0)
-                    session_count = int(row.session_count or 0)
-
-                    if existing is not None:
-                        from sqlalchemy import update
-
-                        await db.execute(
-                            update(DailyUsageRollupTable)
-                            .where(DailyUsageRollupTable.id == existing.id)
-                            .values(
-                                tokens_input=tokens_input,
-                                tokens_output=tokens_output,
-                                tokens_cache_read=tokens_cache_read,
-                                tokens_cache_write=tokens_cache_write,
-                                total_cost_usd=total_cost,
-                                session_count=session_count,
-                            )
-                        )
-                    else:
-                        new_row = DailyUsageRollupTable(
-                            id=_uuid4(),
-                            date=date_val,
-                            agent_slug=agent_slug,
-                            team=team,
-                            model=model,
-                            tokens_input=tokens_input,
-                            tokens_output=tokens_output,
-                            tokens_cache_read=tokens_cache_read,
-                            tokens_cache_write=tokens_cache_write,
-                            total_cost_usd=total_cost,
-                            session_count=session_count,
-                        )
-                        db.add(new_row)
+                    await self._upsert_rollup_row(db, row, _uuid4)
 
                 await db.commit()
                 logger.debug("Daily usage rollup complete", rows_processed=len(rows))
 
         except Exception as exc:
             logger.warning("Daily usage rollup failed", error=str(exc))
+
+    async def _upsert_rollup_row(self, db: Any, row: Any, uuid4: Any) -> None:
+        """Insert or update a single daily_usage_rollups row from an aggregate.
+
+        Looks up the existing rollup for (date, agent_slug, team, model) and
+        either updates its summed columns or inserts a fresh row.
+        """
+        from sqlalchemy import select, update
+
+        from roboco.db.tables import DailyUsageRollupTable
+
+        key = {
+            "date": row.date,
+            "agent_slug": row.agent_slug,
+            "team": row.team,
+            "model": row.model,
+        }
+        values = {
+            "tokens_input": int(row.tokens_input or 0),
+            "tokens_output": int(row.tokens_output or 0),
+            "tokens_cache_read": int(row.tokens_cache_read or 0),
+            "tokens_cache_write": int(row.tokens_cache_write or 0),
+            "total_cost_usd": float(row.total_cost_usd or 0.0),
+            "session_count": int(row.session_count or 0),
+        }
+
+        existing_result = await db.execute(
+            select(DailyUsageRollupTable).where(
+                DailyUsageRollupTable.date == key["date"],
+                DailyUsageRollupTable.agent_slug == key["agent_slug"],
+                DailyUsageRollupTable.team == key["team"],
+                DailyUsageRollupTable.model == key["model"],
+            )
+        )
+        existing = existing_result.scalar_one_or_none()
+
+        if existing is not None:
+            await db.execute(
+                update(DailyUsageRollupTable)
+                .where(DailyUsageRollupTable.id == existing.id)
+                .values(**values)
+            )
+        else:
+            db.add(DailyUsageRollupTable(id=uuid4(), **key, **values))
 
     async def restore_waiting_records(self) -> int:
         """Load persisted waiting records into memory on orchestrator start.
@@ -4502,11 +4494,31 @@ Start by:
         if routing == "cell_pm":
             return self._TEAM_PM_MAP.get(team, "main-pm") if team else "main-pm"
 
-        # Dev routing - requires agent selection
-        if routing == "dev" and team:
-            return self._select_agent_for_cell(team, "dev")
+        # Dev routing - select a cell agent.
+        if routing == "dev":
+            agent = self._select_agent_for_cell(team, "dev") if team else None
+            if agent:
+                return agent
+            # No cell agent — team is missing or a non-cell team (fullstack /
+            # system). Fall back to main-pm to triage rather than leaving the
+            # task ownerless-and-dormant: the dispatcher never re-spawns an
+            # unrouted pending task, so a None here strands it. Mirrors the
+            # cell_pm / escalation `... or "main-pm"` default.
+            logger.warning(
+                "dev routing found no cell agent; falling back to main-pm",
+                task_id=task.get("id"),
+                team=team,
+            )
+            return "main-pm"
 
-        return None
+        # Unrecognized routing classification — never strand the task; main-pm
+        # triages it instead of it going dormant.
+        logger.warning(
+            "unrecognized routing classification; falling back to main-pm",
+            routing=routing,
+            task_id=task.get("id"),
+        )
+        return "main-pm"
 
     def _build_main_pm_triage_prompt(self, task: dict[str, Any]) -> str:
         """Build prompt for MAIN PM to triage and distribute to Cell PMs."""
@@ -4728,7 +4740,7 @@ Start now: evidence(task_id="{task_id}")
 
         A task in CLAIMED/IN_PROGRESS with ``branch_name IS NULL`` is an
         orphan: ``_finalize_claim`` flushed the status before branch creation
-        failed (or before the P0-7 rollback fix landed). The next claim then
+        failed (or before claim rollback became atomic). The next claim then
         fails non-idempotent on ``git checkout -b`` because the on-disk
         branch may exist while the DB state is stale.
 

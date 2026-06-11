@@ -4,9 +4,20 @@ Token pricing for Claude API models.
 Implements per-model USD cost calculation based on Anthropic's published
 pricing. All prices are in USD per 1 million tokens.
 
-Unknown model names return 0.0 without raising so callers don't need to
-guard against missing pricing data.  Self-hosted Ollama models always
-return 0.0 (no API cost) — matched by the ``ollama/`` prefix convention.
+Pricing is provider-aware. A model name resolves to one of three cases:
+
+* **Anthropic** — priced from the table below by substring match.
+* **Non-Anthropic** — local self-hosted Ollama models (``ollama/`` prefix or
+  bare model tags) and Ollama Cloud models (``:cloud`` tag). These have **no
+  per-token cost**: local inference runs on owned hardware, and Ollama Cloud
+  is billed by flat subscription / GPU-time rather than per token. Both return
+  an intentional ``0.0`` — not an error condition, so they are not warned on.
+* **Unpriced Anthropic** — a ``claude``-named model with no table entry (a new
+  or renamed Claude model we have not priced yet). This is real spend we would
+  otherwise undercount, so it logs a warning and returns ``0.0``.
+
+Every path returns ``0.0`` rather than raising, so callers don't need to guard
+against missing pricing data.
 """
 
 from __future__ import annotations
@@ -14,6 +25,11 @@ from __future__ import annotations
 import structlog
 
 logger = structlog.get_logger(__name__)
+
+# Substrings that identify an Anthropic (Claude) model. Used only to decide
+# whether an *unpriced* model is a Claude model we forgot to price (warn) vs a
+# non-Anthropic model that legitimately has no per-token cost (don't warn).
+_ANTHROPIC_FRAGMENTS = ("claude", "opus", "sonnet", "haiku")
 
 # ---------------------------------------------------------------------------
 # Per-model pricing table
@@ -48,6 +64,26 @@ _PRICING: list[tuple[str, float, float, float, float]] = [
 _MILLION = 1_000_000.0
 
 
+def _is_anthropic_model(lower: str) -> bool:
+    """True if the lowercased model name looks like an Anthropic (Claude) model."""
+    return any(fragment in lower for fragment in _ANTHROPIC_FRAGMENTS)
+
+
+def _lookup_prices(lower: str) -> tuple[float, float, float, float] | None:
+    """Return the (input, output, cache_read, cache_write) rates for a model.
+
+    Matches ``lower`` (a lowercased model name) against the pricing table by
+    substring, longest fragment wins. Returns None when no fragment matches.
+    """
+    best_fragment_len = 0
+    best_prices: tuple[float, float, float, float] | None = None
+    for fragment, inp_price, out_price, cr_price, cw_price in _PRICING:
+        if fragment in lower and len(fragment) > best_fragment_len:
+            best_fragment_len = len(fragment)
+            best_prices = (inp_price, out_price, cr_price, cw_price)
+    return best_prices
+
+
 def calculate_cost(
     model: str,
     tokens_input: int,
@@ -58,8 +94,10 @@ def calculate_cost(
     """Calculate the estimated USD cost for a model invocation.
 
     Matches the model name against the known pricing table using substring
-    search (longest match wins).  Unknown models return 0.0 without raising.
-    Self-hosted Ollama models (``ollama/`` prefix) always return 0.0.
+    search (longest match wins). Provider-aware (see module docstring):
+    non-Anthropic models (local Ollama, Ollama Cloud) have no per-token cost
+    and return 0.0 silently; an unpriced Anthropic model returns 0.0 but logs
+    a warning since it represents real spend we are failing to count.
 
     Args:
         model: Model name or short alias (e.g. ``"claude-sonnet-4-6"``,
@@ -70,7 +108,7 @@ def calculate_cost(
         tokens_cache_write: Prompt-cache write tokens (charged at reduced rate).
 
     Returns:
-        Estimated cost in USD as a float.  Returns 0.0 for unknown models
+        Estimated cost in USD as a float. Returns 0.0 for unpriced models
         rather than raising.
     """
     if not model:
@@ -78,21 +116,15 @@ def calculate_cost(
 
     lower = model.lower()
 
-    # Self-hosted Ollama models have no API cost.
-    if lower.startswith("ollama/"):
-        return 0.0
-
-    # Find the best (longest fragment) match
-    best_fragment_len = 0
-    best_prices: tuple[float, float, float, float] | None = None
-
-    for fragment, inp_price, out_price, cr_price, cw_price in _PRICING:
-        if fragment in lower and len(fragment) > best_fragment_len:
-            best_fragment_len = len(fragment)
-            best_prices = (inp_price, out_price, cr_price, cw_price)
-
+    best_prices = _lookup_prices(lower)
     if best_prices is None:
-        logger.warning("No pricing data found for model", model=model)
+        # No per-token rate. Warn only for Anthropic models (real spend we are
+        # undercounting); non-Anthropic models are local/subscription-billed
+        # and have no per-token cost, so an intentional 0.0 is correct.
+        if _is_anthropic_model(lower):
+            logger.warning("No pricing data found for Anthropic model", model=model)
+        else:
+            logger.debug("Non-Anthropic model has no per-token cost", model=model)
         return 0.0
 
     inp_price, out_price, cr_price, cw_price = best_prices

@@ -1,4 +1,4 @@
-"""State machine invariant checks (audit P2-6).
+"""State machine invariant checks.
 
 Originally specced as hypothesis-driven, but hypothesis isn't a project
 dependency, so the same invariants are asserted via deterministic

@@ -435,6 +435,44 @@ async def test_create_session_db(db_session: Any) -> None:
 
 
 @pytest.mark.asyncio
+async def test_assignee_is_board_distinguishes_roles(db_session: Any) -> None:
+    """Drives product team routing: a board reviewer keeps the root on the board.
+
+    A product confirmed via "Board review & Start" is assigned to a board
+    reviewer and must stay team=board so the CEO's Approve & Start gate appears;
+    one assigned to main-pm (or a cell dev) is not a board task.
+    """
+    service = get_prompter_service(db=db_session)
+
+    def _agent(role: AgentRole) -> AgentTable:
+        return AgentTable(
+            id=uuid4(),
+            name="A",
+            slug=f"a-{uuid4().hex[:8]}",
+            role=role,
+            team=None,
+            status=AgentStatus.ACTIVE,
+            model_config={},
+            system_prompt="x",
+            capabilities=[],
+            permissions={},
+            metrics={},
+        )
+
+    po = _agent(AgentRole.PRODUCT_OWNER)
+    hom = _agent(AgentRole.HEAD_MARKETING)
+    dev = _agent(AgentRole.DEVELOPER)
+    db_session.add_all([po, hom, dev])
+    await db_session.flush()
+
+    assert await service._assignee_is_board(po.id) is True
+    assert await service._assignee_is_board(hom.id) is True
+    assert await service._assignee_is_board(dev.id) is False
+    # Unknown id is not a board agent — defensive, must not raise.
+    assert await service._assignee_is_board(uuid4()) is False
+
+
+@pytest.mark.asyncio
 async def test_get_session_not_found(db_session: Any) -> None:
     """_get_session raises NotFoundError for unknown session ID."""
     service = get_prompter_service(db=db_session)

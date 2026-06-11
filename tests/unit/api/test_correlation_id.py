@@ -137,8 +137,7 @@ def _reload_mcp_module(monkeypatch: pytest.MonkeyPatch, dotted: str) -> ModuleTy
     importlib at the top-level keeps PLC0415 happy.
 
     Also writes a stub manifest file and points the MCP server at it,
-    since both servers now refuse to register any tools without one
-    (audit P0-5 / D-12).
+    since both servers now refuse to register any tools without one.
     """
     monkeypatch.setenv("ROBOCO_AGENT_ID", "00000000-0000-0000-0000-000000000001")
     monkeypatch.setenv("ROBOCO_AGENT_ROLE", "developer")

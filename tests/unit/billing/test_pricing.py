@@ -12,7 +12,7 @@ Covers:
 from __future__ import annotations
 
 import pytest
-from roboco.billing.pricing import calculate_cost
+from roboco.billing.pricing import _is_anthropic_model, calculate_cost
 
 # ---------------------------------------------------------------------------
 # Named constants (ruff PLR2004: magic values in comparisons must be named).
@@ -297,3 +297,35 @@ class TestSubstringMatchPriority:
         )
         assert lower_cost == upper_cost
         assert lower_cost > _ZERO_COST
+
+
+# ---------------------------------------------------------------------------
+# Provider awareness — non-Anthropic models have no per-token cost
+# ---------------------------------------------------------------------------
+
+
+class TestProviderAwareness:
+    """Non-Anthropic models (local Ollama / Ollama Cloud) cost 0.0 per token."""
+
+    def test_ollama_prefixed_model_returns_zero(self) -> None:
+        """Self-hosted Ollama models (``ollama/`` prefix) have no API cost."""
+        cost = calculate_cost("ollama/llama3", tokens_input=_M, tokens_output=_M)
+        assert cost == _ZERO_COST
+
+    def test_ollama_cloud_model_returns_zero(self) -> None:
+        """Ollama Cloud (``:cloud`` tag) is subscription-billed, not per token."""
+        cost = calculate_cost("glm-5:cloud", tokens_input=_M, tokens_output=_M)
+        assert cost == _ZERO_COST
+
+    def test_bare_local_model_returns_zero(self) -> None:
+        """A bare local embedding model has no per-token cost."""
+        cost = calculate_cost("qwen3-embedding:0.6b", tokens_input=_M, tokens_output=0)
+        assert cost == _ZERO_COST
+
+    def test_is_anthropic_model_true_for_claude_names(self) -> None:
+        for name in ("claude-opus-4-6", "claude-fable-5", "opus", "sonnet", "haiku"):
+            assert _is_anthropic_model(name) is True, name
+
+    def test_is_anthropic_model_false_for_non_claude_names(self) -> None:
+        for name in ("ollama/llama3", "glm-5:cloud", "qwen3-embedding", "gpt-4o"):
+            assert _is_anthropic_model(name) is False, name
