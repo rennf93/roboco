@@ -55,8 +55,11 @@ ENV NODE_ENV=production
 RUN addgroup --system --gid 1001 nodejs
 RUN adduser --system --uid 1001 nextjs
 
-# Copy public assets
-COPY --from=builder /app/public ./public
+# Copy public assets. Must be chowned to the runtime user (nextjs) like the
+# standalone/static copies below — without it the assets stay root:root
+# rwxrwx--- and the non-root nextjs process gets EACCES serving them, so every
+# /public file (e.g. roboco-logo.png) 500s.
+COPY --from=builder --chown=nextjs:nodejs /app/public ./public
 
 # Copy standalone build
 COPY --from=builder --chown=nextjs:nodejs /app/.next/standalone ./
