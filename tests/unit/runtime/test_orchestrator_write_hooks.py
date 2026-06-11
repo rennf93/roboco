@@ -527,7 +527,7 @@ async def test_stop_agent_finalizes_before_lock() -> None:
 
     finalized: list[str] = []
 
-    async def _fake_finalize(agent_id: str, exit_reason: str = "stopped") -> None:  # noqa: ARG001
+    async def _fake_finalize(agent_id: str, **_kwargs: object) -> None:
         finalized.append(agent_id)
 
     # Stub out the Docker subprocess so stop_agent doesn't actually run Docker
@@ -543,3 +543,55 @@ async def test_stop_agent_finalizes_before_lock() -> None:
 
     # _finalize_spawn_session must have been called exactly once with our agent id
     assert finalized == [_AGENT_ID]
+
+
+# ---------------------------------------------------------------------------
+# _handle_stopped_container — self-exits finalize (stop_agent was not called)
+# ---------------------------------------------------------------------------
+
+
+async def test_handle_stopped_container_graceful_finalizes() -> None:
+    """A graceful self-exit (exit 0) finalizes the spawn session.
+
+    The agent calls i_am_idle and its container exits 0 without stop_agent
+    being invoked, so _handle_stopped_container must finalize to capture the
+    token usage; otherwise the session row is left open with zero tokens.
+    """
+    orch = _make_orchestrator()
+    instance = _make_instance(_AGENT_ID)
+    instance.container_id = "abc123def456"
+    orch._instances[_AGENT_ID] = instance
+
+    calls: list[tuple[str, str]] = []
+
+    async def _fake_finalize(agent_id: str, exit_reason: str = "stopped") -> None:
+        calls.append((agent_id, exit_reason))
+
+    with patch.object(orch, "_finalize_spawn_session", side_effect=_fake_finalize):
+        await orch._handle_stopped_container(_AGENT_ID, instance, 0)
+
+    assert calls == [(_AGENT_ID, "completed")]
+    assert instance.state is OrchestratorAgentState.OFFLINE
+
+
+async def test_handle_stopped_container_crash_finalizes_then_restarts() -> None:
+    """A non-zero exit finalizes (exit_reason='crashed') before auto-restart."""
+    orch = _make_orchestrator()
+    instance = _make_instance(_AGENT_ID)
+    instance.container_id = "abc123def456"
+    instance.error_count = 0
+    orch._instances[_AGENT_ID] = instance
+
+    calls: list[tuple[str, str]] = []
+
+    async def _fake_finalize(agent_id: str, exit_reason: str = "stopped") -> None:
+        calls.append((agent_id, exit_reason))
+
+    with (
+        patch.object(orch, "_finalize_spawn_session", side_effect=_fake_finalize),
+        patch.object(orch, "spawn_agent", AsyncMock()) as mock_spawn,
+    ):
+        await orch._handle_stopped_container(_AGENT_ID, instance, 1)
+
+    assert calls == [(_AGENT_ID, "crashed")]
+    mock_spawn.assert_awaited_once()

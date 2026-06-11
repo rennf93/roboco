@@ -168,3 +168,51 @@ def test_parser_handles_entries_without_message(tmp_path: Path) -> None:
         exp["tokens_cache_read"],
         exp["tokens_cache_write"],
     )
+
+
+def _assistant_line_with_id(row: _UsageRow, message_id: str) -> str:
+    """An assistant line carrying a message id (for de-duplication tests)."""
+    inp, out, cread, cwrite = row
+    return json.dumps(
+        {
+            "type": "assistant",
+            "message": {
+                "id": message_id,
+                "role": "assistant",
+                "usage": {
+                    "input_tokens": inp,
+                    "output_tokens": out,
+                    "cache_read_input_tokens": cread,
+                    "cache_creation_input_tokens": cwrite,
+                },
+            },
+        }
+    )
+
+
+def test_parser_dedupes_repeated_message_id(tmp_path: Path) -> None:
+    """One message logged across several lines (same id) is counted once.
+
+    Claude Code emits one transcript line per content block (thinking, text,
+    tool_use), each repeating the message's ``usage``. Summing every line would
+    roughly double the totals, so the parser must de-duplicate by message id.
+    """
+    msg = (100, 20, 5, 3)
+    other = (7, 2, 1, 0)
+    transcript = tmp_path / "session.jsonl"
+    _write(
+        transcript,
+        _assistant_line_with_id(msg, "msg_aaa"),  # thinking block
+        _assistant_line_with_id(msg, "msg_aaa"),  # text block (same id)
+        _assistant_line_with_id(msg, "msg_aaa"),  # tool_use block (same id)
+        _assistant_line_with_id(other, "msg_bbb"),
+    )
+    tin, tout, cread, cwrite = srv._sum_transcript_usage(transcript)
+    # Counted once per id: msg + other, NOT msg * 3 + other.
+    exp = _expected([msg, other])
+    assert (tin, tout, cread, cwrite) == (
+        exp["tokens_input"],
+        exp["tokens_output"],
+        exp["tokens_cache_read"],
+        exp["tokens_cache_write"],
+    )

@@ -4020,6 +4020,13 @@ Start by:
                 container_id=cid,
                 exit_code=exit_code,
             )
+        # The agent self-exited (a graceful i_am_idle shutdown, or a crash), so
+        # stop_agent() — which normally finalizes — was never called. Finalize
+        # here to capture token usage from the transcript; otherwise the
+        # spawn-session row is left open with zero tokens.
+        await self._finalize_spawn_session(
+            agent_id, exit_reason="completed" if graceful else "crashed"
+        )
         instance.state = AgentState.OFFLINE
         instance.container_id = None
         if graceful:
