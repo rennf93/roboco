@@ -84,16 +84,19 @@ api.interceptors.response.use(
       };
       useRateLimitStore.getState().hitRateLimit(hitEvent);
 
-      // Track retry count and fire Sonner toast when retries exhausted
+      // Track retry count; retry the request until exhausted, then toast
       const retryCount = (error.config?._retryCount ?? 0) + 1;
       if (error.config) {
         error.config._retryCount = retryCount;
+        if (retryCount < RATE_LIMIT_MAX_RETRIES) {
+          // Retry the request — interceptor re-runs on each subsequent 429
+          return api(error.config);
+        }
       }
-      if (retryCount >= RATE_LIMIT_MAX_RETRIES) {
-        toast.warning(
-          `Rate limited by ${provider}. The system has paused operations and will resume automatically in ~${safeRetryAfter}s.`
-        );
-      }
+      // Retries exhausted — notify the user via Sonner toast
+      toast.warning(
+        `Rate limited by ${provider}. The system has paused operations and will resume automatically in ~${safeRetryAfter}s.`
+      );
     }
 
     // Log comprehensive error info
