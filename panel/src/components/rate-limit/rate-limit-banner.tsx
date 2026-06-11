@@ -11,30 +11,26 @@ import type { RateLimitEntry } from "@/types/rate-limits";
 // Countdown row for a single rate-limited provider
 // =============================================================================
 
+function computeSecondsLeft(resumeAt: string): number {
+  return Math.max(
+    0,
+    Math.ceil((new Date(resumeAt).getTime() - Date.now()) / 1000)
+  );
+}
+
 function RateLimitRow({ entry }: { entry: RateLimitEntry }) {
-  const [secondsLeft, setSecondsLeft] = useState<number>(() => {
-    const remaining = Math.ceil(
-      (new Date(entry.resumeAt).getTime() - Date.now()) / 1000
-    );
-    return Math.max(0, remaining);
-  });
+  const resumeAt = entry.resumeAt;
+  const [secondsLeft, setSecondsLeft] = useState(() =>
+    computeSecondsLeft(resumeAt)
+  );
 
   useEffect(() => {
-    if (secondsLeft <= 0) return;
-
+    // Tick every second; re-runs when resumeAt changes (re-hit same provider)
     const id = setInterval(() => {
-      setSecondsLeft((prev) => {
-        const next = prev - 1;
-        if (next <= 0) {
-          clearInterval(id);
-          return 0;
-        }
-        return next;
-      });
+      setSecondsLeft(computeSecondsLeft(resumeAt));
     }, 1000);
-
     return () => clearInterval(id);
-  }, [secondsLeft]);
+  }, [resumeAt]);
 
   const agentCount = entry.affectedAgents.length;
 
