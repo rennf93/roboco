@@ -312,6 +312,51 @@ class ExtractionService:
 
         return best_type, confidence, matches
 
+    async def _call_anthropic_with_retry(self, client: Any, prompt: str) -> Any:
+        """Call Anthropic messages.create with up to MAX_RATE_LIMIT_RETRIES on 429.
+
+        Raises RateLimitError when all retries are exhausted.
+        """
+        import asyncio
+
+        import anthropic as anthropic_mod
+
+        from roboco.services.exceptions import MAX_RATE_LIMIT_RETRIES, RateLimitError
+
+        last_retry_after: float | None = None
+        for rl_attempt in range(MAX_RATE_LIMIT_RETRIES):
+            try:
+                return await client.messages.create(
+                    model="claude-3-haiku-20240307",  # Fast, cheap
+                    max_tokens=2000,
+                    messages=[{"role": "user", "content": prompt}],
+                )
+            except anthropic_mod.RateLimitError as exc:
+                try:
+                    header = exc.response.headers.get("retry-after")
+                    last_retry_after = float(header) if header else None
+                except (AttributeError, TypeError, ValueError):
+                    last_retry_after = None
+                backoff = (
+                    last_retry_after
+                    if last_retry_after is not None
+                    else float(2**rl_attempt)
+                )
+                self.log.warning(
+                    "Anthropic rate limited (429), retrying",
+                    provider="anthropic",
+                    attempt=rl_attempt + 1,
+                    max_retries=MAX_RATE_LIMIT_RETRIES,
+                    backoff_duration=backoff,
+                )
+                if rl_attempt < MAX_RATE_LIMIT_RETRIES - 1:
+                    await asyncio.sleep(backoff)
+                else:
+                    raise RateLimitError(
+                        provider="anthropic", retry_after=last_retry_after
+                    ) from exc
+        raise RateLimitError(provider="anthropic", retry_after=last_retry_after)
+
     async def extract_with_llm(self, ctx: ExtractionContext) -> ExtractionResult:
         """
         Extract messages using LLM classification.
@@ -319,11 +364,14 @@ class ExtractionService:
         This is more accurate but slower and more expensive.
         Falls back to pattern matching if LLM unavailable.
         Uses TOON format for token-efficient communication.
+        Retries up to MAX_RATE_LIMIT_RETRIES times on 429/RateLimitError,
+        respecting the Retry-After header when present.
         """
         from anthropic import AsyncAnthropic
 
         from roboco.config import settings
         from roboco.llm import ToonAdapter
+        from roboco.services.exceptions import RateLimitError
 
         toon = ToonAdapter()
 
@@ -348,11 +396,7 @@ action,Creating file utils.py,0.95
 
 Output only valid TOON, no other text."""
 
-            response = await client.messages.create(
-                model="claude-3-haiku-20240307",  # Fast, cheap for classification
-                max_tokens=2000,
-                messages=[{"role": "user", "content": prompt}],
-            )
+            response = await self._call_anthropic_with_retry(client, prompt)
 
             # Parse response using TOON (falls back to JSON)
             # Extract text from first TextBlock content
@@ -398,6 +442,8 @@ Output only valid TOON, no other text."""
                 session_id=ctx.session_id,
             )
 
+        except RateLimitError:
+            raise
         except Exception as e:
             # Fall back to pattern matching
             self.log.warning("LLM extraction failed, using patterns", error=str(e))

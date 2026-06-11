@@ -19,6 +19,12 @@ import structlog
 
 from roboco.config import settings
 from roboco.models.optimal import SearchResult, ValidationResult
+from roboco.services.exceptions import (
+    HTTP_TOO_MANY_REQUESTS,
+    MAX_RATE_LIMIT_RETRIES,
+    RateLimitError,
+    parse_retry_after_header,
+)
 
 logger = structlog.get_logger()
 
@@ -492,6 +498,10 @@ class ValidatorService:
         """
         Use LLM to validate context against standards.
 
+        Retries the Ollama call up to MAX_RATE_LIMIT_RETRIES times on HTTP 429,
+        respecting the Retry-After header.  Each attempt is bounded by
+        LLM_TIMEOUT_SECONDS so a single slow call cannot block the retry loop.
+
         Returns:
             Tuple of (violations, warnings)
         """
@@ -512,41 +522,63 @@ RELEVANT STANDARDS:
 Analyze the context and identify any violations of the standards above.
 Return your analysis as JSON."""
 
-        try:
-            async with asyncio.timeout(LLM_TIMEOUT_SECONDS):
-                async with httpx.AsyncClient(timeout=LLM_TIMEOUT_SECONDS) as client:
-                    response = await client.post(
-                        f"{settings.local_llm_base_url}/chat/completions",
-                        json={
-                            "model": settings.local_llm_model,
-                            "messages": [
-                                {"role": "system", "content": VALIDATION_SYSTEM_PROMPT},
-                                {"role": "user", "content": user_prompt},
-                            ],
-                            "max_tokens": 2048,
-                            "temperature": 0.1,  # Low temp for consistent analysis
-                            "options": {"num_ctx": 8192},
-                        },
-                    )
+        llm_url = f"{settings.local_llm_base_url}/chat/completions"
+        payload = {
+            "model": settings.local_llm_model,
+            "messages": [
+                {"role": "system", "content": VALIDATION_SYSTEM_PROMPT},
+                {"role": "user", "content": user_prompt},
+            ],
+            "max_tokens": 2048,
+            "temperature": 0.1,  # Low temp for consistent analysis
+            "options": {"num_ctx": 8192},
+        }
 
-                    if response.is_success:
-                        data = response.json()
-                        raw_response = data["choices"][0]["message"]["content"]
-                        return self._parse_llm_response(raw_response)
-                    else:
-                        logger.warning(
-                            "LLM validation call failed",
-                            status=response.status_code,
-                            error=response.text[:200],
-                        )
-                        raise RuntimeError(f"LLM call failed: {response.status_code}")
+        last_rl_retry_after: float | None = None
 
-        except TimeoutError:
-            logger.warning("LLM validation timed out")
-            raise
-        except httpx.TimeoutException:
-            logger.warning("LLM validation HTTP timeout")
-            raise
+        for rl_attempt in range(MAX_RATE_LIMIT_RETRIES):
+            # Each attempt gets its own timeout — raises if the call hangs
+            try:
+                async with asyncio.timeout(LLM_TIMEOUT_SECONDS):
+                    async with httpx.AsyncClient(timeout=LLM_TIMEOUT_SECONDS) as client:
+                        response = await client.post(llm_url, json=payload)
+            except TimeoutError:
+                logger.warning("LLM validation timed out")
+                raise
+            except httpx.TimeoutException:
+                logger.warning("LLM validation HTTP timeout")
+                raise
+
+            if response.status_code == HTTP_TOO_MANY_REQUESTS:
+                retry_after = parse_retry_after_header(response)
+                last_rl_retry_after = retry_after
+                backoff = (
+                    retry_after if retry_after is not None else float(2**rl_attempt)
+                )
+                logger.warning(
+                    "Ollama rate limited (429), retrying",
+                    provider="ollama",
+                    attempt=rl_attempt + 1,
+                    max_retries=MAX_RATE_LIMIT_RETRIES,
+                    backoff_duration=backoff,
+                )
+                if rl_attempt < MAX_RATE_LIMIT_RETRIES - 1:
+                    await asyncio.sleep(backoff)
+                continue
+
+            if response.is_success:
+                data = response.json()
+                raw_response = data["choices"][0]["message"]["content"]
+                return self._parse_llm_response(raw_response)
+            else:
+                logger.warning(
+                    "LLM validation call failed",
+                    status=response.status_code,
+                    error=response.text[:200],
+                )
+                raise RuntimeError(f"LLM call failed: {response.status_code}")
+
+        raise RateLimitError(provider="ollama", retry_after=last_rl_retry_after)
 
     def _build_standards_context(self, standards: list[SearchResult]) -> str:
         """Build a formatted string of standards for the LLM."""

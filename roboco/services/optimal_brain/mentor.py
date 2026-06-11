@@ -32,6 +32,12 @@ from roboco.models.optimal import (
     MentorResponse,
     SearchResult,
 )
+from roboco.services.exceptions import (
+    HTTP_TOO_MANY_REQUESTS,
+    MAX_RATE_LIMIT_RETRIES,
+    RateLimitError,
+    parse_retry_after_header,
+)
 
 logger = structlog.get_logger()
 
@@ -683,7 +689,12 @@ class MentorService:
         agent_profile: AgentProfile | None,
         journal_context: list[dict[str, Any]],
     ) -> str:
-        """Synthesize a personalized answer using LLM."""
+        """Synthesize a personalized answer using LLM.
+
+        Retries the Ollama call up to MAX_RATE_LIMIT_RETRIES times on HTTP 429,
+        respecting the Retry-After header.  Each individual attempt is bounded by
+        a 120-second asyncio timeout so a slow model cannot block the loop.
+        """
         import asyncio
 
         if not sources and not journal_context:
@@ -709,52 +720,73 @@ class MentorService:
             question, sources, conversation_context, agent_profile, journal_context
         )
 
-        # Call LLM
-        try:
-            async with asyncio.timeout(120.0):
-                async with httpx.AsyncClient(timeout=120.0) as client:
-                    response = await client.post(
-                        f"{settings.local_llm_base_url}/chat/completions",
-                        json={
-                            "model": settings.local_llm_model,
-                            "messages": [
-                                {"role": "system", "content": system_prompt},
-                                {"role": "user", "content": user_prompt},
-                            ],
-                            "max_tokens": 4096,
-                            "temperature": 0.5,
-                            "options": {"num_ctx": 8192},
-                        },
+        llm_url = f"{settings.local_llm_base_url}/chat/completions"
+        payload = {
+            "model": settings.local_llm_model,
+            "messages": [
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_prompt},
+            ],
+            "max_tokens": 4096,
+            "temperature": 0.5,
+            "options": {"num_ctx": 8192},
+        }
+
+        last_rl_retry_after: float | None = None
+
+        for rl_attempt in range(MAX_RATE_LIMIT_RETRIES):
+            # Each attempt gets its own 120-second timeout
+            try:
+                async with asyncio.timeout(120.0):
+                    async with httpx.AsyncClient(timeout=120.0) as client:
+                        response = await client.post(llm_url, json=payload)
+            except (TimeoutError, httpx.TimeoutException):
+                logger.warning("LLM call timed out in mentor (120s)")
+                return self._fallback_answer(sources, agent_profile)
+            except Exception as e:
+                logger.warning("LLM call failed in mentor", error=str(e))
+                return self._fallback_answer(sources, agent_profile)
+
+            if response.status_code == HTTP_TOO_MANY_REQUESTS:
+                retry_after = parse_retry_after_header(response)
+                last_rl_retry_after = retry_after
+                backoff = (
+                    retry_after if retry_after is not None else float(2**rl_attempt)
+                )
+                logger.warning(
+                    "Ollama rate limited (429), retrying",
+                    provider="ollama",
+                    attempt=rl_attempt + 1,
+                    max_retries=MAX_RATE_LIMIT_RETRIES,
+                    backoff_duration=backoff,
+                )
+                if rl_attempt < MAX_RATE_LIMIT_RETRIES - 1:
+                    await asyncio.sleep(backoff)
+                continue
+
+            if response.is_success:
+                data = response.json()
+                raw_answer: str = data["choices"][0]["message"]["content"]
+                answer = self._extract_answer(raw_answer)
+
+                if not answer:
+                    logger.warning(
+                        "LLM response empty after extraction",
+                        model=settings.local_llm_model,
+                        original_length=len(raw_answer),
                     )
+                    return self._fallback_answer(sources, agent_profile)
 
-                    if response.is_success:
-                        data = response.json()
-                        raw_answer: str = data["choices"][0]["message"]["content"]
-                        answer = self._extract_answer(raw_answer)
+                return answer
+            else:
+                logger.warning(
+                    "LLM call failed in mentor",
+                    status=response.status_code,
+                    error=response.text[:200],
+                )
+                return self._fallback_answer(sources, agent_profile)
 
-                        if not answer:
-                            logger.warning(
-                                "LLM response empty after extraction",
-                                model=settings.local_llm_model,
-                                original_length=len(raw_answer),
-                            )
-                            return self._fallback_answer(sources, agent_profile)
-
-                        return answer
-                    else:
-                        logger.warning(
-                            "LLM call failed in mentor",
-                            status=response.status_code,
-                            error=response.text[:200],
-                        )
-                        return self._fallback_answer(sources, agent_profile)
-
-        except (TimeoutError, httpx.TimeoutException):
-            logger.warning("LLM call timed out in mentor (60s)")
-            return self._fallback_answer(sources, agent_profile)
-        except Exception as e:
-            logger.warning("LLM call failed in mentor", error=str(e))
-            return self._fallback_answer(sources, agent_profile)
+        raise RateLimitError(provider="ollama", retry_after=last_rl_retry_after)
 
     def _extract_answer(self, text: str) -> str:
         """Extract answer from LLM response, handling think tags."""

@@ -219,6 +219,17 @@ class ChoreographerDeps:
     # callsites / tests that don't exercise Product routing don't have to plumb
     # it in; when None, delegate falls back to parent-project inheritance.
     product: Any = None
+    # Orchestrator access for the rate-limited i_am_blocked path.
+    # Implements get_provider_for_agent(slug) -> str | None,
+    # get_active_agent_slugs_for_provider(provider) -> list[str], and
+    # async mark_waiting_long(slug, waiting_for, task_id, context).
+    # Optional: when None the parking step is skipped (e.g. in unit tests
+    # that don't need to verify orchestrator interactions).
+    orchestrator: Any = None
+    # StreamEventBus for publishing RATE_LIMIT_HIT events.
+    # Optional so existing callsites that don't exercise the rate-limit path
+    # don't have to plumb it in.
+    stream_bus: Any = None
 
 
 @dataclass(frozen=True)
@@ -359,6 +370,14 @@ class Choreographer:
     @property
     def product(self) -> Any:
         return self._deps.product
+
+    @property
+    def orchestrator(self) -> Any:
+        return self._deps.orchestrator
+
+    @property
+    def stream_bus(self) -> Any:
+        return self._deps.stream_bus
 
     async def _touch(self, task_id: UUID | None) -> None:
         """Best-effort heartbeat write; silent on missing task."""
@@ -2188,6 +2207,114 @@ class Choreographer:
             )
         return updated, None
 
+    @staticmethod
+    def _parse_retry_after(what_needed: str | None) -> float | None:
+        """Extract a retry-after seconds value from ``what_needed``, or None.
+
+        Agents may embed the Retry-After seconds in the ``what_needed``
+        field as a numeric string (e.g. ``"30"`` or ``"60.5"``). This
+        helper tries to parse it; any non-numeric or absent value returns
+        ``None``, which maps to the nullable ``retryAfterSeconds`` in the
+        RATE_LIMIT_HIT event.
+        """
+        if what_needed is None:
+            return None
+        try:
+            return float(what_needed.strip())
+        except (ValueError, AttributeError):
+            return None
+
+    async def _handle_rate_limited_parking(
+        self,
+        agent_id: UUID,
+        task_id: UUID,
+        t: Any,
+        agent: Any,
+        role_str: str,
+        briefing: dict[str, Any],
+        what_needed: str | None,
+    ) -> Envelope:
+        """Rate-limited fast path: park agents, publish event, persist state.
+
+        Called from ``i_am_blocked`` when ``reason == 'rate_limited'``.
+        The task stays in its current status (``in_progress``) — no block
+        transition occurs. Instead, every orchestrator-tracked active agent
+        sharing the same provider as the calling agent is parked via
+        ``mark_waiting_long(waiting_for='rate_limit_lifted')``.  A
+        ``RATE_LIMIT_HIT`` event is published so downstream consumers (the
+        orchestrator backpressure layer, the panel) can react.
+        """
+        from roboco.models.events import Event, EventType
+
+        agent_slug: str | None = (
+            getattr(agent, "slug", None) if agent is not None else None
+        )
+
+        provider: str = "unknown"
+        affected_agents: list[str] = []
+
+        orch = self.orchestrator
+        if orch is not None and agent_slug is not None:
+            with contextlib.suppress(Exception):
+                prov = orch.get_provider_for_agent(agent_slug)
+                if prov:
+                    provider = prov
+            with contextlib.suppress(Exception):
+                affected_agents = list(
+                    orch.get_active_agent_slugs_for_provider(provider)
+                )
+            for slug in affected_agents:
+                with contextlib.suppress(Exception):
+                    await orch.mark_waiting_long(
+                        slug,
+                        waiting_for="rate_limit_lifted",
+                        task_id=str(task_id),
+                        context={"provider": provider, "triggered_by": agent_slug},
+                    )
+
+        retry_after_seconds = self._parse_retry_after(what_needed)
+
+        # Persist rate-limit state to Redis so downstream decide_spawn()
+        # calls can gate new spawns for this provider.  Skipped when the
+        # provider is "unknown" (orchestrator not wired or not tracking the
+        # agent) to avoid polluting the tracker with meaningless keys.
+        if provider != "unknown":
+            with contextlib.suppress(Exception):
+                from roboco.services.gateway.rate_limit_tracker import (
+                    RateLimitStateTracker,
+                )
+
+                await RateLimitStateTracker(provider).activate(
+                    retry_after=retry_after_seconds,
+                    affected_agents=affected_agents,
+                )
+
+        bus = self.stream_bus
+        if bus is not None:
+            event = Event(
+                type=EventType.RATE_LIMIT_HIT,
+                data={
+                    "provider": provider,
+                    "affectedAgents": affected_agents,
+                    "retryAfterSeconds": retry_after_seconds,
+                    "timestamp": datetime.now(UTC).isoformat(),
+                },
+                source_agent=str(agent_id),
+            )
+            with contextlib.suppress(Exception):
+                await bus.publish(event)
+
+        await self._touch(task_id)
+        return Envelope.ok(
+            status=str(t.status),
+            task_id=str(task_id),
+            next=(
+                "agent parked waiting for rate_limit_lifted; "
+                "will be respawned when the limit clears"
+            ),
+            context_briefing=briefing,
+        ).with_introspection(task=t, role=role_str)
+
     async def i_am_blocked(
         self,
         agent_id: UUID,
@@ -2202,8 +2329,15 @@ class Choreographer:
         membership (developer/qa/documenter) and the source-status
         constraint of the composed ``block`` action (in_progress only).
         After the spec gate accepts, the journal:struggle entry is written
-        from the verb body, then ``VerbRunner.run_intent("i_am_blocked", ...)``
-        dispatches the (block,) atomic chain wrapped in a savepoint.
+        from the verb body, then either:
+
+        - ``reason == 'rate_limited'``: the task is **not** transitioned to
+          ``blocked``; instead every active agent on the same provider is
+          parked via ``mark_waiting_long(waiting_for='rate_limit_lifted')``
+          and a ``RATE_LIMIT_HIT`` event is published.
+        - any other reason: ``VerbRunner.run_intent("i_am_blocked", ...)``
+          dispatches the ``(block,)`` atomic chain wrapped in a savepoint,
+          transitioning the task to ``blocked``.
         """
         t = await self.task.get(task_id)
         if t is None:
@@ -2253,6 +2387,20 @@ class Choreographer:
             task_id=task_id,
             content=self._build_struggle_body(reason, blocker_type, what_needed),
         )
+
+        # Rate-limited fast path: skip the block state transition and park
+        # all affected agents instead.
+        if reason.strip().lower() == "rate_limited":
+            return await self._handle_rate_limited_parking(
+                agent_id=agent_id,
+                task_id=task_id,
+                t=t,
+                agent=agent,
+                role_str=role_str,
+                briefing=briefing,
+                what_needed=what_needed,
+            )
+
         t, rejection = await self._run_i_am_blocked_intent(
             agent_id, task_id, t, agent, spec_ctx, role_str, briefing
         )

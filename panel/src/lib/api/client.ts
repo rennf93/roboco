@@ -1,5 +1,17 @@
 import axios, { AxiosInstance, AxiosError } from "axios";
+import { toast } from "sonner";
 import { API_URL, CEO_AGENT_ID, CEO_ROLE } from "@/lib/constants";
+import { useRateLimitStore } from "@/store/rate-limit-store";
+import type { RateLimitHitEvent } from "@/types/rate-limits";
+
+// Custom Axios config extension for retry tracking
+declare module "axios" {
+  interface InternalAxiosRequestConfig {
+    _retryCount?: number;
+  }
+}
+
+const RATE_LIMIT_MAX_RETRIES = 3;
 
 // Create axios instance with default config
 const api: AxiosInstance = axios.create({
@@ -46,6 +58,46 @@ api.interceptors.response.use(
     const method = error.config?.method?.toUpperCase();
     const errorData = error.response?.data as Record<string, unknown> | undefined;
     const errorDetail = errorData?.detail || error.message;
+
+    // -------------------------------------------------------------------------
+    // 429 Rate-limit handling — FIRST side-effect, before any other logic
+    // -------------------------------------------------------------------------
+    if (status === 429) {
+      const retryAfterHeader = error.response?.headers?.["retry-after"];
+      const retryAfterSeconds = retryAfterHeader ? parseInt(String(retryAfterHeader), 10) : 60;
+      const safeRetryAfter = isNaN(retryAfterSeconds) ? 60 : retryAfterSeconds;
+
+      // Extract provider from custom header or fall back to URL path heuristics
+      const providerHeader = error.response?.headers?.["x-provider"];
+      const urlProvider = url
+        ? (["anthropic", "openai", "ollama"].find((p) => url.includes(p)) ?? "unknown")
+        : "unknown";
+      const provider = (providerHeader as string | undefined) ?? urlProvider;
+
+      // Dispatch to store as first side-effect
+      const hitEvent: RateLimitHitEvent = {
+        type: "RATE_LIMIT_HIT",
+        provider,
+        affectedAgents: [],
+        retryAfterSeconds: safeRetryAfter,
+        timestamp: new Date().toISOString(),
+      };
+      useRateLimitStore.getState().hitRateLimit(hitEvent);
+
+      // Track retry count; retry the request until exhausted, then toast
+      const retryCount = (error.config?._retryCount ?? 0) + 1;
+      if (error.config) {
+        error.config._retryCount = retryCount;
+        if (retryCount < RATE_LIMIT_MAX_RETRIES) {
+          // Retry the request — interceptor re-runs on each subsequent 429
+          return api(error.config);
+        }
+      }
+      // Retries exhausted — notify the user via Sonner toast
+      toast.warning(
+        `Rate limited by ${provider}. The system has paused operations and will resume automatically in ~${safeRetryAfter}s.`
+      );
+    }
 
     // Log comprehensive error info
     console.error(`[API] ✗ ${method} ${url}`, {
