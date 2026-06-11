@@ -351,6 +351,8 @@ async def test_claimed_dependency_blocked_task_is_released_to_pending(
     await svc.session.flush()
 
     held = await svc.get(dev_subtask.id)
+    owner = held.assigned_to  # capture before the guard releases the claim
+    assert owner is not None
     guard = await choreo._run_claim_guards(agent_id=fe_dev_db_id, task=held)
     assert guard is not None, "claim guard must still reject while UX is unmet"
     assert guard.error == "invalid_state"
@@ -360,7 +362,10 @@ async def test_claimed_dependency_blocked_task_is_released_to_pending(
     assert after.status == TaskStatus.PENDING, (
         "a claimed dependency-blocked task must be released to pending"
     )
-    assert after.assigned_to is None, "release clears the assignee"
+    # Ownership is preserved so the same dev resumes once _unblock_dependents
+    # re-dispatches after the upstream lands — the task is not orphaned to pool.
+    assert after.assigned_to == owner
+    assert after.claimed_by == owner
     assert after.branch_name is None, (
         "release clears branch_name so the re-claim cuts fresh off the current "
         "integration tip (which by then includes the upstream's work)"

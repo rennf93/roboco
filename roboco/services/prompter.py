@@ -26,13 +26,21 @@ from sqlalchemy import select
 
 from roboco.config import settings
 from roboco.db.tables import (
+    AgentTable,
     PrompterMessageTable,
     PrompterSessionTable,
     TaskDraftTable,
     TaskTable,
 )
 from roboco.foundation.identity import CELL_TEAMS
-from roboco.models.base import Complexity, TaskNature, TaskStatus, TaskType, Team
+from roboco.models.base import (
+    AgentRole,
+    Complexity,
+    TaskNature,
+    TaskStatus,
+    TaskType,
+    Team,
+)
 from roboco.models.task import TaskCreateRequest
 from roboco.services.base import NotFoundError, ServiceError, ValidationError
 
@@ -40,6 +48,13 @@ if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncSession
 
 logger = structlog.get_logger()
+
+# A board/advisory assignee means a product coordination root is still in board
+# review — it stays team=board until the CEO's Approve & Start hands it to Main
+# PM. Mirrors `_BOARD_ADVISORY_ROLES` in TaskService.
+_BOARD_REVIEW_ROLES: frozenset[AgentRole] = frozenset(
+    {AgentRole.PRODUCT_OWNER, AgentRole.HEAD_MARKETING, AgentRole.AUDITOR}
+)
 
 
 # ---------------------------------------------------------------------------
@@ -389,6 +404,13 @@ class PrompterService:
         )
         return UUID(str(task.id))
 
+    async def _assignee_is_board(self, agent_id: UUID) -> bool:
+        """True if ``agent_id`` is a board/advisory role (PO / marketing / auditor)."""
+        result = await self._session.execute(
+            select(AgentTable.role).where(AgentTable.id == agent_id)
+        )
+        return result.scalar_one_or_none() in _BOARD_REVIEW_ROLES
+
     async def create_task_from_draft(
         self,
         draft_data: dict[str, Any],
@@ -434,20 +456,29 @@ class PrompterService:
 
         _lead, task_type, nature, complexity = self._coerce_draft_enums(draft_data)
 
-        # Adaptive routing: a product target is a board-led coordination root
-        # owned by the Main PM (who fans out per cell); a project target is a
-        # single-cell executable task owned by the cell doing the work.
-        if resolved_product_id is not None:
-            team = Team.MAIN_PM
-        else:
-            team = self._lead_cell_team(draft_data, default=_lead)
-
         # Explicit assignment (from the confirm button) wins; else fall back to
-        # any assignee carried on the draft.
+        # any assignee carried on the draft. Resolved before team routing — the
+        # owner decides the team for a product.
         resolved_assigned_to: UUID | None = assigned_to
         if resolved_assigned_to is None and draft_data.get("assigned_to"):
             with contextlib.suppress(ValueError):
                 resolved_assigned_to = UUID(str(draft_data["assigned_to"]))
+
+        # Adaptive routing. A project target is a single-cell executable task
+        # owned by the lead cell. A product target is a board-led coordination
+        # root whose team follows the start mode (encoded in the assignee): the
+        # "Board review & Start" path assigns a board reviewer, so it must stay
+        # team=board until approved — otherwise the CEO's Approve & Start gate,
+        # which keys on team=board, never appears and the task strands. "Approve
+        # & Start" (assignee main-pm) and the post-approval state are team=main_pm.
+        if resolved_product_id is None:
+            team = self._lead_cell_team(draft_data, default=_lead)
+        elif resolved_assigned_to is not None and await self._assignee_is_board(
+            resolved_assigned_to
+        ):
+            team = Team.BOARD
+        else:
+            team = Team.MAIN_PM
 
         req = TaskCreateRequest(
             title=draft_data["title"],

@@ -5,9 +5,9 @@ with Alembic migrations applied. Catches "spec says X, DB constraint
 says Y" mismatches the unit-tier parametrized parity suite cannot
 detect.
 
-Companion to ``tests/integration/test_full_lifecycle_real_db.py``
-(audit P2-1 deliverable). That file walks one task through the dev
-chain end to end; this file isolates each major lifecycle path into
+Companion to ``tests/integration/test_full_lifecycle_real_db.py``.
+That file walks one task through the dev chain end to end; this file
+isolates each major lifecycle path into
 its own test so a regression on, say, QA-fail does not also blow up
 the doc-handoff test.
 

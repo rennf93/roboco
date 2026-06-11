@@ -2283,17 +2283,32 @@ class TaskService(BaseService):
         Shared core of ``unclaim_for_reaper`` and
         ``release_dependency_blocked_claim``. Routes through
         ``_validate_and_set_status`` so the state machine records the
-        transition, clears assignee/heartbeat/claimant, and abandons the active
-        WorkSession (best-effort, tagged with ``reason``) so a re-claim doesn't
-        trip the uniqueness constraint. Bypasses ownership/role checks — the
-        system itself is performing the transition. Returns True iff the task
-        was actually released (False when missing or not in a releasable state).
+        transition, releases the live claim (heartbeat + active claimant) and
+        abandons the active WorkSession (best-effort, tagged with ``reason``) so
+        a re-claim doesn't trip the uniqueness constraint. Bypasses
+        ownership/role checks — the system itself is performing the transition.
+        Returns True iff the task was actually released (False when missing or
+        not in a releasable state).
+
+        Ownership is **preserved**, not cleared: both callers release a task its
+        owner should resume — the reaper's holder is dead but will respawn, and
+        a dependency-blocked task continues with the same agent once the
+        upstream lands. Leaving ``assigned_to``/``claimed_by`` pointed at the
+        owner (mirroring the unblock restore) keeps the task from landing in an
+        ownerless ``pending`` limbo that no dispatcher re-spawns. The earlier
+        behaviour nulled ``assigned_to``, which is exactly that orphaning bug.
         """
         task = await self.get(task_id)
         if task is None:
             return False
         if task.status not in (TaskStatus.CLAIMED, TaskStatus.IN_PROGRESS):
             return False
+        # Capture the owner before releasing the claim. A claimed/in_progress
+        # task is always owned via claimed_by/active_claimant_id (and usually
+        # assigned_to); fall back across them so the row never goes ownerless.
+        owner = cast(
+            "Any", task.assigned_to or task.claimed_by or task.active_claimant_id
+        )
         try:
             self._validate_and_set_status(task, TaskStatus.PENDING, None)
         except TaskLifecycleError:
@@ -2303,7 +2318,8 @@ class TaskService(BaseService):
                 task.work_session_id, reason=reason
             )
             task.work_session_id = cast("Any", None)
-        task.assigned_to = cast("Any", None)
+        task.assigned_to = owner
+        task.claimed_by = owner
         task.last_heartbeat_at = None
         task.active_claimant_id = cast("Any", None)
         await self.session.flush()
@@ -2494,6 +2510,26 @@ class TaskService(BaseService):
         except TaskLifecycleError:
             return None
 
+    def _snapshot_pre_block(self, task: TaskTable) -> None:
+        """Record the pre-block status + owner so unblock(restore=True) works.
+
+        Captures the resting state a task is leaving so a PM ``unblock`` with
+        ``restore=True`` can return it exactly there. Call this *before*
+        mutating status/ownership at every block entry (dependency block,
+        soft block, escalation). Only the first block in a chain snapshots —
+        a re-block (e.g. escalating an already-blocked task) must not overwrite
+        the original resting state with ``blocked``. Mirrors the ``not already
+        set`` guard used for ``blocker_raised_by``.
+        """
+        if task.pre_block_state:
+            return
+        task.pre_block_state = (
+            task.status.value
+            if isinstance(task.status, TaskStatus)
+            else str(task.status)
+        )
+        task.pre_block_assignee = cast("Any", task.assigned_to or task.claimed_by)
+
     async def block(
         self,
         task_id: UUID,
@@ -2522,6 +2558,7 @@ class TaskService(BaseService):
         # the unblock path has a consistent source of truth.
         if task.assigned_to and not task.blocker_raised_by:
             task.blocker_raised_by = task.assigned_to
+        self._snapshot_pre_block(task)
         self._validate_and_set_status(task, TaskStatus.BLOCKED, agent_role)
         await self.session.flush()
 
@@ -2603,6 +2640,7 @@ class TaskService(BaseService):
         # Remember the raiser so `unblock` can restore the task to them.
         if task.assigned_to and not task.blocker_raised_by:
             task.blocker_raised_by = task.assigned_to
+        self._snapshot_pre_block(task)
         self._validate_and_set_status(task, TaskStatus.BLOCKED, agent_role)
         await self.session.flush()
 
@@ -2652,12 +2690,22 @@ class TaskService(BaseService):
         if task.status != TaskStatus.BLOCKED:
             return None
 
-        # Restore the raiser so the orchestrator dispatcher (which
-        # includes `in_progress` tasks in its pickup list) respawns the
-        # original agent — not the PM who merely resolved the block.
-        if task.blocker_raised_by:
-            task.assigned_to = cast("Any", task.blocker_raised_by)
-            task.blocker_raised_by = None
+        # Restore ownership so the dispatcher respawns the original worker, not
+        # the PM who merely resolved the block. blocker_raised_by holds the
+        # pre-escalation dev; fall back to the surviving claim owner so a task
+        # claimed via give_me_work (which has no assigned_to to stash) is never
+        # left with a split owner — assigned_to null but claimed_by set, which
+        # the dev dispatcher and the PM pool-router would both try to grab.
+        # Keep both fields on the owner, mirroring _force_unclaim_to_pending and
+        # reassign; this also clears a stale claimed_by left pointing at the
+        # resolver PM after an escalation.
+        owner = cast(
+            "Any", task.blocker_raised_by or task.assigned_to or task.claimed_by
+        )
+        task.blocker_raised_by = None
+        if owner is not None:
+            task.assigned_to = owner
+            task.claimed_by = owner
         # Clear resolver metadata — only meaningful while BLOCKED.
         task.blocker_resolver_type = None
         # A task with a branch was claimed before it blocked, so resume it
@@ -3618,6 +3666,7 @@ class TaskService(BaseService):
             else str(task.status)
         )
         pre_block_owner = cast("Any", task.claimed_by)
+        self._snapshot_pre_block(task)
         task.assigned_to = cast("Any", target_agent_id)
         task.claimed_by = cast("Any", target_agent_id)
         task.status = TaskStatus.BLOCKED
@@ -5890,6 +5939,24 @@ class TaskService(BaseService):
             restored_status = TaskStatus(task.pre_block_state)
         except ValueError:
             return await self.unblock(task_id, agent_role="cell_pm")
+
+        return await self._apply_pre_block_restore(task, restored_status)
+
+    async def _apply_pre_block_restore(
+        self, task: TaskTable, restored_status: TaskStatus
+    ) -> TaskTable:
+        """Restore a blocked task to its snapshotted status + owner.
+
+        Sets status directly (bypassing the strict transition validator) and so
+        emits the audit explicitly, applies the branchless guard legacy
+        unblock() relies on, restores ownership from the snapshot, and clears
+        the pre-block snapshot fields.
+        """
+        # A task with no branch cannot resume in_progress — the dispatcher
+        # refuses a branchless in_progress task and loops — so divert it to
+        # pending, exactly as legacy unblock() does.
+        if restored_status == TaskStatus.IN_PROGRESS and not task.branch_name:
+            restored_status = TaskStatus.PENDING
 
         pre_status = (
             task.status.value

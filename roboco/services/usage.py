@@ -15,9 +15,24 @@ from sqlalchemy import func, select
 
 if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncSession
+    from sqlalchemy.orm import InstrumentedAttribute
 
 from roboco.db.tables import AgentSpawnSessionTable, DailyUsageRollupTable
 from roboco.services.base import BaseService
+
+
+def _row_tokens(row: Any) -> tuple[int, int, int, int]:
+    """Extract (input, output, cache_read, cache_write) token counts as ints.
+
+    Centralizes the null-coalescing that would otherwise be repeated across
+    every aggregation method.
+    """
+    return (
+        int(row.tokens_input or 0),
+        int(row.tokens_output or 0),
+        int(row.tokens_cache_read or 0),
+        int(row.tokens_cache_write or 0),
+    )
 
 
 def _parse_period(period: str) -> tuple[datetime, int]:
@@ -199,211 +214,89 @@ class UsageService(BaseService):
         return points
 
     # =========================================================================
-    # BY-AGENT
+    # BY-DIMENSION (agent / team / model)
     # =========================================================================
+
+    async def _aggregate_by(
+        self,
+        group_column: InstrumentedAttribute[Any],
+        key_name: str,
+        period: str,
+    ) -> list[dict[str, Any]]:
+        """Aggregate token usage grouped by an arbitrary column.
+
+        Shared implementation behind get_by_agent/get_by_team/get_by_model.
+        ``key_name`` is the dict key the grouping value is emitted under
+        (e.g. "agent_slug"). Rows are ordered by input+output desc and each
+        item carries pct_of_total computed against the grand total.
+        """
+        start_dt, _ = _parse_period(period)
+
+        result = await self.session.execute(
+            select(
+                group_column.label(key_name),
+                func.coalesce(func.sum(AgentSpawnSessionTable.tokens_input), 0).label(
+                    "tokens_input"
+                ),
+                func.coalesce(func.sum(AgentSpawnSessionTable.tokens_output), 0).label(
+                    "tokens_output"
+                ),
+                func.coalesce(
+                    func.sum(AgentSpawnSessionTable.tokens_cache_read), 0
+                ).label("tokens_cache_read"),
+                func.coalesce(
+                    func.sum(AgentSpawnSessionTable.tokens_cache_write), 0
+                ).label("tokens_cache_write"),
+                func.coalesce(
+                    func.sum(AgentSpawnSessionTable.estimated_cost_usd), 0.0
+                ).label("cost_usd"),
+            )
+            .where(
+                AgentSpawnSessionTable.started_at >= start_dt,
+                AgentSpawnSessionTable.ended_at.isnot(None),
+            )
+            .group_by(group_column)
+            .order_by(
+                func.sum(
+                    AgentSpawnSessionTable.tokens_input
+                    + AgentSpawnSessionTable.tokens_output
+                ).desc()
+            )
+        )
+        rows = result.fetchall()
+
+        grand_total = sum(sum(_row_tokens(r)) for r in rows)
+        items = []
+        for r in rows:
+            ti, to_, tcr, tcw = _row_tokens(r)
+            total = ti + to_ + tcr + tcw
+            items.append(
+                {
+                    key_name: getattr(r, key_name),
+                    "tokens_input": ti,
+                    "tokens_output": to_,
+                    "total_tokens": total,
+                    "cost_usd": round(float(r.cost_usd or 0.0), 6),
+                    "pct_of_total": round(total / grand_total * 100, 2)
+                    if grand_total > 0
+                    else 0.0,
+                }
+            )
+        return items
 
     async def get_by_agent(self, period: str = "24h") -> list[dict[str, Any]]:
         """Return per-agent token usage with pct_of_total."""
-        start_dt, _ = _parse_period(period)
-
-        result = await self.session.execute(
-            select(
-                AgentSpawnSessionTable.agent_slug,
-                func.coalesce(func.sum(AgentSpawnSessionTable.tokens_input), 0).label(
-                    "tokens_input"
-                ),
-                func.coalesce(func.sum(AgentSpawnSessionTable.tokens_output), 0).label(
-                    "tokens_output"
-                ),
-                func.coalesce(
-                    func.sum(AgentSpawnSessionTable.tokens_cache_read), 0
-                ).label("tokens_cache_read"),
-                func.coalesce(
-                    func.sum(AgentSpawnSessionTable.tokens_cache_write), 0
-                ).label("tokens_cache_write"),
-                func.coalesce(
-                    func.sum(AgentSpawnSessionTable.estimated_cost_usd), 0.0
-                ).label("cost_usd"),
-            )
-            .where(
-                AgentSpawnSessionTable.started_at >= start_dt,
-                AgentSpawnSessionTable.ended_at.isnot(None),
-            )
-            .group_by(AgentSpawnSessionTable.agent_slug)
-            .order_by(
-                func.sum(
-                    AgentSpawnSessionTable.tokens_input
-                    + AgentSpawnSessionTable.tokens_output
-                ).desc()
-            )
+        return await self._aggregate_by(
+            AgentSpawnSessionTable.agent_slug, "agent_slug", period
         )
-        rows = result.fetchall()
-
-        grand_total = sum(
-            int(r.tokens_input or 0)
-            + int(r.tokens_output or 0)
-            + int(r.tokens_cache_read or 0)
-            + int(r.tokens_cache_write or 0)
-            for r in rows
-        )
-        items = []
-        for r in rows:
-            ti = int(r.tokens_input or 0)
-            to_ = int(r.tokens_output or 0)
-            tcr = int(r.tokens_cache_read or 0)
-            tcw = int(r.tokens_cache_write or 0)
-            total = ti + to_ + tcr + tcw
-            items.append(
-                {
-                    "agent_slug": r.agent_slug,
-                    "tokens_input": ti,
-                    "tokens_output": to_,
-                    "total_tokens": total,
-                    "cost_usd": round(float(r.cost_usd or 0.0), 6),
-                    "pct_of_total": round(total / grand_total * 100, 2)
-                    if grand_total > 0
-                    else 0.0,
-                }
-            )
-        return items
-
-    # =========================================================================
-    # BY-TEAM
-    # =========================================================================
 
     async def get_by_team(self, period: str = "24h") -> list[dict[str, Any]]:
         """Return per-team token usage with pct_of_total."""
-        start_dt, _ = _parse_period(period)
-
-        result = await self.session.execute(
-            select(
-                AgentSpawnSessionTable.team,
-                func.coalesce(func.sum(AgentSpawnSessionTable.tokens_input), 0).label(
-                    "tokens_input"
-                ),
-                func.coalesce(func.sum(AgentSpawnSessionTable.tokens_output), 0).label(
-                    "tokens_output"
-                ),
-                func.coalesce(
-                    func.sum(AgentSpawnSessionTable.tokens_cache_read), 0
-                ).label("tokens_cache_read"),
-                func.coalesce(
-                    func.sum(AgentSpawnSessionTable.tokens_cache_write), 0
-                ).label("tokens_cache_write"),
-                func.coalesce(
-                    func.sum(AgentSpawnSessionTable.estimated_cost_usd), 0.0
-                ).label("cost_usd"),
-            )
-            .where(
-                AgentSpawnSessionTable.started_at >= start_dt,
-                AgentSpawnSessionTable.ended_at.isnot(None),
-            )
-            .group_by(AgentSpawnSessionTable.team)
-            .order_by(
-                func.sum(
-                    AgentSpawnSessionTable.tokens_input
-                    + AgentSpawnSessionTable.tokens_output
-                ).desc()
-            )
-        )
-        rows = result.fetchall()
-
-        grand_total = sum(
-            int(r.tokens_input or 0)
-            + int(r.tokens_output or 0)
-            + int(r.tokens_cache_read or 0)
-            + int(r.tokens_cache_write or 0)
-            for r in rows
-        )
-        items = []
-        for r in rows:
-            ti = int(r.tokens_input or 0)
-            to_ = int(r.tokens_output or 0)
-            tcr = int(r.tokens_cache_read or 0)
-            tcw = int(r.tokens_cache_write or 0)
-            total = ti + to_ + tcr + tcw
-            items.append(
-                {
-                    "team": r.team,
-                    "tokens_input": ti,
-                    "tokens_output": to_,
-                    "total_tokens": total,
-                    "cost_usd": round(float(r.cost_usd or 0.0), 6),
-                    "pct_of_total": round(total / grand_total * 100, 2)
-                    if grand_total > 0
-                    else 0.0,
-                }
-            )
-        return items
-
-    # =========================================================================
-    # BY-MODEL
-    # =========================================================================
+        return await self._aggregate_by(AgentSpawnSessionTable.team, "team", period)
 
     async def get_by_model(self, period: str = "24h") -> list[dict[str, Any]]:
         """Return per-model token usage with pct_of_total."""
-        start_dt, _ = _parse_period(period)
-
-        result = await self.session.execute(
-            select(
-                AgentSpawnSessionTable.model,
-                func.coalesce(func.sum(AgentSpawnSessionTable.tokens_input), 0).label(
-                    "tokens_input"
-                ),
-                func.coalesce(func.sum(AgentSpawnSessionTable.tokens_output), 0).label(
-                    "tokens_output"
-                ),
-                func.coalesce(
-                    func.sum(AgentSpawnSessionTable.tokens_cache_read), 0
-                ).label("tokens_cache_read"),
-                func.coalesce(
-                    func.sum(AgentSpawnSessionTable.tokens_cache_write), 0
-                ).label("tokens_cache_write"),
-                func.coalesce(
-                    func.sum(AgentSpawnSessionTable.estimated_cost_usd), 0.0
-                ).label("cost_usd"),
-            )
-            .where(
-                AgentSpawnSessionTable.started_at >= start_dt,
-                AgentSpawnSessionTable.ended_at.isnot(None),
-            )
-            .group_by(AgentSpawnSessionTable.model)
-            .order_by(
-                func.sum(
-                    AgentSpawnSessionTable.tokens_input
-                    + AgentSpawnSessionTable.tokens_output
-                ).desc()
-            )
-        )
-        rows = result.fetchall()
-
-        grand_total = sum(
-            int(r.tokens_input or 0)
-            + int(r.tokens_output or 0)
-            + int(r.tokens_cache_read or 0)
-            + int(r.tokens_cache_write or 0)
-            for r in rows
-        )
-        items = []
-        for r in rows:
-            ti = int(r.tokens_input or 0)
-            to_ = int(r.tokens_output or 0)
-            tcr = int(r.tokens_cache_read or 0)
-            tcw = int(r.tokens_cache_write or 0)
-            total = ti + to_ + tcr + tcw
-            items.append(
-                {
-                    "model": r.model,
-                    "tokens_input": ti,
-                    "tokens_output": to_,
-                    "total_tokens": total,
-                    "cost_usd": round(float(r.cost_usd or 0.0), 6),
-                    "pct_of_total": round(total / grand_total * 100, 2)
-                    if grand_total > 0
-                    else 0.0,
-                }
-            )
-        return items
+        return await self._aggregate_by(AgentSpawnSessionTable.model, "model", period)
 
     # =========================================================================
     # PROJECTION

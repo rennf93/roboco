@@ -52,7 +52,7 @@ const markdownComponents = {
  *  newlines all preserved). */
 function MarkdownBody({ content }: { content: string }) {
   return (
-    <div className="prose prose-sm max-w-none [&_*]:!text-inherit prose-p:my-1.5 prose-headings:mt-3 prose-headings:mb-1 prose-pre:my-2 prose-pre:bg-black/20">
+    <div className="prose prose-sm max-w-none !text-inherit [&_*]:!text-inherit prose-p:my-1.5 prose-headings:mt-3 prose-headings:mb-1 prose-pre:my-2 prose-pre:bg-black/20">
       <ReactMarkdown remarkPlugins={[remarkGfm]} components={markdownComponents}>
         {content}
       </ReactMarkdown>

@@ -886,6 +886,39 @@ async def test_unblock_restores_to_in_progress(
     unblocked = await svc.unblock(task.id)
     assert unblocked is not None
     assert unblocked.status == TaskStatus.IN_PROGRESS
+    # Owner restored into both fields so the dev dispatcher respawns it.
+    assert unblocked.assigned_to == task_setup["agent_id"]
+    assert unblocked.claimed_by == task_setup["agent_id"]
+
+
+@pytest.mark.asyncio
+async def test_unblock_keeps_owner_for_give_me_work_claim(
+    task_setup: dict, db_session: AsyncSession
+) -> None:
+    """A task claimed via give_me_work (no assigned_to) keeps its owner.
+
+    block() only stashes blocker_raised_by from assigned_to, so a give_me_work
+    claim (claimed_by set, assigned_to null) would otherwise unblock into a
+    split-owner state — assigned_to null but claimed_by set — which both the
+    dev dispatcher and the PM pool-router try to grab. unblock must put the
+    owner back into both fields.
+    """
+    svc = task_setup["svc"]
+    task = await svc.create(_req(task_setup))
+    task.status = TaskStatus.IN_PROGRESS
+    task.assigned_to = None
+    task.claimed_by = task_setup["agent_id"]
+    task.branch_name = "feature/backend/abc12345"
+    await db_session.flush()
+    await svc.soft_block(
+        task.id,
+        SoftBlockInfo(reason="x", blocker_type="ext", what_needed="y"),
+    )
+    unblocked = await svc.unblock(task.id)
+    assert unblocked is not None
+    assert unblocked.status == TaskStatus.IN_PROGRESS
+    assert unblocked.assigned_to == task_setup["agent_id"]
+    assert unblocked.claimed_by == task_setup["agent_id"]
 
 
 # ---------------------------------------------------------------------------
@@ -1273,8 +1306,16 @@ async def test_unclaim_for_reaper_resets(
     task.status = TaskStatus.CLAIMED
     task.assigned_to = task_setup["agent_id"]
     task.claimed_by = task_setup["agent_id"]
+    task.active_claimant_id = task_setup["agent_id"]
     await db_session.flush()
     await svc.unclaim_for_reaper(task.id)
+    refreshed = await svc.get(task.id)
+    assert refreshed is not None
+    assert refreshed.status == TaskStatus.PENDING
+    # Claim released but ownership preserved (no ownerless pending limbo).
+    assert refreshed.active_claimant_id is None
+    assert refreshed.assigned_to == task_setup["agent_id"]
+    assert refreshed.claimed_by == task_setup["agent_id"]
 
 
 # ---------------------------------------------------------------------------

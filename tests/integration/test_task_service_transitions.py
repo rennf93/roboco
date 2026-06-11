@@ -197,19 +197,25 @@ async def test_start_paused_task_resumes_in_progress(
 
 
 @pytest.mark.asyncio
-async def test_unclaim_for_reaper_resets_claimed_task(
+async def test_unclaim_for_reaper_resets_claim_but_keeps_owner(
     task_setup: dict, db_session: AsyncSession
 ) -> None:
     svc = task_setup["svc"]
     task = await svc.create(_req(task_setup))
     task.status = TaskStatus.CLAIMED
     task.assigned_to = task_setup["agent_id"]
+    task.active_claimant_id = task_setup["agent_id"]
     await db_session.flush()
     await svc.unclaim_for_reaper(task.id)
     refreshed = await svc.get(task.id)
     assert refreshed is not None
     assert refreshed.status == TaskStatus.PENDING
-    assert refreshed.assigned_to is None
+    # Ownership is preserved so the same agent resumes the task once it
+    # re-dispatches — the task must never land in an ownerless pending limbo.
+    assert refreshed.assigned_to == task_setup["agent_id"]
+    assert refreshed.claimed_by == task_setup["agent_id"]
+    # The live claim is released so the reaper/dispatcher can re-spawn cleanly.
+    assert refreshed.active_claimant_id is None
 
 
 @pytest.mark.asyncio
@@ -220,6 +226,35 @@ async def test_unclaim_for_reaper_skips_when_status_already_pending(
     task = await svc.create(_req(task_setup))  # PENDING
     # Should not raise — branch returns immediately.
     await svc.unclaim_for_reaper(task.id)
+
+
+@pytest.mark.asyncio
+async def test_release_dependency_blocked_claim_keeps_owner(
+    task_setup: dict, db_session: AsyncSession
+) -> None:
+    """Dependency-release returns to pending without orphaning the owner.
+
+    Shares ``_force_unclaim_to_pending`` with the reaper, so it must give the
+    same guarantee: the same agent resumes once the upstream dependency lands.
+    The work-in-progress branch is forgotten so the re-claim cuts fresh off the
+    (now-updated) integration tip.
+    """
+    svc = task_setup["svc"]
+    task = await svc.create(_req(task_setup))
+    task.status = TaskStatus.CLAIMED
+    task.assigned_to = task_setup["agent_id"]
+    task.claimed_by = task_setup["agent_id"]
+    task.active_claimant_id = task_setup["agent_id"]
+    task.branch_name = "feature/backend/ABC12345"
+    await db_session.flush()
+    await svc.release_dependency_blocked_claim(task.id)
+    refreshed = await svc.get(task.id)
+    assert refreshed is not None
+    assert refreshed.status == TaskStatus.PENDING
+    assert refreshed.assigned_to == task_setup["agent_id"]
+    assert refreshed.claimed_by == task_setup["agent_id"]
+    assert refreshed.active_claimant_id is None
+    assert refreshed.branch_name is None
 
 
 # ---------------------------------------------------------------------------
@@ -1414,6 +1449,51 @@ async def test_apply_escalation_reassigns_and_blocks(
     assert "[ESCALATED]" in (task.dev_notes or "")
 
 
+@pytest.mark.asyncio
+async def test_apply_escalation_snapshots_original_owner_for_restore(
+    task_setup: dict, db_session: AsyncSession
+) -> None:
+    """Escalation snapshots the original owner; restore returns it, not the target."""
+    svc = task_setup["svc"]
+    target = AgentTable(
+        id=uuid4(),
+        name="Target",
+        slug=f"target-{uuid4().hex[:8]}",
+        role=AgentRole.CELL_PM,
+        team=Team.BACKEND,
+        status=AgentStatus.ACTIVE,
+        model_config={},
+        system_prompt="t",
+        capabilities=[],
+        permissions={},
+        metrics={},
+    )
+    db_session.add(target)
+    await db_session.flush()
+    task = await svc.create(_req(task_setup))
+    task.assigned_to = task_setup["agent_id"]
+    task.claimed_by = task_setup["agent_id"]
+    task.status = TaskStatus.IN_PROGRESS
+    task.branch_name = "feature/backend/abc12345"
+    await db_session.flush()
+    await svc.apply_escalation(
+        task=task,
+        target_agent_id=target.id,
+        escalator_slug="dev-1",
+        target_slug="cell-pm",
+        reason="external blocker",
+    )
+    # The snapshot captured the outgoing dev, not the escalation target.
+    assert task.pre_block_assignee == task_setup["agent_id"]
+    out = await svc.unblock_with_restore(
+        pm_agent_id=task_setup["agent_id"], task_id=task.id, restore=True
+    )
+    assert out is not None
+    assert out.status == TaskStatus.IN_PROGRESS
+    assert out.assigned_to == task_setup["agent_id"]
+    assert out.claimed_by == task_setup["agent_id"]
+
+
 # ---------------------------------------------------------------------------
 # escalate / escalate_up_to_role helpers
 # ---------------------------------------------------------------------------
@@ -1598,6 +1678,75 @@ async def test_unblock_with_restore_when_status_not_blocked(
     )
     # status not BLOCKED but pre_block_state is set → returns None
     assert out is None
+
+
+@pytest.mark.asyncio
+async def test_soft_block_snapshots_pre_block_state(
+    task_setup: dict, db_session: AsyncSession
+) -> None:
+    """soft_block records the resting status + owner for restore=True."""
+    svc = task_setup["svc"]
+    task = await svc.create(_req(task_setup))
+    task.status = TaskStatus.IN_PROGRESS
+    task.assigned_to = task_setup["agent_id"]
+    task.branch_name = "feature/backend/abc12345"
+    await db_session.flush()
+    await svc.soft_block(
+        task.id, SoftBlockInfo(reason="x", blocker_type="ext", what_needed="y")
+    )
+    assert task.status == TaskStatus.BLOCKED
+    assert task.pre_block_state == TaskStatus.IN_PROGRESS.value
+    assert task.pre_block_assignee == task_setup["agent_id"]
+
+
+@pytest.mark.asyncio
+async def test_unblock_with_restore_returns_to_snapshot(
+    task_setup: dict, db_session: AsyncSession
+) -> None:
+    """restore=True returns the task to its snapshotted status + owner."""
+    svc = task_setup["svc"]
+    task = await svc.create(_req(task_setup))
+    task.status = TaskStatus.IN_PROGRESS
+    task.assigned_to = task_setup["agent_id"]
+    task.branch_name = "feature/backend/abc12345"
+    await db_session.flush()
+    await svc.soft_block(
+        task.id, SoftBlockInfo(reason="x", blocker_type="ext", what_needed="y")
+    )
+    out = await svc.unblock_with_restore(
+        pm_agent_id=task_setup["agent_id"], task_id=task.id, restore=True
+    )
+    assert out is not None
+    assert out.status == TaskStatus.IN_PROGRESS
+    assert out.assigned_to == task_setup["agent_id"]
+    assert out.claimed_by == task_setup["agent_id"]
+    # Snapshot is consumed so a later block re-captures fresh.
+    assert out.pre_block_state is None
+    assert out.pre_block_assignee is None
+
+
+@pytest.mark.asyncio
+async def test_unblock_with_restore_branchless_diverts_to_pending(
+    task_setup: dict, db_session: AsyncSession
+) -> None:
+    """A snapshot of in_progress with no branch restores to pending, not in_progress.
+
+    Restoring a branchless task to in_progress would loop the dispatcher; the
+    restore path applies the same branchless guard legacy unblock() uses.
+    """
+    svc = task_setup["svc"]
+    task = await svc.create(_req(task_setup))
+    task.status = TaskStatus.BLOCKED
+    task.pre_block_state = TaskStatus.IN_PROGRESS.value
+    task.pre_block_assignee = task_setup["agent_id"]
+    task.branch_name = None
+    await db_session.flush()
+    out = await svc.unblock_with_restore(
+        pm_agent_id=task_setup["agent_id"], task_id=task.id, restore=True
+    )
+    assert out is not None
+    assert out.status == TaskStatus.PENDING
+    assert out.assigned_to == task_setup["agent_id"]
 
 
 # ---------------------------------------------------------------------------

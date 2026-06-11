@@ -1,4 +1,4 @@
-"""P2-9: the prompt composer injects the autogen verb table.
+"""The prompt composer injects the autogen verb table.
 
 `compose_prompt` reads `agents/prompts/_generated/<role>.md` and
 includes it as a composition layer (between role and team). This pins

@@ -1,7 +1,7 @@
 """Real-DB end-to-end test driving the gateway through the full lifecycle.
 
-Audit deliverable P2-1: the missing integration test that would have
-caught every smoking gun in the 2026-05-04 audit. Drives a single task
+The end-to-end integration test that would have caught every smoking
+gun in the 2026-05-04 audit. Drives a single task
 from pending → completed using a real `db_session` (Postgres-backed
 fixture from the top-level conftest), a real `Choreographer`, and a
 real `TaskService`. Git is replaced with a deterministic stub
@@ -15,9 +15,9 @@ When extended to all roles, this test catches:
   - i_will_work_on AttributeError on None (claim → start sequence is real)
   - heartbeat seeding (reaper cutoff)
   - active_claimant_id wired (single-claimant invariant)
-  - i_am_done auto-runs submit_verification (P1-3)
-  - QA pass clears active_claimant_id (P1-4)
-  - branch creation atomicity rollback (P0-7)
+  - i_am_done auto-runs submit_verification
+  - QA pass clears active_claimant_id
+  - branch creation atomicity rollback
 """
 
 from __future__ import annotations
@@ -329,8 +329,8 @@ async def test_dev_can_claim_pending_task_via_gateway(
 ) -> None:
     """give_me_work → i_will_work_on lands the task in in_progress.
 
-    Verifies in one shot: P0-2 (None-handling), P0-3 (heartbeat seed),
-    P0-7 (branch atomicity), P1-4 (active_claimant_id wired).
+    Verifies in one shot: None-handling, heartbeat seed, branch
+    atomicity, and active_claimant_id wired.
     """
     task = lifecycle_setup["task"]
     dev_agent = lifecycle_setup["dev_agent"]
@@ -363,8 +363,8 @@ async def test_dev_can_claim_pending_task_via_gateway(
     assert refreshed is not None
     assert str(refreshed.status) == "in_progress"
     assert refreshed.assigned_to == dev_agent.id
-    assert refreshed.last_heartbeat_at is not None, "P0-3: heartbeat seed"
-    assert refreshed.active_claimant_id == dev_agent.id, "P1-4: claim lock"
+    assert refreshed.last_heartbeat_at is not None, "heartbeat seed"
+    assert refreshed.active_claimant_id == dev_agent.id, "claim lock"
 
 
 @pytest.mark.asyncio
@@ -375,7 +375,7 @@ async def test_dev_full_chain_through_awaiting_qa(
 
     Drives the full developer-side closure path. Verifies:
       - open_pr records pr_number on the task (commits + PR pre-flight)
-      - i_am_done auto-runs submit_verification (P1-3) → verifying → awaiting_qa
+      - i_am_done auto-runs submit_verification → verifying → awaiting_qa
       - Heartbeat refreshes after each verb (`_touch`)
       - active_claimant_id remains set through dev's tenure
     """
@@ -422,19 +422,19 @@ async def test_dev_full_chain_through_awaiting_qa(
     assert env.error is None, f"open_pr failed: {env.message}"
     refreshed = await task_service.get(task.id)
     assert refreshed is not None
-    assert refreshed.pr_number == _PR_NUMBER, "P0-7 / S-02: PR recorded on task"
+    assert refreshed.pr_number == _PR_NUMBER, "PR recorded on task"
 
     # 4. i_am_done — auto-runs in_progress → verifying → awaiting_qa.
     env = await c.i_am_done(dev_agent.id, task.id, "tests pass; route works")
     assert env.error is None, f"i_am_done failed: {env.message}"
     assert env.status == "awaiting_qa", (
-        "P1-3: i_am_done must auto-run submit_verification + submit_qa"
+        "i_am_done must auto-run submit_verification + submit_qa"
     )
 
     final = await task_service.get(task.id)
     assert final is not None
     assert str(final.status) == "awaiting_qa"
-    assert final.self_verified is True, "P1-3: self_verified set by auto-verify"
+    assert final.self_verified is True, "self_verified set by auto-verify"
 
 
 @pytest.mark.asyncio
@@ -443,7 +443,7 @@ async def test_full_chain_through_doc_handoff(
 ) -> None:
     """Extend the dev chain: QA pass → documenter → awaiting_pm_review.
 
-    Verifies QA pass clears active_claimant_id (P1-4 + P1-5),
+    Verifies QA pass clears active_claimant_id,
     docs_complete transitions to awaiting_pm_review, and reassignment
     to the cell PM happens on hand-off.
     """
@@ -501,7 +501,7 @@ async def test_full_chain_through_doc_handoff(
     after_qa = await task_service.get(task.id)
     assert after_qa is not None
     assert after_qa.active_claimant_id is None, (
-        "P1-4 + P1-5: QA pass must clear active_claimant_id for next role"
+        "QA pass must clear active_claimant_id for next role"
     )
 
     # Documenter path: claim_doc_task → i_documented.
@@ -516,17 +516,17 @@ async def test_full_chain_through_doc_handoff(
     )
     assert env.error is None, f"i_documented failed: {env.message}"
     assert env.status == "awaiting_pm_review", (
-        "P2-1: i_documented must transition awaiting_documentation → awaiting_pm_review"
+        "i_documented must transition awaiting_documentation → awaiting_pm_review"
     )
 
     after_docs = await task_service.get(task.id)
     assert after_docs is not None
     assert after_docs.assigned_to == cell_pm_agent.id, (
-        "P2-1: docs_complete must reassign to the cell PM for the team"
+        "docs_complete must reassign to the cell PM for the team"
     )
 
 
-# TODO P2-1 follow-up — final stages (cell_pm complete + main_pm complete +
+# TODO: follow-up — final stages (cell_pm complete + main_pm complete +
 # CEO approval) require additional setup: a parent task hierarchy for
 # the merge chain, plus a real `git.pr_merge` simulation that updates
 # the underlying repo. The _StubGit class covers the API surface; what's
