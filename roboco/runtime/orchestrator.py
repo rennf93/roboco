@@ -75,6 +75,13 @@ AGENT_BASE_IMAGE = "roboco-agent-base"
 # _sweep_budget_exceeded) to build the SDK health/usage URL.
 SDK_PORT: int = 9000
 
+# Rate-limit recovery probe: a free, unmetered liveness call confirms a
+# provider has stopped rate-limiting us before parked agents are resumed.
+# Listing models / tags costs no tokens; a non-429 response means lifted.
+_ANTHROPIC_PROBE_BASE = "https://api.anthropic.com"
+_PROBE_TIMEOUT_SECONDS = 10.0
+_HTTP_TOO_MANY_REQUESTS = 429
+
 # The intake (prompter) agent: a single seeded, board-adjacent interviewer.
 # Unlike delivery agents it is never dispatched and runs ONE persistent
 # container at a time (single CEO → one live chat). See the INTAKE section
@@ -3978,7 +3985,7 @@ Start by:
             )
 
     # =========================================================================
-    # RATE-LIMIT PROBE LOOP  (AC4, AC8)
+    # RATE-LIMIT PROBE LOOP
     # =========================================================================
 
     async def _rate_limit_probe_loop(self) -> None:
@@ -4125,18 +4132,51 @@ Start by:
                     paused_agent_count=paused_count,
                 )
 
-    async def _do_probe(self, _provider: str) -> bool:
-        """Return True if the provider is accepting requests again.
+    @staticmethod
+    def _probe_target(provider: str) -> tuple[str | None, dict[str, str]]:
+        """Resolve the (url, headers) for a free liveness probe of ``provider``.
 
-        This method is intentionally thin so tests can monkeypatch it.
-        The default implementation is conservative: returns ``True``
-        (success) so that once the estimated_lift_at window has passed
-        the probe clears the rate limit.  Override in tests to inject
-        either success or failure scenarios.
+        Returns ``(None, {})`` when the provider can't be probed — an unknown
+        provider, or Anthropic with no API key configured. The caller then
+        falls back to time-expiry optimism rather than parking forever.
         """
-        # Default: optimistic — time-expiry gate (checked before this call)
-        # is the primary guard; the probe itself succeeds.
-        return True
+        p = provider.lower()
+        if p == "anthropic":
+            key = settings.anthropic_api_key
+            if not key:
+                return None, {}
+            return (
+                f"{_ANTHROPIC_PROBE_BASE}/v1/models",
+                {"x-api-key": key, "anthropic-version": "2023-06-01"},
+            )
+        if p.startswith("ollama"):
+            return f"{settings.ollama_base_url.rstrip('/')}/api/tags", {}
+        return None, {}
+
+    async def _do_probe(self, provider: str) -> bool:
+        """Return True if ``provider`` is accepting requests again (not 429).
+
+        Makes a free, unmetered liveness call — Anthropic ``GET /v1/models``
+        or Ollama ``GET /api/tags`` — and treats any non-429 response as the
+        rate limit having lifted. A 429 keeps the provider parked; a network
+        error stays parked too (retry next sweep). When the provider can't be
+        probed (no key / unknown), fall back to time-expiry optimism: the
+        caller only reaches this after ``estimated_lift_at`` has passed.
+
+        Injectable boundary — tests monkeypatch this to force outcomes.
+        """
+        url, headers = self._probe_target(provider)
+        if url is None:
+            return True  # cannot probe — trust the elapsed retry_after window
+        try:
+            async with httpx.AsyncClient(timeout=_PROBE_TIMEOUT_SECONDS) as client:
+                resp = await client.get(url, headers=headers)
+        except httpx.HTTPError as exc:
+            logger.debug(
+                "Rate-limit probe request failed", provider=provider, error=str(exc)
+            )
+            return False  # unreachable — stay parked, retry on the next sweep
+        return resp.status_code != _HTTP_TOO_MANY_REQUESTS
 
     async def _notify_rate_limit_ceo(
         self,
@@ -4146,7 +4186,7 @@ Start by:
     ) -> None:
         """Send a high-priority notification to the CEO about a persistent rate limit.
 
-        Fires once per episode (AC8).  Follows the same pattern as
+        Fires once per rate-limit episode. Follows the same pattern as
         ``_notify_stranded_agent`` — direct DB insert + delivery.deliver().
         """
         try:
