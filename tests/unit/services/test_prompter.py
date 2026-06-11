@@ -637,7 +637,12 @@ async def test_confirm_live_draft_main_pm_route_assigns_main_pm(
 
 @pytest.mark.asyncio
 async def test_confirm_live_draft_product_routes_to_main_pm(db_session: Any) -> None:
-    """A product-scoped live draft is a board-led coordination root (Main PM)."""
+    """A product-scoped draft via the "Approve & Start" path is a Main-PM root.
+
+    The board path (the ``route="board"`` default) keeps the root at
+    ``team=board`` until the CEO approves; the Main-PM path is selected
+    explicitly with ``route="main_pm"``.
+    """
     _project_id, ceo_id = await _seed_project_and_ceo(db_session)
     product_id = uuid4()
     product = ProductTable(
@@ -656,7 +661,9 @@ async def test_confirm_live_draft_product_routes_to_main_pm(db_session: Any) -> 
         "acceptance_criteria": ["works end to end"],
         "team": "backend",
     }
-    task_id = await service.confirm_live_draft(draft, ceo_id, product_id=product_id)
+    task_id = await service.confirm_live_draft(
+        draft, ceo_id, product_id=product_id, route="main_pm"
+    )
     row = await db_session.get(TaskTable, task_id)
     assert row.team == Team.MAIN_PM
     assert row.product_id == product_id
