@@ -65,6 +65,9 @@ class EventType(StrEnum):
     BLOCKER_REPORTED = "blocker.reported"
     BLOCKER_RESOLVED = "blocker.resolved"
 
+    # Rate-limit events
+    RATE_LIMIT_HIT = "rate_limit.hit"
+
     # Question events
     QUESTION_ASKED = "question.asked"
     QUESTION_ANSWERED = "question.answered"
