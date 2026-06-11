@@ -1,16 +1,12 @@
 "use client";
 
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import { Badge } from "@/components/ui/badge";
 import { Skeleton } from "@/components/ui/skeleton";
-import { TrendingUp, Clock, CheckCircle, Users, BarChart3, Wifi, WifiOff, Loader2 } from "lucide-react";
-import type { ConnectionState } from "@/lib/websocket/connection";
+import { TrendingUp, CheckCircle, BarChart3, AlertTriangle } from "lucide-react";
 
 interface KeyMetricsProps {
   metrics: Record<string, unknown> | undefined;
   isLoading: boolean;
-  /** Current /ws/system connection state, used to render the status badge */
-  wsState: ConnectionState;
 }
 
 interface MetricItem {
@@ -20,17 +16,14 @@ interface MetricItem {
   format?: (value: number) => string;
 }
 
+// Keys must match DashboardService.get_key_metrics() — the shape /dashboard/ceo
+// returns. (velocity_weekly + completion_rate + documentation_coverage are the
+// 7-day rollups; active_blockers is the live blocked-task count.)
 const METRIC_CONFIG: MetricItem[] = [
   {
-    key: "velocity_24h",
-    label: "Velocity (24h)",
-    icon: <TrendingUp className="h-4 w-4" />,
-    format: (v) => `${v} tasks`,
-  },
-  {
-    key: "velocity_7d",
+    key: "velocity_weekly",
     label: "Velocity (7d)",
-    icon: <BarChart3 className="h-4 w-4" />,
+    icon: <TrendingUp className="h-4 w-4" />,
     format: (v) => `${v} tasks`,
   },
   {
@@ -40,61 +33,24 @@ const METRIC_CONFIG: MetricItem[] = [
     format: (v) => `${Math.round(v * 100)}%`,
   },
   {
-    key: "avg_time_to_done",
-    label: "Avg. Time to Done",
-    icon: <Clock className="h-4 w-4" />,
-    format: (v) => `${(typeof v === "number" ? v : 0).toFixed(1)}h`,
+    key: "documentation_coverage",
+    label: "Documentation Coverage",
+    icon: <BarChart3 className="h-4 w-4" />,
+    format: (v) => `${Math.round(v * 100)}%`,
   },
   {
-    key: "active_agents",
-    label: "Active Agents",
-    icon: <Users className="h-4 w-4" />,
+    key: "active_blockers",
+    label: "Active Blockers",
+    icon: <AlertTriangle className="h-4 w-4" />,
     format: (v) => `${v}`,
   },
 ];
 
-/**
- * Returns the badge variant props (className + icon + label) matching the
- * AgentStreamViewer pattern.
- */
-function getConnectionBadge(wsState: ConnectionState) {
-  switch (wsState) {
-    case "connected":
-      return {
-        className: "bg-green-500 text-white",
-        icon: <Wifi className="h-3 w-3 mr-1" />,
-        label: "Live",
-      };
-    case "connecting":
-    case "reconnecting":
-      return {
-        className: "bg-yellow-500 text-white",
-        icon: <Loader2 className="h-3 w-3 mr-1 animate-spin" />,
-        label: wsState === "reconnecting" ? "Reconnecting..." : "Connecting...",
-      };
-    case "disconnected":
-    default:
-      return {
-        className: "bg-gray-500 text-white",
-        icon: <WifiOff className="h-3 w-3 mr-1" />,
-        label: "Polling",
-      };
-  }
-}
-
-export function KeyMetricsPanel({ metrics, isLoading, wsState }: KeyMetricsProps) {
-  const badge = getConnectionBadge(wsState);
-
+export function KeyMetricsPanel({ metrics, isLoading }: KeyMetricsProps) {
   return (
     <Card>
       <CardHeader className="pb-3">
-        <div className="flex items-center justify-between">
-          <CardTitle className="text-lg">Key Metrics</CardTitle>
-          <Badge className={badge.className}>
-            {badge.icon}
-            {badge.label}
-          </Badge>
-        </div>
+        <CardTitle className="text-lg">Key Metrics</CardTitle>
       </CardHeader>
       <CardContent>
         {isLoading ? (
@@ -114,7 +70,7 @@ export function KeyMetricsPanel({ metrics, isLoading, wsState }: KeyMetricsProps
                     {m.icon}
                     {m.label}
                   </div>
-                  <span className="font-medium transition-all duration-300 ease-in-out">
+                  <span className="font-medium">
                     {value != null
                       ? m.format
                         ? m.format(value)

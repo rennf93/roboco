@@ -3218,7 +3218,7 @@ class AgentOrchestrator:
         fetch, which misses whenever the agent container is short-lived or
         already torn down. Returns zeros when no transcript is found.
         """
-        from roboco.agent_sdk.server import _sum_transcript_usage
+        from roboco.agent_sdk.transcript_usage import sum_transcript_usage
 
         projects = Path.home() / ".claude" / "projects"
         try:
@@ -3228,12 +3228,49 @@ class AgentOrchestrator:
                 if d.is_dir()
                 for f in d.glob("*.jsonl")
             ]
+            if not jsonl:
+                return (0, 0, 0, 0)
+            newest = max(jsonl, key=lambda f: f.stat().st_mtime)
+            return sum_transcript_usage(newest)
         except OSError:
             return (0, 0, 0, 0)
-        if not jsonl:
-            return (0, 0, 0, 0)
-        newest = max(jsonl, key=lambda f: f.stat().st_mtime)
-        return _sum_transcript_usage(newest)
+
+    async def _resolve_final_token_usage(
+        self, agent_id: str
+    ) -> tuple[int, int, int, int]:
+        """Resolve final token counts for a stopping agent.
+
+        Tries the live SDK ``/usage/status`` first; if that misses — the SDK's
+        in-memory counts race container teardown for short-lived agents — it
+        falls back to the agent's Claude Code transcript, which is durable and
+        mounted into this container. Returns
+        ``(input, output, cache_read, cache_write)``.
+        """
+        tokens = (0, 0, 0, 0)
+        sdk_url = f"http://roboco-agent-{agent_id}:{SDK_PORT}/usage/status"
+        try:
+            async with httpx.AsyncClient(timeout=3.0) as client:
+                resp = await client.get(sdk_url)
+                if resp.status_code == http_status.HTTP_200_OK:
+                    data = resp.json()
+                    tokens = (
+                        data.get("tokens_input", 0),
+                        data.get("tokens_output", 0),
+                        data.get("tokens_cache_read", 0),
+                        data.get("tokens_cache_write", 0),
+                    )
+        except Exception as sdk_exc:
+            logger.debug(
+                "Could not fetch final token counts from SDK",
+                agent_id=agent_id,
+                error=str(sdk_exc),
+            )
+
+        if not tokens[0] and not tokens[1]:
+            tin, tout, cr, cw = self._usage_from_transcript(agent_id)
+            if tin or tout:
+                tokens = (tin, tout, cr, cw)
+        return tokens
 
     async def _finalize_spawn_session(
         self,
@@ -3242,9 +3279,9 @@ class AgentOrchestrator:
     ) -> None:
         """Close the open agent_spawn_sessions row for this agent.
 
-        Fetches final token counts from the agent SDK's /usage/status endpoint,
-        calculates cost via pricing module, then updates the DB row with
-        ended_at, token totals, exit_reason, and estimated_cost_usd.
+        Resolves final token counts (live SDK, with a durable transcript
+        fallback), calculates cost via the pricing module, then updates the DB
+        row with ended_at, token totals, exit_reason, and estimated_cost_usd.
         Errors are caught and logged — finalization must never block stop_agent.
         """
         try:
@@ -3252,44 +3289,16 @@ class AgentOrchestrator:
             from roboco.db.base import get_session_factory
             from roboco.db.tables import AgentSpawnSessionTable
 
-            # Fetch final token counts from the agent's SDK
-            sdk_url = f"http://roboco-agent-{agent_id}:{SDK_PORT}/usage/status"
-            tokens_input = 0
-            tokens_output = 0
-            tokens_cache_read = 0
-            tokens_cache_write = 0
-            model = "unknown"
-
-            try:
-                async with httpx.AsyncClient(timeout=3.0) as client:
-                    resp = await client.get(sdk_url)
-                    if resp.status_code == http_status.HTTP_200_OK:
-                        data = resp.json()
-                        tokens_input = data.get("tokens_input", 0)
-                        tokens_output = data.get("tokens_output", 0)
-                        tokens_cache_read = data.get("tokens_cache_read", 0)
-                        tokens_cache_write = data.get("tokens_cache_write", 0)
-            except Exception as sdk_exc:
-                logger.debug(
-                    "Could not fetch final token counts from SDK",
-                    agent_id=agent_id,
-                    error=str(sdk_exc),
-                )
-
-            # The live SDK fetch above races the container teardown and misses
-            # for short-lived agents (counts live in the SDK server's memory,
-            # which dies with the container). Fall back to the durable source of
-            # truth: the agent's Claude Code transcript, mounted into this
-            # container — so usage is captured regardless of container timing.
-            if not tokens_input and not tokens_output:
-                tin, tout, cr, cw = self._usage_from_transcript(agent_id)
-                if tin or tout:
-                    tokens_input = tin
-                    tokens_output = tout
-                    tokens_cache_read = cr
-                    tokens_cache_write = cw
+            # Resolve final token counts (live SDK, with transcript fallback).
+            (
+                tokens_input,
+                tokens_output,
+                tokens_cache_read,
+                tokens_cache_write,
+            ) = await self._resolve_final_token_usage(agent_id)
 
             # Look up the model and usage_session_id from the running instance config.
+            model = "unknown"
             instance = self._instances.get(agent_id)
             if instance and instance.config:
                 model = instance.config.model or "unknown"
@@ -3357,7 +3366,98 @@ class AgentOrchestrator:
                 error=str(exc),
             )
 
-    async def _sweep_token_snapshots(self) -> None:  # noqa: PLR0915
+    @staticmethod
+    async def _fetch_agent_tokens(
+        client: httpx.AsyncClient, agent_id: str
+    ) -> tuple[int, int, int, int] | None:
+        """Fetch cumulative token counts from an agent's SDK usage endpoint.
+
+        Returns ``(input, output, cache_read, cache_write)`` or ``None`` when the
+        agent returns a non-200 status or has not accrued any tokens yet.
+        """
+        sdk_url = f"http://roboco-agent-{agent_id}:{SDK_PORT}/usage/status"
+        resp = await client.get(sdk_url)
+        if resp.status_code != http_status.HTTP_200_OK:
+            return None
+        data = resp.json()
+        tokens = (
+            data.get("tokens_input", 0),
+            data.get("tokens_output", 0),
+            data.get("tokens_cache_read", 0),
+            data.get("tokens_cache_write", 0),
+        )
+        if sum(tokens) == 0:
+            return None
+        return tokens
+
+    @staticmethod
+    async def _persist_token_snapshot(
+        session_factory: Any,
+        agent_id: str,
+        instance: AgentInstance,
+        tokens: tuple[int, int, int, int],
+    ) -> bool:
+        """Insert a token_usage_snapshots row and refresh the open session totals.
+
+        Returns True when a snapshot was written; False when the agent has no
+        open spawn-session row to attach it to.
+        """
+        from uuid import uuid4
+
+        from sqlalchemy import select, update
+
+        from roboco.db.tables import AgentSpawnSessionTable, TokenUsageSnapshotTable
+
+        tokens_input, tokens_output, tokens_cache_read, tokens_cache_write = tokens
+        async with session_factory() as db:
+            # Prefer a direct lookup by the session UUID captured at spawn time;
+            # fall back to the agent_slug heuristic for instances that pre-date
+            # the usage_session_id field.
+            if instance.usage_session_id is not None:
+                result = await db.execute(
+                    select(AgentSpawnSessionTable).where(
+                        AgentSpawnSessionTable.id == instance.usage_session_id
+                    )
+                )
+            else:
+                result = await db.execute(
+                    select(AgentSpawnSessionTable)
+                    .where(
+                        AgentSpawnSessionTable.agent_slug == agent_id,
+                        AgentSpawnSessionTable.ended_at.is_(None),
+                    )
+                    .order_by(AgentSpawnSessionTable.started_at.desc())
+                    .limit(1)
+                )
+            session_row = result.scalar_one_or_none()
+            if session_row is None:
+                return False
+
+            db.add(
+                TokenUsageSnapshotTable(
+                    id=uuid4(),
+                    agent_spawn_session_id=session_row.id,
+                    snapshotted_at=datetime.now(UTC),
+                    tokens_input=tokens_input,
+                    tokens_output=tokens_output,
+                    tokens_cache_read=tokens_cache_read,
+                    tokens_cache_write=tokens_cache_write,
+                )
+            )
+            await db.execute(
+                update(AgentSpawnSessionTable)
+                .where(AgentSpawnSessionTable.id == session_row.id)
+                .values(
+                    tokens_input=tokens_input,
+                    tokens_output=tokens_output,
+                    tokens_cache_read=tokens_cache_read,
+                    tokens_cache_write=tokens_cache_write,
+                )
+            )
+            await db.commit()
+            return True
+
+    async def _sweep_token_snapshots(self) -> None:
         """Write a token_usage_snapshots row for each active agent with non-zero tokens.
 
         Called from _run_sweep() every ~60 s. Also updates the cumulative
@@ -3373,7 +3473,6 @@ class AgentOrchestrator:
 
         try:
             from roboco.db.base import get_session_factory
-            from roboco.db.tables import AgentSpawnSessionTable, TokenUsageSnapshotTable
         except ImportError:
             return
 
@@ -3393,96 +3492,37 @@ class AgentOrchestrator:
                 ):
                     continue
 
-                sdk_url = f"http://roboco-agent-{agent_id}:{SDK_PORT}/usage/status"
                 try:
-                    resp = await client.get(sdk_url)
-                    if resp.status_code != http_status.HTTP_200_OK:
+                    tokens = await self._fetch_agent_tokens(client, agent_id)
+                    if tokens is None:
                         continue
-                    data = resp.json()
-                    tokens_input = data.get("tokens_input", 0)
-                    tokens_output = data.get("tokens_output", 0)
-                    tokens_cache_read = data.get("tokens_cache_read", 0)
-                    tokens_cache_write = data.get("tokens_cache_write", 0)
 
-                    # Skip agents with no token usage yet
-                    total = (
-                        tokens_input
-                        + tokens_output
-                        + tokens_cache_read
-                        + tokens_cache_write
+                    persisted = await self._persist_token_snapshot(
+                        session_factory, agent_id, instance, tokens
                     )
-                    if total == 0:
+                    if not persisted:
                         continue
 
-                    # Resolve model for cost estimation and event data.
-                    _model = instance.config.model if instance.config else "unknown"
-
-                    async with session_factory() as db:
-                        from sqlalchemy import select, update
-
-                        # Prefer a direct lookup by the session UUID captured at
-                        # spawn time; fall back to the agent_slug heuristic for
-                        # instances that pre-date the usage_session_id field.
-                        if instance.usage_session_id is not None:
-                            result = await db.execute(
-                                select(AgentSpawnSessionTable).where(
-                                    AgentSpawnSessionTable.id
-                                    == instance.usage_session_id
-                                )
-                            )
-                        else:
-                            result = await db.execute(
-                                select(AgentSpawnSessionTable)
-                                .where(
-                                    AgentSpawnSessionTable.agent_slug == agent_id,
-                                    AgentSpawnSessionTable.ended_at.is_(None),
-                                )
-                                .order_by(AgentSpawnSessionTable.started_at.desc())
-                                .limit(1)
-                            )
-                        session_row = result.scalar_one_or_none()
-                        if session_row is None:
-                            continue
-
-                        # Insert snapshot
-                        from uuid import uuid4 as _uuid4
-
-                        snapshot = TokenUsageSnapshotTable(
-                            id=_uuid4(),
-                            agent_spawn_session_id=session_row.id,
-                            snapshotted_at=datetime.now(UTC),
-                            tokens_input=tokens_input,
-                            tokens_output=tokens_output,
-                            tokens_cache_read=tokens_cache_read,
-                            tokens_cache_write=tokens_cache_write,
-                        )
-                        db.add(snapshot)
-
-                        # Update cumulative totals on the session row
-                        await db.execute(
-                            update(AgentSpawnSessionTable)
-                            .where(AgentSpawnSessionTable.id == session_row.id)
-                            .values(
-                                tokens_input=tokens_input,
-                                tokens_output=tokens_output,
-                                tokens_cache_read=tokens_cache_read,
-                                tokens_cache_write=tokens_cache_write,
-                            )
-                        )
-                        await db.commit()
+                    tokens_input, tokens_output = tokens[0], tokens[1]
+                    model = instance.config.model if instance.config else "unknown"
 
                     # Publish USAGE_UPDATE event for this agent (throttled).
                     with contextlib.suppress(Exception):
                         from roboco.events import get_event_bus
-                        from roboco.services.usage_events import publish_usage_update
+                        from roboco.services.usage_events import (
+                            UsageUpdate,
+                            publish_usage_update,
+                        )
 
                         await publish_usage_update(
-                            bus=get_event_bus(),
-                            agent_id=agent_id,
-                            task_id=instance.current_task_id,
-                            input_tokens=tokens_input,
-                            output_tokens=tokens_output,
-                            model=_model,
+                            get_event_bus(),
+                            UsageUpdate(
+                                agent_id=agent_id,
+                                task_id=instance.current_task_id,
+                                input_tokens=tokens_input,
+                                output_tokens=tokens_output,
+                                model=model,
+                            ),
                         )
 
                     # Accumulate per-agent data for the aggregate snapshot.
@@ -3490,7 +3530,7 @@ class AgentOrchestrator:
                         from roboco.billing.pricing import calculate_cost
 
                         agent_cost = calculate_cost(
-                            model=_model,
+                            model=model,
                             tokens_input=tokens_input,
                             tokens_output=tokens_output,
                         )
@@ -3499,7 +3539,7 @@ class AgentOrchestrator:
                                 "agent_id": agent_id,
                                 "input_tokens": tokens_input,
                                 "output_tokens": tokens_output,
-                                "model": _model,
+                                "model": model,
                                 "cost_estimate": agent_cost,
                             }
                         )
@@ -3518,17 +3558,22 @@ class AgentOrchestrator:
         if _usage_by_agent:
             with contextlib.suppress(Exception):
                 from roboco.events import get_event_bus
-                from roboco.services.usage_events import publish_usage_snapshot
+                from roboco.services.usage_events import (
+                    UsageSnapshot,
+                    publish_usage_snapshot,
+                )
 
                 await publish_usage_snapshot(
-                    bus=get_event_bus(),
-                    period="60s",
-                    totals={
-                        "input_tokens": _usage_total_input,
-                        "output_tokens": _usage_total_output,
-                    },
-                    cost_estimate=_usage_total_cost,
-                    by_agent=_usage_by_agent,
+                    get_event_bus(),
+                    UsageSnapshot(
+                        period="live",
+                        totals={
+                            "input_tokens": _usage_total_input,
+                            "output_tokens": _usage_total_output,
+                        },
+                        cost_estimate=_usage_total_cost,
+                        by_agent=_usage_by_agent,
+                    ),
                 )
 
     async def _sweep_daily_rollup(self) -> None:

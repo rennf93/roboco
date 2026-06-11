@@ -16,8 +16,10 @@ interface SystemWsMessage {
   provider?: string;
   affectedAgents?: string[];
   retryAfterSeconds?: number;
-  // Usage fields (USAGE_UPDATE / USAGE_SNAPSHOT)
-  key_metrics?: Record<string, unknown>;
+  // Usage fields (USAGE_SNAPSHOT — aggregate token/cost across active agents)
+  totals?: { input_tokens?: number; output_tokens?: number };
+  cost_estimate?: number;
+  period?: string;
   // Shared
   timestamp?: string;
 }
@@ -32,11 +34,11 @@ interface UseRateLimitWebSocketOptions {
  * RateLimitBanner). Handles:
  *
  *  - RATE_LIMIT_HIT / RATE_LIMIT_LIFTED → dispatched to useRateLimitStore
- *  - USAGE_UPDATE / USAGE_SNAPSHOT     → dispatched to useUsageStore
+ *  - USAGE_SNAPSHOT                     → dispatched to useUsageStore
  *
  * Also syncs the live WebSocket connection state into useUsageStore so that
- * other components (e.g. CommandCenter, KeyMetricsPanel) can read it without
- * creating a second /ws/system connection.
+ * other components (e.g. UsageOverviewPanel) can read it without creating a
+ * second /ws/system connection.
  *
  * Accepts an optional onReconnect callback that fires when the connection
  * recovers from a reconnecting state.
@@ -91,12 +93,12 @@ export function useRateLimitWebSocket(options: UseRateLimitWebSocketOptions = {}
         timestamp: lastMessage.timestamp ?? new Date().toISOString(),
       };
       liftRateLimit(event);
-    } else if (
-      lastMessage.type === "USAGE_UPDATE" ||
-      lastMessage.type === "USAGE_SNAPSHOT"
-    ) {
+    } else if (lastMessage.type === "USAGE_SNAPSHOT") {
       setUsageData({
-        key_metrics: lastMessage.key_metrics ?? {},
+        tokens_input: lastMessage.totals?.input_tokens ?? 0,
+        tokens_output: lastMessage.totals?.output_tokens ?? 0,
+        total_cost_usd: lastMessage.cost_estimate ?? 0,
+        period: lastMessage.period ?? "live",
         timestamp: lastMessage.timestamp,
       });
     }

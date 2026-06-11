@@ -17,6 +17,8 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from roboco.services.usage_events import (
+    UsageSnapshot,
+    UsageUpdate,
     _UsageThrottle,
     publish_usage_snapshot,
     publish_usage_update,
@@ -77,11 +79,12 @@ def test_throttle_tracks_agents_independently() -> None:
 def test_throttle_records_timestamp_on_allow() -> None:
     """should_publish records the current time when it returns True."""
     th = _UsageThrottle(window=5.0)
+    recorded_at = 200.0
 
     with patch("roboco.services.usage_events.time") as mock_time:
-        mock_time.monotonic.return_value = 200.0
+        mock_time.monotonic.return_value = recorded_at
         th.should_publish("be-dev-1")
-        assert th._last["be-dev-1"] == 200.0  # noqa: PLR2004
+        assert th._last["be-dev-1"] == recorded_at
 
 
 # ---------------------------------------------------------------------------
@@ -95,15 +98,19 @@ async def test_publish_usage_update_calls_bus_publish() -> None:
     bus = MagicMock()
     bus.publish = AsyncMock()
     th = _UsageThrottle(window=5.0)
+    expected_input = 100
+    expected_output = 50
 
     with patch("roboco.services.usage_events._throttle", th):
         result = await publish_usage_update(
-            bus=bus,
-            agent_id="be-dev-1",
-            task_id="task-abc",
-            input_tokens=100,
-            output_tokens=50,
-            model="claude-sonnet-4-6",
+            bus,
+            UsageUpdate(
+                agent_id="be-dev-1",
+                task_id="task-abc",
+                input_tokens=expected_input,
+                output_tokens=expected_output,
+                model="claude-sonnet-4-6",
+            ),
         )
 
     assert result is True
@@ -112,8 +119,8 @@ async def test_publish_usage_update_calls_bus_publish() -> None:
     assert event.type.value == "usage.update"
     assert event.data["agent_id"] == "be-dev-1"
     assert event.data["task_id"] == "task-abc"
-    assert event.data["input_tokens"] == 100  # noqa: PLR2004
-    assert event.data["output_tokens"] == 50  # noqa: PLR2004
+    assert event.data["input_tokens"] == expected_input
+    assert event.data["output_tokens"] == expected_output
     assert event.data["model"] == "claude-sonnet-4-6"
     assert "timestamp" in event.data
 
@@ -131,22 +138,26 @@ async def test_publish_usage_update_throttle_suppresses_second_call() -> None:
     ):
         mock_time.monotonic.return_value = 100.0
         first = await publish_usage_update(
-            bus=bus,
-            agent_id="be-dev-1",
-            task_id=None,
-            input_tokens=10,
-            output_tokens=5,
-            model="sonnet",
+            bus,
+            UsageUpdate(
+                agent_id="be-dev-1",
+                task_id=None,
+                input_tokens=10,
+                output_tokens=5,
+                model="sonnet",
+            ),
         )
 
         mock_time.monotonic.return_value = 102.0  # 2 s later — still suppressed
         second = await publish_usage_update(
-            bus=bus,
-            agent_id="be-dev-1",
-            task_id=None,
-            input_tokens=20,
-            output_tokens=10,
-            model="sonnet",
+            bus,
+            UsageUpdate(
+                agent_id="be-dev-1",
+                task_id=None,
+                input_tokens=20,
+                output_tokens=10,
+                model="sonnet",
+            ),
         )
 
     assert first is True
@@ -166,13 +177,15 @@ async def test_publish_usage_update_custom_timestamp() -> None:
     th = _UsageThrottle(window=5.0)
     with patch("roboco.services.usage_events._throttle", th):
         await publish_usage_update(
-            bus=bus,
-            agent_id="be-dev-1",
-            task_id=None,
-            input_tokens=0,
-            output_tokens=0,
-            model="sonnet",
-            timestamp=ts,
+            bus,
+            UsageUpdate(
+                agent_id="be-dev-1",
+                task_id=None,
+                input_tokens=0,
+                output_tokens=0,
+                model="sonnet",
+                timestamp=ts,
+            ),
         )
 
     event = bus.publish.await_args.args[0]
@@ -189,37 +202,42 @@ async def test_publish_usage_snapshot_always_publishes() -> None:
     """publish_usage_snapshot has no throttle — always publishes."""
     bus = MagicMock()
     bus.publish = AsyncMock()
+    expected_input = 500
+    expected_cost = 0.0025
+    expected_agents = 2
 
     await publish_usage_snapshot(
-        bus=bus,
-        period="60s",
-        totals={"input_tokens": 500, "output_tokens": 200},
-        cost_estimate=0.0025,
-        by_agent=[
-            {
-                "agent_id": "be-dev-1",
-                "input_tokens": 300,
-                "output_tokens": 100,
-                "model": "sonnet",
-                "cost_estimate": 0.0015,
-            },
-            {
-                "agent_id": "be-dev-2",
-                "input_tokens": 200,
-                "output_tokens": 100,
-                "model": "sonnet",
-                "cost_estimate": 0.0010,
-            },
-        ],
+        bus,
+        UsageSnapshot(
+            period="live",
+            totals={"input_tokens": expected_input, "output_tokens": 200},
+            cost_estimate=expected_cost,
+            by_agent=[
+                {
+                    "agent_id": "be-dev-1",
+                    "input_tokens": 300,
+                    "output_tokens": 100,
+                    "model": "sonnet",
+                    "cost_estimate": 0.0015,
+                },
+                {
+                    "agent_id": "be-dev-2",
+                    "input_tokens": 200,
+                    "output_tokens": 100,
+                    "model": "sonnet",
+                    "cost_estimate": 0.0010,
+                },
+            ],
+        ),
     )
 
     bus.publish.assert_awaited_once()
     event = bus.publish.await_args.args[0]
     assert event.type.value == "usage.snapshot"
-    assert event.data["period"] == "60s"
-    assert event.data["totals"]["input_tokens"] == 500  # noqa: PLR2004
-    assert event.data["cost_estimate"] == 0.0025  # noqa: PLR2004
-    assert len(event.data["by_agent"]) == 2  # noqa: PLR2004
+    assert event.data["period"] == "live"
+    assert event.data["totals"]["input_tokens"] == expected_input
+    assert event.data["cost_estimate"] == expected_cost
+    assert len(event.data["by_agent"]) == expected_agents
     assert "timestamp" in event.data
 
 
@@ -228,14 +246,17 @@ async def test_publish_usage_snapshot_twice_both_published() -> None:
     """No throttle on snapshot: two rapid calls both publish."""
     bus = MagicMock()
     bus.publish = AsyncMock()
+    expected_calls = 2
 
-    for _ in range(2):
+    for _ in range(expected_calls):
         await publish_usage_snapshot(
-            bus=bus,
-            period="60s",
-            totals={"input_tokens": 0, "output_tokens": 0},
-            cost_estimate=0.0,
-            by_agent=[],
+            bus,
+            UsageSnapshot(
+                period="live",
+                totals={"input_tokens": 0, "output_tokens": 0},
+                cost_estimate=0.0,
+                by_agent=[],
+            ),
         )
 
-    assert bus.publish.await_count == 2  # noqa: PLR2004
+    assert bus.publish.await_count == expected_calls

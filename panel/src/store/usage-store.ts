@@ -2,13 +2,20 @@ import { create } from "zustand";
 import type { ConnectionState } from "@/lib/websocket/connection";
 
 /**
- * Usage data received from USAGE_UPDATE or USAGE_SNAPSHOT WebSocket messages
- * on the /ws/system endpoint.
+ * Live token/cost usage pushed over the /ws/system stream via USAGE_SNAPSHOT
+ * events. Mirrors the fields the UsageOverviewPanel renders, so the panel can
+ * swap polling for live data without reshaping anything.
  */
 export interface UsageData {
-  /** Key performance metrics (velocity, completion rate, active agents, etc.) */
-  key_metrics: Record<string, unknown>;
-  /** ISO timestamp of the snapshot */
+  /** Cumulative input tokens across currently-active agents. */
+  tokens_input: number;
+  /** Cumulative output tokens across currently-active agents. */
+  tokens_output: number;
+  /** Estimated USD cost for the snapshot. */
+  total_cost_usd: number;
+  /** Period label for the snapshot (e.g. "live"). */
+  period: string;
+  /** ISO timestamp of the snapshot. */
   timestamp?: string;
 }
 

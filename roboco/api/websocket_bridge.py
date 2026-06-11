@@ -20,6 +20,11 @@ _RATE_LIMIT_WS_TYPES = {
     EventType.RATE_LIMIT_LIFTED: "RATE_LIMIT_LIFTED",
 }
 
+_USAGE_WS_TYPES = {
+    EventType.USAGE_UPDATE: "USAGE_UPDATE",
+    EventType.USAGE_SNAPSHOT: "USAGE_SNAPSHOT",
+}
+
 
 # Handler for notification events
 async def _handle_notification_sent(event: Event) -> None:
@@ -148,13 +153,18 @@ async def _handle_usage_event(event: Event) -> None:
     """Forward USAGE_UPDATE/SNAPSHOT events to operator system WS clients.
 
     Both event types carry all the fields the panel needs directly in
-    ``event.data``; we pass them through tagged with ``event.type.value``
-    so the panel can distinguish per-agent updates from aggregate snapshots.
+    ``event.data``; we tag them with the discriminating ``type`` string the
+    panel switches on (the same UPPER_SNAKE mapping the rate-limit handler
+    uses), so the panel can distinguish per-agent updates from aggregate
+    snapshots.
     """
-    await manager.broadcast_system({"type": event.type.value, **event.data})
+    ws_type = _USAGE_WS_TYPES.get(event.type)
+    if ws_type is None:
+        return
+    await manager.broadcast_system({"type": ws_type, **event.data})
     logger.debug(
         "Usage event forwarded to system WebSocket",
-        event_type=event.type.value,
+        event_type=ws_type,
     )
 
 

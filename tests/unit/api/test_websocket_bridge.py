@@ -299,14 +299,16 @@ async def test_handle_rate_limit_ignores_unrelated_event() -> None:
 
 @pytest.mark.asyncio
 async def test_handle_usage_update_broadcasts_to_system() -> None:
-    """USAGE_UPDATE event → broadcast_system with type=usage.update + data fields."""
+    """USAGE_UPDATE event → broadcast_system tagged USAGE_UPDATE + data fields."""
+    expected_input = 100
+    expected_output = 50
     event = _evt(
         EventType.USAGE_UPDATE,
         {
             "agent_id": "be-dev-1",
             "task_id": "task-abc",
-            "input_tokens": 100,
-            "output_tokens": 50,
+            "input_tokens": expected_input,
+            "output_tokens": expected_output,
             "model": "claude-sonnet-4-6",
             "timestamp": "2026-06-11T00:00:00+00:00",
         },
@@ -316,20 +318,21 @@ async def test_handle_usage_update_broadcasts_to_system() -> None:
         await _handle_usage_event(event)
     mgr.broadcast_system.assert_awaited_once()
     msg = mgr.broadcast_system.await_args.args[0]
-    assert msg["type"] == "usage.update"
+    assert msg["type"] == "USAGE_UPDATE"
     assert msg["agent_id"] == "be-dev-1"
-    assert msg["input_tokens"] == 100  # noqa: PLR2004
-    assert msg["output_tokens"] == 50  # noqa: PLR2004
+    assert msg["input_tokens"] == expected_input
+    assert msg["output_tokens"] == expected_output
 
 
 @pytest.mark.asyncio
 async def test_handle_usage_snapshot_broadcasts_to_system() -> None:
-    """USAGE_SNAPSHOT event → broadcast_system with type=usage.snapshot + aggregate."""
+    """USAGE_SNAPSHOT event → broadcast_system tagged USAGE_SNAPSHOT + aggregate."""
+    expected_input = 500
     event = _evt(
         EventType.USAGE_SNAPSHOT,
         {
-            "period": "60s",
-            "totals": {"input_tokens": 500, "output_tokens": 200},
+            "period": "live",
+            "totals": {"input_tokens": expected_input, "output_tokens": 200},
             "cost_estimate": 0.0025,
             "by_agent": [
                 {
@@ -348,9 +351,9 @@ async def test_handle_usage_snapshot_broadcasts_to_system() -> None:
         await _handle_usage_event(event)
     mgr.broadcast_system.assert_awaited_once()
     msg = mgr.broadcast_system.await_args.args[0]
-    assert msg["type"] == "usage.snapshot"
-    assert msg["period"] == "60s"
-    assert msg["totals"]["input_tokens"] == 500  # noqa: PLR2004
+    assert msg["type"] == "USAGE_SNAPSHOT"
+    assert msg["period"] == "live"
+    assert msg["totals"]["input_tokens"] == expected_input
     assert len(msg["by_agent"]) == 1
 
 

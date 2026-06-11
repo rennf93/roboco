@@ -16,6 +16,7 @@ aggregate and published at most once per sweep cycle.
 from __future__ import annotations
 
 import time
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 
@@ -54,79 +55,75 @@ class _UsageThrottle:
 _throttle = _UsageThrottle()
 
 
-async def publish_usage_update(  # noqa: PLR0913
-    bus: StreamEventBus,
-    agent_id: str,
-    task_id: str | None,
-    input_tokens: int,
-    output_tokens: int,
-    model: str,
-    timestamp: datetime | None = None,
-) -> bool:
+@dataclass(frozen=True, slots=True)
+class UsageUpdate:
+    """Per-agent cumulative token counts carried by a USAGE_UPDATE event.
+
+    Fields map directly onto the event payload the panel consumes (the
+    backend emits these per active agent during the token sweep).
+    """
+
+    agent_id: str
+    task_id: str | None
+    input_tokens: int
+    output_tokens: int
+    model: str
+    timestamp: datetime | None = None
+
+    def event_data(self) -> dict[str, Any]:
+        """Render the event payload, stamping ``timestamp`` if not supplied."""
+        return {
+            "agent_id": self.agent_id,
+            "task_id": self.task_id,
+            "input_tokens": self.input_tokens,
+            "output_tokens": self.output_tokens,
+            "model": self.model,
+            "timestamp": (self.timestamp or datetime.now(UTC)).isoformat(),
+        }
+
+
+@dataclass(frozen=True, slots=True)
+class UsageSnapshot:
+    """Aggregate token/cost totals carried by a USAGE_SNAPSHOT event.
+
+    ``totals`` is ``{"input_tokens": int, "output_tokens": int}``; ``by_agent``
+    is the per-agent breakdown (each item carries ``agent_id``, token counts,
+    ``model`` and ``cost_estimate``).
+    """
+
+    period: str
+    totals: dict[str, int]
+    cost_estimate: float
+    by_agent: list[dict[str, Any]]
+    timestamp: datetime | None = None
+
+    def event_data(self) -> dict[str, Any]:
+        """Render the event payload, stamping ``timestamp`` if not supplied."""
+        return {
+            "period": self.period,
+            "totals": self.totals,
+            "cost_estimate": self.cost_estimate,
+            "by_agent": self.by_agent,
+            "timestamp": (self.timestamp or datetime.now(UTC)).isoformat(),
+        }
+
+
+async def publish_usage_update(bus: StreamEventBus, update: UsageUpdate) -> bool:
     """Publish a USAGE_UPDATE event if the per-agent throttle window has elapsed.
 
-    Args:
-        bus: The StreamEventBus to publish on.
-        agent_id: Agent slug (e.g. ``"be-dev-1"``).
-        task_id: The agent's current task UUID string, or None.
-        input_tokens: Cumulative input-token count for this session.
-        output_tokens: Cumulative output-token count for this session.
-        model: Model name (e.g. ``"claude-sonnet-4-6"``).
-        timestamp: Override publish timestamp; defaults to ``datetime.now(UTC)``.
-
-    Returns:
-        True if the event was published; False if suppressed by the throttle.
+    Returns True if the event was published; False if suppressed by the throttle.
     """
-    if not _throttle.should_publish(agent_id):
+    if not _throttle.should_publish(update.agent_id):
         return False
 
     from roboco.models.events import Event, EventType  # lazy — avoids circular import
 
-    event = Event(
-        type=EventType.USAGE_UPDATE,
-        data={
-            "agent_id": agent_id,
-            "task_id": task_id,
-            "input_tokens": input_tokens,
-            "output_tokens": output_tokens,
-            "model": model,
-            "timestamp": (timestamp or datetime.now(UTC)).isoformat(),
-        },
-    )
-    await bus.publish(event)
+    await bus.publish(Event(type=EventType.USAGE_UPDATE, data=update.event_data()))
     return True
 
 
-async def publish_usage_snapshot(  # noqa: PLR0913
-    bus: StreamEventBus,
-    period: str,
-    totals: dict[str, Any],
-    cost_estimate: float,
-    by_agent: list[dict[str, Any]],
-    timestamp: datetime | None = None,
-) -> None:
-    """Publish a USAGE_SNAPSHOT aggregate event (no throttle).
-
-    Args:
-        bus: The StreamEventBus to publish on.
-        period: Human-readable period label (e.g. ``"60s"``).
-        totals: ``{"input_tokens": int, "output_tokens": int}`` aggregate.
-        cost_estimate: Estimated USD cost for the snapshot period.
-        by_agent: Per-agent breakdown list; each item is a dict with keys
-            ``agent_id``, ``input_tokens``, ``output_tokens``, ``model``,
-            and ``cost_estimate``.
-        timestamp: Override publish timestamp; defaults to ``datetime.now(UTC)``.
-    """
+async def publish_usage_snapshot(bus: StreamEventBus, snapshot: UsageSnapshot) -> None:
+    """Publish a USAGE_SNAPSHOT aggregate event (no throttle)."""
     from roboco.models.events import Event, EventType  # lazy — avoids circular import
 
-    event = Event(
-        type=EventType.USAGE_SNAPSHOT,
-        data={
-            "period": period,
-            "totals": totals,
-            "cost_estimate": cost_estimate,
-            "by_agent": by_agent,
-            "timestamp": (timestamp or datetime.now(UTC)).isoformat(),
-        },
-    )
-    await bus.publish(event)
+    await bus.publish(Event(type=EventType.USAGE_SNAPSHOT, data=snapshot.event_data()))

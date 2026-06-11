@@ -265,6 +265,7 @@ async def test_finalize_spawn_session_http_error_uses_zero_tokens() -> None:
 
     with (
         patch("roboco.runtime.orchestrator.httpx.AsyncClient", _client_cls),
+        patch.object(orch, "_usage_from_transcript", return_value=(0, 0, 0, 0)),
         patch("roboco.db.base.get_session_factory", return_value=db_factory),
         patch("roboco.billing.pricing.calculate_cost", return_value=0.0) as mock_cost,
     ):
@@ -298,6 +299,7 @@ async def test_finalize_spawn_session_non_200_uses_zero_tokens() -> None:
 
     with (
         patch("roboco.runtime.orchestrator.httpx.AsyncClient", _client_cls),
+        patch.object(orch, "_usage_from_transcript", return_value=(0, 0, 0, 0)),
         patch("roboco.db.base.get_session_factory", return_value=db_factory),
         patch("roboco.billing.pricing.calculate_cost", return_value=0.0) as mock_cost,
     ):
