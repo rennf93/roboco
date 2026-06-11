@@ -1,6 +1,9 @@
 """Unit tests for the rate-limited path in Choreographer.i_am_blocked.
 
 Acceptance criteria verified here:
+- AC1: i_am_blocked(reason='rate_limited') calls RateLimitStateTracker.activate()
+       and stores affected agent IDs; all active agents on the rate-limited
+       provider are subsequently marked waiting-long.
 - AC3: POST /v1/i_am_blocked with reason='rate_limited' does NOT transition
        the task to 'blocked'; the task remains in its current status
        (in_progress) and the calling agent is parked via
@@ -13,14 +16,11 @@ Acceptance criteria verified here:
 
 from __future__ import annotations
 
-from unittest.mock import AsyncMock, MagicMock, call
+from unittest.mock import AsyncMock, MagicMock, patch
 from uuid import uuid4
-
-import pytest
 
 from roboco.models.events import EventType
 from roboco.services.gateway.choreographer import Choreographer, ChoreographerDeps
-
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -161,8 +161,7 @@ class TestRateLimitedDoesNotBlockTask:
         # The implementation calls mark_waiting_long(slug, waiting_for=..., ...)
         # so waiting_for is always a keyword argument.
         waiting_for_values = [
-            c.kwargs.get("waiting_for")
-            for c in orch.mark_waiting_long.call_args_list
+            c.kwargs.get("waiting_for") for c in orch.mark_waiting_long.call_args_list
         ]
         assert "rate_limit_lifted" in waiting_for_values
 
@@ -345,12 +344,10 @@ class TestRateLimitHitEventPublished:
         deps = _make_deps(agent_id, task_id, orchestrator=orch, stream_bus=bus)
         c = Choreographer(deps)
 
-        await c.i_am_blocked(
-            agent_id, task_id, "rate_limited", what_needed="30"
-        )
+        await c.i_am_blocked(agent_id, task_id, "rate_limited", what_needed="30")
 
         event = bus.publish.call_args.args[0]
-        assert event.data["retryAfterSeconds"] == 30.0
+        assert event.data["retryAfterSeconds"] == float("30")
 
     async def test_event_data_has_timestamp_iso_string(self) -> None:
         agent_id = uuid4()
@@ -380,5 +377,132 @@ class TestRateLimitHitEventPublished:
         env = await c.i_am_blocked(agent_id, task_id, "rate_limited")
 
         # Should still succeed
+        assert env.error is None
+        assert env.status == "in_progress"
+
+
+# ---------------------------------------------------------------------------
+# AC1: RateLimitStateTracker.activate() called on rate_limited path
+# ---------------------------------------------------------------------------
+
+_TRACKER_PATCH = "roboco.services.gateway.rate_limit_tracker.RateLimitStateTracker"
+
+
+class TestRateLimitTrackerActivateOnParking:
+    """Verify that _handle_rate_limited_parking() calls activate()."""
+
+    async def test_activate_called_when_provider_known(self) -> None:
+        """activate() must be called once when provider != 'unknown'."""
+        agent_id = uuid4()
+        task_id = uuid4()
+        orch = _make_orchestrator(active_agents=["be-dev-1"], provider=_PROVIDER)
+        deps = _make_deps(agent_id, task_id, orchestrator=orch)
+        c = Choreographer(deps)
+
+        mock_tracker = AsyncMock()
+        mock_tracker.activate = AsyncMock(return_value=None)
+        mock_tracker_cls = MagicMock(return_value=mock_tracker)
+
+        with patch(_TRACKER_PATCH, mock_tracker_cls):
+            await c.i_am_blocked(agent_id, task_id, "rate_limited")
+
+        mock_tracker_cls.assert_called_once_with(_PROVIDER)
+        mock_tracker.activate.assert_awaited_once()
+
+    async def test_activate_receives_affected_agents(self) -> None:
+        """activate() must be called with the affected_agents list."""
+        agent_id = uuid4()
+        task_id = uuid4()
+        active = ["be-dev-1", "be-dev-2"]
+        orch = _make_orchestrator(active_agents=active, provider=_PROVIDER)
+        deps = _make_deps(agent_id, task_id, orchestrator=orch)
+        c = Choreographer(deps)
+
+        mock_tracker = AsyncMock()
+        mock_tracker.activate = AsyncMock(return_value=None)
+        mock_tracker_cls = MagicMock(return_value=mock_tracker)
+
+        with patch(_TRACKER_PATCH, mock_tracker_cls):
+            await c.i_am_blocked(agent_id, task_id, "rate_limited")
+
+        call_kwargs = mock_tracker.activate.call_args.kwargs
+        assert call_kwargs.get("affected_agents") == active
+
+    async def test_activate_receives_retry_after_from_what_needed(self) -> None:
+        """activate() must receive retry_after parsed from what_needed."""
+        agent_id = uuid4()
+        task_id = uuid4()
+        orch = _make_orchestrator(active_agents=["be-dev-1"], provider=_PROVIDER)
+        deps = _make_deps(agent_id, task_id, orchestrator=orch)
+        c = Choreographer(deps)
+
+        mock_tracker = AsyncMock()
+        mock_tracker.activate = AsyncMock(return_value=None)
+        mock_tracker_cls = MagicMock(return_value=mock_tracker)
+
+        with patch(_TRACKER_PATCH, mock_tracker_cls):
+            await c.i_am_blocked(agent_id, task_id, "rate_limited", what_needed="45")
+
+        call_kwargs = mock_tracker.activate.call_args.kwargs
+        assert call_kwargs.get("retry_after") == float("45")
+
+    async def test_activate_retry_after_none_when_what_needed_not_numeric(self) -> None:
+        """activate() must receive retry_after=None when what_needed is not a number."""
+        agent_id = uuid4()
+        task_id = uuid4()
+        orch = _make_orchestrator(active_agents=["be-dev-1"], provider=_PROVIDER)
+        deps = _make_deps(agent_id, task_id, orchestrator=orch)
+        c = Choreographer(deps)
+
+        mock_tracker = AsyncMock()
+        mock_tracker.activate = AsyncMock(return_value=None)
+        mock_tracker_cls = MagicMock(return_value=mock_tracker)
+
+        with patch(_TRACKER_PATCH, mock_tracker_cls):
+            await c.i_am_blocked(
+                agent_id, task_id, "rate_limited", what_needed="retry soon"
+            )
+
+        call_kwargs = mock_tracker.activate.call_args.kwargs
+        assert call_kwargs.get("retry_after") is None
+
+    async def test_activate_skipped_when_provider_unknown(self) -> None:
+        """activate() must NOT be called when provider resolves to 'unknown'."""
+        agent_id = uuid4()
+        task_id = uuid4()
+        # get_provider_for_agent returns None → provider stays 'unknown'
+        orch = MagicMock()
+        orch.get_provider_for_agent = MagicMock(return_value=None)
+        orch.get_active_agent_slugs_for_provider = MagicMock(return_value=[])
+        orch.mark_waiting_long = AsyncMock(return_value=None)
+        deps = _make_deps(agent_id, task_id, orchestrator=orch)
+        c = Choreographer(deps)
+
+        mock_tracker = AsyncMock()
+        mock_tracker.activate = AsyncMock(return_value=None)
+        mock_tracker_cls = MagicMock(return_value=mock_tracker)
+
+        with patch(_TRACKER_PATCH, mock_tracker_cls):
+            env = await c.i_am_blocked(agent_id, task_id, "rate_limited")
+
+        # No crash, no activate call
+        assert env.error is None
+        mock_tracker.activate.assert_not_awaited()
+
+    async def test_activate_failure_does_not_crash_path(self) -> None:
+        """If activate() raises, _handle_rate_limited_parking must still succeed."""
+        agent_id = uuid4()
+        task_id = uuid4()
+        orch = _make_orchestrator(active_agents=["be-dev-1"], provider=_PROVIDER)
+        deps = _make_deps(agent_id, task_id, orchestrator=orch)
+        c = Choreographer(deps)
+
+        mock_tracker = AsyncMock()
+        mock_tracker.activate = AsyncMock(side_effect=RuntimeError("redis down"))
+        mock_tracker_cls = MagicMock(return_value=mock_tracker)
+
+        with patch(_TRACKER_PATCH, mock_tracker_cls):
+            env = await c.i_am_blocked(agent_id, task_id, "rate_limited")
+
         assert env.error is None
         assert env.status == "in_progress"
