@@ -59,7 +59,7 @@ def test_detect_python_project(tmp_path: Path) -> None:
 
     commands = _detect_dep_commands(ws)
 
-    assert commands == [("uv sync", ["uv", "sync"])]
+    assert commands == [("uv sync --extra dev", ["uv", "sync", "--extra", "dev"])]
 
 
 def test_detect_pnpm_project(tmp_path: Path) -> None:
@@ -103,7 +103,7 @@ def test_detect_monorepo_both_ecosystems(tmp_path: Path) -> None:
 
     commands = _detect_dep_commands(ws)
 
-    assert ("uv sync", ["uv", "sync"]) in commands
+    assert ("uv sync --extra dev", ["uv", "sync", "--extra", "dev"]) in commands
     assert ("pnpm install", ["pnpm", "install", "--frozen-lockfile"]) in commands
 
 
@@ -167,7 +167,7 @@ async def test_install_runs_detected_command(tmp_path: Path) -> None:
         ran = await svc.install_dev_deps(ws)
 
     assert ran is True
-    assert ["uv", "sync"] in captured
+    assert ["uv", "sync", "--extra", "dev"] in captured
     assert (ws / _DEP_INSTALL_MARKER).is_file()
 
 
