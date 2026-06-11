@@ -1,12 +1,16 @@
 "use client";
 
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Badge } from "@/components/ui/badge";
 import { Skeleton } from "@/components/ui/skeleton";
-import { TrendingUp, Clock, CheckCircle, Users, BarChart3 } from "lucide-react";
+import { TrendingUp, Clock, CheckCircle, Users, BarChart3, Wifi, WifiOff, Loader2 } from "lucide-react";
+import type { ConnectionState } from "@/lib/websocket/connection";
 
 interface KeyMetricsProps {
   metrics: Record<string, unknown> | undefined;
   isLoading: boolean;
+  /** Current /ws/system connection state, used to render the status badge */
+  wsState: ConnectionState;
 }
 
 interface MetricItem {
@@ -49,11 +53,48 @@ const METRIC_CONFIG: MetricItem[] = [
   },
 ];
 
-export function KeyMetricsPanel({ metrics, isLoading }: KeyMetricsProps) {
+/**
+ * Returns the badge variant props (className + icon + label) matching the
+ * AgentStreamViewer pattern.
+ */
+function getConnectionBadge(wsState: ConnectionState) {
+  switch (wsState) {
+    case "connected":
+      return {
+        className: "bg-green-500 text-white",
+        icon: <Wifi className="h-3 w-3 mr-1" />,
+        label: "Live",
+      };
+    case "connecting":
+    case "reconnecting":
+      return {
+        className: "bg-yellow-500 text-white",
+        icon: <Loader2 className="h-3 w-3 mr-1 animate-spin" />,
+        label: wsState === "reconnecting" ? "Reconnecting..." : "Connecting...",
+      };
+    case "disconnected":
+    default:
+      return {
+        className: "bg-gray-500 text-white",
+        icon: <WifiOff className="h-3 w-3 mr-1" />,
+        label: "Polling",
+      };
+  }
+}
+
+export function KeyMetricsPanel({ metrics, isLoading, wsState }: KeyMetricsProps) {
+  const badge = getConnectionBadge(wsState);
+
   return (
     <Card>
       <CardHeader className="pb-3">
-        <CardTitle className="text-lg">Key Metrics</CardTitle>
+        <div className="flex items-center justify-between">
+          <CardTitle className="text-lg">Key Metrics</CardTitle>
+          <Badge className={badge.className}>
+            {badge.icon}
+            {badge.label}
+          </Badge>
+        </div>
       </CardHeader>
       <CardContent>
         {isLoading ? (
@@ -73,7 +114,7 @@ export function KeyMetricsPanel({ metrics, isLoading }: KeyMetricsProps) {
                     {m.icon}
                     {m.label}
                   </div>
-                  <span className="font-medium">
+                  <span className="font-medium transition-all duration-300 ease-in-out">
                     {value != null
                       ? m.format
                         ? m.format(value)
