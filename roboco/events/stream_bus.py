@@ -10,7 +10,7 @@ import contextlib
 import os
 import socket
 from collections.abc import Callable, Coroutine
-from typing import Any
+from typing import Any, cast
 
 import redis.asyncio as redis
 import structlog
@@ -230,21 +230,33 @@ class StreamEventBus:
                 logger.error("Error in stream event loop", error=str(e))
                 await asyncio.sleep(1)
 
+    @staticmethod
+    def _to_str(value: object) -> str:
+        """Decode a Redis stream/key value (bytes or str) to str."""
+        return value.decode() if isinstance(value, bytes) else str(value)
+
     async def _listen_tick(self, stream_dict: dict[str, str]) -> None:
         """Block for one XREADGROUP cycle and dispatch any messages."""
         assert self._redis is not None
-        results = await self._redis.xreadgroup(
+        # redis returns bytes-keyed records (no decode_responses); the concrete
+        # shape is list[(stream, [(id, fields)])]. _handle_message takes str, so
+        # decode the stream name and message id at this boundary.
+        raw = await self._redis.xreadgroup(
             self.group_name,
             self.consumer_name,
-            stream_dict,
+            cast("dict[Any, Any]", stream_dict),
             count=10,
             block=5000,
         )
-        if not results:
+        if not raw:
             return
+        results = cast(
+            "list[tuple[bytes, list[tuple[bytes, dict[bytes, bytes]]]]]", raw
+        )
         for stream_name, messages in results:
+            stream_str = self._to_str(stream_name)
             for message_id, data in messages:
-                await self._handle_message(stream_name, message_id, data)
+                await self._handle_message(stream_str, self._to_str(message_id), data)
 
     async def _handle_response_error(
         self, exc: ResponseError, streams: list[str]
@@ -345,17 +357,18 @@ class StreamEventBus:
         """Claim a single idle message and process it; return count recovered."""
         if self._redis is None:
             raise RuntimeError("Invariant: self._redis must be set — guarded by caller")
-        claimed = await self._redis.xclaim(
+        raw = await self._redis.xclaim(
             stream,
             self.group_name,
             self.consumer_name,
             min_idle_time=idle_time_ms,
             message_ids=[msg_id],
         )
-        if not claimed:
+        if not raw:
             return 0
+        claimed = cast("list[tuple[bytes, dict[bytes, bytes]]]", raw)
         for claim_id, data in claimed:
-            await self._handle_message(stream, claim_id, data)
+            await self._handle_message(stream, self._to_str(claim_id), data)
         return 1
 
     async def _recover_stream(self, stream: str, idle_time_ms: int) -> int:

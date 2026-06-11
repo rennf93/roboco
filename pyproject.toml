@@ -76,7 +76,6 @@ dev = [
     "import-linter",
 
     # Type Stubs
-    "types-redis",
     "types-passlib",
     "types-python-jose",
 
@@ -408,7 +407,6 @@ DEP002 = [
     "ipython",
     "rich",
     # Type stubs (used by mypy)
-    "types-redis",
     "types-passlib",
     "types-python-jose",
     # Documentation (CLI tools)
