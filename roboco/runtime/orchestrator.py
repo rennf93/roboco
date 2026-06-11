@@ -3316,13 +3316,16 @@ class AgentOrchestrator:
                 error=str(exc),
             )
 
-    async def _sweep_token_snapshots(self) -> None:
+    async def _sweep_token_snapshots(self) -> None:  # noqa: PLR0915
         """Write a token_usage_snapshots row for each active agent with non-zero tokens.
 
         Called from _run_sweep() every ~60 s. Also updates the cumulative
         token counts on the open agent_spawn_sessions row so the DB reflects
         current progress without waiting for session close.
         Errors per-agent are caught so one bad agent doesn't abort the whole sweep.
+
+        Additionally publishes USAGE_UPDATE events per agent (throttled to at most
+        one per 5-second window) and a USAGE_SNAPSHOT aggregate after the loop.
         """
         if not self._instances:
             return
@@ -3334,6 +3337,12 @@ class AgentOrchestrator:
             return
 
         session_factory = get_session_factory()
+
+        # Accumulators for the post-loop USAGE_SNAPSHOT event.
+        _usage_by_agent: list[dict[str, Any]] = []
+        _usage_total_input = 0
+        _usage_total_output = 0
+        _usage_total_cost = 0.0
 
         async with httpx.AsyncClient(timeout=3.0) as client:
             for agent_id, instance in list(self._instances.items()):
@@ -3363,6 +3372,9 @@ class AgentOrchestrator:
                     )
                     if total == 0:
                         continue
+
+                    # Resolve model for cost estimation and event data.
+                    _model = instance.config.model if instance.config else "unknown"
 
                     async with session_factory() as db:
                         from sqlalchemy import select, update
@@ -3418,12 +3430,65 @@ class AgentOrchestrator:
                         )
                         await db.commit()
 
+                    # Publish USAGE_UPDATE event for this agent (throttled).
+                    with contextlib.suppress(Exception):
+                        from roboco.events import get_event_bus
+                        from roboco.services.usage_events import publish_usage_update
+
+                        await publish_usage_update(
+                            bus=get_event_bus(),
+                            agent_id=agent_id,
+                            task_id=instance.current_task_id,
+                            input_tokens=tokens_input,
+                            output_tokens=tokens_output,
+                            model=_model,
+                        )
+
+                    # Accumulate per-agent data for the aggregate snapshot.
+                    with contextlib.suppress(Exception):
+                        from roboco.billing.pricing import calculate_cost
+
+                        agent_cost = calculate_cost(
+                            model=_model,
+                            tokens_input=tokens_input,
+                            tokens_output=tokens_output,
+                        )
+                        _usage_by_agent.append(
+                            {
+                                "agent_id": agent_id,
+                                "input_tokens": tokens_input,
+                                "output_tokens": tokens_output,
+                                "model": _model,
+                                "cost_estimate": agent_cost,
+                            }
+                        )
+                        _usage_total_input += tokens_input
+                        _usage_total_output += tokens_output
+                        _usage_total_cost += agent_cost
+
                 except Exception as agent_exc:
                     logger.debug(
                         "Token snapshot failed for agent",
                         agent_id=agent_id,
                         error=str(agent_exc),
                     )
+
+        # Publish a USAGE_SNAPSHOT aggregate if any active agents had token data.
+        if _usage_by_agent:
+            with contextlib.suppress(Exception):
+                from roboco.events import get_event_bus
+                from roboco.services.usage_events import publish_usage_snapshot
+
+                await publish_usage_snapshot(
+                    bus=get_event_bus(),
+                    period="60s",
+                    totals={
+                        "input_tokens": _usage_total_input,
+                        "output_tokens": _usage_total_output,
+                    },
+                    cost_estimate=_usage_total_cost,
+                    by_agent=_usage_by_agent,
+                )
 
     async def _sweep_daily_rollup(self) -> None:
         """Upsert daily_usage_rollups from closed agent_spawn_sessions.
