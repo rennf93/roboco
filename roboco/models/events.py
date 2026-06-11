@@ -69,6 +69,10 @@ class EventType(StrEnum):
     RATE_LIMIT_HIT = "rate_limit.hit"
     RATE_LIMIT_LIFTED = "rate_limit.lifted"
 
+    # Usage events
+    USAGE_UPDATE = "usage.update"
+    USAGE_SNAPSHOT = "usage.snapshot"
+
     # Question events
     QUESTION_ASKED = "question.asked"
     QUESTION_ANSWERED = "question.answered"

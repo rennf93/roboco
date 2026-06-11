@@ -144,6 +144,20 @@ async def _handle_rate_limit_event(event: Event) -> None:
     await manager.broadcast_system({"type": ws_type, **event.data})
 
 
+async def _handle_usage_event(event: Event) -> None:
+    """Forward USAGE_UPDATE/SNAPSHOT events to operator system WS clients.
+
+    Both event types carry all the fields the panel needs directly in
+    ``event.data``; we pass them through tagged with ``event.type.value``
+    so the panel can distinguish per-agent updates from aggregate snapshots.
+    """
+    await manager.broadcast_system({"type": event.type.value, **event.data})
+    logger.debug(
+        "Usage event forwarded to system WebSocket",
+        event_type=event.type.value,
+    )
+
+
 def register_websocket_bridge_handlers() -> None:
     """
     Register event handlers that forward events to WebSocket clients.
@@ -171,6 +185,10 @@ def register_websocket_bridge_handlers() -> None:
     # Rate-limit lifecycle -> system WebSocket (panel banner)
     bus.subscribe(EventType.RATE_LIMIT_HIT, _handle_rate_limit_event)
     bus.subscribe(EventType.RATE_LIMIT_LIFTED, _handle_rate_limit_event)
+
+    # Usage events -> system WebSocket (panel dashboard)
+    bus.subscribe(EventType.USAGE_UPDATE, _handle_usage_event)
+    bus.subscribe(EventType.USAGE_SNAPSHOT, _handle_usage_event)
 
     logger.info("WebSocket bridge handlers registered")
 
