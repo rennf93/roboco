@@ -145,12 +145,10 @@ class ExtractionService:
             await store_message(message)
     """
 
-    def __init__(self, config: ExtractionConfig | None = None) -> None:
-        self.config = config or ExtractionConfig()
-        self.log = logger.bind(component="extraction")
-
-        # Compile patterns
-        self._compiled_patterns: dict[MessageType, list[re.Pattern]] = {
+    @staticmethod
+    def _compile_patterns() -> dict[MessageType, list[re.Pattern]]:
+        """Pre-compile the per-message-type regex pattern lists."""
+        return {
             MessageType.REASONING: [re.compile(p) for p in REASONING_PATTERNS],
             MessageType.DIALOGUE: [re.compile(p) for p in DIALOGUE_PATTERNS],
             MessageType.DECISION: [re.compile(p) for p in DECISION_PATTERNS],
@@ -159,7 +157,10 @@ class ExtractionService:
             MessageType.TECHNICAL: [re.compile(p) for p in TECHNICAL_PATTERNS],
         }
 
-        # Mention pattern
+    def __init__(self, config: ExtractionConfig | None = None) -> None:
+        self.config = config or ExtractionConfig()
+        self.log = logger.bind(component="extraction")
+        self._compiled_patterns = self._compile_patterns()
         self._mention_pattern = re.compile(r"@(\w+)")
 
     async def extract(self, ctx: ExtractionContext) -> ExtractionResult:

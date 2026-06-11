@@ -307,6 +307,58 @@ class OllamaEmbedder:
 
         return embeddings
 
+    @staticmethod
+    def _rl_backoff(retry_after: float | None, rl_attempt: int) -> float:
+        """Backoff seconds for a 429: honor Retry-After, else exponential."""
+        return retry_after if retry_after is not None else float(2**rl_attempt)
+
+    @staticmethod
+    def _map_embed_error(e: Exception, base_url: str) -> Exception:
+        """Map a raw request exception to the appropriate Ollama embedder error."""
+        if isinstance(e, httpx.ConnectError):
+            return OllamaConnectionError(f"Cannot connect to Ollama at {base_url}: {e}")
+        if isinstance(e, httpx.TimeoutException):
+            return OllamaConnectionError(f"Ollama request timed out: {e}")
+        return OllamaEmbedderError(f"Unexpected error: {e}")
+
+    @staticmethod
+    def _log_429(rl_attempt: int, backoff: float) -> None:
+        """Log an Ollama 429 rate-limit retry."""
+        logger.warning(
+            "Ollama rate limited (429), retrying",
+            provider="ollama",
+            attempt=rl_attempt + 1,
+            max_retries=RATE_LIMIT_MAX_RETRIES,
+            backoff_duration=backoff,
+        )
+
+    @staticmethod
+    def _sleep_connect_retry(
+        attempt: int, last_error: Exception | None, label: str, **extra: Any
+    ) -> None:
+        """Exponential backoff between ConnectError/Timeout retries.
+
+        No sleep on the final attempt — the caller raises ``last_error`` then.
+        """
+        if attempt < MAX_RETRIES - 1:
+            delay = RETRY_DELAY_BASE * (2**attempt)
+            logger.warning(
+                label, attempt=attempt + 1, delay=delay, error=str(last_error), **extra
+            )
+            time.sleep(delay)
+
+    @staticmethod
+    async def _asleep_connect_retry(
+        attempt: int, last_error: Exception | None, label: str, **extra: Any
+    ) -> None:
+        """Async counterpart of :meth:`_sleep_connect_retry`."""
+        if attempt < MAX_RETRIES - 1:
+            delay = RETRY_DELAY_BASE * (2**attempt)
+            logger.warning(
+                label, attempt=attempt + 1, delay=delay, error=str(last_error), **extra
+            )
+            await asyncio.sleep(delay)
+
     def embed_query(
         self,
         query: str,
@@ -344,19 +396,10 @@ class OllamaEmbedder:
                     )
                     # 429 check — must NOT enter the ConnectError path
                     if response.status_code == HTTP_TOO_MANY_REQUESTS:
-                        retry_after = parse_retry_after_header(response)
-                        last_rl_retry_after = retry_after
-                        backoff = (
-                            retry_after
-                            if retry_after is not None
-                            else float(2**rl_attempt)
-                        )
-                        logger.warning(
-                            "Ollama rate limited (429), retrying",
-                            provider="ollama",
-                            attempt=rl_attempt + 1,
-                            max_retries=RATE_LIMIT_MAX_RETRIES,
-                            backoff_duration=backoff,
+                        last_rl_retry_after = parse_retry_after_header(response)
+                        self._log_429(
+                            rl_attempt,
+                            self._rl_backoff(last_rl_retry_after, rl_attempt),
                         )
                         got_429 = True
                         break  # break inner loop; outer loop will sleep + retry
@@ -366,26 +409,14 @@ class OllamaEmbedder:
                     self._cache.put(query, result)
                     return result
 
-                except httpx.ConnectError as e:
-                    last_error = OllamaConnectionError(
-                        f"Cannot connect to Ollama at {self.base_url}: {e}"
-                    )
-                except httpx.TimeoutException as e:
-                    last_error = OllamaConnectionError(f"Ollama request timed out: {e}")
                 except (OllamaModelError, OllamaEmbedderError):
                     raise
                 except Exception as e:
-                    last_error = OllamaEmbedderError(f"Unexpected error: {e}")
+                    last_error = self._map_embed_error(e, self.base_url)
 
-                if attempt < MAX_RETRIES - 1:
-                    delay = RETRY_DELAY_BASE * (2**attempt)
-                    logger.warning(
-                        "Ollama embed_query retry",
-                        attempt=attempt + 1,
-                        delay=delay,
-                        error=str(last_error),
-                    )
-                    time.sleep(delay)
+                self._sleep_connect_retry(
+                    attempt, last_error, "Ollama embed_query retry"
+                )
             # --- end inner loop ---
 
             if not got_429:
@@ -393,13 +424,8 @@ class OllamaEmbedder:
                 raise last_error or OllamaEmbedderError("Max retries exceeded")
 
             # 429: sleep and try again (outer loop)
-            backoff = (
-                last_rl_retry_after
-                if last_rl_retry_after is not None
-                else float(2**rl_attempt)
-            )
             if rl_attempt < RATE_LIMIT_MAX_RETRIES - 1:
-                time.sleep(backoff)
+                time.sleep(self._rl_backoff(last_rl_retry_after, rl_attempt))
 
         raise RateLimitError(provider="ollama", retry_after=last_rl_retry_after)
 
@@ -424,57 +450,33 @@ class OllamaEmbedder:
                         json={"model": self.model, "input": batch},
                     )
                     if response.status_code == HTTP_TOO_MANY_REQUESTS:
-                        retry_after = parse_retry_after_header(response)
-                        last_rl_retry_after = retry_after
-                        backoff = (
-                            retry_after
-                            if retry_after is not None
-                            else float(2**rl_attempt)
-                        )
-                        logger.warning(
-                            "Ollama rate limited (429), retrying",
-                            provider="ollama",
-                            attempt=rl_attempt + 1,
-                            max_retries=RATE_LIMIT_MAX_RETRIES,
-                            backoff_duration=backoff,
+                        last_rl_retry_after = parse_retry_after_header(response)
+                        self._log_429(
+                            rl_attempt,
+                            self._rl_backoff(last_rl_retry_after, rl_attempt),
                         )
                         got_429 = True
                         break
 
                     return self._handle_embed_response(response, input_count=len(batch))
 
-                except httpx.ConnectError as e:
-                    last_error = OllamaConnectionError(
-                        f"Cannot connect to Ollama at {self.base_url}: {e}"
-                    )
-                except httpx.TimeoutException as e:
-                    last_error = OllamaConnectionError(f"Ollama request timed out: {e}")
                 except (OllamaModelError, OllamaEmbedderError):
                     raise
                 except Exception as e:
-                    last_error = OllamaEmbedderError(f"Unexpected error: {e}")
+                    last_error = self._map_embed_error(e, self.base_url)
 
-                if attempt < MAX_RETRIES - 1:
-                    delay = RETRY_DELAY_BASE * (2**attempt)
-                    logger.warning(
-                        "Ollama embed_documents retry",
-                        attempt=attempt + 1,
-                        batch_index=batch_index,
-                        delay=delay,
-                        error=str(last_error),
-                    )
-                    time.sleep(delay)
+                self._sleep_connect_retry(
+                    attempt,
+                    last_error,
+                    "Ollama embed_documents retry",
+                    batch_index=batch_index,
+                )
 
             if not got_429:
                 raise last_error or OllamaEmbedderError("Max retries exceeded")
 
-            backoff = (
-                last_rl_retry_after
-                if last_rl_retry_after is not None
-                else float(2**rl_attempt)
-            )
             if rl_attempt < RATE_LIMIT_MAX_RETRIES - 1:
-                time.sleep(backoff)
+                time.sleep(self._rl_backoff(last_rl_retry_after, rl_attempt))
 
         raise RateLimitError(provider="ollama", retry_after=last_rl_retry_after)
 
@@ -582,19 +584,10 @@ class OllamaEmbedder:
                             json={"model": self.model, "input": batch},
                         )
                         if response.status_code == HTTP_TOO_MANY_REQUESTS:
-                            retry_after = parse_retry_after_header(response)
-                            last_rl_retry_after = retry_after
-                            backoff = (
-                                retry_after
-                                if retry_after is not None
-                                else float(2**rl_attempt)
-                            )
-                            logger.warning(
-                                "Ollama rate limited (429), retrying",
-                                provider="ollama",
-                                attempt=rl_attempt + 1,
-                                max_retries=RATE_LIMIT_MAX_RETRIES,
-                                backoff_duration=backoff,
+                            last_rl_retry_after = parse_retry_after_header(response)
+                            self._log_429(
+                                rl_attempt,
+                                self._rl_backoff(last_rl_retry_after, rl_attempt),
                             )
                             got_429 = True
                             break
@@ -603,40 +596,25 @@ class OllamaEmbedder:
                             response, input_count=len(batch)
                         )
 
-                    except httpx.ConnectError as e:
-                        last_error = OllamaConnectionError(
-                            f"Cannot connect to Ollama at {self.base_url}: {e}"
-                        )
-                    except httpx.TimeoutException as e:
-                        last_error = OllamaConnectionError(
-                            f"Ollama request timed out: {e}"
-                        )
                     except (OllamaModelError, OllamaEmbedderError):
                         raise
                     except Exception as e:
-                        last_error = OllamaEmbedderError(f"Unexpected error: {e}")
+                        last_error = self._map_embed_error(e, self.base_url)
 
-                    if attempt < MAX_RETRIES - 1:
-                        delay = RETRY_DELAY_BASE * (2**attempt)
-                        logger.warning(
-                            "Parallel embed batch retry",
-                            batch_index=batch_index,
-                            attempt=attempt + 1,
-                            delay=delay,
-                            error=str(last_error),
-                        )
-                        await asyncio.sleep(delay)
+                    await self._asleep_connect_retry(
+                        attempt,
+                        last_error,
+                        "Parallel embed batch retry",
+                        batch_index=batch_index,
+                    )
 
                 if not got_429:
                     raise last_error or OllamaEmbedderError("Max retries exceeded")
 
-                backoff = (
-                    last_rl_retry_after
-                    if last_rl_retry_after is not None
-                    else float(2**rl_attempt)
-                )
                 if rl_attempt < RATE_LIMIT_MAX_RETRIES - 1:
-                    await asyncio.sleep(backoff)
+                    await asyncio.sleep(
+                        self._rl_backoff(last_rl_retry_after, rl_attempt)
+                    )
 
             raise RateLimitError(provider="ollama", retry_after=last_rl_retry_after)
 
@@ -807,19 +785,10 @@ class OllamaEmbedder:
                             json={"model": self.model, "input": query},
                         )
                         if response.status_code == HTTP_TOO_MANY_REQUESTS:
-                            retry_after = parse_retry_after_header(response)
-                            last_rl_retry_after = retry_after
-                            backoff = (
-                                retry_after
-                                if retry_after is not None
-                                else float(2**rl_attempt)
-                            )
-                            logger.warning(
-                                "Ollama rate limited (429), retrying",
-                                provider="ollama",
-                                attempt=rl_attempt + 1,
-                                max_retries=RATE_LIMIT_MAX_RETRIES,
-                                backoff_duration=backoff,
+                            last_rl_retry_after = parse_retry_after_header(response)
+                            self._log_429(
+                                rl_attempt,
+                                self._rl_backoff(last_rl_retry_after, rl_attempt),
                             )
                             got_429 = True
                             break
@@ -831,42 +800,21 @@ class OllamaEmbedder:
                         self._cache.put(query, result)
                         return result
 
-                    except httpx.ConnectError as e:
-                        last_error = OllamaConnectionError(
-                            f"Cannot connect to Ollama at {self.base_url}: {e}"
-                        )
-                    except httpx.TimeoutException as e:
-                        last_error = OllamaConnectionError(
-                            f"Ollama request timed out: {e}"
-                        )
                     except (OllamaModelError, OllamaEmbedderError):
                         raise
                     except Exception as e:
-                        last_error = OllamaEmbedderError(f"Unexpected error: {e}")
+                        last_error = self._map_embed_error(e, self.base_url)
 
-                if got_429:
-                    break  # exit inner loop cleanly
-
-                if attempt < MAX_RETRIES - 1:
-                    delay = RETRY_DELAY_BASE * (2**attempt)
-                    logger.warning(
-                        "Ollama aembed_query retry",
-                        attempt=attempt + 1,
-                        delay=delay,
-                        error=str(last_error),
-                    )
-                    await asyncio.sleep(delay)
+                # A 429 already broke the inner loop above; otherwise back off.
+                await self._asleep_connect_retry(
+                    attempt, last_error, "Ollama aembed_query retry"
+                )
 
             if not got_429:
                 raise last_error or OllamaEmbedderError("Max retries exceeded")
 
-            backoff = (
-                last_rl_retry_after
-                if last_rl_retry_after is not None
-                else float(2**rl_attempt)
-            )
             if rl_attempt < RATE_LIMIT_MAX_RETRIES - 1:
-                await asyncio.sleep(backoff)
+                await asyncio.sleep(self._rl_backoff(last_rl_retry_after, rl_attempt))
 
         raise RateLimitError(provider="ollama", retry_after=last_rl_retry_after)
 

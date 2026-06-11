@@ -988,6 +988,20 @@ class BaseIndexPlugin(ABC):
             return "", search_results
 
         # ---- LLM call phase with 429 retry (outside index timeout) -----------
+        return await self._ask_llm(prompt, search_results)
+
+    async def _ask_llm(
+        self, prompt: str, search_results: list[SearchResult]
+    ) -> tuple[str, list[SearchResult]]:
+        """Run the 429-retried LLM synthesis for :meth:`ask`.
+
+        Returns ``(answer, citations)``; ``("", citations)`` on any non-429
+        failure. Raises RateLimitError only when every 429 retry is exhausted.
+        """
+        import asyncio
+
+        import httpx
+
         llm_url = f"{self.config.llm_base_url}/chat/completions"
         logger.info(
             "ask() calling LLM",
@@ -1019,10 +1033,11 @@ class BaseIndexPlugin(ABC):
                 return "", search_results
 
             if resp.status_code == HTTP_TOO_MANY_REQUESTS:
-                retry_after = parse_retry_after_header(resp)
-                last_rl_retry_after = retry_after
+                last_rl_retry_after = parse_retry_after_header(resp)
                 backoff = (
-                    retry_after if retry_after is not None else float(2**rl_attempt)
+                    last_rl_retry_after
+                    if last_rl_retry_after is not None
+                    else float(2**rl_attempt)
                 )
                 logger.warning(
                     "Ollama rate limited (429), retrying",
@@ -1037,17 +1052,17 @@ class BaseIndexPlugin(ABC):
 
             if resp.is_success:
                 data = resp.json()
-                answer_text = data["choices"][0]["message"]["content"]
-                answer_text = self._extract_from_think_tags(answer_text)
-                return answer_text, search_results
-            else:
-                logger.warning(
-                    "LLM call failed in ask",
-                    index_type=self.index_type.value,
-                    status=resp.status_code,
-                    error=resp.text[:200] if resp.text else "no error text",
+                answer_text = self._extract_from_think_tags(
+                    data["choices"][0]["message"]["content"]
                 )
-                return "", search_results
+                return answer_text, search_results
+            logger.warning(
+                "LLM call failed in ask",
+                index_type=self.index_type.value,
+                status=resp.status_code,
+                error=resp.text[:200] if resp.text else "no error text",
+            )
+            return "", search_results
 
         raise RateLimitError(provider="ollama", retry_after=last_rl_retry_after)
 

@@ -159,30 +159,36 @@ class RateLimitStateTracker:
                 while True:
                     cursor, keys = await r.scan(cursor, match=pattern, count=100)
                     for raw_key in keys:
-                        key: str = (
-                            raw_key.decode()
-                            if isinstance(raw_key, bytes)
-                            else str(raw_key)
-                        )
-                        # Key shape: roboco:rate_limit:{provider}:state
-                        inner = key[len(cls._KEY_PREFIX) :]
-                        if inner.endswith(":state"):
-                            provider = inner[: -len(":state")]
-                        else:
-                            continue
-                        raw_val = await r.get(key)
-                        if raw_val is None:
-                            continue
-                        decoded: str = (
-                            raw_val.decode()
-                            if isinstance(raw_val, bytes)
-                            else str(raw_val)
-                        )
-                        state: dict[str, Any] = json.loads(decoded)
-                        if state.get("rate_limited"):
-                            results.append((provider, state))
+                        entry = await cls._read_rate_limited_entry(r, raw_key)
+                        if entry is not None:
+                            results.append(entry)
                     if cursor == 0:
                         break
             except Exception:
                 pass
         return results
+
+    @staticmethod
+    def _decode(value: Any) -> str:
+        """Decode a Redis value (bytes or str) to str."""
+        return value.decode() if isinstance(value, bytes) else str(value)
+
+    @classmethod
+    async def _read_rate_limited_entry(
+        cls, r: Any, raw_key: Any
+    ) -> tuple[str, dict[str, Any]] | None:
+        """``(provider, state)`` for a scan key, iff it holds a rate-limited record.
+
+        Returns None for keys that don't match the ``...:{provider}:state`` shape,
+        have no stored value, or whose state is not currently rate-limited.
+        """
+        key = cls._decode(raw_key)
+        inner = key[len(cls._KEY_PREFIX) :]
+        if not inner.endswith(":state"):
+            return None
+        provider = inner[: -len(":state")]
+        raw_val = await r.get(key)
+        if raw_val is None:
+            return None
+        state: dict[str, Any] = json.loads(cls._decode(raw_val))
+        return (provider, state) if state.get("rate_limited") else None

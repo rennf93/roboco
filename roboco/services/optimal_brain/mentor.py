@@ -681,6 +681,44 @@ class MentorService:
         parts.append(f"\nQuestion: {question}")
         return "\n".join(parts)
 
+    @staticmethod
+    def _select_system_prompt(agent_profile: AgentProfile | None) -> str:
+        """Role-specific synthesis prompt when available, else the generic one."""
+        if agent_profile and agent_profile.role in ROLE_PROMPTS:
+            return ROLE_PROMPTS[agent_profile.role]
+        return (
+            "Answer the question based on the knowledge base context provided below. "
+            "Synthesize a clear, thorough answer. Do NOT just copy text - explain in "
+            "your own words. If the context doesn't fully answer the question, say "
+            "what you can based on what's available."
+        )
+
+    def _answer_from_response(
+        self,
+        response: httpx.Response,
+        sources: list[SearchResult],
+        agent_profile: AgentProfile | None,
+    ) -> str:
+        """Parse a successful LLM response into an answer, else fall back."""
+        if not response.is_success:
+            logger.warning(
+                "LLM call failed in mentor",
+                status=response.status_code,
+                error=response.text[:200],
+            )
+            return self._fallback_answer(sources, agent_profile)
+        data = response.json()
+        raw_answer: str = data["choices"][0]["message"]["content"]
+        answer = self._extract_answer(raw_answer)
+        if not answer:
+            logger.warning(
+                "LLM response empty after extraction",
+                model=settings.local_llm_model,
+                original_length=len(raw_answer),
+            )
+            return self._fallback_answer(sources, agent_profile)
+        return answer
+
     async def _synthesize_answer(
         self,
         question: str,
@@ -703,17 +741,7 @@ class MentorService:
                 "Try rephrasing your question or asking about a different topic."
             )
 
-        # Get role-specific system prompt
-        base_prompt = (
-            "Answer the question based on the knowledge base context provided below. "
-            "Synthesize a clear, thorough answer. Do NOT just copy text - explain in "
-            "your own words. If the context doesn't fully answer the question, say "
-            "what you can based on what's available."
-        )
-        if agent_profile and agent_profile.role in ROLE_PROMPTS:
-            system_prompt = ROLE_PROMPTS[agent_profile.role]
-        else:
-            system_prompt = base_prompt
+        system_prompt = self._select_system_prompt(agent_profile)
 
         # Build user prompt
         user_prompt = self._build_user_prompt(
@@ -764,27 +792,7 @@ class MentorService:
                     await asyncio.sleep(backoff)
                 continue
 
-            if response.is_success:
-                data = response.json()
-                raw_answer: str = data["choices"][0]["message"]["content"]
-                answer = self._extract_answer(raw_answer)
-
-                if not answer:
-                    logger.warning(
-                        "LLM response empty after extraction",
-                        model=settings.local_llm_model,
-                        original_length=len(raw_answer),
-                    )
-                    return self._fallback_answer(sources, agent_profile)
-
-                return answer
-            else:
-                logger.warning(
-                    "LLM call failed in mentor",
-                    status=response.status_code,
-                    error=response.text[:200],
-                )
-                return self._fallback_answer(sources, agent_profile)
+            return self._answer_from_response(response, sources, agent_profile)
 
         raise RateLimitError(provider="ollama", retry_after=last_rl_retry_after)
 

@@ -65,7 +65,23 @@ _A2A_CODE_REVIEW_RELEVANT_STATES: frozenset[str] = frozenset(
 )
 
 
-def decide_spawn(  # noqa: PLR0911
+def _stale_trigger_decision(task: Any, trigger: TriggerContext) -> Decision | None:
+    """DROP decision for a trigger that no longer applies to the task, else None."""
+    if task.status in _TERMINAL_STATUSES:
+        return Decision(SpawnDecision.DROP, "task in terminal state — trigger stale")
+    if (
+        trigger.kind is TriggerKind.A2A
+        and trigger.skill == "code_review"
+        and task.status not in _A2A_CODE_REVIEW_RELEVANT_STATES
+    ):
+        return Decision(
+            SpawnDecision.DROP,
+            f"a2a code_review for task in {task.status} — stale",
+        )
+    return None
+
+
+def decide_spawn(
     *,
     task: Any,
     trigger: TriggerContext,
@@ -76,18 +92,9 @@ def decide_spawn(  # noqa: PLR0911
     stale > provider-rate-limit > claimant-lock > task-cooldown > role-rate
     """
     # 1. Stale-trigger cleanup
-    if task.status in _TERMINAL_STATUSES:
-        return Decision(SpawnDecision.DROP, "task in terminal state — trigger stale")
-
-    if (
-        trigger.kind is TriggerKind.A2A
-        and trigger.skill == "code_review"
-        and task.status not in _A2A_CODE_REVIEW_RELEVANT_STATES
-    ):
-        return Decision(
-            SpawnDecision.DROP,
-            f"a2a code_review for task in {task.status} — stale",
-        )
+    stale = _stale_trigger_decision(task, trigger)
+    if stale is not None:
+        return stale
 
     # 2. Provider rate-limit gate
     if trigger.provider_rate_limited:
