@@ -41,6 +41,13 @@ RATE_LIMIT_MAX_RETRIES = 5
 MAX_CONCURRENT_BATCHES = 4  # Number of batches to process in parallel
 DEFAULT_BATCH_SIZE = 32  # piragi's default batch size
 
+# Keep the embedding model resident in Ollama. It runs on CPU and Ollama's
+# default 5-min idle unload means a `say` after an idle window pays a cold 2.4 GB
+# reload before embedding; under contention with glm-5:cloud that overran the
+# embed retry window and dropped the background conversation ingest. -1 = never
+# unload (sent as `keep_alive` on every /api/embed request).
+EMBED_KEEP_ALIVE = -1
+
 
 class OllamaEmbedderError(Exception):
     """Base exception for Ollama embedder errors."""
@@ -180,6 +187,15 @@ class OllamaEmbedder:
         # created on so we can rebuild when the loop rotates.
         self._semaphore: asyncio.Semaphore | None = None
         self._semaphore_loop: asyncio.AbstractEventLoop | None = None
+
+    def _embed_payload(self, input_data: str | list[str]) -> dict[str, object]:
+        """Build the /api/embed JSON body, pinning keep_alive so the model stays
+        resident in Ollama (see EMBED_KEEP_ALIVE)."""
+        return {
+            "model": self.model,
+            "input": input_data,
+            "keep_alive": EMBED_KEEP_ALIVE,
+        }
 
     def _get_sync_client(self) -> httpx.Client:
         """Get or create sync HTTP client with connection pooling."""
@@ -392,7 +408,7 @@ class OllamaEmbedder:
                 try:
                     response = client.post(
                         f"{self.base_url}/api/embed",
-                        json={"model": self.model, "input": query},
+                        json=self._embed_payload(query),
                     )
                     # 429 check — must NOT enter the ConnectError path
                     if response.status_code == HTTP_TOO_MANY_REQUESTS:
@@ -447,7 +463,7 @@ class OllamaEmbedder:
                 try:
                     response = client.post(
                         f"{self.base_url}/api/embed",
-                        json={"model": self.model, "input": batch},
+                        json=self._embed_payload(batch),
                     )
                     if response.status_code == HTTP_TOO_MANY_REQUESTS:
                         last_rl_retry_after = parse_retry_after_header(response)
@@ -581,7 +597,7 @@ class OllamaEmbedder:
                         )
                         response = await client.post(
                             f"{self.base_url}/api/embed",
-                            json={"model": self.model, "input": batch},
+                            json=self._embed_payload(batch),
                         )
                         if response.status_code == HTTP_TOO_MANY_REQUESTS:
                             last_rl_retry_after = parse_retry_after_header(response)
@@ -782,7 +798,7 @@ class OllamaEmbedder:
                     try:
                         response = await client.post(
                             f"{self.base_url}/api/embed",
-                            json={"model": self.model, "input": query},
+                            json=self._embed_payload(query),
                         )
                         if response.status_code == HTTP_TOO_MANY_REQUESTS:
                             last_rl_retry_after = parse_retry_after_header(response)
