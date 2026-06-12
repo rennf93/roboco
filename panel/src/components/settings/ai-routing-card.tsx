@@ -1,12 +1,13 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useState, useCallback } from "react";
 import {
   useApplyMode,
   useCatalog,
   useOllamaKey,
   useRoutingMode,
   useSetOllamaKey,
+  useSelfHostedModels,
 } from "@/hooks/use-providers";
 import {
   Card,
@@ -21,7 +22,9 @@ import { Label } from "@/components/ui/label";
 import {
   Select,
   SelectContent,
+  SelectGroup,
   SelectItem,
+  SelectLabel,
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
@@ -31,12 +34,14 @@ import {
   Cpu,
   Key,
   KeyRound,
+  Server,
   ShieldCheck,
   Sparkles,
 } from "lucide-react";
 import { toast } from "sonner";
 import { AssignmentScope, ModelProvider } from "@/types";
-import type { RoutingMode } from "@/lib/api/providers";
+import type { RoutingMode, SelfHostedTestResult } from "@/lib/api/providers";
+import { SelfHostedSection } from "@/components/settings/self-hosted-section";
 
 // Matches the roboco agents_config AGENT_ROLE_MAP / AGENT_TEAM_MAP.
 // Hard-coded so Mix mode shows a stable 18-row picker without an extra
@@ -70,12 +75,28 @@ export function AIRoutingCard() {
   const { data: catalog = [] } = useCatalog();
   const { data: keyStatus } = useOllamaKey();
   const { data: snapshot } = useRoutingMode();
+  const { data: selfHostedModels = [] } = useSelfHostedModels();
 
   const setKey = useSetOllamaKey();
   const applyMode = useApplyMode();
 
   const hasOllamaKey = !!keyStatus?.has_key;
   const currentMode: RoutingMode = snapshot?.mode ?? "anthropic";
+
+  // Track the latest self-hosted test result so ModeButton can gate access.
+  const [selfHostedTestResult, setSelfHostedTestResult] =
+    useState<SelfHostedTestResult | null>(null);
+  const isSelfHostedConnected = selfHostedTestResult?.status === "connected";
+
+  const handleSelfHostedTestResult = useCallback(
+    (result: SelfHostedTestResult) => {
+      setSelfHostedTestResult(result);
+    },
+    [],
+  );
+
+  // Selected self-hosted model (used when mode === 'self_hosted').
+  const [selfHostedModel, setSelfHostedModel] = useState<string>("");
 
   // --- API key input ---
   const [apiKey, setApiKey] = useState("");
@@ -123,6 +144,9 @@ export function AIRoutingCard() {
   const catalogOllamaOnly = catalog.filter(
     (c: { provider_type: ModelProvider }) => c.provider_type === ModelProvider.OLLAMA_CLOUD,
   );
+  const catalogAnthropicOnly = catalog.filter(
+    (c: { provider_type: ModelProvider }) => c.provider_type === ModelProvider.ANTHROPIC,
+  );
 
   // --- Mode toggle handlers ---
   const flipToAnthropic = async () => {
@@ -144,6 +168,28 @@ export function AIRoutingCard() {
     try {
       await applyMode.mutateAsync({ mode: "ollama" });
       toast.success("All agents now on Ollama");
+    } catch (e) {
+      toast.error("Switch failed: " + errMsg(e));
+    }
+  };
+
+  const flipToSelfHosted = async () => {
+    if (!isSelfHostedConnected) {
+      toast.error("Test the self-hosted connection first");
+      return;
+    }
+    if (
+      !confirm(
+        "Switch every agent to the self-hosted LLM? Clears any overrides.",
+      )
+    )
+      return;
+    try {
+      await applyMode.mutateAsync({
+        mode: "self_hosted",
+        ...(selfHostedModel ? { default_model: selfHostedModel } : {}),
+      });
+      toast.success("All agents now on Self-Hosted LLM");
     } catch (e) {
       toast.error("Switch failed: " + errMsg(e));
     }
@@ -172,6 +218,15 @@ export function AIRoutingCard() {
       );
       return;
     }
+    const needsSelfHosted = Object.values(per_agent).some((m) =>
+      selfHostedModels.find((sh) => sh.model_name === m),
+    );
+    if (needsSelfHosted && !isSelfHostedConnected) {
+      toast.error(
+        "At least one agent is routed to a self-hosted model but the connection has not been tested",
+      );
+      return;
+    }
     try {
       await applyMode.mutateAsync({ mode: "mix", per_agent });
       toast.success("Per-agent routing saved");
@@ -189,7 +244,8 @@ export function AIRoutingCard() {
         <CardDescription>
           Decide which model backs each agent. Anthropic uses the mounted
           <code className="px-1"> ~/.claude </code> auth; Ollama Cloud uses
-          the API key you save below.
+          the API key you save below; Self-Hosted connects to any OpenAI-compatible
+          endpoint you run locally.
         </CardDescription>
       </CardHeader>
       <CardContent className="space-y-6">
@@ -242,10 +298,19 @@ export function AIRoutingCard() {
 
         <Separator />
 
+        {/* -------- Self-Hosted LLM -------- */}
+        <SelfHostedSection
+          testResult={selfHostedTestResult}
+          onTestResult={handleSelfHostedTestResult}
+          onTestSuccess={() => undefined}
+        />
+
+        <Separator />
+
         {/* -------- Mode toggle -------- */}
         <section className="space-y-3">
           <Label className="text-sm font-medium">Routing mode</Label>
-          <div className="grid grid-cols-1 md:grid-cols-3 gap-2">
+          <div className="grid grid-cols-2 md:grid-cols-4 gap-2">
             <ModeButton
               icon={<ShieldCheck className="h-4 w-4" />}
               label="Anthropic"
@@ -267,6 +332,18 @@ export function AIRoutingCard() {
               disabled={applyMode.isPending || !hasOllamaKey}
             />
             <ModeButton
+              icon={<Server className="h-4 w-4" />}
+              label="Self-Hosted"
+              description={
+                isSelfHostedConnected
+                  ? "Every agent uses your self-hosted LLM endpoint."
+                  : "Test the connection above first."
+              }
+              active={currentMode === "self_hosted"}
+              onClick={flipToSelfHosted}
+              disabled={applyMode.isPending || !isSelfHostedConnected}
+            />
+            <ModeButton
               icon={<Cpu className="h-4 w-4" />}
               label="Mix"
               description="Pick a model per agent (table appears below)."
@@ -286,6 +363,41 @@ export function AIRoutingCard() {
             </p>
           ) : null}
         </section>
+
+        {/* -------- Self-Hosted model picker (when self_hosted mode active) -------- */}
+        {currentMode === "self_hosted" && (
+          <>
+            <Separator />
+            <section className="space-y-2">
+              <Label className="text-sm font-medium">
+                Self-Hosted default model
+              </Label>
+              <p className="text-xs text-muted-foreground">
+                Choose which discovered model all agents should use in
+                self-hosted mode.
+              </p>
+              <Select
+                value={selfHostedModel}
+                onValueChange={setSelfHostedModel}
+              >
+                <SelectTrigger className="w-full max-w-sm">
+                  <SelectValue placeholder="(use server default)" />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="">(use server default)</SelectItem>
+                  {selfHostedModels.map((m) => (
+                    <SelectItem key={m.model_name} value={m.model_name}>
+                      {m.display_name}
+                      {m.display_name !== m.model_name
+                        ? ` — ${m.model_name}`
+                        : ""}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </section>
+          </>
+        )}
 
         {/* -------- Mix-mode per-agent picker -------- */}
         <Separator />
@@ -327,16 +439,72 @@ export function AIRoutingCard() {
                     }))
                   }
                 >
-                  <SelectTrigger>
+                  <SelectTrigger className="w-full">
                     <SelectValue placeholder="(inherit)" />
                   </SelectTrigger>
                   <SelectContent>
                     <SelectItem value="__clear__">(inherit global)</SelectItem>
-                    {catalogForMix.map((c: { model_name: string; display_name: string }) => (
-                      <SelectItem key={c.model_name} value={c.model_name}>
-                        {c.display_name} — {c.model_name}
-                      </SelectItem>
-                    ))}
+
+                    {/* Anthropic models */}
+                    {catalogAnthropicOnly.length > 0 && (
+                      <SelectGroup>
+                        <SelectLabel>
+                          <ProviderBadge variant="anthropic" />
+                          Anthropic
+                        </SelectLabel>
+                        {catalogAnthropicOnly.map(
+                          (c: { model_name: string; display_name: string }) => (
+                            <SelectItem key={c.model_name} value={c.model_name}>
+                              {c.display_name}
+                            </SelectItem>
+                          ),
+                        )}
+                      </SelectGroup>
+                    )}
+
+                    {/* Ollama Cloud models */}
+                    {catalogOllamaOnly.length > 0 && (
+                      <SelectGroup>
+                        <SelectLabel>
+                          <ProviderBadge variant="ollama" />
+                          Ollama Cloud
+                        </SelectLabel>
+                        {catalogOllamaOnly.map(
+                          (c: { model_name: string; display_name: string }) => (
+                            <SelectItem key={c.model_name} value={c.model_name}>
+                              {c.display_name}
+                            </SelectItem>
+                          ),
+                        )}
+                      </SelectGroup>
+                    )}
+
+                    {/* Self-Hosted models */}
+                    {selfHostedModels.length > 0 && (
+                      <SelectGroup>
+                        <SelectLabel>
+                          <ProviderBadge variant="self-hosted" />
+                          Self-Hosted
+                        </SelectLabel>
+                        {selfHostedModels.map((m) => (
+                          <SelectItem key={m.model_name} value={m.model_name}>
+                            {m.display_name}
+                          </SelectItem>
+                        ))}
+                      </SelectGroup>
+                    )}
+
+                    {/* Fallback: un-grouped catalog when no grouping is possible */}
+                    {catalogAnthropicOnly.length === 0 &&
+                      catalogOllamaOnly.length === 0 &&
+                      selfHostedModels.length === 0 &&
+                      catalogForMix.map(
+                        (c: { model_name: string; display_name: string }) => (
+                          <SelectItem key={c.model_name} value={c.model_name}>
+                            {c.display_name} — {c.model_name}
+                          </SelectItem>
+                        ),
+                      )}
                   </SelectContent>
                 </Select>
               </div>
@@ -401,4 +569,35 @@ function ModeButton({
 
 function errMsg(e: unknown): string {
   return e instanceof Error ? e.message : "Unknown error";
+}
+
+// ---------------------------------------------------------------------------
+// Small colored pill to distinguish providers in the Mix mode dropdown.
+// ---------------------------------------------------------------------------
+
+function ProviderBadge({
+  variant,
+}: {
+  variant: "anthropic" | "ollama" | "self-hosted";
+}) {
+  const styles: Record<string, string> = {
+    anthropic: "bg-blue-500/20 text-blue-700 dark:text-blue-400",
+    ollama: "bg-violet-500/20 text-violet-700 dark:text-violet-400",
+    "self-hosted": "bg-purple-500/20 text-purple-700 dark:text-purple-400",
+  };
+  const labels: Record<string, string> = {
+    anthropic: "A",
+    ollama: "O",
+    "self-hosted": "S",
+  };
+  return (
+    <span
+      className={
+        "mr-1 inline-flex h-4 w-4 items-center justify-center rounded-full text-[10px] font-bold " +
+        (styles[variant] ?? "")
+      }
+    >
+      {labels[variant]}
+    </span>
+  );
 }
