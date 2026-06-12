@@ -8,7 +8,11 @@ on:
 
 permissions:
   actions: write
-  contents: read
+  # write (not read): CLA Assistant commits signatures/version1/cla.json to the
+  # cla-signatures branch in this repo, so GITHUB_TOKEN needs contents:write.
+  # With read-only it 403s ("Resource not accessible by integration") and the
+  # signature is never recorded even after the contributor signs.
+  contents: write
   pull-requests: write
   statuses: write
 
