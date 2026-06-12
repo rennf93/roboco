@@ -13,3 +13,4 @@ export { gitApi } from "./git";
 export { a2aApi } from "./a2a";
 export { streamApi } from "./stream";
 export { groupsApi } from "./groups";
+export { settingsApi } from "./settings";

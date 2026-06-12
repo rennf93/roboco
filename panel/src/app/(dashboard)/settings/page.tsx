@@ -26,6 +26,7 @@ import {
 } from "lucide-react";
 import { toast } from "sonner";
 import { API_URL, WS_URL } from "@/lib/constants";
+import { TranscriptRetentionCard } from "@/components/settings/transcript-retention-card";
 
 export default function SettingsPage() {
   const { theme, setTheme } = useTheme();
@@ -182,6 +183,9 @@ export default function SettingsPage() {
           </div>
         </CardContent>
       </Card>
+
+      {/* Transcript Retention (panel-tunable; persisted server-side) */}
+      <TranscriptRetentionCard />
 
       {/* Connection Info */}
       <Card>
