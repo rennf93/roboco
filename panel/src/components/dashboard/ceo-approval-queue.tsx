@@ -17,9 +17,9 @@ import {
 } from "@/components/ui/dialog";
 import { Textarea } from "@/components/ui/textarea";
 import { Label } from "@/components/ui/label";
-import { CheckCircle2, XCircle, Clock, FileText, ExternalLink } from "lucide-react";
+import { CheckCircle2, XCircle, Clock, FileText, ExternalLink, Rocket } from "lucide-react";
 import Link from "next/link";
-import type { Task } from "@/types";
+import { TaskStatus, Team, type Task } from "@/types";
 import { toast } from "sonner";
 
 interface CeoApprovalQueueProps {
@@ -29,14 +29,33 @@ interface CeoApprovalQueueProps {
 export function CeoApprovalQueue({ className }: CeoApprovalQueueProps) {
   const queryClient = useQueryClient();
   const [selectedTask, setSelectedTask] = useState<Task | null>(null);
-  const [actionType, setActionType] = useState<"approve" | "reject" | null>(null);
+  const [actionType, setActionType] = useState<"approve" | "reject" | "start" | null>(null);
   const [notes, setNotes] = useState("");
 
-  // Fetch tasks awaiting CEO approval
+  // Fetch tasks awaiting CEO approval (the end-of-work, pre-merge gate)
   const { data: tasks, isLoading } = useQuery({
     queryKey: ["tasks", "awaiting-ceo-approval"],
     queryFn: () => tasksApi.getAwaitingCeoApproval(),
     refetchInterval: 30000, // Refresh every 30 seconds
+  });
+
+  // Fetch tasks waiting on the CEO's Approve & Start (board review done, still
+  // PENDING). The orchestrator sets board_review_complete + notifies the CEO
+  // but leaves the task pending, so it never appears in the awaiting-ceo list.
+  // Surface it here, or the CEO has no idea a task is waiting on them.
+  //
+  // approve_and_start does NOT change status — it re-targets the task to the
+  // Main PM (team → main_pm). So exclude team === MAIN_PM, otherwise an
+  // already-approved task stays in this list forever.
+  const { data: startTasks } = useQuery({
+    queryKey: ["tasks", "awaiting-approve-start"],
+    queryFn: async () => {
+      const pending = await tasksApi.list({ status: TaskStatus.PENDING });
+      return pending.filter(
+        (t) => t.board_review_complete === true && t.team !== Team.MAIN_PM,
+      );
+    },
+    refetchInterval: 30000,
   });
 
   // Approve mutation
@@ -67,7 +86,21 @@ export function CeoApprovalQueue({ className }: CeoApprovalQueueProps) {
     },
   });
 
-  const openDialog = (task: Task, action: "approve" | "reject") => {
+  // Approve & Start mutation — hands a board-reviewed task to the Main PM.
+  const approveStartMutation = useMutation({
+    mutationFn: ({ taskId, notes }: { taskId: string; notes: string }) =>
+      tasksApi.approveAndStart(taskId, notes),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["tasks"] });
+      toast.success("Task approved and handed to Main PM");
+      closeDialog();
+    },
+    onError: (error) => {
+      toast.error(`Failed to approve & start: ${error instanceof Error ? error.message : "Unknown error"}`);
+    },
+  });
+
+  const openDialog = (task: Task, action: "approve" | "reject" | "start") => {
     setSelectedTask(task);
     setActionType(action);
     setNotes("");
@@ -90,6 +123,13 @@ export function CeoApprovalQueue({ className }: CeoApprovalQueueProps) {
         return;
       }
       approveMutation.mutate({ taskId: selectedTask.id, notes: notes.trim() });
+    } else if (actionType === "start") {
+      // Server requires substantive approval notes (>= 20 chars).
+      if (notes.trim().length < 20) {
+        toast.error("Approval notes are required (>= 20 characters)");
+        return;
+      }
+      approveStartMutation.mutate({ taskId: selectedTask.id, notes: notes.trim() });
     } else if (actionType === "reject") {
       if (!notes.trim()) {
         toast.error("Rejection reason is required");
@@ -132,6 +172,68 @@ export function CeoApprovalQueue({ className }: CeoApprovalQueueProps) {
   }
 
   const pendingTasks = tasks || [];
+  const readyToStart = startTasks || [];
+  const totalCount = pendingTasks.length + readyToStart.length;
+
+  const renderRow = (task: Task, kind: "start" | "approve") => (
+    <div
+      key={task.id}
+      className="flex items-start justify-between p-4 border rounded-lg hover:bg-muted/50 transition-colors"
+    >
+      <div className="flex-1 min-w-0">
+        <div className="flex items-center gap-2 mb-1">
+          {getPriorityBadge(task.priority)}
+          <Badge variant="outline">{task.team}</Badge>
+        </div>
+        <Link
+          href={`/tasks/${task.id}`}
+          className="font-medium hover:underline line-clamp-1"
+        >
+          {task.title}
+        </Link>
+        {task.quick_context && (
+          <p className="text-sm text-muted-foreground mt-1 line-clamp-2">
+            {task.quick_context}
+          </p>
+        )}
+      </div>
+      <div className="flex items-center gap-2 ml-4 flex-shrink-0">
+        <Link href={`/tasks/${task.id}`}>
+          <Button variant="ghost" size="sm">
+            <FileText className="h-4 w-4" />
+          </Button>
+        </Link>
+        <Button
+          variant="outline"
+          size="sm"
+          className="text-destructive hover:text-destructive"
+          onClick={() => openDialog(task, "reject")}
+        >
+          <XCircle className="h-4 w-4 mr-1" />
+          Reject
+        </Button>
+        {kind === "start" ? (
+          <Button
+            size="sm"
+            className="bg-blue-600 hover:bg-blue-700"
+            onClick={() => openDialog(task, "start")}
+          >
+            <Rocket className="h-4 w-4 mr-1" />
+            Approve &amp; Start
+          </Button>
+        ) : (
+          <Button
+            size="sm"
+            className="bg-green-600 hover:bg-green-700"
+            onClick={() => openDialog(task, "approve")}
+          >
+            <CheckCircle2 className="h-4 w-4 mr-1" />
+            Approve
+          </Button>
+        )}
+      </div>
+    </div>
+  );
 
   return (
     <>
@@ -140,70 +242,38 @@ export function CeoApprovalQueue({ className }: CeoApprovalQueueProps) {
           <CardTitle className="flex items-center gap-2">
             <Clock className="h-5 w-5" />
             CEO Approval Queue
-            {pendingTasks.length > 0 && (
+            {totalCount > 0 && (
               <Badge variant="secondary" className="ml-2">
-                {pendingTasks.length}
+                {totalCount}
               </Badge>
             )}
           </CardTitle>
-          <CardDescription>Tasks escalated for your final approval</CardDescription>
+          <CardDescription>Tasks waiting on your decision</CardDescription>
         </CardHeader>
         <CardContent>
-          {pendingTasks.length === 0 ? (
+          {totalCount === 0 ? (
             <div className="text-center py-8 text-muted-foreground">
               <CheckCircle2 className="h-12 w-12 mx-auto mb-2 opacity-50" />
               <p>No tasks awaiting approval</p>
             </div>
           ) : (
-            <div className="space-y-3">
-              {pendingTasks.map((task) => (
-                <div
-                  key={task.id}
-                  className="flex items-start justify-between p-4 border rounded-lg hover:bg-muted/50 transition-colors"
-                >
-                  <div className="flex-1 min-w-0">
-                    <div className="flex items-center gap-2 mb-1">
-                      {getPriorityBadge(task.priority)}
-                      <Badge variant="outline">{task.team}</Badge>
-                    </div>
-                    <Link
-                      href={`/tasks/${task.id}`}
-                      className="font-medium hover:underline line-clamp-1"
-                    >
-                      {task.title}
-                    </Link>
-                    {task.quick_context && (
-                      <p className="text-sm text-muted-foreground mt-1 line-clamp-2">
-                        {task.quick_context}
-                      </p>
-                    )}
-                  </div>
-                  <div className="flex items-center gap-2 ml-4 flex-shrink-0">
-                    <Link href={`/tasks/${task.id}`}>
-                      <Button variant="ghost" size="sm">
-                        <FileText className="h-4 w-4" />
-                      </Button>
-                    </Link>
-                    <Button
-                      variant="outline"
-                      size="sm"
-                      className="text-destructive hover:text-destructive"
-                      onClick={() => openDialog(task, "reject")}
-                    >
-                      <XCircle className="h-4 w-4 mr-1" />
-                      Reject
-                    </Button>
-                    <Button
-                      size="sm"
-                      className="bg-green-600 hover:bg-green-700"
-                      onClick={() => openDialog(task, "approve")}
-                    >
-                      <CheckCircle2 className="h-4 w-4 mr-1" />
-                      Approve
-                    </Button>
-                  </div>
+            <div className="space-y-5">
+              {readyToStart.length > 0 && (
+                <div className="space-y-3">
+                  <p className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+                    Ready to start · board reviewed
+                  </p>
+                  {readyToStart.map((task) => renderRow(task, "start"))}
                 </div>
-              ))}
+              )}
+              {pendingTasks.length > 0 && (
+                <div className="space-y-3">
+                  <p className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+                    Final approval · work complete
+                  </p>
+                  {pendingTasks.map((task) => renderRow(task, "approve"))}
+                </div>
+              )}
             </div>
           )}
         </CardContent>
@@ -214,12 +284,18 @@ export function CeoApprovalQueue({ className }: CeoApprovalQueueProps) {
         <DialogContent>
           <DialogHeader>
             <DialogTitle>
-              {actionType === "approve" ? "Approve Task" : "Reject Task"}
+              {actionType === "approve"
+                ? "Approve Task"
+                : actionType === "start"
+                  ? "Approve & Start Task"
+                  : "Reject Task"}
             </DialogTitle>
             <DialogDescription>
               {actionType === "approve"
                 ? "This will complete the task and notify the team."
-                : "This will send the task back for revision."}
+                : actionType === "start"
+                  ? "This hands the task to the Main PM to delegate to the cells and begin work."
+                  : "This will send the task back for revision."}
             </DialogDescription>
           </DialogHeader>
 
@@ -247,14 +323,20 @@ export function CeoApprovalQueue({ className }: CeoApprovalQueueProps) {
 
           <div className="space-y-2">
             <Label htmlFor="notes">
-              {actionType === "approve" ? "Notes (optional)" : "Reason for rejection (required)"}
+              {actionType === "reject"
+                ? "Reason for rejection (required)"
+                : actionType === "start"
+                  ? "Approval notes (required, ≥ 20 characters)"
+                  : "Notes (optional)"}
             </Label>
             <Textarea
               id="notes"
               placeholder={
-                actionType === "approve"
-                  ? "Add any notes about this approval..."
-                  : "Explain what needs to be fixed..."
+                actionType === "reject"
+                  ? "Explain what needs to be fixed..."
+                  : actionType === "start"
+                    ? "Why this is ready to build, scope to hold to, anything the Main PM should know..."
+                    : "Add any notes about this approval..."
               }
               value={notes}
               onChange={(e) => setNotes(e.target.value)}
@@ -268,15 +350,29 @@ export function CeoApprovalQueue({ className }: CeoApprovalQueueProps) {
             </Button>
             <Button
               onClick={handleConfirm}
-              disabled={approveMutation.isPending || rejectMutation.isPending}
-              className={actionType === "approve" ? "bg-green-600 hover:bg-green-700" : ""}
+              disabled={
+                approveMutation.isPending ||
+                rejectMutation.isPending ||
+                approveStartMutation.isPending
+              }
+              className={
+                actionType === "approve"
+                  ? "bg-green-600 hover:bg-green-700"
+                  : actionType === "start"
+                    ? "bg-blue-600 hover:bg-blue-700"
+                    : ""
+              }
               variant={actionType === "reject" ? "destructive" : "default"}
             >
-              {approveMutation.isPending || rejectMutation.isPending
+              {approveMutation.isPending ||
+              rejectMutation.isPending ||
+              approveStartMutation.isPending
                 ? "Processing..."
                 : actionType === "approve"
                   ? "Approve & Complete"
-                  : "Reject & Request Revision"}
+                  : actionType === "start"
+                    ? "Approve & Start"
+                    : "Reject & Request Revision"}
             </Button>
           </DialogFooter>
         </DialogContent>
