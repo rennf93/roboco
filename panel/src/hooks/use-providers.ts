@@ -2,6 +2,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   providersApi,
   type ApplyModePayload,
+  type SelfHostedConfigPayload,
 } from "@/lib/api/providers";
 
 export const providerKeys = {
@@ -9,6 +10,9 @@ export const providerKeys = {
   catalog: () => [...providerKeys.all, "catalog"] as const,
   ollamaKey: () => [...providerKeys.all, "ollama-key"] as const,
   mode: () => [...providerKeys.all, "mode"] as const,
+  selfHostedConfig: () => [...providerKeys.all, "self-hosted-config"] as const,
+  selfHostedModels: () => [...providerKeys.all, "self-hosted-models"] as const,
+  selfHostedTest: () => [...providerKeys.all, "self-hosted-test"] as const,
 };
 
 export function useCatalog() {
@@ -53,6 +57,64 @@ export function useApplyMode() {
     mutationFn: (payload: ApplyModePayload) => providersApi.applyMode(payload),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: providerKeys.mode() });
+    },
+  });
+}
+
+// ---------------------------------------------------------------------------
+// Self-hosted LLM hooks
+// ---------------------------------------------------------------------------
+
+/** Query: fetch saved self-hosted config (base_url + has_auth_token flag). */
+export function useSelfHostedConfig() {
+  return useQuery({
+    queryKey: providerKeys.selfHostedConfig(),
+    queryFn: () => providersApi.getSelfHostedConfig(),
+    staleTime: 30_000,
+  });
+}
+
+/** Mutation: save self-hosted base URL + optional auth token. */
+export function useSetSelfHostedConfig() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (payload: SelfHostedConfigPayload) =>
+      providersApi.saveSelfHostedConfig(payload),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: providerKeys.selfHostedConfig() });
+    },
+  });
+}
+
+/** Mutation: test the self-hosted connection and return status + model count. */
+export function useTestSelfHosted() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: () => providersApi.testSelfHosted(),
+    onSuccess: () => {
+      // After a successful test, also refresh the model list.
+      qc.invalidateQueries({ queryKey: providerKeys.selfHostedModels() });
+    },
+  });
+}
+
+/** Query: list models discovered from the self-hosted endpoint. */
+export function useSelfHostedModels() {
+  return useQuery({
+    queryKey: providerKeys.selfHostedModels(),
+    queryFn: () => providersApi.getSelfHostedModels(),
+    staleTime: 2 * 60_000, // 2 minutes
+  });
+}
+
+/** Mutation: force-refresh the discovered model list. */
+export function useRefreshSelfHostedModels() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: () => providersApi.refreshSelfHostedModels(),
+    onSuccess: (data) => {
+      // Update the cached model list in place.
+      qc.setQueryData(providerKeys.selfHostedModels(), data);
     },
   });
 }

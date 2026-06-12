@@ -24,7 +24,7 @@ export interface ModelAssignment {
   model_name: string;
 }
 
-export type RoutingMode = "anthropic" | "ollama" | "mix";
+export type RoutingMode = "anthropic" | "ollama" | "self_hosted" | "mix";
 
 export interface ModeSnapshot {
   mode: RoutingMode;
@@ -36,6 +36,39 @@ export interface ApplyModePayload {
   default_model?: string;
   // Required when mode=mix: map of agent_slug → model_name.
   per_agent?: Record<string, string>;
+}
+
+// ---------------------------------------------------------------------------
+// Self-hosted LLM types
+// ---------------------------------------------------------------------------
+
+/** Configuration stored server-side for the self-hosted provider. */
+export interface SelfHostedConfig {
+  base_url: string | null;
+  has_auth_token: boolean;
+}
+
+/** Status values returned by the test-connection endpoint. */
+export type SelfHostedTestStatus = "connected" | "error";
+
+/** Result of a test-connection call. */
+export interface SelfHostedTestResult {
+  status: SelfHostedTestStatus;
+  model_count: number;
+  error_message: string | null;
+  last_checked: string | null; // ISO datetime
+}
+
+/** One model entry returned by the discovery endpoint. */
+export interface SelfHostedModel {
+  model_name: string;
+  display_name: string;
+}
+
+/** Payload for saving the self-hosted config (base URL + optional token). */
+export interface SelfHostedConfigPayload {
+  base_url: string;
+  auth_token?: string; // omit to leave token unchanged; "" to clear
 }
 
 export const providersApi = {
@@ -63,6 +96,46 @@ export const providersApi = {
 
   applyMode: async (payload: ApplyModePayload): Promise<ModeSnapshot> => {
     const { data } = await api.post<ModeSnapshot>("/providers", payload);
+    return data;
+  },
+
+  // -------------------------------------------------------------------------
+  // Self-hosted provider
+  // -------------------------------------------------------------------------
+
+  getSelfHostedConfig: async (): Promise<SelfHostedConfig> => {
+    const { data } = await api.get<SelfHostedConfig>("/providers/self-hosted");
+    return data;
+  },
+
+  saveSelfHostedConfig: async (
+    payload: SelfHostedConfigPayload,
+  ): Promise<SelfHostedConfig> => {
+    const { data } = await api.put<SelfHostedConfig>(
+      "/providers/self-hosted",
+      payload,
+    );
+    return data;
+  },
+
+  testSelfHosted: async (): Promise<SelfHostedTestResult> => {
+    const { data } = await api.post<SelfHostedTestResult>(
+      "/providers/self-hosted/test",
+    );
+    return data;
+  },
+
+  getSelfHostedModels: async (): Promise<SelfHostedModel[]> => {
+    const { data } = await api.get<SelfHostedModel[]>(
+      "/providers/self-hosted/models",
+    );
+    return data;
+  },
+
+  refreshSelfHostedModels: async (): Promise<SelfHostedModel[]> => {
+    const { data } = await api.post<SelfHostedModel[]>(
+      "/providers/self-hosted/models/refresh",
+    );
     return data;
   },
 };
