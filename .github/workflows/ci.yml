@@ -76,8 +76,10 @@ jobs:
       ROBOCO_DATABASE_NAME: roboco
       ROBOCO_REDIS_HOST: localhost
       ROBOCO_REDIS_PORT: '6379'
-      # Fernet key required by the security layer (utils/crypto). Test-only.
-      ROBOCO_ENCRYPTION_KEY: 'zZ9nHr0e8aQ1bV3cN6mP2kJ5gT7yW4dX8sL0fR2uA0='
+      # Fernet key required by the security layer (utils/crypto). Test-only —
+      # a valid generated key (the previous value was 43 chars, not a real
+      # Fernet key, so encryption tests failed with "Incorrect padding").
+      ROBOCO_ENCRYPTION_KEY: 'yp3Awiv0zmxpRa6Gi9Y9hJbi4pZ2FXHRNr4EI6-Gx9U='
       # The pytest harness (tests/conftest.py) provisions its own ephemeral
       # databases via an admin connection to the `postgres` DB and reads a
       # separate ROBOCO_TEST_DB_* set. The pgvector image's POSTGRES_USER is a
