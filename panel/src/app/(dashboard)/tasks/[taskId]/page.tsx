@@ -361,23 +361,22 @@ export default function TaskDetailPage({ params }: TaskDetailPageProps) {
       {/* Header */}
       <TaskHeader task={task} onAction={handleAction} />
 
-      {/* CEO gate #1: Approve & Start a board-reviewed coordination task.
-          This is the handoff for a board/fan-out task (a product, no repo of its
-          own) that the Board has reviewed and is waiting on the CEO to hand to
-          Main PM. The server's approve_and_start keeps the task PENDING (it
-          re-targets to Main PM without a status change — that pending state is
-          what drives Main PM dispatch), so we gate on PENDING here, NOT on
-          awaiting_ceo_approval (the unrelated end-of-work ceo-approve flow).
-          The button must not appear until the board has actually finished
-          reviewing, so we also require board_review_complete — the flag the
-          orchestrator sets once BOTH the PO and Head of Marketing are done. The
-          coordination predicate (no project_id, has product_id) keeps the
-          button to the board's fan-out handoffs, not every board-team task. */}
+      {/* CEO gate #1: Approve & Start a board-reviewed task. After the Board
+          finishes, the orchestrator sets board_review_complete and sends the
+          CEO an approval notification, but the task STAYS pending (its pending
+          state is what drives Main PM dispatch on approval) — so we gate on
+          PENDING here, NOT on awaiting_ceo_approval (the unrelated end-of-work
+          ceo-approve flow). Gate on exactly the orchestrator's own criterion:
+          pending + board_review_complete. The earlier team===BOARD / product-
+          scoped predicate was too narrow — it hid this button for project-
+          scoped intake tasks (which carry a project_id, team=the lead cell,
+          and no product_id), leaving the CEO with no way to approve them.
+          approve_and_start re-targets the task to the Main PM (team → main_pm)
+          without changing status, so exclude team===MAIN_PM to hide the button
+          once it's been approved. */}
       {task.status === TaskStatus.PENDING &&
-        task.team === Team.BOARD &&
-        !task.project_id &&
-        !!task.product_id &&
-        task.board_review_complete === true && (
+        task.board_review_complete === true &&
+        task.team !== Team.MAIN_PM && (
           <div className="flex justify-end">
             <ApproveAndStartButton task={task} />
           </div>
