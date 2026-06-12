@@ -115,14 +115,13 @@ def _autogen_verbs_layer(prompts_path: Path, role: "AgentRole") -> str | None:
 # briefing, so we hoist the exact call into a top-of-system-prompt
 # layer (highest-priority instruction the model sees).
 #
-# Read/Bash/Grep/Glob/Task/TodoWrite are needed by every role; Edit/Write
+# Read/Bash/Grep/Glob/TodoWrite are needed by every role; Edit/Write
 # only by roles that author code or docs.
 _BUILTIN_TOOLS_COMMON: tuple[str, ...] = (
     "Read",
     "Bash",
     "Grep",
     "Glob",
-    "Task",
     "TodoWrite",
 )
 _BUILTIN_TOOLS_AUTHORS: tuple[str, ...] = (*_BUILTIN_TOOLS_COMMON, "Edit", "Write")

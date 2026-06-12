@@ -68,6 +68,26 @@ def test_pm_blocks_exclude_edit_and_write() -> None:
         assert "Write" not in names, f"{role} must not list Write"
 
 
+def test_no_role_block_lists_the_task_subagent_tool() -> None:
+    """Task (sub-agent dispatch) is dropped from the briefing tool grant.
+
+    No role uses Task and there are no custom sub-agent definitions, so it only
+    spawns a context-blind generic sub-agent that burns budget.
+    """
+    for role in (
+        "developer",
+        "documenter",
+        "qa",
+        "main_pm",
+        "cell_pm",
+        "product_owner",
+        "head_marketing",
+        "auditor",
+    ):
+        names = _tool_names(_orch()._build_tool_load_block(role))
+        assert "Task" not in names, f"{role} must not list Task: {names}"
+
+
 def test_unknown_role_returns_empty() -> None:
     assert _orch()._build_tool_load_block("nonexistent") == ""
 

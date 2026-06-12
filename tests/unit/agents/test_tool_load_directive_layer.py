@@ -95,6 +95,24 @@ def test_pm_blocks_exclude_edit_and_write() -> None:
         )
 
 
+def test_no_role_is_granted_the_task_subagent_tool() -> None:
+    """Task (sub-agent dispatch) is dropped from the built-in tool grant.
+
+    No role prompt or workflow uses Task and there are no custom sub-agent
+    definitions, so a Task call only spawns a context-blind generic sub-agent
+    that burns budget. The tools-ready line must not advertise it for any role.
+    """
+    for role in (
+        AgentRole.DEVELOPER,
+        AgentRole.DOCUMENTER,
+        AgentRole.QA,
+        AgentRole.MAIN_PM,
+        AgentRole.CELL_PM,
+    ):
+        names = _tool_names(_composed_prompt_for(role, Team.BACKEND))
+        assert "Task" not in names, f"{role.value} must not list Task: {names}"
+
+
 def test_block_is_first_layer_before_lifecycle() -> None:
     """Tools-ready block precedes the lifecycle and base layers."""
     prompt = _composed_prompt_for(AgentRole.DEVELOPER, Team.BACKEND)

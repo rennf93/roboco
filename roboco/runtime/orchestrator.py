@@ -1800,8 +1800,6 @@ class AgentOrchestrator:
           - Read/Write/Edit  : file IO inside the workspace
           - Bash             : shell commands (gated by bash-guard hook)
           - Grep/Glob        : code navigation
-          - Task             : sub-agent dispatch (used for ToolSearch and
-                               other delegated jobs)
           - TodoWrite        : per-session planning
         Permissions still gate *which* paths Edit/Write can touch (see
         `_get_role_permissions`), so this is purely about loading vs
@@ -1817,7 +1815,7 @@ class AgentOrchestrator:
             "/app/mcp-config.json",
             "--strict-mcp-config",
             "--tools",
-            "Read,Write,Edit,Bash,Grep,Glob,Task,TodoWrite",
+            "Read,Write,Edit,Bash,Grep,Glob,TodoWrite",
             "--output-format",
             "stream-json",
             "--verbose",
@@ -2315,7 +2313,6 @@ class AgentOrchestrator:
         "Bash",
         "Grep",
         "Glob",
-        "Task",
         "TodoWrite",
     )
     _ROLE_BUILTIN_TOOLS: ClassVar[dict[str, tuple[str, ...]]] = {
