@@ -21,7 +21,6 @@ _RATE_LIMIT_WS_TYPES = {
 }
 
 _USAGE_WS_TYPES = {
-    EventType.USAGE_UPDATE: "USAGE_UPDATE",
     EventType.USAGE_SNAPSHOT: "USAGE_SNAPSHOT",
 }
 
@@ -150,13 +149,12 @@ async def _handle_rate_limit_event(event: Event) -> None:
 
 
 async def _handle_usage_event(event: Event) -> None:
-    """Forward USAGE_UPDATE/SNAPSHOT events to operator system WS clients.
+    """Forward USAGE_SNAPSHOT events to operator system WS clients.
 
-    Both event types carry all the fields the panel needs directly in
-    ``event.data``; we tag them with the discriminating ``type`` string the
+    The event carries all the fields the panel needs directly in
+    ``event.data``; we tag it with the discriminating ``type`` string the
     panel switches on (the same UPPER_SNAKE mapping the rate-limit handler
-    uses), so the panel can distinguish per-agent updates from aggregate
-    snapshots.
+    uses).
     """
     ws_type = _USAGE_WS_TYPES.get(event.type)
     if ws_type is None:
@@ -197,7 +195,6 @@ def register_websocket_bridge_handlers() -> None:
     bus.subscribe(EventType.RATE_LIMIT_LIFTED, _handle_rate_limit_event)
 
     # Usage events -> system WebSocket (panel dashboard)
-    bus.subscribe(EventType.USAGE_UPDATE, _handle_usage_event)
     bus.subscribe(EventType.USAGE_SNAPSHOT, _handle_usage_event)
 
     logger.info("WebSocket bridge handlers registered")

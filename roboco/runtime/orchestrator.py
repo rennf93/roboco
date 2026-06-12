@@ -3507,8 +3507,8 @@ class AgentOrchestrator:
         current progress without waiting for session close.
         Errors per-agent are caught so one bad agent doesn't abort the whole sweep.
 
-        Additionally publishes USAGE_UPDATE events per agent (throttled to at most
-        one per 5-second window) and a USAGE_SNAPSHOT aggregate after the loop.
+        Also publishes a USAGE_SNAPSHOT aggregate event after the loop so the
+        /ws/system dashboard updates live for active agents.
         """
         if not self._instances:
             return
@@ -3547,25 +3547,6 @@ class AgentOrchestrator:
 
                     tokens_input, tokens_output = tokens[0], tokens[1]
                     model = instance.config.model if instance.config else "unknown"
-
-                    # Publish USAGE_UPDATE event for this agent (throttled).
-                    with contextlib.suppress(Exception):
-                        from roboco.events import get_event_bus
-                        from roboco.services.usage_events import (
-                            UsageUpdate,
-                            publish_usage_update,
-                        )
-
-                        await publish_usage_update(
-                            get_event_bus(),
-                            UsageUpdate(
-                                agent_id=agent_id,
-                                task_id=instance.current_task_id,
-                                input_tokens=tokens_input,
-                                output_tokens=tokens_output,
-                                model=model,
-                            ),
-                        )
 
                     # Accumulate per-agent data for the aggregate snapshot.
                     with contextlib.suppress(Exception):
