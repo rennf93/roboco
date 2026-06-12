@@ -61,6 +61,10 @@ _ROLE_LAYER_MAP: dict[str, str] = {
     "product_owner": "board.md",
     "head_marketing": "board.md",
     "auditor": "board.md",
+    # Intake interviewer — the live-session role prompt that wires up the
+    # propose_draft mission. Without this the prompter only sees the
+    # gateway verbs layer (i_am_idle) and refuses to draft.
+    "prompter": "prompter.md",
 }
 
 _TEAM_LAYER_MAP: dict[str, str] = {
