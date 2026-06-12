@@ -245,6 +245,37 @@ class Settings(BaseSettings):
     )
 
     # ==========================================================================
+    # Transcript retention (agent Claude Code transcripts under ~/.claude)
+    # ==========================================================================
+    transcript_retention_days: int = Field(
+        default=14,
+        ge=1,
+        description=(
+            "Default retention window, in days, for agent Claude Code "
+            "transcripts (the *.jsonl files agents write under "
+            "~/.claude/projects). A background sweep prunes agent-owned "
+            "transcripts older than this. Panel-editable: a stored "
+            "`transcript_retention_days` system setting overrides this default "
+            "when present; this is the fallback used before one is set."
+        ),
+    )
+    transcript_prune_enabled: bool = Field(
+        default=True,
+        description=(
+            "Whether the orchestrator background sweep prunes old agent "
+            "transcripts. Disable to keep every transcript indefinitely."
+        ),
+    )
+    transcript_prune_interval_seconds: int = Field(
+        default=3600,
+        ge=300,
+        description=(
+            "Minimum seconds between transcript-retention prune passes. The "
+            "prune is age-based (days), so it need not run more than hourly."
+        ),
+    )
+
+    # ==========================================================================
     # Git command execution
     # ==========================================================================
     git_command_timeout_seconds: int = Field(

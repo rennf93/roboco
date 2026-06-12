@@ -1736,6 +1736,27 @@ class ProviderConfigTable(Base):
     __table_args__ = (Index("ix_provider_configs_enabled", "enabled"),)
 
 
+class SystemSettingTable(Base):
+    """Key-value store for runtime-editable, panel-tunable system settings.
+
+    Operator-tunable values that must persist across restarts and be editable
+    from the panel (first user: ``transcript_retention_days``). One row per key;
+    the value is stored as text and parsed by the reader. Code defaults in
+    ``roboco.config`` are the fallback when a key has no row yet.
+    """
+
+    __tablename__ = "system_settings"
+
+    key: Mapped[str] = mapped_column(String(100), primary_key=True)
+    value: Mapped[str] = mapped_column(Text, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        default=lambda: datetime.now(UTC),
+        onupdate=lambda: datetime.now(UTC),
+        nullable=False,
+    )
+
+
 class ModelAssignmentTable(Base):
     """SQLAlchemy table for (scope, provider, model) routing rows.
 

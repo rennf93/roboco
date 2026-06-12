@@ -561,6 +561,8 @@ class AgentOrchestrator:
         self._health_task: asyncio.Task | None = None
         self._dispatcher_task: asyncio.Task | None = None
         self._sweeper_task: asyncio.Task | None = None
+        # Last time the transcript-retention prune ran (throttled in the sweep).
+        self._last_transcript_prune: datetime | None = None
         # Rate-limit probe loop: 30-second interval, scans Redis for all
         # rate-limited providers and resolves waiting agents on success.
         self._rate_limit_probe_task: asyncio.Task | None = None
@@ -3936,6 +3938,65 @@ Start by:
         # closed sessions into the daily aggregation table.
         await self._sweep_token_snapshots()
         await self._sweep_daily_rollup()
+
+        # Prune old agent transcripts (throttled internally to ~hourly) so the
+        # operator's bind-mounted ~/.claude doesn't grow without bound.
+        await self._sweep_transcript_retention()
+
+    async def _sweep_transcript_retention(self) -> None:
+        """Prune agent transcripts older than the retention window.
+
+        Throttled to ``settings.transcript_prune_interval_seconds``. Reads the
+        window from the ``system_settings`` store (panel-editable), falling back
+        to ``settings.transcript_retention_days``. Only agent-owned project dirs
+        (``-app`` + per-workspace dirs) are touched — never the operator's own
+        Claude sessions. Best-effort: any failure is logged, never raised.
+        """
+        if not settings.transcript_prune_enabled:
+            return
+        now = datetime.now(UTC)
+        last = self._last_transcript_prune
+        if (
+            last is not None
+            and (now - last).total_seconds()
+            < settings.transcript_prune_interval_seconds
+        ):
+            return
+        self._last_transcript_prune = now
+
+        retention_days = settings.transcript_retention_days
+        with contextlib.suppress(Exception):
+            from roboco.db.base import get_session_factory
+            from roboco.services.settings import get_settings_service
+
+            session_factory = get_session_factory()
+            async with session_factory() as db:
+                retention_days = await get_settings_service(db).get_int(
+                    "transcript_retention_days", settings.transcript_retention_days
+                )
+
+        from roboco.runtime.transcript_retention import select_prunable_transcripts
+
+        projects_root = Path.home() / ".claude" / "projects"
+        cutoff = (now - timedelta(days=retention_days)).timestamp()
+        prunable = select_prunable_transcripts(
+            projects_root, settings.workspaces_root, cutoff
+        )
+        pruned = 0
+        for transcript in prunable:
+            try:
+                transcript.unlink()
+                pruned += 1
+            except OSError as exc:
+                logger.debug(
+                    "Transcript prune failed", path=str(transcript), error=str(exc)
+                )
+        if pruned:
+            logger.info(
+                "Pruned old agent transcripts",
+                count=pruned,
+                retention_days=retention_days,
+            )
 
     @staticmethod
     async def _fetch_budget_status(

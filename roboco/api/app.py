@@ -34,6 +34,7 @@ from roboco.api.routes.prompter import router as prompter_router
 from roboco.api.routes.prompter_live import router as prompter_live_router
 from roboco.api.routes.provider import router as provider_router
 from roboco.api.routes.sessions import router as sessions_router
+from roboco.api.routes.settings import router as settings_router
 from roboco.api.routes.stream import router as stream_router
 from roboco.api.routes.system import router as system_router
 from roboco.api.routes.tasks import router as tasks_router
@@ -220,6 +221,12 @@ def create_app() -> FastAPI:
         sessions_router,
         prefix=f"{api_prefix}/sessions",
         tags=["Sessions"],
+    )
+
+    app.include_router(
+        settings_router,
+        prefix=f"{api_prefix}/settings",
+        tags=["Settings"],
     )
 
     app.include_router(
