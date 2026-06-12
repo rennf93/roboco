@@ -79,8 +79,7 @@ class SelfHostedConfigRequest(BaseModel):
     auth_token: str | None = Field(
         default=None,
         description=(
-            "Optional bearer token for the Ollama server;"
-            " omit to leave unchanged"
+            "Optional bearer token for the Ollama server; omit to leave unchanged"
         ),
     )
 
