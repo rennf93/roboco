@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from http import HTTPStatus
 from typing import TYPE_CHECKING
+from unittest.mock import AsyncMock, patch
 from uuid import uuid4
 
 import pytest
@@ -260,3 +261,250 @@ async def test_apply_mode_ollama_without_provider_returns_404(
         )
     app.dependency_overrides.clear()
     assert response.status_code in (HTTPStatus.NOT_FOUND, HTTPStatus.OK)
+
+
+# =============================================================================
+# Self-hosted endpoints
+# =============================================================================
+
+
+@pytest_asyncio.fixture
+async def app_client_with_local(
+    db_session: AsyncSession,
+) -> AsyncIterator[AsyncClient]:
+    """App client pre-seeded with Anthropic, Ollama Cloud, and LOCAL providers."""
+    app = _make_app(db_session)
+    suffix = uuid4().hex[:8]
+    db_session.add(
+        ProviderConfigTable(
+            name=f"anthropic-local-{suffix}",
+            type=ModelProvider.ANTHROPIC,
+            enabled=True,
+        )
+    )
+    db_session.add(
+        ProviderConfigTable(
+            name=f"ollama-local-{suffix}",
+            type=ModelProvider.OLLAMA_CLOUD,
+            enabled=False,
+            base_url="https://ollama.example.com",
+        )
+    )
+    db_session.add(
+        ProviderConfigTable(
+            name=f"self-hosted-local-{suffix}",
+            type=ModelProvider.LOCAL,
+            enabled=False,
+        )
+    )
+    await db_session.flush()
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        yield client
+    app.dependency_overrides.clear()
+
+
+@pytest.mark.asyncio
+async def test_put_self_hosted_saves_base_url(
+    app_client_with_local: AsyncClient,
+) -> None:
+    """PUT /self-hosted saves base_url and enables the LOCAL provider."""
+    response = await app_client_with_local.put(
+        "/api/providers/self-hosted",
+        json={"base_url": "http://192.168.1.10:11434"},
+        headers=_HDR_PM,
+    )
+    assert response.status_code == HTTPStatus.OK
+    body = response.json()
+    assert body["base_url"] == "http://192.168.1.10:11434"
+    assert body["enabled"] is True
+    assert body["has_token"] is False
+
+
+@pytest.mark.asyncio
+async def test_put_self_hosted_with_token_stores_encrypted(
+    app_client_with_local: AsyncClient,
+) -> None:
+    """PUT /self-hosted with auth_token stores Fernet-encrypted token."""
+    response = await app_client_with_local.put(
+        "/api/providers/self-hosted",
+        json={
+            "base_url": "http://192.168.1.10:11434",
+            "auth_token": "secret-ollama-key",
+        },
+        headers=_HDR_PM,
+    )
+    assert response.status_code == HTTPStatus.OK
+    body = response.json()
+    assert body["has_token"] is True
+
+
+@pytest.mark.asyncio
+async def test_put_self_hosted_not_seeded_returns_404(
+    db_session: AsyncSession,
+) -> None:
+    """PUT /self-hosted when LOCAL provider not seeded returns 404."""
+    await db_session.execute(
+        delete(ProviderConfigTable).where(
+            ProviderConfigTable.type == ModelProvider.LOCAL
+        )
+    )
+    await db_session.flush()
+
+    app = _make_app(db_session)
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        response = await client.put(
+            "/api/providers/self-hosted",
+            json={"base_url": "http://localhost:11434"},
+            headers=_HDR_PM,
+        )
+    app.dependency_overrides.clear()
+    assert response.status_code == HTTPStatus.NOT_FOUND
+
+
+@pytest.mark.asyncio
+async def test_put_self_hosted_developer_forbidden(
+    db_session: AsyncSession,
+) -> None:
+    """PUT /self-hosted is forbidden for developer role."""
+    app = _make_app(db_session, role=AgentRole.DEVELOPER, team=Team.BACKEND)
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        response = await client.put(
+            "/api/providers/self-hosted",
+            json={"base_url": "http://localhost:11434"},
+            headers={"X-Agent-ID": str(uuid4()), "X-Agent-Role": "developer"},
+        )
+    app.dependency_overrides.clear()
+    assert response.status_code == HTTPStatus.FORBIDDEN
+
+
+@pytest.mark.asyncio
+async def test_post_test_self_hosted_when_reachable(
+    app_client_with_local: AsyncClient,
+) -> None:
+    """POST /self-hosted/test returns {ok: true, model_count: N} when reachable."""
+    # First configure the base_url.
+    await app_client_with_local.put(
+        "/api/providers/self-hosted",
+        json={"base_url": "http://192.168.1.10:11434"},
+        headers=_HDR_PM,
+    )
+    with patch(
+        "roboco.api.routes.provider.probe_ollama_tags",
+        new_callable=AsyncMock,
+        return_value=(["llama3.1:8b", "gemma2:9b"], None),
+    ):
+        response = await app_client_with_local.post(
+            "/api/providers/self-hosted/test",
+            headers=_HDR_PM,
+        )
+    assert response.status_code == HTTPStatus.OK
+    body = response.json()
+    assert body["ok"] is True
+    assert body["model_count"] == 2  # noqa: PLR2004
+    assert body["error"] is None
+
+
+@pytest.mark.asyncio
+async def test_post_test_self_hosted_when_unreachable(
+    app_client_with_local: AsyncClient,
+) -> None:
+    """POST /self-hosted/test returns {ok: false, error: '...'} when unreachable."""
+    await app_client_with_local.put(
+        "/api/providers/self-hosted",
+        json={"base_url": "http://192.168.1.10:11434"},
+        headers=_HDR_PM,
+    )
+    with patch(
+        "roboco.api.routes.provider.probe_ollama_tags",
+        new_callable=AsyncMock,
+        return_value=([], "Could not connect to http://192.168.1.10:11434"),
+    ):
+        response = await app_client_with_local.post(
+            "/api/providers/self-hosted/test",
+            headers=_HDR_PM,
+        )
+    # Must be 200 with ok=false, NOT 500.
+    assert response.status_code == HTTPStatus.OK
+    body = response.json()
+    assert body["ok"] is False
+    assert body["error"] is not None
+    assert body["model_count"] is None
+
+
+@pytest.mark.asyncio
+async def test_post_test_self_hosted_not_configured(
+    app_client_with_local: AsyncClient,
+) -> None:
+    """POST /self-hosted/test when no base_url returns {ok: false} without 500."""
+    # LOCAL provider seeded but no base_url configured.
+    response = await app_client_with_local.post(
+        "/api/providers/self-hosted/test",
+        headers=_HDR_PM,
+    )
+    assert response.status_code == HTTPStatus.OK
+    body = response.json()
+    assert body["ok"] is False
+    assert body["error"] is not None
+
+
+@pytest.mark.asyncio
+async def test_get_self_hosted_models_returns_list(
+    app_client_with_local: AsyncClient,
+) -> None:
+    """GET /self-hosted/models returns model name strings from Ollama /api/tags."""
+    await app_client_with_local.put(
+        "/api/providers/self-hosted",
+        json={"base_url": "http://192.168.1.10:11434"},
+        headers=_HDR_PM,
+    )
+    with patch(
+        "roboco.api.routes.provider.probe_ollama_tags",
+        new_callable=AsyncMock,
+        return_value=(["llama3.1:8b", "gemma2:9b", "qwen2.5:14b"], None),
+    ):
+        response = await app_client_with_local.get(
+            "/api/providers/self-hosted/models",
+            headers=_HDR_PM,
+        )
+    assert response.status_code == HTTPStatus.OK
+    models = response.json()
+    assert isinstance(models, list)
+    assert "llama3.1:8b" in models
+    assert len(models) == 3  # noqa: PLR2004
+
+
+@pytest.mark.asyncio
+async def test_get_self_hosted_models_not_configured_returns_404(
+    app_client_with_local: AsyncClient,
+) -> None:
+    """GET /self-hosted/models when no base_url configured returns 404."""
+    response = await app_client_with_local.get(
+        "/api/providers/self-hosted/models",
+        headers=_HDR_PM,
+    )
+    assert response.status_code == HTTPStatus.NOT_FOUND
+
+
+@pytest.mark.asyncio
+async def test_get_self_hosted_models_unreachable_returns_503(
+    app_client_with_local: AsyncClient,
+) -> None:
+    """GET /self-hosted/models when server unreachable returns 503."""
+    await app_client_with_local.put(
+        "/api/providers/self-hosted",
+        json={"base_url": "http://192.168.1.10:11434"},
+        headers=_HDR_PM,
+    )
+    with patch(
+        "roboco.api.routes.provider.probe_ollama_tags",
+        new_callable=AsyncMock,
+        return_value=([], "Could not connect"),
+    ):
+        response = await app_client_with_local.get(
+            "/api/providers/self-hosted/models",
+            headers=_HDR_PM,
+        )
+    assert response.status_code == HTTPStatus.SERVICE_UNAVAILABLE

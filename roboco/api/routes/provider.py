@@ -1,10 +1,12 @@
 """
 Provider Routes
 
-Thin HTTP plumbing for the Settings UI's AI-routing panel. Four endpoints
-cover the whole UX: fetch the catalog, get / set the Ollama key, fetch the
-current mode + assignments, apply a mode change. No provider CRUD — the
-two providers (Anthropic + Ollama Cloud) are pre-seeded by migration 004.
+Thin HTTP plumbing for the Settings UI's AI-routing panel. Endpoints
+cover the whole UX: fetch the catalog, get / set the Ollama key,
+configure / test / discover the self-hosted server, fetch the current
+mode + assignments, apply a mode change. No provider CRUD — the
+providers (Anthropic, Ollama Cloud, Self-Hosted) are pre-seeded by
+migrations 004 and 027.
 """
 
 from fastapi import APIRouter, HTTPException, status
@@ -15,14 +17,18 @@ from roboco.api.schemas.provider import (
     CatalogEntryResponse,
     ModeResponse,
     OllamaKeyStatus,
+    SelfHostedConfigRequest,
+    SelfHostedConfigResponse,
+    SelfHostedTestResponse,
     SetOllamaKeyRequest,
     assignment_to_response,
 )
 from roboco.models.base import ModelProvider
 from roboco.models.llm_catalog import MODEL_CATALOG
 from roboco.services.base import NotFoundError
-from roboco.services.llm import get_model_routing_service
-from roboco.services.provider import get_provider_service
+from roboco.services.llm import get_model_routing_service, probe_ollama_tags
+from roboco.services.provider import ProviderUpdate, get_provider_service
+from roboco.utils.converters import require_uuid
 
 router = APIRouter()
 
@@ -104,6 +110,136 @@ async def set_ollama_key(
         has_key=bool(provider.auth_token_encrypted),
         enabled=provider.enabled,
     )
+
+
+# =============================================================================
+# SELF-HOSTED (LOCAL) OLLAMA SERVER
+# =============================================================================
+
+
+@router.put("/self-hosted", response_model=SelfHostedConfigResponse)
+async def set_self_hosted_config(
+    data: SelfHostedConfigRequest,
+    db: DbSession,
+    agent: CurrentAgentContext,
+) -> SelfHostedConfigResponse:
+    """Save the base URL (and optionally an auth token) for the LOCAL provider.
+
+    The LOCAL provider row must be seeded (migration 027). The token, when
+    provided and non-empty, is Fernet-encrypted before storing. An empty
+    string for `auth_token` clears the stored token. The provider is
+    automatically enabled when a valid base_url is saved.
+    """
+    require_pm_or_above(agent.role, "configure the self-hosted provider")
+    provider_svc = get_provider_service(db)
+    providers = await provider_svc.list_providers(include_disabled=True)
+    local = next(
+        (p for p in providers if p.type == ModelProvider.LOCAL),
+        None,
+    )
+    if local is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=(
+                "Self-Hosted provider not seeded. "
+                "Run alembic upgrade head (migration 027)."
+            ),
+        )
+
+    # Determine token update intent:
+    # None → leave unchanged, "" → clear, non-empty str → re-encrypt.
+    clear_token = data.auth_token is not None and data.auth_token == ""
+    new_token = data.auth_token if (data.auth_token and data.auth_token != "") else None
+
+    await provider_svc.update_provider(
+        require_uuid(local.id),
+        ProviderUpdate(
+            base_url=data.base_url,
+            auth_token=new_token,
+            clear_auth_token=clear_token,
+            enabled=True,
+        ),
+    )
+    await db.commit()
+
+    # Re-fetch after commit to get the persisted state.
+    updated = await provider_svc.list_providers(include_disabled=True)
+    local_updated = next(p for p in updated if p.type == ModelProvider.LOCAL)
+    return SelfHostedConfigResponse(
+        base_url=local_updated.base_url,
+        has_token=bool(local_updated.auth_token_encrypted),
+        enabled=local_updated.enabled,
+    )
+
+
+@router.post("/self-hosted/test", response_model=SelfHostedTestResponse)
+async def test_self_hosted_connection(
+    db: DbSession,
+    agent: CurrentAgentContext,
+) -> SelfHostedTestResponse:
+    """Probe the configured self-hosted Ollama server.
+
+    Returns ``{ok: true, model_count: N}`` when the server is reachable
+    and returns a valid model list from ``{base_url}/api/tags``.
+    Returns ``{ok: false, error: '<message>'}`` on any failure — never
+    raises a 500, so the Settings UI can display a friendly error.
+    """
+    require_pm_or_above(agent.role, "test the self-hosted connection")
+    provider_svc = get_provider_service(db)
+    providers = await provider_svc.list_providers(include_disabled=True)
+    local = next(
+        (p for p in providers if p.type == ModelProvider.LOCAL),
+        None,
+    )
+    if local is None or not local.base_url:
+        return SelfHostedTestResponse(
+            ok=False,
+            error=(
+                "Self-hosted server is not configured."
+                " Set base_url first via PUT /self-hosted."
+            ),
+        )
+
+    models, error = await probe_ollama_tags(local.base_url)
+    if error is not None:
+        return SelfHostedTestResponse(ok=False, error=error)
+    return SelfHostedTestResponse(ok=True, model_count=len(models))
+
+
+@router.get("/self-hosted/models", response_model=list[str])
+async def get_self_hosted_models(
+    db: DbSession,
+    agent: CurrentAgentContext,
+) -> list[str]:
+    """Return the list of model names available on the self-hosted Ollama server.
+
+    Queries ``{base_url}/api/tags`` and extracts the ``name`` field from
+    each model entry. Raises 503 if the server is unreachable, 404 if
+    the LOCAL provider is not configured.
+    """
+    require_pm_or_above(agent.role, "list self-hosted models")
+    provider_svc = get_provider_service(db)
+    providers = await provider_svc.list_providers(include_disabled=True)
+    local = next(
+        (p for p in providers if p.type == ModelProvider.LOCAL),
+        None,
+    )
+    if local is None or not local.base_url:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=(
+                "Self-hosted provider is not configured. "
+                "Set base_url via PUT /self-hosted first."
+            ),
+        )
+
+    models, error = await probe_ollama_tags(local.base_url)
+    if error is not None:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=f"Self-hosted server unreachable: {error}",
+        )
+    return models
 
 
 # =============================================================================
