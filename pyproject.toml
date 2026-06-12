@@ -50,7 +50,7 @@ dependencies = [
     # appear in direct deps for the source override to bind. deptry's
     # DEP002 ignore for `torch` below documents the same reality.
     "torch",
-    "claude-agent-sdk>=0.2.94",
+    "claude-agent-sdk>=0.2.97",
 ]
 
 [project.optional-dependencies]
@@ -420,7 +420,7 @@ DEP003 = ["starlette"]
 [dependency-groups]
 dev = [
     "pytest>=9.0.3",
-    "pytest-asyncio>=1.3.0",
+    "pytest-asyncio>=1.4.0",
     "pytest-cov>=7.1.0",
 ]
 
