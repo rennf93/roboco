@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { settingsApi } from "@/lib/api";
 import {
@@ -21,24 +21,24 @@ const DEFAULT_RETENTION = "14";
 
 export function TranscriptRetentionCard() {
   const queryClient = useQueryClient();
-  const [days, setDays] = useState<string>(DEFAULT_RETENTION);
+  // `edited` holds the user's in-progress input; null means "show the server
+  // value". Deriving the displayed value avoids syncing query state into local
+  // state with an effect (react-hooks/set-state-in-effect).
+  const [edited, setEdited] = useState<string | null>(null);
 
   const { data: settings, isLoading } = useQuery({
     queryKey: ["settings"],
     queryFn: settingsApi.getAll,
   });
 
-  useEffect(() => {
-    const stored = settings?.[RETENTION_KEY];
-    if (stored !== undefined) {
-      setDays(stored);
-    }
-  }, [settings]);
+  const serverValue = settings?.[RETENTION_KEY] ?? DEFAULT_RETENTION;
+  const days = edited ?? serverValue;
 
   const saveMutation = useMutation({
     mutationFn: (value: string) => settingsApi.update(RETENTION_KEY, value),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["settings"] });
+      setEdited(null); // re-sync the input to the freshly-saved server value
       toast.success("Transcript retention updated");
     },
     onError: (error) => {
@@ -79,7 +79,7 @@ export function TranscriptRetentionCard() {
             min={1}
             value={days}
             disabled={isLoading}
-            onChange={(e) => setDays(e.target.value)}
+            onChange={(e) => setEdited(e.target.value)}
             className="max-w-[160px]"
           />
         </div>
