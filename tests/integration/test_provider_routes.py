@@ -260,7 +260,7 @@ async def test_apply_mode_ollama_without_provider_returns_404(
             "/api/providers", json={"mode": "ollama"}, headers=_HDR_PM
         )
     app.dependency_overrides.clear()
-    assert response.status_code in (HTTPStatus.NOT_FOUND, HTTPStatus.OK)
+    assert response.status_code == HTTPStatus.NOT_FOUND
 
 
 # =============================================================================
@@ -402,6 +402,11 @@ async def test_post_test_self_hosted_when_reachable(
         )
     assert response.status_code == HTTPStatus.OK
     body = response.json()
+    # Contract: field names and types for the test response schema.
+    assert "ok" in body
+    assert "model_count" in body
+    assert "error" in body
+    assert isinstance(body["ok"], bool)
     assert body["ok"] is True
     assert body["model_count"] == 2  # noqa: PLR2004
     assert body["error"] is None
@@ -451,10 +456,52 @@ async def test_post_test_self_hosted_not_configured(
 
 
 @pytest.mark.asyncio
+async def test_get_self_hosted_config_returns_200(
+    app_client_with_local: AsyncClient,
+) -> None:
+    """GET /self-hosted returns {base_url, has_token, enabled} when LOCAL is seeded."""
+    response = await app_client_with_local.get(
+        "/api/providers/self-hosted",
+        headers=_HDR_PM,
+    )
+    assert response.status_code == HTTPStatus.OK
+    body = response.json()
+    # Contract: field names and types must match the schema.
+    assert "base_url" in body
+    assert "has_token" in body
+    assert "enabled" in body
+    assert isinstance(body["has_token"], bool)
+    assert isinstance(body["enabled"], bool)
+
+
+@pytest.mark.asyncio
+async def test_get_self_hosted_config_not_seeded_returns_404(
+    db_session: AsyncSession,
+) -> None:
+    """GET /self-hosted when LOCAL provider not seeded returns 404."""
+    await db_session.execute(
+        delete(ProviderConfigTable).where(
+            ProviderConfigTable.type == ModelProvider.LOCAL
+        )
+    )
+    await db_session.flush()
+
+    app = _make_app(db_session)
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        response = await client.get(
+            "/api/providers/self-hosted",
+            headers=_HDR_PM,
+        )
+    app.dependency_overrides.clear()
+    assert response.status_code == HTTPStatus.NOT_FOUND
+
+
+@pytest.mark.asyncio
 async def test_get_self_hosted_models_returns_list(
     app_client_with_local: AsyncClient,
 ) -> None:
-    """GET /self-hosted/models returns model name strings from Ollama /api/tags."""
+    """GET /self-hosted/models returns [{model_name, display_name}] objects."""
     await app_client_with_local.put(
         "/api/providers/self-hosted",
         json={"base_url": "http://192.168.1.10:11434"},
@@ -472,8 +519,17 @@ async def test_get_self_hosted_models_returns_list(
     assert response.status_code == HTTPStatus.OK
     models = response.json()
     assert isinstance(models, list)
-    assert "llama3.1:8b" in models
     assert len(models) == 3  # noqa: PLR2004
+    # Contract: each entry must be an object with model_name and display_name.
+    first = models[0]
+    assert isinstance(first, dict)
+    assert "model_name" in first
+    assert "display_name" in first
+    assert isinstance(first["model_name"], str)
+    assert isinstance(first["display_name"], str)
+    # Verify specific entry present.
+    names = [m["model_name"] for m in models]
+    assert "llama3.1:8b" in names
 
 
 @pytest.mark.asyncio

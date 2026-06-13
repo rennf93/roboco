@@ -105,6 +105,19 @@ class SelfHostedTestResponse(BaseModel):
     error: str | None = None
 
 
+class SelfHostedModelEntry(BaseModel):
+    """One model available on the self-hosted Ollama server.
+
+    `model_name` is the raw Ollama tag identifier (e.g. ``llama3.1:8b``).
+    `display_name` is a human-readable label for the Settings UI dropdown;
+    for self-hosted models it mirrors `model_name` since Ollama's ``/api/tags``
+    does not return a separate display label.
+    """
+
+    model_name: str
+    display_name: str
+
+
 # =============================================================================
 # MODEL ASSIGNMENTS (read-only for the UI)
 # =============================================================================

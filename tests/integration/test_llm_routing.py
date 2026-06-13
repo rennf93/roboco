@@ -539,3 +539,54 @@ async def test_upsert_assignment_unknown_model_without_local_raises(
             scope_value="be-dev-1",
             model_name="ghost-model:latest",
         )
+
+
+@pytest.mark.asyncio
+async def test_upsert_assignment_enables_local_when_disabled(
+    db_session: AsyncSession,
+) -> None:
+    """upsert_assignment transitions LOCAL provider from enabled=False to enabled=True.
+
+    AC4: proves that mix-mode assignment of a non-catalog model name resolves
+    to provider_type LOCAL and LOCAL.enabled is True afterward — even when the
+    LOCAL provider starts with enabled=False (the seeded state from migration 028
+    before the operator configures a base_url via PUT /providers/self-hosted).
+    """
+    # Arrange: Anthropic provider (required by ModelRoutingService internals)
+    # and LOCAL provider starting with enabled=False.
+    anthropic = ProviderConfigTable(
+        name="anthropic-ac4-test",
+        type=ModelProvider.ANTHROPIC,
+        enabled=True,
+    )
+    local = ProviderConfigTable(
+        name="self-hosted-ac4-test",
+        type=ModelProvider.LOCAL,
+        enabled=False,  # Starts DISABLED — this is the state to be transitioned.
+        base_url="http://localhost:11434",
+    )
+    db_session.add_all([anthropic, local])
+    await db_session.flush()
+
+    # Pre-condition: LOCAL is disabled before the call.
+    assert local.enabled is False
+
+    # Act: upsert a non-catalog model name → resolves to LOCAL →
+    # calls ProviderService.update_provider(enabled=True) on the LOCAL row.
+    svc = ModelRoutingService(db_session)
+    row = await svc.upsert_assignment(
+        scope=AssignmentScope.AGENT_SLUG,
+        scope_value="test-agent-ac4",
+        model_name="non-catalog-model:7b",
+    )
+
+    # Refresh local from DB so the in-memory object reflects the DB write.
+    await db_session.refresh(local)
+
+    # Assert: assignment resolved to LOCAL and LOCAL provider is now enabled.
+    assert row.provider.type == ModelProvider.LOCAL
+    assert row.model_name == "non-catalog-model:7b"
+    assert local.enabled is True, (
+        "upsert_assignment must call update_provider(enabled=True) on LOCAL "
+        "whenever it routes a non-catalog model to the LOCAL provider"
+    )
