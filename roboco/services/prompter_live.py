@@ -43,6 +43,10 @@ class LiveIntakeSession:
     agent_id: str  # container agent id, e.g. "intake-3f9c1a2b"
     queue: asyncio.Queue[Any] = field(default_factory=asyncio.Queue)
     closed: bool = False
+    # Set when the chat is *parked* awaiting board review of this task: the
+    # session stays alive (not reaped) so the board's feedback can be injected
+    # in-context for an in-place re-draft. ``None`` for a normal live chat.
+    task_id: str | None = None
 
 
 class PrompterLiveRegistry:
@@ -96,6 +100,32 @@ class PrompterLiveRegistry:
         session.closed = True
         session.queue.put_nowait(_CLOSE)
         self.log.info("Live intake session closed", session_id=session_id)
+
+    def park(self, session_id: str, task_id: str) -> bool:
+        """Mark a session as parked awaiting board review of ``task_id``.
+
+        Keeps the session alive (the opposite of ``close``): the intake agent
+        stays resident with the full interview in context, so the board's
+        feedback can be injected for an in-place re-draft. False if no such
+        live session (it was already reaped / never opened).
+        """
+        session = self._sessions.get(session_id)
+        if session is None or session.closed:
+            return False
+        session.task_id = task_id
+        self.log.info(
+            "Live intake session parked for board review",
+            session_id=session_id,
+            task_id=task_id,
+        )
+        return True
+
+    def find_by_task(self, task_id: str) -> LiveIntakeSession | None:
+        """Return the live (un-closed) session parked for ``task_id``, if any."""
+        for session in self._sessions.values():
+            if session.task_id == task_id and not session.closed:
+                return session
+        return None
 
     # -- agent -> panel ----------------------------------------------------
 

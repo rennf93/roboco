@@ -247,6 +247,19 @@ async def confirm_live(
         raise _translate_service_error(e) from e
     await db.commit()
 
+    # Board route (first confirm, not a re-draft): keep the intake agent alive
+    # and PARK it against this task, so when the board finishes its review the
+    # orchestrator can inject that feedback in-context for an in-place re-draft
+    # (the agent still holds the whole interview). Every other path is terminal
+    # → reap. If parking fails (session already gone), fall through to reap so
+    # nothing leaks.
+    if (
+        body.task_id is None
+        and body.route == "board"
+        and get_live_registry().park(session_id, str(task_id))
+    ):
+        return {"task_id": str(task_id)}
+
     # The draft is now a task — reap the agent + close the relay stream.
     await get_orchestrator().reap_intake_session(session_id)
     return {"task_id": str(task_id)}

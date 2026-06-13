@@ -5872,6 +5872,51 @@ Start now: evidence(task_id="{task_id}")
             "Board review complete — CEO Approve & Start unlocked",
             task_id=task_id,
         )
+        # Keep-alive re-draft: if an intake chat is parked awaiting this review,
+        # inject the board's feedback so the still-resident prompter re-drafts
+        # in-context. Best-effort; the cold "Re-draft" path covers the rest.
+        await self._inject_board_brief_into_parked_intake(task_id)
+
+    async def _inject_board_brief_into_parked_intake(self, task_id: str) -> None:
+        """Inject the board's review into a parked intake session, if one exists.
+
+        No-op when no session is parked for this task (it was reaped, the
+        container died, or the draft never used the board route) — the CEO then
+        re-drafts via the cold ``/re-interview`` path instead. Never raises.
+        """
+        from roboco.services.prompter_live import get_live_registry
+
+        session = get_live_registry().find_by_task(task_id)
+        if session is None:
+            return
+        from uuid import UUID
+
+        from roboco.db.base import get_db_context
+        from roboco.services.journal import get_journal_service
+        from roboco.services.prompter import compose_redraft_message
+        from roboco.services.task import get_task_service
+
+        try:
+            async with get_db_context() as db:
+                task = await get_task_service(db).get(UUID(task_id))
+                if task is None:
+                    return
+                entries = await get_journal_service(db).board_review_brief(
+                    UUID(task_id)
+                )
+                message = compose_redraft_message(task, entries)
+            delivered = await get_live_registry().deliver(session.session_id, message)
+            logger.info(
+                "Injected board feedback into parked intake",
+                task_id=task_id,
+                delivered=delivered,
+            )
+        except Exception as exc:
+            logger.warning(
+                "Failed to inject board feedback into parked intake",
+                task_id=task_id,
+                error=str(exc),
+            )
 
     def _pm_spawn_prompt(
         self, routing: str, agent_id: str, task: dict[str, Any]

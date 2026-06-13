@@ -635,6 +635,21 @@ export function usePrompter() {
 
     try {
       const { task_id } = await prompterLiveApi.confirm(sid, payload);
+      // Board route, first pass: the backend parked the intake agent so the
+      // board's feedback can be injected for an in-place re-draft. Keep the chat
+      // alive (don't reap) — the revised draft will arrive here to approve.
+      if (route === "board" && !redraftId) {
+        redraftTaskIdRef.current = task_id;
+        addMessage({
+          role: "assistant",
+          content:
+            "Sent to the board — the Product Owner and Head of Marketing are " +
+            "reviewing this. Their feedback will arrive here as a revised draft " +
+            "you can approve. You can leave and come back; this chat stays open.",
+        });
+        setState("chatting");
+        return; // `finally` resets the launching guard
+      }
       // The draft became a task — reap the agent and close the stream.
       closeStream();
       void prompterLiveApi.stop(sid).catch(() => undefined);
@@ -653,7 +668,7 @@ export function usePrompter() {
       setIsLaunching(false);
       launchingRef.current = false;
     }
-  }, [editableDraft, isValidForLaunch, closeStream]);
+  }, [editableDraft, isValidForLaunch, closeStream, addMessage]);
 
   // -----------------------------------------------------------------------
   // Reset to start another conversation
