@@ -50,6 +50,16 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
+    # Delete any model_assignments that point to the LOCAL provider row first
+    # to avoid a FK RESTRICT violation on provider_configs.id.
+    op.execute(
+        sa.text(
+            "DELETE FROM model_assignments "
+            "WHERE provider_config_id IN ("
+            "    SELECT id FROM provider_configs WHERE name = 'Self-Hosted (Ollama)'"
+            ")"
+        )
+    )
     op.execute(
         sa.text(
             "DELETE FROM provider_configs "

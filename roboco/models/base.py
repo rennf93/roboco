@@ -191,7 +191,10 @@ class ModelProvider(StrEnum):
     `ANTHROPIC` is the built-in default — routed via the mounted `~/.claude/`
     credentials inside each agent container. `OLLAMA_CLOUD` routes via
     `ANTHROPIC_BASE_URL` + `ANTHROPIC_AUTH_TOKEN` env injection at spawn.
-    OPENAI / LOCAL are historical placeholders (unused today).
+    `LOCAL` is the self-hosted Ollama provider: the operator configures its
+    base URL via PUT /api/providers/self-hosted (seeded by migration 028).
+    Agents assigned to LOCAL are routed to that server at spawn time.
+    `OPENAI` is reserved for future use.
     """
 
     ANTHROPIC = "anthropic"
