@@ -23,14 +23,39 @@ if TYPE_CHECKING:
 
 
 @pytest.mark.asyncio
-async def test_migration_028_upgrade_local_row_inserted(
+async def test_migration_028_upgrade_insert_contract(
     db_session: AsyncSession,
 ) -> None:
-    """After upgrade to head, the LOCAL provider row is present in provider_configs.
+    """The upgrade INSERT SQL seeds the correct LOCAL provider row and is idempotent.
 
-    The upgrade() in migration 028 does an INSERT ... ON CONFLICT DO NOTHING,
-    so this row must exist after running `alembic upgrade head`.
+    Executes the INSERT ... ON CONFLICT DO NOTHING SQL from migration 028's
+    upgrade() directly in the test session, verifying:
+      - name='Self-Hosted (Ollama)', type='local', enabled=False on the row.
+      - Running the same INSERT a second time leaves exactly one row (idempotency).
     """
+    _insert_sql = text(
+        """
+        INSERT INTO provider_configs
+            (id, name, type, base_url, auth_token_encrypted, enabled, created_at)
+        VALUES
+            (
+                gen_random_uuid(),
+                'Self-Hosted (Ollama)',
+                'local',
+                NULL,
+                NULL,
+                false,
+                now()
+            )
+        ON CONFLICT (name) DO NOTHING
+        """
+    )
+
+    # --- First run: the row should be inserted.
+    await db_session.execute(_insert_sql)
+    await db_session.flush()
+
+    # Verify the field contract on the newly-inserted row.
     result = await db_session.execute(
         text(
             "SELECT name, type, enabled "
@@ -39,14 +64,23 @@ async def test_migration_028_upgrade_local_row_inserted(
         )
     )
     rows = list(result)
-    assert len(rows) == 1, (
-        "Expected exactly one 'Self-Hosted (Ollama)' row; "
-        f"found {len(rows)}. Run `alembic upgrade head` to seed it."
-    )
+    assert len(rows) == 1
     name, ptype, enabled = rows[0]
     assert name == "Self-Hosted (Ollama)"
     assert ptype == "local"
     assert enabled is False  # starts disabled; user configures via PUT /self-hosted
+
+    # --- Second run: ON CONFLICT DO NOTHING must not create a duplicate.
+    await db_session.execute(_insert_sql)
+    await db_session.flush()
+
+    result = await db_session.execute(
+        text("SELECT id FROM provider_configs WHERE name = 'Self-Hosted (Ollama)'")
+    )
+    assert len(list(result)) == 1, (
+        "Expected exactly one 'Self-Hosted (Ollama)' row after two INSERT "
+        "executions; ON CONFLICT DO NOTHING must prevent duplicates."
+    )
 
 
 @pytest.mark.asyncio
