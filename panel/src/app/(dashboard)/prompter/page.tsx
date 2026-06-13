@@ -1,5 +1,6 @@
 "use client";
 
+import { useEffect, useRef } from "react";
 import { Loader2, Sparkles, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { usePrompter } from "@/hooks/use-prompter";
@@ -34,7 +35,20 @@ export default function PrompterPage() {
     launchTask,
     startAnother,
     isLaunching,
+    startRedraft,
   } = usePrompter();
+
+  // Entry from a task's "Re-draft with board feedback" button: ?redraft=<taskId>
+  // re-opens intake seeded with the board's review of that task. Fire once.
+  const redraftTriggered = useRef(false);
+  useEffect(() => {
+    if (redraftTriggered.current) return;
+    const taskId = new URLSearchParams(window.location.search).get("redraft");
+    if (taskId) {
+      redraftTriggered.current = true;
+      void startRedraft(taskId);
+    }
+  }, [startRedraft]);
 
   const showForm = state === "form" || state === "preparing";
   const isComposerDisabled =

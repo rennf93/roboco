@@ -3889,6 +3889,18 @@ class TaskService(BaseService):
                 current_status=task.status.value,
             )
             return None
+        # A board task may not be handed to Main PM until the Product Owner and
+        # Head of Marketing have finished reviewing. Today only the UI hides the
+        # button; enforce the invariant server-side so an early/rogue call can't
+        # start the work before the board's input exists. Non-board tasks
+        # (team already MAIN_PM) are unaffected — only a task still on the board
+        # carries this precondition.
+        if task.team == Team.BOARD and not task.board_review_complete:
+            self.log.warning(
+                "Cannot approve_and_start - board review not complete",
+                task_id=str(task_id),
+            )
+            return None
 
         main_pm = await get_agent_service(self.session).get_by_slug("main-pm")
         if main_pm is None:

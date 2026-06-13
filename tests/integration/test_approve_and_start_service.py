@@ -52,6 +52,8 @@ async def start_setup(db_session: AsyncSession) -> AsyncIterator[dict]:
     def _task(
         status: TaskStatus = TaskStatus.PENDING,
         assigned_to: UUID | None = None,
+        team: Team = Team.MAIN_PM,
+        board_review_complete: bool = False,
     ) -> TaskTable:
         t = TaskTable(
             id=uuid4(),
@@ -64,7 +66,8 @@ async def start_setup(db_session: AsyncSession) -> AsyncIterator[dict]:
             nature=TaskNature.TECHNICAL,
             project_id=project.id,
             created_by=po.id,
-            team=Team.MAIN_PM,
+            team=team,
+            board_review_complete=board_review_complete,
             assigned_to=assigned_to if assigned_to else po.id,
         )
         db_session.add(t)
@@ -122,3 +125,23 @@ async def test_returns_none_when_not_pending(start_setup: dict) -> None:
     await start_setup["db"].flush()
     out = await start_setup["svc"].approve_and_start(task.id, "x" * 25)
     assert out is None
+
+
+@pytest.mark.asyncio
+async def test_returns_none_when_board_review_incomplete(start_setup: dict) -> None:
+    # A task still on the board with an unfinished review must not be started.
+    task = start_setup["mk"](team=Team.BOARD, board_review_complete=False)
+    await start_setup["db"].flush()
+    out = await start_setup["svc"].approve_and_start(task.id, "x" * 25)
+    assert out is None
+    assert task.assigned_to == start_setup["po"].id  # not handed to Main PM
+
+
+@pytest.mark.asyncio
+async def test_succeeds_when_board_review_complete(start_setup: dict) -> None:
+    task = start_setup["mk"](team=Team.BOARD, board_review_complete=True)
+    await start_setup["db"].flush()
+    out = await start_setup["svc"].approve_and_start(task.id, "x" * 25)
+    assert out is not None
+    assert out.assigned_to == start_setup["main_pm"].id
+    assert out.status == TaskStatus.PENDING

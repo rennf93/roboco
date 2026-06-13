@@ -14,6 +14,7 @@ import {
   type ConfirmPayload,
 } from "@/lib/api/prompter";
 import { getErrorMessage } from "@/lib/api/client";
+import { tasksApi } from "@/lib/api/tasks";
 import { Team } from "@/types";
 import type { TaskType, TaskNature, Complexity } from "@/types";
 
@@ -162,6 +163,7 @@ interface PersistedChat {
   state: PrompterState;
   scope: { targetKind: TargetKind; projectId: string; productId: string };
   editableDraft: EditableDraft;
+  redraftTaskId?: string | null;
   savedAt: number;
 }
 
@@ -225,6 +227,9 @@ export function usePrompter() {
 
   // Live-session plumbing held in refs so SSE callbacks never see stale state.
   const sessionIdRef = useRef<string | null>(null);
+  // Set when this chat is a board-informed re-draft of an existing task: confirm
+  // then updates that task in place instead of creating a new one.
+  const redraftTaskIdRef = useRef<string | null>(null);
   const sourceRef = useRef<EventSource | null>(null);
   const streamingIdRef = useRef<string | null>(null);
   // Synchronous re-entry guard for launch — a double-click was creating two tasks.
@@ -390,6 +395,7 @@ export function usePrompter() {
         state,
         scope: scopeRef.current,
         editableDraft,
+        redraftTaskId: redraftTaskIdRef.current,
         savedAt: Date.now(),
       });
     }
@@ -415,6 +421,7 @@ export function usePrompter() {
         // events. Any tokens from a turn that was mid-flight at reload are gone,
         // so land in a stable state rather than "streaming".
         sessionIdRef.current = persisted.sessionId;
+        redraftTaskIdRef.current = persisted.redraftTaskId ?? null;
         setSessionId(persisted.sessionId);
         setMessages(persisted.messages);
         setEditableDraft(persisted.editableDraft);
@@ -481,6 +488,41 @@ export function usePrompter() {
     addMessage,
     openStream,
   ]);
+
+  // -----------------------------------------------------------------------
+  // Re-draft an existing board-reviewed task with the board's feedback
+  // -----------------------------------------------------------------------
+
+  const startRedraft = useCallback(
+    async (taskId: string) => {
+      if (state === "preparing" || sessionIdRef.current) return;
+      setState("preparing");
+      try {
+        // Scope the chat to the task's product/project so launch has a target
+        // even if the re-drafted proposal omits it.
+        const task = await tasksApi.get(taskId);
+        if (task.product_id) {
+          setTargetKind("product");
+          setProductId(task.product_id);
+        } else if (task.project_id) {
+          setTargetKind("project");
+          setProjectId(task.project_id);
+        }
+        const { session_id } = await prompterLiveApi.reInterview(taskId);
+        redraftTaskIdRef.current = taskId;
+        sessionIdRef.current = session_id;
+        setSessionId(session_id);
+        openStream(session_id);
+        setIsSending(true);
+        setActivity("Re-opening intake with the board's feedback…");
+        setState("streaming");
+      } catch (err) {
+        addMessage({ role: "error", content: getErrorMessage(err) });
+        setState("form");
+      }
+    },
+    [state, addMessage, openStream],
+  );
 
   // -----------------------------------------------------------------------
   // Send a chat message
@@ -580,6 +622,11 @@ export function usePrompter() {
       editableDraft.targetKind === "product"
         ? { product_id: editableDraft.productId, draft, route }
         : { project_id: editableDraft.projectId, draft, route };
+    // Board-informed re-draft: confirm updates the existing task in place.
+    const redraftId = redraftTaskIdRef.current;
+    if (redraftId) {
+      payload.task_id = redraftId;
+    }
 
     const effectiveTeam =
       editableDraft.targetKind === "product"
@@ -588,11 +635,27 @@ export function usePrompter() {
 
     try {
       const { task_id } = await prompterLiveApi.confirm(sid, payload);
+      // Board route, first pass: the backend parked the intake agent so the
+      // board's feedback can be injected for an in-place re-draft. Keep the chat
+      // alive (don't reap) — the revised draft will arrive here to approve.
+      if (route === "board" && !redraftId) {
+        redraftTaskIdRef.current = task_id;
+        addMessage({
+          role: "assistant",
+          content:
+            "Sent to the board — the Product Owner and Head of Marketing are " +
+            "reviewing this. Their feedback will arrive here as a revised draft " +
+            "you can approve. You can leave and come back; this chat stays open.",
+        });
+        setState("chatting");
+        return; // `finally` resets the launching guard
+      }
       // The draft became a task — reap the agent and close the stream.
       closeStream();
       void prompterLiveApi.stop(sid).catch(() => undefined);
       clearPersisted();
       sessionIdRef.current = null;
+      redraftTaskIdRef.current = null;
       setCreatedTaskId(task_id);
       setCreatedTaskTitle(draft.title);
       setCreatedTaskTeam(effectiveTeam);
@@ -605,7 +668,7 @@ export function usePrompter() {
       setIsLaunching(false);
       launchingRef.current = false;
     }
-  }, [editableDraft, isValidForLaunch, closeStream]);
+  }, [editableDraft, isValidForLaunch, closeStream, addMessage]);
 
   // -----------------------------------------------------------------------
   // Reset to start another conversation
@@ -655,6 +718,7 @@ export function usePrompter() {
     setInitialMessage,
     isFormValid,
     start,
+    startRedraft,
 
     // Chat + confirm
     send,

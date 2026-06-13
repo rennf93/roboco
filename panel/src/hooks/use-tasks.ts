@@ -1,13 +1,14 @@
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { tasksApi, type TaskFilters } from "@/lib/api/tasks";
-import type {
-  Task,
-  TaskCreate,
-  ProgressRequest,
-  CheckpointRequest,
-  CommitRequest,
-  SoftBlockRequest,
-  EscalateRequest,
+import {
+  Team,
+  type Task,
+  type TaskCreate,
+  type ProgressRequest,
+  type CheckpointRequest,
+  type CommitRequest,
+  type SoftBlockRequest,
+  type EscalateRequest,
 } from "@/types";
 
 // Type for task updates - allows any Task field to be updated
@@ -21,6 +22,7 @@ export const taskKeys = {
   details: () => [...taskKeys.all, "detail"] as const,
   detail: (id: string) => [...taskKeys.details(), id] as const,
   subtasks: (parentId: string) => [...taskKeys.all, "subtasks", parentId] as const,
+  boardReview: (id: string) => [...taskKeys.all, "board-review", id] as const,
   stats: () => [...taskKeys.all, "stats"] as const,
   statsByTeam: () => [...taskKeys.all, "stats-by-team"] as const,
 };
@@ -39,6 +41,25 @@ export function useTask(taskId: string) {
     queryKey: taskKeys.detail(taskId),
     queryFn: () => tasksApi.get(taskId),
     enabled: !!taskId,
+    // No per-task websocket exists, so while a board task is mid-review we poll
+    // the detail so the "Approve & Start" button appears as soon as the board
+    // finishes. Polling stops the moment board_review_complete flips true.
+    refetchInterval: (query) =>
+      query.state.data?.team === Team.BOARD &&
+      !query.state.data?.board_review_complete
+        ? 4000
+        : false,
+  });
+}
+
+// The board's review (PO + Head of Marketing) for a task. Enabled lazily so
+// it's only fetched where it's shown (e.g. the approve/redraft surface).
+export function useBoardReview(taskId: string, enabled = true) {
+  return useQuery({
+    queryKey: taskKeys.boardReview(taskId),
+    queryFn: () => tasksApi.getBoardReview(taskId),
+    enabled: !!taskId && enabled,
+    staleTime: 30000,
   });
 }
 
