@@ -41,7 +41,7 @@ from roboco.api.schemas.tasks import (
     task_to_response,
     transform_update_data,
 )
-from roboco.exceptions import TaskLifecycleError
+from roboco.exceptions import GitError, TaskLifecycleError
 from roboco.foundation.policy import task_completeness as tc
 from roboco.models.base import AgentRole, TaskStatus, Team
 from roboco.models.task import TaskCreate
@@ -522,6 +522,36 @@ async def update_task(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Not authorized to update this task",
         )
+
+    # Resolve assigned_to slug → UUID before transforming. The schema accepts
+    # either a UUID string or an agent slug (e.g. "be-dev-1"). The transform
+    # helper parse_uuid_or_none returns None on non-UUID strings, so we must
+    # resolve slugs here before delegating to the transform step.
+    # Explicitly-sent null (unassign) is handled correctly by transform itself.
+    if "assigned_to" in data.model_fields_set and data.assigned_to is not None:
+        try:
+            UUID(data.assigned_to)  # already a valid UUID — no action needed
+        except ValueError:
+            # It's a slug — look up the agent
+            from roboco.services.repositories.query_helpers import get_agent_by_slug
+
+            agent_row = await get_agent_by_slug(db, data.assigned_to)
+            if agent_row is None:
+                raise HTTPException(
+                    status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                    detail={
+                        "error": {
+                            "code": "ASSIGNEE_NOT_FOUND",
+                            "message": (
+                                f"No agent with slug or UUID '{data.assigned_to}'"
+                            ),
+                            "hint": "Use an agent slug (e.g. 'be-dev-1') or UUID",
+                        }
+                    },
+                ) from None
+            # Replace the slug with the resolved UUID string so transform
+            # can parse it as a proper UUID.
+            data = data.model_copy(update={"assigned_to": str(agent_row.id)})
 
     # Transform input data for database storage
     updates = transform_update_data(data)
@@ -1354,6 +1384,144 @@ async def ceo_approve_task(
 
     await db.commit()
     return task_to_response(task)
+
+
+@router.get("/{task_id}/ceo-approve", response_model=TaskResponse)
+async def ceo_approve_eligibility_check(
+    task_id: UUID,
+    db: DbSession,
+    agent: CurrentAgentContext,
+) -> TaskResponse:
+    """Pre-flight check: can this task be CEO-approved?
+
+    Returns the task if it is eligible (has a PR attached).
+    Returns HTTP 400 with 'NO_PR' if the task has no pull request.
+    Useful for panel gates and automated pre-checks before POSTing to
+    ceo-approve or approve-and-merge.
+    """
+    if agent.role != AgentRole.CEO:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Only CEO can check CEO-approval eligibility",
+        )
+
+    service = get_task_service(db)
+    task = await service.get(task_id)
+    if not task:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="Task not found"
+        )
+
+    if task.pr_number is None:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=(
+                "NO_PR: Task has no pull request attached. A PR must be "
+                "opened and approved by QA before CEO approval. Use the "
+                "developer's open_pr flow to create the PR."
+            ),
+        )
+
+    return task_to_response(task)
+
+
+@router.post("/{task_id}/approve-and-merge", response_model=TaskResponse)
+async def approve_and_merge_task(
+    task_id: UUID,
+    db: DbSession,
+    agent: CurrentAgentContext,
+) -> TaskResponse:
+    """CEO merge + complete in one step.
+
+    Merges the task's PR, updates the work session, and marks the task
+    completed. Only CEO can perform this action. The PR must already exist
+    on the task (pr_number set). Merge failures are returned as structured
+    HTTP errors rather than unhandled exceptions.
+    """
+    if agent.role != AgentRole.CEO:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Only CEO can approve-and-merge tasks",
+        )
+
+    service = get_task_service(db)
+    task = await service.get(task_id)
+    if not task:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="Task not found"
+        )
+
+    if task.pr_number is None:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=(
+                "NO_PR: Cannot approve-and-merge — task has no PR. "
+                "The developer must open a PR (open_pr gateway verb or "
+                "POST /api/git/create-pr) before CEO can merge."
+            ),
+        )
+
+    # Resolve the project slug from the task's project_id so the git
+    # service can locate the workspace and call the GitHub API.
+    if task.project_id is None:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=(
+                "NO_PROJECT: Task has no project_id; cannot resolve "
+                "workspace for merge. Set project_id on the task first."
+            ),
+        )
+
+    from roboco.api.schemas.git import GitMergePRRequest
+    from roboco.services.git import get_git_service
+    from roboco.services.project import get_project_service
+
+    project_service = get_project_service(db)
+    project = await project_service.get(UUID(str(task.project_id)))
+    if not project:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=(
+                f"NO_PROJECT: Project {task.project_id} not found; "
+                "cannot resolve workspace for merge."
+            ),
+        )
+
+    git_service = get_git_service(db)
+    try:
+        await git_service.merge_pr_for_task(
+            agent.agent_id,
+            agent.role,
+            GitMergePRRequest(
+                project_slug=project.slug,
+                pr_number=task.pr_number,
+                task_id=task_id,
+                merge_method="squash",
+                agent_id=str(agent.agent_id),
+            ),
+        )
+    except (ServiceError, GitError) as e:
+        msg = getattr(e, "message", str(e))
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Merge failed: {msg}",
+        ) from e
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Merge failed (unexpected error): {e}",
+        ) from e
+
+    # merge_pr_for_task commits the session internally; re-fetch the
+    # updated task to return the merged state.
+    updated_task = await service.get(task_id)
+    if not updated_task:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Task disappeared after merge",
+        )
+
+    return task_to_response(updated_task)
 
 
 @router.post("/{task_id}/approve-and-start", response_model=TaskResponse)
