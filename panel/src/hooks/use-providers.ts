@@ -65,7 +65,7 @@ export function useApplyMode() {
 // Self-hosted LLM hooks
 // ---------------------------------------------------------------------------
 
-/** Query: fetch saved self-hosted config (base_url + has_auth_token flag). */
+/** Query: fetch saved self-hosted config (base_url + has_token flag). */
 export function useSelfHostedConfig() {
   return useQuery({
     queryKey: providerKeys.selfHostedConfig(),
@@ -107,14 +107,12 @@ export function useSelfHostedModels() {
   });
 }
 
-/** Mutation: force-refresh the discovered model list. */
+/** Mutation: invalidate the cached model list so it is re-fetched from GET /self-hosted/models. */
 export function useRefreshSelfHostedModels() {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: () => providersApi.refreshSelfHostedModels(),
-    onSuccess: (data) => {
-      // Update the cached model list in place.
-      qc.setQueryData(providerKeys.selfHostedModels(), data);
+    mutationFn: async () => {
+      await qc.invalidateQueries({ queryKey: providerKeys.selfHostedModels() });
     },
   });
 }

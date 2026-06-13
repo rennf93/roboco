@@ -86,7 +86,7 @@ export function AIRoutingCard() {
   // Track the latest self-hosted test result so ModeButton can gate access.
   const [selfHostedTestResult, setSelfHostedTestResult] =
     useState<SelfHostedTestResult | null>(null);
-  const isSelfHostedConnected = selfHostedTestResult?.status === "connected";
+  const isSelfHostedConnected = selfHostedTestResult?.ok === true;
 
   const handleSelfHostedTestResult = useCallback(
     (result: SelfHostedTestResult) => {
@@ -377,14 +377,16 @@ export function AIRoutingCard() {
                 self-hosted mode.
               </p>
               <Select
-                value={selfHostedModel}
-                onValueChange={setSelfHostedModel}
+                value={selfHostedModel || "__clear__"}
+                onValueChange={(v: string) =>
+                  setSelfHostedModel(v === "__clear__" ? "" : v)
+                }
               >
                 <SelectTrigger className="w-full max-w-sm">
                   <SelectValue placeholder="(use server default)" />
                 </SelectTrigger>
                 <SelectContent>
-                  <SelectItem value="">(use server default)</SelectItem>
+                  <SelectItem value="__clear__">(use server default)</SelectItem>
                   {selfHostedModels.map((m) => (
                     <SelectItem key={m.model_name} value={m.model_name}>
                       {m.display_name}

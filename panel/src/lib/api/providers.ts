@@ -44,19 +44,16 @@ export interface ApplyModePayload {
 
 /** Configuration stored server-side for the self-hosted provider. */
 export interface SelfHostedConfig {
-  base_url: string | null;
-  has_auth_token: boolean;
+  base_url: string;
+  has_token: boolean;
+  enabled: boolean;
 }
-
-/** Status values returned by the test-connection endpoint. */
-export type SelfHostedTestStatus = "connected" | "error";
 
 /** Result of a test-connection call. */
 export interface SelfHostedTestResult {
-  status: SelfHostedTestStatus;
-  model_count: number;
-  error_message: string | null;
-  last_checked: string | null; // ISO datetime
+  ok: boolean;
+  model_count: number | null;
+  error: string | null;
 }
 
 /** One model entry returned by the discovery endpoint. */
@@ -128,13 +125,6 @@ export const providersApi = {
   getSelfHostedModels: async (): Promise<SelfHostedModel[]> => {
     const { data } = await api.get<SelfHostedModel[]>(
       "/providers/self-hosted/models",
-    );
-    return data;
-  },
-
-  refreshSelfHostedModels: async (): Promise<SelfHostedModel[]> => {
-    const { data } = await api.post<SelfHostedModel[]>(
-      "/providers/self-hosted/models/refresh",
     );
     return data;
   },
