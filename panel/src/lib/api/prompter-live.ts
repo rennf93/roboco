@@ -67,6 +67,15 @@ export const prompterLiveApi = {
     return data;
   },
 
+  /** Re-open intake to re-draft a board-reviewed task with the board's feedback.
+   *  Spawns a fresh session seeded with the current draft + the board review. */
+  reInterview: async (taskId: string): Promise<StartLiveResponse> => {
+    const { data } = await api.post<StartLiveResponse>(
+      `/prompter/live/re-interview/${taskId}`
+    );
+    return data;
+  },
+
   /** SSE URL the panel opens to watch the agent. EventSource sends no headers
    *  (the route is keyed by the opaque session id on the trusted network). */
   streamUrl: (sessionId: string): string =>
