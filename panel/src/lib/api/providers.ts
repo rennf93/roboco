@@ -44,7 +44,7 @@ export interface ApplyModePayload {
 
 /** Configuration stored server-side for the self-hosted provider. */
 export interface SelfHostedConfig {
-  base_url: string;
+  base_url: string | null;
   has_token: boolean;
   enabled: boolean;
 }
