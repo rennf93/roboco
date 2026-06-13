@@ -1383,6 +1383,42 @@ class GitService(BaseService):
                 {"owner": owner, "repo": repo, "head": payload.get("head")},
             ) from e
 
+    async def _pr_base_on_remote(
+        self,
+        workspace: Path,
+        target_branch: str,
+        default_branch: str,
+        git_token: str,
+        task_id: UUID,
+    ) -> str:
+        """Return a PR base branch that actually exists on origin.
+
+        The PR base must exist on the remote, or GitHub rejects creation with
+        422 "base field invalid". An ancestor task's branch can be absent on
+        origin (parent claimed but never pushed — e.g. a PM paused before any
+        commit), which strands every child at PR time. Mirror the branch-cutting
+        fallback (see ``create_branch``): if the resolved base is missing on
+        origin, retarget to the default branch rather than hard-failing. The
+        default branch is assumed present, so it is returned unchecked.
+        """
+        if target_branch == default_branch:
+            return target_branch
+        ls = await self._run_git(
+            workspace,
+            ["ls-remote", "--heads", "origin", target_branch],
+            check=False,
+            token=git_token,
+        )
+        if ls.stdout.strip():
+            return target_branch
+        self.log.warning(
+            "PR base branch not on remote; retargeting PR to the default branch",
+            base_branch=target_branch,
+            default_branch=default_branch,
+            task_id=str(task_id),
+        )
+        return default_branch
+
     async def create_pull_request(
         self, workspace: Path, request: GitCreatePRRequest
     ) -> tuple[int, str, str, str, str]:
@@ -1401,6 +1437,9 @@ class GitService(BaseService):
 
         target_branch = await self._resolve_pr_target_branch(
             request, task, default_branch
+        )
+        target_branch = await self._pr_base_on_remote(
+            workspace, target_branch, default_branch, git_token, request.task_id
         )
         pr_title, pr_body = await self._generate_pr_title_body(
             request, task, source_branch, target_branch, request.task_id
