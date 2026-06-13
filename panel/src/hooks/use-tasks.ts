@@ -43,15 +43,10 @@ export function useTask(taskId: string) {
 }
 
 export function useSubtasks(parentTaskId: string) {
-  const { data: allTasks = [] } = useTasks();
-
   return useQuery({
     queryKey: taskKeys.subtasks(parentTaskId),
-    queryFn: async (): Promise<Task[]> => {
-      // Filter tasks where parent_task_id matches
-      return allTasks.filter((task) => task.parent_task_id === parentTaskId);
-    },
-    enabled: !!parentTaskId && allTasks.length > 0,
+    queryFn: () => tasksApi.getSubtasks(parentTaskId),
+    enabled: !!parentTaskId,
   });
 }
 

@@ -91,8 +91,12 @@ export function ChatMessages({
         if (msg.role === "user") {
           return (
             <div key={msg.id} className="flex justify-end">
-              <div className="max-w-[70%] rounded-2xl rounded-tr-sm bg-primary px-4 py-3 text-sm text-primary-foreground">
+              <div className="group relative max-w-[70%] rounded-2xl rounded-tr-sm bg-primary px-4 py-3 text-sm text-primary-foreground">
                 <MarkdownBody content={msg.content} />
+                <CopyButton
+                  value={msg.content}
+                  className="absolute right-1.5 top-1.5 bg-primary-foreground/10 text-primary-foreground opacity-0 transition-opacity group-hover:opacity-100"
+                />
               </div>
             </div>
           );
@@ -101,9 +105,13 @@ export function ChatMessages({
         if (msg.role === "error") {
           return (
             <div key={msg.id} className="flex justify-start">
-              <div className="flex max-w-[70%] items-start gap-2 rounded-2xl rounded-tl-sm border border-destructive/30 bg-destructive/10 px-4 py-3 text-sm text-destructive">
+              <div className="group relative flex max-w-[70%] items-start gap-2 rounded-2xl rounded-tl-sm border border-destructive/30 bg-destructive/10 px-4 py-3 text-sm text-destructive">
                 <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" />
                 <span>{msg.content}</span>
+                <CopyButton
+                  value={msg.content}
+                  className="absolute right-1.5 top-1.5 bg-background/80 opacity-0 transition-opacity group-hover:opacity-100"
+                />
               </div>
             </div>
           );
@@ -115,11 +123,15 @@ export function ChatMessages({
             <div className="flex justify-start">
               <div
                 className={cn(
-                  "max-w-[70%] rounded-2xl rounded-tl-sm bg-muted px-4 py-3 text-sm text-foreground",
+                  "group relative max-w-[70%] rounded-2xl rounded-tl-sm bg-muted px-4 py-3 text-sm text-foreground",
                   msg.draft && "max-w-[85%]"
                 )}
               >
                 <MarkdownBody content={msg.content} />
+                <CopyButton
+                  value={msg.content}
+                  className="absolute right-1.5 top-1.5 bg-background/80 opacity-0 transition-opacity group-hover:opacity-100"
+                />
               </div>
             </div>
 

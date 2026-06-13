@@ -50,6 +50,24 @@ import { toast } from "sonner";
 import Link from "next/link";
 import { TaskTypeBadge } from "../task-type-badge";
 
+// Valid next statuses per current status (for the status dropdown)
+const validNextStatuses: Record<TaskStatus, TaskStatus[]> = {
+  [TaskStatus.BACKLOG]: [TaskStatus.PENDING],
+  [TaskStatus.PENDING]: [TaskStatus.CLAIMED, TaskStatus.CANCELLED],
+  [TaskStatus.CLAIMED]: [TaskStatus.IN_PROGRESS, TaskStatus.PENDING, TaskStatus.CANCELLED],
+  [TaskStatus.IN_PROGRESS]: [TaskStatus.BLOCKED, TaskStatus.PAUSED, TaskStatus.VERIFYING, TaskStatus.CANCELLED],
+  [TaskStatus.BLOCKED]: [TaskStatus.IN_PROGRESS],
+  [TaskStatus.PAUSED]: [TaskStatus.IN_PROGRESS],
+  [TaskStatus.VERIFYING]: [TaskStatus.AWAITING_QA, TaskStatus.CANCELLED],
+  [TaskStatus.NEEDS_REVISION]: [TaskStatus.CLAIMED],
+  [TaskStatus.AWAITING_QA]: [TaskStatus.AWAITING_DOCUMENTATION, TaskStatus.NEEDS_REVISION],
+  [TaskStatus.AWAITING_DOCUMENTATION]: [TaskStatus.AWAITING_PM_REVIEW],
+  [TaskStatus.AWAITING_PM_REVIEW]: [TaskStatus.COMPLETED, TaskStatus.AWAITING_CEO_APPROVAL, TaskStatus.NEEDS_REVISION],
+  [TaskStatus.AWAITING_CEO_APPROVAL]: [TaskStatus.COMPLETED, TaskStatus.NEEDS_REVISION, TaskStatus.CANCELLED],
+  [TaskStatus.COMPLETED]: [],
+  [TaskStatus.CANCELLED]: [TaskStatus.PENDING],
+};
+
 // Status badge colors
 const statusColors: Record<TaskStatus, string> = {
   [TaskStatus.BACKLOG]: "bg-slate-100 text-slate-600 dark:bg-slate-800 dark:text-slate-400",
@@ -307,13 +325,19 @@ export function TaskHeader({ task, onAction }: TaskHeaderProps) {
               </h1>
             )}
 
-            {/* Status Dropdown */}
+            {/* Status Dropdown — only current status + valid next statuses */}
             <Select value={task.status} onValueChange={(v) => handleStatusChange(v as TaskStatus)}>
               <SelectTrigger className={`w-auto h-7 text-xs font-medium border-0 ${statusColors[task.status]}`}>
                 <SelectValue />
               </SelectTrigger>
               <SelectContent>
-                {Object.values(TaskStatus).map((status) => (
+                {/* Always render the current status first so the trigger value is always present */}
+                <SelectItem key={task.status} value={task.status}>
+                  <span className={`px-2 py-0.5 rounded ${statusColors[task.status]}`}>
+                    {statusLabels[task.status]}
+                  </span>
+                </SelectItem>
+                {validNextStatuses[task.status].map((status) => (
                   <SelectItem key={status} value={status}>
                     <span className={`px-2 py-0.5 rounded ${statusColors[status]}`}>
                       {statusLabels[status]}
