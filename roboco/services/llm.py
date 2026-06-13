@@ -26,9 +26,10 @@ Self-hosted (LOCAL) provider support:
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any, ClassVar, cast
+from typing import TYPE_CHECKING, Any, ClassVar, Literal, cast
 
 import httpx
+import structlog
 from sqlalchemy import delete as sa_delete
 from sqlalchemy import select
 
@@ -56,6 +57,7 @@ if TYPE_CHECKING:
 # ---------------------------------------------------------------------------
 
 _OLLAMA_TAGS_TIMEOUT = 5.0  # seconds
+_log = structlog.get_logger(__name__)
 
 
 async def probe_ollama_tags(base_url: str) -> tuple[list[str], str | None]:
@@ -82,7 +84,12 @@ async def probe_ollama_tags(base_url: str) -> tuple[list[str], str | None]:
     except httpx.HTTPStatusError as exc:
         return [], f"Server at {base_url} returned HTTP {exc.response.status_code}"
     except Exception as exc:
-        return [], f"Unexpected error probing {base_url}: {exc}"
+        _log.error(
+            "Unexpected error probing Ollama server",
+            base_url=base_url,
+            error=str(exc),
+        )
+        return [], "An unexpected error occurred while probing the self-hosted server."
 
 
 @dataclass(frozen=True)
@@ -250,6 +257,14 @@ class ModelRoutingService(BaseService):
                 provider = await self._get_seeded_provider(entry.provider_type)
                 provider_type_for_log = entry.provider_type
 
+        # Whenever an assignment resolves to LOCAL, ensure the LOCAL provider
+        # row is enabled so resolve_for_agent() will actually use it.
+        if provider_type_for_log == ModelProvider.LOCAL:
+            provider_svc = ProviderService(self.session)
+            await provider_svc.update_provider(
+                require_uuid(provider.id), ProviderUpdate(enabled=True)
+            )
+
         row = await self.get_assignment(scope=scope, scope_value=scope_value)
         if row is None:
             row = ModelAssignmentTable(
@@ -273,7 +288,7 @@ class ModelRoutingService(BaseService):
         )
         return row
 
-    async def derive_mode(self) -> str:
+    async def derive_mode(self) -> Literal["anthropic", "ollama", "mix", "self_hosted"]:
         """Return the current "mode" label for the Settings UI.
 
         Decision tree matches what `apply_mode` writes:
