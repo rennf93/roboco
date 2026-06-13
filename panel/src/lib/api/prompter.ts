@@ -44,4 +44,7 @@ export interface ConfirmPayload {
   product_id?: string;
   draft?: DraftProposal;
   route?: "board" | "main_pm";
+  // Set on a board-informed re-draft: the confirm updates this existing task in
+  // place instead of creating a new one (scope is taken from the task).
+  task_id?: string;
 }

@@ -22,6 +22,30 @@ def test_open_get_close() -> None:
     assert reg.get("s1") is None
 
 
+def test_park_and_find_by_task() -> None:
+    """A parked session is discoverable by task id for board-feedback injection."""
+    reg = PrompterLiveRegistry()
+    session = reg.open("s1", "intake-1")
+    assert reg.park("s1", "task-abc") is True
+    assert session.task_id == "task-abc"
+    assert reg.find_by_task("task-abc") is session
+    assert reg.find_by_task("task-other") is None
+
+
+def test_park_missing_session_returns_false() -> None:
+    reg = PrompterLiveRegistry()
+    assert reg.park("nope", "task-abc") is False
+
+
+def test_find_by_task_ignores_closed_session() -> None:
+    """A reaped parked session is not returned (the cold re-draft path covers it)."""
+    reg = PrompterLiveRegistry()
+    reg.open("s1", "intake-1")
+    reg.park("s1", "task-abc")
+    reg.close("s1")
+    assert reg.find_by_task("task-abc") is None
+
+
 def test_is_alive_tracks_open_and_close() -> None:
     """is_alive backs the panel's after-reload reconnect decision."""
     reg = PrompterLiveRegistry()

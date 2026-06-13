@@ -4,7 +4,7 @@ Task API Routes
 Full CRUD operations and lifecycle management for tasks.
 """
 
-from typing import Annotated, cast
+from typing import Annotated, Any, cast
 from uuid import UUID
 
 from fastapi import APIRouter, Body, HTTPException, Query, status
@@ -14,12 +14,14 @@ from roboco.api.deps import (
     DbSession,
     PermissionServiceDep,
     get_permission_service,
+    require_pm_or_above,
 )
 from roboco.api.schemas.sessions import (
     SessionTaskLinkResponse,
     TaskSessionsResponse,
 )
 from roboco.api.schemas.tasks import (
+    BoardReviewEntry,
     CancelTaskRequest,
     CheckpointRequest,
     ClaimRequest,
@@ -52,6 +54,7 @@ from roboco.services.base import (
     UnauthorizedError,
     ValidationError,
 )
+from roboco.services.journal import get_journal_service
 from roboco.services.messaging import get_messaging_service
 from roboco.services.notification_delivery import (
     EscalationError,
@@ -640,6 +643,27 @@ async def get_descendants(
     service = get_task_service(db)
     tasks = await service.get_all_descendants(task_id)
     return task_list_to_response(tasks)
+
+
+@router.get("/{task_id}/board-review", response_model=list[BoardReviewEntry])
+async def get_board_review(
+    task_id: UUID,
+    db: DbSession,
+    agent: CurrentAgentContext,
+) -> list[dict[str, Any]]:
+    """Return the board's review of a task — the Product Owner + Head of
+    Marketing decision-log entries — so the CEO can read the actual analysis at
+    the approval/redraft gate instead of a placeholder. PM-or-above only.
+    Empty list when the board has not reviewed yet.
+    """
+    require_pm_or_above(agent.role, "view the board review")
+    service = get_task_service(db)
+    task = await service.get(task_id)
+    if not task:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="Task not found"
+        )
+    return await get_journal_service(db).board_review_brief(task_id)
 
 
 # =============================================================================
@@ -1557,6 +1581,19 @@ async def approve_and_start_task(
                 "START_NOTES_REQUIRED: approve-and-start must include notes "
                 "(>=20 chars) recording why the board work is ready to build. "
                 "POST /api/tasks/{id}/approve-and-start with notes='...'."
+            ),
+        )
+
+    # A board task can't be started until the board has finished reviewing.
+    # The service enforces this too (defense in depth); the route surfaces a
+    # precise message rather than the generic "not startable".
+    if task.team == Team.BOARD and not task.board_review_complete:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=(
+                "BOARD_REVIEW_INCOMPLETE: the Product Owner and Head of "
+                "Marketing must finish reviewing before this task can be "
+                "approved and started."
             ),
         )
 

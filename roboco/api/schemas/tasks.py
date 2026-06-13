@@ -23,6 +23,20 @@ from roboco.utils.converters import require_uuid, to_python_uuid, to_python_uuid
 # =============================================================================
 
 
+class BoardReviewEntry(BaseModel):
+    """One board reviewer's decision-log entry for a task (PO or Head of Marketing).
+
+    Surfaced at the CEO's approval/redraft gate so the actual board analysis is
+    readable instead of a placeholder.
+    """
+
+    author: str
+    author_role: str
+    title: str
+    content: str
+    timestamp: str | None = None
+
+
 class ProgressUpdateResponse(BaseModel):
     """A progress update on a task."""
 

@@ -24,7 +24,12 @@ from fastapi import APIRouter, HTTPException, Request, status
 from pydantic import BaseModel, Field, model_validator
 from sse_starlette import EventSourceResponse
 
-from roboco.api.deps import CurrentAgentContext, DbSession, get_orchestrator
+from roboco.api.deps import (
+    CurrentAgentContext,
+    DbSession,
+    get_orchestrator,
+    require_pm_or_above,
+)
 from roboco.services.base import NotFoundError, ServiceError, ValidationError
 from roboco.services.prompter import get_prompter_service
 from roboco.services.prompter_live import get_live_registry
@@ -195,9 +200,15 @@ class LiveConfirmRequest(BaseModel):
     product_id: UUID | None = None
     draft: dict[str, Any]
     route: Literal["board", "main_pm"] = "board"
+    # Set on a board-informed re-draft: confirm updates this existing task in
+    # place instead of creating a new one. When present, project/product scope
+    # is taken from the task, so neither is required here.
+    task_id: UUID | None = None
 
     @model_validator(mode="after")
     def _exactly_one_target(self) -> LiveConfirmRequest:
+        if self.task_id is not None:
+            return self
         if bool(self.project_id) == bool(self.product_id):
             raise ValueError("provide exactly one of project_id / product_id")
         return self
@@ -219,20 +230,105 @@ async def confirm_live(
     """
     service = get_prompter_service(db)
     try:
-        task_id = await service.confirm_live_draft(
-            body.draft,
-            agent.agent_id,
-            project_id=body.project_id,
-            product_id=body.product_id,
-            route=body.route,
-        )
+        if body.task_id is not None:
+            # Board-informed re-draft: update the existing task in place.
+            task_id = await service.update_live_draft(
+                body.task_id, body.draft, route=body.route
+            )
+        else:
+            task_id = await service.confirm_live_draft(
+                body.draft,
+                agent.agent_id,
+                project_id=body.project_id,
+                product_id=body.product_id,
+                route=body.route,
+            )
     except ServiceError as e:
         raise _translate_service_error(e) from e
     await db.commit()
 
+    # Board route (first confirm, not a re-draft): keep the intake agent alive
+    # and PARK it against this task, so when the board finishes its review the
+    # orchestrator can inject that feedback in-context for an in-place re-draft
+    # (the agent still holds the whole interview). Every other path is terminal
+    # → reap. If parking fails (session already gone), fall through to reap so
+    # nothing leaks.
+    if (
+        body.task_id is None
+        and body.route == "board"
+        and get_live_registry().park(session_id, str(task_id))
+    ):
+        return {"task_id": str(task_id)}
+
     # The draft is now a task — reap the agent + close the relay stream.
     await get_orchestrator().reap_intake_session(session_id)
     return {"task_id": str(task_id)}
+
+
+async def _intake_scope_for_task(
+    db: DbSession, task: Any
+) -> tuple[str | None, str | None]:
+    """Return (project_slug, product_id) intake scope for a task — exactly one."""
+    if task.product_id is not None:
+        return None, str(task.product_id)
+    if task.project_id is not None:
+        from roboco.services.project import get_project_service
+
+        proj = await get_project_service(db).get(UUID(str(task.project_id)))
+        return (proj.slug if proj else None), None
+    return None, None
+
+
+@router.post(
+    "/live/re-interview/{task_id}",
+    response_model=StartLiveResponse,
+    status_code=status.HTTP_201_CREATED,
+)
+async def re_interview(
+    task_id: UUID, db: DbSession, agent: CurrentAgentContext
+) -> StartLiveResponse:
+    """Re-open intake to re-draft a board-reviewed task with the board's feedback.
+
+    Spawns a fresh intake session seeded with the current draft + the Product
+    Owner / Head of Marketing review, scoped to the task's product/project. The
+    panel opens its stream and, on confirm, passes ``task_id`` so the revised
+    draft updates this task instead of creating a new one. This is the cold path
+    (and the resilience fallback for the keep-alive re-draft).
+    """
+    from roboco.services.journal import get_journal_service
+    from roboco.services.prompter import compose_redraft_message
+    from roboco.services.task import get_task_service
+
+    require_pm_or_above(agent.role, "re-interview a task")
+    task = await get_task_service(db).get(task_id)
+    if task is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail=f"Task {task_id} not found"
+        )
+    project_slug, product_id = await _intake_scope_for_task(db, task)
+    if not project_slug and not product_id:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Task has no project/product scope to re-interview against.",
+        )
+
+    entries = await get_journal_service(db).board_review_brief(task_id)
+    initial_message = compose_redraft_message(task, entries)
+
+    session_id = uuid4().hex
+    try:
+        await get_orchestrator().start_intake_session(
+            session_id,
+            project_slug=project_slug,
+            product_id=product_id,
+            initial_message=initial_message,
+        )
+    except Exception as exc:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to start re-interview session: {exc}",
+        ) from exc
+    return StartLiveResponse(session_id=session_id)
 
 
 @router.post("/live/{session_id}/events")

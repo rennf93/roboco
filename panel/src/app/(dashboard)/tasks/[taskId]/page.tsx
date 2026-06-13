@@ -20,6 +20,7 @@ import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { AlertTriangle, ArrowLeft, RefreshCw } from "lucide-react";
 import Link from "next/link";
+import { useRouter } from "next/navigation";
 import { toast } from "sonner";
 
 interface TaskDetailPageProps {
@@ -28,6 +29,7 @@ interface TaskDetailPageProps {
 
 export default function TaskDetailPage({ params }: TaskDetailPageProps) {
   const { taskId } = use(params);
+  const router = useRouter();
   const { data: task, isLoading, error, refetch } = useTask(taskId);
   const { data: project } = useProject(task?.project_id ?? "");
   const lifecycle = useTaskLifecycle();
@@ -377,7 +379,15 @@ export default function TaskDetailPage({ params }: TaskDetailPageProps) {
       {task.status === TaskStatus.PENDING &&
         task.board_review_complete === true &&
         task.team !== Team.MAIN_PM && (
-          <div className="flex justify-end">
+          <div className="flex justify-end gap-2">
+            {task.team === Team.BOARD && (
+              <Button
+                variant="outline"
+                onClick={() => router.push(`/prompter?redraft=${task.id}`)}
+              >
+                Re-draft with board feedback
+              </Button>
+            )}
             <ApproveAndStartButton task={task} />
           </div>
         )}

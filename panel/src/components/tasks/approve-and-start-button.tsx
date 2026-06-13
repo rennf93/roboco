@@ -3,6 +3,8 @@
 import { useState } from "react";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { tasksApi } from "@/lib/api";
+import { useBoardReview } from "@/hooks/use-tasks";
+import { Markdown } from "@/components/ui/markdown";
 import { Button } from "@/components/ui/button";
 import {
   Dialog,
@@ -22,10 +24,22 @@ interface ApproveAndStartButtonProps {
   task: Task;
 }
 
+function roleLabel(role: string): string {
+  if (role === "product_owner") return "Product Owner";
+  if (role === "head_marketing") return "Head of Marketing";
+  return role;
+}
+
 export function ApproveAndStartButton({ task }: ApproveAndStartButtonProps) {
   const queryClient = useQueryClient();
   const [open, setOpen] = useState(false);
   const [notes, setNotes] = useState("");
+  // Fetch the board's actual review only while the dialog is open, so the CEO
+  // reads the PO + Head of Marketing analysis before approving.
+  const { data: boardReview = [], isLoading: boardLoading } = useBoardReview(
+    task.id,
+    open,
+  );
 
   const approveAndStartMutation = useMutation({
     mutationFn: ({ taskId, notes }: { taskId: string; notes: string }) =>
@@ -79,10 +93,38 @@ export function ApproveAndStartButton({ task }: ApproveAndStartButtonProps) {
           </DialogHeader>
 
           <div className="space-y-2">
+            <Label>Board review (Product Owner &amp; Head of Marketing)</Label>
+            {boardLoading ? (
+              <p className="text-xs text-muted-foreground">
+                Loading board review…
+              </p>
+            ) : boardReview.length === 0 ? (
+              <p className="text-xs text-muted-foreground">
+                No board review recorded for this task yet.
+              </p>
+            ) : (
+              <div className="max-h-72 space-y-3 overflow-y-auto rounded-md border p-3">
+                {boardReview.map((entry) => (
+                  <div
+                    key={entry.timestamp ?? `${entry.author}-${entry.title}`}
+                    className="space-y-1"
+                  >
+                    <span className="inline-block rounded-full bg-primary/10 px-2 py-0.5 text-xs font-medium text-primary">
+                      {roleLabel(entry.author_role)}
+                    </span>
+                    <div className="text-sm font-medium">{entry.title}</div>
+                    <Markdown compact>{entry.content}</Markdown>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+
+          <div className="space-y-2">
             <Label htmlFor="approve-and-start-notes">Approval notes (required)</Label>
             <Textarea
               id="approve-and-start-notes"
-              placeholder="Board review complete; requirements are clear. Build it..."
+              placeholder="Board review read; requirements are clear. Build it..."
               value={notes}
               onChange={(e) => setNotes(e.target.value)}
               rows={3}
