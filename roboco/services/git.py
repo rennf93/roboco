@@ -1719,6 +1719,45 @@ class GitService(BaseService):
                 {"owner": owner, "repo": repo, "pr": pr_number},
             ) from e
 
+    async def _first_allowed_merge_method(
+        self,
+        owner: str,
+        repo: str,
+        git_token: str,
+        *,
+        exclude: str | None = None,
+    ) -> str | None:
+        """Return a merge method the repo permits, preferring squash > merge >
+        rebase and skipping ``exclude``; ``None`` if the lookup fails.
+
+        Used to recover when a merge is refused with 405 because the repo has
+        that merge method disabled in its settings.
+        """
+        try:
+            async with httpx.AsyncClient(timeout=_default_git_timeout()) as client:
+                resp = await client.get(
+                    f"https://api.github.com/repos/{owner}/{repo}",
+                    headers={
+                        "Authorization": f"Bearer {git_token}",
+                        "Accept": "application/vnd.github+json",
+                        "X-GitHub-Api-Version": "2022-11-28",
+                    },
+                )
+            if not resp.is_success:
+                return None
+            data = resp.json()
+        except httpx.HTTPError:
+            return None
+        allowed = {
+            "squash": data.get("allow_squash_merge", True),
+            "merge": data.get("allow_merge_commit", True),
+            "rebase": data.get("allow_rebase_merge", True),
+        }
+        for method in ("squash", "merge", "rebase"):
+            if method != exclude and allowed.get(method):
+                return method
+        return None
+
     async def _sync_target_branch(
         self, workspace: Path, target_branch: str, git_token: str
     ) -> str:
@@ -1817,6 +1856,27 @@ class GitService(BaseService):
         resp = await self._call_merge_api(
             owner, repo, pr_number, git_token, merge_method
         )
+        # A 405 means the repo disallows this merge method (e.g. "Squash merges
+        # are not allowed on this repository" when that button is turned off).
+        # Fall back to a method the repo actually permits and retry once, so a
+        # repo's merge-button settings can't permanently wedge the PM at task
+        # completion with an open, mergeable PR.
+        if resp.status_code == httpx.codes.METHOD_NOT_ALLOWED:
+            fallback = await self._first_allowed_merge_method(
+                owner, repo, git_token, exclude=merge_method
+            )
+            if fallback and fallback != merge_method:
+                self.log.info(
+                    "Merge method refused by repo; retrying with a permitted one",
+                    requested=merge_method,
+                    fallback=fallback,
+                    owner=owner,
+                    repo=repo,
+                    pr=pr_number,
+                )
+                resp = await self._call_merge_api(
+                    owner, repo, pr_number, git_token, fallback
+                )
         if not resp.is_success:
             raise GitError(
                 f"GitHub API refused PR merge ({resp.status_code}): {resp.text[:200]}",
