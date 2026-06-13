@@ -98,14 +98,15 @@ export function SelfHostedSection({
     try {
       const result = await testConnection.mutateAsync();
       onTestResult?.(result);
-      if (result.status === "connected") {
-        onTestSuccess?.(result.model_count);
+      if (result.ok) {
+        onTestSuccess?.(result.model_count ?? 0);
         setLastRefreshed(new Date().toISOString());
+        const count = result.model_count ?? 0;
         toast.success(
-          `Connected — ${result.model_count} model${result.model_count === 1 ? "" : "s"} available`,
+          `Connected — ${count} model${count === 1 ? "" : "s"} available`,
         );
       } else {
-        toast.error(`Connection failed: ${result.error_message ?? "unknown error"}`);
+        toast.error(`Connection failed: ${result.error ?? "unknown error"}`);
       }
     } catch (e) {
       toast.error("Test failed: " + errMsg(e));
@@ -129,14 +130,14 @@ export function SelfHostedSection({
   // Determine which empty state to show, if any.
   const showNoUrlState = !hasSavedUrl;
   const showErrorState =
-    hasSavedUrl && testResult?.status === "error" && !showNoUrlState;
+    hasSavedUrl && testResult?.ok === false && !showNoUrlState;
   const showNoModelsState =
     hasSavedUrl &&
-    testResult?.status === "connected" &&
+    testResult?.ok === true &&
     models.length === 0 &&
     !showNoUrlState;
   const showModelList =
-    hasSavedUrl && testResult?.status === "connected" && models.length > 0;
+    hasSavedUrl && testResult?.ok === true && models.length > 0;
 
   return (
     <section className="space-y-4">
@@ -144,12 +145,12 @@ export function SelfHostedSection({
       <div className="flex items-center gap-2">
         <Server className="h-4 w-4 text-muted-foreground" />
         <Label className="text-sm font-medium">Self-Hosted LLM</Label>
-        {testResult?.status === "connected" && (
+        {testResult?.ok === true && (
           <span className="inline-flex items-center gap-1 rounded-full bg-emerald-500/10 px-2 py-0.5 text-xs font-medium text-emerald-600">
             <CheckCircle2 className="h-3 w-3" /> connected
           </span>
         )}
-        {testResult?.status === "error" && (
+        {testResult?.ok === false && (
           <span className="inline-flex items-center gap-1 rounded-full bg-red-500/10 px-2 py-0.5 text-xs font-medium text-red-600">
             <XCircle className="h-3 w-3" /> error
           </span>
@@ -187,7 +188,7 @@ export function SelfHostedSection({
               value={authToken}
               onChange={(e) => setAuthToken(e.target.value)}
               placeholder={
-                config?.has_auth_token
+                config?.has_token
                   ? "•••••••••••• (leave blank to keep)"
                   : "sk-… or Bearer token"
               }
@@ -210,12 +211,12 @@ export function SelfHostedSection({
             {saveConfig.isPending ? "Saving…" : "Save"}
           </Button>
         </div>
-        {config?.has_auth_token && (
+        {config?.has_token && (
           <p className="text-xs text-muted-foreground">
             A token is stored. Type a new value to update it.
           </p>
         )}
-        {!config?.has_auth_token && (
+        {!config?.has_token && (
           <p className="text-xs text-muted-foreground">
             Stored Fernet-encrypted server-side; never returned by the API.
           </p>
@@ -241,17 +242,17 @@ export function SelfHostedSection({
         </Button>
 
         {/* Inline result badge */}
-        {testResult?.status === "connected" && (
+        {testResult?.ok === true && (
           <span className="inline-flex items-center gap-1 rounded-full bg-emerald-500/10 px-3 py-1 text-xs font-medium text-emerald-700 dark:text-emerald-400">
             <CheckCircle2 className="h-3.5 w-3.5" />
-            Connected &mdash; {testResult.model_count} model
-            {testResult.model_count === 1 ? "" : "s"} available
+            Connected &mdash; {testResult.model_count ?? 0} model
+            {(testResult.model_count ?? 0) === 1 ? "" : "s"} available
           </span>
         )}
-        {testResult?.status === "error" && (
+        {testResult?.ok === false && (
           <span className="inline-flex items-center gap-1 rounded-full bg-red-500/10 px-3 py-1 text-xs font-medium text-red-700 dark:text-red-400">
             <XCircle className="h-3.5 w-3.5" />
-            {testResult.error_message ?? "Connection failed"}
+            {testResult.error ?? "Connection failed"}
           </span>
         )}
       </div>
@@ -279,13 +280,8 @@ export function SelfHostedSection({
                 Last test failed
               </p>
               <p className="text-xs text-red-600 dark:text-red-500">
-                {testResult?.error_message ?? "Unknown error"}
+                {testResult?.error ?? "Unknown error"}
               </p>
-              {testResult?.last_checked && (
-                <p className="text-xs text-muted-foreground">
-                  Last checked: {relativeTime(testResult.last_checked)}
-                </p>
-              )}
             </div>
             <Button
               variant="outline"
