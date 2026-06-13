@@ -13,11 +13,11 @@ from uuid import UUID
 from sqlalchemy import and_, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from roboco.db.tables import JournalEntryTable, JournalTable
+from roboco.db.tables import AgentTable, JournalEntryTable, JournalTable
 from roboco.foundation.policy.journaling import (
     SCOPE_TO_TYPE as _FOUNDATION_SCOPE_TO_TYPE,
 )
-from roboco.models.base import JournalEntryType
+from roboco.models.base import AgentRole, JournalEntryType
 from roboco.models.journal import (
     DecisionLogParams,
     GeneralEntryParams,
@@ -402,6 +402,45 @@ class JournalService(BaseService):
                 updated_at=row.updated_at,
             )
             for row in rows
+        ]
+
+    async def board_review_brief(self, task_id: UUID) -> list[dict[str, Any]]:
+        """The board's review of a task: Product Owner + Head of Marketing
+        ``DECISION_LOG`` entries tied to ``task_id``, oldest first.
+
+        This is the board's handoff in structured form. It backs the CEO's
+        approval/redraft surface so the actual PO + HoM analysis is visible
+        (instead of the static placeholder shown at the gate today), and feeds
+        the intake re-draft loop. Each row carries its author (slug + role).
+        Returns an empty list when the board has not reviewed yet.
+        """
+        board_roles = (AgentRole.PRODUCT_OWNER, AgentRole.HEAD_MARKETING)
+        query = (
+            select(
+                JournalEntryTable.title,
+                JournalEntryTable.content,
+                JournalEntryTable.timestamp,
+                AgentTable.slug,
+                AgentTable.role,
+            )
+            .join(JournalTable, JournalEntryTable.journal_id == JournalTable.id)
+            .join(AgentTable, JournalTable.agent_id == AgentTable.id)
+            .where(JournalEntryTable.task_id == task_id)
+            .where(JournalEntryTable.type == JournalEntryType.DECISION_LOG)
+            .where(AgentTable.role.in_(board_roles))
+            .order_by(JournalEntryTable.timestamp.asc())
+            .limit(20)
+        )
+        result = await self.session.execute(query)
+        return [
+            {
+                "author": row.slug,
+                "author_role": str(row.role),
+                "title": row.title,
+                "content": row.content,
+                "timestamp": row.timestamp.isoformat() if row.timestamp else None,
+            }
+            for row in result.all()
         ]
 
     async def delete_entry(self, entry_id: UUID) -> bool:
