@@ -84,13 +84,16 @@ api.interceptors.response.use(
       };
       useRateLimitStore.getState().hitRateLimit(hitEvent);
 
-      // Track retry count; retry the request until exhausted, then toast
+      // Track retry count; retry the request (after backoff delay) until exhausted, then toast
       const retryCount = (error.config?._retryCount ?? 0) + 1;
       if (error.config) {
         error.config._retryCount = retryCount;
         if (retryCount < RATE_LIMIT_MAX_RETRIES) {
-          // Retry the request — interceptor re-runs on each subsequent 429
-          return api(error.config);
+          // Wait retryAfterSeconds before retrying — interceptor re-runs on each subsequent 429
+          const delayMs = safeRetryAfter * 1000;
+          return new Promise<void>((resolve) => setTimeout(resolve, delayMs)).then(
+            () => api(error.config!)
+          );
         }
       }
       // Retries exhausted — notify the user via Sonner toast

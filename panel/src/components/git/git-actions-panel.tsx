@@ -19,6 +19,7 @@ import {
   GitCommit,
   Upload,
   GitPullRequest,
+  GitMerge,
   RefreshCw,
   ArrowUp,
 } from "lucide-react";
@@ -31,9 +32,11 @@ interface GitActionsPanelProps {
   onCommit: (message: string) => void;
   onPush: (force?: boolean) => void;
   onCreatePR: (title: string, body: string) => void;
+  onMergePR: (prNumber: number) => void;
   isCommitting: boolean;
   isPushing: boolean;
   isCreatingPR: boolean;
+  isMerging: boolean;
 }
 
 export function GitActionsPanel({
@@ -44,21 +47,52 @@ export function GitActionsPanel({
   onCommit,
   onPush,
   onCreatePR,
+  onMergePR,
   isCommitting,
   isPushing,
   isCreatingPR,
+  isMerging,
 }: GitActionsPanelProps) {
   void _agentId; // Reserved for future use
   const [showCommitDialog, setShowCommitDialog] = useState(false);
   const [showPRDialog, setShowPRDialog] = useState(false);
+  const [showMergeDialog, setShowMergeDialog] = useState(false);
   const [commitMessage, setCommitMessage] = useState("");
   const [prTitle, setPrTitle] = useState("");
   const [prBody, setPrBody] = useState("");
+  const [mergePrNumber, setMergePrNumber] = useState("");
 
   const hasStagedChanges = (status?.staged_files.length ?? 0) > 0;
   const hasUnpushedCommits = (status?.ahead ?? 0) > 0;
   const canPush = hasUnpushedCommits;
   const canCreatePR = hasUnpushedCommits || status?.current_branch !== "main";
+
+  const handleCommitDialogOpenChange = (newOpen: boolean) => {
+    if (!newOpen) setCommitMessage("");
+    setShowCommitDialog(newOpen);
+  };
+
+  const handlePRDialogOpenChange = (newOpen: boolean) => {
+    if (!newOpen) {
+      setPrTitle("");
+      setPrBody("");
+    }
+    setShowPRDialog(newOpen);
+  };
+
+  const handleMergeDialogOpenChange = (newOpen: boolean) => {
+    if (!newOpen) setMergePrNumber("");
+    setShowMergeDialog(newOpen);
+  };
+
+  const handleMergePR = () => {
+    const prNum = parseInt(mergePrNumber, 10);
+    if (!isNaN(prNum) && prNum > 0) {
+      onMergePR(prNum);
+      setShowMergeDialog(false);
+      setMergePrNumber("");
+    }
+  };
 
   const handleCommit = () => {
     if (commitMessage.trim()) {
@@ -84,7 +118,7 @@ export function GitActionsPanel({
       </CardHeader>
       <CardContent className="space-y-3">
         {/* Commit Action */}
-        <Dialog open={showCommitDialog} onOpenChange={setShowCommitDialog}>
+        <Dialog open={showCommitDialog} onOpenChange={handleCommitDialogOpenChange}>
           <DialogTrigger asChild>
             <Button
               className="w-full justify-start"
@@ -168,7 +202,7 @@ export function GitActionsPanel({
         </Button>
 
         {/* Create PR Action */}
-        <Dialog open={showPRDialog} onOpenChange={setShowPRDialog}>
+        <Dialog open={showPRDialog} onOpenChange={handlePRDialogOpenChange}>
           <DialogTrigger asChild>
             <Button
               className="w-full justify-start"
@@ -217,6 +251,52 @@ export function GitActionsPanel({
               >
                 {isCreatingPR && <RefreshCw className="h-4 w-4 mr-2 animate-spin" />}
                 Create PR
+              </Button>
+            </DialogFooter>
+          </DialogContent>
+        </Dialog>
+
+        {/* Merge PR Action */}
+        <Dialog open={showMergeDialog} onOpenChange={handleMergeDialogOpenChange}>
+          <DialogTrigger asChild>
+            <Button
+              className="w-full justify-start"
+              variant="outline"
+            >
+              {isMerging ? (
+                <RefreshCw className="h-4 w-4 mr-2 animate-spin" />
+              ) : (
+                <GitMerge className="h-4 w-4 mr-2" />
+              )}
+              Merge PR
+            </Button>
+          </DialogTrigger>
+          <DialogContent className="max-w-sm">
+            <DialogHeader>
+              <DialogTitle>Merge Pull Request</DialogTitle>
+            </DialogHeader>
+            <div className="space-y-4 py-4">
+              <div className="space-y-2">
+                <label className="text-sm font-medium">PR Number</label>
+                <Input
+                  type="number"
+                  placeholder="e.g. 42"
+                  value={mergePrNumber}
+                  onChange={(e) => setMergePrNumber(e.target.value)}
+                  min={1}
+                />
+              </div>
+            </div>
+            <DialogFooter>
+              <Button variant="outline" onClick={() => setShowMergeDialog(false)}>
+                Cancel
+              </Button>
+              <Button
+                onClick={handleMergePR}
+                disabled={!mergePrNumber.trim() || isNaN(parseInt(mergePrNumber, 10)) || isMerging}
+              >
+                {isMerging && <RefreshCw className="h-4 w-4 mr-2 animate-spin" />}
+                Merge
               </Button>
             </DialogFooter>
           </DialogContent>

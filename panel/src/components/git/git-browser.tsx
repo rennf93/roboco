@@ -49,7 +49,7 @@ function GitBrowserContent() {
   const { data: unstagedDiff, isLoading: loadingUnstagedDiff } = useGitDiff(projectSlug, false, undefined, !!projectSlug);
 
   // Git operations
-  const { commit, push, createBranch, checkout, createPR } = useGitOperations();
+  const { commit, push, createBranch, checkout, createPR, mergePR } = useGitOperations();
 
   // Update URL params
   const updateParams = useCallback(
@@ -160,6 +160,20 @@ function GitBrowserContent() {
     }
   };
 
+  const handleMergePR = async (prNumber: number) => {
+    try {
+      const result = await mergePR.mutateAsync({
+        project_slug: projectSlug,
+        pr_number: prNumber,
+        task_id: taskId || "manual",
+        agent_id: "ceo",
+      });
+      toast.success(`Merged PR #${result.pr_number} → ${result.target_branch}`);
+    } catch {
+      toast.error("Failed to merge PR");
+    }
+  };
+
   // Check offline
   const isOffline = projectsError && (
     projectsError.message?.includes("Network Error") ||
@@ -243,9 +257,11 @@ function GitBrowserContent() {
               onCommit={handleCommit}
               onPush={handlePush}
               onCreatePR={handleCreatePR}
+              onMergePR={handleMergePR}
               isCommitting={commit.isPending}
               isPushing={push.isPending}
               isCreatingPR={createPR.isPending}
+              isMerging={mergePR.isPending}
             />
           </div>
 

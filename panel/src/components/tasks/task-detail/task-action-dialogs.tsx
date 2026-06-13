@@ -44,8 +44,13 @@ export function EscalateToCeoDialog({
     }
   };
 
+  const handleOpenChange = (newOpen: boolean) => {
+    if (!newOpen) setReason("");
+    onOpenChange(newOpen);
+  };
+
   return (
-    <Dialog open={open} onOpenChange={onOpenChange}>
+    <Dialog open={open} onOpenChange={handleOpenChange}>
       <DialogContent>
         <DialogHeader>
           <DialogTitle>Escalate to CEO</DialogTitle>
@@ -101,8 +106,13 @@ export function CeoRejectDialog({
     }
   };
 
+  const handleOpenChange = (newOpen: boolean) => {
+    if (!newOpen) setNotes("");
+    onOpenChange(newOpen);
+  };
+
   return (
-    <Dialog open={open} onOpenChange={onOpenChange}>
+    <Dialog open={open} onOpenChange={handleOpenChange}>
       <DialogContent>
         <DialogHeader>
           <DialogTitle>Request Changes</DialogTitle>
@@ -167,8 +177,13 @@ export function CeoApproveDialog({
     }
   };
 
+  const handleOpenChange = (newOpen: boolean) => {
+    if (!newOpen) setNotes("");
+    onOpenChange(newOpen);
+  };
+
   return (
-    <Dialog open={open} onOpenChange={onOpenChange}>
+    <Dialog open={open} onOpenChange={handleOpenChange}>
       <DialogContent>
         <DialogHeader>
           <DialogTitle>Approve &amp; Merge</DialogTitle>
@@ -244,8 +259,13 @@ export function RequiredNotesDialog({
     }
   };
 
+  const handleOpenChange = (newOpen: boolean) => {
+    if (!newOpen) setText("");
+    onOpenChange(newOpen);
+  };
+
   return (
-    <Dialog open={open} onOpenChange={onOpenChange}>
+    <Dialog open={open} onOpenChange={handleOpenChange}>
       <DialogContent>
         <DialogHeader>
           <DialogTitle>{title}</DialogTitle>
