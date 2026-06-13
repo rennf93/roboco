@@ -13,7 +13,7 @@ from fastapi import FastAPI
 from httpx import ASGITransport, AsyncClient
 from roboco.api.deps import get_agent_context, get_db
 from roboco.api.routes.provider import router as provider_router
-from roboco.db.tables import ProviderConfigTable
+from roboco.db.tables import ModelAssignmentTable, ProviderConfigTable
 from roboco.models import AgentRole, Team
 from roboco.models.base import ModelProvider
 from roboco.models.permissions import AgentContext
@@ -78,12 +78,54 @@ async def app_client(
     app.dependency_overrides.clear()
 
 
+@pytest_asyncio.fixture
+async def app_client_with_ollama(
+    db_session: AsyncSession,
+) -> AsyncIterator[AsyncClient]:
+    """App client pre-seeded with Anthropic and Ollama Cloud providers.
+
+    Begins with a DELETE-before-seed isolation step: deletes all rows from
+    ModelAssignmentTable (FK-safe) then ProviderConfigTable before adding
+    fresh ANTHROPIC + OLLAMA_CLOUD rows. This ensures tests are
+    order-independent regardless of what prior tests committed.
+    """
+    app = _make_app(db_session)
+    suffix = uuid4().hex[:8]
+    # FK-safe cleanup: model_assignments.provider_config_id references
+    # provider_configs.id, so assignments must be deleted first.
+    await db_session.execute(delete(ModelAssignmentTable))
+    await db_session.execute(delete(ProviderConfigTable))
+    await db_session.flush()
+    db_session.add(
+        ProviderConfigTable(
+            name=f"anthropic-test-{suffix}",
+            type=ModelProvider.ANTHROPIC,
+            enabled=True,
+        )
+    )
+    db_session.add(
+        ProviderConfigTable(
+            name=f"ollama-test-{suffix}",
+            type=ModelProvider.OLLAMA_CLOUD,
+            enabled=False,
+            base_url="https://ollama.example.com",
+        )
+    )
+    await db_session.flush()
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        yield client
+    app.dependency_overrides.clear()
+
+
 _HDR_PM = {"X-Agent-ID": str(uuid4()), "X-Agent-Role": "main_pm"}
 
 
 @pytest.mark.asyncio
-async def test_get_catalog(app_client: AsyncClient) -> None:
-    response = await app_client.get("/api/providers/catalog", headers=_HDR_PM)
+async def test_get_catalog(app_client_with_ollama: AsyncClient) -> None:
+    response = await app_client_with_ollama.get(
+        "/api/providers/catalog", headers=_HDR_PM
+    )
     assert response.status_code == HTTPStatus.OK
     assert isinstance(response.json(), list)
 
@@ -104,8 +146,10 @@ async def test_get_catalog_forbidden_for_developer(
 
 
 @pytest.mark.asyncio
-async def test_get_ollama_key_status(app_client: AsyncClient) -> None:
-    response = await app_client.get("/api/providers/ollama-key", headers=_HDR_PM)
+async def test_get_ollama_key_status(app_client_with_ollama: AsyncClient) -> None:
+    response = await app_client_with_ollama.get(
+        "/api/providers/ollama-key", headers=_HDR_PM
+    )
     assert response.status_code == HTTPStatus.OK
     body = response.json()
     assert "has_key" in body
@@ -113,8 +157,8 @@ async def test_get_ollama_key_status(app_client: AsyncClient) -> None:
 
 
 @pytest.mark.asyncio
-async def test_set_ollama_key(app_client: AsyncClient) -> None:
-    response = await app_client.put(
+async def test_set_ollama_key(app_client_with_ollama: AsyncClient) -> None:
+    response = await app_client_with_ollama.put(
         "/api/providers/ollama-key",
         json={"api_key": "secret-key-123"},
         headers=_HDR_PM,
@@ -125,8 +169,8 @@ async def test_set_ollama_key(app_client: AsyncClient) -> None:
 
 
 @pytest.mark.asyncio
-async def test_get_current_mode(app_client: AsyncClient) -> None:
-    response = await app_client.get("/api/providers", headers=_HDR_PM)
+async def test_get_current_mode(app_client_with_ollama: AsyncClient) -> None:
+    response = await app_client_with_ollama.get("/api/providers", headers=_HDR_PM)
     assert response.status_code == HTTPStatus.OK
     body = response.json()
     assert body["mode"] in {"anthropic", "ollama", "mix"}
@@ -134,9 +178,9 @@ async def test_get_current_mode(app_client: AsyncClient) -> None:
 
 @pytest.mark.asyncio
 async def test_apply_mode_anthropic_clears_assignments(
-    app_client: AsyncClient,
+    app_client_with_ollama: AsyncClient,
 ) -> None:
-    response = await app_client.post(
+    response = await app_client_with_ollama.post(
         "/api/providers", json={"mode": "anthropic"}, headers=_HDR_PM
     )
     assert response.status_code == HTTPStatus.OK
@@ -145,9 +189,11 @@ async def test_apply_mode_anthropic_clears_assignments(
 
 
 @pytest.mark.asyncio
-async def test_apply_mode_unknown_returns_4xx(app_client: AsyncClient) -> None:
+async def test_apply_mode_unknown_returns_4xx(
+    app_client_with_ollama: AsyncClient,
+) -> None:
     """Unknown mode is rejected — Pydantic 422 at schema layer or 400 at service."""
-    response = await app_client.post(
+    response = await app_client_with_ollama.post(
         "/api/providers", json={"mode": "quantum"}, headers=_HDR_PM
     )
     assert response.status_code in (
@@ -230,10 +276,10 @@ async def test_get_mode_developer_forbidden(
 
 @pytest.mark.asyncio
 async def test_apply_mode_mix_without_per_agent_returns_400(
-    app_client: AsyncClient,
+    app_client_with_ollama: AsyncClient,
 ) -> None:
     """Apply 'mix' mode without per_agent triggers ValueError → 400 (lines 149-152)."""
-    response = await app_client.post(
+    response = await app_client_with_ollama.post(
         "/api/providers",
         json={"mode": "mix"},
         headers=_HDR_PM,
@@ -272,9 +318,20 @@ async def test_apply_mode_ollama_without_provider_returns_404(
 async def app_client_with_local(
     db_session: AsyncSession,
 ) -> AsyncIterator[AsyncClient]:
-    """App client pre-seeded with Anthropic, Ollama Cloud, and LOCAL providers."""
+    """App client pre-seeded with Anthropic, Ollama Cloud, and LOCAL providers.
+
+    Begins with a DELETE-before-seed isolation step: deletes all rows from
+    ModelAssignmentTable (FK-safe) then ProviderConfigTable before adding
+    fresh rows. This ensures tests are order-independent regardless of what
+    prior tests committed.
+    """
     app = _make_app(db_session)
     suffix = uuid4().hex[:8]
+    # FK-safe cleanup: model_assignments.provider_config_id references
+    # provider_configs.id, so assignments must be deleted first.
+    await db_session.execute(delete(ModelAssignmentTable))
+    await db_session.execute(delete(ProviderConfigTable))
+    await db_session.flush()
     db_session.add(
         ProviderConfigTable(
             name=f"anthropic-local-{suffix}",
