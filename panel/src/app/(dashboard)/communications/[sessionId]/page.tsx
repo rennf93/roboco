@@ -21,6 +21,7 @@ import {
   Hash,
   RefreshCw,
 } from "lucide-react";
+import { CopyButton } from "@/components/ui/copy-button";
 import { formatDistanceToNow, format } from "date-fns";
 import { toast } from "sonner";
 import Link from "next/link";
@@ -238,7 +239,7 @@ function SessionDetailContent() {
                 {messages.map((message) => (
                   <div
                     key={message.id}
-                    className="flex gap-3 p-3 rounded-lg border bg-card hover:bg-muted/30 transition-colors"
+                    className="group relative flex gap-3 p-3 rounded-lg border bg-card hover:bg-muted/30 transition-colors"
                   >
                     <div className="h-9 w-10 rounded-lg bg-primary/10 flex items-center justify-center shrink-0 border">
                       <span className="text-[10px] font-bold tracking-tight">
@@ -259,6 +260,11 @@ function SessionDetailContent() {
                         <Markdown>{message.content}</Markdown>
                       </div>
                     </div>
+                    {/* Copy button — visible on hover */}
+                    <CopyButton
+                      value={message.content}
+                      className="absolute right-2 top-2 opacity-0 transition-opacity group-hover:opacity-100"
+                    />
                   </div>
                 ))}
               </div>
