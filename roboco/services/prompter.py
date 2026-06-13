@@ -30,7 +30,7 @@ from roboco.models.base import (
     Team,
 )
 from roboco.models.task import TaskCreateRequest
-from roboco.services.base import ServiceError, ValidationError
+from roboco.services.base import NotFoundError, ServiceError, ValidationError
 
 if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncSession
@@ -192,6 +192,9 @@ class PrompterService:
         - ``"main_pm"`` ("Approve & Start") → task at PENDING assigned to the Main
           PM, who delegates to the cells directly (Board review skipped).
 
+        For a board-informed *re-draft* of an existing task the route calls
+        :meth:`update_live_draft` instead (updates in place, no new task).
+
         Enum fields the dialog doesn't surface default to sane values so a
         confirm never fails on a missing ``nature``.
         """
@@ -220,6 +223,54 @@ class PrompterService:
             assigned_to=assignee_slug,
         )
         return UUID(str(task.id))
+
+    async def update_live_draft(
+        self,
+        task_id: UUID,
+        draft: dict[str, Any],
+        *,
+        route: Literal["board", "main_pm"] = "main_pm",
+    ) -> UUID:
+        """Apply a board-informed re-draft to an existing task, then route it.
+
+        The board reviewed the task; the prompter folded that feedback into a
+        revised draft. This updates the *same* coordination task in place
+        (title / description / acceptance criteria) — never a new task, which
+        would duplicate the one the board already reviewed — then routes per the
+        button the CEO pressed on the re-draft:
+
+        - ``"main_pm"`` ("Approve & Start") → hand the revised task to the Main
+          PM via ``approve_and_start`` (board review is already complete).
+        - ``"board"`` → send it back for another review round: clear
+          ``board_review_complete`` so the orchestrator re-dispatches the board.
+        """
+        from roboco.services.task import get_task_service
+
+        draft_data: dict[str, Any] = dict(draft)
+        draft_data["description"] = compose_description(draft_data)
+        task_service = get_task_service(self._session)
+        task = await task_service.update(
+            task_id,
+            title=draft_data.get("title"),
+            description=draft_data["description"],
+            acceptance_criteria=draft_data.get("acceptance_criteria"),
+        )
+        if task is None:
+            raise NotFoundError(resource_type="Task", resource_id=str(task_id))
+
+        if route == "main_pm":
+            await task_service.approve_and_start(
+                task_id,
+                notes="Re-drafted with board feedback; approved to build.",
+            )
+        else:  # re-board: another review round on the revised draft
+            await task_service.update(task_id, board_review_complete=False)
+        self.log.info(
+            "Live intake re-draft applied",
+            task_id=str(task_id),
+            route=route,
+        )
+        return task_id
 
     @staticmethod
     def _resolve_uuid_field(draft_data: dict[str, Any], key: str) -> UUID | None:
@@ -425,6 +476,47 @@ def _section(sections: list[str], heading: str, body: str) -> None:
     """Append a markdown section when its body is non-empty."""
     if body:
         sections.append(f"## {heading}\n\n{body}")
+
+
+def format_board_briefing(entries: list[dict[str, Any]]) -> str:
+    """Render board review entries into a markdown briefing for the prompter.
+
+    Used to seed a re-draft intake session with the Product Owner + Head of
+    Marketing analysis so the agent revises the draft against real feedback.
+    """
+    if not entries:
+        return ""
+    role_label = {
+        "product_owner": "Product Owner",
+        "head_marketing": "Head of Marketing",
+    }
+    blocks: list[str] = [
+        "The board reviewed your draft. Revise it to incorporate their feedback, "
+        "then propose the updated draft. Their reviews:",
+    ]
+    for e in entries:
+        who = role_label.get(str(e.get("author_role")), str(e.get("author") or "Board"))
+        title = str(e.get("title") or "").strip()
+        content = str(e.get("content") or "").strip()
+        header = f"### {who}" + (f" — {title}" if title else "")
+        blocks.append(f"{header}\n\n{content}")
+    return "\n\n".join(blocks)
+
+
+def compose_redraft_message(task: TaskTable, entries: list[dict[str, Any]]) -> str:
+    """Seed message for a re-draft intake session: the current draft + board review.
+
+    Gives the prompter the existing task draft to revise plus the Product Owner /
+    Head of Marketing feedback to fold in, so the fresh session re-drafts the same
+    task rather than starting from scratch.
+    """
+    criteria = "\n".join(f"- {c}" for c in (task.acceptance_criteria or []))
+    briefing = format_board_briefing(entries)
+    return (
+        "You are revising an existing task draft with board feedback.\n\n"
+        f"## Current draft: {task.title}\n\n{task.description}\n\n"
+        f"### Acceptance criteria\n{criteria}\n\n{briefing}"
+    ).strip()
 
 
 def compose_description(draft: dict[str, Any]) -> str:
