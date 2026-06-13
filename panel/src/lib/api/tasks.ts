@@ -21,6 +21,16 @@ export interface TaskFilters {
   offset?: number;
 }
 
+// One board reviewer's decision-log entry for a task (PO or Head of Marketing).
+// Matches the backend BoardReviewEntry schema.
+export interface BoardReviewEntry {
+  author: string;
+  author_role: string;
+  title: string;
+  content: string;
+  timestamp: string | null;
+}
+
 export const tasksApi = {
   // List tasks with optional filters
   list: async (filters?: TaskFilters): Promise<Task[]> => {
@@ -55,6 +65,16 @@ export const tasksApi = {
     }
 
     const { data } = await api.get<Task>("/tasks/" + taskId);
+    return data;
+  },
+
+  // The board's review (PO + Head of Marketing decision logs) for a task,
+  // oldest-first. Empty until the board has reviewed.
+  getBoardReview: async (taskId: string): Promise<BoardReviewEntry[]> => {
+    if (isMockMode()) return [];
+    const { data } = await api.get<BoardReviewEntry[]>(
+      "/tasks/" + taskId + "/board-review",
+    );
     return data;
   },
 
