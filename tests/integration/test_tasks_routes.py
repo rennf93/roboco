@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from http import HTTPStatus
+from pathlib import Path
 from types import SimpleNamespace
 from typing import TYPE_CHECKING
 from unittest.mock import AsyncMock, patch
@@ -39,8 +40,10 @@ from roboco.services.base import (
     ValidationError,
 )
 from roboco.services.base import ServiceError as SvcError
+from roboco.services.git import GitService
 from roboco.services.notification_delivery import EscalationError
 from roboco.services.permissions import PermissionService
+from roboco.services.task import TaskService
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator
@@ -3373,3 +3376,76 @@ async def test_cell_pm_complete_merges_then_completes(task_client: dict) -> None
     merge_request = call_args.args[2]  # positional: agent_id, agent_role, request
     _expected_pr = 77
     assert merge_request.pr_number == _expected_pr
+
+
+# ---------------------------------------------------------------------------
+# POST /tasks/{id}/complete — PM merge path end-to-end (AC: double-completion fix)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_pm_merge_auto_completes_without_double_completion(
+    task_client: dict,
+) -> None:
+    """POST /complete on awaiting_pm_review calls real merge_pr_for_task and
+    real complete_task_for_agent is NOT called — the task is auto-completed
+    by _auto_complete_on_merge inside the git service, and the route detects
+    the completed state from the re-fetch and returns 200 directly.
+
+    Only the git-workspace / GitHub-API layer is mocked (GitService.get_workspace
+    and GitService.merge_pull_request).  merge_pr_for_task and complete_task_for_agent
+    run for real so this exercises the fix for the double-completion 500.
+    """
+    # Seed a task in awaiting_pm_review with a PR.  No work_session_id so that
+    # _assert_pr_merged_for_complete returns True without querying WorkSession.
+    task = _seed_task(
+        task_client,
+        status=TaskStatus.AWAITING_PM_REVIEW,
+        pr_number=99,
+        # work_session_id intentionally omitted (defaults to None)
+    )
+    await task_client["db"].flush()
+
+    # Spy: we want to assert complete_task_for_agent is never reached.
+    # If it were called on an already-completed task it would raise ValidationError
+    # and the route would return a non-200 — but we assert explicitly to be clear.
+    complete_for_agent_spy = AsyncMock(
+        wraps=TaskService.complete_task_for_agent,
+        name="complete_task_for_agent_spy",
+    )
+
+    _mock_workspace = Path("/tmp/mock_workspace")
+
+    with (
+        patch.object(
+            GitService,
+            "get_workspace",
+            new=AsyncMock(return_value=_mock_workspace),
+        ),
+        patch.object(
+            GitService,
+            "merge_pull_request",
+            new=AsyncMock(return_value=("main", "dead1234")),
+        ),
+        patch.object(
+            TaskService,
+            "complete_task_for_agent",
+            new=complete_for_agent_spy,
+        ),
+    ):
+        response = await task_client["client"].post(
+            f"/api/tasks/{task.id}/complete",
+            json={"justification": "All criteria met and QA signed off."},
+            headers=_HDR,
+        )
+
+    # The route must return 200; if the double-completion bug were present the
+    # second call to complete() would fail (task already completed) → 422/400.
+    assert response.status_code == HTTPStatus.OK, response.text
+
+    body = response.json()
+    assert body["status"] == "completed", f"expected completed, got {body['status']}"
+
+    # complete_task_for_agent must NOT have been called: the task was already
+    # auto-completed by _auto_complete_on_merge inside merge_pr_for_task.
+    complete_for_agent_spy.assert_not_called()
