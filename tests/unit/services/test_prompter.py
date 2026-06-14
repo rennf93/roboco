@@ -259,9 +259,9 @@ async def test_assignee_is_board_distinguishes_roles(db_session: Any) -> None:
     db_session.add_all([po, hom, dev])
     await db_session.flush()
 
-    assert await service._assignee_is_board(cast(UUID, po.id)) is True
-    assert await service._assignee_is_board(cast(UUID, hom.id)) is True
-    assert await service._assignee_is_board(cast(UUID, dev.id)) is False
+    assert await service._assignee_is_board(cast("UUID", po.id)) is True
+    assert await service._assignee_is_board(cast("UUID", hom.id)) is True
+    assert await service._assignee_is_board(cast("UUID", dev.id)) is False
     # Unknown id is not a board agent — defensive, must not raise.
     assert await service._assignee_is_board(uuid4()) is False
 

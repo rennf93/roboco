@@ -9,14 +9,11 @@ file shows up in coverage.
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Any
+from typing import Any
 from uuid import uuid4
 
 import pytest
 from roboco.services.gateway.choreographer._protocol import ChoreographerHelpers
-
-if TYPE_CHECKING:
-    from roboco.services.gateway.envelope import Envelope
 
 
 def _empty_env() -> Any:
