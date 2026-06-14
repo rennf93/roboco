@@ -12,8 +12,6 @@ Covers acceptance criteria:
 from __future__ import annotations
 
 import json
-import sys
-import types
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 from uuid import uuid4
@@ -24,60 +22,26 @@ import pytest
 import pytest_asyncio  # noqa: F401 - registers asyncio mode
 
 # ---------------------------------------------------------------------------
-# Ensure piragi stubs are present before the optimal_brain modules are imported
+# Module imports
 # ---------------------------------------------------------------------------
-
-_PIRAGI_STUB_NAMES = (
-    "piragi",
-    "piragi.types",
-    "piragi.stores",
-    "piragi.stores.postgres",
-    "piragi.chunking",
-    "piragi.semantic_chunking",
-)
-
-
-def _stub_piragi() -> None:
-    mock = MagicMock()
-    for name in _PIRAGI_STUB_NAMES:
-        if name not in sys.modules:
-            mod = types.ModuleType(name)
-            mod.__dict__.update(
-                {
-                    "AsyncRagi": mock,
-                    "Citation": mock,
-                    "Document": mock,
-                    "Chunk": mock,
-                    "PostgresStore": mock,
-                }
-            )
-            sys.modules[name] = mod
-
-
-_stub_piragi()
-
-# ---------------------------------------------------------------------------
-# Module imports (after stubs are injected)
-# ---------------------------------------------------------------------------
-
-from roboco.models.extraction import ExtractionContext  # noqa: E402
-from roboco.models.optimal import IndexType  # noqa: E402
-from roboco.services.exceptions import (  # noqa: E402
+from roboco.models.extraction import ExtractionContext
+from roboco.models.optimal import IndexType
+from roboco.services.exceptions import (
     MAX_RATE_LIMIT_RETRIES,
     RateLimitError,
     parse_retry_after_header,
 )
-from roboco.services.extraction import ExtractionService  # noqa: E402
-from roboco.services.optimal_brain.indexes.journals import (  # noqa: E402
+from roboco.services.extraction import ExtractionService
+from roboco.services.optimal_brain.indexes.journals import (
     JournalsIndexPlugin,
 )
-from roboco.services.optimal_brain.mentor import MentorService  # noqa: E402
-from roboco.services.optimal_brain.ollama_embedder import (  # noqa: E402
+from roboco.services.optimal_brain.mentor import MentorService
+from roboco.services.optimal_brain.ollama_embedder import (
     MAX_RETRIES,
     OllamaConnectionError,
     OllamaEmbedder,
 )
-from roboco.services.optimal_brain.validator import ValidatorService  # noqa: E402
+from roboco.services.optimal_brain.validator import ValidatorService
 
 # ---------------------------------------------------------------------------
 # Constants
@@ -162,12 +126,14 @@ def _make_anthropic_rl_exc(
 
 
 def _make_journal_plugin() -> JournalsIndexPlugin:
-    """Create a minimal JournalsIndexPlugin without initialising piragi."""
+    """Create a minimal JournalsIndexPlugin without running initialize()."""
     plugin = JournalsIndexPlugin.__new__(JournalsIndexPlugin)
     plugin._config = MagicMock()
     plugin._config.llm_base_url = "http://ollama-test:11434/v1"
     plugin._config.llm_model = "glm-5:cloud"
-    plugin._ragi = MagicMock()
+    plugin._store = MagicMock()
+    plugin._chunker = MagicMock()
+    plugin._embedder = MagicMock()
     plugin._initialized = True
     return plugin
 

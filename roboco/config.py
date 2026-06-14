@@ -115,9 +115,9 @@ class Settings(BaseSettings):
         return f"redis://{self.redis_host}:{self.redis_port}/{self.redis_db}"
 
     # ==========================================================================
-    # RAG (piragi with pgvector)
+    # RAG (in-house engine with pgvector)
     # ==========================================================================
-    rag_persist_dir: str = ".piragi"
+    rag_persist_dir: str = ".roboco"
     rag_chunk_strategy: str = Field(
         default="fixed",
         pattern="^(fixed|semantic|hierarchical|contextual)$",
@@ -150,7 +150,7 @@ class Settings(BaseSettings):
     @computed_field  # type: ignore[prop-decorator]
     @property
     def rag_store_url(self) -> str:
-        """PostgreSQL connection URL for piragi vector store."""
+        """PostgreSQL connection URL for the in-house vector store."""
         return (
             f"postgres://{self.database_user}:{self.database_password}"
             f"@{self.database_host}:{self.database_port}/{self.database_name}"

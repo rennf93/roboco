@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-# piragi stubs are injected by conftest.py before this module is imported.
 from roboco.services.optimal_brain.indexes.base import build_doc_source
 from roboco.services.optimal_brain.indexes.conversations import ConversationsIndexPlugin
 from roboco.services.optimal_brain.indexes.journals import JournalsIndexPlugin

@@ -19,10 +19,10 @@ from pathlib import Path
 from typing import Any
 
 import structlog
-from piragi.types import Chunk
 
 from roboco.models.optimal import IndexType
 from roboco.services.optimal_brain.indexes.base import BaseIndexPlugin, IngestResult
+from roboco.services.optimal_brain.text_chunker import Chunk
 
 logger = structlog.get_logger()
 
@@ -45,7 +45,7 @@ class FileHashRegistry:
 
     def __init__(self, cache_file: Path | None = None):
         """Initialize with optional cache file path."""
-        self._cache_file = cache_file or Path(".piragi/file_hashes.json")
+        self._cache_file = cache_file or Path(".roboco/file_hashes.json")
         self._hashes: dict[str, str] = {}
         self._load()
 
@@ -297,7 +297,7 @@ SKIP_DIRECTORIES = {
     ".venv",
     "venv",
     "__pycache__",
-    ".piragi",
+    ".roboco",
     "node_modules",
     ".next",
     "dist",
@@ -568,8 +568,8 @@ class CodeIndexPlugin(BaseIndexPlugin):
         """
         Batch ingest code files using line-based chunking.
 
-        Unlike the base class ingest_batch which uses piragi's sentence-based
-        chunker, this method uses a simple line-based chunker that's
+        Unlike the base class ingest_batch which uses the sliding-window
+        TextChunker, this method uses a simple line-based chunker that's
         appropriate for source code.
 
         Args:
@@ -619,15 +619,20 @@ class CodeIndexPlugin(BaseIndexPlugin):
                 for d in files_data
             ]
 
-        # Embed and store using piragi's internals
-        ragi_sync = self.ragi._sync
-
-        def _embed_and_store() -> None:
-            chunks_with_embeddings = ragi_sync.embedder.embed_chunks(all_chunks)
-            ragi_sync.store.add_chunks(chunks_with_embeddings)
+        # Embed and store using the in-house embedder and vector store
+        embedder = self._require_embedder
+        store = self._require_store
 
         try:
-            await asyncio.to_thread(_embed_and_store)
+            if hasattr(embedder, "aembed_chunks"):
+                chunks_with_embeddings: list[Chunk] = await embedder.aembed_chunks(
+                    all_chunks
+                )
+            else:
+                chunks_with_embeddings = await asyncio.to_thread(
+                    embedder.embed_chunks, all_chunks
+                )
+            await store.add_chunks(chunks_with_embeddings)
 
             return [
                 IngestResult(

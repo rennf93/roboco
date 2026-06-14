@@ -20,7 +20,7 @@ SKIP_DIRECTORIES = {
     ".venv",
     "venv",
     "__pycache__",
-    ".piragi",
+    ".roboco",
     "node_modules",
     ".next",
     "dist",
