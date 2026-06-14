@@ -12,7 +12,7 @@ interface TeamHealthCardsProps {
 export function TeamHealthCards({ teams, isLoading }: TeamHealthCardsProps) {
   if (isLoading) {
     return (
-      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
+      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 xl:grid-cols-4 2xl:grid-cols-6 gap-4">
         {[...Array(4)].map((_, i) => (
           <Skeleton key={i} className="h-48" />
         ))}
@@ -29,7 +29,7 @@ export function TeamHealthCards({ teams, isLoading }: TeamHealthCardsProps) {
   }
 
   return (
-    <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
+    <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 xl:grid-cols-4 2xl:grid-cols-6 gap-4">
       {teams.map((health) => (
         <TeamHealthCard key={health.team} health={health} />
       ))}

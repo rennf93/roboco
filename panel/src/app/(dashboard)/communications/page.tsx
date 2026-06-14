@@ -297,7 +297,7 @@ function CommunicationsPageContent() {
   const selectedChannel = channels?.find(c => c.id === channelId);
 
   return (
-    <div className="flex flex-col h-[calc(100vh-7rem)]">
+    <div className="flex flex-col lg:h-[calc(100vh-7rem)]">
       {/* Header */}
       <div className="flex items-center justify-between mb-4">
         <div>
@@ -319,9 +319,9 @@ function CommunicationsPageContent() {
           onRetry={() => refetch()}
         />
       ) : (
-        <div className="grid grid-cols-12 gap-6 flex-1 min-h-0">
+        <div className="grid grid-cols-12 gap-4 lg:gap-6 lg:flex-1 lg:min-h-0">
           {/* Panel 1: Channels */}
-          <Card className="col-span-3 flex flex-col overflow-hidden">
+          <Card className="col-span-12 lg:col-span-3 flex flex-col overflow-hidden">
             <CardContent className="p-3 flex flex-col h-full">
               <div className="flex items-center gap-2 mb-3 pb-2 border-b">
                 <Hash className="h-4 w-4 text-muted-foreground" />
@@ -339,7 +339,7 @@ function CommunicationsPageContent() {
           </Card>
 
           {/* Panel 2: Groups */}
-          <Card className="col-span-3 flex flex-col overflow-hidden">
+          <Card className="col-span-12 lg:col-span-3 flex flex-col overflow-hidden">
             <CardContent className="p-3 flex flex-col h-full">
               <div className="flex items-center gap-2 mb-3 pb-2 border-b">
                 <Users className="h-4 w-4 text-muted-foreground" />
@@ -365,7 +365,7 @@ function CommunicationsPageContent() {
           </Card>
 
           {/* Panel 3: Sessions */}
-          <Card className="col-span-6 flex flex-col overflow-hidden">
+          <Card className="col-span-12 lg:col-span-6 flex flex-col overflow-hidden">
             <CardContent className="p-3 flex flex-col h-full">
               <div className="flex items-center gap-2 mb-3 pb-2 border-b">
                 <MessageCircle className="h-4 w-4 text-muted-foreground" />
@@ -393,29 +393,29 @@ function CommunicationsPageContent() {
 export default function CommunicationsPage() {
   return (
     <Suspense fallback={
-      <div className="flex flex-col h-[calc(100vh-7rem)]">
+      <div className="flex flex-col lg:h-[calc(100vh-7rem)]">
         <div className="flex items-center justify-between mb-4">
           <div>
             <Skeleton className="h-9 w-48 mb-2" />
             <Skeleton className="h-5 w-64" />
           </div>
         </div>
-        <div className="grid grid-cols-12 gap-6 flex-1">
-          <Card className="col-span-3">
+        <div className="grid grid-cols-12 gap-4 lg:gap-6">
+          <Card className="col-span-12 lg:col-span-3">
             <CardContent className="p-3 space-y-2">
               {Array.from({ length: 6 }).map((_, i) => (
                 <Skeleton key={i} className="h-8 w-full" />
               ))}
             </CardContent>
           </Card>
-          <Card className="col-span-3">
+          <Card className="col-span-12 lg:col-span-3">
             <CardContent className="p-3 space-y-2">
               {Array.from({ length: 4 }).map((_, i) => (
                 <Skeleton key={i} className="h-10 w-full" />
               ))}
             </CardContent>
           </Card>
-          <Card className="col-span-6" />
+          <Card className="col-span-12 lg:col-span-6" />
         </div>
       </div>
     }>

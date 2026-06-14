@@ -48,7 +48,7 @@ export function AuditorDashboard() {
       </div>
 
       {/* Top Row: Live Feeds + Quality Metrics */}
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+      <div className="grid grid-cols-1 lg:grid-cols-2 xl:grid-cols-2 2xl:grid-cols-2 gap-6">
         <LiveFeedsPanel
           feeds={dashboard?.live_feeds}
           isLoading={loadingDashboard}
@@ -60,7 +60,7 @@ export function AuditorDashboard() {
       </div>
 
       {/* Bottom Row: Flagged Items + Reports */}
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+      <div className="grid grid-cols-1 lg:grid-cols-2 xl:grid-cols-2 2xl:grid-cols-2 gap-6">
         <FlaggedItemsPanel flags={flags} isLoading={loadingFlags} />
         <ReportsPanel reports={reports} isLoading={loadingReports} />
       </div>
