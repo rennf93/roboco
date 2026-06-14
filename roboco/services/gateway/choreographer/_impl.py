@@ -3220,43 +3220,131 @@ class Choreographer:
         # tasks for be-pm; Cell PM created two code tasks for be-dev-1).
         if guard := await self._delegate_sibling_dedup_guard(parent_task_id, inputs):
             return guard
+        # Split-before-claim: reject an egregiously-bundled code leaf so the PM
+        # splits it before any dev can claim it.
+        if guard := self._delegate_sizing_guard(inputs):
+            return guard
         # Gate Set B: PARENT_NOT_CLAIMED + SUBTASK_CAP
         return await self._delegate_lifecycle_guards(
             pm_agent_id, parent_task_id, parent
         )
 
     _TERMINAL_STATUSES: ClassVar[frozenset[str]] = frozenset({"completed", "cancelled"})
-    _SPINE_TASK_TYPES: ClassVar[frozenset[str]] = frozenset(
-        {"code", "planning", "documentation"}
-    )
+    # Per-parent concurrency cap by spine task_type. `code` is capped at the
+    # number of developers in a cell (2) so both can build independent units in
+    # parallel; `planning` and `documentation` stay sequential (one at a time).
+    _SPINE_TYPE_CAPS: ClassVar[dict[str, int]] = {
+        "code": 2,
+        "planning": 1,
+        "documentation": 1,
+    }
+    # Split-before-claim sizing thresholds for a `code` leaf (by acceptance-
+    # criteria count). Above the nudge count we flag a possible split in the
+    # success envelope; above the hard count we reject so the PM splits the
+    # bundle before any dev can claim it.
+    _SIZING_NUDGE_AC_COUNT: ClassVar[int] = 5
+    _SIZING_HARD_AC_COUNT: ClassVar[int] = 8
+
+    @classmethod
+    def _code_leaf_ac_count(cls, inputs: DelegateInputs) -> int | None:
+        """Acceptance-criteria count for a ``code`` subtask, else None.
+
+        Only ``code`` leaves are sized this way — ``planning`` briefs (main_pm
+        → cell_pm) legitimately carry many criteria and are exempt.
+        """
+        if str(inputs.task_type or "") != "code":
+            return None
+        return len(inputs.acceptance_criteria or [])
+
+    @classmethod
+    def _delegate_sizing_guard(cls, inputs: DelegateInputs) -> Envelope | None:
+        """Hard-block an egregiously-bundled code leaf (split-before-claim).
+
+        A ``code`` subtask carrying more than ``_SIZING_HARD_AC_COUNT``
+        acceptance criteria bundles too many independent concerns into one leaf:
+        QA can't pass a partial, the dev re-touches unrelated parts, and criteria
+        get dropped. Reject it so the PM splits the bundle before a dev ever
+        claims it. Moderate bundling is allowed but flagged (see
+        :meth:`_sizing_hint`).
+        """
+        ac_count = cls._code_leaf_ac_count(inputs)
+        if ac_count is None or ac_count <= cls._SIZING_HARD_AC_COUNT:
+            return None
+        return Envelope.invalid_state(
+            message=(
+                f"code subtask bundles {ac_count} acceptance criteria — too many "
+                f"independent concerns for one leaf "
+                f"(cap {cls._SIZING_HARD_AC_COUNT})."
+            ),
+            remediate=(
+                "Split this into smaller code subtasks before delegating — one "
+                "concern each, 2-4 acceptance criteria per subtask. Hand "
+                "independent concerns to both cell devs in parallel; sequence "
+                "dependent ones. A bundled leaf drives multi-round QA failures "
+                "and drops criteria."
+            ),
+            context_briefing={},
+        )
+
+    @classmethod
+    def _sizing_hint(cls, inputs: DelegateInputs) -> str | None:
+        """Soft nudge for a code leaf in the moderate sizing band.
+
+        Fires above the nudge count and below the hard cap (the hard cap rejects
+        outright). Surfaced in the delegate success envelope, never blocking.
+        """
+        ac_count = cls._code_leaf_ac_count(inputs)
+        if ac_count is None or ac_count <= cls._SIZING_NUDGE_AC_COUNT:
+            return None
+        return (
+            f"This code subtask carries {ac_count} acceptance criteria. If they "
+            "span more than one independent concern, consider splitting it so "
+            "each concern is its own subtask — and hand independents to both "
+            "devs in parallel. (Allowed, just flagged.)"
+        )
 
     @staticmethod
     def _spine_type_dup_envelope(
-        new_type: str, sibling: Any, sib_assignee: str
+        new_type: str, sibling: Any, sib_assignee: str, cap: int = 1
     ) -> Envelope:
         """Rule-1 rejection: spine-type concurrency cap hit."""
+        capacity = (
+            f"The {new_type!r} spine is sequential — only one non-terminal at a time."
+            if cap == 1
+            else (
+                f"The {new_type!r} spine is capped at {cap} concurrent "
+                f"(one per cell developer) and both are already in flight."
+            )
+        )
+        parallel_hint = (
+            "If the work is genuinely parallel (two independent modules), "
+            "split this parent into two sibling parents instead of two code "
+            "subtasks under one parent.\n\n"
+            if cap == 1
+            else (
+                f"You may run up to {cap} code subtasks at once (one per dev) "
+                "when they touch independent files; a further one must wait for "
+                "an in-flight sibling to finish.\n\n"
+            )
+        )
         return Envelope.invalid_state(
             message=(
-                f"parent already has a non-terminal "
-                f"task_type={new_type!r} subtask "
-                f"({sibling.id}, assigned_to={sib_assignee!r}, "
-                f"status={sibling.status}). The {new_type!r} spine is "
-                f"sequential — only one non-terminal at a time."
+                f"parent already has {cap} non-terminal "
+                f"task_type={new_type!r} subtask(s) "
+                f"(e.g. {sibling.id}, assigned_to={sib_assignee!r}, "
+                f"status={sibling.status}). {capacity}"
             ),
             remediate=(
-                "Drive the existing sibling to completion / "
-                "cancel it before delegating another of the same "
-                "type. If the work is genuinely parallel (two "
-                "independent modules), split this parent into "
-                "two sibling parents instead of two code "
-                "subtasks under one parent.\n\n"
-                "**DO NOT work around this by delegating again with a "
+                "Drive an existing sibling to completion / cancel it before "
+                "delegating another of the same type. "
+                + parallel_hint
+                + "**DO NOT work around this by delegating again with a "
                 "different task_type** (e.g. 'documentation' or "
                 "'research' as a 'verification' subtask). The lifecycle "
                 "handles QA, documentation, and PM-review automatically "
                 "after the code subtask finishes — you do not create "
                 "auxiliary subtasks for those roles. Call i_am_idle() "
-                "now and wait for the existing child to come back."
+                "now and wait for an existing child to come back."
             ),
             context_briefing={},
         )
@@ -3295,27 +3383,71 @@ class Choreographer:
         )
 
     @classmethod
-    def _sibling_dup_envelope(
-        cls, sibling: Any, new_type: str, new_team: str, new_assignee: str
+    def _sibling_cap_envelope(
+        cls,
+        siblings: list[Any],
+        new_type: str,
+        new_team: str,
+        new_assignee: str,
     ) -> Envelope | None:
-        """Apply Rule-1 then Rule-2 against one non-terminal sibling.
+        """Apply Rule-2 (same-assignee) then Rule-1 (spine concurrency cap).
 
-        ``code`` / ``documentation`` stay capped regardless of team —
-        a single repo on one branch shouldn't have two simultaneous code
-        subtasks. ``planning`` allows cross-team fanout (see
-        :meth:`_is_cross_team_planning`).
+        Rule 2: a PM never gives one agent two non-terminal subtasks of the
+        same type under one parent.
+
+        Rule 1: a parent may hold at most ``_SPINE_TYPE_CAPS[type]`` non-terminal
+        subtasks of a spine type. ``code`` is capped at 2 (one per cell dev) so
+        both developers can build independent units in parallel; ``planning``
+        and ``documentation`` stay at 1. ``planning`` on a different team does
+        not count toward the cap — that's main_pm's legitimate cross-cell fanout
+        (see :meth:`_is_cross_team_planning`).
         """
-        sib_type = str(getattr(sibling, "task_type", ""))
-        sib_team = str(getattr(sibling, "team", "") or "")
-        sib_assignee = str(getattr(sibling, "assigned_to", "") or "")
-        same_spine_type = new_type in cls._SPINE_TASK_TYPES and sib_type == new_type
-        if same_spine_type and not cls._is_cross_team_planning(
-            new_type, new_team, sib_team
-        ):
-            return cls._spine_type_dup_envelope(new_type, sibling, sib_assignee)
-        if sib_assignee and sib_assignee == new_assignee and sib_type == new_type:
-            return cls._same_assignee_dup_envelope(new_type, new_assignee, sibling)
+        live = [
+            s
+            for s in siblings
+            if str(getattr(s, "status", "")) not in cls._TERMINAL_STATUSES
+        ]
+        return cls._same_assignee_rejection(
+            live, new_type, new_assignee
+        ) or cls._spine_cap_rejection(live, new_type, new_team)
+
+    @classmethod
+    def _same_assignee_rejection(
+        cls, live: list[Any], new_type: str, new_assignee: str
+    ) -> Envelope | None:
+        """Rule 2: a PM never gives one agent two same-type subtasks per parent."""
+        if not new_assignee:
+            return None
+        for sibling in live:
+            if (
+                str(getattr(sibling, "assigned_to", "") or "") == new_assignee
+                and str(getattr(sibling, "task_type", "")) == new_type
+            ):
+                return cls._same_assignee_dup_envelope(new_type, new_assignee, sibling)
         return None
+
+    @classmethod
+    def _spine_cap_rejection(
+        cls, live: list[Any], new_type: str, new_team: str
+    ) -> Envelope | None:
+        """Rule 1: at most ``_SPINE_TYPE_CAPS[type]`` non-terminal same-type."""
+        cap = cls._SPINE_TYPE_CAPS.get(new_type)
+        if cap is None:
+            return None
+        same_spine = [
+            s
+            for s in live
+            if str(getattr(s, "task_type", "")) == new_type
+            and not cls._is_cross_team_planning(
+                new_type, new_team, str(getattr(s, "team", "") or "")
+            )
+        ]
+        if len(same_spine) < cap:
+            return None
+        blocker = same_spine[0]
+        return cls._spine_type_dup_envelope(
+            new_type, blocker, str(getattr(blocker, "assigned_to", "") or ""), cap=cap
+        )
 
     async def _delegate_sibling_dedup_guard(
         self,
@@ -3324,34 +3456,29 @@ class Choreographer:
     ) -> Envelope | None:
         """Block PM-decomposition over-spread (the smoke-run runaway pattern).
 
-        Two rules, both rooted in 'one lifecycle hop per parent':
+        Two rules, both rooted in bounded per-parent concurrency:
 
-        1. **Same-type concurrency cap**: a parent may have AT MOST one
-           non-terminal subtask of types ``code`` / ``planning`` /
-           ``documentation`` at any given time, regardless of assignee.
-           Exception: ``planning`` subtasks on different
-           teams are allowed in parallel — that's main_pm's legitimate
-           cross-cell fanout.
+        1. **Same-type concurrency cap**: a parent may hold at most
+           ``_SPINE_TYPE_CAPS[type]`` non-terminal subtasks of a spine type —
+           ``code`` is capped at 2 (one per cell developer, so both build
+           independent units in parallel); ``planning`` and ``documentation``
+           stay at 1. Exception: ``planning`` subtasks on different teams do
+           not count toward the cap — that's main_pm's legitimate cross-cell
+           fanout.
         2. **Same-assignee same-type** (fallback): a PM never delegates two
-           ``research``/``design``/``administrative`` subtasks to the same
-           agent under the same parent.
+           subtasks of the same type to the same agent under the same parent
+           (so the two parallel ``code`` slots always go to different devs).
 
-        Both rules surface the existing sibling id so the PM can finish
+        Both rules surface an existing sibling id so the PM can finish
         or cancel it instead of guessing.
         """
         siblings = await self.task.get_subtasks(parent_task_id)
-        new_type = str(inputs.task_type or "")
-        new_team = str(inputs.team or "")
-        new_assignee = str(inputs.assigned_to or "")
-        for sibling in siblings:
-            if str(getattr(sibling, "status", "")) in self._TERMINAL_STATUSES:
-                continue
-            envelope = self._sibling_dup_envelope(
-                sibling, new_type, new_team, new_assignee
-            )
-            if envelope is not None:
-                return envelope
-        return None
+        return self._sibling_cap_envelope(
+            list(siblings),
+            str(inputs.task_type or ""),
+            str(inputs.team or ""),
+            str(inputs.assigned_to or ""),
+        )
 
     async def _delegate_static_guards(
         self,
@@ -3708,6 +3835,9 @@ class Choreographer:
                 verb="delegate",
             )
         await self._wire_ux_frontend_dependency(new_task, parent)
+        hint = self._sizing_hint(inputs)
+        if hint is not None:
+            briefing = {**briefing, "sizing_hint": hint}
         return Envelope.ok(
             status="created",
             task_id=str(new_task.id),

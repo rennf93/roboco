@@ -27,6 +27,7 @@ def test_spine_cap_remediate_forbids_task_type_workaround() -> None:
         new_type="code",
         sibling=sibling,
         sib_assignee="be-dev-1",
+        cap=2,
     )
     remediate = env.remediate or ""
     assert "DO NOT work around" in remediate, (
@@ -43,6 +44,7 @@ def test_spine_cap_remediate_warns_about_verification_subtasks() -> None:
         new_type="code",
         sibling=sibling,
         sib_assignee="be-dev-1",
+        cap=2,
     )
     remediate = env.remediate or ""
     # Anti-pattern names — must appear so the model pattern-matches its own behavior.
@@ -57,5 +59,6 @@ def test_spine_cap_envelope_is_invalid_state() -> None:
         new_type="code",
         sibling=sibling,
         sib_assignee="be-dev-1",
+        cap=2,
     )
     assert env.error == "invalid_state"
