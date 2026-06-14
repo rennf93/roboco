@@ -129,7 +129,7 @@ async def test_close_pull_request_patches_state_closed() -> None:
     task = type("T", (), {"id": "t", "assigned_to": None, "created_by": None})()
     svc.session = AsyncMock()
     svc.session.execute = AsyncMock(
-        return_value=type("Res", (), {"scalar_one_or_none": lambda self: task})()
+        return_value=type("Res", (), {"scalar_one_or_none": lambda _self: task})()
     )
     svc._project_for_task = AsyncMock(  # type: ignore[method-assign]
         return_value=type("P", (), {"slug": "proj"})()
