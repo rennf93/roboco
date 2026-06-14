@@ -12,6 +12,7 @@ import {
 } from "@/components/ui/dropdown-menu";
 import { NotificationBell } from "@/components/notifications/notification-bell";
 import { ConnectionStatus } from "./connection-status";
+import { MobileSidebar } from "./mobile-sidebar";
 
 export function Header() {
   const { setTheme } = useTheme();
@@ -20,6 +21,8 @@ export function Header() {
     <header className="flex h-16 items-center justify-between border-b bg-background px-6">
       {/* Search */}
       <div className="flex items-center gap-4 flex-1 max-w-md">
+        {/* Mobile nav trigger — only shown below md, where the sidebar is hidden */}
+        <MobileSidebar />
         <div className="relative w-full">
           <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
           <Input
