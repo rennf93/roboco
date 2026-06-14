@@ -35,6 +35,13 @@ class BudgetPolicy:
     loop_window: int = 10  # rolling-window size
     loop_action: Literal["warn", "halt"] = "halt"  # NEW: was effectively "warn"
     pm_respawn_max_unproductive: int = 3
+    # A same-status respawn that emitted a tracing_gap is normally treated as a
+    # rule-following retry and resets the unproductive counter. That reset is
+    # bounded: a task whose EVERY respawn trips the SAME tracing_gap is a stuck
+    # loop, not progress (e.g. a cold-respawned PM that can never satisfy the
+    # unblock journal-decision gate). After this many consecutive resets the
+    # gap stops counting as progress and strikes accrue, so the loop gate fires.
+    pm_respawn_max_tracing_resets: int = 3
     verb_retry_max_per_minute: int = 3  # default cap for verbs not in VERB_RETRY_LIMITS
 
 

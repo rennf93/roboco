@@ -66,6 +66,40 @@ async def test_three_tracing_gap_responses_do_not_trip_kill() -> None:
 
 
 @pytest.mark.asyncio
+async def test_unending_tracing_gap_is_bounded_and_eventually_trips() -> None:
+    """A task whose EVERY respawn trips the same tracing_gap must still die.
+
+    The rule-following reset is bounded by ``pm_respawn_max_tracing_resets``.
+    Before this bound a permanently-wedged task (e.g. a cold-respawned PM that
+    can never satisfy the unblock journal-decision gate) emitted a tracing_gap
+    on every spawn, reset the strike counter every time, and respawned
+    forever — the production bleed. With the cap, resets are exhausted and
+    strikes accrue until the gate fires.
+    """
+    orch = _new_orchestrator()
+    task_id = str(uuid4())
+    task = {"id": task_id, "status": "blocked"}
+
+    fake_audit = AsyncMock()
+    fake_audit.has_recent_tracing_gap = AsyncMock(return_value=True)
+
+    with (
+        patch("roboco.services.audit.get_audit_service", return_value=fake_audit),
+        patch(
+            "roboco.services.notification.NotificationService",
+            return_value=AsyncMock(),
+        ),
+    ):
+        results = [
+            await orch._pm_respawn_should_gate("main-pm", task) for _ in range(12)
+        ]
+
+    # The bug was that this list would be all-False forever. The gate must
+    # trip at least once now that the reset budget is finite.
+    assert any(results), "tracing_gap loop must eventually be gated"
+
+
+@pytest.mark.asyncio
 async def test_three_no_progress_spawns_still_trip_kill() -> None:
     """When there is NO tracing_gap envelope, the strike logic still bites.
 

@@ -105,6 +105,15 @@ export function TaskHeader({ task, onAction }: TaskHeaderProps) {
   const nextStatuses: TaskStatus[] = (validTransitionsData ?? []).filter(
     (s) => s !== task.status
   );
+  // God-mode: the panel always acts as the CEO/operator, so the dropdown also
+  // offers every OTHER status as a forced admin override — letting the CEO
+  // recover a task wedged in a state with no valid in-band move (e.g. a task
+  // stuck in `blocked` whose PR can never merge, or reopening a `cancelled`
+  // task). These route through the audited admin-override path, not lifecycle
+  // verbs. See handleStatusChange.
+  const overrideStatuses: TaskStatus[] = Object.values(TaskStatus).filter(
+    (s) => s !== task.status && !nextStatuses.includes(s)
+  );
   const [deleteOpen, setDeleteOpen] = useState(false);
 
   // Inline editing states
@@ -177,8 +186,7 @@ export function TaskHeader({ task, onAction }: TaskHeaderProps) {
     // Skip if same status
     if (newStatus === task.status) return;
 
-    // Backend requires lifecycle actions for ALL status changes
-    // Map target status to the action that achieves it
+    // Map a target status to the lifecycle action that achieves it in-band.
     const statusToAction: Partial<Record<TaskStatus, string>> = {
       [TaskStatus.PENDING]: "reopen", // From cancelled
       [TaskStatus.CLAIMED]: "claim",
@@ -193,10 +201,26 @@ export function TaskHeader({ task, onAction }: TaskHeaderProps) {
     };
 
     const action = statusToAction[newStatus];
-    if (action && onAction) {
+    // Prefer the real lifecycle action when this is a valid in-band transition —
+    // it runs the proper side effects (e.g. `complete` merges the PR).
+    if (action && nextStatuses.includes(newStatus) && onAction) {
       onAction(action);
-    } else {
-      toast.error(`Cannot transition to ${statusLabels[newStatus]} from current status`);
+      return;
+    }
+
+    // God-mode override: force ANY status, even from a state with no valid
+    // in-band move (a task wedged in `blocked` whose PR can never merge, or
+    // reopening a `cancelled` task). Audited via PATCH /tasks/{id} {status} ->
+    // admin_set_status. No PR merge / lifecycle side effects fire — this is a
+    // pure, operator-driven state correction the CEO is entitled to make.
+    try {
+      await updateTask.mutateAsync({
+        taskId: task.id,
+        updates: { status: newStatus },
+      });
+      toast.success(`Status forced to ${statusLabels[newStatus]}`);
+    } catch {
+      toast.error(`Failed to set status to ${statusLabels[newStatus]}`);
     }
   };
 
@@ -344,6 +368,19 @@ export function TaskHeader({ task, onAction }: TaskHeaderProps) {
                   <SelectItem key={status} value={status}>
                     <span className={`px-2 py-0.5 rounded ${statusColors[status]}`}>
                       {statusLabels[status]}
+                    </span>
+                  </SelectItem>
+                ))}
+                {/* God-mode: every remaining status as an audited admin
+                    override (no valid in-band transition). Marked "force" so
+                    the operator knows it bypasses the normal lifecycle. */}
+                {overrideStatuses.map((status) => (
+                  <SelectItem key={status} value={status}>
+                    <span className={`px-2 py-0.5 rounded ${statusColors[status]}`}>
+                      {statusLabels[status]}
+                    </span>
+                    <span className="ml-1 text-[10px] uppercase tracking-wide text-muted-foreground">
+                      force
                     </span>
                   </SelectItem>
                 ))}

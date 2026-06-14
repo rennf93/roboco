@@ -5585,6 +5585,7 @@ Start now: evidence(task_id="{task_id}")
 
     # Use foundation's default; keep the local name for back-compat.
     _PM_RESPAWN_MAX_UNPRODUCTIVE = _AGENT_LOOP_BUDGET.pm_respawn_max_unproductive
+    _PM_RESPAWN_MAX_TRACING_RESETS = _AGENT_LOOP_BUDGET.pm_respawn_max_tracing_resets
 
     async def _pm_respawn_should_gate(
         self, agent_slug: str, task: dict[str, Any]
@@ -5629,12 +5630,29 @@ Start now: evidence(task_id="{task_id}")
             }
             return False
         # Same status as last spawn — could be a stuck loop OR a
-        # rule-following retry. Consult audit before counting.
+        # rule-following retry. A tracing_gap normally means the agent is
+        # advancing through a verb chain, so reset the strike counter — but
+        # only up to a bound. A task whose EVERY respawn trips the same gap is
+        # wedged, not progressing (e.g. the unblock journal-decision gate a
+        # cold-respawned PM can never satisfy), so cap the resets and let
+        # strikes accrue once the budget is exhausted. Without this cap the
+        # gate never fires for a tracing_gap loop and respawns run forever.
         if await self._pm_made_rule_following_retry(agent_slug, task_id, record):
-            record["count"] = 1
-            record["last_check"] = now
-            record["notified"] = False
-            return False
+            resets = record.get("tracing_resets", 0)
+            if resets < self._PM_RESPAWN_MAX_TRACING_RESETS:
+                record["tracing_resets"] = resets + 1
+                record["count"] = 1
+                record["last_check"] = now
+                record["notified"] = False
+                return False
+            logger.warning(
+                "PM respawn tracing_gap reset budget exhausted — "
+                "treating recurring gap as a stuck loop",
+                agent_id=agent_slug,
+                task_id=task_id,
+                task_status=current_status,
+                tracing_resets=resets,
+            )
         record["count"] += 1
         record["last_check"] = now
         if record["count"] > self._PM_RESPAWN_MAX_UNPRODUCTIVE:
@@ -6708,6 +6726,12 @@ Never `commit`, never write code, never run `git`. PMs coordinate.
                 assigned_slug = self._resolve_agent_slug(assigned_to)
                 if self._is_agent_active(assigned_slug):
                     continue
+                # Loop guard: a review task that keeps re-surfacing without
+                # advancing (e.g. an unmergeable PR that re-blocks every cycle)
+                # must stop respawning the reviewer, else it burns tokens
+                # forever. The gate notifies the CEO once it trips.
+                if await self._pm_respawn_should_gate(assigned_slug, task):
+                    continue
                 # Agent not running - spawn them to continue
                 await self.spawn_agent(
                     agent_id=assigned_slug,
@@ -6817,6 +6841,14 @@ Never `commit`, never write code, never run `git`. PMs coordinate.
                 continue
 
             if self._is_agent_active(agent_id):
+                continue
+
+            # Loop guard: a blocked task whose unblock can never succeed (e.g.
+            # a cold-respawned PM that can't satisfy the unblock decision gate,
+            # or an unresolvable merge conflict) must stop respawning the
+            # resolver. The gate notifies the CEO once it trips so the wedged
+            # task surfaces instead of silently burning tokens.
+            if await self._pm_respawn_should_gate(agent_id, task):
                 continue
 
             await self.spawn_agent(
