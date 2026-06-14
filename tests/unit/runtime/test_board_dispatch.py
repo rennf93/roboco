@@ -12,14 +12,17 @@
 
 from __future__ import annotations
 
-from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
-from typing import Any, cast
+from typing import TYPE_CHECKING, Any, cast
 from unittest.mock import AsyncMock, patch
 from uuid import uuid4
 
-import httpx
 import pytest
+
+if TYPE_CHECKING:
+    from collections.abc import AsyncIterator
+
+    import httpx
 from roboco.runtime.orchestrator import AgentOrchestrator
 
 
@@ -158,7 +161,7 @@ async def test_unassigned_board_task_dispatches_both_via_board_handler() -> None
         "description": "A board-level task to review and shape.",
         "assigned_to": None,
     }
-    client = cast(httpx.AsyncClient, object())
+    client = cast("httpx.AsyncClient", object())
     with (
         patch.object(orch, "_is_agent_active", return_value=False),
         patch.object(orch, "_task_git_context", return_value=None),

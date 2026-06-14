@@ -8,9 +8,11 @@ without spinning up a Postgres + Redis stack.
 
 from __future__ import annotations
 
-from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
-from typing import Any, cast
+from typing import TYPE_CHECKING, Any, cast
+
+if TYPE_CHECKING:
+    from collections.abc import AsyncIterator
 from unittest.mock import AsyncMock, MagicMock, patch
 from uuid import UUID, uuid4
 
@@ -77,36 +79,36 @@ def svc() -> NotificationService:
 @pytest.mark.asyncio
 async def test_resolve_agent_uuid_returns_none_for_blank() -> None:
     db = _FakeDb()
-    assert await _resolve_agent_uuid(cast(Any, db), None) is None
-    assert await _resolve_agent_uuid(cast(Any, db), "") is None
+    assert await _resolve_agent_uuid(cast("Any", db), None) is None
+    assert await _resolve_agent_uuid(cast("Any", db), "") is None
 
 
 @pytest.mark.asyncio
 async def test_resolve_agent_uuid_passes_through_uuid() -> None:
     aid = uuid4()
     db = _FakeDb()
-    assert await _resolve_agent_uuid(cast(Any, db), aid) == aid
+    assert await _resolve_agent_uuid(cast("Any", db), aid) == aid
 
 
 @pytest.mark.asyncio
 async def test_resolve_agent_uuid_parses_uuid_string() -> None:
     aid = uuid4()
     db = _FakeDb()
-    assert await _resolve_agent_uuid(cast(Any, db), str(aid)) == aid
+    assert await _resolve_agent_uuid(cast("Any", db), str(aid)) == aid
 
 
 @pytest.mark.asyncio
 async def test_resolve_agent_uuid_resolves_slug() -> None:
     expected = uuid4()
     db = _FakeDb(agent_uuid=expected)
-    resolved = await _resolve_agent_uuid(cast(Any, db), "be-dev-1")
+    resolved = await _resolve_agent_uuid(cast("Any", db), "be-dev-1")
     assert resolved == expected
 
 
 @pytest.mark.asyncio
 async def test_resolve_agent_uuid_returns_none_for_unknown_slug() -> None:
     db = _FakeDb(agent_uuid=None)
-    assert await _resolve_agent_uuid(cast(Any, db), "ghost") is None
+    assert await _resolve_agent_uuid(cast("Any", db), "ghost") is None
 
 
 class _PatchDbContext:

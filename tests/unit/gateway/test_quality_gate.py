@@ -4,9 +4,12 @@ i_am_done, blocking a red submit before it reaches QA. Full tests stay on CI.
 
 from __future__ import annotations
 
-import pathlib
 from types import SimpleNamespace
+from typing import TYPE_CHECKING
 from unittest.mock import AsyncMock, MagicMock
+
+if TYPE_CHECKING:
+    import pathlib
 from uuid import uuid4
 
 import pytest
