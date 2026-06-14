@@ -51,24 +51,6 @@ import { toast } from "sonner";
 import Link from "next/link";
 import { TaskTypeBadge } from "../task-type-badge";
 
-// Valid next statuses per current status (for the status dropdown)
-const validNextStatuses: Record<TaskStatus, TaskStatus[]> = {
-  [TaskStatus.BACKLOG]: [TaskStatus.PENDING],
-  [TaskStatus.PENDING]: [TaskStatus.CLAIMED, TaskStatus.CANCELLED],
-  [TaskStatus.CLAIMED]: [TaskStatus.IN_PROGRESS, TaskStatus.PENDING, TaskStatus.CANCELLED],
-  [TaskStatus.IN_PROGRESS]: [TaskStatus.BLOCKED, TaskStatus.PAUSED, TaskStatus.VERIFYING, TaskStatus.CANCELLED],
-  [TaskStatus.BLOCKED]: [TaskStatus.IN_PROGRESS],
-  [TaskStatus.PAUSED]: [TaskStatus.IN_PROGRESS],
-  [TaskStatus.VERIFYING]: [TaskStatus.AWAITING_QA, TaskStatus.CANCELLED],
-  [TaskStatus.NEEDS_REVISION]: [TaskStatus.CLAIMED],
-  [TaskStatus.AWAITING_QA]: [TaskStatus.AWAITING_DOCUMENTATION, TaskStatus.NEEDS_REVISION],
-  [TaskStatus.AWAITING_DOCUMENTATION]: [TaskStatus.AWAITING_PM_REVIEW],
-  [TaskStatus.AWAITING_PM_REVIEW]: [TaskStatus.COMPLETED, TaskStatus.AWAITING_CEO_APPROVAL, TaskStatus.NEEDS_REVISION],
-  [TaskStatus.AWAITING_CEO_APPROVAL]: [TaskStatus.COMPLETED, TaskStatus.NEEDS_REVISION, TaskStatus.CANCELLED],
-  [TaskStatus.COMPLETED]: [],
-  [TaskStatus.CANCELLED]: [TaskStatus.PENDING],
-};
-
 // Status badge colors
 const statusColors: Record<TaskStatus, string> = {
   [TaskStatus.BACKLOG]: "bg-slate-100 text-slate-600 dark:bg-slate-800 dark:text-slate-400",
@@ -113,10 +95,10 @@ export function TaskHeader({ task, onAction }: TaskHeaderProps) {
   const router = useRouter();
   const deleteTask = useDeleteTask();
   const updateTask = useUpdateTask();
-  // Fetch valid next statuses from GET /tasks/{id}/valid-transitions; falls back
-  // to the hardcoded validNextStatuses map if the endpoint errors or returns 404.
-  const { data: validTransitionsData } = useTaskValidTransitions(task.id);
-  const nextStatuses: TaskStatus[] = validTransitionsData ?? validNextStatuses[task.status];
+  // Fetch valid next statuses from GET /tasks/{id}/valid-transitions.
+  // Falls back to [] while loading or on error — the Select is disabled during loading.
+  const { data: validTransitionsData, isLoading: isTransitionsLoading } = useTaskValidTransitions(task.id);
+  const nextStatuses: TaskStatus[] = validTransitionsData ?? [];
   const [deleteOpen, setDeleteOpen] = useState(false);
 
   // Inline editing states
@@ -279,7 +261,7 @@ export function TaskHeader({ task, onAction }: TaskHeaderProps) {
         actions.push({ label: "Request Changes", action: "request-changes", icon: <ThumbsDown className="h-4 w-4 mr-2" /> });
         break;
       case TaskStatus.AWAITING_CEO_APPROVAL:
-        actions.push({ label: "Approve & Merge", action: "ceo-approve", icon: <ThumbsUp className="h-4 w-4 mr-2" /> });
+        actions.push({ label: "Approve & Merge", action: "approve-and-merge", icon: <ThumbsUp className="h-4 w-4 mr-2" /> });
         actions.push({ label: "Request Changes", action: "ceo-reject", icon: <ThumbsDown className="h-4 w-4 mr-2" /> });
         break;
       case TaskStatus.CANCELLED:
@@ -335,9 +317,12 @@ export function TaskHeader({ task, onAction }: TaskHeaderProps) {
               </h1>
             )}
 
-            {/* Status Dropdown — only current status + valid next statuses */}
+            {/* Status Dropdown — only current status + valid next statuses from backend */}
             <Select value={task.status} onValueChange={(v) => handleStatusChange(v as TaskStatus)}>
-              <SelectTrigger className={`w-auto h-7 text-xs font-medium border-0 ${statusColors[task.status]}`}>
+              <SelectTrigger
+                className={`w-auto h-7 text-xs font-medium border-0 ${statusColors[task.status]}`}
+                disabled={isTransitionsLoading}
+              >
                 <SelectValue />
               </SelectTrigger>
               <SelectContent>
@@ -347,8 +332,8 @@ export function TaskHeader({ task, onAction }: TaskHeaderProps) {
                     {statusLabels[task.status]}
                   </span>
                 </SelectItem>
-                {/* nextStatuses sourced from useTaskValidTransitions (GET /tasks/{id}/valid-transitions)
-                    with graceful fallback to the hardcoded validNextStatuses map */}
+                {/* nextStatuses sourced exclusively from useTaskValidTransitions
+                    (GET /tasks/{id}/valid-transitions) — no local fallback array */}
                 {nextStatuses.map((status) => (
                   <SelectItem key={status} value={status}>
                     <span className={`px-2 py-0.5 rounded ${statusColors[status]}`}>

@@ -406,8 +406,13 @@ export const tasksApi = {
 
   // Returns the valid next statuses for a task from GET /tasks/{id}/valid-transitions
   getValidTransitions: async (taskId: string): Promise<TaskStatus[]> => {
-    const { data } = await api.get<TaskStatus[]>("/tasks/" + taskId + "/valid-transitions");
-    return data;
+    if (isMockMode()) {
+      return [];
+    }
+    const { data } = await api.get<{ valid_statuses: TaskStatus[] }>(
+      "/tasks/" + taskId + "/valid-transitions"
+    );
+    return data.valid_statuses;
   },
 
   // =========================================================================
@@ -597,6 +602,14 @@ export const tasksApi = {
       "/tasks/" + taskId + "/approve-and-start",
       { notes },
     );
+    return data;
+  },
+
+  // CEO gate #2: approve the completed work and merge the PR.
+  // No request body — the backend endpoint accepts no notes parameter.
+  // May throw HTTP 400 with detail starting 'NO_PR' or 'Merge failed'.
+  approveAndMerge: async (taskId: string): Promise<Task> => {
+    const { data } = await api.post<Task>("/tasks/" + taskId + "/approve-and-merge");
     return data;
   },
 
