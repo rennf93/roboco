@@ -2361,6 +2361,192 @@ class GitService(BaseService):
             )
         return {"merge_commit_sha": merge_commit or None}
 
+    async def _get_pr_refs(
+        self, owner: str, repo: str, pr_number: int, git_token: str
+    ) -> tuple[str, str] | None:
+        """Return ``(head_ref, base_ref)`` for a PR, or ``None`` if unavailable."""
+        try:
+            async with httpx.AsyncClient(timeout=_default_git_timeout()) as client:
+                resp = await client.get(
+                    f"https://api.github.com/repos/{owner}/{repo}/pulls/{pr_number}",
+                    headers={
+                        "Authorization": f"Bearer {git_token}",
+                        "Accept": "application/vnd.github+json",
+                        "X-GitHub-Api-Version": "2022-11-28",
+                    },
+                )
+        except httpx.HTTPError:
+            return None
+        if not resp.is_success:
+            return None
+        data = resp.json()
+        head = (data.get("head") or {}).get("ref")
+        base = (data.get("base") or {}).get("ref")
+        if not head or not base:
+            return None
+        return str(head), str(base)
+
+    async def rebase_onto_base(
+        self,
+        workspace: Path,
+        *,
+        head_branch: str,
+        base_branch: str,
+        git_token: str,
+    ) -> dict[str, Any]:
+        """Rebase ``head_branch`` onto the latest ``base_branch`` from origin.
+
+        This is the primitive both the sequence-ordered merge (rebase a later
+        sibling onto the prior one's merged result) and the conflict resolver
+        (rebase a wedged PR before re-merging) build on.
+
+        Returns one of:
+          - ``{"status": "superseded"}`` — the rebase was clean and the head
+            has NO commits the base lacks; all its work is already in the base
+            (e.g. a sibling that merged a superset landed first). Safe to close
+            the PR + complete the task without a merge.
+          - ``{"status": "rebased", "unique_commits": int}`` — clean rebase
+            with unique work; the rebased branch was force-pushed to origin and
+            can now merge cleanly.
+          - ``{"status": "conflicts", "files": [...]}`` — the rebase hit
+            conflicts and was aborted; a developer must resolve by hand.
+
+        Never touches the base branch and only ever force-pushes
+        ``head_branch`` (with ``--force-with-lease``). The caller must ensure
+        ``base_branch`` is not a protected/default branch — agents never
+        rebase-merge into master.
+        """
+        await self._run_git(workspace, ["fetch", "origin"], token=git_token)
+        await self._run_git(workspace, ["checkout", head_branch])
+        await self._run_git(workspace, ["reset", "--hard", f"origin/{head_branch}"])
+        rebase = await self._run_git(
+            workspace, ["rebase", f"origin/{base_branch}"], check=False
+        )
+        if rebase.returncode != 0:
+            conflict = await self._run_git(
+                workspace,
+                ["diff", "--name-only", "--diff-filter=U"],
+                check=False,
+            )
+            files = [f for f in conflict.stdout.splitlines() if f.strip()]
+            await self._run_git(workspace, ["rebase", "--abort"], check=False)
+            return {"status": "conflicts", "files": files}
+        count = await self._run_git(
+            workspace,
+            ["rev-list", "--count", f"origin/{base_branch}..HEAD"],
+        )
+        unique = int(count.stdout.strip() or "0")
+        if unique == 0:
+            return {"status": "superseded"}
+        await self._run_git(
+            workspace,
+            ["push", "--force-with-lease", "origin", f"HEAD:{head_branch}"],
+            token=git_token,
+        )
+        return {"status": "rebased", "unique_commits": unique}
+
+    async def rebase_pr_for_task(
+        self,
+        pr_number: int,
+        *,
+        actor_agent_id: UUID | None = None,
+    ) -> dict[str, Any]:
+        """Resolve workspace/refs for a PR and rebase its branch onto the base.
+
+        Thin wrapper over :meth:`rebase_onto_base` that loads the task/project
+        that owns the PR (mirrors :meth:`pr_merge`) and reads the PR's head/base
+        refs from GitHub. Returns the same classification dict, or
+        ``{"status": "unknown"}`` when refs can't be resolved.
+        """
+        from sqlalchemy import select
+
+        from roboco.db.tables import TaskTable as _TaskTable
+
+        result = await self.session.execute(
+            select(_TaskTable).where(_TaskTable.pr_number == pr_number).limit(1)
+        )
+        task = result.scalar_one_or_none()
+        if task is None:
+            raise NotFoundError("PR", str(pr_number))
+        project = await self._project_for_task(task)
+        if project is None:
+            raise NotFoundError("Project for task", str(task.id))
+
+        workspace_agent_id = self._resolve_workspace_agent_id(task, actor_agent_id)
+        workspace = await self.get_workspace(project.slug, agent_id=workspace_agent_id)
+        git_token = await self._get_project_token_or_raise(project.slug)
+        owner, repo = self._parse_github_remote(workspace)
+
+        refs = await self._get_pr_refs(owner, repo, pr_number, git_token)
+        if refs is None:
+            return {"status": "unknown"}
+        head_branch, base_branch = refs
+        return await self.rebase_onto_base(
+            workspace,
+            head_branch=head_branch,
+            base_branch=base_branch,
+            git_token=git_token,
+        )
+
+    async def close_pull_request(
+        self,
+        pr_number: int,
+        *,
+        comment: str | None = None,
+        delete_branch: bool = True,
+        actor_agent_id: UUID | None = None,
+    ) -> None:
+        """Close PR ``pr_number`` on GitHub, optionally with an explanatory comment.
+
+        Used to retire a PR whose work is already in the base (superseded) so a
+        wedged task can complete without a merge — the "close the dead PR"
+        action agents had no verb for. Best-effort branch cleanup on close.
+        """
+        from sqlalchemy import select
+
+        from roboco.db.tables import TaskTable as _TaskTable
+
+        result = await self.session.execute(
+            select(_TaskTable).where(_TaskTable.pr_number == pr_number).limit(1)
+        )
+        task = result.scalar_one_or_none()
+        if task is None:
+            raise NotFoundError("PR", str(pr_number))
+        project = await self._project_for_task(task)
+        if project is None:
+            raise NotFoundError("Project for task", str(task.id))
+
+        workspace_agent_id = self._resolve_workspace_agent_id(task, actor_agent_id)
+        workspace = await self.get_workspace(project.slug, agent_id=workspace_agent_id)
+        git_token = await self._get_project_token_or_raise(project.slug)
+        owner, repo = self._parse_github_remote(workspace)
+
+        headers = {
+            "Authorization": f"Bearer {git_token}",
+            "Accept": "application/vnd.github+json",
+            "X-GitHub-Api-Version": "2022-11-28",
+        }
+        async with httpx.AsyncClient(timeout=_default_git_timeout()) as client:
+            if comment:
+                await client.post(
+                    f"https://api.github.com/repos/{owner}/{repo}/issues/"
+                    f"{pr_number}/comments",
+                    headers=headers,
+                    json={"body": comment},
+                )
+            resp = await client.patch(
+                f"https://api.github.com/repos/{owner}/{repo}/pulls/{pr_number}",
+                headers=headers,
+                json={"state": "closed"},
+            )
+        if not resp.is_success:
+            raise GitError(
+                f"GitHub API refused PR close ({resp.status_code}): {resp.text[:200]}",
+                {"owner": owner, "repo": repo, "pr": pr_number},
+            )
+        if delete_branch:
+            await self._delete_pr_branch_best_effort(owner, repo, pr_number, git_token)
+
     async def pr_target(
         self,
         pr_number: int,
