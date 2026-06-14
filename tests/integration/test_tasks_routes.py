@@ -23,6 +23,8 @@ from roboco.api.routes.tasks import (
 )
 from roboco.db.tables import AgentTable, ProjectTable, TaskTable
 from roboco.exceptions import GitError, TaskLifecycleError
+from roboco.foundation.policy.lifecycle import STATUS_GRAPH
+from roboco.foundation.policy.lifecycle import Status as LifecycleStatus
 from roboco.models import AgentRole, AgentStatus, Team
 from roboco.models.base import (
     TaskNature,
@@ -112,9 +114,9 @@ def _seed_task(
         acceptance_criteria=["ac"],
         status=status,
         priority=kw.pop("priority", 2),
-        task_type=TaskType.CODE,
-        nature=TaskNature.TECHNICAL,
-        project_id=setup["project"].id,
+        task_type=kw.pop("task_type", TaskType.CODE),
+        nature=kw.pop("nature", TaskNature.TECHNICAL),
+        project_id=kw.pop("project_id", setup["project"].id),
         created_by=kw.pop("created_by", setup["agent"].id),
         team=kw.pop("team", Team.BACKEND),
         **kw,
@@ -349,6 +351,35 @@ async def test_get_task_stats_by_team(task_client: dict) -> None:
     client = task_client["client"]
     response = await client.get("/api/tasks/stats/by-team", headers=_HDR)
     assert response.status_code == HTTPStatus.OK
+
+
+@pytest.mark.asyncio
+async def test_lifecycle_transitions_parity(task_client: dict) -> None:
+    """GET /lifecycle-transitions returns the exact STATUS_GRAPH as strings.
+
+    Parity check: response keys and values must match
+    roboco.foundation.policy.lifecycle.STATUS_GRAPH.
+    """
+    client = task_client["client"]
+    response = await client.get("/api/tasks/lifecycle-transitions", headers=_HDR)
+    assert response.status_code == HTTPStatus.OK
+    body = response.json()
+
+    # Keys must be exactly the set of status string values
+    expected_keys = {s.value for s in STATUS_GRAPH}
+    assert set(body.keys()) == expected_keys, (
+        f"Key mismatch: extra={set(body.keys()) - expected_keys}, "
+        f"missing={expected_keys - set(body.keys())}"
+    )
+
+    # Values must match STATUS_GRAPH (as sorted lists of strings)
+    for status_str, next_statuses in body.items():
+        src = LifecycleStatus(status_str)
+        expected_targets = sorted(t.value for t in STATUS_GRAPH[src])
+        assert sorted(next_statuses) == expected_targets, (
+            f"Targets for {status_str!r} mismatch: "
+            f"got {sorted(next_statuses)!r}, want {expected_targets!r}"
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -3289,3 +3320,56 @@ async def test_approve_and_merge_git_error_returns_structured_error(
     body = response.json()
     assert isinstance(body.get("detail"), str)
     assert len(body["detail"]) > 0
+
+
+# ---------------------------------------------------------------------------
+# POST /tasks/{id}/complete — PM merge path (AC: pm-merge-path fix)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_cell_pm_complete_merges_then_completes(task_client: dict) -> None:
+    """POST /complete on an awaiting_pm_review task with a pr_number triggers
+    merge_pr_for_task before the task is marked completed.
+
+    The git service and project service are mocked so no real GitHub call is
+    made; the test verifies the call ordering and the final 200 response.
+    """
+    task = _seed_task(task_client, status=TaskStatus.AWAITING_PM_REVIEW, pr_number=77)
+    await task_client["db"].flush()
+
+    with (
+        patch("roboco.api.routes.tasks.get_task_service") as mock_task_factory,
+        patch("roboco.services.project.get_project_service") as mock_proj_factory,
+        patch("roboco.services.git.get_git_service") as mock_git_factory,
+    ):
+        # Task service: get() returns the seeded task; complete_task_for_agent
+        # simulates the service marking it completed and returning it.
+        task_instance = AsyncMock()
+        task_instance.get = AsyncMock(return_value=task)
+        completed_task = task  # same object; status already set on the mock
+        task_instance.complete_task_for_agent = AsyncMock(return_value=completed_task)
+        mock_task_factory.return_value = task_instance
+
+        proj_instance = AsyncMock()
+        proj_instance.get = AsyncMock(return_value=task_client["project"])
+        mock_proj_factory.return_value = proj_instance
+
+        git_instance = AsyncMock()
+        git_instance.merge_pr_for_task = AsyncMock(return_value=("main", "abc1234"))
+        mock_git_factory.return_value = git_instance
+
+        response = await task_client["client"].post(
+            f"/api/tasks/{task.id}/complete",
+            json={"justification": "All criteria met; QA and docs signed off."},
+            headers=_HDR,
+        )
+
+    assert response.status_code == HTTPStatus.OK
+    # merge_pr_for_task must have been called exactly once
+    git_instance.merge_pr_for_task.assert_called_once()
+    call_args = git_instance.merge_pr_for_task.call_args
+    # The GitMergePRRequest passed to merge_pr_for_task must carry the right pr_number
+    merge_request = call_args.args[2]  # positional: agent_id, agent_role, request
+    _expected_pr = 77
+    assert merge_request.pr_number == _expected_pr
