@@ -32,12 +32,16 @@ def _make_deps(**overrides: AsyncMock) -> ChoreographerDeps:
     )
 
 
-def _choreo(task: AsyncMock, git: AsyncMock) -> Choreographer:
+def _choreo(
+    task: AsyncMock, git: AsyncMock, monkeypatch: pytest.MonkeyPatch
+) -> Choreographer:
     choreo = Choreographer(_make_deps(task=task, git=git))
     # Isolate from briefing assembly (hits many repos) and CEO notification.
-    choreo._briefing_for = AsyncMock(return_value={})  # type: ignore[method-assign]
-    choreo._notify_ceo_merge_conflict = AsyncMock()  # type: ignore[method-assign]
-    choreo._maybe_advance_parent_to_pm_review = AsyncMock()  # type: ignore[method-assign]
+    # monkeypatch.setattr (not direct assignment) keeps mypy's method-assign
+    # check satisfied without silencing it.
+    monkeypatch.setattr(choreo, "_briefing_for", AsyncMock(return_value={}))
+    monkeypatch.setattr(choreo, "_notify_ceo_merge_conflict", AsyncMock())
+    monkeypatch.setattr(choreo, "_maybe_advance_parent_to_pm_review", AsyncMock())
     return choreo
 
 
@@ -45,7 +49,9 @@ _EXC = MergeConflictError("GitHub API refused PR merge (405): not mergeable")
 
 
 @pytest.mark.asyncio
-async def test_superseded_closes_pr_and_completes_without_merge() -> None:
+async def test_superseded_closes_pr_and_completes_without_merge(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     """All work already in base -> close the dead PR + complete, no re-merge."""
     git = AsyncMock()
     git.rebase_pr_for_task = AsyncMock(return_value={"status": "superseded"})
@@ -55,7 +61,7 @@ async def test_superseded_closes_pr_and_completes_without_merge() -> None:
     task.cell_pm_complete = AsyncMock(
         return_value=MagicMock(status="completed", parent_task_id=None, team="frontend")
     )
-    choreo = _choreo(task, git)
+    choreo = _choreo(task, git, monkeypatch)
     t = MagicMock(pr_number=159, parent_task_id=None, team="frontend")
 
     env = await choreo._resolve_merge_conflict_on_complete(
@@ -72,7 +78,9 @@ async def test_superseded_closes_pr_and_completes_without_merge() -> None:
 
 
 @pytest.mark.asyncio
-async def test_rebased_retries_merge_and_completes() -> None:
+async def test_rebased_retries_merge_and_completes(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     """Clean rebase with unique work -> retry the merge, then complete."""
     git = AsyncMock()
     git.rebase_pr_for_task = AsyncMock(
@@ -84,7 +92,7 @@ async def test_rebased_retries_merge_and_completes() -> None:
     task.cell_pm_complete = AsyncMock(
         return_value=MagicMock(status="completed", parent_task_id=None, team="frontend")
     )
-    choreo = _choreo(task, git)
+    choreo = _choreo(task, git, monkeypatch)
     t = MagicMock(pr_number=160, parent_task_id=None, team="backend")
 
     await choreo._resolve_merge_conflict_on_complete(
@@ -97,7 +105,9 @@ async def test_rebased_retries_merge_and_completes() -> None:
 
 
 @pytest.mark.asyncio
-async def test_genuine_conflict_escalates_to_ceo_and_does_not_loop() -> None:
+async def test_genuine_conflict_escalates_to_ceo_and_does_not_loop(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     """Unresolvable conflict -> admin override to awaiting_ceo_approval."""
     git = AsyncMock()
     git.rebase_pr_for_task = AsyncMock(
@@ -108,7 +118,11 @@ async def test_genuine_conflict_escalates_to_ceo_and_does_not_loop() -> None:
     task = AsyncMock()
     task.admin_set_status = AsyncMock()
     task.get = AsyncMock(return_value=MagicMock(status="awaiting_ceo_approval"))
-    choreo = _choreo(task, git)
+    choreo = _choreo(task, git, monkeypatch)
+    # Hold a local ref to the notification mock so the assertion has a typed
+    # AsyncMock to call (the attribute itself reads as the original method type).
+    notify = AsyncMock()
+    monkeypatch.setattr(choreo, "_notify_ceo_merge_conflict", notify)
     tid = uuid4()
     t = MagicMock(pr_number=160, parent_task_id=None, team="backend")
 
@@ -124,12 +138,14 @@ async def test_genuine_conflict_escalates_to_ceo_and_does_not_loop() -> None:
     git.close_pull_request.assert_not_awaited()
     git.pr_merge.assert_not_awaited()
     task.cell_pm_complete.assert_not_awaited()
-    choreo._notify_ceo_merge_conflict.assert_awaited_once()
+    notify.assert_awaited_once()
     assert env.error is None
 
 
 @pytest.mark.asyncio
-async def test_unknown_rebase_outcome_escalates_rather_than_completing() -> None:
+async def test_unknown_rebase_outcome_escalates_rather_than_completing(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     """A non-classifiable rebase result must escalate, not silently complete."""
     git = AsyncMock()
     git.rebase_pr_for_task = AsyncMock(return_value={"status": "unknown"})
@@ -138,7 +154,7 @@ async def test_unknown_rebase_outcome_escalates_rather_than_completing() -> None
     task = AsyncMock()
     task.admin_set_status = AsyncMock()
     task.get = AsyncMock(return_value=MagicMock(status="awaiting_ceo_approval"))
-    choreo = _choreo(task, git)
+    choreo = _choreo(task, git, monkeypatch)
     t = MagicMock(pr_number=160, parent_task_id=None, team="backend")
 
     await choreo._resolve_merge_conflict_on_complete(

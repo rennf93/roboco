@@ -11,7 +11,7 @@ from __future__ import annotations
 
 from pathlib import Path
 from typing import Any
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from roboco.services.git import GitService
@@ -122,23 +122,37 @@ async def test_rebase_never_force_pushes_on_conflict() -> None:
 
 
 @pytest.mark.asyncio
-async def test_close_pull_request_patches_state_closed() -> None:
+async def test_close_pull_request_patches_state_closed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     """close_pull_request issues a PATCH state=closed (and an optional comment)."""
     svc = _git_service()
-    # Stub the task/project/workspace/token/remote resolution chain.
+    # Stub the task/project/workspace/token/remote resolution chain via
+    # monkeypatch.setattr (not direct assignment) so mypy's method-assign check
+    # stays satisfied without silencing it.
     task = type("T", (), {"id": "t", "assigned_to": None, "created_by": None})()
-    svc.session = AsyncMock()
-    svc.session.execute = AsyncMock(
+    session = AsyncMock()
+    session.execute = AsyncMock(
         return_value=type("Res", (), {"scalar_one_or_none": lambda _self: task})()
     )
-    svc._project_for_task = AsyncMock(  # type: ignore[method-assign]
-        return_value=type("P", (), {"slug": "proj"})()
+    delete_branch = AsyncMock()
+    monkeypatch.setattr(svc, "session", session, raising=False)
+    monkeypatch.setattr(
+        svc,
+        "_project_for_task",
+        AsyncMock(return_value=type("P", (), {"slug": "proj"})()),
     )
-    svc._resolve_workspace_agent_id = lambda *_a, **_k: None  # type: ignore[method-assign]
-    svc.get_workspace = AsyncMock(return_value=Path("/tmp/ws"))  # type: ignore[method-assign]
-    svc._get_project_token_or_raise = AsyncMock(return_value="tok")  # type: ignore[method-assign]
-    svc._parse_github_remote = lambda _ws: ("owner", "repo")  # type: ignore[method-assign]
-    svc._delete_pr_branch_best_effort = AsyncMock()  # type: ignore[method-assign]
+    monkeypatch.setattr(
+        svc, "_resolve_workspace_agent_id", MagicMock(return_value=None)
+    )
+    monkeypatch.setattr(svc, "get_workspace", AsyncMock(return_value=Path("/tmp/ws")))
+    monkeypatch.setattr(
+        svc, "_get_project_token_or_raise", AsyncMock(return_value="tok")
+    )
+    monkeypatch.setattr(
+        svc, "_parse_github_remote", MagicMock(return_value=("owner", "repo"))
+    )
+    monkeypatch.setattr(svc, "_delete_pr_branch_best_effort", delete_branch)
 
     calls: list[tuple[str, str]] = []
 
@@ -170,4 +184,4 @@ async def test_close_pull_request_patches_state_closed() -> None:
         "https://api.github.com/repos/owner/repo/issues/159/comments",
     ) in calls
     assert ("PATCH", "https://api.github.com/repos/owner/repo/pulls/159") in calls
-    svc._delete_pr_branch_best_effort.assert_awaited_once()
+    delete_branch.assert_awaited_once()

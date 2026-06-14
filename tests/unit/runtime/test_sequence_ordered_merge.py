@@ -137,7 +137,7 @@ async def test_db_failure_falls_through_to_dispatch() -> None:
 
 
 @pytest.mark.asyncio
-async def test_dispatch_skips_blocked_sibling() -> None:
+async def test_dispatch_skips_blocked_sibling(monkeypatch: pytest.MonkeyPatch) -> None:
     """_dispatch_pm_review_work must not spawn a PM for a gated task."""
     orch = _new_orchestrator()
     task = {
@@ -147,12 +147,17 @@ async def test_dispatch_skips_blocked_sibling() -> None:
         "team": "frontend",
         "assigned_to": str(uuid4()),
     }
-    orch._fetch_tasks = AsyncMock(return_value=[task])  # type: ignore[method-assign]
-    orch._blocked_by_earlier_sibling = AsyncMock(return_value=True)  # type: ignore[method-assign]
-    orch.spawn_agent = AsyncMock()  # type: ignore[method-assign]
-    orch._resolve_agent_slug = lambda _a: "fe-pm"  # type: ignore[method-assign]
-    orch._is_agent_active = lambda _s: False  # type: ignore[method-assign]
+    spawn = AsyncMock()
+    # monkeypatch.setattr keeps mypy's method-assign check satisfied without
+    # silencing it; the spawn mock is held locally so the assertion is typed.
+    monkeypatch.setattr(orch, "_fetch_tasks", AsyncMock(return_value=[task]))
+    monkeypatch.setattr(
+        orch, "_blocked_by_earlier_sibling", AsyncMock(return_value=True)
+    )
+    monkeypatch.setattr(orch, "spawn_agent", spawn)
+    monkeypatch.setattr(orch, "_resolve_agent_slug", MagicMock(return_value="fe-pm"))
+    monkeypatch.setattr(orch, "_is_agent_active", MagicMock(return_value=False))
 
     await orch._dispatch_pm_review_work(cast("Any", MagicMock()))
 
-    orch.spawn_agent.assert_not_awaited()
+    spawn.assert_not_awaited()
